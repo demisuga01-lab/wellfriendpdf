@@ -1534,9 +1534,318 @@ pub struct IncrementalMutationReport {
     pub original_prefix_preserved: bool,
     pub output_reopened: bool,
     pub visible_after_reopen: bool,
+    #[serde(default)]
+    pub render_invalidation: serde_json::Value,
     pub output_sha256: String,
     pub post_save_signature_impact: SignatureImpactSummary,
     pub cryptographic_validity_claimed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct IncrementalFormWidgetSnapshot {
+    object_ref: Option<String>,
+    page: Option<usize>,
+    rect: Option<[f64; 4]>,
+    appearance_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct IncrementalFormFieldSnapshot {
+    field_ref: Option<String>,
+    value: Option<String>,
+    widgets: Vec<IncrementalFormWidgetSnapshot>,
+}
+
+fn push_incremental_form_ref(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn push_incremental_form_page(values: &mut Vec<usize>, value: usize) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn collect_incremental_form_appearance_refs_from_object(
+    reader: &crate::reader::PdfReader,
+    object: &PdfObject,
+    depth: usize,
+    seen: &mut BTreeSet<(u32, u16)>,
+    refs: &mut Vec<String>,
+) {
+    if depth > 8 {
+        return;
+    }
+    if let Some(reference) = object.as_reference() {
+        push_incremental_form_ref(refs, ref_id(reference));
+        if seen.insert(reference) {
+            if let Ok(resolved) = reader.get_and_resolve(reference.0, reference.1) {
+                collect_incremental_form_appearance_refs_from_object(
+                    reader,
+                    &resolved,
+                    depth + 1,
+                    seen,
+                    refs,
+                );
+            }
+        }
+        return;
+    }
+    match object {
+        PdfObject::Dictionary(dict) => {
+            for (_, value) in dict.entries() {
+                collect_incremental_form_appearance_refs_from_object(
+                    reader,
+                    value,
+                    depth + 1,
+                    seen,
+                    refs,
+                );
+            }
+        }
+        PdfObject::Array(items) => {
+            for value in items {
+                collect_incremental_form_appearance_refs_from_object(
+                    reader,
+                    value,
+                    depth + 1,
+                    seen,
+                    refs,
+                );
+            }
+        }
+        PdfObject::Stream { .. } => {}
+        _ => {}
+    }
+}
+
+fn collect_incremental_form_widget_appearance_refs(
+    reader: &crate::reader::PdfReader,
+    object_ref: Option<&str>,
+) -> Vec<String> {
+    let Some(reference) = object_ref.and_then(parse_ref_id) else {
+        return Vec::new();
+    };
+    let Ok(widget) = reader.get_and_resolve(reference.0, reference.1) else {
+        return Vec::new();
+    };
+    let Some(dict) = widget.as_dict() else {
+        return Vec::new();
+    };
+    let Some(appearance) = dict.get("AP") else {
+        return Vec::new();
+    };
+    let mut refs = Vec::new();
+    let mut seen = BTreeSet::new();
+    collect_incremental_form_appearance_refs_from_object(
+        reader, appearance, 0, &mut seen, &mut refs,
+    );
+    refs
+}
+
+fn incremental_form_scalar_name(object: &PdfObject) -> Option<String> {
+    match object {
+        PdfObject::String(bytes) => Some(crate::info::decode_pdf_text_string(bytes)),
+        PdfObject::Name(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn incremental_form_field_roots(engine: &ContentEngine) -> Result<Vec<PdfObject>> {
+    let document = engine.document();
+    let reader = document.reader();
+    let catalog = document.get_catalog()?;
+    Ok(catalog
+        .get("AcroForm")
+        .and_then(|acroform| reader.resolve(acroform.clone()).ok())
+        .and_then(|object| {
+            object
+                .as_dict()
+                .and_then(|dict| dict.get("Fields"))
+                .cloned()
+        })
+        .and_then(|fields| reader.resolve(fields).ok())
+        .and_then(|fields| fields.as_array().map(<[PdfObject]>::to_vec))
+        .unwrap_or_default())
+}
+
+fn incremental_form_field_reference_by_name(
+    reader: &crate::reader::PdfReader,
+    source: &PdfObject,
+    parent_name: &str,
+    target: &str,
+    depth: usize,
+) -> Result<Option<(u32, u16)>> {
+    if depth > 32 {
+        return Err(WellfriendError::ResourceLimit(
+            "secure_mutation resource_limit_exceeded: AcroForm field hierarchy exceeds depth 32"
+                .to_string(),
+        ));
+    }
+    let reference = source.as_reference();
+    let resolved = reader.resolve(source.clone())?;
+    let Some(dict) = resolved.as_dict() else {
+        return Ok(None);
+    };
+    let local_name = dict.get("T").and_then(incremental_form_scalar_name);
+    let full_name = match (parent_name.is_empty(), local_name.as_deref()) {
+        (_, None | Some("")) => parent_name.to_string(),
+        (true, Some(local)) => local.to_string(),
+        (false, Some(local)) => format!("{parent_name}.{local}"),
+    };
+    if full_name == target && dict.get("T").is_some() {
+        return Ok(reference);
+    }
+    for child in dict
+        .get("Kids")
+        .and_then(|value| reader.resolve(value.clone()).ok())
+        .and_then(|value| value.as_array().map(<[PdfObject]>::to_vec))
+        .unwrap_or_default()
+    {
+        if let Some(reference) =
+            incremental_form_field_reference_by_name(reader, &child, &full_name, target, depth + 1)?
+        {
+            return Ok(Some(reference));
+        }
+    }
+    Ok(None)
+}
+
+fn incremental_form_field_ref(engine: &ContentEngine, field_name: &str) -> Result<Option<String>> {
+    let reader = engine.document().reader();
+    for root in incremental_form_field_roots(engine)? {
+        if let Some(reference) =
+            incremental_form_field_reference_by_name(reader, &root, "", field_name, 0)?
+        {
+            return Ok(Some(ref_id(reference)));
+        }
+    }
+    Ok(None)
+}
+
+fn incremental_form_field_snapshot(
+    input: &[u8],
+    field_name: &str,
+) -> Result<Option<IncrementalFormFieldSnapshot>> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let reader = engine.document().reader();
+    let field_ref = incremental_form_field_ref(&engine, field_name)?;
+    let Some(field) = crate::forms_report(&engine)?
+        .fields
+        .into_iter()
+        .find(|field| field.full_name == field_name)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(IncrementalFormFieldSnapshot {
+        field_ref,
+        value: field.value,
+        widgets: field
+            .widgets
+            .into_iter()
+            .map(|widget| IncrementalFormWidgetSnapshot {
+                appearance_refs: collect_incremental_form_widget_appearance_refs(
+                    reader,
+                    widget.object.as_deref(),
+                ),
+                object_ref: widget.object,
+                page: widget.page,
+                rect: widget.rect,
+            })
+            .collect(),
+    }))
+}
+
+fn incremental_form_field_refs(field: Option<&IncrementalFormFieldSnapshot>) -> Vec<String> {
+    let mut refs = Vec::new();
+    if let Some(field) = field {
+        if let Some(field_ref) = &field.field_ref {
+            push_incremental_form_ref(&mut refs, field_ref.clone());
+        }
+        for widget in &field.widgets {
+            if let Some(widget_ref) = &widget.object_ref {
+                push_incremental_form_ref(&mut refs, widget_ref.clone());
+            }
+            for appearance_ref in &widget.appearance_refs {
+                push_incremental_form_ref(&mut refs, appearance_ref.clone());
+            }
+        }
+    }
+    refs
+}
+
+fn incremental_form_render_invalidation_report(
+    input: &[u8],
+    output: &[u8],
+    field_name: &str,
+) -> Result<serde_json::Value> {
+    let before = incremental_form_field_snapshot(input, field_name)?;
+    let after = incremental_form_field_snapshot(output, field_name)?;
+    let before_refs = incremental_form_field_refs(before.as_ref())
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let after_refs = incremental_form_field_refs(after.as_ref())
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut changed_object_refs = Vec::new();
+    let mut created_object_refs = Vec::new();
+    let mut removed_object_refs = Vec::new();
+    let mut render_write_set_refs = Vec::new();
+    for reference in after_refs.difference(&before_refs) {
+        push_incremental_form_ref(&mut created_object_refs, reference.clone());
+        push_incremental_form_ref(&mut render_write_set_refs, reference.clone());
+    }
+    for reference in before_refs.difference(&after_refs) {
+        push_incremental_form_ref(&mut removed_object_refs, reference.clone());
+        push_incremental_form_ref(&mut render_write_set_refs, reference.clone());
+    }
+    for reference in before_refs.intersection(&after_refs) {
+        push_incremental_form_ref(&mut changed_object_refs, reference.clone());
+        push_incremental_form_ref(&mut render_write_set_refs, reference.clone());
+    }
+    let mut affected_pages = Vec::new();
+    let mut dirty_regions = Vec::new();
+    for (snapshot, reason) in [
+        (before.as_ref(), "incremental_form_widget_before"),
+        (after.as_ref(), "incremental_form_widget_after"),
+    ] {
+        if let Some(snapshot) = snapshot {
+            for widget in &snapshot.widgets {
+                if let (Some(page), Some(rect)) = (widget.page, widget.rect) {
+                    push_incremental_form_page(&mut affected_pages, page);
+                    let entry = serde_json::json!({
+                        "page": page,
+                        "region": rect,
+                        "reason": reason,
+                    });
+                    if !dirty_regions.iter().any(|existing| existing == &entry) {
+                        dirty_regions.push(entry);
+                    }
+                }
+            }
+        }
+    }
+    affected_pages.sort_unstable();
+    let visual_dirty_region_count = dirty_regions.len();
+    Ok(serde_json::json!({
+        "schema_version": "secure-mutation-incremental-form-render-invalidation.v1",
+        "scope": "incremental_form_value_update",
+        "structured_render_write_set": before != after,
+        "field_name": field_name,
+        "before_field_ref": before.as_ref().and_then(|field| field.field_ref.clone()),
+        "after_field_ref": after.as_ref().and_then(|field| field.field_ref.clone()),
+        "before_value": before.as_ref().and_then(|field| field.value.clone()),
+        "after_value": after.as_ref().and_then(|field| field.value.clone()),
+        "render_write_set_refs": render_write_set_refs,
+        "changed_object_refs": changed_object_refs,
+        "created_object_refs": created_object_refs,
+        "removed_object_refs": removed_object_refs,
+        "affected_pages": affected_pages,
+        "dirty_regions": dirty_regions,
+        "visual_dirty_region_count": visual_dirty_region_count,
+    }))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1741,13 +2050,15 @@ pub fn incremental_form_value_update_pdf(
                             && text_value(&dict, "V").as_deref() == Some(value)
                     })
             });
-    let report = finish_incremental_report(
+    let mut report = finish_incremental_report(
         input,
         &output,
         policy,
         EditOperation::FormValueUpdate,
         visible,
     )?;
+    report.render_invalidation =
+        incremental_form_render_invalidation_report(input, &output, field_name)?;
     Ok((output, report))
 }
 
@@ -1957,6 +2268,11 @@ fn finish_incremental_report(
         original_prefix_preserved: true,
         output_reopened: true,
         visible_after_reopen,
+        render_invalidation: serde_json::json!({
+            "schema_version": "secure-mutation-incremental-form-render-invalidation.v1",
+            "scope": "not_incremental_form_value_update",
+            "structured_render_write_set": false,
+        }),
         output_sha256: resource_digest(output),
         post_save_signature_impact,
         cryptographic_validity_claimed: false,

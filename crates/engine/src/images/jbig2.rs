@@ -19,7 +19,7 @@ pub fn decode(data: &[u8], globals: Option<&[u8]>) -> Result<RawImage> {
     image
         .decode(&mut sink)
         .map_err(|err| WellfriendError::MalformedPdf(format!("JBIG2Decode failed: {err}")))?;
-    Ok(sink.finish())
+    sink.finish()
 }
 
 struct GrayscaleSink {
@@ -38,25 +38,24 @@ impl GrayscaleSink {
         }
     }
 
-    fn finish(mut self) -> RawImage {
+    fn finish(self) -> Result<RawImage> {
         let expected = self.width as usize * self.height as usize;
         if self.pixels.len() != expected {
-            log::warn!(
-                "JBIG2Decode {}x{}: decoded {} pixels, expected {}; truncating/padding",
+            return Err(WellfriendError::MalformedPdf(format!(
+                "JBIG2Decode {}x{} decoded {} pixels, expected {}",
                 self.width,
                 self.height,
                 self.pixels.len(),
                 expected
-            );
-            self.pixels.resize(expected, 255);
+            )));
         }
-        RawImage {
+        Ok(RawImage {
             width: self.width,
             height: self.height,
             channels: 1,
             bits_per_sample: 8,
             pixels: self.pixels,
-        }
+        })
     }
 
     fn push_gray(&mut self, black: bool, count: usize) {
@@ -88,5 +87,15 @@ mod tests {
     fn malformed_embedded_stream_returns_error() {
         let result = decode(b"not a jbig2 stream", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn jbig2_sink_refuses_short_output() {
+        let mut sink = GrayscaleSink::new(4, 1);
+        sink.push_gray(false, 2);
+        let err = sink
+            .finish()
+            .expect_err("short JBIG2 output must fail typed");
+        assert!(format!("{err}").contains("JBIG2Decode 4x1 decoded 2 pixels, expected 4"));
     }
 }

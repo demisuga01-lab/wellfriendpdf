@@ -376,6 +376,8 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "268435456",
         "--pixel-format",
         "bgra8",
+        "--alpha-mode",
+        "straight",
         "--reverse-byte-order",
         "--grayscale",
         "--halftone",
@@ -401,6 +403,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(json["contract_json_sidecars"], 1);
     assert_eq!(json["font_substitution_sidecars"], 1);
     assert_eq!(json["pixel_format"], "bgra8");
+    assert_eq!(json["alpha_mode"], "straight");
     assert_eq!(json["grayscale"], true);
     assert_eq!(json["print_profile"], "proof");
 
@@ -440,6 +443,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(contract["clip"]["width"], 16);
     assert_eq!(contract["clip"]["height"], 16);
     assert_eq!(contract["pixel_format"], "Bgra8");
+    assert_eq!(contract["alpha_mode"], "Straight");
     assert_eq!(contract["reverse_byte_order"], true);
     assert_eq!(contract["grayscale"], true);
     assert_eq!(contract["halftone"], "Screen");
@@ -487,6 +491,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(replay_json["contract_json_input"], true);
     assert_eq!(replay_json["font_substitution_sidecars"], 1);
     assert_eq!(replay_json["pixel_format"], "Bgra8");
+    assert_eq!(replay_json["alpha_mode"], "Straight");
     assert_eq!(replay_json["grayscale"], true);
     assert_eq!(replay_json["print_profile"], "Proof");
     let replay_entries = zip_entries(&replay_zip);
@@ -607,6 +612,67 @@ fn render_contract_trim_page_box_uses_trim_dimensions() {
 }
 
 #[test]
+fn render_contract_device_transform_shifts_raw_surface() {
+    let input = tmp("render_contract_device_transform.pdf");
+    std::fs::write(&input, red_top_left_rect_page_pdf()).expect("write transform fixture");
+    let output = tmp("render_contract_device_transform.zip");
+    let out = run(&[
+        "render",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "-p",
+        "1",
+        "--dpi",
+        "72",
+        "--format",
+        "raw",
+        "--render-contract",
+        "--device-transform",
+        "1,0,0,1,5,7",
+        "--clip",
+        "0,0,24,24",
+        "--background",
+        "12,34,56",
+        "--write-contract-json",
+        "--json",
+    ]);
+    let json = assert_json(&out, "render contract device transform");
+    assert_eq!(json["render_contract"], true);
+
+    let entries = zip_entries(&output);
+    let raw = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.raw")
+        .expect("raw surface entry");
+    assert_eq!(raw.1.len(), 24 * 24 * 4);
+    let pixel = |x: usize, y: usize| {
+        let offset = (y * 24 + x) * 4;
+        &raw.1[offset..offset + 4]
+    };
+    assert_eq!(pixel(2, 2), &[12, 34, 56, 255]);
+    assert_eq!(pixel(6, 8), &[255, 0, 0, 255]);
+
+    let contract = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.contract.json")
+        .expect("contract sidecar entry");
+    let contract: serde_json::Value =
+        serde_json::from_slice(&contract.1).expect("parse contract sidecar");
+    assert_eq!(
+        contract["transform"]["values"][4].as_u64(),
+        Some(5.0f64.to_bits())
+    );
+    assert_eq!(
+        contract["transform"]["values"][5].as_u64(),
+        Some(7.0f64.to_bits())
+    );
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}
+
+#[test]
 fn render_raster_output_is_deterministic_across_thread_counts() {
     let serial_zip = tmp("render_threads_1.zip");
     let parallel_zip = tmp("render_threads_4.zip");
@@ -711,6 +777,61 @@ fn render_eps_runs() {
     ]);
     assert_ok(&out, "render eps");
     assert!(o.exists());
+    let _ = std::fs::remove_file(&o);
+}
+
+#[test]
+fn render_strict_vector_modes_run_and_report() {
+    for format in ["svg", "ps", "eps"] {
+        let ext = if format == "ps" { "ps" } else { "zip" };
+        let o = tmp(&format!("render_strict_vector_{format}.{ext}"));
+        let out = run(&[
+            "render",
+            fx("minimal.pdf").to_str().unwrap(),
+            "-o",
+            o.to_str().unwrap(),
+            "-p",
+            "1",
+            "--format",
+            format,
+            "--strict-vector",
+            "--json",
+        ]);
+        let json = assert_json(&out, &format!("render {format} --strict-vector"));
+        assert_eq!(json["format"], format);
+        assert_eq!(json["strict_vector"], true);
+        assert_eq!(json["pages_rendered"], 1);
+        assert_eq!(json["rasterized_fallback_pages"], 0);
+        assert!(o.exists());
+        let _ = std::fs::remove_file(&o);
+    }
+}
+
+#[test]
+fn render_strict_vector_rejects_raster_formats() {
+    let o = tmp("render_strict_vector_png.zip");
+    let out = run(&[
+        "render",
+        fx("minimal.pdf").to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "-p",
+        "1",
+        "--format",
+        "png",
+        "--strict-vector",
+    ]);
+    assert!(
+        !out.status.success(),
+        "render png --strict-vector should fail: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--strict-vector applies only"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = std::fs::remove_file(&o);
 }
 
@@ -967,6 +1088,65 @@ fn render_rejects_huge_page_without_abort() {
     let _ = std::fs::remove_file(&o);
 }
 
+#[test]
+fn render_corpus_display_list_refuses_unsupported_retained_replay() {
+    let corpus = tmp("render_corpus_unsupported_display_list");
+    remove_path(&corpus);
+    std::fs::create_dir_all(&corpus).expect("create render-corpus fixture dir");
+    let input = corpus.join("unsupported-retained.pdf");
+    std::fs::write(&input, unsupported_retained_display_list_pdf())
+        .expect("write unsupported retained fixture");
+    let jsonl = tmp("render_corpus_unsupported_display_list.jsonl");
+    let summary = tmp("render_corpus_unsupported_display_list.summary.json");
+    remove_path(&jsonl);
+    remove_path(&summary);
+
+    let out = run(&[
+        "render-corpus",
+        corpus.to_str().unwrap(),
+        "--jsonl",
+        jsonl.to_str().unwrap(),
+        "--summary",
+        summary.to_str().unwrap(),
+        "--pages",
+        "first",
+        "--pipeline",
+        "display-list",
+        "--document-cache",
+        "off",
+        "--workers",
+        "1",
+        "--evidence",
+        "raw",
+    ]);
+    let summary_json = assert_json(&out, "render-corpus display-list unsupported retained");
+    assert_eq!(summary_json["failed_files"], 1);
+    assert_eq!(summary_json["successful_files"], 0);
+    assert_eq!(summary_json["pages_rendered"], 0);
+    assert_eq!(summary_json["display_list_fallbacks"], 0);
+
+    let jsonl_text = std::fs::read_to_string(&jsonl).expect("read render-corpus jsonl");
+    let record: serde_json::Value =
+        serde_json::from_str(jsonl_text.lines().next().expect("one jsonl record"))
+            .expect("parse render-corpus record");
+    assert_eq!(record["ok"], false);
+    assert_eq!(record["pages_attempted"], 1);
+    assert_eq!(record["pages_rendered"], 0);
+    let error = record["error"].as_str().expect("record error");
+    assert!(
+        error.contains("display-list pipeline refuses unsupported retained replay"),
+        "expected retained refusal error, got {error}"
+    );
+    assert!(
+        error.contains("rerun with --pipeline immediate"),
+        "expected explicit immediate-pipeline guidance, got {error}"
+    );
+
+    remove_path(&corpus);
+    remove_path(&jsonl);
+    remove_path(&summary);
+}
+
 /// Build a minimal but well-formed single-page PDF with a giant `/MediaBox`,
 /// including a valid xref table and `startxref` so the reader parses it.
 fn huge_page_pdf() -> Vec<u8> {
@@ -995,6 +1175,39 @@ fn huge_page_pdf() -> Vec<u8> {
     pdf.into_bytes()
 }
 
+fn unsupported_retained_display_list_pdf() -> Vec<u8> {
+    let content = "Q\n";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R >>"
+            .to_string(),
+        format!(
+            "<< /Length {} >>\nstream\n{}endstream",
+            content.len(),
+            content
+        ),
+    ];
+    let mut pdf = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (idx, body) in objs.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", idx + 1, body));
+    }
+    let xref_off = pdf.len();
+    pdf.push_str(&format!("xref\n0 {}\n", objs.len() + 1));
+    pdf.push_str("0000000000 65535 f \n");
+    for off in &offsets {
+        pdf.push_str(&format!("{off:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+        objs.len() + 1,
+        xref_off
+    ));
+    pdf.into_bytes()
+}
+
 fn media_crop_page_pdf() -> Vec<u8> {
     let objs = [
         "<< /Type /Catalog /Pages 2 0 R >>",
@@ -1012,6 +1225,76 @@ fn media_crop_page_pdf() -> Vec<u8> {
     pdf.push_str("0000000000 65535 f \n");
     for off in &offsets {
         pdf.push_str(&format!("{:010} 00000 n \n", off));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+        objs.len() + 1,
+        xref_off
+    ));
+    pdf.into_bytes()
+}
+
+fn red_top_left_rect_page_pdf() -> Vec<u8> {
+    let content = "1 0 0 rg 0 90 10 10 re f\n";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R >>"
+            .to_string(),
+        format!(
+            "<< /Length {} >>\nstream\n{}endstream",
+            content.len(),
+            content
+        ),
+    ];
+    let mut pdf = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (idx, body) in objs.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", idx + 1, body));
+    }
+    let xref_off = pdf.len();
+    pdf.push_str(&format!("xref\n0 {}\n", objs.len() + 1));
+    pdf.push_str("0000000000 65535 f \n");
+    for off in &offsets {
+        pdf.push_str(&format!("{off:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+        objs.len() + 1,
+        xref_off
+    ));
+    pdf.into_bytes()
+}
+
+fn prepress_plate_pdf() -> Vec<u8> {
+    let content = "/CS1 cs 0.25 scn 10 10 20 20 re f\n\
+                   /CS1 CS 0.75 SCN 40 10 m 80 10 l S\n\
+                   /CS2 cs 0.20 0.80 scn 10 40 20 20 re f\n";
+    let type4 = "{ 0 }";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /ColorSpace << /CS1 [/Separation /SpotOrange /DeviceRGB 5 0 R] /CS2 [/DeviceN [/Cyan /SpotGreen] /DeviceRGB 6 0 R] >> >> /Contents 4 0 R >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{}endstream", content.len(), content),
+        "<< /FunctionType 2 /Domain [0 1] /Range [0 1 0 1 0 1] /C0 [1 1 1] /C1 [1 0.5 0] /N 1 >>".to_string(),
+        format!(
+            "<< /FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1] /Length {} >>\nstream\n{}endstream",
+            type4.len(),
+            type4
+        ),
+    ];
+    let mut pdf = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (idx, body) in objs.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", idx + 1, body));
+    }
+    let xref_off = pdf.len();
+    pdf.push_str(&format!("xref\n0 {}\n", objs.len() + 1));
+    pdf.push_str("0000000000 65535 f \n");
+    for off in &offsets {
+        pdf.push_str(&format!("{off:010} 00000 n \n"));
     }
     pdf.push_str(&format!(
         "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
@@ -1320,6 +1603,113 @@ fn transparency_rendering_report_commands_emit_json() {
     assert!(combined.get("forms").is_some());
     assert!(combined.get("annotations").is_some());
     assert!(combined.get("page_operations").is_some());
+}
+
+#[test]
+fn backend_plan_arena_report_command_emits_json() {
+    let json = assert_json(
+        &run(&[
+            "backend-plan-arena-report",
+            fx("multi_stream.pdf").to_str().unwrap(),
+            "--page",
+            "1",
+            "--dpi",
+            "72",
+            "--render-mode",
+            "compat",
+        ]),
+        "backend-plan-arena-report",
+    );
+
+    assert_eq!(json["kind"], "backend_plan_arena_report");
+    assert_eq!(json["report"]["schema_version"], 1);
+    assert_eq!(json["report"]["page_number"], 1);
+    assert!(json["report"]["document_revision"].as_u64().is_some());
+    assert!(json["report"]["hot_operation_count"].as_u64().unwrap() > 0);
+    assert!(json["report"]["path_arena_entries"].as_u64().is_some());
+    assert!(json["report"]["descriptor_kinds"].as_object().is_some());
+}
+
+#[test]
+fn prepress_plate_report_command_emits_json() {
+    let input = tmp("prepress_plate_report.pdf");
+    std::fs::write(&input, prepress_plate_pdf()).expect("write prepress fixture");
+    let json = assert_json(
+        &run(&[
+            "prepress-plate-report",
+            input.to_str().unwrap(),
+            "--page",
+            "1",
+            "--dpi",
+            "72",
+        ]),
+        "prepress-plate-report",
+    );
+
+    assert_eq!(json["kind"], "prepress_plate_report");
+    assert_eq!(json["report"]["true_separation_framebuffer"], true);
+    assert_eq!(json["report"]["page_number"], 1);
+    assert_eq!(json["report"]["plate_count"], 3);
+    assert_eq!(json["report"]["contribution_count"], 4);
+    assert_eq!(
+        json["report"]["deterministic_plane_order"],
+        serde_json::json!(["Cyan", "SpotGreen", "SpotOrange"])
+    );
+    assert!(json["report"]["cache_fingerprint"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+
+    let _ = std::fs::remove_file(&input);
+}
+
+#[test]
+fn document_views_report_command_emits_json() {
+    let json = assert_json(
+        &run(&[
+            "document-views-report",
+            fx("multi_stream.pdf").to_str().unwrap(),
+        ]),
+        "document-views-report",
+    );
+
+    assert_eq!(json["kind"], "document_views_report");
+    assert_eq!(json["report"]["schema_version"], 1);
+    assert_eq!(json["report"]["views"].as_array().unwrap().len(), 5);
+    assert!(json["report"]["views"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|view| view["name"] == "render"));
+    assert_eq!(json["report"]["materialization"]["semantic_pages"], 0);
+}
+
+#[test]
+fn image_decode_capability_report_command_emits_json() {
+    let json = assert_json(
+        &run(&[
+            "image-decode-capability-report",
+            fx("image_only.pdf").to_str().unwrap(),
+        ]),
+        "image-decode-capability-report",
+    );
+
+    assert_eq!(json["kind"], "image_decode_capability_report");
+    assert_eq!(json["report"]["schema_version"], 1);
+    assert!(json["report"]["image_count"].as_u64().unwrap() > 0);
+    assert!(json["report"]["native_metadata_inspection_count"]
+        .as_u64()
+        .is_some());
+    assert!(json["report"]["renderer_boundary_cancellation_count"]
+        .as_u64()
+        .is_some());
+    assert!(json["report"]["images"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|image| {
+            image["capability"]["metadata_inspection"].is_string()
+                || image["capability"]["metadata_inspection"].is_object()
+        }));
 }
 
 #[test]

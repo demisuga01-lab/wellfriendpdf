@@ -22,6 +22,7 @@ use crate::render::shading::{eval_type2, eval_type3, get_float_array};
 pub(crate) const MAX_TYPE0_SAMPLE_VALUES: usize = 4_194_304;
 pub(crate) const MAX_TYPE4_TOKENS: usize = 16_384;
 pub(crate) const MAX_TYPE4_STACK: usize = 1_024;
+const MAX_FUNCTION_ARRAY_COMPONENTS: usize = crate::render::colorspace::MAX_DEVICEN_COMPONENTS;
 
 /// Evaluate a PDF function with one or more inputs, returning its output
 /// components. Returns an empty `Vec` for unsupported types or malformed input
@@ -35,15 +36,273 @@ pub(crate) fn eval_function_n(
         Some(d) => d,
         None => return Vec::new(),
     };
-    match dict.get_integer("FunctionType").unwrap_or(-1) {
-        0 => eval_type0(func_obj, &dict, inputs, reader),
-        2 => eval_type2(&dict, inputs.first().copied().unwrap_or(0.0)),
-        3 => eval_type3(&dict, inputs.first().copied().unwrap_or(0.0), reader),
-        4 => eval_type4(func_obj, &dict, inputs, reader),
-        other => {
+    match dict.get_integer("FunctionType") {
+        Some(0) => {
+            if validate_type0_shape(&dict).is_none() {
+                log::debug!("PDF Function Type 0 has malformed required shape");
+                return Vec::new();
+            }
+            eval_type0(func_obj, &dict, inputs, reader)
+        }
+        Some(2) => {
+            if validate_type2_shape(&dict).is_none() {
+                log::debug!("PDF Function Type 2 has malformed required shape");
+                return Vec::new();
+            }
+            let Some(input) = first_finite_input(inputs, "Type 2") else {
+                return Vec::new();
+            };
+            eval_type2(&dict, input)
+        }
+        Some(3) => {
+            if validate_type3_shape(&dict, reader, 1).is_none() {
+                log::debug!("PDF Function Type 3 has malformed required shape");
+                return Vec::new();
+            }
+            let Some(input) = first_finite_input(inputs, "Type 3") else {
+                return Vec::new();
+            };
+            eval_type3(&dict, input, reader)
+        }
+        Some(4) => {
+            let Some(input_count) = function_domain_input_count(&dict) else {
+                log::debug!("PDF Function Type 4 has malformed /Domain");
+                return Vec::new();
+            };
+            if validate_type4_shape(&dict, input_count).is_none() {
+                log::debug!("PDF Function Type 4 has malformed required shape");
+                return Vec::new();
+            }
+            let Some(inputs) = finite_inputs(inputs, input_count, "Type 4") else {
+                return Vec::new();
+            };
+            eval_type4(func_obj, &dict, inputs, reader)
+        }
+        Some(other) => {
             log::debug!("PDF Function Type {other} not supported");
             Vec::new()
         }
+        None => {
+            log::debug!("PDF Function missing FunctionType");
+            Vec::new()
+        }
+    }
+}
+
+/// Evaluate a shading `/Function`, accepting either one normal PDF function or
+/// a PDF array of one-output component functions.
+pub(crate) fn eval_function_or_array_n(
+    func_obj: &PdfObject,
+    inputs: &[f64],
+    reader: &PdfReader,
+) -> Vec<f64> {
+    let Some(functions) = resolve_to_array(func_obj, reader) else {
+        return eval_function_n(func_obj, inputs, reader);
+    };
+    if functions.is_empty() || functions.len() > MAX_FUNCTION_ARRAY_COMPONENTS {
+        return Vec::new();
+    }
+
+    let mut outputs = Vec::with_capacity(functions.len());
+    for function in functions {
+        let value = eval_function_n(&function, inputs, reader);
+        match value.as_slice() {
+            [component] if component.is_finite() => outputs.push(*component),
+            _ => return Vec::new(),
+        }
+    }
+    outputs
+}
+
+/// Validate the dictionary fields that `eval_function_n` would otherwise
+/// tolerate through optional defaults. This is used by active render paths that
+/// must fail closed on malformed present fields instead of sampling defaults.
+pub(crate) fn validate_function_shape(
+    func_obj: &PdfObject,
+    input_count: usize,
+    reader: &PdfReader,
+) -> bool {
+    validate_function_shape_inner(func_obj, input_count.max(1), reader, 0).is_some()
+}
+
+/// Validate a shading `/Function`, accepting either one function or an array of
+/// component functions. Array entries are still evaluated later to prove each
+/// component function has exactly one finite output.
+pub(crate) fn validate_function_or_array_shape(
+    func_obj: &PdfObject,
+    input_count: usize,
+    reader: &PdfReader,
+) -> bool {
+    let input_count = input_count.max(1);
+    let Some(functions) = resolve_to_array(func_obj, reader) else {
+        return validate_function_shape_inner(func_obj, input_count, reader, 0).is_some();
+    };
+    !functions.is_empty()
+        && functions.len() <= MAX_FUNCTION_ARRAY_COMPONENTS
+        && functions.iter().all(|function| {
+            validate_function_shape_inner(function, input_count, reader, 0).is_some()
+        })
+}
+
+fn first_finite_input(inputs: &[f64], label: &str) -> Option<f64> {
+    finite_inputs(inputs, 1, label).map(|values| values[0])
+}
+
+fn finite_inputs<'a>(inputs: &'a [f64], expected: usize, label: &str) -> Option<&'a [f64]> {
+    let values = inputs.get(..expected)?;
+    if values.iter().all(|value| value.is_finite()) {
+        Some(values)
+    } else {
+        log::debug!("PDF Function {label} received non-finite input");
+        None
+    }
+}
+
+fn function_domain_input_count(dict: &PdfDictionary) -> Option<usize> {
+    let domain = require_strict_float_array_even(dict, "Domain")?;
+    Some(domain.len() / 2)
+}
+
+fn validate_function_shape_inner(
+    func_obj: &PdfObject,
+    input_count: usize,
+    reader: &PdfReader,
+    depth: usize,
+) -> Option<()> {
+    if depth > 16 {
+        return None;
+    }
+    let dict = resolve_to_dict(func_obj, reader)?;
+    match dict.get_integer("FunctionType")? {
+        0 => validate_type0_shape(&dict),
+        2 => validate_type2_shape(&dict),
+        3 => validate_type3_shape(&dict, reader, depth + 1),
+        4 => validate_type4_shape(&dict, input_count),
+        _ => None,
+    }
+}
+
+fn validate_type0_shape(dict: &PdfDictionary) -> Option<()> {
+    let size = strict_type0_size(dict)?;
+    let range = require_strict_float_array_even(dict, "Range")?;
+    require_strict_float_array_exact(dict, "Domain", size.len().checked_mul(2)?)?;
+    let bps = usize::try_from(dict.get_integer("BitsPerSample")?).ok()?;
+    if !matches!(bps, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32) {
+        return None;
+    }
+    if let Some(encode) = strict_float_array_field(dict, "Encode").ok()? {
+        if encode.len() != size.len().checked_mul(2)? {
+            return None;
+        }
+    }
+    if let Some(decode) = strict_float_array_field(dict, "Decode").ok()? {
+        if decode.len() != range.len() {
+            return None;
+        }
+    }
+    Some(())
+}
+
+fn strict_type0_size(dict: &PdfDictionary) -> Option<Vec<usize>> {
+    let size_obj = dict.get("Size")?.as_array()?;
+    if size_obj.is_empty() {
+        return None;
+    }
+    let mut size = Vec::with_capacity(size_obj.len());
+    for item in size_obj {
+        let value = item.as_integer()?;
+        if value <= 0 {
+            return None;
+        }
+        size.push(usize::try_from(value).ok()?);
+    }
+    Some(size)
+}
+
+fn validate_type2_shape(dict: &PdfDictionary) -> Option<()> {
+    require_strict_float_array_exact(dict, "Domain", 2)?;
+    let n = dict.get("N")?.as_number()?;
+    if !n.is_finite() {
+        return None;
+    }
+    if let Some(range) = strict_float_array_field(dict, "Range").ok()? {
+        if range.len() < 2 || !range.len().is_multiple_of(2) {
+            return None;
+        }
+    }
+    for key in ["C0", "C1"] {
+        if let Some(values) = strict_float_array_field(dict, key).ok()? {
+            if values.is_empty() {
+                return None;
+            }
+        }
+    }
+    Some(())
+}
+
+fn validate_type3_shape(dict: &PdfDictionary, reader: &PdfReader, next_depth: usize) -> Option<()> {
+    require_strict_float_array_exact(dict, "Domain", 2)?;
+    if let Some(range) = strict_float_array_field(dict, "Range").ok()? {
+        if range.len() < 2 || !range.len().is_multiple_of(2) {
+            return None;
+        }
+    }
+    let functions = dict.get("Functions")?.as_array()?;
+    if functions.is_empty() {
+        return None;
+    }
+    require_strict_float_array_exact(dict, "Bounds", functions.len().saturating_sub(1))?;
+    require_strict_float_array_exact(dict, "Encode", functions.len().checked_mul(2)?)?;
+    for function in functions {
+        validate_function_shape_inner(function, 1, reader, next_depth)?;
+    }
+    Some(())
+}
+
+fn validate_type4_shape(dict: &PdfDictionary, input_count: usize) -> Option<()> {
+    require_strict_float_array_exact(dict, "Domain", input_count.checked_mul(2)?)?;
+    require_strict_float_array_even(dict, "Range")?;
+    Some(())
+}
+
+fn strict_float_array_field(
+    dict: &PdfDictionary,
+    key: &str,
+) -> std::result::Result<Option<Vec<f64>>, ()> {
+    let Some(value) = dict.get(key) else {
+        return Ok(None);
+    };
+    let arr = value.as_array().ok_or(())?;
+    let mut values = Vec::with_capacity(arr.len());
+    for item in arr {
+        let value = item.as_number().ok_or(())?;
+        if !value.is_finite() {
+            return Err(());
+        }
+        values.push(value);
+    }
+    Ok(Some(values))
+}
+
+fn require_strict_float_array_exact(
+    dict: &PdfDictionary,
+    key: &str,
+    len: usize,
+) -> Option<Vec<f64>> {
+    let values = strict_float_array_field(dict, key).ok()??;
+    if values.len() == len {
+        Some(values)
+    } else {
+        None
+    }
+}
+
+fn require_strict_float_array_even(dict: &PdfDictionary, key: &str) -> Option<Vec<f64>> {
+    let values = strict_float_array_field(dict, key).ok()??;
+    if values.len() >= 2 && values.len().is_multiple_of(2) {
+        Some(values)
+    } else {
+        None
     }
 }
 
@@ -56,6 +315,19 @@ fn resolve_to_dict(obj: &PdfObject, reader: &PdfReader) -> Option<PdfDictionary>
             match reader.get_object(*number, *generation).ok()? {
                 PdfObject::Dictionary(d) => Some(d),
                 PdfObject::Stream { dict, .. } => Some(dict),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn resolve_to_array(obj: &PdfObject, reader: &PdfReader) -> Option<Vec<PdfObject>> {
+    match obj {
+        PdfObject::Array(items) => Some(items.clone()),
+        PdfObject::Reference { number, generation } => {
+            match reader.get_object(*number, *generation).ok()? {
+                PdfObject::Array(items) => Some(items),
                 _ => None,
             }
         }
@@ -115,7 +387,6 @@ impl<'a> BitReader<'a> {
 
     /// Discard bits up to the next byte boundary (mesh shadings byte-align each
     /// vertex/flag group per the spec). Used by the mesh-shading vertex reader.
-    #[allow(dead_code)]
     pub(crate) fn align_to_byte(&mut self) {
         if !self.bit_pos.is_multiple_of(8) {
             self.bit_pos = (self.bit_pos / 8 + 1) * 8;
@@ -124,7 +395,6 @@ impl<'a> BitReader<'a> {
 
     /// Number of unread bits remaining. Used by the mesh-shading vertex reader
     /// to detect the end of the vertex/patch stream.
-    #[allow(dead_code)]
     pub(crate) fn bits_remaining(&self) -> usize {
         (self.data.len() * 8).saturating_sub(self.bit_pos)
     }
@@ -149,31 +419,37 @@ fn eval_type0(
     inputs: &[f64],
     reader: &PdfReader,
 ) -> Vec<f64> {
-    let domain = get_float_array(dict, "Domain").unwrap_or_default();
-    let range = match get_float_array(dict, "Range") {
-        Some(r) if r.len() >= 2 => r,
-        _ => {
-            log::debug!("Type 0 function: missing /Range");
+    let size = match strict_type0_size(dict) {
+        Some(size) => size,
+        None => {
+            log::debug!("Type 0 function: missing or malformed /Size");
             return Vec::new();
         }
     };
-    let size: Vec<usize> = match dict.get("Size").and_then(PdfObject::as_array) {
-        Some(arr) => arr
-            .iter()
-            .filter_map(|o| o.as_integer())
-            .map(|n| n.max(1) as usize)
-            .collect(),
-        None => {
-            log::debug!("Type 0 function: missing /Size");
-            return Vec::new();
-        }
+    let Some(domain) = require_strict_float_array_exact(dict, "Domain", size.len() * 2) else {
+        log::debug!("Type 0 function: missing or malformed /Domain");
+        return Vec::new();
+    };
+    let Some(range) = require_strict_float_array_even(dict, "Range") else {
+        log::debug!("Type 0 function: missing or malformed /Range");
+        return Vec::new();
     };
     let m = size.len(); // number of input dimensions
     let n = range.len() / 2; // number of output components
-    if m == 0 || n == 0 || domain.len() < 2 * m {
+    if m == 0 || n == 0 {
         return Vec::new();
     }
-    let bps = dict.get_integer("BitsPerSample").unwrap_or(8) as usize;
+    let Some(inputs) = finite_inputs(inputs, m, "Type 0") else {
+        log::debug!("Type 0 function: missing or malformed input dimensions");
+        return Vec::new();
+    };
+    let Some(bps) = dict
+        .get_integer("BitsPerSample")
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        log::debug!("Type 0 function: missing or invalid /BitsPerSample");
+        return Vec::new();
+    };
     if !matches!(bps, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32) {
         log::debug!("Type 0 function: unsupported BitsPerSample {bps}");
         return Vec::new();
@@ -189,14 +465,27 @@ fn eval_type0(
 
     // Encode maps each input domain interval onto sample-index space
     // [0, Size_i - 1]; default is exactly that identity-to-index mapping.
-    let encode = get_float_array(dict, "Encode").unwrap_or_else(|| {
-        size.iter()
+    let encode = match strict_float_array_field(dict, "Encode") {
+        Ok(Some(values)) if values.len() == m * 2 => values,
+        Ok(Some(_)) | Err(()) => {
+            log::debug!("Type 0 function: malformed /Encode");
+            return Vec::new();
+        }
+        Ok(None) => size
+            .iter()
             .flat_map(|&s| [0.0, (s as f64 - 1.0).max(0.0)])
-            .collect()
-    });
+            .collect(),
+    };
     // Decode maps sample values [0, 2^bps - 1] onto the output range; default
     // equals Range.
-    let decode = get_float_array(dict, "Decode").unwrap_or_else(|| range.clone());
+    let decode = match strict_float_array_field(dict, "Decode") {
+        Ok(Some(values)) if values.len() == range.len() => values,
+        Ok(Some(_)) | Err(()) => {
+            log::debug!("Type 0 function: malformed /Decode");
+            return Vec::new();
+        }
+        Ok(None) => range.clone(),
+    };
 
     let samples = match resolve_stream_bytes(func_obj, reader) {
         Some(bytes) => bytes,
@@ -205,18 +494,26 @@ fn eval_type0(
             return Vec::new();
         }
     };
+    let Some(required_bits) = sample_values.checked_mul(bps) else {
+        log::debug!("Type 0 function: sample bit count overflow");
+        return Vec::new();
+    };
+    if samples.len().saturating_mul(8) < required_bits {
+        log::debug!(
+            "Type 0 function: sample stream too short ({} bytes for {required_bits} bits)",
+            samples.len()
+        );
+        return Vec::new();
+    }
 
     // Encode each input into continuous sample-index coordinates `e_i`.
     let mut e = Vec::with_capacity(m);
     for i in 0..m {
-        let x = inputs.get(i).copied().unwrap_or(0.0);
+        let x = inputs[i];
         let dmin = domain[2 * i];
         let dmax = domain[2 * i + 1];
-        let emin = encode.get(2 * i).copied().unwrap_or(0.0);
-        let emax = encode
-            .get(2 * i + 1)
-            .copied()
-            .unwrap_or((size[i] as f64 - 1.0).max(0.0));
+        let emin = encode[2 * i];
+        let emax = encode[2 * i + 1];
         let x = x.clamp(dmin.min(dmax), dmin.max(dmax));
         let ei = if (dmax - dmin).abs() < 1e-12 {
             emin
@@ -260,10 +557,13 @@ fn eval_type0(
         }
         for (j, slot) in out.iter_mut().enumerate() {
             let sample_index = flat * n + j;
-            let raw = read_sample(&samples, sample_index, bps).unwrap_or(0.0);
+            let Some(raw) = read_sample(&samples, sample_index, bps) else {
+                log::debug!("Type 0 function: failed to read sample {sample_index}");
+                return Vec::new();
+            };
             // Decode raw [0, max] -> [decode_lo, decode_hi].
-            let dlo = decode.get(2 * j).copied().unwrap_or(0.0);
-            let dhi = decode.get(2 * j + 1).copied().unwrap_or(1.0);
+            let dlo = decode[2 * j];
+            let dhi = decode[2 * j + 1];
             let val = dlo + (raw / max_sample) * (dhi - dlo);
             *slot += weight * val;
         }
@@ -347,28 +647,34 @@ fn eval_type4(
         return Vec::new();
     }
 
-    // The top `n` numbers on the stack are the outputs (bottom-to-top order).
-    let nums: Vec<f64> = stack
-        .iter()
-        .filter_map(|v| match v {
-            PsValue::Num(x) => Some(*x),
-            PsValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-            PsValue::Proc(_) => None,
-        })
-        .collect();
-    if nums.len() < n {
+    let Some(outputs) = numeric_stack_suffix(&stack, n) else {
+        log::debug!("Type 4 function: final stack outputs are not numeric");
         return Vec::new();
-    }
-    let start = nums.len() - n;
-    nums[start..]
-        .iter()
+    };
+    outputs
+        .into_iter()
         .enumerate()
-        .map(|(j, &v)| {
+        .map(|(j, v)| {
             let rlo = range[2 * j];
             let rhi = range[2 * j + 1];
             v.clamp(rlo.min(rhi), rlo.max(rhi))
         })
         .collect()
+}
+
+fn numeric_stack_suffix(stack: &[PsValue], count: usize) -> Option<Vec<f64>> {
+    if count == 0 || stack.len() < count {
+        return None;
+    }
+    let start = stack.len() - count;
+    let mut output = Vec::with_capacity(count);
+    for value in &stack[start..] {
+        match value {
+            PsValue::Num(number) if number.is_finite() => output.push(*number),
+            _ => return None,
+        }
+    }
+    Some(output)
 }
 
 fn tokenize_ps(text: &str) -> Vec<PsToken> {
@@ -497,8 +803,7 @@ fn check_ps_stack(stack: &[PsValue]) -> Result<(), ()> {
 
 fn pop_num(stack: &mut Vec<PsValue>) -> Result<f64, ()> {
     match stack.pop() {
-        Some(PsValue::Num(x)) => Ok(x),
-        Some(PsValue::Bool(b)) => Ok(if b { 1.0 } else { 0.0 }),
+        Some(PsValue::Num(x)) if x.is_finite() => Ok(x),
         _ => Err(()),
     }
 }
@@ -506,7 +811,6 @@ fn pop_num(stack: &mut Vec<PsValue>) -> Result<f64, ()> {
 fn pop_bool(stack: &mut Vec<PsValue>) -> Result<bool, ()> {
     match stack.pop() {
         Some(PsValue::Bool(b)) => Ok(b),
-        Some(PsValue::Num(x)) => Ok(x != 0.0),
         _ => Err(()),
     }
 }
@@ -740,16 +1044,7 @@ mod tests {
         let body = strip_outer_proc(&tokens);
         let mut stack: Vec<PsValue> = inputs.iter().map(|&v| PsValue::Num(v)).collect();
         exec_ps(&body, &mut stack, 0).unwrap();
-        let nums: Vec<f64> = stack
-            .iter()
-            .filter_map(|v| match v {
-                PsValue::Num(x) => Some(*x),
-                PsValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-                PsValue::Proc(_) => None,
-            })
-            .collect();
-        let start = nums.len() - n_outputs;
-        nums[start..].to_vec()
+        numeric_stack_suffix(&stack, n_outputs).unwrap()
     }
 
     #[test]
@@ -914,6 +1209,42 @@ mod tests {
         }
     }
 
+    fn type2_object(include_domain: bool) -> PdfObject {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<String, PdfObject> = BTreeMap::new();
+        m.insert("FunctionType".into(), PdfObject::Integer(2));
+        if include_domain {
+            m.insert(
+                "Domain".into(),
+                PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
+            );
+        }
+        m.insert("C0".into(), PdfObject::Array(vec![PdfObject::Real(0.0)]));
+        m.insert("C1".into(), PdfObject::Array(vec![PdfObject::Real(1.0)]));
+        m.insert("N".into(), PdfObject::Real(1.0));
+        PdfObject::Dictionary(PdfDictionary::new(m))
+    }
+
+    fn type2_component_object(c0: &[f64], c1: &[f64]) -> PdfObject {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<String, PdfObject> = BTreeMap::new();
+        m.insert("FunctionType".into(), PdfObject::Integer(2));
+        m.insert(
+            "Domain".into(),
+            PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
+        );
+        m.insert(
+            "C0".into(),
+            PdfObject::Array(c0.iter().copied().map(PdfObject::Real).collect()),
+        );
+        m.insert(
+            "C1".into(),
+            PdfObject::Array(c1.iter().copied().map(PdfObject::Real).collect()),
+        );
+        m.insert("N".into(), PdfObject::Real(1.0));
+        PdfObject::Dictionary(PdfDictionary::new(m))
+    }
+
     #[test]
     fn type0_1d_exact_at_sample_points() {
         // 4 samples over Domain [0,1] -> Range [0,1]: 0, 85, 170, 255 (8-bit).
@@ -958,6 +1289,23 @@ mod tests {
     }
 
     #[test]
+    fn type0_rejects_missing_input_dimension_instead_of_zero_default() {
+        let obj = type0_stream(
+            &[2, 2],
+            8,
+            &[0.0, 1.0, 0.0, 1.0],
+            &[0.0, 1.0],
+            vec![0, 255, 255, 0],
+        );
+        let r = reader_for_tests();
+
+        assert!(
+            eval_function_n(&obj, &[0.5], &r).is_empty(),
+            "missing second Type 0 input must not be evaluated as 0.0"
+        );
+    }
+
+    #[test]
     fn type0_16bit_samples() {
         // 2 samples, 16-bit: 0x0000 and 0xFFFF over [0,1].
         let obj = type0_stream(
@@ -983,6 +1331,244 @@ mod tests {
         );
         let r = reader_for_tests();
         assert!(eval_function_n(&obj, &[0.5], &r).is_empty());
+    }
+
+    #[test]
+    fn type0_rejects_short_sample_stream_instead_of_zero_padding() {
+        let obj = type0_stream(&[2], 8, &[0.0, 1.0], &[0.0, 1.0], vec![0]);
+        let r = reader_for_tests();
+        assert!(eval_function_n(&obj, &[1.0], &r).is_empty());
+    }
+
+    #[test]
+    fn type0_rejects_missing_bits_per_sample_instead_of_defaulting() {
+        let mut obj = type0_stream(&[2], 8, &[0.0, 1.0], &[0.0, 1.0], vec![0, 255]);
+        if let PdfObject::Stream { dict, .. } = &mut obj {
+            dict.remove("BitsPerSample");
+        }
+        let r = reader_for_tests();
+        assert!(eval_function_n(&obj, &[1.0], &r).is_empty());
+    }
+
+    #[test]
+    fn type0_evaluator_rejects_malformed_local_shape_fields() {
+        let r = reader_for_tests();
+
+        let mut malformed_size = type0_stream(&[2], 8, &[0.0, 1.0], &[0.0, 1.0], vec![0, 255]);
+        if let PdfObject::Stream { dict, .. } = &mut malformed_size {
+            dict.insert(
+                "Size",
+                PdfObject::Array(vec![PdfObject::Integer(2), PdfObject::Name("Bad".into())]),
+            );
+        }
+        if let PdfObject::Stream { dict, .. } = &malformed_size {
+            assert!(eval_type0(&malformed_size, dict, &[1.0], &r).is_empty());
+        }
+
+        let mut malformed_encode = type0_stream(&[2], 8, &[0.0, 1.0], &[0.0, 1.0], vec![0, 255]);
+        if let PdfObject::Stream { dict, .. } = &mut malformed_encode {
+            dict.insert(
+                "Encode",
+                PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Name("Bad".into())]),
+            );
+        }
+        if let PdfObject::Stream { dict, .. } = &malformed_encode {
+            assert!(eval_type0(&malformed_encode, dict, &[1.0], &r).is_empty());
+        }
+
+        let mut overlong_decode = type0_stream(&[2], 8, &[0.0, 1.0], &[0.0, 1.0], vec![0, 255]);
+        if let PdfObject::Stream { dict, .. } = &mut overlong_decode {
+            dict.insert(
+                "Decode",
+                PdfObject::Array(vec![
+                    PdfObject::Real(0.0),
+                    PdfObject::Real(1.0),
+                    PdfObject::Real(0.0),
+                    PdfObject::Real(1.0),
+                ]),
+            );
+        }
+        if let PdfObject::Stream { dict, .. } = &overlong_decode {
+            assert!(eval_type0(&overlong_decode, dict, &[1.0], &r).is_empty());
+        }
+    }
+
+    #[test]
+    fn type2_rejects_missing_input_instead_of_zero_default() {
+        let obj = type2_object(true);
+        let r = reader_for_tests();
+
+        assert!(
+            eval_function_n(&obj, &[], &r).is_empty(),
+            "missing Type 2 input must not be evaluated as 0.0"
+        );
+    }
+
+    #[test]
+    fn type2_rejects_missing_domain_instead_of_defaulting() {
+        let obj = type2_object(false);
+        let r = reader_for_tests();
+
+        assert!(
+            eval_function_n(&obj, &[0.5], &r).is_empty(),
+            "missing Type 2 /Domain must not use a default domain"
+        );
+    }
+
+    #[test]
+    fn function_array_evaluates_one_output_component_functions() {
+        let obj = PdfObject::Array(vec![
+            type2_component_object(&[1.0], &[0.0]),
+            type2_component_object(&[0.5], &[0.5]),
+            type2_component_object(&[0.0], &[1.0]),
+        ]);
+        let r = reader_for_tests();
+
+        assert!(validate_function_or_array_shape(&obj, 1, &r));
+        let values = eval_function_or_array_n(&obj, &[0.25], &r);
+
+        assert_eq!(values.len(), 3);
+        assert!((values[0] - 0.75).abs() < 0.01, "R={}", values[0]);
+        assert!((values[1] - 0.5).abs() < 0.01, "G={}", values[1]);
+        assert!((values[2] - 0.25).abs() < 0.01, "B={}", values[2]);
+    }
+
+    #[test]
+    fn function_array_rejects_multi_output_component_functions() {
+        let obj = PdfObject::Array(vec![type2_component_object(&[0.0, 0.0], &[1.0, 1.0])]);
+        let r = reader_for_tests();
+
+        assert!(validate_function_or_array_shape(&obj, 1, &r));
+        assert!(
+            eval_function_or_array_n(&obj, &[0.25], &r).is_empty(),
+            "component arrays must not accept subfunctions with more than one output"
+        );
+    }
+
+    #[test]
+    fn function_array_rejects_malformed_component_functions() {
+        let obj = PdfObject::Array(vec![type2_object(false)]);
+        let r = reader_for_tests();
+
+        assert!(
+            !validate_function_or_array_shape(&obj, 1, &r),
+            "malformed subfunction shape must fail closed before shading paint"
+        );
+        assert!(eval_function_or_array_n(&obj, &[0.25], &r).is_empty());
+    }
+
+    #[test]
+    fn type3_rejects_missing_encode_instead_of_defaulting() {
+        use std::collections::BTreeMap;
+        let sub = type2_object(true);
+        let mut m: BTreeMap<String, PdfObject> = BTreeMap::new();
+        m.insert("FunctionType".into(), PdfObject::Integer(3));
+        m.insert(
+            "Domain".into(),
+            PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
+        );
+        m.insert("Functions".into(), PdfObject::Array(vec![sub]));
+        m.insert("Bounds".into(), PdfObject::Array(vec![]));
+        let obj = PdfObject::Dictionary(PdfDictionary::new(m));
+        let r = reader_for_tests();
+
+        assert!(
+            eval_function_n(&obj, &[0.5], &r).is_empty(),
+            "missing Type 3 /Encode must not use a default encode array"
+        );
+    }
+
+    #[test]
+    fn type4_rejects_missing_input_dimension_instead_of_empty_stack_default() {
+        let obj = type4_stream("{ 0.5 }", &[0.0, 1.0]);
+        let r = reader_for_tests();
+
+        assert!(
+            eval_function_n(&obj, &[], &r).is_empty(),
+            "missing Type 4 input must not execute with an empty initial stack"
+        );
+        assert_eq!(eval_function_n(&obj, &[0.25], &r), vec![0.5]);
+    }
+
+    #[test]
+    fn type4_rejects_boolean_or_procedure_outputs_instead_of_numeric_coercion() {
+        let r = reader_for_tests();
+
+        let bool_output = type4_stream("{ true }", &[0.0, 1.0]);
+        assert!(
+            eval_function_n(&bool_output, &[0.25], &r).is_empty(),
+            "Type 4 final booleans must not be coerced to 0/1 output components"
+        );
+
+        let proc_output = type4_stream("{ 0.25 { 0.75 } }", &[0.0, 1.0]);
+        assert!(
+            eval_function_n(&proc_output, &[0.25], &r).is_empty(),
+            "Type 4 final procedures must not be filtered while keeping earlier numeric outputs"
+        );
+    }
+
+    #[test]
+    fn type4_rejects_boolean_numeric_operands_and_numeric_conditions() {
+        let r = reader_for_tests();
+
+        let boolean_as_number = type4_stream("{ true 1 add }", &[0.0, 1.0]);
+        assert!(
+            eval_function_n(&boolean_as_number, &[0.25], &r).is_empty(),
+            "Type 4 numeric operators must not coerce booleans to 0/1"
+        );
+
+        let numeric_condition = type4_stream("{ 1 { 0.5 } if }", &[0.0, 1.0]);
+        assert!(
+            eval_function_n(&numeric_condition, &[0.25], &r).is_empty(),
+            "Type 4 if/ifelse conditions must be booleans, not numeric truthiness"
+        );
+    }
+
+    #[test]
+    fn function_shape_rejects_malformed_present_type2_arrays() {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<String, PdfObject> = BTreeMap::new();
+        m.insert("FunctionType".into(), PdfObject::Integer(2));
+        m.insert(
+            "Domain".into(),
+            PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
+        );
+        m.insert(
+            "C0".into(),
+            PdfObject::Array(vec![
+                PdfObject::Real(0.0),
+                PdfObject::Real(0.0),
+                PdfObject::Real(0.0),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        );
+        m.insert(
+            "C1".into(),
+            PdfObject::Array(vec![
+                PdfObject::Real(1.0),
+                PdfObject::Real(0.0),
+                PdfObject::Real(0.0),
+            ]),
+        );
+        m.insert("N".into(), PdfObject::Real(1.0));
+        let obj = PdfObject::Dictionary(PdfDictionary::new(m));
+        let r = reader_for_tests();
+        assert!(!validate_function_shape(&obj, 1, &r));
+    }
+
+    #[test]
+    fn function_shape_allows_absent_type2_c0_c1_defaults() {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<String, PdfObject> = BTreeMap::new();
+        m.insert("FunctionType".into(), PdfObject::Integer(2));
+        m.insert(
+            "Domain".into(),
+            PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
+        );
+        m.insert("N".into(), PdfObject::Real(1.0));
+        let obj = PdfObject::Dictionary(PdfDictionary::new(m));
+        let r = reader_for_tests();
+        assert!(validate_function_shape(&obj, 1, &r));
     }
 
     #[test]

@@ -382,8 +382,8 @@ The first resumed production slice extends the compositor hot path with:
 - axis-aligned scaled-image caching for exact integer-phase opaque gray/RGB
   XObject draws, storing device-size RGB scale results by image identity, target
   dimensions, and render mode, then replaying them through the one-to-one row
-  writer and binary-clip path. Fractional-phase, affine, alpha/masked,
-  interpolated, and JPX-compatibility images stay on the canonical sampler;
+  writer and binary-clip path. Fractional-phase, affine, alpha/masked, and
+  interpolated images stay on the canonical sampler;
 - Type3 geometry-cache key isolation, using the same resource-dictionary
   identity as the Type3 charproc program cache so same-named fonts with
   different Type3 dictionaries cannot share stale retained glyph geometry;

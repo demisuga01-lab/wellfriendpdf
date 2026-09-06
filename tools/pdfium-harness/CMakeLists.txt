@@ -10,6 +10,9 @@ find_path(
   PATH_SUFFIXES public include
   REQUIRED
 )
+if(NOT EXISTS "${PDFIUM_INCLUDE_DIR}/fpdf_formfill.h")
+  message(FATAL_ERROR "PDFium public form-fill header fpdf_formfill.h was not found in ${PDFIUM_INCLUDE_DIR}")
+endif()
 find_library(
   PDFIUM_LIBRARY
   NAMES pdfium libpdfium

@@ -859,7 +859,7 @@ pub fn fuzz_font_mapping(data: &[u8]) {
             "\u{0633}\u{0644}\u{0627}\u{0645}".to_string()
         };
         let _ = std::hint::black_box(TextShaper::shape(
-            font_match.bytes,
+            font_match.bytes.as_ref(),
             &shape_text,
             ShapeOptions::default(),
         ));

@@ -120,6 +120,145 @@ pub fn extract_glyph_path_for_simple_var(
     (Some(builder.into_path()), advance)
 }
 
+/// Strict vector-output variant of [`extract_glyph_path_for_simple`].
+///
+/// This refuses to synthesize a glyph advance. It may still return `None` for
+/// the outline (for whitespace or fonts without drawable contours), but the
+/// advance is present only when it came from a real sfnt/CFF metric source.
+pub(crate) fn extract_glyph_path_for_simple_required_advance(
+    font_bytes: &[u8],
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+) -> Option<(Option<Path>, f64)> {
+    extract_glyph_path_for_simple_required_advance_var(
+        font_bytes,
+        code,
+        ch,
+        glyph_name,
+        &VariationRequest::none(),
+    )
+}
+
+/// Variation-aware strict metric variant used by exact raster text rendering.
+pub(crate) fn extract_glyph_path_for_simple_required_advance_var(
+    font_bytes: &[u8],
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+    request: &VariationRequest,
+) -> Option<(Option<Path>, f64)> {
+    let mut face = match ttf_parser::Face::parse(font_bytes, 0) {
+        Ok(face) => face,
+        Err(_) => {
+            if let Some(glyph_name) = glyph_name {
+                if let Some(result) =
+                    crate::render::font_rasterizer::cff_support::outline_by_name_required_width(
+                        font_bytes, glyph_name,
+                    )
+                    .filter(|(_, advance)| advance.is_finite())
+                {
+                    return Some(result);
+                }
+            }
+            if let Ok(code) = u8::try_from(code) {
+                if let Some(result) =
+                    crate::render::font_rasterizer::cff_support::outline_by_code_required_width(
+                        font_bytes, code,
+                    )
+                    .filter(|(_, advance)| advance.is_finite())
+                {
+                    return Some(result);
+                }
+            }
+            return None;
+        }
+    };
+
+    variations::apply_request(&mut face, request);
+
+    let upem = f64::from(face.units_per_em());
+    if upem <= 0.0 || !upem.is_finite() {
+        return None;
+    }
+    let glyph_id = glyph_index_for_simple(&face, code, ch, glyph_name)?;
+    let advance = face
+        .glyph_hor_advance(glyph_id)
+        .map(|width| f64::from(width) / upem * 1000.0)
+        .filter(|advance| advance.is_finite())?;
+
+    let mut builder = GlyphToPath::new();
+    let outline = face
+        .outline_glyph(glyph_id, &mut builder)
+        .map(|_| builder.into_path());
+    Some((outline, advance))
+}
+
+/// Extract a simple-font glyph outline only when the glyph id comes from a real
+/// font mapping. Unlike the compatibility extractor, this never synthesizes a
+/// code-point-derived glyph id.
+pub(crate) fn extract_glyph_path_for_simple_mapped_outline(
+    font_bytes: &[u8],
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+) -> Option<Option<Path>> {
+    extract_glyph_path_for_simple_mapped_outline_var(
+        font_bytes,
+        code,
+        ch,
+        glyph_name,
+        &VariationRequest::none(),
+    )
+}
+
+pub(crate) fn extract_glyph_path_for_simple_mapped_outline_var(
+    font_bytes: &[u8],
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+    request: &VariationRequest,
+) -> Option<Option<Path>> {
+    let mut face = match ttf_parser::Face::parse(font_bytes, 0) {
+        Ok(face) => face,
+        Err(_) => {
+            if let Some(glyph_name) = glyph_name {
+                if let Some((outline, _)) =
+                    crate::render::font_rasterizer::cff_support::outline_by_name(
+                        font_bytes, glyph_name,
+                    )
+                {
+                    return Some(outline);
+                }
+            }
+            if let Ok(code) = u8::try_from(code) {
+                if let Some((outline, _)) =
+                    crate::render::font_rasterizer::cff_support::outline_by_code(font_bytes, code)
+                {
+                    return Some(outline);
+                }
+            }
+            if let Some(glyph_name) = glyph_name {
+                if let Some((outline, _)) =
+                    crate::fonts::type1::outline_by_name(font_bytes, glyph_name)
+                {
+                    return Some(outline);
+                }
+            }
+            return None;
+        }
+    };
+
+    variations::apply_request(&mut face, request);
+
+    let glyph_id = glyph_index_for_simple(&face, code, ch, glyph_name)?;
+    let mut builder = GlyphToPath::new();
+    Some(
+        face.outline_glyph(glyph_id, &mut builder)
+            .map(|_| builder.into_path()),
+    )
+}
+
 /// Extract the outline [`Path`] and advance width for a glyph id (CID fonts).
 /// Falls back to the standalone CFF parser for bare CFF (/CIDFontType0C).
 pub fn extract_glyph_path_by_gid(font_bytes: &[u8], gid: u16) -> (Option<Path>, f64) {
@@ -164,6 +303,88 @@ pub fn extract_glyph_path_by_gid_var(
         return (None, advance);
     }
     (Some(builder.into_path()), advance)
+}
+
+/// Strict vector-output variant of [`extract_glyph_path_by_gid`].
+///
+/// This requires a real sfnt/CFF advance for the glyph id and refuses the
+/// compatibility defaults used by raster fallback paths.
+pub(crate) fn extract_glyph_path_by_gid_required_advance(
+    font_bytes: &[u8],
+    gid: u16,
+) -> Option<(Option<Path>, f64)> {
+    extract_glyph_path_by_gid_required_advance_var(font_bytes, gid, &VariationRequest::none())
+}
+
+/// Variation-aware strict metric variant used by exact raster text rendering.
+pub(crate) fn extract_glyph_path_by_gid_required_advance_var(
+    font_bytes: &[u8],
+    gid: u16,
+    request: &VariationRequest,
+) -> Option<(Option<Path>, f64)> {
+    let mut face = match ttf_parser::Face::parse(font_bytes, 0) {
+        Ok(face) => face,
+        Err(_) => {
+            return crate::render::font_rasterizer::cff_support::outline_by_gid_required_width(
+                font_bytes, gid,
+            )
+            .filter(|(_, advance)| advance.is_finite());
+        }
+    };
+
+    variations::apply_request(&mut face, request);
+
+    let upem = f64::from(face.units_per_em());
+    if upem <= 0.0 || !upem.is_finite() {
+        return None;
+    }
+    let glyph_id = ttf_parser::GlyphId(gid);
+    let advance = face
+        .glyph_hor_advance(glyph_id)
+        .map(|width| f64::from(width) / upem * 1000.0)
+        .filter(|advance| advance.is_finite())?;
+
+    let mut builder = GlyphToPath::new();
+    let outline = face
+        .outline_glyph(glyph_id, &mut builder)
+        .map(|_| builder.into_path());
+    Some((outline, advance))
+}
+
+/// Extract a CID/GID outline only when the requested glyph id is valid for the
+/// font program. This is the vector-output counterpart to the best-effort
+/// compatibility extractor above.
+pub(crate) fn extract_glyph_path_by_gid_mapped_outline(
+    font_bytes: &[u8],
+    gid: u16,
+) -> Option<Option<Path>> {
+    extract_glyph_path_by_gid_mapped_outline_var(font_bytes, gid, &VariationRequest::none())
+}
+
+pub(crate) fn extract_glyph_path_by_gid_mapped_outline_var(
+    font_bytes: &[u8],
+    gid: u16,
+    request: &VariationRequest,
+) -> Option<Option<Path>> {
+    let mut face = match ttf_parser::Face::parse(font_bytes, 0) {
+        Ok(face) => face,
+        Err(_) => {
+            return crate::render::font_rasterizer::cff_support::outline_by_gid(font_bytes, gid)
+                .map(|(outline, _)| outline);
+        }
+    };
+
+    variations::apply_request(&mut face, request);
+
+    if gid >= face.number_of_glyphs() {
+        return None;
+    }
+    let glyph_id = ttf_parser::GlyphId(gid);
+    let mut builder = GlyphToPath::new();
+    Some(
+        face.outline_glyph(glyph_id, &mut builder)
+            .map(|_| builder.into_path()),
+    )
 }
 
 /// Best-effort fallback glyph id for a char with no cmap mapping, mirroring the
@@ -286,6 +507,40 @@ mod tests {
         assert!(
             (advance - expected_advance).abs() < 0.1,
             "advance {advance} should come from cmap-selected gid {expected_gid:?}, expected {expected_advance}"
+        );
+    }
+
+    #[test]
+    fn vector_mapped_outline_refuses_synthetic_simple_gid() {
+        let engine =
+            ContentEngine::open_path(repo_fixture("tests/corpus/pdfs/pdfjs/openoffice.pdf"))
+                .expect("open openoffice fixture");
+        let resources = engine.get_page_resources(1).expect("page resources");
+        let reader = engine.document().reader();
+        let font_dict = resources
+            .fonts
+            .values()
+            .find(|dict| {
+                dict.get_name("BaseFont")
+                    .map(|name| name.contains("Helvetica-Bold"))
+                    .unwrap_or(false)
+            })
+            .expect("openoffice subset font");
+        let font_bytes =
+            FontRasterizer::extract_font_bytes(font_dict, reader).expect("embedded font bytes");
+
+        let mapped = extract_glyph_path_for_simple_mapped_outline(&font_bytes, 65, 'A', Some("A"))
+            .expect("mapped code should resolve through the subset cmap");
+        assert!(
+            mapped.is_some(),
+            "mapped glyph should still expose an outline"
+        );
+
+        let missing =
+            extract_glyph_path_for_simple_mapped_outline(&font_bytes, u16::MAX, '\u{10ffff}', None);
+        assert!(
+            missing.is_none(),
+            "strict vector output must not invent a code-point-derived glyph id"
         );
     }
 

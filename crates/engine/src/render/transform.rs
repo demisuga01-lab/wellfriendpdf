@@ -235,6 +235,8 @@ pub struct Viewport {
     pub origin_x_px: u32,
     /// Pixel-space y offset of this viewport inside the full rendered page.
     pub origin_y_px: u32,
+    /// Additional caller-specified device transform from the render contract.
+    pub device_transform: Transform2D,
 }
 
 impl Viewport {
@@ -266,6 +268,7 @@ impl Viewport {
             rotation: 0,
             origin_x_px: 0,
             origin_y_px: 0,
+            device_transform: Transform2D::identity(),
         }
     }
 
@@ -293,9 +296,18 @@ impl Viewport {
                 rotation,
                 origin_x_px: 0,
                 origin_y_px: 0,
+                device_transform: base.device_transform,
             },
             0 | 180 => Self { rotation, ..base },
             _ => Self { rotation, ..base },
+        }
+    }
+
+    /// Return a copy using an additional contract device transform.
+    pub fn with_device_transform(&self, device_transform: Transform2D) -> Self {
+        Self {
+            device_transform,
+            ..self.clone()
         }
     }
 
@@ -319,6 +331,7 @@ impl Viewport {
             rotation: self.rotation,
             origin_x_px: self.origin_x_px.saturating_add(clamped_x),
             origin_y_px: self.origin_y_px.saturating_add(clamped_y),
+            device_transform: self.device_transform,
         }
     }
 
@@ -359,7 +372,7 @@ impl Viewport {
         let y2 = self.media_box[3];
         let s = self.scale;
 
-        let mut transform = match self.rotation % 360 {
+        let transform = match self.rotation % 360 {
             0 => Transform2D {
                 a: s,
                 b: 0.0,
@@ -411,6 +424,7 @@ impl Viewport {
                 f: y2 * s,
             },
         };
+        let mut transform = transform.concat(&self.device_transform);
         transform.e -= self.origin_x_px as f64;
         transform.f -= self.origin_y_px as f64;
         transform
@@ -689,6 +703,23 @@ mod tests {
         let (tx, ty) = tile.page_to_pixel_f64(25.0, 90.0);
         assert_eq!((fx, fy), (25.0, 10.0));
         assert_eq!((tx, ty), (0.0, 0.0));
+    }
+
+    #[test]
+    fn viewport_device_transform_applies_after_page_transform() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72)
+            .with_device_transform(Transform2D::translation(5.0, 7.0));
+
+        assert_eq!(vp.page_to_pixel_f64(10.0, 90.0), (15.0, 17.0));
+    }
+
+    #[test]
+    fn pixel_window_subtracts_tile_origin_after_device_transform() {
+        let full = Viewport::new([0.0, 0.0, 100.0, 100.0], 72)
+            .with_device_transform(Transform2D::translation(5.0, 7.0));
+        let tile = full.pixel_window(10, 20, 30, 40);
+
+        assert_eq!(tile.page_to_pixel_f64(0.0, 100.0), (-5.0, -13.0));
     }
 
     #[test]

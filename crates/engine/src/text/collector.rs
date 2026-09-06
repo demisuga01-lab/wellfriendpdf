@@ -234,7 +234,10 @@ impl<'a> TextCollector<'a> {
             "gs" => {
                 if let Some(name) = op.name(0) {
                     if let Some(ext_dict) = self.resources.ext_g_states.get(name).cloned() {
-                        self.gs.apply_ext_g_state(&ext_dict);
+                        let label = format!("ExtGState /{name}");
+                        if let Err(err) = self.gs.try_apply_ext_g_state(&ext_dict, &label) {
+                            log::warn!("TextCollector: {err}");
+                        }
                     } else {
                         log::warn!("TextCollector: ExtGState '{}' not found in resources", name);
                     }

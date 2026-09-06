@@ -745,10 +745,16 @@ fn normalize_pages(total: usize, pages: &[usize]) -> Result<Vec<usize>> {
 
 fn render_page_rgb(engine: &ContentEngine, page: usize, dpi: u32) -> Result<RawImage> {
     let raw = engine.render_page(page, dpi)?.to_raw_image();
+    raw_image_to_rgb("rendered page image", raw)
+}
+
+fn raw_image_to_rgb(label: &str, raw: RawImage) -> Result<RawImage> {
+    ensure_image_sample_len(label, raw.width, raw.height, raw.channels, raw.pixels.len())?;
     match raw.channels {
         3 => Ok(raw),
         4 => {
-            let mut pixels = Vec::with_capacity(raw.width as usize * raw.height as usize * 3);
+            let out_len = expected_image_sample_len(raw.width, raw.height, 3)?;
+            let mut pixels = Vec::with_capacity(out_len);
             for px in raw.pixels.chunks_exact(4) {
                 pixels.extend_from_slice(&px[..3]);
             }
@@ -761,7 +767,8 @@ fn render_page_rgb(engine: &ContentEngine, page: usize, dpi: u32) -> Result<RawI
             })
         }
         1 => {
-            let mut pixels = Vec::with_capacity(raw.width as usize * raw.height as usize * 3);
+            let out_len = expected_image_sample_len(raw.width, raw.height, 3)?;
+            let mut pixels = Vec::with_capacity(out_len);
             for gray in raw.pixels {
                 pixels.extend_from_slice(&[gray, gray, gray]);
             }
@@ -831,6 +838,7 @@ fn image_payload(bytes: &[u8], extension_hint: Option<&str>) -> Result<ImagePayl
         let (pixels, width, height, channels) = ImageDecoder::decode_jpeg_with_info(bytes)?;
         enforce_decode_cap(width, height)?;
         if channels == 4 {
+            ensure_image_sample_len("image-to-pdf JPEG CMYK", width, height, 4, pixels.len())?;
             let rgb = crate::images::decoder::ColorSpaceConverter::cmyk_to_rgb(&pixels);
             let rgba = rgb_to_rgba(width, height, &rgb, 3)?;
             return Ok(ImagePayload {
@@ -872,10 +880,13 @@ fn decode_png_rgba(bytes: &[u8]) -> Result<RawImage> {
         .map_err(|err| WellfriendError::MalformedPdf(format!("PNG decode failed: {err}")))?;
     let samples = &buf[..info.buffer_size()];
     let pixels = match info.color_type {
-        png::ColorType::Grayscale => gray_to_rgba(info.width, info.height, samples),
-        png::ColorType::GrayscaleAlpha => gray_alpha_to_rgba(info.width, info.height, samples),
+        png::ColorType::Grayscale => gray_to_rgba(info.width, info.height, samples)?,
+        png::ColorType::GrayscaleAlpha => gray_alpha_to_rgba(info.width, info.height, samples)?,
         png::ColorType::Rgb => rgb_to_rgba(info.width, info.height, samples, 3)?,
-        png::ColorType::Rgba => samples.to_vec(),
+        png::ColorType::Rgba => {
+            ensure_image_sample_len("PNG RGBA", info.width, info.height, 4, samples.len())?;
+            samples.to_vec()
+        }
         png::ColorType::Indexed => {
             return Err(WellfriendError::UnsupportedFeature(
                 "indexed PNG did not expand to samples".to_string(),
@@ -900,6 +911,42 @@ fn enforce_decode_cap(width: u32, height: u32) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn expected_image_sample_len(width: u32, height: u32, channels: u8) -> Result<usize> {
+    if channels == 0 {
+        return Err(WellfriendError::MalformedPdf(
+            "image sample length uses zero channels".to_string(),
+        ));
+    }
+    enforce_decode_cap(width, height)?;
+    let pixels = u64::from(width) * u64::from(height);
+    let samples = pixels.checked_mul(u64::from(channels)).ok_or_else(|| {
+        WellfriendError::ResourceLimit(format!(
+            "image sample length overflow for {width}x{height} x{channels}"
+        ))
+    })?;
+    usize::try_from(samples).map_err(|_| {
+        WellfriendError::ResourceLimit(format!(
+            "image sample length {samples} exceeds addressable memory"
+        ))
+    })
+}
+
+fn ensure_image_sample_len(
+    label: &str,
+    width: u32,
+    height: u32,
+    channels: u8,
+    actual_len: usize,
+) -> Result<usize> {
+    let expected_len = expected_image_sample_len(width, height, channels)?;
+    if actual_len != expected_len {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "{label} decoded {actual_len} bytes, expected {expected_len} for {width}x{height} x{channels}"
+        )));
+    }
+    Ok(expected_len)
 }
 
 fn fit_rect(source_w: f64, source_h: f64, max_w: f64, max_h: f64) -> (f64, f64) {
@@ -1074,20 +1121,24 @@ fn validate_page_number_format(format: &str) -> Result<()> {
     Ok(())
 }
 
-fn gray_to_rgba(width: u32, height: u32, samples: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+fn gray_to_rgba(width: u32, height: u32, samples: &[u8]) -> Result<Vec<u8>> {
+    ensure_image_sample_len("PNG grayscale", width, height, 1, samples.len())?;
+    let out_len = expected_image_sample_len(width, height, 4)?;
+    let mut out = Vec::with_capacity(out_len);
     for &g in samples {
         out.extend_from_slice(&[g, g, g, 255]);
     }
-    out
+    Ok(out)
 }
 
-fn gray_alpha_to_rgba(width: u32, height: u32, samples: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+fn gray_alpha_to_rgba(width: u32, height: u32, samples: &[u8]) -> Result<Vec<u8>> {
+    ensure_image_sample_len("PNG grayscale-alpha", width, height, 2, samples.len())?;
+    let out_len = expected_image_sample_len(width, height, 4)?;
+    let mut out = Vec::with_capacity(out_len);
     for chunk in samples.chunks_exact(2) {
         out.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
     }
-    out
+    Ok(out)
 }
 
 fn rgb_to_rgba(width: u32, height: u32, samples: &[u8], channels: u8) -> Result<Vec<u8>> {
@@ -1096,7 +1147,9 @@ fn rgb_to_rgba(width: u32, height: u32, samples: &[u8], channels: u8) -> Result<
             "unsupported RGB conversion channel count {channels}"
         )));
     }
-    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+    ensure_image_sample_len("RGB image", width, height, 3, samples.len())?;
+    let out_len = expected_image_sample_len(width, height, 4)?;
+    let mut out = Vec::with_capacity(out_len);
     for chunk in samples.chunks_exact(3) {
         out.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
     }
@@ -1128,6 +1181,60 @@ mod tests {
             pixels: vec![255, 0, 0, 255, 0, 0, 255, 255],
         };
         ImageEncoder::encode_png(&image).unwrap()
+    }
+
+    #[test]
+    fn utility_rgb_to_rgba_rejects_short_input() {
+        let err = rgb_to_rgba(2, 1, &[255, 0, 0, 0, 255], 3).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("RGB image decoded 5 bytes, expected 6"));
+    }
+
+    #[test]
+    fn utility_gray_alpha_to_rgba_rejects_trailing_sample() {
+        let err = gray_alpha_to_rgba(1, 1, &[128, 255, 0]).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("PNG grayscale-alpha decoded 3 bytes, expected 2"));
+    }
+
+    #[test]
+    fn utility_cmyk_length_guard_rejects_short_input() {
+        let err = ensure_image_sample_len("image-to-pdf JPEG CMYK", 1, 1, 4, 3).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("image-to-pdf JPEG CMYK decoded 3 bytes, expected 4"));
+    }
+
+    #[test]
+    fn utility_raw_image_to_rgb_rejects_short_rgba_buffer() {
+        let raw = RawImage {
+            width: 1,
+            height: 1,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels: vec![255, 0, 0],
+        };
+        let err = raw_image_to_rgb("rendered page image", raw).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("rendered page image decoded 3 bytes, expected 4"));
+    }
+
+    #[test]
+    fn utility_raw_image_to_rgb_rejects_trailing_gray_buffer() {
+        let raw = RawImage {
+            width: 1,
+            height: 1,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels: vec![128, 64],
+        };
+        let err = raw_image_to_rgb("rendered page image", raw).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("rendered page image decoded 2 bytes, expected 1"));
     }
 
     #[test]

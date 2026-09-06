@@ -24,10 +24,11 @@
 //! set. NoView annotations with Print set ARE shown in print mode.
 //!
 //! Proof mode uses Print visibility (same as Print) plus routes color through
-//! proof CMM transforms when the native CMM backend is available and the
-//! rendering intent/profile shape is supported.
+//! output-intent proof CMM transforms when the native CMM backend is available
+//! and the rendering intent/profile shape is supported.
 
 use crate::render::buffer::PixelBuffer;
+use crate::render::cmm;
 use crate::render::contract::{
     ColorManagementPolicy, HalftonePolicy, OverprintPolicy, PrintProfile,
 };
@@ -97,12 +98,25 @@ pub struct PrintProfileRefusal {
 pub enum PrintProfileRefusalCategory {
     /// Halftone screening cannot be combined with separation-preserving output.
     UnsupportedHalftone,
-    /// Overprint semantics (PreserveSeparations) requested without native CMM.
+    /// Separation-preserving overprint requested for a raster target that cannot
+    /// retain process and named plates as output channels.
     UnsupportedOverprintSeparations,
     /// Proof profile CMM routing requires native lcms2 backend.
     UnsupportedProofCmm,
+    /// NativeLittleCms was requested but this build/target has no native CMM.
+    UnsupportedNativeCmmBackend,
     /// Halftone+Overprint combined semantics are not modeled.
     UnsupportedHalftoneOverprint,
+}
+
+/// Output surface family used when validating print/prepress policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrintOutputSurfaceKind {
+    /// Normal render contracts that return bounded RGB/BGRA/RGBA/BGR/gray rows.
+    RgbGrayRaster,
+    /// The prepress `SeparationFramebuffer` N-channel plate surface.
+    SeparationFramebuffer,
 }
 
 /// Validate that the requested print profile + prepress policy combination is
@@ -117,6 +131,29 @@ pub(crate) fn validate_print_profile_prepress(
     halftone: HalftonePolicy,
     overprint: OverprintPolicy,
     cmm_policy: ColorManagementPolicy,
+) -> Result<(), PrintProfileRefusal> {
+    validate_print_profile_prepress_for_surface(
+        profile,
+        halftone,
+        overprint,
+        cmm_policy,
+        PrintOutputSurfaceKind::RgbGrayRaster,
+    )
+}
+
+/// Validate print/prepress policy for a specific output surface family.
+///
+/// The regular render-contract surface is RGB/gray and therefore cannot accept
+/// `PreserveSeparations`. The prepress plate report path owns a bounded
+/// `SeparationFramebuffer` with deterministic N-channel plane labels, so it can
+/// preserve process and named plate samples without pretending to be an RGB
+/// raster render.
+pub(crate) fn validate_print_profile_prepress_for_surface(
+    profile: PrintProfile,
+    halftone: HalftonePolicy,
+    overprint: OverprintPolicy,
+    cmm_policy: ColorManagementPolicy,
+    surface: PrintOutputSurfaceKind,
 ) -> Result<(), PrintProfileRefusal> {
     // RGB ordered-screen halftoning is implemented for raster surfaces. It must
     // not be used for PreserveSeparations because that policy requires keeping
@@ -133,28 +170,42 @@ pub(crate) fn validate_print_profile_prepress(
         });
     }
 
-    // PreserveSeparations overprint requires native CMM for correct ink behavior.
+    // PreserveSeparations cannot be represented by RGB/gray raster outputs.
+    // The separate prepress N-channel framebuffer is the source path that can
+    // retain process and named plates as semantic output channels.
     if overprint == OverprintPolicy::PreserveSeparations
-        && cmm_policy != ColorManagementPolicy::NativeLittleCms
+        && surface == PrintOutputSurfaceKind::RgbGrayRaster
     {
         return Err(PrintProfileRefusal {
             profile: print_profile_cache_label(profile).to_string(),
-            reason: "OverprintPolicy::PreserveSeparations requires NativeLittleCms \
-                     color management for correct ink separation behavior; current CMM \
-                     policy cannot honor separation-preserving overprint"
+            reason: "OverprintPolicy::PreserveSeparations requires a separation-preserving \
+                     output surface; active render contracts produce bounded RGB/gray raster \
+                     output and expose Separation/DeviceN plate data through the prepress \
+                     plate report instead"
                 .to_string(),
             category: PrintProfileRefusalCategory::UnsupportedOverprintSeparations,
         });
     }
 
-    // Proof profile with DeterministicFallback CMM cannot produce correct
-    // proof rendering because it lacks ICC transform fidelity.
-    if profile == PrintProfile::Proof && cmm_policy == ColorManagementPolicy::DeterministicFallback
-    {
+    // A contract that explicitly selects NativeLittleCms must not pass
+    // validation in default/wasm builds that can only execute qcms fallback.
+    if cmm_policy == ColorManagementPolicy::NativeLittleCms && !cmm::native_cmm_status().available {
         return Err(PrintProfileRefusal {
             profile: print_profile_cache_label(profile).to_string(),
-            reason: "PrintProfile::Proof requires at minimum PortableQcms color management; \
-                     DeterministicFallback cannot produce correct proof-intent color transforms"
+            reason: "ColorManagementPolicy::NativeLittleCms requires the native lcms2 backend, \
+                     but the active build/target reports no available native CMM"
+                .to_string(),
+            category: PrintProfileRefusalCategory::UnsupportedNativeCmmBackend,
+        });
+    }
+
+    // Proof profile requires native output-intent proofing. Portable qcms and
+    // deterministic fallback cannot produce the active proof transform.
+    if profile == PrintProfile::Proof && cmm_policy != ColorManagementPolicy::NativeLittleCms {
+        return Err(PrintProfileRefusal {
+            profile: print_profile_cache_label(profile).to_string(),
+            reason: "PrintProfile::Proof requires ColorManagementPolicy::NativeLittleCms; \
+                     portable/deterministic CMM cannot honor output-intent proofing"
                 .to_string(),
             category: PrintProfileRefusalCategory::UnsupportedProofCmm,
         });
@@ -281,11 +332,7 @@ mod tests {
 
     #[test]
     fn halftone_screen_is_supported_without_separation_preservation() {
-        for profile in [
-            PrintProfile::Display,
-            PrintProfile::Print,
-            PrintProfile::Proof,
-        ] {
+        for profile in [PrintProfile::Display, PrintProfile::Print] {
             let result = validate_print_profile_prepress(
                 profile,
                 HalftonePolicy::Screen,
@@ -294,6 +341,18 @@ mod tests {
             );
             assert!(result.is_ok());
         }
+        let proof = validate_print_profile_prepress(
+            PrintProfile::Proof,
+            HalftonePolicy::Screen,
+            OverprintPolicy::Disabled,
+            ColorManagementPolicy::PortableQcms,
+        );
+        assert_eq!(
+            proof
+                .expect_err("Proof still requires native output-intent CMM")
+                .category,
+            PrintProfileRefusalCategory::UnsupportedProofCmm
+        );
     }
 
     #[test]
@@ -322,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn preserve_separations_requires_native_cmm() {
+    fn preserve_separations_requires_separation_preserving_output_surface() {
         let result = validate_print_profile_prepress(
             PrintProfile::Print,
             HalftonePolicy::Disabled,
@@ -335,29 +394,101 @@ mod tests {
             PrintProfileRefusalCategory::UnsupportedOverprintSeparations
         );
 
-        // NativeLittleCms allows PreserveSeparations
         let result = validate_print_profile_prepress(
             PrintProfile::Print,
             HalftonePolicy::Disabled,
             OverprintPolicy::PreserveSeparations,
             ColorManagementPolicy::NativeLittleCms,
         );
+        let refusal =
+            result.expect_err("native CMM alone must not imply separation-preserving output");
+        assert_eq!(
+            refusal.category,
+            PrintProfileRefusalCategory::UnsupportedOverprintSeparations
+        );
+        assert!(refusal.reason.contains("separation-preserving output"));
+    }
+
+    #[test]
+    fn separation_framebuffer_surface_accepts_preserve_separations() {
+        let result = validate_print_profile_prepress_for_surface(
+            PrintProfile::Print,
+            HalftonePolicy::Disabled,
+            OverprintPolicy::PreserveSeparations,
+            ColorManagementPolicy::PortableQcms,
+            PrintOutputSurfaceKind::SeparationFramebuffer,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
-    fn proof_refuses_deterministic_fallback_cmm() {
-        let result = validate_print_profile_prepress(
+    fn separation_framebuffer_surface_still_refuses_rgb_halftone_preserve_separations() {
+        let result = validate_print_profile_prepress_for_surface(
+            PrintProfile::Print,
+            HalftonePolicy::Screen,
+            OverprintPolicy::PreserveSeparations,
+            ColorManagementPolicy::PortableQcms,
+            PrintOutputSurfaceKind::SeparationFramebuffer,
+        );
+        assert_eq!(
+            result.unwrap_err().category,
+            PrintProfileRefusalCategory::UnsupportedHalftone
+        );
+    }
+
+    #[test]
+    fn proof_separation_framebuffer_keeps_native_cmm_requirement() {
+        let result = validate_print_profile_prepress_for_surface(
             PrintProfile::Proof,
             HalftonePolicy::Disabled,
-            OverprintPolicy::Disabled,
-            ColorManagementPolicy::DeterministicFallback,
+            OverprintPolicy::PreserveSeparations,
+            ColorManagementPolicy::PortableQcms,
+            PrintOutputSurfaceKind::SeparationFramebuffer,
         );
-        assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().category,
             PrintProfileRefusalCategory::UnsupportedProofCmm
         );
+    }
+
+    #[test]
+    fn native_littlecms_policy_requires_available_backend() {
+        let result = validate_print_profile_prepress(
+            PrintProfile::Display,
+            HalftonePolicy::Disabled,
+            OverprintPolicy::Disabled,
+            ColorManagementPolicy::NativeLittleCms,
+        );
+        if cmm::native_cmm_status().available {
+            assert!(result.is_ok());
+        } else {
+            let refusal = result.expect_err("unavailable NativeLittleCms must be refused");
+            assert_eq!(
+                refusal.category,
+                PrintProfileRefusalCategory::UnsupportedNativeCmmBackend
+            );
+            assert!(refusal.reason.contains("native lcms2 backend"));
+        }
+    }
+
+    #[test]
+    fn proof_refuses_deterministic_fallback_cmm() {
+        for policy in [
+            ColorManagementPolicy::PortableQcms,
+            ColorManagementPolicy::DeterministicFallback,
+        ] {
+            let result = validate_print_profile_prepress(
+                PrintProfile::Proof,
+                HalftonePolicy::Disabled,
+                OverprintPolicy::Disabled,
+                policy,
+            );
+            assert!(result.is_err(), "Proof must refuse {policy:?}");
+            assert_eq!(
+                result.unwrap_err().category,
+                PrintProfileRefusalCategory::UnsupportedProofCmm
+            );
+        }
     }
 
     #[test]
@@ -380,22 +511,19 @@ mod tests {
         )
         .is_ok());
 
-        // Proof with PortableQcms: valid (qcms is sufficient for proof)
-        assert!(validate_print_profile_prepress(
-            PrintProfile::Proof,
-            HalftonePolicy::Disabled,
-            OverprintPolicy::Disabled,
-            ColorManagementPolicy::PortableQcms,
-        )
-        .is_ok());
-
-        // Proof with NativeLittleCms and PreserveSeparations: valid
-        assert!(validate_print_profile_prepress(
+        // PreserveSeparations remains invalid even with NativeLittleCms because
+        // the active render target is RGB/gray raster output, not n-channel ink.
+        let native_result = validate_print_profile_prepress(
             PrintProfile::Proof,
             HalftonePolicy::Disabled,
             OverprintPolicy::PreserveSeparations,
             ColorManagementPolicy::NativeLittleCms,
-        )
-        .is_ok());
+        );
+        assert_eq!(
+            native_result
+                .expect_err("PreserveSeparations must fail closed")
+                .category,
+            PrintProfileRefusalCategory::UnsupportedOverprintSeparations
+        );
     }
 }

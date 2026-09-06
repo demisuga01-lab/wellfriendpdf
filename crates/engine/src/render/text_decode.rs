@@ -9,11 +9,18 @@
 
 use crate::engine::PageResources;
 use crate::fonts::cid::{cid_font_has_embedded_program, cid_to_gid};
-use crate::fonts::resolver::{detect_font_subtype, get_descendant_font, FontSubtype};
+use crate::fonts::resolver::{
+    detect_font_subtype, get_descendant_font, validate_visual_font_metrics, FontSubtype,
+};
 use crate::fonts::FontResolver;
 use crate::object::PdfDictionary;
 use crate::reader::PdfReader;
 use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
+use crate::render::glyph_outline::{
+    extract_glyph_path_by_gid_mapped_outline, extract_glyph_path_by_gid_required_advance,
+    extract_glyph_path_for_simple_mapped_outline, extract_glyph_path_for_simple_required_advance,
+};
+use crate::render::path::Path;
 
 /// One decoded glyph ready to be shown.
 #[derive(Debug, Clone)]
@@ -47,11 +54,28 @@ pub fn decode_text_bytes(
     resources: &PageResources,
     reader: &PdfReader,
 ) -> Vec<DecodedGlyph> {
+    match try_decode_text_bytes(bytes, font_name, resources, reader) {
+        Ok(glyphs) => glyphs,
+        Err(reason) => {
+            log::debug!("visual text decode refused: {reason}");
+            Vec::new()
+        }
+    }
+}
+
+/// Decode a visual text string under `font_name`'s font, refusing malformed
+/// fixed-width character-code sequences instead of synthesizing padded glyphs.
+pub fn try_decode_text_bytes(
+    bytes: &[u8],
+    font_name: &str,
+    resources: &PageResources,
+    reader: &PdfReader,
+) -> std::result::Result<Vec<DecodedGlyph>, String> {
     let Some(font_dict) = resources.fonts.get(font_name) else {
-        return latin1_glyphs(bytes);
+        return Ok(latin1_glyphs(bytes));
     };
     let resolver = FontResolver::new(font_dict, reader);
-    decode_text_bytes_with_resolver(bytes, font_dict, &resolver, reader)
+    try_decode_text_bytes_with_resolver(bytes, font_dict, &resolver, reader)
 }
 
 /// Decode a text string using a caller-owned resolver cache.
@@ -61,6 +85,23 @@ pub fn decode_text_bytes_with_resolver(
     resolver: &FontResolver,
     reader: &PdfReader,
 ) -> Vec<DecodedGlyph> {
+    match try_decode_text_bytes_with_resolver(bytes, font_dict, resolver, reader) {
+        Ok(glyphs) => glyphs,
+        Err(reason) => {
+            log::debug!("visual text decode refused: {reason}");
+            Vec::new()
+        }
+    }
+}
+
+/// Decode a text string using a caller-owned resolver cache.
+pub fn try_decode_text_bytes_with_resolver(
+    bytes: &[u8],
+    font_dict: &PdfDictionary,
+    resolver: &FontResolver,
+    reader: &PdfReader,
+) -> std::result::Result<Vec<DecodedGlyph>, String> {
+    validate_visual_font_metrics(font_dict, Some(reader))?;
     if detect_font_subtype(font_dict) == FontSubtype::Type0 {
         return decode_type0_text_with_resolver(bytes, font_dict, resolver, reader);
     }
@@ -71,16 +112,7 @@ pub fn decode_text_bytes_with_resolver(
     let code_size = resolver.code_size().max(1);
     let mut idx = 0usize;
     while idx < bytes.len() {
-        let code = if code_size == 2 {
-            let high = bytes[idx];
-            let low = bytes.get(idx + 1).copied().unwrap_or(0);
-            idx = idx.saturating_add(2);
-            (u16::from(high) << 8) | u16::from(low)
-        } else {
-            let code = u16::from(bytes[idx]);
-            idx = idx.saturating_add(1);
-            code
-        };
+        let code = next_visual_text_code(bytes, &mut idx, code_size, "visual text")?;
         let text = resolver.decode_char(code);
         let ch = text.chars().next().unwrap_or('\u{FFFD}');
         let glyph_name = resolver.glyph_name(code).map(str::to_string);
@@ -102,7 +134,7 @@ pub fn decode_text_bytes_with_resolver(
             vertical_origin: None,
         });
     }
-    glyphs
+    Ok(glyphs)
 }
 
 fn decode_type0_text_with_resolver(
@@ -110,7 +142,7 @@ fn decode_type0_text_with_resolver(
     font_dict: &PdfDictionary,
     resolver: &FontResolver,
     reader: &PdfReader,
-) -> Vec<DecodedGlyph> {
+) -> std::result::Result<Vec<DecodedGlyph>, String> {
     let descendant_font = get_descendant_font(font_dict, reader);
     let render_as_gid = cid_font_has_embedded_program(descendant_font.as_ref(), reader);
     let mut glyphs = Vec::new();
@@ -118,16 +150,7 @@ fn decode_type0_text_with_resolver(
     let code_size = resolver.code_size().max(1);
 
     while idx < bytes.len() {
-        let cid = if code_size == 2 {
-            let high = bytes[idx];
-            let low = bytes.get(idx + 1).copied().unwrap_or(0);
-            idx = idx.saturating_add(2);
-            (u16::from(high) << 8) | u16::from(low)
-        } else {
-            let code = u16::from(bytes[idx]);
-            idx = idx.saturating_add(1);
-            code
-        };
+        let cid = next_visual_text_code(bytes, &mut idx, code_size, "Type0 visual text")?;
 
         let text = resolver.decode_char(cid);
         let unicode = text.chars().next().unwrap_or('\u{FFFD}');
@@ -160,7 +183,32 @@ fn decode_type0_text_with_resolver(
             vertical_origin,
         });
     }
-    glyphs
+    Ok(glyphs)
+}
+
+fn next_visual_text_code(
+    bytes: &[u8],
+    idx: &mut usize,
+    code_size: u8,
+    label: &str,
+) -> std::result::Result<u16, String> {
+    if code_size == 2 {
+        let offset = *idx;
+        let Some(low) = bytes.get(offset + 1).copied() else {
+            return Err(format!(
+                "malformed {label} string: incomplete 2-byte character code at byte {offset} of {}",
+                bytes.len()
+            ));
+        };
+        let high = bytes[offset];
+        *idx = offset.saturating_add(2);
+        Ok((u16::from(high) << 8) | u16::from(low))
+    } else {
+        let offset = *idx;
+        let code = u16::from(bytes[offset]);
+        *idx = offset.saturating_add(1);
+        Ok(code)
+    }
 }
 
 /// Resolve the embedded (or fallback) font program bytes for a font name.
@@ -186,6 +234,45 @@ pub fn get_font_bytes(
         }
     }
     get_fallback_font(font_name).map(|bytes| bytes.to_vec())
+}
+
+/// Return a glyph's horizontal advance only when it is backed by a real font
+/// metric table entry. Vector sinks use this to avoid inventing movement when
+/// the PDF did not provide widths and the font program cannot provide them.
+pub(crate) fn decoded_glyph_strict_horizontal_advance(
+    glyph: &DecodedGlyph,
+    font_bytes: &[u8],
+) -> Option<f64> {
+    let advance = if glyph.is_gid {
+        extract_glyph_path_by_gid_required_advance(font_bytes, glyph.code)?.1
+    } else {
+        extract_glyph_path_for_simple_required_advance(
+            font_bytes,
+            glyph.code,
+            glyph.unicode,
+            glyph.glyph_name.as_deref(),
+        )?
+        .1
+    };
+    advance.is_finite().then_some(advance)
+}
+
+/// Return a glyph outline only when vector output can map the glyph through the
+/// font program without inventing a compatibility glyph id.
+pub(crate) fn decoded_glyph_strict_outline(
+    glyph: &DecodedGlyph,
+    font_bytes: &[u8],
+) -> Option<Option<Path>> {
+    if glyph.is_gid {
+        extract_glyph_path_by_gid_mapped_outline(font_bytes, glyph.code)
+    } else {
+        extract_glyph_path_for_simple_mapped_outline(
+            font_bytes,
+            glyph.code,
+            glyph.unicode,
+            glyph.glyph_name.as_deref(),
+        )
+    }
 }
 
 fn latin1_glyphs(bytes: &[u8]) -> Vec<DecodedGlyph> {
@@ -237,5 +324,50 @@ fn decode_win_ansi(byte: u8) -> char {
         0x9E => 'ž',
         0x9F => 'Ÿ',
         other => other as char,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::PdfObject;
+
+    fn type0_identity_font() -> PdfDictionary {
+        let mut font = PdfDictionary::empty();
+        font.insert("Type", PdfObject::Name("Font".to_string()));
+        font.insert("Subtype", PdfObject::Name("Type0".to_string()));
+        font.insert("BaseFont", PdfObject::Name("TestCID".to_string()));
+        font.insert("Encoding", PdfObject::Name("Identity-H".to_string()));
+        font
+    }
+
+    #[test]
+    fn type0_visual_text_decodes_complete_two_byte_codes() {
+        let reader = PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf()).unwrap();
+        let font = type0_identity_font();
+        let resolver = FontResolver::new_from_dict_only(&font);
+        let glyphs = try_decode_text_bytes_with_resolver(
+            &[0x00, 0x48, 0x00, 0x69],
+            &font,
+            &resolver,
+            &reader,
+        )
+        .expect("complete Type0 text decodes");
+
+        let chars: Vec<char> = glyphs.iter().map(|glyph| glyph.unicode).collect();
+        assert_eq!(chars, vec!['H', 'i']);
+    }
+
+    #[test]
+    fn type0_visual_text_rejects_odd_trailing_byte_instead_of_padding() {
+        let reader = PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf()).unwrap();
+        let font = type0_identity_font();
+        let resolver = FontResolver::new_from_dict_only(&font);
+        let err =
+            try_decode_text_bytes_with_resolver(&[0x00, 0x48, 0x56], &font, &resolver, &reader)
+                .expect_err("odd Type0 byte sequence must not synthesize CID 0x5600");
+
+        assert!(err.contains("incomplete 2-byte character code"));
+        assert!(err.contains("byte 2 of 3"));
     }
 }

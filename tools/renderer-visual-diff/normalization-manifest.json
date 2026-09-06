@@ -1,23 +1,31 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "purpose": "RB-15 visual-reference normalization manifest for compact renderer comparisons",
   "scope": "fixture-scale normalization; no corpus loops, timing, or competitor benchmarks",
   "normalization_pipeline": [
     {
       "step": 1,
       "name": "channel_order_normalization",
-      "description": "Convert input from any supported channel order to canonical RGBA",
+      "description": "Convert input from any supported channel order and explicit packed byte order to canonical RGBA, including raw buffers with explicit row stride",
       "supported_orders": ["rgba", "bgra", "argb", "rgb", "bgr", "gray", "gray_alpha"],
+      "supported_byte_orders": ["native", "little", "big"],
       "output": "8-bit RGBA",
-      "cli_flags": ["--left-channel-order", "--right-channel-order"]
+      "cli_flags": ["--left-channel-order", "--right-channel-order", "--left-stride", "--right-stride", "--left-byte-order", "--right-byte-order"],
+      "report_fields": [
+        "normalization.{left,right}.channel_order_applied",
+        "normalization.{left,right}.byte_order_applied"
+      ]
     },
     {
       "step": 2,
-      "name": "alpha_premultiplication",
-      "description": "Detect or assume premultiplied alpha and convert to straight alpha",
-      "detection": "heuristic sampling (channels <= alpha with partial transparency)",
-      "override": "explicit --left-premultiplied / --right-premultiplied flags",
-      "output": "straight-alpha RGBA"
+      "name": "alpha_semantics_normalization",
+      "description": "Normalize straight, premultiplied, or opaque alpha inputs to canonical straight-alpha RGBA",
+      "supported_semantics": ["straight", "premultiplied", "opaque"],
+      "premultiplied_detection": "heuristic sampling remains advisory only; the pipeline mutates alpha only when explicitly requested by CLI or render-context metadata",
+      "override": "render context alpha_semantics or explicit --left-alpha-mode / --right-alpha-mode flags; legacy --left-premultiplied / --right-premultiplied map to premultiplied",
+      "cli_flags": ["--left-alpha-mode", "--right-alpha-mode", "--left-premultiplied", "--right-premultiplied"],
+      "output": "straight-alpha RGBA with opaque inputs forced to alpha=255",
+      "report_field": "normalization.{left,right}.alpha_semantics_applied"
     },
     {
       "step": 3,
@@ -29,6 +37,19 @@
     },
     {
       "step": 4,
+      "name": "render_context_pixel_normalization",
+      "description": "Apply active render-context pixel normalization after channel and alpha normalization",
+      "background_policy": "explicit render-context RGBA backgrounds are composited into the canonical RGBA surface",
+      "grayscale_policy": "grayscale=true converts RGB channels to canonical luma while preserving alpha",
+      "dimension_policy": "declared width/height or dimensions are exact validation bounds after EXIF and render-context rotation, not resize hints",
+      "report_fields": [
+        "normalization.{left,right}.expected_size",
+        "normalization.{left,right}.background_rgba_applied",
+        "normalization.{left,right}.grayscale_applied"
+      ]
+    },
+    {
+      "step": 5,
       "name": "canonical_rgba_surface",
       "description": "Final unified 8-bit RGBA surface for comparison",
       "bit_depth": 8,
@@ -36,7 +57,40 @@
       "mode": "RGBA"
     },
     {
-      "step": 5,
+      "step": 6,
+      "name": "render_context_policy",
+      "description": "Normalize sidecar render metadata for later corpus adjudication without running a renderer, including deterministic structured font-environment identity",
+      "tracked_fields": [
+        "media_box",
+        "crop_box",
+        "rotation_degrees",
+        "matrix",
+        "dimensions",
+        "stride_bytes",
+        "channel_order",
+        "alpha_semantics",
+        "background_rgba",
+        "annotations",
+        "forms",
+        "optional_content",
+        "grayscale",
+        "color_profile",
+        "display_profile",
+        "print_profile",
+        "byte_order",
+        "text_smoothing",
+        "image_smoothing",
+        "path_smoothing",
+        "font_environment",
+        "font_environment_fingerprint",
+        "malformed_input_policy"
+      ],
+      "font_environment_policy": "strings are trimmed/lowercased; structured dict/list manifests are recursively canonicalized with sorted object keys, normalized path separators, and a SHA-256 fingerprint",
+      "cli_flags": ["--left-context-json", "--right-context-json"],
+      "output_field": "normalization_policy"
+    },
+    {
+      "step": 7,
       "name": "expected_difference_mask",
       "description": "Grayscale mask where nonzero pixels are excluded from comparison",
       "format": "any image format loadable as grayscale",
@@ -45,33 +99,68 @@
       "cli_flag": "--expected-difference-mask"
     },
     {
-      "step": 6,
+      "step": 8,
       "name": "critical_region_classification",
-      "description": "Connected mismatch regions classified by severity tier",
+      "description": "Connected mismatch regions classified by severity tier and likely renderer-difference taxonomy",
       "severity_tiers": {
         "critical": "large region (>=16px), high edge weight (>=30.0), high fill ratio (>=0.6)",
         "significant": "moderate size (>=16px) or moderate edge weight (>=15.0)",
         "minor": "small region (>=4px) with low structural impact",
         "negligible": "very small region (<4px)"
       },
-      "output_field": "connected_mismatch_regions[].severity"
+      "difference_classes": [
+        "antialiasing",
+        "hinting",
+        "font_fallback",
+        "color_profile",
+        "malformed_input_policy",
+        "annotation_policy",
+        "form_policy",
+        "optional_content_policy",
+        "transparency_rounding",
+        "channel_layout",
+        "dimension_or_transform",
+        "background_policy",
+        "unclassified_pixel_delta"
+      ],
+      "output_fields": [
+        "connected_mismatch_regions[].severity",
+        "connected_mismatch_regions[].classifications",
+        "classification_summary"
+      ]
     }
   ],
   "comparison_output": {
-    "schema_version": 2,
+    "schema_version": 3,
     "metrics": [
       "changed_pixel_count",
       "changed_pixel_percent",
       "mae",
       "rmse",
+      "color_mae",
+      "color_rmse",
+      "max_color_delta",
       "psnr",
       "ssim_global_luminance",
       "alpha_mae",
       "edge_weighted_difference"
     ],
-    "region_fields": ["x", "y", "width", "height", "changed_pixels", "severity"],
+    "region_fields": ["x", "y", "width", "height", "changed_pixels", "severity", "classifications"],
     "summary_field": "severity_summary",
-    "normalization_report_field": "normalization"
+    "classification_summary_field": "classification_summary",
+    "normalization_report_field": "normalization",
+      "normalization_report_fields": [
+      "expected_size",
+      "raw_stride_bytes",
+      "channel_order_applied",
+      "byte_order_applied",
+      "alpha_semantics_applied",
+      "unpremultiplied",
+      "background_rgba_applied",
+      "grayscale_applied",
+      "exif_rotation_applied",
+      "render_rotation_applied"
+    ]
   },
   "legacy_compatibility": {
     "description": "Legacy --left-bgra-raw / --right-bgra-raw flags map to channel_order=bgra + raw_mode",
@@ -86,6 +175,7 @@
       "TestExifRotation",
       "TestExpectedDifferenceMask",
       "TestCriticalRegionClassification",
+      "TestRenderContextNormalization",
       "TestFullPipelineIntegration"
     ]
   }

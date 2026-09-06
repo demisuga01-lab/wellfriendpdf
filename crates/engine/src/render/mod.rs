@@ -40,12 +40,13 @@ pub use buffer::{
 pub use clip_dag::{ClipDag, ClipDagStats, ClipNode, ClipState};
 pub use color::{ColorSpaceHandler, RenderColor};
 pub use contract::{
-    AlphaMode, AnnotationRenderPolicy, BackendSelection, ColorManagementPolicy, ColorScheme,
-    CompositingPolicy, ContractColor, DeterminismPolicy, DeviceClip, DeviceMatrix, DisplayItemId,
-    ExactnessPolicy, ExecutionMode, FormRenderPolicy, HalftonePolicy, ObjectIdentityId,
-    OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RenderContract,
-    RenderResourceBudget, RenderingIntent, ResourceId, RevisionId, SmoothingPolicy, SourceLinkId,
-    RENDER_CONTRACT_SCHEMA_VERSION,
+    render_contract_field_effects, AlphaMode, AnnotationRenderPolicy, BackendSelection,
+    ColorManagementPolicy, ColorScheme, CompositingPolicy, ContractColor, DeterminismPolicy,
+    DeviceClip, DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, FormRenderPolicy,
+    HalftonePolicy, ObjectIdentityId, OptionalContentStateId, OverprintPolicy, PageBox,
+    PixelFormat, PrintProfile, RenderContract, RenderContractFieldEffect, RenderResourceBudget,
+    RenderingIntent, ResourceId, RevisionId, SmoothingPolicy, SourceLinkId,
+    RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
 };
 pub use display_list::{
     build_display_list, render_display_list, replay_display_list, CpuRenderDevice, DisplayList,
@@ -53,8 +54,12 @@ pub use display_list::{
     RenderDevice, RenderTile, UnsupportedRenderOp,
 };
 pub use document_view::{
-    CanonicalDocument, EditDocumentView, ObjectIdentity, PageIdentity, ParsedPageProgram,
-    RenderDocumentView, SemanticDocumentView, ValidationDocumentView, ViewMaterializationStats,
+    BackendDocumentPagePlan, BackendDocumentPlanArena, BackendDocumentPlanArenaReport,
+    BackendPlanArenaReport, CanonicalDocument, DocumentViewBoundary, DocumentViewsReport,
+    EditDocumentView, ObjectIdentity, PageIdentity, ParsedPageProgram, RenderDocumentView,
+    SemanticDocumentView, ValidationDocumentView, ViewMaterializationStats,
+    BACKEND_DOCUMENT_PLAN_ARENA_REPORT_SCHEMA_VERSION, BACKEND_PLAN_ARENA_REPORT_SCHEMA_VERSION,
+    DOCUMENT_VIEWS_REPORT_SCHEMA_VERSION,
 };
 pub use font_rasterizer::{get_fallback_font, FontRasterizer};
 pub use font_substitution_report::{
@@ -62,6 +67,13 @@ pub use font_substitution_report::{
     FontSubstitutionLog, FontSubstitutionMetricPosture, FontSubstitutionReason,
 };
 pub use glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
+pub use image_decode_planning::{
+    image_decode_capabilities_for_filters, image_decode_capabilities_for_image_reference,
+    ImageDecodeCapabilityReport, ImageDecodeCapabilityStatus, ImageDecodeCodec,
+    ImageDecodeExecutionControlStatus, ImageDecodeUnavailableReason, ImageReductionLevel,
+    ImageSourceRegion, ProgressiveImageDecodeReport, ProgressiveImageDecodeRequest,
+    ProgressiveImageDecodeSession, ProgressiveImageDecodeState,
+};
 pub use image_painter::ImagePainter;
 pub use invalidation::{InvalidationResult, RenderDependencyGraph};
 pub use line::{DashState, LinePainter, WuLineRenderer};
@@ -71,22 +83,34 @@ pub use path::{
     PathRasterStats, PathSegment,
 };
 pub use plan::{
-    ColdPayload, GraphicsStateDescriptor, HotDisplayOp, InlineImageDescriptor,
-    MarkedContentProperties, NativeDescriptor, PackedColdTables, PackedCompileRefusal,
-    PackedDisplayList, PatternPaintPhase, PatternPathDescriptor, PlanDispatcher, RenderBatch,
-    RenderPlan, RenderSpatialIndex,
+    GraphicsStateDescriptor, HotDisplayOp, InlineImageDescriptor, MarkedContentProperties,
+    NativeDescriptor, PackedColdTables, PackedCompileRefusal, PackedDisplayList, PatternPaintPhase,
+    PatternPathDescriptor, PlanDispatcher, RenderBatch, RenderPlan, RenderSpatialIndex,
 };
-pub use postscript::{assemble_eps_document, assemble_ps_document, render_page_ps, PsPage};
+pub use postscript::{
+    assemble_eps_document, assemble_ps_document, render_page_ps, render_page_ps_strict, PsPage,
+};
 pub use print_profile::{PrintProfileRefusal, PrintProfileRefusalCategory};
 pub use progressive::{
-    choose_adaptive_tile_size, ProgressiveRenderJob, ProgressiveRenderState,
-    ProgressiveRenderStepReport, ProgressiveRenderToken,
+    choose_adaptive_tile_size, ProgressiveAdjacentPagePrefetch,
+    ProgressiveAdjacentPagePrefetchExecution, ProgressiveAdjacentPagePrefetchExecutionReport,
+    ProgressiveObsoletePublication, ProgressiveRenderContextRevisionReport,
+    ProgressiveRenderFallbackEvent, ProgressiveRenderInvalidationReport, ProgressiveRenderJob,
+    ProgressiveRenderState, ProgressiveRenderStepReport, ProgressiveRenderToken,
+    ProgressiveTilePriorityClass, ProgressiveTilePublication, ProgressiveTilePublicationAcceptance,
+    ProgressiveViewerCallbackDispatchReport, ProgressiveViewerCallbackEvent,
+    ProgressiveViewerCallbackSink, ProgressiveViewerQueueExecutionItem,
+    ProgressiveViewerQueueExecutionReport, ProgressiveViewerQueueItem,
+    ProgressiveViewerQueuePriority,
 };
 pub use quality::RenderQuality;
 pub use shading::ShadingRenderer;
-pub use svg::{render_page_svg, SvgPage};
+pub use svg::{render_page_svg, render_page_svg_strict, SvgPage};
 pub use transaction_invalidation::{
-    map_refs_to_canonical_ids, TransactionInvalidationResult, TransactionWriteSet,
+    apply_render_invalidation_plan_json_to_cache, dirty_regions_to_render_tiles,
+    map_refs_to_canonical_ids, RenderInvalidationCachePlan, RenderInvalidationPlanTile,
+    TransactionInvalidationResult, TransactionWriteSet,
+    RENDER_TRANSACTION_INVALIDATION_PLAN_SCHEMA_VERSION,
 };
 pub use transform::{Transform2D, Viewport};
 pub use vector_fallback::{

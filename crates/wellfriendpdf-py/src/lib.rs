@@ -2,15 +2,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyIndexError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyException, PyIndexError, PyInterruptedError, PyTypeError, PyValueError};
+use pyo3::marker::Ungil;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyByteArray, PyBytes, PyDict, PyList, PyModule, PyType};
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
+use wellfriendpdf_engine::render::apply_render_invalidation_plan_json_to_cache;
 use wellfriendpdf_engine::{
     sdk, CancelToken, ContentEngine, DocType, DocumentInfo, EvidenceBundle, ExtractOptions,
     ExtractionProfile, ImageLocateOptions, ImageOutputFormat, IntermediateStore, NetworkBudget,
-    OcrPolicy, PageRegion, ParseOptions, RetrievalPolicy, SerializeOptions,
+    OcrPolicy, PageRegion, ParseOptions, RenderDocumentCache, RetrievalPolicy, SerializeOptions,
     SignatureRevocationMode, TrustStore, VerifyOptions,
 };
 
@@ -27,6 +29,22 @@ struct PyDocument {
 #[pyclass(name = "ProgressiveRenderJob", module = "wellfriendpdf", unsendable)]
 struct PyProgressiveRenderJob {
     job: wellfriendpdf_engine::ProgressiveRenderJob,
+}
+
+#[pyclass(
+    name = "RenderContract",
+    module = "wellfriendpdf",
+    unsendable,
+    skip_from_py_object
+)]
+#[derive(Clone)]
+struct PyRenderContract {
+    contract: wellfriendpdf_engine::RenderContract,
+}
+
+#[pyclass(name = "RenderCache", module = "wellfriendpdf", unsendable)]
+struct PyRenderCache {
+    cache: RenderDocumentCache,
 }
 
 #[pyclass(name = "Page", module = "wellfriendpdf", unsendable)]
@@ -87,6 +105,350 @@ struct PySignatureRetrievalPolicy {
 )]
 struct PySignatureValidationCancellation {
     token: CancelToken,
+}
+
+#[pyclass(name = "RenderCancellation", module = "wellfriendpdf")]
+struct PyRenderCancellation {
+    token: CancelToken,
+}
+
+#[pymethods]
+impl PyRenderContract {
+    #[new]
+    fn new(json: &str) -> PyResult<Self> {
+        let contract = parse_render_contract_json(json)?;
+        Ok(Self { contract })
+    }
+
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        Self::new(json)
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.contract)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn surface_byte_length(&self) -> PyResult<usize> {
+        self.contract
+            .stride
+            .checked_mul(self.contract.height as usize)
+            .ok_or_else(|| PyValueError::new_err("render contract surface byte length overflows"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_surface(
+        &self,
+        width: u32,
+        height: u32,
+        pixel_format: Option<&str>,
+        alpha_mode: Option<&str>,
+        stride: Option<usize>,
+        grayscale: Option<bool>,
+        reverse_byte_order: Option<bool>,
+    ) -> PyResult<Self> {
+        let pixel_format = match pixel_format.unwrap_or("Rgba8") {
+            "Rgba8" | "rgba8" | "rgba" => wellfriendpdf_engine::render::PixelFormat::Rgba8,
+            "Bgra8" | "bgra8" | "bgra" => wellfriendpdf_engine::render::PixelFormat::Bgra8,
+            "Rgb8" | "rgb8" | "rgb" => wellfriendpdf_engine::render::PixelFormat::Rgb8,
+            "Bgr8" | "bgr8" | "bgr" => wellfriendpdf_engine::render::PixelFormat::Bgr8,
+            "Gray8" | "gray8" | "gray" | "grey8" | "grey" => {
+                wellfriendpdf_engine::render::PixelFormat::Gray8
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported render contract pixel_format '{other}'"
+                )))
+            }
+        };
+        let alpha_mode = match alpha_mode.unwrap_or("Premultiplied") {
+            "Premultiplied" | "premultiplied" => {
+                wellfriendpdf_engine::render::AlphaMode::Premultiplied
+            }
+            "Straight" | "straight" => wellfriendpdf_engine::render::AlphaMode::Straight,
+            "Opaque" | "opaque" => wellfriendpdf_engine::render::AlphaMode::Opaque,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported render contract alpha_mode '{other}'"
+                )))
+            }
+        };
+        if width == 0 || height == 0 {
+            return Err(PyValueError::new_err(
+                "render contract surface dimensions must be positive",
+            ));
+        }
+        let minimum_stride = width as usize * pixel_format.bytes_per_pixel();
+        let stride = stride.unwrap_or(minimum_stride);
+        if stride < minimum_stride {
+            return Err(PyValueError::new_err(format!(
+                "render contract stride {stride} is below the required {minimum_stride} bytes"
+            )));
+        }
+        let mut contract = self.contract.clone();
+        contract.width = width;
+        contract.height = height;
+        contract.pixel_format = pixel_format;
+        contract.alpha_mode = alpha_mode;
+        contract.stride = stride;
+        contract.grayscale = grayscale.unwrap_or(contract.grayscale);
+        contract.reverse_byte_order = reverse_byte_order.unwrap_or(contract.reverse_byte_order);
+        contract
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { contract })
+    }
+
+    fn with_clip(&self, x: i32, y: i32, width: u32, height: u32) -> PyResult<Self> {
+        if width == 0 || height == 0 {
+            return Err(PyValueError::new_err(
+                "render contract clip must be non-empty",
+            ));
+        }
+        let mut contract = self.contract.clone();
+        contract.clip = Some(wellfriendpdf_engine::render::DeviceClip {
+            x,
+            y,
+            width,
+            height,
+        });
+        contract
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { contract })
+    }
+
+    fn without_clip(&self) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.clip = None;
+        contract
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { contract })
+    }
+
+    fn with_device_transform(
+        &self,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    ) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.transform =
+            wellfriendpdf_engine::render::DeviceMatrix::from_f64([a, b, c, d, e, f]);
+        contract
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { contract })
+    }
+
+    fn with_background(&self, r: u8, g: u8, b: u8, a: Option<u8>) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.background = wellfriendpdf_engine::render::ContractColor {
+            r,
+            g,
+            b,
+            a: a.unwrap_or(255),
+        };
+        contract
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { contract })
+    }
+
+    fn with_page_box(&self, page_box: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.page_box = parse_render_contract_enum_py("page_box", page_box)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_execution_mode(&self, execution_mode: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.execution_mode = parse_render_contract_enum_py("execution_mode", execution_mode)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_backend(&self, backend: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.backend = parse_render_contract_enum_py("backend", backend)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_compositing(&self, compositing: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.compositing = parse_render_contract_enum_py("compositing", compositing)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_annotations(&self, annotations: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.annotations = parse_render_contract_enum_py("annotations", annotations)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_forms(&self, forms: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.forms = parse_render_contract_enum_py("forms", forms)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_optional_content(&self, optional_content: &str) -> PyResult<Self> {
+        if optional_content.trim().is_empty() {
+            return Err(PyValueError::new_err(
+                "render contract optional_content must be present",
+            ));
+        }
+        let mut contract = self.contract.clone();
+        contract.optional_content =
+            wellfriendpdf_engine::render::OptionalContentStateId(optional_content.to_string());
+        validate_py_render_contract(contract)
+    }
+
+    fn with_smoothing(&self, smoothing: &str) -> PyResult<Self> {
+        let smoothing = parse_render_contract_enum_py("smoothing", smoothing)?;
+        let mut contract = self.contract.clone();
+        contract.text_smoothing = smoothing;
+        contract.image_smoothing = smoothing;
+        contract.path_smoothing = smoothing;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_text_smoothing(&self, text_smoothing: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.text_smoothing = parse_render_contract_enum_py("text_smoothing", text_smoothing)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_image_smoothing(&self, image_smoothing: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.image_smoothing =
+            parse_render_contract_enum_py("image_smoothing", image_smoothing)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_path_smoothing(&self, path_smoothing: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.path_smoothing = parse_render_contract_enum_py("path_smoothing", path_smoothing)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_subpixel_text(&self, subpixel_text: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.subpixel_text = parse_render_contract_enum_py("subpixel_text", subpixel_text)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_color_scheme(&self, color_scheme: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.color_scheme = parse_render_contract_enum_py("color_scheme", color_scheme)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_print_profile(&self, print_profile: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.print_profile = parse_render_contract_enum_py("print_profile", print_profile)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_halftone(&self, halftone: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.halftone = parse_render_contract_enum_py("halftone", halftone)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_overprint(&self, overprint: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.overprint = parse_render_contract_enum_py("overprint", overprint)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_rendering_intent(&self, rendering_intent: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.rendering_intent =
+            parse_render_contract_enum_py("rendering_intent", rendering_intent)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_color_management(&self, color_management: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.color_management =
+            parse_render_contract_enum_py("color_management", color_management)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_exactness(&self, exactness: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.exactness = parse_render_contract_enum_py("exactness", exactness)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_determinism(&self, determinism: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.determinism = parse_render_contract_enum_py("determinism", determinism)?;
+        validate_py_render_contract(contract)
+    }
+
+    fn with_resource_budget(
+        &self,
+        max_pixels: Option<u64>,
+        max_decoded_bytes: Option<u64>,
+        max_temporary_bytes: Option<u64>,
+        max_cache_bytes: Option<u64>,
+    ) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        if let Some(max_pixels) = max_pixels {
+            contract.resource_budget.max_pixels = max_pixels;
+        }
+        if let Some(max_decoded_bytes) = max_decoded_bytes {
+            contract.resource_budget.max_decoded_bytes = max_decoded_bytes;
+        }
+        if let Some(max_temporary_bytes) = max_temporary_bytes {
+            contract.resource_budget.max_temporary_bytes = max_temporary_bytes;
+        }
+        if let Some(max_cache_bytes) = max_cache_bytes {
+            contract.resource_budget.max_cache_bytes = max_cache_bytes;
+        }
+        contract
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { contract })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RenderContract(page={}, width={}, height={}, pixel_format={:?}, alpha_mode={:?})",
+            self.contract.page_number,
+            self.contract.width,
+            self.contract.height,
+            self.contract.pixel_format,
+            self.contract.alpha_mode
+        )
+    }
+}
+
+#[pymethods]
+impl PyRenderCache {
+    #[new]
+    fn new() -> Self {
+        Self {
+            cache: RenderDocumentCache::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.cache.clear();
+    }
+
+    fn apply_render_invalidation_plan_json(&mut self, plan_json: &str) -> PyResult<String> {
+        let report = run_wellfriendpdf(|| {
+            apply_render_invalidation_plan_json_to_cache(&mut self.cache, plan_json)
+        })?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
 }
 
 #[pymethods]
@@ -316,6 +678,24 @@ impl PySignatureRetrievalPolicy {
 
 #[pymethods]
 impl PySignatureValidationCancellation {
+    #[new]
+    fn new() -> Self {
+        Self {
+            token: CancelToken::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.token.cancel();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+}
+
+#[pymethods]
+impl PyRenderCancellation {
     #[new]
     fn new() -> Self {
         Self {
@@ -573,6 +953,20 @@ impl PyDocument {
         })
     }
 
+    /// Register caller-owned replacement font bytes for this document.
+    ///
+    /// Call this before creating page/progressive handles that share the same
+    /// document engine.
+    fn register_font_bytes(&mut self, name: String, font_bytes: Vec<u8>) -> PyResult<()> {
+        let engine = Arc::get_mut(&mut self.engine).ok_or_else(|| {
+            WellfriendError::new_err(
+                "cannot register font bytes while this document is shared by page or progressive handles",
+            )
+        })?;
+        run_wellfriendpdf(|| engine.register_font_bytes(name, font_bytes))?;
+        Ok(())
+    }
+
     #[getter]
     fn page_count(&self) -> PyResult<usize> {
         run_wellfriendpdf(|| self.engine.page_count())
@@ -744,6 +1138,24 @@ impl PyDocument {
         run_wellfriendpdf(|| self.engine.render_page_png_fast(page, dpi))
     }
 
+    #[pyo3(signature = (page, dpi=150, mode="compat"))]
+    fn render_with_font_substitution_report(
+        &self,
+        page: usize,
+        dpi: u32,
+        mode: &str,
+    ) -> PyResult<(Vec<u8>, String)> {
+        let render_mode = wellfriendpdf_engine::RenderMode::from_name(mode)
+            .ok_or_else(|| PyValueError::new_err("mode must be compat or high"))?;
+        let (png, log) = run_wellfriendpdf(|| {
+            self.engine
+                .render_page_png_fast_with_font_substitution_report(page, dpi, render_mode)
+        })?;
+        let json = serde_json::to_string(&log)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok((png, json))
+    }
+
     #[pyo3(signature = (page, dpi=150, mode=None))]
     fn default_render_contract_json(
         &self,
@@ -759,9 +1171,29 @@ impl PyDocument {
         serde_json::to_string(&contract).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
-    fn render_contract_png(&self, contract_json: &str) -> PyResult<Vec<u8>> {
-        let contract: wellfriendpdf_engine::RenderContract = serde_json::from_str(contract_json)
-            .map_err(|error| PyValueError::new_err(format!("render contract JSON: {error}")))?;
+    #[pyo3(signature = (page, dpi=150, mode=None))]
+    fn default_render_contract(
+        &self,
+        page: usize,
+        dpi: u32,
+        mode: Option<&str>,
+    ) -> PyResult<PyRenderContract> {
+        let mode_name = mode.unwrap_or("compat");
+        let render_mode = wellfriendpdf_engine::RenderMode::from_name(mode_name)
+            .ok_or_else(|| PyValueError::new_err("mode must be compat or high"))?;
+        let contract =
+            run_wellfriendpdf(|| self.engine.default_render_contract(page, dpi, render_mode))?;
+        Ok(PyRenderContract { contract })
+    }
+
+    fn render_cache(&self) -> PyRenderCache {
+        PyRenderCache {
+            cache: RenderDocumentCache::new(),
+        }
+    }
+
+    fn render_contract_png(&self, contract: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+        let contract = extract_render_contract(contract)?;
         run_wellfriendpdf(|| {
             self.engine.render_page_png_with_contract(
                 &contract,
@@ -770,13 +1202,122 @@ impl PyDocument {
         })
     }
 
+    fn render_contract_png_with_render_cache(
+        &self,
+        contract: &Bound<'_, PyAny>,
+        mut cache: PyRefMut<'_, PyRenderCache>,
+    ) -> PyResult<Vec<u8>> {
+        let contract = extract_render_contract(contract)?;
+        run_wellfriendpdf(|| {
+            self.engine.render_page_png_with_contract_and_cache(
+                &contract,
+                &wellfriendpdf_engine::CancelToken::none(),
+                &mut cache.cache,
+            )
+        })
+    }
+
+    fn render_contract_png_with_cancellation(
+        &self,
+        py: Python<'_>,
+        contract: &Bound<'_, PyAny>,
+        cancellation: PyRef<'_, PyRenderCancellation>,
+    ) -> PyResult<Vec<u8>> {
+        let contract = extract_render_contract(contract)?;
+        let engine = Arc::clone(&self.engine);
+        let token = cancellation.token.clone();
+        run_wellfriendpdf_detached(py, move || {
+            engine.render_page_png_with_contract(&contract, &token)
+        })
+    }
+
+    fn render_contract_png_with_font_substitution_report(
+        &self,
+        contract: &Bound<'_, PyAny>,
+    ) -> PyResult<(Vec<u8>, String)> {
+        let contract = extract_render_contract(contract)?;
+        let (png, log) = run_wellfriendpdf(|| {
+            self.engine
+                .render_page_png_with_contract_and_font_substitution_report(
+                    &contract,
+                    &wellfriendpdf_engine::CancelToken::none(),
+                )
+        })?;
+        let json = serde_json::to_string(&log)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok((png, json))
+    }
+
+    fn render_contract_png_with_font_substitution_report_with_cancellation(
+        &self,
+        py: Python<'_>,
+        contract: &Bound<'_, PyAny>,
+        cancellation: PyRef<'_, PyRenderCancellation>,
+    ) -> PyResult<(Vec<u8>, String)> {
+        let contract = extract_render_contract(contract)?;
+        let engine = Arc::clone(&self.engine);
+        let token = cancellation.token.clone();
+        let (png, log) = run_wellfriendpdf_detached(py, move || {
+            engine.render_page_png_with_contract_and_font_substitution_report(&contract, &token)
+        })?;
+        let json = serde_json::to_string(&log)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok((png, json))
+    }
+
+    fn render_contract_png_with_render_report(
+        &self,
+        contract: &Bound<'_, PyAny>,
+    ) -> PyResult<(Vec<u8>, String)> {
+        let contract = extract_render_contract(contract)?;
+        let (png, log, telemetry_report) = run_wellfriendpdf(|| {
+            self.engine
+                .render_page_png_with_contract_and_telemetry_report(
+                    &contract,
+                    &wellfriendpdf_engine::CancelToken::none(),
+                )
+        })?;
+        Ok((png, contract_render_report_json(&log, &telemetry_report)?))
+    }
+
+    fn render_contract_png_with_render_cache_report(
+        &self,
+        contract: &Bound<'_, PyAny>,
+        mut cache: PyRefMut<'_, PyRenderCache>,
+    ) -> PyResult<(Vec<u8>, String)> {
+        let contract = extract_render_contract(contract)?;
+        let (png, log, telemetry_report) = run_wellfriendpdf(|| {
+            self.engine
+                .render_page_png_with_contract_and_telemetry_report_and_cache(
+                    &contract,
+                    &wellfriendpdf_engine::CancelToken::none(),
+                    &mut cache.cache,
+                )
+        })?;
+        Ok((png, contract_render_report_json(&log, &telemetry_report)?))
+    }
+
+    fn render_contract_png_with_render_report_with_cancellation(
+        &self,
+        py: Python<'_>,
+        contract: &Bound<'_, PyAny>,
+        cancellation: PyRef<'_, PyRenderCancellation>,
+    ) -> PyResult<(Vec<u8>, String)> {
+        let contract = extract_render_contract(contract)?;
+        let engine = Arc::clone(&self.engine);
+        let token = cancellation.token.clone();
+        let (png, log, telemetry_report) = run_wellfriendpdf_detached(py, move || {
+            engine.render_page_png_with_contract_and_telemetry_report(&contract, &token)
+        })?;
+        Ok((png, contract_render_report_json(&log, &telemetry_report)?))
+    }
+
     fn render_contract_into(
         &self,
-        contract_json: &str,
+        contract: &Bound<'_, PyAny>,
         output: &Bound<'_, PyByteArray>,
     ) -> PyResult<()> {
-        let contract: wellfriendpdf_engine::RenderContract = serde_json::from_str(contract_json)
-            .map_err(|error| PyValueError::new_err(format!("render contract JSON: {error}")))?;
+        let contract = extract_render_contract(contract)?;
         // SAFETY: PyO3 guarantees the bound bytearray is mutable for this GIL-held call.
         let output = unsafe { output.as_bytes_mut() };
         run_wellfriendpdf(|| {
@@ -786,6 +1327,93 @@ impl PyDocument {
                 output,
             )
         })
+    }
+
+    fn render_contract_into_with_cancellation(
+        &self,
+        contract: &Bound<'_, PyAny>,
+        output: &Bound<'_, PyByteArray>,
+        cancellation: PyRef<'_, PyRenderCancellation>,
+    ) -> PyResult<()> {
+        let contract = extract_render_contract(contract)?;
+        let token = cancellation.token.clone();
+        // SAFETY: PyO3 guarantees the bound bytearray is mutable for this GIL-held call.
+        let output = unsafe { output.as_bytes_mut() };
+        run_wellfriendpdf(|| {
+            self.engine
+                .render_page_into_buffer(&contract, &token, output)
+        })
+    }
+
+    fn render_contract_into_with_font_substitution_report(
+        &self,
+        contract: &Bound<'_, PyAny>,
+        output: &Bound<'_, PyByteArray>,
+    ) -> PyResult<String> {
+        let contract = extract_render_contract(contract)?;
+        // SAFETY: PyO3 guarantees the bound bytearray is mutable for this GIL-held call.
+        let output = unsafe { output.as_bytes_mut() };
+        let log = run_wellfriendpdf(|| {
+            self.engine
+                .render_page_into_buffer_with_font_substitution_report(
+                    &contract,
+                    &wellfriendpdf_engine::CancelToken::none(),
+                    output,
+                )
+        })?;
+        serde_json::to_string(&log).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn render_contract_into_with_font_substitution_report_with_cancellation(
+        &self,
+        contract: &Bound<'_, PyAny>,
+        output: &Bound<'_, PyByteArray>,
+        cancellation: PyRef<'_, PyRenderCancellation>,
+    ) -> PyResult<String> {
+        let contract = extract_render_contract(contract)?;
+        let token = cancellation.token.clone();
+        // SAFETY: PyO3 guarantees the bound bytearray is mutable for this GIL-held call.
+        let output = unsafe { output.as_bytes_mut() };
+        let log = run_wellfriendpdf(|| {
+            self.engine
+                .render_page_into_buffer_with_font_substitution_report(&contract, &token, output)
+        })?;
+        serde_json::to_string(&log).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn render_contract_into_with_render_report(
+        &self,
+        contract: &Bound<'_, PyAny>,
+        output: &Bound<'_, PyByteArray>,
+    ) -> PyResult<String> {
+        let contract = extract_render_contract(contract)?;
+        // SAFETY: PyO3 guarantees the bound bytearray is mutable for this GIL-held call.
+        let output = unsafe { output.as_bytes_mut() };
+        let (log, telemetry_report) = run_wellfriendpdf(|| {
+            self.engine.render_page_into_buffer_with_telemetry_report(
+                &contract,
+                &wellfriendpdf_engine::CancelToken::none(),
+                output,
+            )
+        })?;
+        contract_render_report_json(&log, &telemetry_report)
+    }
+
+    fn render_contract_into_with_render_report_with_cancellation(
+        &self,
+        contract: &Bound<'_, PyAny>,
+        output: &Bound<'_, PyByteArray>,
+        cancellation: PyRef<'_, PyRenderCancellation>,
+    ) -> PyResult<String> {
+        let contract = extract_render_contract(contract)?;
+        let token = cancellation.token.clone();
+        // SAFETY: PyO3 guarantees the bound bytearray is mutable for this GIL-held call.
+        let output = unsafe { output.as_bytes_mut() };
+        let (log, telemetry_report) = run_wellfriendpdf(|| {
+            self.engine
+                .render_page_into_buffer_with_telemetry_report(&contract, &token, output)
+        })?;
+        contract_render_report_json(&log, &telemetry_report)
     }
 
     #[pyo3(signature = (page, dpi=150, tile_width=256, tile_height=256, mode="compat"))]
@@ -811,6 +1439,21 @@ impl PyDocument {
         Ok(PyProgressiveRenderJob { job })
     }
 
+    #[pyo3(signature = (contract, tile_width=256, tile_height=256))]
+    fn progressive_render_job_with_contract(
+        &self,
+        contract: &Bound<'_, PyAny>,
+        tile_width: u32,
+        tile_height: u32,
+    ) -> PyResult<PyProgressiveRenderJob> {
+        let contract = extract_render_contract(contract)?;
+        let job = run_wellfriendpdf(|| {
+            self.engine
+                .progressive_render_job_with_contract(contract, tile_width, tile_height)
+        })?;
+        Ok(PyProgressiveRenderJob { job })
+    }
+
     // ── Report surfaces (shared wellfriendpdf_engine::sdk facade) ────────────────────
     //
     // Each returns a Python dict parsed from the SDK's versioned-JSON envelope
@@ -825,6 +1468,72 @@ impl PyDocument {
     /// Risky active-content inventory (JavaScript, launch/URI actions, etc.).
     fn risky_content_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::risky_content_report_json(bytes, None))
+    }
+
+    /// Per-image decoder capability report for region/reduction/progressive support.
+    fn image_decode_capability_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::image_decode_capability_report_json(bytes, None)
+        })
+    }
+
+    /// Canonical source identity plus lazy render/edit/semantic/validation view boundaries.
+    fn document_views_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::document_views_report_json(bytes, None))
+    }
+
+    /// Per-page render-view backend packed-plan arena report.
+    #[pyo3(signature = (page, dpi=72, mode="compat"))]
+    fn backend_plan_arena_report<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        dpi: u32,
+        mode: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let mode = mode.to_string();
+        self.report_json(py, |bytes| {
+            sdk::backend_plan_arena_report_json(bytes, page, dpi, Some(&mode), None)
+        })
+    }
+
+    /// Per-page backend packed-plan arena report for an explicit schema-v1 contract.
+    fn backend_plan_arena_report_for_contract<'py>(
+        &self,
+        py: Python<'py>,
+        contract_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let contract_json = contract_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::backend_plan_arena_report_for_contract_json(bytes, &contract_json, None)
+        })
+    }
+
+    /// Sparse Prepress CMM Separation/DeviceN plate framebuffer report.
+    #[pyo3(signature = (page, dpi=72))]
+    fn prepress_plate_report<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        dpi: u32,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prepress_plate_report_json(bytes, page, dpi, None)
+        })
+    }
+
+    /// Progressive image-decode lifecycle report for a discovered image.
+    /// Actions include start, continue, pause, resume, cancel, fail, close,
+    /// and document_close.
+    fn progressive_image_decode_lifecycle_report<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let request_json = request_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::progressive_image_decode_lifecycle_report_json(bytes, &request_json, None)
+        })
     }
 
     /// Parser diagnostics: repair/xref/revisions/linearization/encryption.
@@ -1364,6 +2073,31 @@ impl PyDocument {
         let bytes = self.file_bytes();
         let (out, report) = run_wellfriendpdf(|| {
             sdk::editing_transactions_transaction_apply_json(&bytes, request_json, None)
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (request_json, render_invalidation_options_json=None, output=None))]
+    fn editing_transactions_transaction_apply_with_render_invalidation<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        render_invalidation_options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let options = render_invalidation_options_json.map(str::to_string);
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::editing_transactions_transaction_apply_with_render_invalidation_json(
+                &bytes,
+                request_json,
+                options.as_deref(),
+                None,
+            )
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -3451,6 +4185,30 @@ impl PyProgressiveRenderJob {
         serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
+    fn step_with_cancellation(
+        &mut self,
+        max_tiles: usize,
+        cancellation_requested: &Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        if py_cancellation_requested(cancellation_requested)? {
+            self.job.request_cancel();
+            return Err(PyInterruptedError::new_err(
+                "Wellfriend progressive render step was cancelled",
+            ));
+        }
+        let report = run_wellfriendpdf(|| {
+            self.job
+                .render_next(max_tiles, &wellfriendpdf_engine::CancelToken::none())
+        })?;
+        if py_cancellation_requested(cancellation_requested)? {
+            self.job.request_cancel();
+            return Err(PyInterruptedError::new_err(
+                "Wellfriend progressive render step was cancelled",
+            ));
+        }
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
     fn token_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.job.token())
             .map_err(|error| PyValueError::new_err(error.to_string()))
@@ -3471,20 +4229,210 @@ impl PyProgressiveRenderJob {
         self.job.cancel();
     }
 
-    fn finish_png(&self) -> PyResult<Option<Vec<u8>>> {
-        let Some(buffer) = self.job.finish() else {
-            return Ok(None);
-        };
+    fn request_cancel(&self) {
+        self.job.request_cancel();
+    }
+
+    #[pyo3(signature = (x=None, y=None, width=None, height=None))]
+    fn revise_viewport_hint_json(
+        &mut self,
+        x: Option<u32>,
+        y: Option<u32>,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> PyResult<String> {
+        let viewport_hint = parse_optional_render_tile(x, y, width, height)?;
+        let report = run_wellfriendpdf(|| self.job.revise_viewport_hint(viewport_hint))?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (x=None, y=None, width=None, height=None))]
+    fn revise_dirty_region_json(
+        &mut self,
+        x: Option<u32>,
+        y: Option<u32>,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> PyResult<String> {
+        let dirty_region = parse_optional_render_tile(x, y, width, height)?;
+        let report = run_wellfriendpdf(|| self.job.revise_dirty_region(dirty_region))?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (render_contract_fingerprint=None, visibility_fingerprint=None))]
+    fn revise_render_context_json(
+        &mut self,
+        render_contract_fingerprint: Option<String>,
+        visibility_fingerprint: Option<String>,
+    ) -> PyResult<String> {
+        let report = run_wellfriendpdf(|| {
+            self.job
+                .revise_render_context(render_contract_fingerprint, visibility_fingerprint)
+        })?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn revise_render_contract_json(&mut self, contract_json: &str) -> PyResult<String> {
+        let contract: wellfriendpdf_engine::RenderContract = serde_json::from_str(contract_json)
+            .map_err(|error| {
+                PyValueError::new_err(format!("progressive render contract JSON: {error}"))
+            })?;
+        let report = run_wellfriendpdf(|| self.job.revise_render_contract(contract))?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn apply_render_invalidation_plan_json(&mut self, plan_json: &str) -> PyResult<String> {
+        let report = run_wellfriendpdf(|| self.job.apply_render_invalidation_plan_json(plan_json))?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn evaluate_tile_publication_json(&self, publication_json: &str) -> PyResult<String> {
+        let publication: wellfriendpdf_engine::ProgressiveTilePublication =
+            serde_json::from_str(publication_json).map_err(|error| {
+                PyValueError::new_err(format!("progressive tile publication JSON: {error}"))
+            })?;
+        let report = self.job.evaluate_tile_publication(&publication);
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn viewer_queue_json(&self) -> PyResult<String> {
+        let report = self.job.viewer_queue_report();
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn execute_viewer_queue_json(&mut self, max_items: usize) -> PyResult<String> {
+        let report = run_wellfriendpdf(|| {
+            self.job
+                .execute_viewer_queue(max_items, &wellfriendpdf_engine::CancelToken::none())
+        })?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn execute_viewer_queue_json_with_cancellation(
+        &mut self,
+        max_items: usize,
+        cancellation: PyRef<'_, PyRenderCancellation>,
+    ) -> PyResult<String> {
+        let token = cancellation.token.clone();
+        let report = run_wellfriendpdf(|| self.job.execute_viewer_queue(max_items, &token))?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn execute_adjacent_page_prefetch(
+        &self,
+        prefetch_identity: &str,
+        max_tiles: usize,
+    ) -> PyResult<(String, Option<PyProgressiveRenderJob>)> {
+        let execution = run_wellfriendpdf(|| {
+            self.job.execute_adjacent_page_prefetch(
+                prefetch_identity,
+                max_tiles,
+                &wellfriendpdf_engine::CancelToken::none(),
+            )
+        })?;
+        let report_json = serde_json::to_string(&execution.report)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let job = execution.job.map(|job| PyProgressiveRenderJob { job });
+        Ok((report_json, job))
+    }
+
+    fn execute_adjacent_page_prefetch_with_cancellation(
+        &self,
+        prefetch_identity: &str,
+        max_tiles: usize,
+        cancellation: PyRef<'_, PyRenderCancellation>,
+    ) -> PyResult<(String, Option<PyProgressiveRenderJob>)> {
+        let token = cancellation.token.clone();
+        let execution = run_wellfriendpdf(|| {
+            self.job
+                .execute_adjacent_page_prefetch(prefetch_identity, max_tiles, &token)
+        })?;
+        let report_json = serde_json::to_string(&execution.report)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let job = execution.job.map(|job| PyProgressiveRenderJob { job });
+        Ok((report_json, job))
+    }
+
+    fn viewer_callback_dispatch_json(&self) -> PyResult<String> {
+        let report = self.job.viewer_callback_dispatch_report();
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn dispatch_viewer_callbacks(&self, callback: &Bound<'_, PyAny>) -> PyResult<String> {
+        if !callback.is_callable() {
+            return Err(PyTypeError::new_err("callback must be callable"));
+        }
+        let report = self.job.viewer_callback_dispatch_report();
+        for event in &report.events {
+            let event_json = serde_json::to_string(event)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            callback.call1((event_json,))?;
+        }
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn finish_png(&self) -> PyResult<Vec<u8>> {
+        let buffer = run_wellfriendpdf(|| self.job.finish_checked())?;
         let png = run_wellfriendpdf(|| {
             wellfriendpdf_engine::images::encoder::ImageEncoder::encode_png_fast(
                 &buffer.to_raw_image(),
             )
         })?;
-        Ok(Some(png))
+        Ok(png)
+    }
+
+    fn finish_png_with_cancellation(
+        &self,
+        cancellation_requested: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<u8>> {
+        if py_cancellation_requested(cancellation_requested)? {
+            self.job.request_cancel();
+            return Err(PyInterruptedError::new_err(
+                "Wellfriend progressive render finish was cancelled",
+            ));
+        }
+        let png = self.finish_png()?;
+        if py_cancellation_requested(cancellation_requested)? {
+            self.job.request_cancel();
+            return Err(PyInterruptedError::new_err(
+                "Wellfriend progressive render finish was cancelled",
+            ));
+        }
+        Ok(png)
     }
 
     fn close(&mut self) {
         self.job.close();
+    }
+}
+
+fn py_cancellation_requested(cancellation_requested: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if cancellation_requested.is_callable() {
+        cancellation_requested.call0()?.is_truthy()
+    } else {
+        cancellation_requested.is_truthy()
+    }
+}
+
+fn parse_optional_render_tile(
+    x: Option<u32>,
+    y: Option<u32>,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> PyResult<Option<wellfriendpdf_engine::RenderTile>> {
+    match (x, y, width, height) {
+        (Some(x), Some(y), Some(width), Some(height)) => {
+            Ok(Some(wellfriendpdf_engine::RenderTile {
+                x,
+                y,
+                width,
+                height,
+            }))
+        }
+        (None, None, None, None) => Ok(None),
+        _ => Err(PyValueError::new_err(
+            "x, y, width, and height must be supplied together",
+        )),
     }
 }
 
@@ -3493,6 +4441,9 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("WellfriendError", py.get_type::<WellfriendError>())?;
     module.add_class::<PyDocument>()?;
     module.add_class::<PyProgressiveRenderJob>()?;
+    module.add_class::<PyRenderContract>()?;
+    module.add_class::<PyRenderCache>()?;
+    module.add_class::<PyRenderCancellation>()?;
     module.add_class::<PySignatureTrustStore>()?;
     module.add_class::<PySignatureIntermediateStore>()?;
     module.add_class::<PySignatureEvidenceStore>()?;
@@ -3687,6 +4638,101 @@ where
         Ok(Err(err)) => Err(WellfriendError::new_err(err.to_string())),
         Err(_) => Err(WellfriendError::new_err("Rust panic while processing PDF")),
     }
+}
+
+fn run_wellfriendpdf_detached<T, F>(py: Python<'_>, operation: F) -> PyResult<T>
+where
+    F: Send + Ungil + FnOnce() -> wellfriendpdf_engine::Result<T>,
+    T: Send + Ungil,
+{
+    match py.detach(move || std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(WellfriendError::new_err(err.to_string())),
+        Err(_) => Err(WellfriendError::new_err("Rust panic while processing PDF")),
+    }
+}
+
+fn contract_render_report_json(
+    log: &wellfriendpdf_engine::FontSubstitutionLog,
+    telemetry_report: &wellfriendpdf_engine::RenderContractTelemetryReport,
+) -> PyResult<String> {
+    let report = serde_json::json!({
+        "font_substitution_report": log,
+        "render_telemetry_report": telemetry_report,
+    });
+    serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+fn parse_render_contract_json(json: &str) -> PyResult<wellfriendpdf_engine::RenderContract> {
+    let contract: wellfriendpdf_engine::RenderContract = serde_json::from_str(json)
+        .map_err(|error| PyValueError::new_err(format!("render contract JSON: {error}")))?;
+    contract
+        .validate()
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok(contract)
+}
+
+fn validate_py_render_contract(
+    contract: wellfriendpdf_engine::RenderContract,
+) -> PyResult<PyRenderContract> {
+    contract
+        .validate()
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok(PyRenderContract { contract })
+}
+
+fn parse_render_contract_enum_py<T>(field: &str, value: &str) -> PyResult<T>
+where
+    T: DeserializeOwned,
+{
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(PyValueError::new_err(format!(
+            "render contract {field} must be present"
+        )));
+    }
+    let canonical = canonical_contract_enum_name(trimmed);
+    for candidate in [trimmed, canonical.as_str()] {
+        if let Ok(parsed) = serde_json::from_value(serde_json::Value::String(candidate.to_string()))
+        {
+            return Ok(parsed);
+        }
+    }
+    Err(PyValueError::new_err(format!(
+        "unsupported render contract {field} '{value}'"
+    )))
+}
+
+fn canonical_contract_enum_name(value: &str) -> String {
+    let mut out = String::new();
+    let mut uppercase_next = true;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if uppercase_next {
+                out.push(ch.to_ascii_uppercase());
+                uppercase_next = false;
+            } else {
+                out.push(ch);
+            }
+        } else {
+            uppercase_next = true;
+        }
+    }
+    out
+}
+
+fn extract_render_contract(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<wellfriendpdf_engine::RenderContract> {
+    if let Ok(contract) = value.extract::<PyRef<'_, PyRenderContract>>() {
+        return Ok(contract.contract.clone());
+    }
+    if let Ok(json) = value.extract::<String>() {
+        return parse_render_contract_json(&json);
+    }
+    Err(PyTypeError::new_err(
+        "render contract must be a RenderContract instance or JSON string",
+    ))
 }
 
 fn read_signature_component_file(path: &PathBuf) -> PyResult<Vec<u8>> {

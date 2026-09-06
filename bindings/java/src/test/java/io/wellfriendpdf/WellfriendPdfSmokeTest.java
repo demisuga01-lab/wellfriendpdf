@@ -11,6 +11,10 @@ import java.util.Map;
 
 public final class WellfriendPdfSmokeTest {
     public static void main(String[] args) throws Exception {
+        renderContractBuilderRoundTripsSchemaJson();
+        if (args.length == 1 && "--contract-builder-only".equals(args[0])) {
+            return;
+        }
         Path fixture = fixturePath();
         Path semantic_closeoutFixture = locateFixture("multi_stream.pdf");
         try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(fixture)) {
@@ -19,11 +23,70 @@ public final class WellfriendPdfSmokeTest {
             byte[] png = doc.page(1).renderPng();
             byte[] jpeg = doc.page(1).renderJpeg(72, (byte) 85);
             String contract = doc.defaultRenderContractJson(1, 72);
+            WellfriendPdf.RenderContract typedContract = doc.defaultRenderContract(1, 72);
+            WellfriendPdf.RenderContract blueTypedContract = typedContract.withBackground(12, 34, 56);
+            assertTrue(blueTypedContract.toJson().contains("\"background\":{\"r\":12"),
+                "typed render contract background builder");
             byte[] contractPng = doc.renderPagePngWithContractJson(contract);
+            byte[] typedContractPng = doc.renderPagePng(blueTypedContract);
+            WellfriendPdf.BinaryResult pngWithFontReport =
+                doc.renderPagePngWithFontSubstitutionReportJson(1, 72);
+            WellfriendPdf.BinaryResult contractPngWithFontReport =
+                doc.renderPagePngWithContractAndFontSubstitutionReportJson(contract);
+            WellfriendPdf.BinaryResult contractPngWithRenderReport =
+                doc.renderPagePngWithContractAndRenderReportJson(contract);
             ByteBuffer callerSurface = ByteBuffer.allocateDirect(4_000_000);
-            doc.renderPageIntoBufferWithContractJson(contract, callerSurface);
+            doc.renderPageIntoBuffer(typedContract, callerSurface);
+            String callerFontReport =
+                doc.renderPageIntoBufferWithFontSubstitutionReport(typedContract, callerSurface);
+            String callerRenderReport =
+                doc.renderPageIntoBufferWithRenderReport(typedContract, callerSurface);
             assertTrue(callerSurface.get(0) != 0 || callerSurface.get(1) != 0 || callerSurface.get(2) != 0,
                 "caller-owned render surface");
+            assertTrue(pngWithFontReport.bytes().length > 8 && pngWithFontReport.bytes()[0] == (byte) 0x89,
+                "PNG plus font substitution report");
+            assertTrue(contractPngWithFontReport.bytes().length > 8 && contractPngWithFontReport.bytes()[0] == (byte) 0x89,
+                "contract PNG plus font substitution report");
+            assertTrue(contractPngWithRenderReport.bytes().length > 8 && contractPngWithRenderReport.bytes()[0] == (byte) 0x89,
+                "contract PNG plus render report");
+            assertTrue(pngWithFontReport.reportJson().contains("\"events\""),
+                "render font substitution report JSON");
+            assertTrue(contractPngWithFontReport.reportJson().contains("\"events\""),
+                "contract render font substitution report JSON");
+            assertTrue(callerFontReport.contains("\"events\""),
+                "caller-owned surface font substitution report JSON");
+            assertTrue(contractPngWithRenderReport.reportJson().contains("\"font_substitution_report\""),
+                "contract render report font envelope");
+            assertTrue(contractPngWithRenderReport.reportJson().contains("\"render_telemetry_report\""),
+                "contract render report telemetry envelope");
+            assertTrue(contractPngWithRenderReport.reportJson().contains("\"one_shot_render_contract_report\""),
+                "contract render report telemetry scope");
+            assertTrue(callerRenderReport.contains("\"render_telemetry_report\""),
+                "caller-owned render report telemetry envelope");
+            assertTrue(callerRenderReport.contains("\"resource_budget_max_cache_bytes\""),
+                "caller-owned render report cache budget");
+            try (WellfriendPdf.RenderCache renderCache = new WellfriendPdf.RenderCache()) {
+                WellfriendPdf.BinaryResult cachedRenderReport =
+                    doc.renderPagePngWithContractAndRenderCacheReportJson(contract, renderCache);
+                assertTrue(cachedRenderReport.bytes().length > 8,
+                    "caller-owned render cache PNG");
+                assertTrue(cachedRenderReport.reportJson().contains("\"caller_owned_render_cache_report\""),
+                    "caller-owned render cache telemetry scope");
+                String cacheInvalidation = renderCache.applyRenderInvalidationPlanJson("""
+                    {
+                      "schema_version": "render-transaction-invalidation-plan.v1",
+                      "next_revision": 42,
+                      "mapped_source_ids": [],
+                      "source_cache_markers": [],
+                      "affected_pages": [1],
+                      "affected_tiles": [],
+                      "conservative_reset_required": false
+                    }
+                    """);
+                assertTrue(cacheInvalidation.contains("\"current_revision\":42"),
+                    "caller-owned render cache invalidation plan");
+                renderCache.clear();
+            }
             try (WellfriendPdf.ProgressiveRenderSession session = doc.progressiveRenderSession(1, 72, 64, 64, "compat")) {
                 String progressiveToken = session.pauseJson();
                 assertTrue(progressiveToken.contains("\"lifecycle_state\":\"paused\""), "progressive pause");
@@ -35,16 +98,38 @@ public final class WellfriendPdfSmokeTest {
                 assertTrue(progressivePng.length > 8 && progressivePng[0] == (byte) 0x89,
                     "progressive finish PNG");
             }
+            try (WellfriendPdf.ProgressiveRenderSession session = doc.progressiveRenderSession(1, 72, 64, 64, "compat")) {
+                session.requestCancel();
+                String cancelled = session.stepJson(4);
+                assertTrue(cancelled.contains("\"cancelled\":true"), "progressive request cancel");
+                assertTrue(cancelled.contains("\"phase\":\"cancelled_resumable\""),
+                    "progressive request cancel remains resumable");
+            }
+            try (WellfriendPdf.ProgressiveRenderSession session = doc.progressiveRenderSession(1, 72, 64, 64, "compat")) {
+                boolean tokenCancelled = false;
+                try {
+                    session.stepJson(4, () -> true);
+                } catch (java.util.concurrent.CancellationException ex) {
+                    tokenCancelled = true;
+                }
+                assertTrue(tokenCancelled, "progressive supplier cancellation");
+                assertTrue(session.stepJson(4).contains("\"cancelled\":true"),
+                    "supplier cancellation reaches native session");
+            }
             assertTrue(png.length > 8 && png[0] == (byte) 0x89 && png[1] == (byte) 0x50,
                 "PNG raster rendering");
             assertTrue(contractPng.length > 8 && contractPng[0] == (byte) 0x89 && contractPng[1] == (byte) 0x50,
                 "contract PNG raster rendering");
+            assertTrue(typedContractPng.length > 8 && typedContractPng[0] == (byte) 0x89 && typedContractPng[1] == (byte) 0x50,
+                "typed contract PNG raster rendering");
             assertTrue(jpeg.length > 4 && jpeg[0] == (byte) 0xff && jpeg[1] == (byte) 0xd8,
                 "JPEG raster rendering");
             assertTrue(doc.parseJson().contains("\"schema_version\""), "parse json");
             Map<String, String> reports = new LinkedHashMap<>();
             reports.put("feature", WellfriendPdf.featureReportJson());
             reports.put("security", doc.securityReportJson());
+            reports.put("document_views", doc.documentViewsReportJson());
+            reports.put("prepress_plate", doc.prepressPlateReportJson(1));
             reports.put("parser", doc.parserReportJson("repair"));
             reports.put("color", doc.colorReportJson("generic"));
             reports.put("validate_security", doc.validateJson("security"));
@@ -370,7 +455,7 @@ public final class WellfriendPdfSmokeTest {
             "progressive resume feature status");
         assertTrue(feature.contains("\"cancellation\""), "cancellation feature posture");
         assertTrue(
-            feature.contains("engine_render_cancellation_supported_binding_tokens_later"),
+            feature.contains("engine_render_cancellation_progressive_bindings_source_available"),
             "cancellation binding token status");
         assertTrue(feature.contains("\"codec_isolation\""), "codec isolation feature posture");
         assertTrue(feature.contains("\"transparency_rendering_transparency_compositing\""), "transparency_rendering feature posture");
@@ -606,6 +691,121 @@ public final class WellfriendPdfSmokeTest {
 
     private static void assertReport(String json, String label) {
         assertTrue(json.contains("\"schema_version\""), label);
+    }
+
+    private static void renderContractBuilderRoundTripsSchemaJson() {
+        WellfriendPdf.RenderContract contract = WellfriendPdf.RenderContract.fromJson("""
+                {
+                  "schema_version": 1,
+                  "document_revision": 9,
+                  "page_identity": 7,
+                  "page_number": 1,
+                  "dpi": 72,
+                  "page_box": "Crop",
+                  "transform": {"values":[4607182418800017408,0,0,4607182418800017408,0,0]},
+                  "clip": null,
+                  "width": 2,
+                  "height": 3,
+                  "stride": 8,
+                  "pixel_format": "Rgba8",
+                  "alpha_mode": "Premultiplied",
+                  "background": {"r":255,"g":255,"b":255,"a":255},
+                  "execution_mode": "Standard",
+                  "backend": "StandardCpu",
+                  "compositing": "Compatibility",
+                  "annotations": "Include",
+                  "forms": "Include",
+                  "optional_content": "ocg:test",
+                  "text_smoothing": "Antialiased",
+                  "image_smoothing": "Antialiased",
+                  "path_smoothing": "Antialiased",
+                  "subpixel_text": "Disabled",
+                  "grayscale": false,
+                  "color_scheme": "Light",
+                  "reverse_byte_order": false,
+                  "print_profile": "Display",
+                  "halftone": "Disabled",
+                  "overprint": "Disabled",
+                  "rendering_intent": "RelativeColorimetric",
+                  "color_management": "PortableQcms",
+                  "exactness": "Compatibility",
+                  "determinism": "Required",
+                  "resource_budget": {
+                    "max_pixels": 100000000,
+                    "max_decoded_bytes": 536870912,
+                    "max_temporary_bytes": 268435456,
+                    "max_cache_bytes": 268435456
+                  }
+                }
+                """);
+        WellfriendPdf.RenderContract built = contract
+            .withSurface(
+                5,
+                4,
+                WellfriendPdf.RenderContract.PixelFormat.Rgb8,
+                WellfriendPdf.RenderContract.AlphaMode.Opaque,
+                -1,
+                false,
+                false)
+            .withClip(1, 2, 3, 4)
+            .withDeviceTransform(1, 0, 0, 1, 2, 3)
+            .withBackground(12, 34, 56)
+            .withPageBox(WellfriendPdf.RenderContract.PageBox.Trim)
+            .withExecutionMode(WellfriendPdf.RenderContract.ExecutionMode.Research)
+            .withBackend(WellfriendPdf.RenderContract.BackendSelection.ScalarReference)
+            .withCompositing(WellfriendPdf.RenderContract.CompositingPolicy.HighQuality)
+            .withAnnotations(WellfriendPdf.RenderContract.AnnotationPolicy.Exclude)
+            .withForms(WellfriendPdf.RenderContract.FormPolicy.Exclude)
+            .withOptionalContent("ocg:parity")
+            .withSmoothing(WellfriendPdf.RenderContract.SmoothingPolicy.Disabled)
+            .withTextSmoothing(WellfriendPdf.RenderContract.SmoothingPolicy.Subpixel)
+            .withImageSmoothing(WellfriendPdf.RenderContract.SmoothingPolicy.Antialiased)
+            .withPathSmoothing(WellfriendPdf.RenderContract.SmoothingPolicy.Disabled)
+            .withSubpixelText(WellfriendPdf.RenderContract.SmoothingPolicy.Subpixel)
+            .withColorScheme(WellfriendPdf.RenderContract.ColorScheme.Dark)
+            .withPrintProfile(WellfriendPdf.RenderContract.PrintProfile.Proof)
+            .withHalftone(WellfriendPdf.RenderContract.HalftonePolicy.Screen)
+            .withOverprint(WellfriendPdf.RenderContract.OverprintPolicy.Preview)
+            .withRenderingIntent(WellfriendPdf.RenderContract.RenderingIntent.Perceptual)
+            .withColorManagement(WellfriendPdf.RenderContract.ColorManagementPolicy.DeterministicFallback)
+            .withExactness(WellfriendPdf.RenderContract.ExactnessPolicy.HighQualityExact)
+            .withDeterminism(WellfriendPdf.RenderContract.DeterminismPolicy.BestEffortResearch)
+            .withResourceBudget(20L, null, null, null);
+        String json = built.toJson();
+        assertTrue(json.contains("\"pixel_format\":\"Rgb8\""), "typed Java contract pixel format");
+        assertTrue(json.contains("\"alpha_mode\":\"Opaque\""), "typed Java contract alpha mode");
+        assertTrue(json.contains("\"stride\":15"), "typed Java contract stride");
+        assertTrue(json.contains("\"max_pixels\":20"), "typed Java contract budget");
+        assertTrue(json.contains("\"background\":{\"r\":12"), "typed Java contract background");
+        assertTrue(json.contains("\"clip\":{\"x\":1,\"y\":2,\"width\":3,\"height\":4}"),
+            "typed Java contract clip");
+        assertTrue(json.contains("\"page_box\":\"Trim\""), "typed Java contract page box");
+        assertTrue(json.contains("\"execution_mode\":\"Research\""), "typed Java contract execution mode");
+        assertTrue(json.contains("\"backend\":\"ScalarReference\""), "typed Java contract backend");
+        assertTrue(json.contains("\"compositing\":\"HighQuality\""), "typed Java contract compositing");
+        assertTrue(json.contains("\"annotations\":\"Exclude\""), "typed Java contract annotations");
+        assertTrue(json.contains("\"forms\":\"Exclude\""), "typed Java contract forms");
+        assertTrue(json.contains("\"optional_content\":\"ocg:parity\""), "typed Java contract optional content");
+        assertTrue(json.contains("\"text_smoothing\":\"Subpixel\""), "typed Java contract text smoothing");
+        assertTrue(json.contains("\"image_smoothing\":\"Antialiased\""), "typed Java contract image smoothing");
+        assertTrue(json.contains("\"path_smoothing\":\"Disabled\""), "typed Java contract path smoothing");
+        assertTrue(json.contains("\"subpixel_text\":\"Subpixel\""), "typed Java contract subpixel text");
+        assertTrue(json.contains("\"color_scheme\":\"Dark\""), "typed Java contract color scheme");
+        assertTrue(json.contains("\"print_profile\":\"Proof\""), "typed Java contract print profile");
+        assertTrue(json.contains("\"halftone\":\"Screen\""), "typed Java contract halftone");
+        assertTrue(json.contains("\"overprint\":\"Preview\""), "typed Java contract overprint");
+        assertTrue(json.contains("\"rendering_intent\":\"Perceptual\""), "typed Java contract rendering intent");
+        assertTrue(json.contains("\"color_management\":\"DeterministicFallback\""),
+            "typed Java contract color management");
+        assertTrue(json.contains("\"exactness\":\"HighQualityExact\""), "typed Java contract exactness");
+        assertTrue(json.contains("\"determinism\":\"BestEffortResearch\""), "typed Java contract determinism");
+        assertTrue(built.surfaceByteLength() == 60, "typed Java contract surface byte length");
+        try {
+            WellfriendPdf.RenderContract.fromJson(json.replace("\"page_box\":\"Trim\"", "\"page_box\":\"Bogus\""));
+            throw new AssertionError("unknown render contract enum should fail");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("page_box"), "typed Java contract enum validation");
+        }
     }
 
     private static void assertPrefix(byte[] bytes, String expected, String label) {

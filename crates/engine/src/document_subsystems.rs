@@ -602,6 +602,8 @@ pub struct DocumentSubsystemsOperationReport {
     pub transaction: Value,
     pub appearance_effect: Value,
     pub xfa_effect: Value,
+    #[serde(default)]
+    pub render_invalidation: Value,
     pub undo_available: bool,
     pub exact_limits: Vec<String>,
 }
@@ -611,6 +613,366 @@ fn digest(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FormInvalidationWidget {
+    object_ref: Option<String>,
+    page: Option<usize>,
+    rect: Option<[f64; 4]>,
+    appearance_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FormInvalidationField {
+    field_type: String,
+    value: Option<String>,
+    default_value: Option<String>,
+    field_ref: Option<String>,
+    widgets: Vec<FormInvalidationWidget>,
+}
+
+fn document_subsystems_object_ref(number: u32, generation: u16) -> String {
+    format!("{number} {generation} R")
+}
+
+fn parse_document_subsystems_object_ref(value: &str) -> Option<(u32, u16)> {
+    let mut parts = value.split_whitespace();
+    let number = parts.next()?.parse().ok()?;
+    let generation = parts.next()?.parse().ok()?;
+    matches!(parts.next(), Some("R")).then_some((number, generation))
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn push_unique_page(values: &mut Vec<usize>, value: usize) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn push_dirty_region(values: &mut Vec<Value>, page: usize, region: [f64; 4], reason: &str) {
+    let entry = json!({
+        "page": page,
+        "region": region,
+        "reason": reason,
+    });
+    if !values.iter().any(|existing| existing == &entry) {
+        values.push(entry);
+    }
+}
+
+fn collect_appearance_refs_from_object(
+    reader: &PdfReader,
+    object: &PdfObject,
+    depth: usize,
+    seen: &mut BTreeSet<(u32, u16)>,
+    refs: &mut Vec<String>,
+) {
+    if depth > 8 {
+        return;
+    }
+    if let Some((number, generation)) = object.as_reference() {
+        push_unique_string(refs, document_subsystems_object_ref(number, generation));
+        if seen.insert((number, generation)) {
+            if let Ok(resolved) = reader.get_and_resolve(number, generation) {
+                collect_appearance_refs_from_object(reader, &resolved, depth + 1, seen, refs);
+            }
+        }
+        return;
+    }
+    match object {
+        PdfObject::Dictionary(dict) => {
+            for (_, value) in dict.entries() {
+                collect_appearance_refs_from_object(reader, value, depth + 1, seen, refs);
+            }
+        }
+        PdfObject::Array(items) => {
+            for value in items {
+                collect_appearance_refs_from_object(reader, value, depth + 1, seen, refs);
+            }
+        }
+        PdfObject::Stream { .. } => {}
+        _ => {}
+    }
+}
+
+fn collect_widget_appearance_refs(reader: &PdfReader, object_ref: Option<&str>) -> Vec<String> {
+    let Some((number, generation)) = object_ref.and_then(parse_document_subsystems_object_ref)
+    else {
+        return Vec::new();
+    };
+    let Ok(widget) = reader.get_and_resolve(number, generation) else {
+        return Vec::new();
+    };
+    let Some(dict) = widget.as_dict() else {
+        return Vec::new();
+    };
+    let Some(appearance) = dict.get("AP") else {
+        return Vec::new();
+    };
+    let mut refs = Vec::new();
+    let mut seen = BTreeSet::new();
+    collect_appearance_refs_from_object(reader, appearance, 0, &mut seen, &mut refs);
+    refs
+}
+
+fn collect_form_invalidation_snapshot(
+    engine: &ContentEngine,
+) -> Result<BTreeMap<String, FormInvalidationField>> {
+    let report = crate::forms_report(engine)?;
+    let document = engine.document();
+    let reader = document.reader();
+    let catalog = document.get_catalog()?;
+    let field_roots = if let Some(acroform) = catalog.get("AcroForm") {
+        reader
+            .resolve(acroform.clone())
+            .ok()
+            .and_then(|object| {
+                object
+                    .as_dict()
+                    .and_then(|dict| dict.get("Fields"))
+                    .cloned()
+            })
+            .and_then(|fields| reader.resolve(fields).ok())
+            .and_then(|fields| fields.as_array().map(<[PdfObject]>::to_vec))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut snapshot = BTreeMap::new();
+    for field in report.fields {
+        let field_ref = field_roots
+            .iter()
+            .find_map(|root| {
+                form_field_reference_by_name(reader, root, "", &field.full_name, 0)
+                    .ok()
+                    .flatten()
+            })
+            .map(|(number, generation)| document_subsystems_object_ref(number, generation));
+        let widgets = field
+            .widgets
+            .iter()
+            .map(|widget| FormInvalidationWidget {
+                object_ref: widget.object.clone(),
+                page: widget.page,
+                rect: widget.rect,
+                appearance_refs: collect_widget_appearance_refs(reader, widget.object.as_deref()),
+            })
+            .collect();
+        snapshot.insert(
+            field.full_name,
+            FormInvalidationField {
+                field_type: field.field_type,
+                value: field.value,
+                default_value: field.default_value,
+                field_ref,
+                widgets,
+            },
+        );
+    }
+    Ok(snapshot)
+}
+
+fn form_action_changes_live_widget_appearance(action: Option<&DocumentSubsystemsAction>) -> bool {
+    !matches!(
+        action,
+        Some(
+            DocumentSubsystemsAction::FormSetDefault { .. }
+                | DocumentSubsystemsAction::FormSetButtonDefault { .. }
+                | DocumentSubsystemsAction::FormRename { .. }
+                | DocumentSubsystemsAction::FormSetCalculationOrder { .. }
+        )
+    )
+}
+
+fn form_field_visual_state(field: Option<&FormInvalidationField>) -> Value {
+    match field {
+        Some(field) => json!({
+            "value": field.value,
+            "widgets": field.widgets.iter().map(|widget| json!({
+                "object_ref": widget.object_ref,
+                "page": widget.page,
+                "rect": widget.rect,
+                "appearance_refs": widget.appearance_refs,
+            })).collect::<Vec<_>>(),
+        }),
+        None => Value::Null,
+    }
+}
+
+fn form_field_refs(field: &FormInvalidationField) -> Vec<String> {
+    let mut refs = Vec::new();
+    if let Some(field_ref) = &field.field_ref {
+        push_unique_string(&mut refs, field_ref.clone());
+    }
+    for widget in &field.widgets {
+        if let Some(widget_ref) = &widget.object_ref {
+            push_unique_string(&mut refs, widget_ref.clone());
+        }
+        for appearance_ref in &widget.appearance_refs {
+            push_unique_string(&mut refs, appearance_ref.clone());
+        }
+    }
+    refs
+}
+
+fn field_snapshot_ref_sets(
+    before: Option<&FormInvalidationField>,
+    after: Option<&FormInvalidationField>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    (
+        before
+            .map(form_field_refs)
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
+        after
+            .map(form_field_refs)
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
+    )
+}
+
+fn add_form_dirty_regions(
+    dirty_regions: &mut Vec<Value>,
+    affected_pages: &mut Vec<usize>,
+    field: Option<&FormInvalidationField>,
+    reason: &str,
+) {
+    if let Some(field) = field {
+        for widget in &field.widgets {
+            if let (Some(page), Some(rect)) = (widget.page, widget.rect) {
+                push_unique_page(affected_pages, page);
+                push_dirty_region(dirty_regions, page, rect, reason);
+            }
+        }
+    }
+}
+
+fn form_render_invalidation_report(
+    input: &[u8],
+    output: &[u8],
+    action: Option<&DocumentSubsystemsAction>,
+) -> Result<Value> {
+    let before_engine = ContentEngine::open_bytes(input.to_vec())?;
+    let after_engine = ContentEngine::open_bytes(output.to_vec())?;
+    let before = collect_form_invalidation_snapshot(&before_engine)?;
+    let after = collect_form_invalidation_snapshot(&after_engine)?;
+    let mut names = BTreeSet::new();
+    names.extend(before.keys().cloned());
+    names.extend(after.keys().cloned());
+
+    let mut field_reports = Vec::new();
+    let mut changed_object_refs = Vec::new();
+    let mut created_object_refs = Vec::new();
+    let mut removed_object_refs = Vec::new();
+    let mut render_write_set_refs = Vec::new();
+    let mut affected_pages = Vec::new();
+    let mut dirty_regions = Vec::new();
+    let live_widget_action = form_action_changes_live_widget_appearance(action);
+
+    for name in names {
+        let before_field = before.get(&name);
+        let after_field = after.get(&name);
+        if before_field == after_field {
+            continue;
+        }
+
+        let (before_refs, after_refs) = field_snapshot_ref_sets(before_field, after_field);
+        for reference in after_refs.difference(&before_refs) {
+            push_unique_string(&mut created_object_refs, reference.clone());
+            push_unique_string(&mut render_write_set_refs, reference.clone());
+        }
+        for reference in before_refs.difference(&after_refs) {
+            push_unique_string(&mut removed_object_refs, reference.clone());
+            push_unique_string(&mut render_write_set_refs, reference.clone());
+        }
+        for reference in before_refs.intersection(&after_refs) {
+            push_unique_string(&mut changed_object_refs, reference.clone());
+            push_unique_string(&mut render_write_set_refs, reference.clone());
+        }
+
+        let visual_state_changed =
+            form_field_visual_state(before_field) != form_field_visual_state(after_field);
+        if live_widget_action && visual_state_changed {
+            add_form_dirty_regions(
+                &mut dirty_regions,
+                &mut affected_pages,
+                before_field,
+                "form_widget_before",
+            );
+            add_form_dirty_regions(
+                &mut dirty_regions,
+                &mut affected_pages,
+                after_field,
+                "form_widget_after",
+            );
+        }
+
+        field_reports.push(json!({
+            "field_name": name,
+            "field_type_before": before_field.map(|field| field.field_type.clone()),
+            "field_type_after": after_field.map(|field| field.field_type.clone()),
+            "before_field_ref": before_field.and_then(|field| field.field_ref.clone()),
+            "after_field_ref": after_field.and_then(|field| field.field_ref.clone()),
+            "before_value": before_field.and_then(|field| field.value.clone()),
+            "after_value": after_field.and_then(|field| field.value.clone()),
+            "before_default_value": before_field.and_then(|field| field.default_value.clone()),
+            "after_default_value": after_field.and_then(|field| field.default_value.clone()),
+            "before_widget_refs": before_field.map(|field| field.widgets.iter().filter_map(|widget| widget.object_ref.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+            "after_widget_refs": after_field.map(|field| field.widgets.iter().filter_map(|widget| widget.object_ref.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+            "before_appearance_refs": before_field.map(|field| field.widgets.iter().flat_map(|widget| widget.appearance_refs.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+            "after_appearance_refs": after_field.map(|field| field.widgets.iter().flat_map(|widget| widget.appearance_refs.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+            "visual_state_changed": visual_state_changed,
+        }));
+    }
+
+    affected_pages.sort_unstable();
+    field_reports.sort_by(|a, b| {
+        a["field_name"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["field_name"].as_str().unwrap_or_default())
+    });
+    let visual_dirty_region_count = dirty_regions.len();
+
+    Ok(json!({
+        "schema_version": "document-subsystems-render-invalidation.v1",
+        "scope": "acroform_widget_and_form_value",
+        "structured_render_write_set": !field_reports.is_empty(),
+        "field_count": field_reports.len(),
+        "field_names": field_reports.iter().filter_map(|entry| entry["field_name"].as_str().map(str::to_string)).collect::<Vec<_>>(),
+        "render_write_set_refs": render_write_set_refs,
+        "changed_object_refs": changed_object_refs,
+        "created_object_refs": created_object_refs,
+        "removed_object_refs": removed_object_refs,
+        "affected_pages": affected_pages,
+        "dirty_regions": dirty_regions,
+        "visual_dirty_region_count": visual_dirty_region_count,
+        "fields": field_reports,
+    }))
+}
+
+fn document_subsystems_render_invalidation_report(
+    subsystem: &DocumentSubsystemsSubsystem,
+    input: &[u8],
+    output: &[u8],
+    action: Option<&DocumentSubsystemsAction>,
+) -> Result<Value> {
+    if *subsystem == DocumentSubsystemsSubsystem::FormData {
+        return form_render_invalidation_report(input, output, action);
+    }
+    Ok(json!({
+        "schema_version": "document-subsystems-render-invalidation.v1",
+        "scope": "not_acroform_widget_or_form_value",
+        "structured_render_write_set": false,
+    }))
 }
 
 fn value<T: Serialize>(item: &T) -> Result<Value> {
@@ -5585,6 +5947,12 @@ fn apply_explicit_action(
             "document_subsystems output_reopen_failed: {error}"
         ))
     })?;
+    let render_invalidation = document_subsystems_render_invalidation_report(
+        &request.subsystem,
+        input,
+        &output,
+        Some(action),
+    )?;
     Ok((
         output.clone(),
         DocumentSubsystemsOperationReport {
@@ -5604,6 +5972,7 @@ fn apply_explicit_action(
             transaction,
             appearance_effect,
             xfa_effect,
+            render_invalidation,
             undo_available: true,
             exact_limits: no_change_limit(&request.subsystem),
         },
@@ -5840,6 +6209,8 @@ pub fn apply_document_subsystems(
     })?;
     let output_sha256 = digest(&output);
     let reopened_page_count = reopen.page_count()?;
+    let render_invalidation =
+        document_subsystems_render_invalidation_report(&request.subsystem, input, &output, None)?;
     Ok((
         output,
         DocumentSubsystemsOperationReport {
@@ -5854,6 +6225,7 @@ pub fn apply_document_subsystems(
             transaction,
             appearance_effect,
             xfa_effect,
+            render_invalidation,
             undo_available: true,
             exact_limits: no_change_limit(&request.subsystem),
         },
@@ -7362,10 +7734,13 @@ mod tests {
             .into_iter()
             .find(|field| field.field_type == "text")
             .expect("text field fixture");
+        let field_name = field.full_name.clone();
+        let widget_rect = field.widgets.first().and_then(|widget| widget.rect);
+        let widget_page = field.widgets.first().and_then(|widget| widget.page);
         let request = DocumentSubsystemsRequest {
             subsystem: DocumentSubsystemsSubsystem::FormData,
             action: Some(DocumentSubsystemsAction::FormSetText {
-                field_name: field.full_name.clone(),
+                field_name: field_name.clone(),
                 value: "DocumentSubsystems".to_string(),
             }),
             reflow: None,
@@ -7377,6 +7752,50 @@ mod tests {
         let (output, report) =
             apply_document_subsystems(&input, &request).expect("form source edit");
         assert_eq!(report.operation, "acroform_source_edit");
+        assert_eq!(
+            report.render_invalidation["schema_version"],
+            "document-subsystems-render-invalidation.v1"
+        );
+        assert_eq!(
+            report.render_invalidation["structured_render_write_set"],
+            Value::Bool(true)
+        );
+        assert!(report.render_invalidation["field_names"]
+            .as_array()
+            .expect("field names")
+            .iter()
+            .any(|name| name == &Value::String(field_name.clone())));
+        assert!(!report.render_invalidation["render_write_set_refs"]
+            .as_array()
+            .expect("render write set refs")
+            .is_empty());
+        assert!(
+            !report.render_invalidation["created_object_refs"]
+                .as_array()
+                .expect("created refs")
+                .is_empty(),
+            "form value updates regenerate a widget appearance object"
+        );
+        assert!(report.render_invalidation["fields"]
+            .as_array()
+            .expect("field invalidation entries")
+            .iter()
+            .any(|entry| entry["field_name"] == field_name
+                && entry["after_value"] == "DocumentSubsystems"
+                && entry["visual_state_changed"] == Value::Bool(true)));
+        if let (Some(page), Some(rect)) = (widget_page, widget_rect) {
+            assert!(
+                report.render_invalidation["dirty_regions"]
+                    .as_array()
+                    .expect("dirty regions")
+                    .iter()
+                    .any(|entry| entry["page"] == page
+                        && entry["region"] == json!(rect)
+                        && (entry["reason"] == "form_widget_before"
+                            || entry["reason"] == "form_widget_after")),
+                "live form-value update must expose widget dirty rectangles"
+            );
+        }
         assert!(ContentEngine::open_bytes(output.clone()).is_ok());
         let (restored, inverse) =
             undo_document_subsystems(&input, &output, &request).expect("form inverse");
@@ -7386,7 +7805,7 @@ mod tests {
         let default_request = DocumentSubsystemsRequest {
             subsystem: DocumentSubsystemsSubsystem::FormData,
             action: Some(DocumentSubsystemsAction::FormSetDefault {
-                field_name: field.full_name.clone(),
+                field_name: field_name.clone(),
                 value: "DocumentSubsystemsDefault".to_string(),
             }),
             reflow: None,
@@ -7398,6 +7817,21 @@ mod tests {
         let (defaulted, default_report) =
             apply_document_subsystems(&input, &default_request).expect("form default value");
         assert_eq!(default_report.operation, "acroform_source_edit");
+        assert_eq!(
+            default_report.render_invalidation["structured_render_write_set"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            default_report.render_invalidation["visual_dirty_region_count"],
+            Value::from(0)
+        );
+        assert!(default_report.render_invalidation["fields"]
+            .as_array()
+            .expect("default invalidation entries")
+            .iter()
+            .any(|entry| entry["field_name"] == field_name
+                && entry["after_default_value"] == "DocumentSubsystemsDefault"
+                && entry["visual_state_changed"] == Value::Bool(false)));
         assert!(crate::forms_report(
             &ContentEngine::open_bytes(defaulted.clone()).expect("open defaulted form"),
         )
@@ -7405,7 +7839,7 @@ mod tests {
         .fields
         .iter()
         .any(|candidate| {
-            candidate.full_name == field.full_name
+            candidate.full_name == field_name
                 && candidate.default_value.as_deref() == Some("DocumentSubsystemsDefault")
         }));
         let (restored, _) = undo_document_subsystems(&input, &defaulted, &default_request)
@@ -7416,7 +7850,7 @@ mod tests {
             subsystem: DocumentSubsystemsSubsystem::FormData,
             action: Some(DocumentSubsystemsAction::FormImportData {
                 data: serde_json::to_string(&json!({
-                    "fields": [{"name": field.full_name.clone(), "value": "Imported"}]
+                    "fields": [{"name": field_name.clone(), "value": "Imported"}]
                 }))
                 .expect("serialize form import"),
                 format: "json".to_string(),
@@ -7430,6 +7864,22 @@ mod tests {
         let (imported, import_report) =
             apply_document_subsystems(&input, &import_request).expect("form data import");
         assert_eq!(import_report.operation, "acroform_source_edit");
+        assert_eq!(
+            import_report.render_invalidation["structured_render_write_set"],
+            Value::Bool(true)
+        );
+        assert!(
+            import_report.render_invalidation["visual_dirty_region_count"]
+                .as_u64()
+                .is_some_and(|count| count > 0)
+        );
+        assert!(import_report.render_invalidation["fields"]
+            .as_array()
+            .expect("import invalidation entries")
+            .iter()
+            .any(|entry| entry["field_name"] == field_name
+                && entry["after_value"] == "Imported"
+                && entry["visual_state_changed"] == Value::Bool(true)));
         assert!(ContentEngine::open_bytes(imported.clone()).is_ok());
         let (restored, _) =
             undo_document_subsystems(&input, &imported, &import_request).expect("form import undo");
@@ -7438,7 +7888,7 @@ mod tests {
         let rename_request = DocumentSubsystemsRequest {
             subsystem: DocumentSubsystemsSubsystem::FormData,
             action: Some(DocumentSubsystemsAction::FormRename {
-                field_name: field.full_name.clone(),
+                field_name: field_name.clone(),
                 new_name: "DocumentSubsystemsRenamed".to_string(),
             }),
             reflow: None,
@@ -7464,7 +7914,7 @@ mod tests {
         let delete_request = DocumentSubsystemsRequest {
             subsystem: DocumentSubsystemsSubsystem::FormData,
             action: Some(DocumentSubsystemsAction::FormDelete {
-                field_name: field.full_name.clone(),
+                field_name: field_name.clone(),
             }),
             reflow: None,
             approved: true,
@@ -7481,7 +7931,7 @@ mod tests {
         .expect("inspect deleted form")
         .fields
         .iter()
-        .any(|candidate| candidate.full_name == field.full_name));
+        .any(|candidate| candidate.full_name == field_name));
         let (restored, _) =
             undo_document_subsystems(&input, &deleted, &delete_request).expect("form delete undo");
         assert_eq!(restored, input);
@@ -7489,7 +7939,7 @@ mod tests {
         let reset_request = DocumentSubsystemsRequest {
             subsystem: DocumentSubsystemsSubsystem::FormData,
             action: Some(DocumentSubsystemsAction::FormReset {
-                field_name: Some(field.full_name),
+                field_name: Some(field_name),
             }),
             reflow: None,
             approved: true,

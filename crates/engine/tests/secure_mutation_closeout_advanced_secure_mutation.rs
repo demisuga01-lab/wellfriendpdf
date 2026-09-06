@@ -344,6 +344,30 @@ fn signature_policy_executes_allowed_incremental_edits_and_blocks_prohibited_tar
     assert!(form.starts_with(&input));
     assert!(form_report.visible_after_reopen);
     assert!(!form_report.cryptographic_validity_claimed);
+    assert_eq!(
+        form_report.render_invalidation["schema_version"],
+        "secure-mutation-incremental-form-render-invalidation.v1"
+    );
+    assert_eq!(
+        form_report.render_invalidation["structured_render_write_set"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(form_report.render_invalidation["field_name"], "Open");
+    assert_eq!(form_report.render_invalidation["before_field_ref"], "5-0");
+    assert_eq!(form_report.render_invalidation["after_field_ref"], "5-0");
+    assert_eq!(form_report.render_invalidation["after_value"], "allowed");
+    assert!(form_report.render_invalidation["visual_dirty_region_count"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert!(!form_report.render_invalidation["render_write_set_refs"]
+        .as_array()
+        .expect("incremental form write-set refs")
+        .is_empty());
+    assert!(form_report.render_invalidation["changed_object_refs"]
+        .as_array()
+        .expect("incremental form changed refs")
+        .iter()
+        .any(|value| value == "5-0"));
 
     let annotation = IncrementalAnnotationEdit::AddTextNote {
         page: 1,
@@ -398,6 +422,14 @@ fn pades_ltv_signature_preserving_form_fill_plans_applies_and_revalidates() {
     let (output, result) =
         apply_signature_preserving_form_fill(&input, "Open", "allowed", &options, false).unwrap();
     assert!(output.starts_with(&input));
+    assert_eq!(
+        result.mutation.render_invalidation["structured_render_write_set"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
+        result.mutation.render_invalidation["scope"],
+        "incremental_form_value_update"
+    );
     assert!(result.post_edit.original_prefix_preserved);
     assert_eq!(
         result.post_edit.before_signature_count,

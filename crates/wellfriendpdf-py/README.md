@@ -48,12 +48,23 @@ doc.text_semantic(); doc.chunks(); doc.semantic_document()
 doc.semantic_bundle()          # full Semantic Closeout semantic report
 doc.advanced_chunks()          # provenance/table/CJK/security-aware chunks
 doc.semantic_search("invoice") # semantic + dictionary-token provenance
+doc.image_decode_capability_report()
+doc.progressive_image_decode_lifecycle_report('{"image_index":0}')
 doc.table_proposal_status()    # hook/runtime/privacy status, no model load
 
 # Output-producing (return (bytes, report)):
 data, rep = doc.sanitize(policy="balanced", output="clean.pdf")
 data, rep = doc.canonicalize(date_epoch=0)          # deterministic
 data, rep = doc.redact(["SECRET"], strict=True)     # verifies absence
+data, rep = doc.editing_transactions_transaction_apply_with_render_invalidation(
+    request_json,
+    render_invalidation_options_json='{"page_number":1,"dpi":72,"tile_width":256,"tile_height":256}',
+)
+
+cache = doc.render_cache()
+png = doc.render_contract_png_with_render_cache(contract_json, cache)
+png, cache_report = doc.render_contract_png_with_render_cache_report(contract_json, cache)
+invalidation_report = cache.apply_render_invalidation_plan_json(render_invalidation_json)
 
 # No-document queries:
 wellfriendpdf.feature_report()                               # version + capabilities
@@ -109,6 +120,40 @@ can be opened with `password="..."`.
 - Module helpers for structural ops and conversions including
   `pdf_to_xlsx`, `pdf_to_pptx`, `pdf_to_docx`, `docx_to_pdf`,
   `xlsx_to_pdf`, and `pptx_to_pdf`
+- Editing transaction apply can return a render-invalidation plan through
+  `editing_transactions_transaction_apply_with_render_invalidation(...)`,
+  including mapped source IDs and optional dirty render tiles for caller caches.
+- Image decode APIs expose per-image region/reduction/progressive capability
+  status and bounded progressive image-decode lifecycle JSON through
+  `image_decode_capability_report()` and
+  `progressive_image_decode_lifecycle_report(request_json)`, including
+  `document_close` release reports for document-owned decoder state.
+- Contract rendering exposes cooperative cancellation through
+  `RenderCancellation`, including `cancel()` and `is_cancelled()`, for PNG,
+  bytearray caller-owned surfaces, font-substitution report, and
+  render-telemetry report methods. Existing compatibility methods remain
+  non-cancellable; cancellable PNG and PNG report methods release the Python
+  GIL while rendering so another Python thread can call `cancel()`. Cancellable
+  bytearray caller-owned surface methods and mutable progressive job methods
+  still run with the GIL held because they involve Python-owned buffers or
+  unsendable job state.
+- Progressive render jobs expose
+  `revise_render_contract_json(contract_json)` for full live schema-v1 contract
+  revision, plus `request_cancel`,
+  `step_with_cancellation(max_tiles, predicate_or_bool)`, and
+  `finish_png_with_cancellation(predicate_or_bool)` for Python-side
+  cancellation ergonomics; `finish_png()` and the cancellation variant raise
+  checked tile-assembly diagnostics when called before completion, plus
+  `viewer_queue_json()`,
+  `execute_viewer_queue_json(max_items)`,
+  `execute_viewer_queue_json_with_cancellation(max_items, cancellation)`,
+  `execute_adjacent_page_prefetch(prefetch_identity, max_tiles)`,
+  `execute_adjacent_page_prefetch_with_cancellation(prefetch_identity,
+  max_tiles, cancellation)`, and
+  `viewer_callback_dispatch_json()` for source-visible viewer scheduling,
+  owned current-page queue execution, cancellable queue/prefetch execution,
+  bounded adjacent-page child-session prefetch execution, and callback dispatch
+  reports.
 
 Region coordinates are PDF user-space points with origin at the page's
 bottom-left. Scoped extraction includes an item when its center is in the region

@@ -123,6 +123,34 @@ internal static partial class NativeMethods
         }
     }
 
+    internal sealed class RenderCancellationHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private RenderCancellationHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            wellfriendpdf_render_cancellation_free(handle);
+            return true;
+        }
+    }
+
+    internal sealed class RenderCacheHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private RenderCacheHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            wellfriendpdf_render_cache_free(handle);
+            return true;
+        }
+    }
+
     internal sealed class SignatureValidationOptionsHandle : SafeHandleZeroOrMinusOneIsInvalid
     {
         private SignatureValidationOptionsHandle()
@@ -245,6 +273,14 @@ internal static partial class NativeMethods
     internal static extern void wellfriendpdf_document_free(IntPtr document);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_register_font_bytes(
+        DocumentHandle document,
+        IntPtr name,
+        byte[] fontData,
+        UIntPtr fontLen,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void wellfriendpdf_string_free(IntPtr value);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
@@ -252,6 +288,42 @@ internal static partial class NativeMethods
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void wellfriendpdf_buffer_free(WellfriendBuffer buffer);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern RenderCancellationHandle wellfriendpdf_render_cancellation_new(
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_render_cancellation_cancel(
+        RenderCancellationHandle cancellation,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_render_cancellation_is_cancelled(
+        RenderCancellationHandle cancellation,
+        out int cancelled,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void wellfriendpdf_render_cancellation_free(IntPtr cancellation);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern RenderCacheHandle wellfriendpdf_render_cache_new(out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_render_cache_clear(
+        RenderCacheHandle cache,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_render_cache_apply_render_invalidation_plan_json(
+        RenderCacheHandle cache,
+        IntPtr planJson,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void wellfriendpdf_render_cache_free(IntPtr cache);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_page_count(
@@ -275,6 +347,16 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_font_substitution_report_json(
+        DocumentHandle document,
+        UIntPtr page,
+        uint dpi,
+        IntPtr renderMode,
+        out WellfriendBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_render_page_jpeg(
         DocumentHandle document,
         UIntPtr page,
@@ -293,10 +375,85 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_backend_plan_arena_report_json(
+        DocumentHandle document,
+        UIntPtr page,
+        uint dpi,
+        IntPtr renderMode,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_backend_plan_arena_report_for_contract_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_render_page_png_with_contract_json(
         DocumentHandle document,
         IntPtr contractJson,
         out WellfriendBuffer buffer,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_contract_and_render_cache_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        RenderCacheHandle cache,
+        out WellfriendBuffer buffer,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_contract_json_and_cancellation(
+        DocumentHandle document,
+        IntPtr contractJson,
+        RenderCancellationHandle cancellation,
+        out WellfriendBuffer buffer,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        out WellfriendBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json_and_cancellation(
+        DocumentHandle document,
+        IntPtr contractJson,
+        RenderCancellationHandle cancellation,
+        out WellfriendBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_contract_and_render_report_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        out WellfriendBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_contract_and_render_cache_report_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        RenderCacheHandle cache,
+        out WellfriendBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_contract_and_render_report_json_and_cancellation(
+        DocumentHandle document,
+        IntPtr contractJson,
+        RenderCancellationHandle cancellation,
+        out WellfriendBuffer buffer,
+        out IntPtr json,
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
@@ -305,6 +462,53 @@ internal static partial class NativeMethods
         IntPtr contractJson,
         [Out] byte[] output,
         UIntPtr outputLen,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_into_buffer_with_contract_json_and_cancellation(
+        DocumentHandle document,
+        IntPtr contractJson,
+        RenderCancellationHandle cancellation,
+        [Out] byte[] output,
+        UIntPtr outputLen,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        [Out] byte[] output,
+        UIntPtr outputLen,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json_and_cancellation(
+        DocumentHandle document,
+        IntPtr contractJson,
+        RenderCancellationHandle cancellation,
+        [Out] byte[] output,
+        UIntPtr outputLen,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        [Out] byte[] output,
+        UIntPtr outputLen,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json_and_cancellation(
+        DocumentHandle document,
+        IntPtr contractJson,
+        RenderCancellationHandle cancellation,
+        [Out] byte[] output,
+        UIntPtr outputLen,
+        out IntPtr json,
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
@@ -318,9 +522,119 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ProgressiveRenderJobHandle wellfriendpdf_document_progressive_render_new_with_contract_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        uint tileWidth,
+        uint tileHeight,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_progressive_render_step_json(
         ProgressiveRenderJobHandle job,
         UIntPtr maxTiles,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_request_cancel(
+        ProgressiveRenderJobHandle job,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_revise_viewport_hint_json(
+        ProgressiveRenderJobHandle job,
+        int viewportHintPresent,
+        uint x,
+        uint y,
+        uint width,
+        uint height,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_revise_dirty_region_json(
+        ProgressiveRenderJobHandle job,
+        int dirtyRegionPresent,
+        uint x,
+        uint y,
+        uint width,
+        uint height,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_revise_render_context_json(
+        ProgressiveRenderJobHandle job,
+        IntPtr renderContractFingerprint,
+        IntPtr visibilityFingerprint,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_revise_render_contract_json(
+        ProgressiveRenderJobHandle job,
+        IntPtr contractJson,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_apply_render_invalidation_plan_json(
+        ProgressiveRenderJobHandle job,
+        IntPtr planJson,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_evaluate_tile_publication_json(
+        ProgressiveRenderJobHandle job,
+        IntPtr publicationJson,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_viewer_queue_json(
+        ProgressiveRenderJobHandle job,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_execute_viewer_queue_json(
+        ProgressiveRenderJobHandle job,
+        UIntPtr maxItems,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_execute_viewer_queue_json_and_cancellation(
+        ProgressiveRenderJobHandle job,
+        UIntPtr maxItems,
+        RenderCancellationHandle cancellation,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json(
+        ProgressiveRenderJobHandle job,
+        IntPtr prefetchIdentity,
+        UIntPtr maxTiles,
+        out ProgressiveRenderJobHandle childJob,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json_and_cancellation(
+        ProgressiveRenderJobHandle job,
+        IntPtr prefetchIdentity,
+        UIntPtr maxTiles,
+        RenderCancellationHandle cancellation,
+        out ProgressiveRenderJobHandle childJob,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_viewer_callback_dispatch_json(
+        ProgressiveRenderJobHandle job,
         out IntPtr json,
         out IntPtr errorOut);
 
@@ -424,6 +738,33 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_security_report_json(
         DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_views_report_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prepress_plate_report_json(
+        DocumentHandle document,
+        UIntPtr page,
+        uint dpi,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_image_decode_capability_report_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_progressive_image_decode_lifecycle_report_json(
+        DocumentHandle document,
+        IntPtr requestJson,
         out IntPtr json,
         out IntPtr errorOut);
 
@@ -874,6 +1215,10 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_editing_transactions_transaction_apply_json(
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_editing_transactions_transaction_apply_with_render_invalidation_json(
+        DocumentHandle document, IntPtr requestJson, IntPtr renderInvalidationOptionsJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_editing_transactions_text_map_json(

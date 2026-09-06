@@ -1,6 +1,6 @@
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::tokenizer::{ContentToken, ContentTokenizer};
-use crate::error::Result;
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 
 pub struct ContentParser;
@@ -20,7 +20,7 @@ impl ContentParser {
     /// Parse all tokens from the byte slice into operations.
     /// Token errors are logged as warnings; parsing continues.
     pub fn parse(data: &[u8]) -> Result<Vec<ContentOperation>> {
-        Ok(Self::parse_tokens(ContentTokenizer::new(data)))
+        Self::parse_tokens_inner(ContentTokenizer::new(data), false)
     }
 
     /// Same as [`ContentParser::parse`] but accepts a pre-built token iterator.
@@ -82,7 +82,7 @@ impl ContentParser {
                 ContentToken::Operator(op) => {
                     let mut operands = drain_operands(&mut stack);
                     if op == "ID" {
-                        operands = normalize_inline_image_operands(operands);
+                        operands = normalize_inline_image_operands(operands)?;
                     }
                     if array_depth > 0 {
                         log::warn!("operator '{op}' encountered before closing array");
@@ -190,23 +190,36 @@ pub fn expand_inline_image_keys(dict: &mut PdfDictionary) {
     *dict = expanded;
 }
 
-fn normalize_inline_image_operands(operands: Vec<Operand>) -> Vec<Operand> {
+fn normalize_inline_image_operands(operands: Vec<Operand>) -> Result<Vec<Operand>> {
     let mut dict = PdfDictionary::empty();
-    let mut iter = operands.into_iter().peekable();
-    while let Some(operand) = iter.next() {
+    let mut iter = operands.into_iter().enumerate();
+    while let Some((key_index, operand)) = iter.next() {
         let Operand::Name(key) = operand else {
-            continue;
+            return Err(WellfriendError::MalformedPdf(format!(
+                "malformed inline image parameters: key at position {key_index} is not a name"
+            )));
         };
-        let Some(value) = iter.next() else {
-            break;
+        let Some((_, value)) = iter.next() else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "malformed inline image parameters: /{key} has no value"
+            )));
         };
+        let full_key = inline_image_full_key(&key);
+        if dict.contains_key(full_key) {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "malformed inline image parameters: duplicate /{full_key}"
+            )));
+        }
         if let Some(object) = operand_to_pdf_object(value) {
-            dict.insert(key, object);
+            dict.insert(
+                full_key.to_string(),
+                expand_inline_image_value(full_key, object),
+            );
         }
     }
 
-    expand_inline_image_keys(&mut dict);
-    dict.entries()
+    Ok(dict
+        .entries()
         .flat_map(|(key, value)| {
             let mut out = vec![Operand::Name(key.clone())];
             if let Some(value) = pdf_object_to_operand(value) {
@@ -214,7 +227,7 @@ fn normalize_inline_image_operands(operands: Vec<Operand>) -> Vec<Operand> {
             }
             out
         })
-        .collect()
+        .collect())
 }
 
 fn inline_image_full_key(key: &str) -> &str {
@@ -279,7 +292,7 @@ fn inline_image_filter_name(name: &str) -> &str {
     }
 }
 
-fn operand_to_pdf_object(operand: Operand) -> Option<PdfObject> {
+pub(crate) fn operand_to_pdf_object(operand: Operand) -> Option<PdfObject> {
     match operand {
         Operand::Integer(value) => Some(PdfObject::Integer(value)),
         Operand::Real(value) => Some(PdfObject::Real(value)),
@@ -447,6 +460,32 @@ mod tests {
         );
         assert_eq!(operations[3].operator, "EI");
         assert!(operations[3].operands.is_empty());
+    }
+
+    #[test]
+    fn malformed_inline_image_parameters_return_parse_error() {
+        for (content, expected) in [
+            (
+                b"BI 42 /W 1 /H 1 /CS /G /BPC 8 ID x EI".as_slice(),
+                "key at position 0 is not a name",
+            ),
+            (
+                b"BI /W 1 /H 1 /CS /G /BPC ID x EI".as_slice(),
+                "/BPC has no value",
+            ),
+            (
+                b"BI /W 1 /W 2 /H 1 /CS /G /BPC 8 ID x EI".as_slice(),
+                "duplicate /Width",
+            ),
+        ] {
+            let error = ContentParser::parse(content)
+                .expect_err("malformed inline image parameters must fail parsing");
+            let message = format!("{error}");
+            assert!(
+                message.contains("malformed inline image parameters") && message.contains(expected),
+                "expected {expected:?}, got {message}"
+            );
+        }
     }
 
     #[test]

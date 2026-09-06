@@ -228,25 +228,6 @@ impl ImagePainter {
         true
     }
 
-    /// Preserve the older JPX compatibility path where Poppler smooths some
-    /// magnified JPXDecode images even without an explicit `/Interpolate true`.
-    pub(crate) fn paint_image_with_jpx_compat_and_alpha(
-        buf: &mut PixelBuffer,
-        image: &RawImage,
-        ctm: &Transform2D,
-        viewport: &Viewport,
-        paint_alpha: f32,
-    ) {
-        Self::paint_image_with_mode(
-            buf,
-            image,
-            ctm,
-            viewport,
-            SmoothMode::LegacyBilinear,
-            paint_alpha,
-        );
-    }
-
     fn paint_image_with_mode(
         buf: &mut PixelBuffer,
         image: &RawImage,
@@ -260,6 +241,15 @@ impl ImagePainter {
             return;
         }
         if image.width == 0 || image.height == 0 || image.channels == 0 || image.pixels.is_empty() {
+            return;
+        }
+        if image.bits_per_sample != 8 || !matches!(image.channels, 1 | 3 | 4) || !image.is_valid() {
+            log::warn!(
+                "ImagePainter: invalid decoded image {}x{} x{} channels, skipping image",
+                image.width,
+                image.height,
+                image.channels
+            );
             return;
         }
         if ctm.determinant().abs() < 1e-10 {
@@ -781,37 +771,14 @@ impl ImagePainter {
     }
 
     fn get_pixel_channels(image: &RawImage, x: usize, y: usize) -> [u8; 4] {
-        let channels = image.channels as usize;
-        let stride = match (image.width as usize).checked_mul(channels) {
-            Some(stride) => stride,
-            None => return [0, 0, 0, 255],
-        };
-        let base = match y
-            .checked_mul(stride)
-            .and_then(|row| row.checked_add(x * channels))
-        {
-            Some(base) => base,
-            None => return [0, 0, 0, 255],
-        };
-
-        match image.channels {
-            1 => {
-                let g = image.pixels.get(base).copied().unwrap_or(0);
+        match image.pixel(x, y) {
+            [g] => {
+                let g = *g;
                 [g, g, g, 255]
             }
-            3 => [
-                image.pixels.get(base).copied().unwrap_or(0),
-                image.pixels.get(base + 1).copied().unwrap_or(0),
-                image.pixels.get(base + 2).copied().unwrap_or(0),
-                255,
-            ],
-            4 => [
-                image.pixels.get(base).copied().unwrap_or(0),
-                image.pixels.get(base + 1).copied().unwrap_or(0),
-                image.pixels.get(base + 2).copied().unwrap_or(0),
-                image.pixels.get(base + 3).copied().unwrap_or(255),
-            ],
-            _ => [0, 0, 0, 255],
+            [r, g, b] => [*r, *g, *b, 255],
+            [r, g, b, a] => [*r, *g, *b, *a],
+            _ => [0, 0, 0, 0],
         }
     }
 }
@@ -1181,6 +1148,60 @@ mod tests {
             pixels: Vec::new(),
         };
         ImagePainter::paint_image(&mut buf, &empty, &ctm, &vp);
+    }
+
+    #[test]
+    fn paint_image_with_short_buffer_does_not_synthesize_black_pixels() {
+        let vp = Viewport::new([0.0, 0.0, 10.0, 10.0], 72);
+        let ctm = Transform2D::new(10.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+        let mut buf = PixelBuffer::new_filled(10, 10, WHITE);
+        let malformed = RawImage {
+            width: 1,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![0],
+        };
+
+        ImagePainter::paint_image(&mut buf, &malformed, &ctm, &vp);
+
+        assert_eq!(buf.get_pixel(5, 5), WHITE);
+    }
+
+    #[test]
+    fn sample_short_buffer_is_transparent_not_black() {
+        let malformed = RawImage {
+            width: 1,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![0],
+        };
+
+        assert_eq!(
+            ImagePainter::nearest_sample(&malformed, 0.5, 0.5),
+            [0, 0, 0, 0]
+        );
+        assert_eq!(
+            ImagePainter::interpolated_sample(&malformed, 0.5, 0.5),
+            [0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn sample_unsupported_channels_is_transparent_not_black() {
+        let malformed = RawImage {
+            width: 1,
+            height: 1,
+            channels: 2,
+            bits_per_sample: 8,
+            pixels: vec![0, 0],
+        };
+
+        assert_eq!(
+            ImagePainter::nearest_sample(&malformed, 0.5, 0.5),
+            [0, 0, 0, 0]
+        );
     }
 
     #[test]

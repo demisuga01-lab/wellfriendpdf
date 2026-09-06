@@ -98,6 +98,41 @@ fn axial_shading_type2_extends_across_page() {
 }
 
 #[test]
+fn axial_shading_function_array_paints_component_gradient() {
+    let mut b = PdfBuilder::new();
+    b.add("<< /Type /Catalog /Pages 2 0 R >>"); // 1
+    b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
+    b.add(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 4 0 R \
+         /Resources << /Shading << /Sh1 5 0 R >> >> >>",
+    ); // 3
+    b.add_stream("", b"/Sh1 sh\n"); // 4
+    b.add(
+        "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [4 10 16 10] \
+         /Domain [0 1] /Extend [true true] /Function [ \
+         << /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >> \
+         << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [0] /N 1 >> \
+         << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> \
+         ] >>",
+    ); // 5
+
+    let pdf = b.build();
+    let left = render_pixel(pdf.clone(), 72, 0.1, 0.5);
+    let right = render_pixel(pdf, 72, 0.9, 0.5);
+
+    assert!(
+        left[0] > 150 && left[1] < 80 && left[2] < 120,
+        "function-array left side should be red-ish: {:?}",
+        left
+    );
+    assert!(
+        right[2] > 150 && right[1] < 80 && right[0] < 120,
+        "function-array right side should be blue-ish: {:?}",
+        right
+    );
+}
+
+#[test]
 fn radial_shading_type3_interpolates_between_circles() {
     let mut b = PdfBuilder::new();
     b.add("<< /Type /Catalog /Pages 2 0 R >>"); // 1

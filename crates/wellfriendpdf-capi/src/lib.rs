@@ -1,15 +1,20 @@
 //! C ABI for wellfriendpdf-engine.
 
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int};
+use std::os::raw::{c_char, c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::slice;
 use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
+use wellfriendpdf_engine::render::{
+    apply_render_invalidation_plan_json_to_cache, AlphaMode, ContractColor, DeviceClip,
+    DeviceMatrix, OptionalContentStateId, PixelFormat, RenderContract,
+};
 use wellfriendpdf_engine::{
-    sdk, ContentEngine, DocType, ExtractOptions, OcrPolicy, ParseOptions,
-    Result as WellfriendResult, TextExtractor,
+    sdk, CancelToken, ContentEngine, DocType, ExtractOptions, OcrPolicy, ParseOptions,
+    RenderDocumentCache, Result as WellfriendResult, TextExtractor,
 };
 
 pub mod ocr_backend;
@@ -37,6 +42,42 @@ pub struct WellfriendDocument {
 #[repr(C)]
 pub struct WellfriendProgressiveRenderJob {
     job: wellfriendpdf_engine::ProgressiveRenderJob,
+}
+
+type WellfriendProgressiveViewerCallback =
+    Option<unsafe extern "C" fn(event_json: *const c_char, user_data: *mut c_void) -> c_int>;
+
+/// Opaque, owned schema-v1 render contract.
+///
+/// The handle wraps the canonical Rust [`RenderContract`] and is validated by
+/// the same engine rules used by JSON contract render entry points. Callers must
+/// free it with `wellfriendpdf_render_contract_free`.
+#[repr(C)]
+pub struct WellfriendRenderContract {
+    contract: RenderContract,
+}
+
+/// Opaque cooperative cancellation source for contract/page rendering.
+///
+/// The same engine [`CancelToken`] is passed into render preparation,
+/// retained-plan compilation, image decode, and tile execution paths. Callers
+/// can signal it from another native thread while a cancellable render ABI call
+/// is in progress.
+#[repr(C)]
+pub struct WellfriendRenderCancellation {
+    token: CancelToken,
+}
+
+/// Opaque caller-owned non-progressive render cache.
+///
+/// This handle lets C and higher-level bindings reuse the same
+/// `RenderDocumentCache` across contract renders, then apply the
+/// render-invalidation plans emitted by editing transactions to that cache.
+/// Callers must synchronize concurrent access themselves and free the handle
+/// with `wellfriendpdf_render_cache_free`.
+#[repr(C)]
+pub struct WellfriendRenderCache {
+    cache: RenderDocumentCache,
 }
 
 /// Opaque, owned Signature Validation signature-validation configuration.
@@ -298,6 +339,37 @@ pub unsafe extern "C" fn wellfriendpdf_document_free(document: *mut WellfriendDo
     }
 }
 
+/// Registers caller-owned replacement font bytes on an open document.
+///
+/// The bytes are copied into the document engine. The registered name is
+/// matched against PDF font names after subset-prefix removal and compacted
+/// ASCII-alphanumeric normalization.
+///
+/// # Safety
+///
+/// `document` must be a valid mutable document handle. `name` must be a
+/// NUL-terminated UTF-8 string. `font_data` must point to `font_len` readable
+/// bytes. If `error_out` is non-null, it must be writable and any returned
+/// string must be freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_register_font_bytes(
+    document: *mut WellfriendDocument,
+    name: *const c_char,
+    font_data: *const u8,
+    font_len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if document.is_null() {
+            return Err("document pointer is null".to_string());
+        }
+        let name = unsafe { required_c_string(name, "name") }?;
+        let bytes = unsafe { read_input_bytes(font_data, font_len, "font_data") }?.to_vec();
+        let doc = unsafe { &mut *document };
+        wellfriendpdf(doc.engine.register_font_bytes(name, bytes))
+    })
+}
+
 /// Frees a UTF-8 string returned by this C API.
 ///
 /// # Safety
@@ -334,6 +406,646 @@ pub unsafe extern "C" fn wellfriendpdf_buffer_free(buffer: WellfriendBuffer) {
         let slice = ptr::slice_from_raw_parts_mut(buffer.data, buffer.len);
         let _ = unsafe { Box::from_raw(slice) };
     }
+}
+
+/// Builds an owned render-contract handle from canonical schema-v1 JSON.
+///
+/// # Safety
+///
+/// `contract_json` must point to a valid NUL-terminated UTF-8 JSON string.
+/// `error_out`, when non-null, must be writable and freed with
+/// `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_from_json(
+    contract_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut WellfriendRenderContract {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        Ok::<_, String>(Box::new(contract))
+    })) {
+        Ok(Ok(contract)) => Box::into_raw(contract),
+        Ok(Err(error)) => {
+            set_error(error_out, &error);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "panic while creating render contract");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Frees a render-contract handle returned by this C API.
+///
+/// # Safety
+///
+/// `contract` must be null or a pointer returned by an wellfriendpdf C-API
+/// render-contract function that has not already been freed.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_free(
+    contract: *mut WellfriendRenderContract,
+) {
+    if !contract.is_null() {
+        let _ = unsafe { Box::from_raw(contract) };
+    }
+}
+
+/// Allocates a cooperative cancellation source for contract/page rendering.
+///
+/// The returned handle is initially not cancelled. Free it with
+/// `wellfriendpdf_render_cancellation_free`.
+///
+/// # Safety
+/// `error_out`, when non-null, must be writable and any returned string must be
+/// freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_cancellation_new(
+    error_out: *mut *mut c_char,
+) -> *mut WellfriendRenderCancellation {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        Box::new(WellfriendRenderCancellation {
+            token: CancelToken::new(),
+        })
+    })) {
+        Ok(cancellation) => Box::into_raw(cancellation),
+        Err(_) => {
+            set_error(error_out, "panic while creating render cancellation");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Signals cooperative cancellation for a live render cancellation source.
+///
+/// It is safe to call from another native thread while a cancellable render ABI
+/// call is in progress.
+///
+/// # Safety
+/// `cancellation` must be a live handle returned by
+/// `wellfriendpdf_render_cancellation_new`. `error_out`, when non-null, must be
+/// writable and any returned string must be freed with
+/// `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_cancellation_cancel(
+    cancellation: *const WellfriendRenderCancellation,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let cancellation = checked_render_cancellation(cancellation)?;
+        cancellation.token.cancel();
+        Ok(())
+    })
+}
+
+/// Returns whether a render cancellation source has been cancelled.
+///
+/// # Safety
+/// `cancellation` must be a live handle returned by
+/// `wellfriendpdf_render_cancellation_new`. `out_cancelled` must be writable.
+/// `error_out`, when non-null, must be writable and any returned string must be
+/// freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_cancellation_is_cancelled(
+    cancellation: *const WellfriendRenderCancellation,
+    out_cancelled: *mut c_int,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_cancelled.is_null() {
+            return Err("out_cancelled pointer is null".into());
+        }
+        unsafe {
+            *out_cancelled = if cancellation.token.is_cancelled() {
+                1
+            } else {
+                0
+            };
+        }
+        Ok(())
+    })
+}
+
+/// Frees a render cancellation source. It is valid to pass NULL.
+///
+/// # Safety
+/// `cancellation` must be null or a live handle returned by
+/// `wellfriendpdf_render_cancellation_new` and not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_cancellation_free(
+    cancellation: *mut WellfriendRenderCancellation,
+) {
+    if !cancellation.is_null() {
+        let _ = unsafe { Box::from_raw(cancellation) };
+    }
+}
+
+/// Allocates an owned non-progressive render cache for contract renders.
+///
+/// The returned handle is empty and may be reused across sequential renders of
+/// one document worker. Free it with `wellfriendpdf_render_cache_free`.
+///
+/// # Safety
+/// `error_out`, when non-null, must be writable and any returned string must be
+/// freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_cache_new(
+    error_out: *mut *mut c_char,
+) -> *mut WellfriendRenderCache {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        Box::new(WellfriendRenderCache {
+            cache: RenderDocumentCache::new(),
+        })
+    })) {
+        Ok(cache) => Box::into_raw(cache),
+        Err(_) => {
+            set_error(error_out, "panic while creating render cache");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Clears all retained entries from a non-progressive render cache.
+///
+/// # Safety
+/// `cache` must be a live handle returned by `wellfriendpdf_render_cache_new`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_cache_clear(
+    cache: *mut WellfriendRenderCache,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        checked_render_cache(cache)?.cache.clear();
+        Ok(())
+    })
+}
+
+/// Applies an SDK render-invalidation plan to a non-progressive render cache.
+///
+/// `plan_json` may be a plan object or an SDK envelope containing
+/// `report.render_invalidation`. The returned JSON is an `InvalidationResult`.
+///
+/// # Safety
+/// `cache` must be a live handle. `plan_json` must be a NUL-terminated UTF-8
+/// JSON string. `out_json` must be writable and freed with
+/// `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_cache_apply_render_invalidation_plan_json(
+    cache: *mut WellfriendRenderCache,
+    plan_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let cache = checked_render_cache(cache)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let plan_json = unsafe { required_c_string(plan_json, "plan_json") }?;
+        let report = wellfriendpdf(apply_render_invalidation_plan_json_to_cache(
+            &mut cache.cache,
+            &plan_json,
+        ))?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Frees a non-progressive render cache. It is valid to pass NULL.
+///
+/// # Safety
+/// `cache` must be null or a live handle returned by
+/// `wellfriendpdf_render_cache_new` and not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_cache_free(cache: *mut WellfriendRenderCache) {
+    if !cache.is_null() {
+        let _ = unsafe { Box::from_raw(cache) };
+    }
+}
+
+/// Serializes a render-contract handle to canonical JSON owned by the caller.
+///
+/// # Safety
+///
+/// `contract` must be valid. `out_json` must be writable and freed with
+/// `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_to_json(
+    contract: *const WellfriendRenderContract,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = serde_json::to_string(&contract.contract).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Returns `contract.stride * contract.height` for caller-owned surfaces.
+///
+/// # Safety
+///
+/// `contract` and `out_len` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_surface_byte_length(
+    contract: *const WellfriendRenderContract,
+    out_len: *mut usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_len.is_null() {
+            return Err("out_len pointer is null".into());
+        }
+        let len = contract
+            .contract
+            .stride
+            .checked_mul(contract.contract.height as usize)
+            .ok_or_else(|| "render contract surface byte length overflows".to_string())?;
+        unsafe {
+            *out_len = len;
+        }
+        Ok(())
+    })
+}
+
+/// Builds a copy of `contract` with explicit output surface layout.
+///
+/// `pixel_format` accepts `Rgba8`, `Bgra8`, `Rgb8`, `Bgr8`, or `Gray8`
+/// case-insensitively. `alpha_mode` accepts `Premultiplied`, `Straight`, or
+/// `Opaque`. Null values keep the default `Rgba8`/`Premultiplied` behavior used
+/// by the language bindings. Boolean arguments use 0 for false and non-zero for
+/// true.
+///
+/// # Safety
+///
+/// Pointers must follow the standard C ABI ownership rules. The returned handle
+/// is owned by the caller and freed with `wellfriendpdf_render_contract_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_surface(
+    contract: *const WellfriendRenderContract,
+    width: u32,
+    height: u32,
+    pixel_format: *const c_char,
+    alpha_mode: *const c_char,
+    stride: usize,
+    use_custom_stride: c_int,
+    grayscale: c_int,
+    reverse_byte_order: c_int,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        if width == 0 || height == 0 {
+            return Err("render contract surface dimensions must be positive".into());
+        }
+        let pixel_format =
+            parse_pixel_format(unsafe { optional_c_string(pixel_format) }?.as_deref())?;
+        let alpha_mode = parse_alpha_mode(unsafe { optional_c_string(alpha_mode) }?.as_deref())?;
+        let minimum_stride = width as usize * pixel_format.bytes_per_pixel();
+        let stride = if use_custom_stride != 0 {
+            stride
+        } else {
+            minimum_stride
+        };
+        if stride < minimum_stride {
+            return Err(format!(
+                "render contract stride {stride} is below the required {minimum_stride} bytes"
+            ));
+        }
+        let mut next = contract.contract.clone();
+        next.width = width;
+        next.height = height;
+        next.pixel_format = pixel_format;
+        next.alpha_mode = alpha_mode;
+        next.stride = stride;
+        next.grayscale = grayscale != 0;
+        next.reverse_byte_order = reverse_byte_order != 0;
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with a device-space clip applied.
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// `out_contract` must be a valid writable pointer; on success it receives an
+/// owned handle that the caller must release with
+/// `wellfriendpdf_render_contract_free`. `error_out` may be NULL or a valid
+/// writable error-string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_clip(
+    contract: *const WellfriendRenderContract,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        if width == 0 || height == 0 {
+            return Err("render contract clip must be non-empty".into());
+        }
+        let mut next = contract.contract.clone();
+        next.clip = Some(DeviceClip {
+            x,
+            y,
+            width,
+            height,
+        });
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with any device-space clip removed.
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// `out_contract` must be a valid writable pointer; on success it receives an
+/// owned handle that the caller must release with
+/// `wellfriendpdf_render_contract_free`. `error_out` may be NULL or a valid
+/// writable error-string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_without_clip(
+    contract: *const WellfriendRenderContract,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        next.clip = None;
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with a device transform applied.
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// `out_contract` must be a valid writable pointer; on success it receives an
+/// owned handle that the caller must release with
+/// `wellfriendpdf_render_contract_free`. `error_out` may be NULL or a valid
+/// writable error-string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_device_transform(
+    contract: *const WellfriendRenderContract,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    e: f64,
+    f: f64,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        next.transform = DeviceMatrix::from_f64([a, b, c, d, e, f]);
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with an RGBA background color applied.
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// `out_contract` must be a valid writable pointer; on success it receives an
+/// owned handle that the caller must release with
+/// `wellfriendpdf_render_contract_free`. `error_out` may be NULL or a valid
+/// writable error-string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_background(
+    contract: *const WellfriendRenderContract,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        next.background = ContractColor { r, g, b, a };
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with selected resource-budget fields replaced.
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// `out_contract` must be a valid writable pointer; on success it receives an
+/// owned handle that the caller must release with
+/// `wellfriendpdf_render_contract_free`. `error_out` may be NULL or a valid
+/// writable error-string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_resource_budget(
+    contract: *const WellfriendRenderContract,
+    max_pixels: u64,
+    use_max_pixels: c_int,
+    max_decoded_bytes: u64,
+    use_max_decoded_bytes: c_int,
+    max_temporary_bytes: u64,
+    use_max_temporary_bytes: c_int,
+    max_cache_bytes: u64,
+    use_max_cache_bytes: c_int,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        if use_max_pixels != 0 {
+            next.resource_budget.max_pixels = max_pixels;
+        }
+        if use_max_decoded_bytes != 0 {
+            next.resource_budget.max_decoded_bytes = max_decoded_bytes;
+        }
+        if use_max_temporary_bytes != 0 {
+            next.resource_budget.max_temporary_bytes = max_temporary_bytes;
+        }
+        if use_max_cache_bytes != 0 {
+            next.resource_budget.max_cache_bytes = max_cache_bytes;
+        }
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with selected schema-v1 policy fields replaced.
+///
+/// Every string argument may be NULL to keep the current value. Non-NULL enum
+/// values accept canonical schema names such as `StandardCpu` plus lowercase
+/// kebab/snake forms such as `standard-cpu` and `standard_cpu`.
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// `out_contract` must be a valid writable pointer; on success it receives an
+/// owned handle that the caller must release with
+/// `wellfriendpdf_render_contract_free`. `error_out` may be NULL or a valid
+/// writable error-string pointer.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_schema_policies(
+    contract: *const WellfriendRenderContract,
+    page_box: *const c_char,
+    execution_mode: *const c_char,
+    backend: *const c_char,
+    compositing: *const c_char,
+    annotations: *const c_char,
+    forms: *const c_char,
+    optional_content: *const c_char,
+    text_smoothing: *const c_char,
+    image_smoothing: *const c_char,
+    path_smoothing: *const c_char,
+    subpixel_text: *const c_char,
+    color_scheme: *const c_char,
+    print_profile: *const c_char,
+    halftone: *const c_char,
+    overprint: *const c_char,
+    rendering_intent: *const c_char,
+    color_management: *const c_char,
+    exactness: *const c_char,
+    determinism: *const c_char,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+
+        if let Some(value) = unsafe { optional_c_string(page_box) }? {
+            next.page_box = parse_contract_enum("page_box", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(execution_mode) }? {
+            next.execution_mode = parse_contract_enum("execution_mode", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(backend) }? {
+            next.backend = parse_contract_enum("backend", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(compositing) }? {
+            next.compositing = parse_contract_enum("compositing", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(annotations) }? {
+            next.annotations = parse_contract_enum("annotations", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(forms) }? {
+            next.forms = parse_contract_enum("forms", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(optional_content) }? {
+            if value.trim().is_empty() {
+                return Err("render contract optional_content must be present".into());
+            }
+            next.optional_content = OptionalContentStateId(value);
+        }
+        if let Some(value) = unsafe { optional_c_string(text_smoothing) }? {
+            next.text_smoothing = parse_contract_enum("text_smoothing", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(image_smoothing) }? {
+            next.image_smoothing = parse_contract_enum("image_smoothing", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(path_smoothing) }? {
+            next.path_smoothing = parse_contract_enum("path_smoothing", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(subpixel_text) }? {
+            next.subpixel_text = parse_contract_enum("subpixel_text", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(color_scheme) }? {
+            next.color_scheme = parse_contract_enum("color_scheme", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(print_profile) }? {
+            next.print_profile = parse_contract_enum("print_profile", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(halftone) }? {
+            next.halftone = parse_contract_enum("halftone", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(overprint) }? {
+            next.overprint = parse_contract_enum("overprint", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(rendering_intent) }? {
+            next.rendering_intent = parse_contract_enum("rendering_intent", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(color_management) }? {
+            next.color_management = parse_contract_enum("color_management", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(exactness) }? {
+            next.exactness = parse_contract_enum("exactness", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(determinism) }? {
+            next.determinism = parse_contract_enum("determinism", &value)?;
+        }
+
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
 }
 
 /// Returns the number of pages in a document.
@@ -680,6 +1392,50 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_page_png(
     })
 }
 
+/// Renders a page to PNG bytes and returns render-time font substitution JSON.
+///
+/// # Safety
+///
+/// `document` must be a valid open document. `out_buffer` must be writable and
+/// any returned buffer must be freed with `wellfriendpdf_buffer_free`.
+/// `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+/// `render_mode`, when non-null, must point to a valid NUL-terminated UTF-8
+/// string. `error_out`, when non-null, follows standard C ABI ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_font_substitution_report_json(
+    document: *const WellfriendDocument,
+    page: usize,
+    dpi: u32,
+    render_mode: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let mode_name =
+            unsafe { optional_c_string(render_mode) }?.unwrap_or_else(|| "compat".to_string());
+        let mode = wellfriendpdf_engine::RenderMode::from_name(&mode_name)
+            .ok_or_else(|| format!("unsupported render mode '{mode_name}'"))?;
+        let (png, log) = wellfriendpdf(
+            doc.engine
+                .render_page_png_fast_with_font_substitution_report(page, dpi, mode),
+        )?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
 /// Returns the canonical default render contract as JSON for one page.
 ///
 /// `render_mode` may be null (the deterministic compatibility default),
@@ -742,16 +1498,548 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_js
             return Err("out_buffer pointer is null".into());
         }
         let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
-        let contract: wellfriendpdf_engine::RenderContract =
-            serde_json::from_str(&contract_json)
-                .map_err(|err| format!("render contract JSON: {err}"))?;
-        let png =
-            wellfriendpdf(doc.engine.render_page_png_with_contract(
-                &contract,
-                &wellfriendpdf_engine::CancelToken::none(),
-            ))?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let png = render_contract_png(doc, &contract.contract, &CancelToken::none())?;
         unsafe {
             *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using an owned render-contract handle.
+///
+/// # Safety
+/// `document` and `contract` must be valid handles. `out_buffer` must be
+/// writable and freed with `wellfriendpdf_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_handle(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let png = render_contract_png(doc, &contract.contract, &CancelToken::none())?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using render-contract JSON and a caller-owned render
+/// cache.
+///
+/// The cache is mutated by the render and may later receive a render
+/// invalidation plan through
+/// `wellfriendpdf_render_cache_apply_render_invalidation_plan_json`.
+///
+/// # Safety
+/// `document` and `cache` must be valid handles. `contract_json` must point to a
+/// valid NUL-terminated UTF-8 JSON string. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_and_render_cache_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    cache: *mut WellfriendRenderCache,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let cache = checked_render_cache(cache)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let png = render_contract_png_with_cache(
+            doc,
+            &contract.contract,
+            &CancelToken::none(),
+            &mut cache.cache,
+        )?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using a render-contract handle and a caller-owned
+/// render cache.
+///
+/// # Safety
+/// `document`, `contract`, and `cache` must be valid handles. `out_buffer` must
+/// be writable and freed with `wellfriendpdf_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_handle_and_render_cache(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    cache: *mut WellfriendRenderCache,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        let cache = checked_render_cache(cache)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let png = render_contract_png_with_cache(
+            doc,
+            &contract.contract,
+            &CancelToken::none(),
+            &mut cache.cache,
+        )?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using render-contract JSON, a caller-owned render
+/// cache, and returns font-substitution plus cache telemetry JSON.
+///
+/// The telemetry report uses `scope: caller_owned_render_cache_report`.
+///
+/// # Safety
+/// Same pointer and ownership requirements as the cached PNG render function,
+/// plus `out_json` must be writable and freed with
+/// `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_and_render_cache_report_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    cache: *mut WellfriendRenderCache,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let cache = checked_render_cache(cache)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let (png, log, telemetry_report) = render_contract_png_with_render_report_and_cache(
+            doc,
+            &contract.contract,
+            &CancelToken::none(),
+            &mut cache.cache,
+        )?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using a render-contract handle, a caller-owned render
+/// cache, and returns font-substitution plus cache telemetry JSON.
+///
+/// # Safety
+/// `document`, `contract`, and `cache` must be valid handles. `out_buffer` and
+/// `out_json` must be writable and freed by the caller.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_handle_and_render_cache_report_json(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    cache: *mut WellfriendRenderCache,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        let cache = checked_render_cache(cache)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let (png, log, telemetry_report) = render_contract_png_with_render_report_and_cache(
+            doc,
+            &contract.contract,
+            &CancelToken::none(),
+            &mut cache.cache,
+        )?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using render-contract JSON and a cooperative
+/// cancellation source.
+///
+/// # Safety
+/// `document` and `cancellation` must be valid handles. `contract_json` must
+/// point to a valid NUL-terminated UTF-8 JSON string. `out_buffer` must be
+/// writable and freed with `wellfriendpdf_buffer_free`. `error_out`, when
+/// non-null, must be writable and freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    cancellation: *const WellfriendRenderCancellation,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let png = render_contract_png(doc, &contract.contract, &cancellation.token)?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle to PNG with a cooperative cancellation source.
+///
+/// # Safety
+/// `document`, `contract`, and `cancellation` must be valid handles.
+/// `out_buffer` must be writable and freed with `wellfriendpdf_buffer_free`.
+/// `error_out`, when non-null, must be writable and freed with
+/// `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_handle_and_cancellation(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    cancellation: *const WellfriendRenderCancellation,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let png = render_contract_png(doc, &contract.contract, &cancellation.token)?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using render-contract JSON and returns render-time
+/// font substitution JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as
+/// `wellfriendpdf_document_render_page_png_with_contract_json`, plus `out_json`
+/// must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let (png, log) =
+            render_contract_png_with_font_report(doc, &contract.contract, &CancelToken::none())?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle to PNG and returns render-time font substitution JSON.
+///
+/// # Safety
+/// Same ownership requirements as
+/// `wellfriendpdf_document_render_page_png_with_contract_handle`, plus
+/// `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_handle_and_font_substitution_report_json(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let (png, log) =
+            render_contract_png_with_font_report(doc, &contract.contract, &CancelToken::none())?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using render-contract JSON and returns combined
+/// font-substitution plus render-telemetry JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as
+/// `wellfriendpdf_document_render_page_png_with_contract_json`, plus `out_json`
+/// must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_and_render_report_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let (png, log, telemetry_report) =
+            render_contract_png_with_render_report(doc, &contract.contract, &CancelToken::none())?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle to PNG and returns combined font-substitution plus
+/// render-telemetry JSON.
+///
+/// # Safety
+/// Same ownership requirements as
+/// `wellfriendpdf_document_render_page_png_with_contract_handle`, plus
+/// `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_handle_and_render_report_json(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let (png, log, telemetry_report) =
+            render_contract_png_with_render_report(doc, &contract.contract, &CancelToken::none())?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using render-contract JSON and a cooperative
+/// cancellation source, returning render-time font substitution JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as
+/// `wellfriendpdf_document_render_page_png_with_contract_json_and_cancellation`,
+/// plus `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    cancellation: *const WellfriendRenderCancellation,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let (png, log) =
+            render_contract_png_with_font_report(doc, &contract.contract, &cancellation.token)?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle to PNG with a cooperative cancellation source,
+/// returning render-time font substitution JSON.
+///
+/// # Safety
+/// Same ownership requirements as
+/// `wellfriendpdf_document_render_page_png_with_contract_handle_and_cancellation`,
+/// plus `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_handle_and_font_substitution_report_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    cancellation: *const WellfriendRenderCancellation,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let (png, log) =
+            render_contract_png_with_font_report(doc, &contract.contract, &cancellation.token)?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using render-contract JSON and a cooperative
+/// cancellation source, returning combined font-substitution plus
+/// render-telemetry JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as
+/// `wellfriendpdf_document_render_page_png_with_contract_json_and_cancellation`,
+/// plus `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_and_render_report_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    cancellation: *const WellfriendRenderCancellation,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let (png, log, telemetry_report) =
+            render_contract_png_with_render_report(doc, &contract.contract, &cancellation.token)?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle to PNG with a cooperative cancellation source,
+/// returning combined font-substitution plus render-telemetry JSON.
+///
+/// # Safety
+/// Same ownership requirements as
+/// `wellfriendpdf_document_render_page_png_with_contract_handle_and_cancellation`,
+/// plus `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_handle_and_render_report_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    cancellation: *const WellfriendRenderCancellation,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let (png, log, telemetry_report) =
+            render_contract_png_with_render_report(doc, &contract.contract, &cancellation.token)?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+            *out_json = into_c_string(json);
         }
         Ok(())
     })
@@ -782,15 +2070,430 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract
             return Err("output pointer is null".into());
         }
         let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
-        let contract: wellfriendpdf_engine::RenderContract =
-            serde_json::from_str(&contract_json)
-                .map_err(|err| format!("render contract JSON: {err}"))?;
+        let contract = parse_render_contract_json(&contract_json)?;
         let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
-        wellfriendpdf(doc.engine.render_page_into_buffer(
-            &contract,
-            &wellfriendpdf_engine::CancelToken::none(),
+        render_contract_into_buffer(doc, &contract.contract, &CancelToken::none(), output)?;
+        Ok(())
+    })
+}
+
+/// Renders a contract handle into caller-owned memory.
+///
+/// # Safety
+/// `document` and `contract` must be valid handles. `output` must point to
+/// `output_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_handle(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    output: *mut u8,
+    output_len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        render_contract_into_buffer(doc, &contract.contract, &CancelToken::none(), output)?;
+        Ok(())
+    })
+}
+
+/// Renders a contract JSON into caller-owned memory with a cooperative
+/// cancellation source.
+///
+/// # Safety
+/// `document` and `cancellation` must be valid handles. `contract_json` must
+/// point to a valid NUL-terminated UTF-8 JSON string. `output` must point to
+/// `output_len` writable bytes and remain valid for the duration of the call.
+/// `error_out`, when non-null, must be writable and freed with
+/// `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    cancellation: *const WellfriendRenderCancellation,
+    output: *mut u8,
+    output_len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        render_contract_into_buffer(doc, &contract.contract, &cancellation.token, output)?;
+        Ok(())
+    })
+}
+
+/// Renders a contract handle into caller-owned memory with a cooperative
+/// cancellation source.
+///
+/// # Safety
+/// `document`, `contract`, and `cancellation` must be valid handles. `output`
+/// must point to `output_len` writable bytes and remain valid for the duration
+/// of the call. `error_out`, when non-null, must be writable and freed with
+/// `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_handle_and_cancellation(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    cancellation: *const WellfriendRenderCancellation,
+    output: *mut u8,
+    output_len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        render_contract_into_buffer(doc, &contract.contract, &cancellation.token, output)?;
+        Ok(())
+    })
+}
+
+/// Renders a contract into caller-owned memory and returns render-time font
+/// substitution JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as
+/// `wellfriendpdf_document_render_into_buffer_with_contract_json`, plus
+/// `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    output: *mut u8,
+    output_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        let log = render_contract_into_buffer_with_font_report(
+            doc,
+            &contract.contract,
+            &CancelToken::none(),
             output,
-        ))?;
+        )?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle into caller-owned memory and returns render-time
+/// font substitution JSON.
+///
+/// # Safety
+/// Same ownership requirements as
+/// `wellfriendpdf_document_render_into_buffer_with_contract_handle`, plus
+/// `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_handle_and_font_substitution_report_json(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    output: *mut u8,
+    output_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        let log = render_contract_into_buffer_with_font_report(
+            doc,
+            &contract.contract,
+            &CancelToken::none(),
+            output,
+        )?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract into caller-owned memory and returns combined
+/// font-substitution plus render-telemetry JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as
+/// `wellfriendpdf_document_render_into_buffer_with_contract_json`, plus
+/// `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    output: *mut u8,
+    output_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        let (log, telemetry_report) = render_contract_into_buffer_with_render_report(
+            doc,
+            &contract.contract,
+            &CancelToken::none(),
+            output,
+        )?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle into caller-owned memory and returns combined
+/// font-substitution plus render-telemetry JSON.
+///
+/// # Safety
+/// Same ownership requirements as
+/// `wellfriendpdf_document_render_into_buffer_with_contract_handle`, plus
+/// `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_handle_and_render_report_json(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    output: *mut u8,
+    output_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        let (log, telemetry_report) = render_contract_into_buffer_with_render_report(
+            doc,
+            &contract.contract,
+            &CancelToken::none(),
+            output,
+        )?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract JSON into caller-owned memory with a cooperative
+/// cancellation source and returns render-time font substitution JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as
+/// `wellfriendpdf_document_render_into_buffer_with_contract_json_and_cancellation`,
+/// plus `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    cancellation: *const WellfriendRenderCancellation,
+    output: *mut u8,
+    output_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        let log = render_contract_into_buffer_with_font_report(
+            doc,
+            &contract.contract,
+            &cancellation.token,
+            output,
+        )?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle into caller-owned memory with a cooperative
+/// cancellation source and returns render-time font substitution JSON.
+///
+/// # Safety
+/// Same ownership requirements as
+/// `wellfriendpdf_document_render_into_buffer_with_contract_handle_and_cancellation`,
+/// plus `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_handle_and_font_substitution_report_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    cancellation: *const WellfriendRenderCancellation,
+    output: *mut u8,
+    output_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        let log = render_contract_into_buffer_with_font_report(
+            doc,
+            &contract.contract,
+            &cancellation.token,
+            output,
+        )?;
+        let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract JSON into caller-owned memory with a cooperative
+/// cancellation source and returns combined font-substitution plus
+/// render-telemetry JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as
+/// `wellfriendpdf_document_render_into_buffer_with_contract_json_and_cancellation`,
+/// plus `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    cancellation: *const WellfriendRenderCancellation,
+    output: *mut u8,
+    output_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract = parse_render_contract_json(&contract_json)?;
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        let (log, telemetry_report) = render_contract_into_buffer_with_render_report(
+            doc,
+            &contract.contract,
+            &cancellation.token,
+            output,
+        )?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a contract handle into caller-owned memory with a cooperative
+/// cancellation source and returns combined font-substitution plus
+/// render-telemetry JSON.
+///
+/// # Safety
+/// Same ownership requirements as
+/// `wellfriendpdf_document_render_into_buffer_with_contract_handle_and_cancellation`,
+/// plus `out_json` must be writable and freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_handle_and_render_report_json_and_cancellation(
+    document: *const WellfriendDocument,
+    contract: *const WellfriendRenderContract,
+    cancellation: *const WellfriendRenderCancellation,
+    output: *mut u8,
+    output_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let contract = checked_render_contract(contract)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        let (log, telemetry_report) = render_contract_into_buffer_with_render_report(
+            doc,
+            &contract.contract,
+            &cancellation.token,
+            output,
+        )?;
+        let json = contract_render_report_json(&log, &telemetry_report)?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
         Ok(())
     })
 }
@@ -839,6 +2542,49 @@ pub unsafe extern "C" fn wellfriendpdf_document_progressive_render_new(
     }
 }
 
+/// Creates an owned progressive rendering session from a schema-v1 render
+/// contract JSON string.
+///
+/// # Safety
+/// `document` must be a valid open document. `contract_json` must point to a
+/// NUL-terminated UTF-8 render contract JSON string. `error_out`, when
+/// non-null, must be writable and freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_progressive_render_new_with_contract_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    tile_width: u32,
+    tile_height: u32,
+    error_out: *mut *mut c_char,
+) -> *mut WellfriendProgressiveRenderJob {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        let doc = checked_doc(document)?;
+        let json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(&json).map_err(|err| err.to_string())?;
+        let job = wellfriendpdf(doc.engine.progressive_render_job_with_contract(
+            contract,
+            tile_width,
+            tile_height,
+        ))?;
+        Ok::<_, String>(Box::new(WellfriendProgressiveRenderJob { job }))
+    })) {
+        Ok(Ok(job)) => Box::into_raw(job),
+        Ok(Err(error)) => {
+            set_error(error_out, &error);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(
+                error_out,
+                "panic while creating progressive render session from contract",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
 /// Advances a progressive session by at most `max_tiles` tiles and returns a
 /// JSON `ProgressiveRenderStepReport` owned by the caller.
 ///
@@ -862,6 +2608,503 @@ pub unsafe extern "C" fn wellfriendpdf_progressive_render_step_json(
             job.job
                 .render_next(max_tiles, &wellfriendpdf_engine::CancelToken::none()),
         )?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Signals cooperative cancellation for an in-flight progressive step.
+///
+/// Unlike `wellfriendpdf_progressive_render_cancel`, this does not release the
+/// retained session state or move the job to a terminal lifecycle state. The
+/// next observed step report is resumable.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `error_out`, when non-null, must be
+/// writable and freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_request_cancel(
+    job: *const WellfriendProgressiveRenderJob,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        checked_progressive_job_ref(job)?.job.request_cancel();
+        Ok(())
+    })
+}
+
+/// Revises the visible-work hint, invalidates prior tile publications, and
+/// returns a JSON `ProgressiveRenderStepReport` with obsolete publication IDs.
+///
+/// Pass `viewport_hint_present == 0` to clear the hint. When non-zero, the x/y/w/h
+/// fields define the new viewport hint in device pixels.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `out_json` must be writable and
+/// freed with `wellfriendpdf_string_free`. `error_out`, when non-null, must be
+/// writable and freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_revise_viewport_hint_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    viewport_hint_present: c_int,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let viewport_hint =
+            (viewport_hint_present != 0).then_some(wellfriendpdf_engine::RenderTile {
+                x,
+                y,
+                width,
+                height,
+            });
+        let report = wellfriendpdf(job.job.revise_viewport_hint(viewport_hint))?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Revises a dirty region, invalidates only intersecting tile publications, and
+/// returns a JSON `ProgressiveRenderStepReport`.
+///
+/// Pass `dirty_region_present == 0` to clear the current dirty-region hint.
+/// When non-zero, the x/y/w/h fields define the dirty region in device pixels.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `out_json` must be writable and
+/// freed with `wellfriendpdf_string_free`. `error_out`, when non-null, must be
+/// writable and freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_revise_dirty_region_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    dirty_region_present: c_int,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let dirty_region =
+            (dirty_region_present != 0).then_some(wellfriendpdf_engine::RenderTile {
+                x,
+                y,
+                width,
+                height,
+            });
+        let report = wellfriendpdf(job.job.revise_dirty_region(dirty_region))?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Revises caller-visible render identity state, invalidates all prior tile
+/// publications, and returns a JSON `ProgressiveRenderContextRevisionReport`.
+///
+/// Pass NULL for either identity pointer to keep the current value.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. Optional identity pointers must be
+/// NUL-terminated UTF-8 strings when non-null. `out_json` must be writable and
+/// freed with `wellfriendpdf_string_free`; `error_out` follows standard C ABI
+/// ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_revise_render_context_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    render_contract_fingerprint: *const c_char,
+    visibility_fingerprint: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let render_contract_fingerprint =
+            unsafe { optional_c_string(render_contract_fingerprint) }?;
+        let visibility_fingerprint = unsafe { optional_c_string(visibility_fingerprint) }?;
+        let report = wellfriendpdf(
+            job.job
+                .revise_render_context(render_contract_fingerprint, visibility_fingerprint),
+        )?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Revises the active schema-v1 render contract, invalidates all prior tile
+/// publications, and returns a JSON `ProgressiveRenderContextRevisionReport`.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `contract_json` must be a
+/// NUL-terminated UTF-8 JSON string containing a valid `RenderContract`.
+/// `out_json` must be writable and freed with `wellfriendpdf_string_free`;
+/// `error_out` follows standard C ABI ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_revise_render_contract_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    contract_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(&contract_json)
+                .map_err(|err| format!("progressive render contract JSON is invalid: {err}"))?;
+        let report = wellfriendpdf(job.job.revise_render_contract(contract))?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Applies a render-invalidation plan JSON to the progressive session's owned
+/// render cache and returns a JSON `ProgressiveRenderInvalidationReport`.
+///
+/// `plan_json` may be a plan object or an SDK envelope containing
+/// `report.render_invalidation`.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `plan_json` must be a
+/// NUL-terminated UTF-8 JSON string. `out_json` must be writable and freed with
+/// `wellfriendpdf_string_free`; `error_out` follows standard C ABI ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_apply_render_invalidation_plan_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    plan_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let plan_json = unsafe { required_c_string(plan_json, "plan_json") }?;
+        let report = wellfriendpdf(job.job.apply_render_invalidation_plan_json(&plan_json))?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Evaluates whether a tile publication JSON from a step report still belongs
+/// to the current progressive session state.
+///
+/// The returned JSON is a `ProgressiveTilePublicationAcceptance` with an
+/// `accepted` boolean plus a deterministic reason for stale/rejected
+/// publications.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `publication_json` must be a
+/// NUL-terminated UTF-8 JSON `ProgressiveTilePublication`. `out_json` must be
+/// writable and freed with `wellfriendpdf_string_free`; `error_out` follows
+/// standard C ABI ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_evaluate_tile_publication_json(
+    job: *const WellfriendProgressiveRenderJob,
+    publication_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job_ref(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let publication_json = unsafe { required_c_string(publication_json, "publication_json") }?;
+        let publication: wellfriendpdf_engine::ProgressiveTilePublication =
+            serde_json::from_str(&publication_json)
+                .map_err(|err| format!("progressive tile publication JSON: {err}"))?;
+        let report = job.job.evaluate_tile_publication(&publication);
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Returns the current progressive viewer queue preview JSON without rendering
+/// another tile.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `out_json` must be writable and
+/// freed with `wellfriendpdf_string_free`; `error_out` follows standard C ABI
+/// ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_viewer_queue_json(
+    job: *const WellfriendProgressiveRenderJob,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job_ref(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let report = job.job.viewer_queue_report();
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Executes owned current-page work from the progressive viewer queue and
+/// returns deferred adjacent-page prefetch work as JSON.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `out_json` must be writable and
+/// freed with `wellfriendpdf_string_free`; `error_out` follows standard C ABI
+/// ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_execute_viewer_queue_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    max_items: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let report = wellfriendpdf(
+            job.job
+                .execute_viewer_queue(max_items, &wellfriendpdf_engine::CancelToken::none()),
+        )?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Executes owned current-page work from the progressive viewer queue with a
+/// cooperative cancellation source.
+///
+/// # Safety
+/// `job` and `cancellation` must be valid handles. `out_json` must be writable
+/// and freed with `wellfriendpdf_string_free`; `error_out` follows standard C
+/// ABI ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_execute_viewer_queue_json_and_cancellation(
+    job: *mut WellfriendProgressiveRenderJob,
+    max_items: usize,
+    cancellation: *const WellfriendRenderCancellation,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let report = wellfriendpdf(job.job.execute_viewer_queue(max_items, &cancellation.token))?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Executes an adjacent-page prefetch and returns both a report JSON and an
+/// owned child progressive job handle when the source session is live.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `prefetch_identity` must be a
+/// NUL-terminated UTF-8 string from the current viewer queue report.
+/// `out_job` and `out_json` must be writable. The returned child job must be
+/// freed with `wellfriendpdf_progressive_render_free`; returned strings follow
+/// the normal `wellfriendpdf_string_free` ownership rule.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json(
+    job: *const WellfriendProgressiveRenderJob,
+    prefetch_identity: *const c_char,
+    max_tiles: usize,
+    out_job: *mut *mut WellfriendProgressiveRenderJob,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job_ref(job)?;
+        if out_job.is_null() {
+            return Err("out_job pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let prefetch_identity =
+            unsafe { required_c_string(prefetch_identity, "prefetch_identity") }?;
+        let execution = wellfriendpdf(job.job.execute_adjacent_page_prefetch(
+            &prefetch_identity,
+            max_tiles,
+            &wellfriendpdf_engine::CancelToken::none(),
+        ))?;
+        let json = serde_json::to_string(&execution.report).map_err(|err| err.to_string())?;
+        let child = execution
+            .job
+            .map(|job| Box::into_raw(Box::new(WellfriendProgressiveRenderJob { job })))
+            .unwrap_or(ptr::null_mut());
+        unsafe {
+            *out_job = child;
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Executes an adjacent-page prefetch with a cooperative cancellation source.
+///
+/// # Safety
+/// `job` and `cancellation` must be valid handles. `prefetch_identity` must be a
+/// NUL-terminated UTF-8 string from the current viewer queue report. `out_job`
+/// and `out_json` must be writable. The returned child job must be freed with
+/// `wellfriendpdf_progressive_render_free`; returned strings follow the normal
+/// `wellfriendpdf_string_free` ownership rule.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json_and_cancellation(
+    job: *const WellfriendProgressiveRenderJob,
+    prefetch_identity: *const c_char,
+    max_tiles: usize,
+    cancellation: *const WellfriendRenderCancellation,
+    out_job: *mut *mut WellfriendProgressiveRenderJob,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job_ref(job)?;
+        let cancellation = checked_render_cancellation(cancellation)?;
+        if out_job.is_null() {
+            return Err("out_job pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let prefetch_identity =
+            unsafe { required_c_string(prefetch_identity, "prefetch_identity") }?;
+        let execution = wellfriendpdf(job.job.execute_adjacent_page_prefetch(
+            &prefetch_identity,
+            max_tiles,
+            &cancellation.token,
+        ))?;
+        let json = serde_json::to_string(&execution.report).map_err(|err| err.to_string())?;
+        let child = execution
+            .job
+            .map(|job| Box::into_raw(Box::new(WellfriendProgressiveRenderJob { job })))
+            .unwrap_or(ptr::null_mut());
+        unsafe {
+            *out_job = child;
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Returns the deterministic progressive viewer callback dispatch report JSON
+/// without invoking host callbacks.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `out_json` must be writable and
+/// freed with `wellfriendpdf_string_free`; `error_out` follows standard C ABI
+/// ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_viewer_callback_dispatch_json(
+    job: *const WellfriendProgressiveRenderJob,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job_ref(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let report = job.job.viewer_callback_dispatch_report();
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Invokes a host callback once for each deterministic progressive viewer
+/// callback event and returns the dispatch report JSON.
+///
+/// No callbacks are invoked when the progressive session is terminal; the
+/// returned report then carries `no_callback_after_terminal_state = true`.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `callback` must be a valid
+/// function pointer for the duration of the call. Each `event_json` pointer is
+/// valid only until the callback returns. `out_json` must be writable and freed
+/// with `wellfriendpdf_string_free`; `error_out` follows standard C ABI
+/// ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_dispatch_viewer_callbacks(
+    job: *const WellfriendProgressiveRenderJob,
+    callback: WellfriendProgressiveViewerCallback,
+    user_data: *mut c_void,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job_ref(job)?;
+        let callback = callback.ok_or_else(|| "callback pointer is null".to_string())?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let report = job.job.viewer_callback_dispatch_report();
+        for event in &report.events {
+            let event_json = serde_json::to_string(event).map_err(|err| err.to_string())?;
+            let event_json = CString::new(event_json).map_err(|err| err.to_string())?;
+            let status = unsafe { callback(event_json.as_ptr(), user_data) };
+            if status != WELLFRIENDPDF_STATUS_OK {
+                return Err(format!(
+                    "progressive viewer callback returned non-zero status {status}"
+                ));
+            }
+        }
         let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
         unsafe {
             *out_json = into_c_string(json);
@@ -971,10 +3214,7 @@ pub unsafe extern "C" fn wellfriendpdf_progressive_render_finish_png(
         if out_buffer.is_null() {
             return Err("out_buffer pointer is null".into());
         }
-        let buffer = job
-            .job
-            .finish()
-            .ok_or_else(|| "progressive session has not completed".to_string())?;
+        let buffer = wellfriendpdf(job.job.finish_checked())?;
         let png = wellfriendpdf(
             wellfriendpdf_engine::images::encoder::ImageEncoder::encode_png_fast(
                 &buffer.to_raw_image(),
@@ -3004,12 +5244,180 @@ pub unsafe extern "C" fn wellfriendpdf_document_security_report_json(
     }
 }
 
+/// Canonical document/view boundary report JSON.
+///
+/// # Safety
+/// See `wellfriendpdf_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_views_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::document_views_report_json(b, None)
+        })
+    }
+}
+
+/// Per-page render-view backend packed-plan arena report JSON.
+///
+/// `render_mode` may be null (compat), `compat`, or `high`.
+///
+/// # Safety
+/// See `wellfriendpdf_document_security_report_json`; `render_mode` may be NULL
+/// or a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_backend_plan_arena_report_json(
+    document: *const WellfriendDocument,
+    page: usize,
+    dpi: u32,
+    render_mode: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let mode_name =
+            unsafe { optional_c_string(render_mode) }?.unwrap_or_else(|| "compat".to_string());
+        let json = wellfriendpdf(sdk::backend_plan_arena_report_json(
+            &doc_bytes(doc),
+            page,
+            dpi,
+            Some(&mode_name),
+            None,
+        ))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Per-page render-view backend packed-plan arena report JSON for an explicit
+/// schema-v1 render contract.
+///
+/// # Safety
+/// See `wellfriendpdf_document_security_report_json`; `contract_json` must be a
+/// valid NUL-terminated UTF-8 render-contract JSON string.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_backend_plan_arena_report_for_contract_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let json = wellfriendpdf(sdk::backend_plan_arena_report_for_contract_json(
+            &doc_bytes(doc),
+            &contract_json,
+            None,
+        ))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
 /// Parser diagnostics report JSON. `mode` is `strict`|`repair`|`audit` (NULL →
 /// `repair`).
 ///
 /// # Safety
 /// See `wellfriendpdf_document_security_report_json`; `mode` may be NULL or a
 /// NUL-terminated UTF-8 string.
+/// Sparse Prepress CMM Separation/DeviceN plate framebuffer report JSON.
+///
+/// # Safety
+/// See `wellfriendpdf_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prepress_plate_report_json(
+    document: *const WellfriendDocument,
+    page: usize,
+    dpi: u32,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = wellfriendpdf(sdk::prepress_plate_report_json(
+            &doc_bytes(doc),
+            page,
+            dpi,
+            None,
+        ))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Per-image renderer decode capability report JSON.
+///
+/// The report enumerates discovered images and reports the active decoder's
+/// native region, reduction, and progressive capability status for each image
+/// without decoding image pixels.
+///
+/// # Safety
+/// See `wellfriendpdf_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_image_decode_capability_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::image_decode_capability_report_json(b, None)
+        })
+    }
+}
+
+/// Progressive image-decode lifecycle report JSON for one discovered image.
+///
+/// `request_json` is a UTF-8 JSON object with optional `image_index`,
+/// `cache_key`, `max_retained_bytes`, and `actions` fields. Actions are
+/// `start`, `continue`, `pause`, `resume`, `cancel`, `fail`, `close`, and
+/// `document_close`.
+///
+/// # Safety
+/// See `wellfriendpdf_document_security_report_json`; `request_json` must be a
+/// valid NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_progressive_image_decode_lifecycle_report_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request_json = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let request_json =
+                request_json.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            sdk::progressive_image_decode_lifecycle_report_json(b, &request_json, None)
+        })
+    }
+}
+
+/// Parser report JSON.
+///
+/// # Safety
+/// See `wellfriendpdf_document_security_report_json`; `mode` may be NULL or a
+/// valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn wellfriendpdf_document_parser_report_json(
     document: *const WellfriendDocument,
@@ -4101,6 +6509,42 @@ pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_transaction
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Apply an atomic editing transactions scene text transaction and return owned
+/// PDF bytes plus a render-invalidation plan JSON report.
+///
+/// `render_invalidation_options_json` may be NULL. When present, it must be a
+/// JSON object accepted by the SDK render-invalidation planner.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_transaction_apply_with_render_invalidation_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    render_invalidation_options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    let options = unsafe { optional_c_string(render_invalidation_options_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::editing_transactions_transaction_apply_with_render_invalidation_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                options
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
                 None,
             )
         })
@@ -5802,11 +8246,51 @@ fn checked_progressive_job<'a>(
     }
 }
 
+fn checked_progressive_job_ref<'a>(
+    job: *const WellfriendProgressiveRenderJob,
+) -> Result<&'a WellfriendProgressiveRenderJob, String> {
+    if job.is_null() {
+        Err("progressive render job pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*job })
+    }
+}
+
 fn checked_doc<'a>(document: *const WellfriendDocument) -> Result<&'a WellfriendDocument, String> {
     if document.is_null() {
         Err("document pointer is null".to_string())
     } else {
         Ok(unsafe { &*document })
+    }
+}
+
+fn checked_render_contract<'a>(
+    contract: *const WellfriendRenderContract,
+) -> Result<&'a WellfriendRenderContract, String> {
+    if contract.is_null() {
+        Err("render contract pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*contract })
+    }
+}
+
+fn checked_render_cancellation<'a>(
+    cancellation: *const WellfriendRenderCancellation,
+) -> Result<&'a WellfriendRenderCancellation, String> {
+    if cancellation.is_null() {
+        Err("render cancellation pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*cancellation })
+    }
+}
+
+fn checked_render_cache<'a>(
+    cache: *mut WellfriendRenderCache,
+) -> Result<&'a mut WellfriendRenderCache, String> {
+    if cache.is_null() {
+        Err("render cache pointer is null".to_string())
+    } else {
+        Ok(unsafe { &mut *cache })
     }
 }
 
@@ -5977,6 +8461,204 @@ fn wellfriendpdf<T>(result: WellfriendResult<T>) -> Result<T, String> {
     result.map_err(|err| err.to_string())
 }
 
+fn parse_render_contract_json(json: &str) -> Result<WellfriendRenderContract, String> {
+    let contract: RenderContract =
+        serde_json::from_str(json).map_err(|err| format!("render contract JSON: {err}"))?;
+    validate_render_contract(contract)
+}
+
+fn validate_render_contract(contract: RenderContract) -> Result<WellfriendRenderContract, String> {
+    contract.validate().map_err(|err| err.to_string())?;
+    Ok(WellfriendRenderContract { contract })
+}
+
+fn parse_pixel_format(value: Option<&str>) -> Result<PixelFormat, String> {
+    match value.unwrap_or("Rgba8") {
+        "Rgba8" | "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
+        "Bgra8" | "bgra8" | "bgra" => Ok(PixelFormat::Bgra8),
+        "Rgb8" | "rgb8" | "rgb" => Ok(PixelFormat::Rgb8),
+        "Bgr8" | "bgr8" | "bgr" => Ok(PixelFormat::Bgr8),
+        "Gray8" | "gray8" | "gray" | "grey8" | "grey" => Ok(PixelFormat::Gray8),
+        other => Err(format!(
+            "unsupported render contract pixel_format '{other}'"
+        )),
+    }
+}
+
+fn parse_alpha_mode(value: Option<&str>) -> Result<AlphaMode, String> {
+    match value.unwrap_or("Premultiplied") {
+        "Premultiplied" | "premultiplied" => Ok(AlphaMode::Premultiplied),
+        "Straight" | "straight" => Ok(AlphaMode::Straight),
+        "Opaque" | "opaque" => Ok(AlphaMode::Opaque),
+        other => Err(format!("unsupported render contract alpha_mode '{other}'")),
+    }
+}
+
+fn parse_contract_enum<T>(field: &str, value: &str) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("render contract {field} must be present"));
+    }
+    let canonical = canonical_contract_enum_name(trimmed);
+    for candidate in [trimmed, canonical.as_str()] {
+        if let Ok(parsed) = serde_json::from_value(serde_json::Value::String(candidate.to_string()))
+        {
+            return Ok(parsed);
+        }
+    }
+    Err(format!("unsupported render contract {field} '{value}'"))
+}
+
+fn canonical_contract_enum_name(value: &str) -> String {
+    let mut out = String::new();
+    let mut uppercase_next = true;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if uppercase_next {
+                out.push(ch.to_ascii_uppercase());
+                uppercase_next = false;
+            } else {
+                out.push(ch);
+            }
+        } else {
+            uppercase_next = true;
+        }
+    }
+    out
+}
+
+fn render_contract_png(
+    doc: &WellfriendDocument,
+    contract: &RenderContract,
+    cancellation: &CancelToken,
+) -> Result<Vec<u8>, String> {
+    wellfriendpdf(
+        doc.engine
+            .render_page_png_with_contract(contract, cancellation),
+    )
+}
+
+fn render_contract_png_with_cache(
+    doc: &WellfriendDocument,
+    contract: &RenderContract,
+    cancellation: &CancelToken,
+    cache: &mut RenderDocumentCache,
+) -> Result<Vec<u8>, String> {
+    wellfriendpdf(
+        doc.engine
+            .render_page_png_with_contract_and_cache(contract, cancellation, cache),
+    )
+}
+
+fn render_contract_png_with_font_report(
+    doc: &WellfriendDocument,
+    contract: &RenderContract,
+    cancellation: &CancelToken,
+) -> Result<(Vec<u8>, wellfriendpdf_engine::FontSubstitutionLog), String> {
+    wellfriendpdf(
+        doc.engine
+            .render_page_png_with_contract_and_font_substitution_report(contract, cancellation),
+    )
+}
+
+fn render_contract_png_with_render_report(
+    doc: &WellfriendDocument,
+    contract: &RenderContract,
+    cancellation: &CancelToken,
+) -> Result<
+    (
+        Vec<u8>,
+        wellfriendpdf_engine::FontSubstitutionLog,
+        wellfriendpdf_engine::RenderContractTelemetryReport,
+    ),
+    String,
+> {
+    wellfriendpdf(
+        doc.engine
+            .render_page_png_with_contract_and_telemetry_report(contract, cancellation),
+    )
+}
+
+fn render_contract_png_with_render_report_and_cache(
+    doc: &WellfriendDocument,
+    contract: &RenderContract,
+    cancellation: &CancelToken,
+    cache: &mut RenderDocumentCache,
+) -> Result<
+    (
+        Vec<u8>,
+        wellfriendpdf_engine::FontSubstitutionLog,
+        wellfriendpdf_engine::RenderContractTelemetryReport,
+    ),
+    String,
+> {
+    wellfriendpdf(
+        doc.engine
+            .render_page_png_with_contract_and_telemetry_report_and_cache(
+                contract,
+                cancellation,
+                cache,
+            ),
+    )
+}
+
+fn render_contract_into_buffer(
+    doc: &WellfriendDocument,
+    contract: &RenderContract,
+    cancellation: &CancelToken,
+    output: &mut [u8],
+) -> Result<(), String> {
+    wellfriendpdf(
+        doc.engine
+            .render_page_into_buffer(contract, cancellation, output),
+    )
+}
+
+fn render_contract_into_buffer_with_font_report(
+    doc: &WellfriendDocument,
+    contract: &RenderContract,
+    cancellation: &CancelToken,
+    output: &mut [u8],
+) -> Result<wellfriendpdf_engine::FontSubstitutionLog, String> {
+    wellfriendpdf(
+        doc.engine
+            .render_page_into_buffer_with_font_substitution_report(contract, cancellation, output),
+    )
+}
+
+fn render_contract_into_buffer_with_render_report(
+    doc: &WellfriendDocument,
+    contract: &RenderContract,
+    cancellation: &CancelToken,
+    output: &mut [u8],
+) -> Result<
+    (
+        wellfriendpdf_engine::FontSubstitutionLog,
+        wellfriendpdf_engine::RenderContractTelemetryReport,
+    ),
+    String,
+> {
+    wellfriendpdf(doc.engine.render_page_into_buffer_with_telemetry_report(
+        contract,
+        cancellation,
+        output,
+    ))
+}
+
+fn contract_render_report_json(
+    log: &wellfriendpdf_engine::FontSubstitutionLog,
+    telemetry_report: &wellfriendpdf_engine::RenderContractTelemetryReport,
+) -> Result<String, String> {
+    let report = serde_json::json!({
+        "font_substitution_report": log,
+        "render_telemetry_report": telemetry_report,
+    });
+    serde_json::to_string(&report).map_err(|err| err.to_string())
+}
+
 /// Build [`ParseOptions`] carrying the document's registered OCR backend (if
 /// any). With a backend, uses `OcrPolicy::Auto` (scanned pages recognized) and a
 /// generous per-page timeout as an engine-side backstop; without one, returns
@@ -6104,6 +8786,102 @@ mod tests {
         b.build()
     }
 
+    fn two_page_sample_pdf() -> Vec<u8> {
+        let mut b = PdfBuilder::new();
+        b.add("<< /Type /Catalog /Pages 2 0 R >>");
+        b.add("<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>");
+        b.add(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        );
+        b.add_stream(b"BT /F1 12 Tf 40 120 Td (Hello C API page one) Tj ET");
+        b.add("<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>");
+        b.add(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
+        );
+        b.add_stream(b"BT /F1 12 Tf 40 120 Td (Hello C API page two) Tj ET");
+        b.build()
+    }
+
+    fn image_sample_pdf() -> Vec<u8> {
+        let mut b = PdfBuilder::new();
+        b.add("<< /Type /Catalog /Pages 2 0 R >>");
+        b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        b.add(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] \
+             /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>",
+        );
+        b.add(
+            "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 \
+             /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /DCTDecode \
+             /Length 4 >>\nstream\nxxxx\nendstream",
+        );
+        b.add_stream(b"q 1 0 0 1 0 0 cm /Im1 Do Q");
+        b.build()
+    }
+
+    fn assert_font_substitution_report_shape(report: *const c_char) {
+        let report_json = unsafe { CStr::from_ptr(report) }
+            .to_str()
+            .expect("report JSON UTF-8");
+        let value: serde_json::Value = serde_json::from_str(report_json).expect("parse report");
+        assert!(value["events"].is_array());
+        assert!(value["overflow_count"].is_number());
+        if let Some(event) = value["events"].as_array().and_then(|events| events.first()) {
+            assert!(event["requested_pdf_font"].is_string());
+            assert!(event["selected_replacement"].is_string());
+            assert!(event["reason"].is_string());
+            assert!(event["metric_posture"].is_string());
+            assert!(event["embedded_state"].is_string());
+            assert!(event["encoding"].is_string());
+            assert!(event["resolution_source"].is_string());
+            assert!(event["selection_reason"].is_string());
+            assert!(event["required_glyph_coverage"].is_object());
+            assert!(event["missing_glyphs"].is_number());
+            assert!(event["visual_risk_category"].is_string());
+            assert!(event["extraction_impact"].is_string());
+            assert!(event["editing_impact"].is_string());
+            assert!(event["font_policy_identity"].is_string());
+        }
+    }
+
+    fn assert_render_report_shape(report: *const c_char) {
+        let report_json = unsafe { CStr::from_ptr(report) }
+            .to_str()
+            .expect("render report JSON UTF-8");
+        let value: serde_json::Value = serde_json::from_str(report_json).expect("parse report");
+        assert!(value["font_substitution_report"]["events"].is_array());
+        let telemetry = &value["render_telemetry_report"];
+        assert_eq!(
+            telemetry["scope"].as_str(),
+            Some("one_shot_render_contract_report")
+        );
+        assert!(telemetry["cache_fingerprint"].is_string());
+        assert!(telemetry["resource_budget_max_cache_bytes"].is_number());
+        assert!(telemetry["aggregate_resource_cache_bytes"].is_number());
+        assert!(telemetry["glyph_cache"].is_object());
+        assert!(telemetry["display_list_raster_cache"].is_object());
+        assert!(telemetry["offscreen_buffer_pool_bytes"].is_number());
+    }
+
+    fn assert_caller_owned_render_cache_report_shape(report: *const c_char) {
+        let report_json = unsafe { CStr::from_ptr(report) }
+            .to_str()
+            .expect("render cache report JSON UTF-8");
+        let value: serde_json::Value = serde_json::from_str(report_json).expect("parse report");
+        assert!(value["font_substitution_report"]["events"].is_array());
+        let telemetry = &value["render_telemetry_report"];
+        assert_eq!(
+            telemetry["scope"].as_str(),
+            Some("caller_owned_render_cache_report")
+        );
+        assert!(telemetry["cache_fingerprint"].is_string());
+        assert!(telemetry["aggregate_resource_cache_bytes"].is_number());
+        assert!(telemetry["display_list_cache"].is_object());
+        assert!(telemetry["display_list_raster_cache"].is_object());
+    }
+
     fn encrypted_sample_pdf(password: &[u8]) -> Vec<u8> {
         let engine = ContentEngine::open_bytes(sample_pdf()).expect("sample opens");
         encrypt(
@@ -6116,6 +8894,37 @@ mod tests {
             },
         )
         .expect("encrypt sample")
+    }
+
+    #[test]
+    fn capi_render_cancellation_reports_status() {
+        let mut error = std::ptr::null_mut();
+        let cancellation = unsafe { wellfriendpdf_render_cancellation_new(&mut error) };
+        assert!(!cancellation.is_null());
+        assert!(error.is_null());
+
+        let mut cancelled = -1;
+        let status = unsafe {
+            wellfriendpdf_render_cancellation_is_cancelled(cancellation, &mut cancelled, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!(cancelled, 0);
+        assert!(error.is_null());
+
+        let status = unsafe { wellfriendpdf_render_cancellation_cancel(cancellation, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(error.is_null());
+
+        let status = unsafe {
+            wellfriendpdf_render_cancellation_is_cancelled(cancellation, &mut cancelled, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!(cancelled, 1);
+        assert!(error.is_null());
+
+        unsafe {
+            wellfriendpdf_render_cancellation_free(cancellation);
+        }
     }
 
     #[test]
@@ -6199,6 +9008,553 @@ mod tests {
     }
 
     #[test]
+    fn capi_render_contract_schema_policy_builder_round_trips() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        let mut contract_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                std::ptr::null(),
+                &mut contract_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!contract_json.is_null());
+
+        let base = unsafe { wellfriendpdf_render_contract_from_json(contract_json, &mut error) };
+        assert!(!base.is_null());
+        assert!(error.is_null());
+
+        let page_box = CString::new("media").unwrap();
+        let backend = CString::new("research-hybrid").unwrap();
+        let compositing = CString::new("high-quality").unwrap();
+        let annotations = CString::new("exclude").unwrap();
+        let forms = CString::new("exclude").unwrap();
+        let optional_content = CString::new("ocg:test-layer").unwrap();
+        let text_smoothing = CString::new("disabled").unwrap();
+        let image_smoothing = CString::new("subpixel").unwrap();
+        let path_smoothing = CString::new("antialiased").unwrap();
+        let subpixel_text = CString::new("subpixel").unwrap();
+        let color_scheme = CString::new("forced-monochrome").unwrap();
+        let print_profile = CString::new("print").unwrap();
+        let halftone = CString::new("screen").unwrap();
+        let overprint = CString::new("preview").unwrap();
+        let rendering_intent = CString::new("perceptual").unwrap();
+        let color_management = CString::new("deterministic-fallback").unwrap();
+        let exactness = CString::new("high-quality-exact").unwrap();
+        let determinism = CString::new("best-effort-research").unwrap();
+        let mut updated = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_schema_policies(
+                base,
+                page_box.as_ptr(),
+                std::ptr::null(),
+                backend.as_ptr(),
+                compositing.as_ptr(),
+                annotations.as_ptr(),
+                forms.as_ptr(),
+                optional_content.as_ptr(),
+                text_smoothing.as_ptr(),
+                image_smoothing.as_ptr(),
+                path_smoothing.as_ptr(),
+                subpixel_text.as_ptr(),
+                color_scheme.as_ptr(),
+                print_profile.as_ptr(),
+                halftone.as_ptr(),
+                overprint.as_ptr(),
+                rendering_intent.as_ptr(),
+                color_management.as_ptr(),
+                exactness.as_ptr(),
+                determinism.as_ptr(),
+                &mut updated,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!updated.is_null());
+
+        let mut round_trip = std::ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_render_contract_to_json(updated, &mut round_trip, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let parsed: wellfriendpdf_engine::RenderContract = serde_json::from_str(
+            unsafe { CStr::from_ptr(round_trip) }
+                .to_str()
+                .expect("contract JSON UTF-8"),
+        )
+        .expect("parse updated contract");
+        assert_eq!(
+            parsed.page_box,
+            wellfriendpdf_engine::render::PageBox::Media
+        );
+        assert_eq!(
+            parsed.backend,
+            wellfriendpdf_engine::render::BackendSelection::ResearchHybrid
+        );
+        assert_eq!(
+            parsed.compositing,
+            wellfriendpdf_engine::render::CompositingPolicy::HighQuality
+        );
+        assert_eq!(
+            parsed.annotations,
+            wellfriendpdf_engine::render::AnnotationRenderPolicy::Exclude
+        );
+        assert_eq!(
+            parsed.forms,
+            wellfriendpdf_engine::render::FormRenderPolicy::Exclude
+        );
+        assert_eq!(parsed.optional_content.0, "ocg:test-layer");
+        assert_eq!(
+            parsed.color_scheme,
+            wellfriendpdf_engine::render::ColorScheme::ForcedMonochrome
+        );
+        assert_eq!(
+            parsed.print_profile,
+            wellfriendpdf_engine::render::PrintProfile::Print
+        );
+        assert_eq!(
+            parsed.exactness,
+            wellfriendpdf_engine::render::ExactnessPolicy::HighQualityExact
+        );
+
+        unsafe {
+            wellfriendpdf_string_free(contract_json);
+            wellfriendpdf_string_free(round_trip);
+            wellfriendpdf_render_contract_free(base);
+            wellfriendpdf_render_contract_free(updated);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_render_cache_handle_renders_and_applies_invalidation_plan() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        let mut contract = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                std::ptr::null(),
+                &mut contract,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!contract.is_null());
+
+        let cache = unsafe { wellfriendpdf_render_cache_new(&mut error) };
+        assert!(!cache.is_null());
+        assert!(error.is_null());
+
+        let mut png = WellfriendBuffer::empty();
+        let mut report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_contract_and_render_cache_report_json(
+                doc,
+                contract,
+                cache,
+                &mut png,
+                &mut report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(error.is_null());
+        let bytes = unsafe { slice::from_raw_parts(png.data, png.len) };
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_caller_owned_render_cache_report_shape(report);
+
+        let plan = CString::new(
+            serde_json::json!({
+                "schema_version": "render-transaction-invalidation-plan.v1",
+                "next_revision": 9001,
+                "affected_pages": [1],
+                "mapped_source_ids": [],
+                "source_cache_markers": [],
+                "affected_tiles": [],
+                "conservative_reset_required": false
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut invalidation = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_cache_apply_render_invalidation_plan_json(
+                cache,
+                plan.as_ptr(),
+                &mut invalidation,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(error.is_null());
+        let invalidation_json = unsafe { CStr::from_ptr(invalidation) }
+            .to_str()
+            .expect("invalidation JSON UTF-8");
+        let invalidation_value: serde_json::Value =
+            serde_json::from_str(invalidation_json).expect("parse invalidation");
+        assert_eq!(invalidation_value["current_revision"], 9001);
+        assert_eq!(invalidation_value["invalidated_pages"][0], 1);
+
+        let status = unsafe { wellfriendpdf_render_cache_clear(cache, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(error.is_null());
+
+        unsafe {
+            wellfriendpdf_string_free(invalidation);
+            wellfriendpdf_string_free(report);
+            wellfriendpdf_buffer_free(png);
+            wellfriendpdf_render_cache_free(cache);
+            wellfriendpdf_string_free(contract);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_render_contract_handle_builds_and_renders() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        let mut contract_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                std::ptr::null(),
+                &mut contract_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!contract_json.is_null());
+
+        let base = unsafe { wellfriendpdf_render_contract_from_json(contract_json, &mut error) };
+        assert!(!base.is_null());
+        assert!(error.is_null());
+
+        let rgb = CString::new("Rgb8").unwrap();
+        let opaque = CString::new("Opaque").unwrap();
+        let mut surface = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_surface(
+                base,
+                12,
+                9,
+                rgb.as_ptr(),
+                opaque.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                &mut surface,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!surface.is_null());
+
+        let mut with_background = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_background(
+                surface,
+                12,
+                34,
+                56,
+                255,
+                &mut with_background,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!with_background.is_null());
+
+        let mut with_clip = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_clip(
+                with_background,
+                0,
+                0,
+                12,
+                9,
+                &mut with_clip,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!with_clip.is_null());
+
+        let mut length = 0usize;
+        let status = unsafe {
+            wellfriendpdf_render_contract_surface_byte_length(with_clip, &mut length, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!(length, 12 * 9 * 3);
+
+        let mut round_trip_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_to_json(with_clip, &mut round_trip_json, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!round_trip_json.is_null());
+        let parsed: RenderContract = serde_json::from_str(
+            unsafe { CStr::from_ptr(round_trip_json) }
+                .to_str()
+                .expect("contract JSON UTF-8"),
+        )
+        .expect("round-trip contract");
+        assert_eq!(parsed.width, 12);
+        assert_eq!(parsed.height, 9);
+        assert_eq!(parsed.stride, 36);
+        assert_eq!(parsed.pixel_format, PixelFormat::Rgb8);
+        assert_eq!(parsed.alpha_mode, AlphaMode::Opaque);
+        assert_eq!(parsed.background.r, 12);
+        assert!(parsed.clip.is_some());
+
+        let mut png = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_contract_handle(
+                doc, base, &mut png, &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let bytes = unsafe { slice::from_raw_parts(png.data, png.len) };
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let mut caller_surface = vec![0xAA; length];
+        let status = unsafe {
+            wellfriendpdf_document_render_into_buffer_with_contract_handle(
+                doc,
+                with_clip,
+                caller_surface.as_mut_ptr(),
+                caller_surface.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(caller_surface.iter().any(|byte| *byte != 0xAA));
+
+        unsafe {
+            wellfriendpdf_buffer_free(png);
+            wellfriendpdf_string_free(contract_json);
+            wellfriendpdf_string_free(round_trip_json);
+            wellfriendpdf_render_contract_free(base);
+            wellfriendpdf_render_contract_free(surface);
+            wellfriendpdf_render_contract_free(with_background);
+            wellfriendpdf_render_contract_free(with_clip);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_render_font_substitution_report_outputs_owned_json() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        let mut png = WellfriendBuffer::empty();
+        let mut report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_font_substitution_report_json(
+                doc,
+                1,
+                72,
+                std::ptr::null(),
+                &mut png,
+                &mut report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!report.is_null());
+        assert_font_substitution_report_shape(report);
+
+        let mut contract = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                std::ptr::null(),
+                &mut contract,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!contract.is_null());
+
+        let mut contract_png = WellfriendBuffer::empty();
+        let mut contract_report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json(
+                doc,
+                contract,
+                &mut contract_png,
+                &mut contract_report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!contract_report.is_null());
+        assert_font_substitution_report_shape(contract_report);
+
+        let contract_json = unsafe { CStr::from_ptr(contract) }
+            .to_str()
+            .expect("contract JSON UTF-8");
+        let parsed: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(contract_json).expect("parse contract");
+        let mut surface = vec![0u8; parsed.stride * parsed.height as usize];
+        let mut buffer_report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json(
+                doc,
+                contract,
+                surface.as_mut_ptr(),
+                surface.len(),
+                &mut buffer_report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!buffer_report.is_null());
+        assert_font_substitution_report_shape(buffer_report);
+
+        unsafe {
+            wellfriendpdf_buffer_free(png);
+            wellfriendpdf_buffer_free(contract_png);
+            wellfriendpdf_string_free(report);
+            wellfriendpdf_string_free(contract);
+            wellfriendpdf_string_free(contract_report);
+            wellfriendpdf_string_free(buffer_report);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_render_report_outputs_owned_json() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        let mut contract = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                std::ptr::null(),
+                &mut contract,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!contract.is_null());
+
+        let contract_json = unsafe { CStr::from_ptr(contract) }
+            .to_str()
+            .expect("contract JSON UTF-8");
+        let parsed: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(contract_json).expect("parse contract");
+        let mut surface = vec![0u8; parsed.stride * parsed.height as usize];
+
+        let mut png = WellfriendBuffer::empty();
+        let mut png_report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_contract_and_render_report_json(
+                doc,
+                contract,
+                &mut png,
+                &mut png_report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!png_report.is_null());
+        assert_render_report_shape(png_report);
+
+        let mut buffer_report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json(
+                doc,
+                contract,
+                surface.as_mut_ptr(),
+                surface.len(),
+                &mut buffer_report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!buffer_report.is_null());
+        assert_render_report_shape(buffer_report);
+
+        let handle = unsafe { wellfriendpdf_render_contract_from_json(contract, &mut error) };
+        assert!(!handle.is_null());
+
+        let mut handle_png = WellfriendBuffer::empty();
+        let mut handle_png_report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_contract_handle_and_render_report_json(
+                doc,
+                handle,
+                &mut handle_png,
+                &mut handle_png_report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!handle_png_report.is_null());
+        assert_render_report_shape(handle_png_report);
+
+        let mut handle_buffer_report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_render_into_buffer_with_contract_handle_and_render_report_json(
+                doc,
+                handle,
+                surface.as_mut_ptr(),
+                surface.len(),
+                &mut handle_buffer_report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!handle_buffer_report.is_null());
+        assert_render_report_shape(handle_buffer_report);
+
+        unsafe {
+            wellfriendpdf_buffer_free(png);
+            wellfriendpdf_buffer_free(handle_png);
+            wellfriendpdf_string_free(contract);
+            wellfriendpdf_string_free(png_report);
+            wellfriendpdf_string_free(buffer_report);
+            wellfriendpdf_string_free(handle_png_report);
+            wellfriendpdf_string_free(handle_buffer_report);
+            wellfriendpdf_render_contract_free(handle);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
     fn capi_progressive_render_session_lifecycle_and_finish_png() {
         let pdf = sample_pdf();
         let mut error = std::ptr::null_mut();
@@ -6242,6 +9598,1033 @@ mod tests {
         assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
         unsafe {
             wellfriendpdf_buffer_free(png);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_render_new_with_contract_json_preserves_contract_identity() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let mut contract_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                mode.as_ptr(),
+                &mut contract_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!contract_json.is_null());
+        let contract_text = unsafe { CStr::from_ptr(contract_json) }
+            .to_string_lossy()
+            .into_owned();
+        let mut contract: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(&contract_text).expect("parse default contract");
+        contract.exactness = wellfriendpdf_engine::ExactnessPolicy::HighQualityExact;
+        let exact_contract_json =
+            CString::new(serde_json::to_string(&contract).expect("serialize exact contract"))
+                .expect("contract CString");
+
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new_with_contract_json(
+                doc,
+                exact_contract_json.as_ptr(),
+                64,
+                64,
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut token_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_token_json(job, &mut token_json, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let token_text = unsafe { CStr::from_ptr(token_json) }
+            .to_string_lossy()
+            .into_owned();
+        let token: serde_json::Value = serde_json::from_str(&token_text).expect("parse token");
+        assert_eq!(token["render_mode"], "compat");
+        assert_eq!(
+            token["render_contract_fingerprint"],
+            serde_json::json!(contract.cache_fingerprint())
+        );
+
+        unsafe {
+            wellfriendpdf_string_free(contract_json);
+            wellfriendpdf_string_free(token_json);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_revise_render_contract_updates_live_job() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut contract_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                mode.as_ptr(),
+                &mut contract_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let contract_text = unsafe { CStr::from_ptr(contract_json) }
+            .to_string_lossy()
+            .into_owned();
+        let mut contract: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(&contract_text).expect("parse default contract");
+        contract.clip = Some(wellfriendpdf_engine::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 80,
+        });
+        contract.width = 96;
+        contract.height = 80;
+        contract.stride = 96 * 4;
+        let expected_fingerprint = contract.cache_fingerprint();
+        let revised_contract_json =
+            CString::new(serde_json::to_string(&contract).expect("serialize revised contract"))
+                .expect("contract CString");
+
+        let mut revision_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_revise_render_contract_json(
+                job,
+                revised_contract_json.as_ptr(),
+                &mut revision_json,
+                &mut error,
+            )
+        };
+        if status != WELLFRIENDPDF_STATUS_OK {
+            let message = if error.is_null() {
+                "missing C ABI error detail".to_string()
+            } else {
+                unsafe { CStr::from_ptr(error) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            panic!("progressive render-contract revision failed: {message}");
+        }
+        let revision_text = unsafe { CStr::from_ptr(revision_json) }
+            .to_string_lossy()
+            .into_owned();
+        let revision: serde_json::Value =
+            serde_json::from_str(&revision_text).expect("parse revision report");
+        assert_eq!(revision["changed"], true);
+        assert_eq!(
+            revision["current_render_contract_fingerprint"],
+            serde_json::json!(expected_fingerprint)
+        );
+        assert_eq!(revision["step_report"]["total_units"], 4);
+        assert_eq!(revision["step_report"]["completed_units"], 0);
+        assert_eq!(
+            revision["obsolete_publications"][0]["reason"],
+            "render_contract_revised"
+        );
+
+        unsafe {
+            wellfriendpdf_string_free(contract_json);
+            wellfriendpdf_string_free(revision_json);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_finish_before_complete_uses_checked_error() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut png = WellfriendBuffer::empty();
+        let status =
+            unsafe { wellfriendpdf_progressive_render_finish_png(job, &mut png, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_ERROR);
+        assert!(!error.is_null());
+        let message = unsafe { CStr::from_ptr(error) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(message.contains("progressive render cannot finish before all tiles are complete"));
+
+        unsafe {
+            wellfriendpdf_string_free(error);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_request_cancel_reports_resumable_step() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let status = unsafe { wellfriendpdf_progressive_render_request_cancel(job, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+
+        let mut step = std::ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_progressive_render_step_json(job, 4, &mut step, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let step_json = unsafe { CStr::from_ptr(step) }
+            .to_str()
+            .expect("step JSON UTF-8");
+        let report: serde_json::Value = serde_json::from_str(step_json).expect("parse step report");
+        assert_eq!(report["cancelled"], true);
+        assert_eq!(report["phase"], "cancelled_resumable");
+        assert_eq!(report["lifecycle_state"], "paused");
+        assert_eq!(report["resume_possible"], true);
+
+        unsafe {
+            wellfriendpdf_string_free(step);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_revise_viewport_hint_reports_obsolete_publication() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut step = std::ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_progressive_render_step_json(job, 2, &mut step, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let first_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(step) }
+                .to_str()
+                .expect("step JSON UTF-8"),
+        )
+        .expect("parse first step");
+        let old_identity = first_report["publication_identity"]
+            .as_str()
+            .expect("publication identity")
+            .to_string();
+        unsafe { wellfriendpdf_string_free(step) };
+
+        let mut revise = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_revise_viewport_hint_json(
+                job,
+                1,
+                128,
+                128,
+                32,
+                32,
+                &mut revise,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let revise_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(revise) }
+                .to_str()
+                .expect("revision JSON UTF-8"),
+        )
+        .expect("parse revision report");
+        assert_eq!(revise_report["completed_units"], 0);
+        assert_ne!(
+            revise_report["publication_identity"].as_str().unwrap(),
+            old_identity
+        );
+        assert_eq!(
+            revise_report["obsolete_publications"][0]["publication_identity"],
+            old_identity
+        );
+        assert_eq!(
+            revise_report["obsolete_publications"][0]["reason"],
+            "viewport_hint_revised"
+        );
+
+        unsafe {
+            wellfriendpdf_string_free(revise);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_revise_dirty_region_reports_obsolete_tile_publication() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut step = std::ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_progressive_render_step_json(job, 2, &mut step, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let first_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(step) }
+                .to_str()
+                .expect("step JSON UTF-8"),
+        )
+        .expect("parse first step");
+        let old_identity = first_report["publication_identity"]
+            .as_str()
+            .expect("publication identity")
+            .to_string();
+        unsafe { wellfriendpdf_string_free(step) };
+
+        let mut revise = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_revise_dirty_region_json(
+                job,
+                1,
+                72,
+                8,
+                8,
+                8,
+                &mut revise,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let revise_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(revise) }
+                .to_str()
+                .expect("dirty revision JSON UTF-8"),
+        )
+        .expect("parse dirty revision report");
+        assert_eq!(revise_report["completed_units"], 1);
+        assert_ne!(
+            revise_report["publication_identity"].as_str().unwrap(),
+            old_identity
+        );
+        assert_eq!(
+            revise_report["obsolete_publications"][0]["publication_identity"],
+            old_identity
+        );
+        assert_eq!(
+            revise_report["obsolete_publications"][0]["reason"],
+            "dirty_region_revised"
+        );
+        assert_eq!(revise_report["obsolete_publications"][0]["tile"]["x"], 64);
+        assert!(
+            revise_report["obsolete_publications"][0]["tile_publication_identity"]
+                .as_str()
+                .is_some_and(|identity| identity.contains("tile_index=1"))
+        );
+
+        unsafe {
+            wellfriendpdf_string_free(revise);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_apply_render_invalidation_plan_obsoletes_retained_tile() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut step = std::ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_progressive_render_step_json(job, 2, &mut step, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let first_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(step) }
+                .to_str()
+                .expect("step JSON UTF-8"),
+        )
+        .expect("parse first step");
+        let publication = first_report["completed_tile_publications"][0].clone();
+        let old_identity = publication["publication_identity"]
+            .as_str()
+            .expect("publication identity")
+            .to_string();
+        let old_tile_identity = publication["tile_publication_identity"]
+            .as_str()
+            .expect("tile publication identity")
+            .to_string();
+        let next_revision = publication["document_revision"].as_u64().unwrap() + 1;
+        let tile = publication["tile"].clone();
+        unsafe { wellfriendpdf_string_free(step) };
+
+        let plan = serde_json::json!({
+            "schema_version": "render-transaction-invalidation-plan.v1",
+            "next_revision": next_revision,
+            "affected_pages": [1],
+            "mapped_source_ids": [],
+            "source_cache_markers": [],
+            "affected_tiles": [
+                {
+                    "page": 1,
+                    "tile": tile
+                }
+            ],
+            "conservative_reset_required": false
+        });
+        let plan_json = CString::new(plan.to_string()).expect("plan CString");
+        let mut report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_apply_render_invalidation_plan_json(
+                job,
+                plan_json.as_ptr(),
+                &mut report,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let invalidation_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(report) }
+                .to_str()
+                .expect("invalidation JSON UTF-8"),
+        )
+        .expect("parse invalidation report");
+        assert_eq!(invalidation_report["applied"], true);
+        assert_eq!(invalidation_report["affected_current_page"], true);
+        assert_eq!(
+            invalidation_report["previous_publication_identity"],
+            old_identity
+        );
+        assert_eq!(
+            invalidation_report["invalidated_completed_tiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(invalidation_report["step_report"]["obsolete_publications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["tile_publication_identity"].as_str()
+                == Some(old_tile_identity.as_str())));
+
+        unsafe {
+            wellfriendpdf_string_free(report);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_evaluate_tile_publication_reports_current_and_stale() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut step = std::ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_progressive_render_step_json(job, 1, &mut step, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let first_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(step) }
+                .to_str()
+                .expect("step JSON UTF-8"),
+        )
+        .expect("parse first step");
+        let publication = first_report["completed_tile_publications"][0].to_string();
+        let publication_c = CString::new(publication).expect("publication CString");
+        unsafe { wellfriendpdf_string_free(step) };
+
+        let mut acceptance = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_evaluate_tile_publication_json(
+                job,
+                publication_c.as_ptr(),
+                &mut acceptance,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let accepted_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(acceptance) }
+                .to_str()
+                .expect("acceptance JSON UTF-8"),
+        )
+        .expect("parse acceptance report");
+        assert_eq!(accepted_report["accepted"], true);
+        assert_eq!(accepted_report["reason"], "current");
+        unsafe { wellfriendpdf_string_free(acceptance) };
+
+        let mut revise = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_revise_viewport_hint_json(
+                job,
+                1,
+                128,
+                128,
+                32,
+                32,
+                &mut revise,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        unsafe { wellfriendpdf_string_free(revise) };
+
+        let mut stale = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_evaluate_tile_publication_json(
+                job,
+                publication_c.as_ptr(),
+                &mut stale,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let stale_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(stale) }
+                .to_str()
+                .expect("stale JSON UTF-8"),
+        )
+        .expect("parse stale report");
+        assert_eq!(stale_report["accepted"], false);
+        assert_eq!(stale_report["reason"], "obsolete_publication");
+
+        unsafe {
+            wellfriendpdf_string_free(stale);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_viewer_queue_json_exposes_preview() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut queue = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_viewer_queue_json(job, &mut queue, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(queue) }
+                .to_str()
+                .expect("queue JSON UTF-8"),
+        )
+        .expect("parse queue report");
+        assert!(report["viewer_queue_preview"]
+            .as_array()
+            .expect("viewer queue array")
+            .iter()
+            .any(|item| item["priority"] == "unhinted"));
+
+        unsafe {
+            wellfriendpdf_string_free(queue);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_execute_viewer_queue_json_advances_work() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut execution = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_execute_viewer_queue_json(
+                job,
+                2,
+                &mut execution,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(execution) }
+                .to_str()
+                .expect("execution JSON UTF-8"),
+        )
+        .expect("parse execution report");
+        assert_eq!(report["terminal_suppressed"], false);
+        assert!(
+            report["rendered_current_page_tiles"]
+                .as_u64()
+                .expect("rendered_current_page_tiles")
+                > 0
+        );
+        assert!(report["executed_items"]
+            .as_array()
+            .expect("executed items")
+            .iter()
+            .any(|item| item["result"] == "rendered_current_page_tile"
+                && item["tile_publication"].is_object()));
+
+        unsafe {
+            wellfriendpdf_string_free(execution);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_execute_viewer_queue_json_observes_cancellation() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+        let cancellation = unsafe { wellfriendpdf_render_cancellation_new(&mut error) };
+        assert!(!cancellation.is_null());
+        let status = unsafe { wellfriendpdf_render_cancellation_cancel(cancellation, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+
+        let mut execution = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_execute_viewer_queue_json_and_cancellation(
+                job,
+                2,
+                cancellation,
+                &mut execution,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(execution) }
+                .to_str()
+                .expect("execution JSON UTF-8"),
+        )
+        .expect("parse execution report");
+        assert_eq!(report["rendered_current_page_tiles"], 0);
+        assert_eq!(report["render_step_report"]["cancelled"], true);
+        assert_eq!(report["render_step_report"]["phase"], "cancelled_resumable");
+        assert_eq!(report["queue_after"]["lifecycle_state"], "paused");
+
+        unsafe {
+            wellfriendpdf_string_free(execution);
+            wellfriendpdf_render_cancellation_free(cancellation);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_execute_adjacent_page_prefetch_returns_child_handle() {
+        let pdf = two_page_sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                128,
+                128,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut queue = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_viewer_queue_json(job, &mut queue, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let queue_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(queue) }
+                .to_str()
+                .expect("queue JSON UTF-8"),
+        )
+        .expect("parse queue report");
+        let prefetch_identity = queue_report["adjacent_page_prefetches"][0]["prefetch_identity"]
+            .as_str()
+            .expect("prefetch identity");
+        let prefetch_identity = CString::new(prefetch_identity).expect("prefetch identity CString");
+
+        let mut child_job = std::ptr::null_mut();
+        let mut execution = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json(
+                job,
+                prefetch_identity.as_ptr(),
+                1,
+                &mut child_job,
+                &mut execution,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!child_job.is_null());
+        let report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(execution) }
+                .to_str()
+                .expect("execution JSON UTF-8"),
+        )
+        .expect("parse execution report");
+        assert_eq!(report["executed"], true);
+        assert_eq!(report["page_number"], 2);
+        assert!(
+            report["render_step_report"]["rendered_this_step"]
+                .as_u64()
+                .expect("rendered_this_step")
+                > 0
+        );
+
+        let mut child_token = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_token_json(child_job, &mut child_token, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let token: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(child_token) }
+                .to_str()
+                .expect("child token JSON UTF-8"),
+        )
+        .expect("parse child token");
+        assert_eq!(token["page_number"], 2);
+
+        unsafe {
+            wellfriendpdf_string_free(child_token);
+            wellfriendpdf_string_free(execution);
+            wellfriendpdf_string_free(queue);
+            wellfriendpdf_progressive_render_free(child_job);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_execute_adjacent_page_prefetch_observes_cancellation() {
+        let pdf = two_page_sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                128,
+                128,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut queue = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_viewer_queue_json(job, &mut queue, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let queue_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(queue) }
+                .to_str()
+                .expect("queue JSON UTF-8"),
+        )
+        .expect("parse queue report");
+        let prefetch_identity = queue_report["adjacent_page_prefetches"][0]["prefetch_identity"]
+            .as_str()
+            .expect("prefetch identity");
+        let prefetch_identity = CString::new(prefetch_identity).expect("prefetch identity CString");
+        let cancellation = unsafe { wellfriendpdf_render_cancellation_new(&mut error) };
+        assert!(!cancellation.is_null());
+        let status = unsafe { wellfriendpdf_render_cancellation_cancel(cancellation, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+
+        let mut child_job = std::ptr::null_mut();
+        let mut execution = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json_and_cancellation(
+                job,
+                prefetch_identity.as_ptr(),
+                1,
+                cancellation,
+                &mut child_job,
+                &mut execution,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!child_job.is_null());
+        let report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(execution) }
+                .to_str()
+                .expect("execution JSON UTF-8"),
+        )
+        .expect("parse execution report");
+        assert_eq!(report["executed"], true);
+        assert_eq!(report["render_step_report"]["rendered_this_step"], 0);
+        assert_eq!(report["render_step_report"]["cancelled"], true);
+        assert_eq!(report["render_step_report"]["phase"], "cancelled_resumable");
+
+        unsafe {
+            wellfriendpdf_string_free(execution);
+            wellfriendpdf_string_free(queue);
+            wellfriendpdf_render_cancellation_free(cancellation);
+            wellfriendpdf_progressive_render_free(child_job);
+            wellfriendpdf_progressive_render_free(job);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_viewer_callback_dispatch_json_exposes_events() {
+        unsafe extern "C" fn count_callback(
+            event_json: *const c_char,
+            user_data: *mut c_void,
+        ) -> c_int {
+            if event_json.is_null() || user_data.is_null() {
+                return WELLFRIENDPDF_STATUS_NULL;
+            }
+            let raw = match unsafe { CStr::from_ptr(event_json) }.to_str() {
+                Ok(raw) => raw,
+                Err(_) => return WELLFRIENDPDF_STATUS_ERROR,
+            };
+            let event: serde_json::Value = match serde_json::from_str(raw) {
+                Ok(event) => event,
+                Err(_) => return WELLFRIENDPDF_STATUS_ERROR,
+            };
+            if event["callback"].is_string() {
+                let count = unsafe { &mut *(user_data as *mut usize) };
+                *count += 1;
+            }
+            WELLFRIENDPDF_STATUS_OK
+        }
+
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+
+        let mut callbacks = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_viewer_callback_dispatch_json(
+                job,
+                &mut callbacks,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(callbacks) }
+                .to_str()
+                .expect("callbacks JSON UTF-8"),
+        )
+        .expect("parse callbacks report");
+        assert_eq!(report["no_callback_after_terminal_state"], false);
+        assert!(report["events"]
+            .as_array()
+            .expect("callbacks event array")
+            .iter()
+            .any(|event| event["callback"] == "viewer_queue_item_scheduled"));
+
+        let mut invoked = 0usize;
+        let mut dispatch = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_progressive_render_dispatch_viewer_callbacks(
+                job,
+                Some(count_callback),
+                (&mut invoked as *mut usize).cast(),
+                &mut dispatch,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let dispatch_report: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(dispatch) }
+                .to_str()
+                .expect("dispatch JSON UTF-8"),
+        )
+        .expect("parse dispatch report");
+        assert_eq!(
+            invoked,
+            dispatch_report["callbacks_dispatched"]
+                .as_u64()
+                .expect("callbacks_dispatched") as usize
+        );
+        assert!(invoked > 0);
+
+        unsafe {
+            wellfriendpdf_string_free(dispatch);
+            wellfriendpdf_string_free(callbacks);
             wellfriendpdf_progressive_render_free(job);
             wellfriendpdf_document_free(doc);
         }
@@ -7010,6 +11393,11 @@ mod tests {
             wellfriendpdf_document_security_report_json,
             "security_report",
         );
+        let views = report_envelope(
+            wellfriendpdf_document_views_report_json,
+            "document_views_report",
+        );
+        assert_eq!(views["report"]["views"].as_array().unwrap().len(), 5);
         report_envelope(wellfriendpdf_document_forms_report_json, "forms_report");
         let xfa = report_envelope(wellfriendpdf_document_xfa_report_json, "xfa_report");
         assert_eq!(xfa["report"]["schema_version"], "xfa_runtime.xfa.v1");
@@ -7331,6 +11719,38 @@ mod tests {
         assert!(plan.contains("editing_transactions_transaction_plan"));
         assert!(plan.contains("transaction_id"));
         unsafe { wellfriendpdf_string_free(json) };
+
+        let options = CString::new(
+            r#"{
+                "page_number":1,
+                "dpi":72,
+                "tile_width":64,
+                "tile_height":64
+            }"#,
+        )
+        .unwrap();
+        let mut output = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_editing_transactions_transaction_apply_with_render_invalidation_json(
+                doc,
+                request.as_ptr(),
+                options.as_ptr(),
+                &mut output,
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let bytes = unsafe { slice::from_raw_parts(output.data, output.len) };
+        assert!(bytes.starts_with(b"%PDF-"));
+        let apply = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(apply.contains("editing_transactions_transaction_apply_with_render_invalidation"));
+        assert!(apply.contains("render-transaction-invalidation-plan.v1"));
+        assert!(apply.contains("ContentEngine::invalidate_for_transaction_with_tiles"));
+        unsafe {
+            wellfriendpdf_buffer_free(output);
+            wellfriendpdf_string_free(json);
+        }
 
         let sample_text = CString::new("A\u{0301}B").unwrap();
         let direction = CString::new("ltr").unwrap();
@@ -7698,6 +12118,86 @@ mod tests {
         unsafe { wellfriendpdf_string_free(json) };
 
         unsafe { wellfriendpdf_document_free(doc) };
+    }
+
+    #[test]
+    fn capi_progressive_image_decode_lifecycle_report_json() {
+        let pdf = image_sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let request = CString::new(
+            r#"{"image_index":0,"max_retained_bytes":2048,"actions":["start","continue","cancel","close"]}"#,
+        )
+        .unwrap();
+        let mut json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_progressive_image_decode_lifecycle_report_json(
+                doc,
+                request.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "progressive_image_decode_lifecycle_report");
+        assert_eq!(value["report"]["image"]["name"], "Im1");
+        assert_eq!(
+            value["report"]["reports"][1]["phase"],
+            "full_decode_required"
+        );
+        assert_eq!(value["report"]["reports"][2]["state"], "cancelled");
+        assert_eq!(
+            value["report"]["reports"][2]["release_reason"],
+            "cancellation"
+        );
+        assert_eq!(value["report"]["reports"][3]["state"], "closed");
+        assert_eq!(
+            value["report"]["reports"][3]["release_reason"],
+            "session_close"
+        );
+        unsafe {
+            wellfriendpdf_string_free(json);
+        }
+
+        let request = CString::new(
+            r#"{"image_index":0,"max_retained_bytes":2048,"actions":["start","document_close","continue"]}"#,
+        )
+        .unwrap();
+        let mut json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_progressive_image_decode_lifecycle_report_json(
+                doc,
+                request.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["report"]["reports"][1]["phase"], "document_close");
+        assert_eq!(value["report"]["reports"][1]["state"], "closed");
+        assert_eq!(
+            value["report"]["reports"][1]["release_reason"],
+            "document_close"
+        );
+        assert_eq!(value["report"]["reports"][2]["phase"], "continue_terminal");
+        assert_eq!(
+            value["report"]["reports"][2]["release_reason"],
+            "document_close"
+        );
+        unsafe {
+            wellfriendpdf_string_free(json);
+            wellfriendpdf_document_free(doc);
+        }
     }
 
     #[test]

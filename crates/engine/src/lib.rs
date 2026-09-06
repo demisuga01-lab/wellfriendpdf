@@ -226,7 +226,7 @@ pub use codec_isolation::{
 pub use color_report::{
     color_report, color_report_bytes, ColorBackendDecision, ColorDiagnostic, ColorLimits,
     ColorReport, ColorSeverity, ColorSpaceUsage, ColorValidationProfile, OutputIntentInfo,
-    OverprintReport,
+    OverprintReport, TintTransformCacheReport,
 };
 pub use compliance::{
     convert_to_pdfa, convert_to_pdfa_checked, improve_pdfua_best_effort, validate_pdfa,
@@ -324,9 +324,10 @@ pub use editing_transactions::{
     EDITING_TRANSACTIONS_SCHEMA_VERSION,
 };
 pub use engine::{
-    max_decode_pixels, max_render_pixels, ContentEngine, ExtractionProfile, PageRegion,
-    PageResources, PlacedImageReference, RegionImage, RegionWord, DEFAULT_MAX_DECODE_PIXELS,
-    DEFAULT_MAX_RENDER_PIXELS,
+    max_decode_pixels, max_render_pixels, ContentEngine, ExtractionProfile,
+    ImageDecodeCapabilityDocumentReport, ImageDecodeCapabilityImageReport, PageRegion,
+    PageResources, PlacedImageReference, RegionImage, RegionWord, RenderContractTelemetryReport,
+    DEFAULT_MAX_DECODE_PIXELS, DEFAULT_MAX_RENDER_PIXELS,
 };
 pub use error::{ErrorKind, Result, WellfriendError};
 pub use eval::{score, score_json, ScoreInput, ScoreOutput};
@@ -344,8 +345,8 @@ pub use filters::{
 pub use fonts::variations::{AxisValue, VariationRequest};
 pub use fonts::{
     BundledFontProvider, FontDecodeSource, FontMatch, FontMatchRequest, FontProvider,
-    FontProviderSource, FontResolver, FontType, ShapeOptions, ShapedGlyph, ShapedRun,
-    TextDirection, TextShaper,
+    FontProviderSource, FontResolver, FontType, RegisteredFontProvider, ShapeOptions, ShapedGlyph,
+    ShapedRun, TextDirection, TextShaper,
 };
 pub use fonts_report::{list_fonts, FontInfo};
 pub use form_action_policy::{
@@ -419,29 +420,40 @@ pub use pubsec::{
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
-    flatten_cubic, flatten_path, get_fallback_font, map_refs_to_canonical_ids, path_raster_stats,
-    pixel_buffer_allocation_stats, pixel_compositor_backend,
-    pixel_compositor_detected_hardware_backend, pixel_compositor_operation_backend,
-    pixel_compositor_stats, rgb, rgba, AlphaMask, CachedGlyph, CanonicalDocument, ClipMask,
-    ColorManagementPolicy, ColorSpaceHandler, CompositingPolicy, ContractColor, CpuRenderDevice,
-    DashState, DeviceClip, DeviceMatrix, DisplayItemId, DisplayList, DisplayListStats, DisplayOp,
-    DrawState, EditDocumentView, ExactnessPolicy, FillRule, FlatPath, FontRasterizer,
-    FontSubstitutionEvent, FontSubstitutionLog, FontSubstitutionMetricPosture,
+    dirty_regions_to_render_tiles, flatten_cubic, flatten_path, get_fallback_font,
+    map_refs_to_canonical_ids, path_raster_stats, pixel_buffer_allocation_stats,
+    pixel_compositor_backend, pixel_compositor_detected_hardware_backend,
+    pixel_compositor_operation_backend, pixel_compositor_stats, rgb, rgba, AlphaMask,
+    BackendDocumentPagePlan, BackendDocumentPlanArena, BackendDocumentPlanArenaReport,
+    BackendPlanArenaReport, CachedGlyph, CanonicalDocument, ClipMask, ColorManagementPolicy,
+    ColorSpaceHandler, CompositingPolicy, ContractColor, CpuRenderDevice, DashState, DeviceClip,
+    DeviceMatrix, DisplayItemId, DisplayList, DisplayListStats, DisplayOp, DocumentViewBoundary,
+    DocumentViewsReport, DrawState, EditDocumentView, ExactnessPolicy, FillRule, FlatPath,
+    FontRasterizer, FontSubstitutionEvent, FontSubstitutionLog, FontSubstitutionMetricPosture,
     FontSubstitutionReason, FormRenderPolicy, GlyphCache, GlyphCacheKey, GlyphCacheStats,
     ImagePainter, InvalidationResult, LinePainter, ObjectIdentityId, PageBox, PageIdentity,
     PageRenderer, ParsedPageProgram, Path, PathPainter, PathRasterStats, PathSegment, PixelBuffer,
     PixelBufferAllocationStats, PixelColor, PixelCompositorBackend, PixelCompositorOperation,
     PixelCompositorStats, PrintProfile, PrintProfileRefusal, PrintProfileRefusalCategory,
-    ProgressiveRenderJob, ProgressiveRenderState, ProgressiveRenderStepReport,
-    ProgressiveRenderToken, RenderArtifactCacheStats, RenderCache, RenderCacheKey,
+    ProgressiveAdjacentPagePrefetch, ProgressiveAdjacentPagePrefetchExecution,
+    ProgressiveAdjacentPagePrefetchExecutionReport, ProgressiveObsoletePublication,
+    ProgressiveRenderContextRevisionReport, ProgressiveRenderFallbackEvent,
+    ProgressiveRenderInvalidationReport, ProgressiveRenderJob, ProgressiveRenderState,
+    ProgressiveRenderStepReport, ProgressiveRenderToken, ProgressiveTilePriorityClass,
+    ProgressiveTilePublication, ProgressiveTilePublicationAcceptance,
+    ProgressiveViewerCallbackDispatchReport, ProgressiveViewerCallbackEvent,
+    ProgressiveViewerCallbackSink, ProgressiveViewerQueueExecutionItem,
+    ProgressiveViewerQueueExecutionReport, ProgressiveViewerQueueItem,
+    ProgressiveViewerQueuePriority, RenderArtifactCacheStats, RenderCache, RenderCacheKey,
     RenderCacheMetrics, RenderColor, RenderContract, RenderDependencyGraph, RenderDevice,
     RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderQuality,
     RenderResourceBudget, RenderTile, ResourceId, RevisionId, SemanticDocumentView, SourceLinkId,
     SvgPage, TransactionInvalidationResult, TransactionWriteSet, Transform2D, UnsupportedRenderOp,
-    ValidationDocumentView, ViewMaterializationStats, Viewport, WuLineRenderer, BLACK, BLUE, GREEN,
-    RED, TRANSPARENT, WHITE,
+    ValidationDocumentView, ViewMaterializationStats, Viewport, WuLineRenderer,
+    BACKEND_DOCUMENT_PLAN_ARENA_REPORT_SCHEMA_VERSION, BACKEND_PLAN_ARENA_REPORT_SCHEMA_VERSION,
+    BLACK, BLUE, DOCUMENT_VIEWS_REPORT_SCHEMA_VERSION, GREEN, RED, TRANSPARENT, WHITE,
 };
-pub use render::{render_page_svg, svg, text_decode};
+pub use render::{render_page_svg, render_page_svg_strict, svg, text_decode};
 pub use runtime::*;
 pub use sdk::REPORT_ENVELOPE_VERSION;
 pub use secure_mutation::{

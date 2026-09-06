@@ -27,8 +27,9 @@
 //! [`crate::versioning`], [`crate::editing`], [`crate::filters`], and the
 //! [`crate::ContentEngine`] methods.
 
-use serde::Serialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     codec_isolation::{
@@ -48,7 +49,13 @@ use crate::{
     },
     parser_report::{parser_report_bytes_with_password, ParserMode},
     prepress,
-    render::cmm,
+    render::{
+        cmm, dirty_regions_to_render_tiles, map_refs_to_canonical_ids,
+        page_renderer::source_cache_markers_for_object, DeviceMatrix, PageBox,
+        ProgressiveImageDecodeReport, ProgressiveImageDecodeRequest, ProgressiveImageDecodeSession,
+        RenderContract, RenderTile, Transform2D,
+        RENDER_TRANSACTION_INVALIDATION_PLAN_SCHEMA_VERSION,
+    },
     security::{
         canonicalize_pdf, sanitize_pdf, scan_risky_content, security_report, CanonicalizeOptions,
         SanitizerOptions,
@@ -59,8 +66,8 @@ use crate::{
         validate_pdfx_profile, StandardsValidationOptions,
     },
     versioning::resource_dedup_report,
-    ContentEngine, DocumentInfo, Result, TextQuad, TextSearchOptions, TextSemanticOptions,
-    WellfriendError,
+    ContentEngine, DocumentInfo, RenderMode, Result, TextQuad, TextSearchOptions,
+    TextSemanticOptions, WellfriendError,
 };
 
 /// Version of the JSON envelope wrapping every SDK report. Bump only when the
@@ -114,6 +121,263 @@ pub fn risky_content_report_json(bytes: &[u8], password: Option<&[u8]>) -> Resul
 pub fn document_info_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope("document_info", &DocumentInfo::gather(engine.document())?)
+}
+
+/// Canonical document identity plus lazy render/edit/semantic/validation view
+/// boundaries. This is a source-boundary report; it does not render pages or
+/// construct semantic/validation models.
+pub fn document_views_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope("document_views_report", &engine.document_views_report()?)
+}
+
+/// Per-page render-view backend packed-plan arena report.
+///
+/// This compiles the current page display list through the render view and
+/// reports hot/cold arena, descriptor, batch, and compile-refusal counts without
+/// rendering pixels or constructing edit/semantic/validation views.
+pub fn backend_plan_arena_report_json(
+    bytes: &[u8],
+    page: usize,
+    dpi: u32,
+    mode: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let mode_name = mode.unwrap_or("compat");
+    let render_mode = RenderMode::from_name(mode_name).ok_or_else(|| {
+        WellfriendError::invalid_input(format!("mode must be compat or high, got '{mode_name}'"))
+    })?;
+    envelope(
+        "backend_plan_arena_report",
+        &engine
+            .render_view()
+            .backend_plan_arena_report(page, dpi, render_mode)?,
+    )
+}
+
+/// Per-page render-view backend packed-plan arena report for an explicit
+/// schema-v1 render contract.
+///
+/// This lets callers inspect display, print, or proof contract plan identity
+/// without rendering pixels and without depending on the default
+/// page/dpi/mode builder.
+pub fn backend_plan_arena_report_for_contract_json(
+    bytes: &[u8],
+    contract_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let contract = serde_json::from_str::<RenderContract>(contract_json).map_err(json_err)?;
+    envelope(
+        "backend_plan_arena_report",
+        &engine
+            .render_view()
+            .backend_plan_arena_report_for_contract(contract)?,
+    )
+}
+
+/// Whole-document render-view backend packed-plan arena report.
+///
+/// This explicitly materializes owned CPU backend plans for every page in the
+/// opened source revision, aggregates their packed hot/cold arenas, and still
+/// avoids pixel rendering plus edit/semantic/validation view construction.
+pub fn backend_document_plan_arena_report_json(
+    bytes: &[u8],
+    dpi: u32,
+    mode: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let mode_name = mode.unwrap_or("compat");
+    let render_mode = RenderMode::from_name(mode_name).ok_or_else(|| {
+        WellfriendError::invalid_input(format!("mode must be compat or high, got '{mode_name}'"))
+    })?;
+    let arena = engine
+        .render_view()
+        .backend_document_plan_arena(dpi, render_mode)?;
+    envelope("backend_document_plan_arena_report", &arena.report())
+}
+
+/// Sparse Prepress CMM Separation/DeviceN plate framebuffer report.
+///
+/// This follows the active page render interpreter's fill/stroke/color-space
+/// path, records supported Separation and DeviceN plate contributions, and
+/// returns the bounded plate/tint/overprint cache identity without rendering or
+/// exporting a production press surface.
+pub fn prepress_plate_report_json(
+    bytes: &[u8],
+    page: usize,
+    dpi: u32,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prepress_plate_report",
+        &engine.prepress_plate_report(page, dpi)?,
+    )
+}
+
+/// Per-image renderer decode capability report.
+///
+/// This enumerates discovered image XObjects and inline images, then reports the
+/// active decoder's native metadata-inspection, region, reduction, progressive,
+/// tile, and component capability status plus renderer-boundary cancellation
+/// and memory-budget controls for each image without decoding image pixels.
+pub fn image_decode_capability_report_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "image_decode_capability_report",
+        &engine.image_decode_capability_report()?,
+    )
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProgressiveImageDecodeLifecycleJsonRequest {
+    image_index: Option<usize>,
+    cache_key: Option<String>,
+    max_retained_bytes: Option<usize>,
+    actions: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProgressiveImageDecodeLifecycleReport {
+    schema_version: u32,
+    document_revision: u64,
+    image_count: usize,
+    image_index: usize,
+    image: crate::ImageDecodeCapabilityImageReport,
+    cache_key: String,
+    max_retained_bytes: usize,
+    reports: Vec<ProgressiveImageDecodeReport>,
+}
+
+/// Run a bounded progressive image-decode lifecycle against one discovered image.
+///
+/// `request_json` accepts:
+///
+/// - `image_index` (default `0`) selecting an image from
+///   [`ContentEngine::image_decode_capability_report`];
+/// - `cache_key` to override the stable source-derived key used for request ID
+///   generation;
+/// - `max_retained_bytes` (default 64 KiB);
+/// - `actions`, a sequence of `start`, `continue`, `pause`, `resume`,
+///   `cancel`, `fail`, `close`, and `document_close` (default: all
+///   non-failure lifecycle actions except document-close in that order).
+///
+/// The lifecycle does not decode image pixels while the active codec adapters
+/// lack resumable progressive continuation. It exposes the same typed
+/// state/release semantics through every JSON binding without pretending native
+/// progressive decode exists.
+pub fn progressive_image_decode_lifecycle_report_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let capability_report = engine.image_decode_capability_report()?;
+    let request: ProgressiveImageDecodeLifecycleJsonRequest = if request_json.trim().is_empty() {
+        ProgressiveImageDecodeLifecycleJsonRequest {
+            image_index: None,
+            cache_key: None,
+            max_retained_bytes: None,
+            actions: None,
+        }
+    } else {
+        serde_json::from_str(request_json).map_err(|error| {
+            WellfriendError::invalid_input(format!(
+                "progressive image decode lifecycle request JSON: {error}"
+            ))
+        })?
+    };
+
+    let image_index = request.image_index.unwrap_or(0);
+    let image = capability_report
+        .images
+        .get(image_index)
+        .cloned()
+        .ok_or_else(|| {
+            WellfriendError::invalid_input(format!(
+                "image_index {image_index} out of range for {} discovered images",
+                capability_report.image_count
+            ))
+        })?;
+    let cache_key = request
+        .cache_key
+        .unwrap_or_else(|| progressive_image_decode_cache_key(&capability_report, &image));
+    let max_retained_bytes = request.max_retained_bytes.unwrap_or(64 * 1024);
+    let actions = request
+        .actions
+        .unwrap_or_else(default_progressive_image_decode_actions);
+
+    let request =
+        ProgressiveImageDecodeRequest::new(cache_key.clone(), image.capability, max_retained_bytes);
+    let mut session = ProgressiveImageDecodeSession::new(request);
+    let mut reports = Vec::with_capacity(actions.len());
+    for action in actions {
+        let report = match normalize_lifecycle_action(&action).as_str() {
+            "start" => session.start(),
+            "continue" => session.continue_decode(),
+            "pause" => session.pause(),
+            "resume" => session.resume(),
+            "cancel" => session.cancel(),
+            "fail" => session.fail(),
+            "close" => session.close(),
+            "document_close" => session.close_for_document_close(),
+            other => {
+                return Err(WellfriendError::invalid_input(format!(
+                    "unsupported progressive image decode lifecycle action '{other}'"
+                )));
+            }
+        };
+        reports.push(report);
+    }
+
+    envelope(
+        "progressive_image_decode_lifecycle_report",
+        &ProgressiveImageDecodeLifecycleReport {
+            schema_version: 1,
+            document_revision: capability_report.document_revision,
+            image_count: capability_report.image_count,
+            image_index,
+            image,
+            cache_key,
+            max_retained_bytes,
+            reports,
+        },
+    )
+}
+
+fn progressive_image_decode_cache_key(
+    report: &crate::ImageDecodeCapabilityDocumentReport,
+    image: &crate::ImageDecodeCapabilityImageReport,
+) -> String {
+    format!(
+        "image-decode:rev{}:page{}:{}:{}:{}:{}x{}:{}:{:?}",
+        report.document_revision,
+        image.page,
+        image.object_number,
+        image.generation_number,
+        image.name,
+        image.width,
+        image.height,
+        image.bits_per_component,
+        image.filters
+    )
+}
+
+fn default_progressive_image_decode_actions() -> Vec<String> {
+    ["start", "continue", "pause", "resume", "cancel", "close"]
+        .iter()
+        .map(|action| (*action).to_string())
+        .collect()
+}
+
+fn normalize_lifecycle_action(action: &str) -> String {
+    action.trim().replace('-', "_").to_ascii_lowercase()
 }
 
 /// Parser diagnostics: repair/xref/revisions/linearization/encryption discovery,
@@ -1096,6 +1360,350 @@ pub fn editing_transactions_transaction_apply_json(
     ))
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct RenderInvalidationPlanOptions {
+    render_contract: Option<Value>,
+    render_contract_json: Option<String>,
+    page_number: Option<usize>,
+    page: Option<usize>,
+    dpi: Option<u32>,
+    page_box: Option<String>,
+    device_transform: Option<[f64; 6]>,
+    tile_width: Option<u32>,
+    tile_height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PageRenderTileReport {
+    page: usize,
+    tile: RenderTile,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RenderInvalidationDirtyRegionConversionReport {
+    requested: bool,
+    status: &'static str,
+    page_number: Option<usize>,
+    page_box: Option<PageBox>,
+    dpi: Option<u32>,
+    viewport_width_px: Option<u32>,
+    viewport_height_px: Option<u32>,
+    tile_width: Option<u32>,
+    tile_height: Option<u32>,
+    dirty_region_count: usize,
+    converted_tile_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RenderInvalidationSourceCacheMarkerReport {
+    source_id: crate::render::ObjectIdentityId,
+    object_number: u32,
+    generation: u16,
+    markers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RenderTransactionInvalidationPlanReport {
+    schema_version: &'static str,
+    next_revision: crate::render::RevisionId,
+    affected_object_refs: Vec<String>,
+    affected_pages: Vec<usize>,
+    mapped_source_ids: Vec<crate::render::ObjectIdentityId>,
+    source_cache_markers: Vec<RenderInvalidationSourceCacheMarkerReport>,
+    unmapped_refs: Vec<String>,
+    conservative_reset_required: bool,
+    affected_tiles: Vec<PageRenderTileReport>,
+    exact_tile_coverage_complete: bool,
+    uncovered_affected_pages: Vec<usize>,
+    dirty_region_conversion: RenderInvalidationDirtyRegionConversionReport,
+    cache_application_entry_points: Vec<&'static str>,
+    publication_policy: &'static str,
+}
+
+fn revision_id_from_bytes(bytes: &[u8]) -> crate::render::RevisionId {
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    crate::render::RevisionId(u64::from_le_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ]))
+}
+
+fn parse_render_contract_value(value: Value) -> Result<RenderContract> {
+    match value {
+        Value::String(json) => serde_json::from_str::<RenderContract>(&json).map_err(json_err),
+        Value::Null => Err(WellfriendError::invalid_input(
+            "render_invalidation render_contract must not be null",
+        )),
+        other => serde_json::from_value::<RenderContract>(other).map_err(json_err),
+    }
+}
+
+fn parse_page_box_name(value: Option<&str>) -> Result<PageBox> {
+    let Some(value) = value else {
+        return Ok(PageBox::Crop);
+    };
+    match value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '-'], "")
+        .as_str()
+    {
+        "" | "crop" | "cropbox" => Ok(PageBox::Crop),
+        "media" | "mediabox" => Ok(PageBox::Media),
+        "bleed" | "bleedbox" => Ok(PageBox::Bleed),
+        "trim" | "trimbox" => Ok(PageBox::Trim),
+        "art" | "artbox" => Ok(PageBox::Art),
+        _ => Err(WellfriendError::invalid_input(format!(
+            "unsupported render_invalidation page_box '{value}'"
+        ))),
+    }
+}
+
+fn parse_render_invalidation_options(
+    options_json: Option<&str>,
+) -> Result<Option<RenderInvalidationPlanOptions>> {
+    let Some(options_json) = options_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    serde_json::from_str::<RenderInvalidationPlanOptions>(options_json)
+        .map(Some)
+        .map_err(json_err)
+}
+
+fn render_invalidation_source_cache_markers(
+    engine: &ContentEngine,
+    mapped_source_ids: &[crate::render::ObjectIdentityId],
+) -> Vec<RenderInvalidationSourceCacheMarkerReport> {
+    let identities = engine.canonical_document().object_identities();
+    mapped_source_ids
+        .iter()
+        .filter_map(|source_id| {
+            let identity = identities
+                .iter()
+                .find(|identity| identity.id == *source_id)?;
+            Some(RenderInvalidationSourceCacheMarkerReport {
+                source_id: *source_id,
+                object_number: identity.number,
+                generation: identity.generation,
+                markers: source_cache_markers_for_object(identity.number, identity.generation),
+            })
+        })
+        .collect()
+}
+
+fn render_invalidation_uncovered_affected_pages(
+    affected_pages: &[usize],
+    affected_tiles: &[PageRenderTileReport],
+) -> Vec<usize> {
+    affected_pages
+        .iter()
+        .copied()
+        .filter(|page| !affected_tiles.iter().any(|entry| entry.page == *page))
+        .collect()
+}
+
+fn build_render_invalidation_plan(
+    engine: &ContentEngine,
+    transaction_report: &crate::editing_transactions::EditTransactionReport,
+    next_revision: crate::render::RevisionId,
+    options_json: Option<&str>,
+) -> Result<RenderTransactionInvalidationPlanReport> {
+    let (mapped_source_ids, unmapped_refs) = map_refs_to_canonical_ids(
+        &transaction_report.affected_objects,
+        engine.canonical_document().object_identities(),
+    );
+    let source_cache_markers = render_invalidation_source_cache_markers(engine, &mapped_source_ids);
+    let Some(options) = parse_render_invalidation_options(options_json)? else {
+        return Ok(RenderTransactionInvalidationPlanReport {
+            schema_version: RENDER_TRANSACTION_INVALIDATION_PLAN_SCHEMA_VERSION,
+            next_revision,
+            affected_object_refs: transaction_report.affected_objects.clone(),
+            affected_pages: transaction_report.affected_pages.clone(),
+            mapped_source_ids,
+            source_cache_markers,
+            conservative_reset_required: !unmapped_refs.is_empty(),
+            unmapped_refs,
+            affected_tiles: Vec::new(),
+            exact_tile_coverage_complete: false,
+            uncovered_affected_pages: transaction_report.affected_pages.clone(),
+            dirty_region_conversion: RenderInvalidationDirtyRegionConversionReport {
+                requested: false,
+                status: "not_requested",
+                page_number: None,
+                page_box: None,
+                dpi: None,
+                viewport_width_px: None,
+                viewport_height_px: None,
+                tile_width: None,
+                tile_height: None,
+                dirty_region_count: transaction_report.dirty_regions.len(),
+                converted_tile_count: 0,
+            },
+            cache_application_entry_points: vec![
+                "ContentEngine::invalidate_for_transaction",
+                "TransactionWriteSet::from_transaction_report",
+            ],
+            publication_policy: "callers should discard or reject stale tile publications matching affected pages/sources; no tile grid was provided for exact dirty-tile conversion",
+        });
+    };
+
+    let contract = match options.render_contract {
+        Some(value) => Some(parse_render_contract_value(value)?),
+        None => match options.render_contract_json.as_deref() {
+            Some(json) => Some(serde_json::from_str::<RenderContract>(json).map_err(json_err)?),
+            None => None,
+        },
+    };
+    if let Some(contract) = &contract {
+        contract.validate()?;
+    }
+
+    let page_number = contract
+        .as_ref()
+        .map(|contract| contract.page_number)
+        .or(options.page_number)
+        .or(options.page)
+        .or_else(|| transaction_report.affected_pages.first().copied())
+        .ok_or_else(|| {
+            WellfriendError::invalid_input(
+                "render_invalidation requires page_number/page or an affected page in the transaction report",
+            )
+        })?;
+    let dpi = contract
+        .as_ref()
+        .map(|contract| contract.dpi)
+        .or(options.dpi)
+        .unwrap_or(72)
+        .max(1);
+    let page_box = contract
+        .as_ref()
+        .map(|contract| contract.page_box)
+        .unwrap_or(parse_page_box_name(options.page_box.as_deref())?);
+    let mut viewport = engine.page_viewport_for_box(page_number, dpi, page_box)?;
+    let transform = contract
+        .as_ref()
+        .map(|contract| contract.transform)
+        .unwrap_or_else(|| {
+            options
+                .device_transform
+                .map(DeviceMatrix::from_f64)
+                .unwrap_or_default()
+        });
+    if !transform.is_identity() {
+        viewport = viewport.with_device_transform(Transform2D::from_array(transform.to_f64()));
+    }
+    let tile_width = options
+        .tile_width
+        .or_else(|| contract.as_ref().map(|contract| contract.width))
+        .unwrap_or(viewport.width_px);
+    let tile_height = options
+        .tile_height
+        .or_else(|| contract.as_ref().map(|contract| contract.height))
+        .unwrap_or(viewport.height_px);
+    if tile_width == 0 || tile_height == 0 {
+        return Err(WellfriendError::invalid_input(
+            "render_invalidation tile_width and tile_height must be non-zero",
+        ));
+    }
+
+    let affected_tiles = dirty_regions_to_render_tiles(
+        &transaction_report.dirty_regions,
+        page_number,
+        &viewport,
+        tile_width,
+        tile_height,
+    )
+    .into_iter()
+    .map(|(page, tile)| PageRenderTileReport { page, tile })
+    .collect::<Vec<_>>();
+    let converted_tile_count = affected_tiles.len();
+    let uncovered_affected_pages = render_invalidation_uncovered_affected_pages(
+        &transaction_report.affected_pages,
+        &affected_tiles,
+    );
+    let exact_tile_coverage_complete = uncovered_affected_pages.is_empty();
+
+    Ok(RenderTransactionInvalidationPlanReport {
+        schema_version: RENDER_TRANSACTION_INVALIDATION_PLAN_SCHEMA_VERSION,
+        next_revision,
+        affected_object_refs: transaction_report.affected_objects.clone(),
+        affected_pages: transaction_report.affected_pages.clone(),
+        mapped_source_ids,
+        source_cache_markers,
+        conservative_reset_required: !unmapped_refs.is_empty(),
+        unmapped_refs,
+        affected_tiles,
+        exact_tile_coverage_complete,
+        uncovered_affected_pages,
+        dirty_region_conversion: RenderInvalidationDirtyRegionConversionReport {
+            requested: true,
+            status: if converted_tile_count == 0 {
+                "no_matching_dirty_tiles"
+            } else if !exact_tile_coverage_complete {
+                "partial_tile_coverage_page_wide_uncovered_pages"
+            } else {
+                "converted_to_render_tiles"
+            },
+            page_number: Some(page_number),
+            page_box: Some(page_box),
+            dpi: Some(dpi),
+            viewport_width_px: Some(viewport.width_px),
+            viewport_height_px: Some(viewport.height_px),
+            tile_width: Some(tile_width),
+            tile_height: Some(tile_height),
+            dirty_region_count: transaction_report.dirty_regions.len(),
+            converted_tile_count,
+        },
+        cache_application_entry_points: vec![
+            "ContentEngine::invalidate_for_transaction_with_tiles",
+            "TransactionWriteSet::from_transaction_report_with_tiles",
+        ],
+        publication_policy: "callers should reject stale tile publications whose page/source identity or exact dirty tile appears in this plan before publishing edited-output pixels",
+    })
+}
+
+/// Apply an editing transaction and return a binding-safe render-invalidation
+/// plan beside the transaction report.
+///
+/// `render_invalidation_options_json` is optional. When present, it may include
+/// a `render_contract` object/string or `page_number`/`dpi`/`page_box` plus
+/// `tile_width` and `tile_height`; dirty rectangles from the transaction report
+/// are converted to exact render tiles for the supplied viewport.
+pub fn editing_transactions_transaction_apply_with_render_invalidation_json(
+    bytes: &[u8],
+    request_json: &str,
+    render_invalidation_options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::editing_transactions::SceneTextEditRequest>(request_json)
+            .map_err(json_err)?;
+    let engine = ContentEngine::open_bytes(input.clone())?;
+    let (output, transaction_report) =
+        crate::editing_transactions::apply_scene_text_transaction(&input, &request)?;
+    let next_revision = revision_id_from_bytes(&output);
+    let render_invalidation = build_render_invalidation_plan(
+        &engine,
+        &transaction_report,
+        next_revision,
+        render_invalidation_options_json,
+    )?;
+    Ok((
+        output,
+        envelope(
+            "editing_transactions_transaction_apply_with_render_invalidation",
+            &json!({
+                "transaction_report": transaction_report,
+                "render_invalidation": render_invalidation,
+            }),
+        )?,
+    ))
+}
+
 /// Alias for scene-facing text edits that compile to source-level source editing ops.
 pub fn editing_transactions_scene_edit_text_json(
     bytes: &[u8],
@@ -1103,6 +1711,21 @@ pub fn editing_transactions_scene_edit_text_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     editing_transactions_transaction_apply_json(bytes, request_json, password)
+}
+
+/// Alias for scene-facing text edits that also need a render-invalidation plan.
+pub fn editing_transactions_scene_edit_text_with_render_invalidation_json(
+    bytes: &[u8],
+    request_json: &str,
+    render_invalidation_options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    editing_transactions_transaction_apply_with_render_invalidation_json(
+        bytes,
+        request_json,
+        render_invalidation_options_json,
+        password,
+    )
 }
 
 /// Report dirty entities/regions for a scene text transaction.
@@ -1878,7 +2501,7 @@ fn annotation_ocg_rendering_renderer_report_value() -> serde_json::Value {
             "unsupported_reported": [
                 "alternate_configuration_selection_public_option",
                 "Usage_Print_Export_active_mode_selection",
-                "malformed_or_cyclic_OCG_references_fail_open_with_diagnostic"
+                "malformed_or_cyclic_OCG_references_fail_closed_with_typed_render_refusal"
             ],
             "matrix_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/ocg-layer-matrix.json"
         },
@@ -1892,9 +2515,13 @@ fn annotation_ocg_rendering_renderer_report_value() -> serde_json::Value {
                 "cancelled_resumable_step_reports",
                 "partial_surface_preservation_in_process",
                 "full_vs_progressive_equivalence_tests",
-                "page_box_rotation_render_mode_and_OCG_visibility_fingerprint_in_token"
+                "page_box_rotation_render_mode_and_OCG_visibility_fingerprint_in_token",
+                "publication_identity_in_token_and_step_reports",
+                "completed_tile_publication_identity_for_stale_tile_rejection",
+                "viewer_callback_dispatch_report",
+                "C/Python/WASM/.NET/Java_callback_execution_helpers"
             ],
-            "binding_limit": "Rust engine surface is available; callback-style Python/C/WASM/.NET/Java cancellation/progress tokens remain later binding work",
+            "binding_limit": "Progressive session request-cancel, viewer queue execution JSON, adjacent-page prefetch execution JSON, viewer callback dispatch JSON, and synchronous source callback execution helpers are source-exposed in C/Python/WASM/.NET/Java/server; external viewer runtime matrix validation is deferred beyond source surfaces",
             "matrix_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/progressive-render-matrix.json"
         },
         "tile_band_cache_performance": {
@@ -1978,7 +2605,7 @@ fn renderer_validation_validation_report_value() -> serde_json::Value {
         "remaining_bounded_limits": [
             "non_widget_generated_annotation_shapes remain policy-reported unless an author AP stream exists",
             "alternate OCG configuration selection remains parsed/report-only without public selection API",
-            "binding-level progressive callbacks remain later binding work",
+            "external progressive viewer queue runtime matrix validation is deferred beyond source queue execution surfaces",
             "global image/Form/pattern/shading resource caches remain outside Annotation Ocg Rendering tile-cache closure"
         ]
     })
@@ -2841,14 +3468,14 @@ fn renderer_fuzz_cmm_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Va
             "native_backend_used_in_current_build": false,
             "feature_flag_status": "reserved_not_available",
             "implemented_default_transforms": [
-                "ICCBased profile-to-sRGB preview through qcms",
+                "ICCBased Gray/RGB profile-to-sRGB preview through qcms",
                 "DeviceCMYK deterministic process-ink preview",
                 "CalRGB/CalGray/Lab to sRGB fallback",
                 "rendering intent carried into qcms transform options"
             ],
             "output_intent_behavior": "reported; destination-output proofing transform remains later owner",
             "image_integration": "ICCBased image source to sRGB preview where qcms accepts the profile",
-            "shading_integration": "current Device/Cal/Lab color model only",
+            "shading_integration": "Device/Cal/Lab plus SVG/PS ICCBased Gray/RGB vector shading preview in default qcms; valid ICCBased CMYK vector shadings require native-cmm-lcms2",
             "pattern_integration": "current Device/Cal/Lab color model only",
             "transparency_group_integration": "RGB framebuffer preview only",
             "transform_tests": "qcms_identity_vectors_no_native_claim",
@@ -2882,7 +3509,7 @@ fn renderer_fuzz_cmm_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Va
             "release-duration coverage-guided renderer fuzzing remains a release-hardening run over the Renderer Fuzz CMM targets and promoted corpus",
             "LittleCMS/native CMM is not linked until a separate audited native boundary and package policy are accepted",
             "output-intent destination proofing, device-link ICC, multicolor ICC, true BPC, spot/DeviceN plates, separation framebuffers, and overprint proofing remain later CMM/prepress owners",
-            "qcms/default ICCBased transforms are sRGB preview transforms, not full prepress parity"
+            "qcms/default ICCBased transforms are Gray/RGB sRGB preview transforms; CMYK ICC vector-shading conversion requires native-cmm-lcms2 and still is not full prepress parity"
         ]
     })
 }
@@ -2935,7 +3562,7 @@ fn native_cmm_backend_native_littlecms_cmm_backend_closure_report_value() -> ser
         "icc_transform_support": {
             "gray": if native.available { "lcms2_profile_to_srgb" } else { "qcms_fallback_profile_to_srgb" },
             "rgb": if native.available { "lcms2_profile_to_srgb" } else { "qcms_fallback_profile_to_srgb" },
-            "cmyk": if native.available { "lcms2_profile_to_srgb_for_valid_cmyk_icc_profiles" } else { "qcms_fallback_profile_to_srgb_where_qcms_accepts_profile" },
+            "cmyk": if native.available { "lcms2_profile_to_srgb_for_valid_cmyk_icc_profiles" } else { "unsupported_in_default_qcms_requires_native_lcms2" },
             "malformed_profiles": "fail_closed_structured_diagnostics",
             "oversized_profiles": "fail_closed_16_mib_cap"
         },
@@ -3170,7 +3797,7 @@ fn nchannel_plate_prepress_nchannel_plate_reference_closure_report_value() -> se
         "remaining_exact_limits": [
             "Prepress Proofing owns bounded overprint close-out; Nchannel Plate Prepress remains the n-channel baseline",
             "certification-grade PDF/X validation is later standards work",
-            "resource-heavy Type3 charprocs that invoke XObjects/shadings/images are fail-closed until recursive Type3 resource execution owns those resources",
+            "Type3 charprocs with typed resource ops and per-paint inherited/explicit path colors now use guarded retained plans",
             "ICC profiles whose n-channel pixel format is not exposed by the safe LittleCMS wrapper are inventory plus unsupported_reported_unsafe_profile rather than transformed"
         ],
         "closure_gates": {
@@ -3205,7 +3832,7 @@ fn prepress_proofing_full_overprint_prepress_closeout_report_value() -> serde_js
             "op_opm_status": "OP_stroke_and_op_fill_are_distinct; OPM_0_and_OPM_1_are_modeled_for_supported_process_named_plate_paths",
             "fill_overprint": "implemented_for_DeviceCMYK_Separation_DeviceN_and_named_plate_contribution_paths",
             "stroke_overprint": "implemented_for_DeviceCMYK_Separation_DeviceN_and_named_plate_contribution_paths",
-            "text": "implemented_for_text_fill_text_stroke_Type0_CID_simple_fonts_and_safe_Type3_path_geometry; resource_heavy_Type3_exact_limit_reported",
+            "text": "implemented_for_text_fill_text_stroke_Type0_CID_simple_fonts_safe_Type3_path_geometry_and_guarded_retained_Type3_resource_charprocs_with_per_paint_color",
             "vector": "implemented_for_fill_stroke_fill_stroke_even_odd_nonzero_dash_cap_join_geometry",
             "image": "implemented_for_stencil_current_color_named_separation_devicen_samples_and_CMYK_component_report_paths; unsafe_high_channel_layouts_fail_closed",
             "shading": "implemented_for_axial_radial_mesh_patch_and_function_color_paths_already_supported_by_renderer_CMM_layer",
@@ -3214,7 +3841,7 @@ fn prepress_proofing_full_overprint_prepress_closeout_report_value() -> serde_js
             "plate_preview_consistency": "plate_hashes_RGB_preview_hashes_and_overprint_posture_are_written_by_prepress_proofing_benchmark",
             "remaining_limits": [
                 "vendor-specific RIP quirks without reference evidence are not claimed",
-                "recursive resource-heavy Type3 charprocs remain fail-closed",
+                "unsupported Type3 state/resource matrices remain exact limits",
                 "unsafe high-channel image or ICC pixel formats not exposed by the safe wrapper are unsupported_reported_exact"
             ]
         },
@@ -3440,10 +4067,15 @@ pub fn feature_report_json() -> Result<String> {
                 },
                 "corpus_page_count": 13,
                 "total_pairwise_comparisons": 78,
-                "known_later_owned_renderer_categories": [
-                    "pattern/later",
-                    "shading/later",
-                    "transparency/later"
+                "source_active_renderer_categories": [
+                    "pattern/source_active_with_typed_limits",
+                    "shading/source_active_with_typed_limits",
+                    "transparency/source_active_with_typed_limits"
+                ],
+                "deferred_external_validation_categories": [
+                    "pattern/external_matrix_validation",
+                    "shading/external_matrix_validation",
+                    "transparency/external_matrix_validation"
                 ],
                 "multi_reference_audit_complete": true
             }
@@ -3736,9 +4368,9 @@ pub fn feature_report_json() -> Result<String> {
             },
             "fallback_taxonomy": {
                 "removed_vague_buckets": [
-                    "text_clipping/later",
-                    "shading/later",
-                    "pattern/later"
+                    "text_clipping/source_active_with_typed_limits",
+                    "shading/source_active_with_typed_limits",
+                    "pattern/source_active_with_typed_limits"
                 ],
                 "remaining_precise_limits": [
                     "advanced_icc_device_link_multicolor_cmm",
@@ -3858,7 +4490,7 @@ pub fn feature_report_json() -> Result<String> {
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
-            "security_report", "sanitize", "canonicalize", "parser_report",
+            "security_report", "document_views_report", "sanitize", "canonicalize", "parser_report",
             "color_report", "standards_profile", "interactive_report",
             "forms_report", "annotation_report", "page_operations_report",
             "signature_report", "font_report", "decode_budget_report",
@@ -3893,23 +4525,53 @@ pub fn feature_report_json() -> Result<String> {
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
-            "exposed_bindings": [],
+            "exposed_bindings": [
+                "Rust",
+                "server",
+                "C",
+                "Python",
+                "WASM",
+                ".NET",
+                "Java"
+            ],
             "engine_observable_operations": [
                 "progressive_render_job_with_mode",
+                "progressive_render_job_with_contract",
                 "ProgressiveRenderJob::render_next",
-                "ProgressiveRenderJob::token"
+                "ProgressiveRenderJob::token",
+                "ProgressiveRenderJob::revise_viewport_hint",
+                "ProgressiveRenderJob::revise_dirty_region",
+                "ProgressiveRenderJob::revise_render_context",
+                "ProgressiveRenderJob::revise_render_contract",
+                "ProgressiveRenderJob::evaluate_tile_publication",
+                "ProgressiveRenderJob::viewer_queue_report",
+                "ProgressiveRenderJob::viewer_callback_dispatch_report"
             ],
-            "reason": "Annotation Ocg Rendering adds an engine-level tile checkpoint model; callback-style binding progress APIs remain later binding work."
+            "reason": "Annotation Ocg Rendering adds an engine-level tile checkpoint model, canonical schema-v1 render-contract construction and live contract revision, source-level viewport/dirty-region/contract obsolete-publication reports, source-session tile-publication acceptance, adjacent-page prefetch preview planning, source viewer queue execution JSON, adjacent-page prefetch execution JSON, viewer callback dispatch JSON, and C/Python/WASM/.NET/Java synchronous callback helpers; external viewer runtime matrix validation is deferred beyond source surfaces."
         },
         "cancellation": {
-            "status": "engine_render_cancellation_supported_binding_tokens_later",
-            "exposed_bindings": [],
+            "status": "engine_render_cancellation_progressive_bindings_source_available",
+            "exposed_bindings": [
+                "Rust",
+                "server",
+                "C",
+                "Python",
+                "WASM",
+                ".NET",
+                "Java"
+            ],
             "engine_observable_operations": [
                 "render_page_cancellable",
                 "render_display_list_cancellable_with_mode",
-                "ProgressiveRenderJob::render_next"
+                "ProgressiveRenderJob::render_next",
+                "ProgressiveRenderJob::request_cancel",
+                "ProgressiveRenderJob::revise_viewport_hint",
+                "ProgressiveRenderJob::revise_render_context",
+                "ProgressiveRenderJob::revise_render_contract",
+                "ProgressiveRenderJob::viewer_queue_report",
+                "ProgressiveRenderJob::viewer_callback_dispatch_report"
             ],
-            "reason": "Engine render internals observe CancelToken and progressive steps return resumable cancellation reports; Python/C/WASM/.NET/Java binding-level cancellation tokens remain later work."
+            "reason": "Engine render internals observe linked CancelToken values, and progressive session request-cancel, viewport/dirty-region/full-render-contract obsolete-publication JSON, tile-publication evaluation, viewer queue preview/execution JSON, adjacent-page prefetch execution JSON, viewer callback dispatch JSON, and C/Python/WASM/.NET/Java synchronous callback execution helpers are exposed through source surfaces; external viewer runtime matrix validation is deferred beyond source cancellation and queue surfaces."
         },
     });
     serde_json::to_string(&json!({
@@ -4688,6 +5350,104 @@ mod tests {
         .expect("fixture present")
     }
 
+    fn text_edit_fixture(content: &[u8]) -> Vec<u8> {
+        use crate::writer::{OutputObject, PdfWriter};
+        use crate::PdfObject;
+
+        let mut catalog = crate::PdfDictionary::empty();
+        catalog.insert("Type", PdfObject::Name("Catalog".into()));
+        catalog.insert(
+            "Pages",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        let mut pages = crate::PdfDictionary::empty();
+        pages.insert("Type", PdfObject::Name("Pages".into()));
+        pages.insert("Count", PdfObject::Integer(1));
+        pages.insert(
+            "Kids",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 3,
+                generation: 0,
+            }]),
+        );
+        let mut font = crate::PdfDictionary::empty();
+        font.insert("Type", PdfObject::Name("Font".into()));
+        font.insert("Subtype", PdfObject::Name("Type1".into()));
+        font.insert("BaseFont", PdfObject::Name("Courier".into()));
+        font.insert("Encoding", PdfObject::Name("WinAnsiEncoding".into()));
+        let mut fonts = crate::PdfDictionary::empty();
+        fonts.insert(
+            "F1",
+            PdfObject::Reference {
+                number: 5,
+                generation: 0,
+            },
+        );
+        let mut resources = crate::PdfDictionary::empty();
+        resources.insert("Font", PdfObject::Dictionary(fonts));
+        let mut page = crate::PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".into()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(200),
+                PdfObject::Integer(200),
+            ]),
+        );
+        page.insert("Resources", PdfObject::Dictionary(resources));
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: 4,
+                generation: 0,
+            },
+        );
+        let mut stream = crate::PdfDictionary::empty();
+        stream.insert("Length", PdfObject::Integer(content.len() as i64));
+        PdfWriter::new(
+            vec![
+                OutputObject {
+                    number: 1,
+                    object: PdfObject::Dictionary(catalog),
+                },
+                OutputObject {
+                    number: 2,
+                    object: PdfObject::Dictionary(pages),
+                },
+                OutputObject {
+                    number: 3,
+                    object: PdfObject::Dictionary(page),
+                },
+                OutputObject {
+                    number: 4,
+                    object: PdfObject::Stream {
+                        dict: stream,
+                        raw: content.to_vec(),
+                    },
+                },
+                OutputObject {
+                    number: 5,
+                    object: PdfObject::Dictionary(font),
+                },
+            ],
+            1,
+        )
+        .write()
+        .expect("text edit fixture")
+    }
+
     fn parse(json: &str) -> serde_json::Value {
         serde_json::from_str(json).expect("valid JSON")
     }
@@ -4698,6 +5458,83 @@ mod tests {
         assert_eq!(v["kind"], kind);
         assert!(v.get("report").is_some(), "report field present");
         v
+    }
+
+    fn one_image_pdf() -> Vec<u8> {
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+            b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /DCTDecode /Length 4 >>\nstream\nxxxx\nendstream".to_vec(),
+            b"<< /Length 19 >>\nstream\nq 1 0 0 1 0 0 cm /Im1 Do Q\nendstream".to_vec(),
+        ];
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            pdf.extend_from_slice(obj);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    fn prepress_plate_pdf() -> Vec<u8> {
+        let content = "/CS1 cs 0.25 scn 10 10 20 20 re f\n\
+                       /CS1 CS 0.75 SCN 40 10 m 80 10 l S\n\
+                       /CS2 cs 0.20 0.80 scn 10 40 20 20 re f\n";
+        let type4 = "{ 0 }";
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /ColorSpace << /CS1 [/Separation /SpotOrange /DeviceRGB 5 0 R] /CS2 [/DeviceN [/Cyan /SpotGreen] /DeviceRGB 6 0 R] >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            b"<< /FunctionType 2 /Domain [0 1] /Range [0 1 0 1 0 1] /C0 [1 1 1] /C1 [1 0.5 0] /N 1 >>".to_vec(),
+            format!(
+                "<< /FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1] /Length {} >>\nstream\n{}\nendstream",
+                type4.len(),
+                type4
+            )
+            .into_bytes(),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            pdf.extend_from_slice(obj);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        pdf
     }
 
     #[test]
@@ -4726,6 +5563,123 @@ mod tests {
             "document_info",
         );
         assert!(v["report"]["page_count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn document_views_report_exposes_view_boundaries() {
+        let v = assert_envelope(
+            &document_views_report_json(&fixture(), None).unwrap(),
+            "document_views_report",
+        );
+        assert_eq!(v["report"]["schema_version"], 1);
+        assert_eq!(v["report"]["views"].as_array().unwrap().len(), 5);
+        assert!(v["report"]["views"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|view| view["name"] == "render"));
+        assert_eq!(v["report"]["materialization"]["semantic_pages"], 0);
+        assert!(v["report"]["remaining_limitation"]
+            .as_str()
+            .unwrap()
+            .contains("owned CPU backend packed document arenas are available"));
+        assert_eq!(
+            v["report"]["owned_backend_plan_arena_entry_point"],
+            "RenderDocumentView::backend_document_plan_arena"
+        );
+    }
+
+    #[test]
+    fn backend_plan_arena_report_exposes_packed_plan_shape() {
+        let v = assert_envelope(
+            &backend_plan_arena_report_json(&fixture(), 1, 72, Some("compat"), None).unwrap(),
+            "backend_plan_arena_report",
+        );
+        assert_eq!(v["report"]["schema_version"], 1);
+        assert_eq!(v["report"]["page_number"], 1);
+        assert!(v["report"]["hot_operation_count"].as_u64().unwrap() > 0);
+        assert!(v["report"]["batch_count"].as_u64().unwrap() > 0);
+        assert!(v["report"]["descriptor_kinds"].is_object());
+        assert!(v["report"]["resource_arena_entries"].is_object());
+        assert!(
+            v["report"]["resource_arena_entries"]["font"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(v["report"]["compile_refusals"].is_object());
+    }
+
+    #[test]
+    fn backend_plan_arena_report_accepts_explicit_print_contract() {
+        let bytes = fixture();
+        let engine = open(&bytes, None).expect("open fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let display_fingerprint = contract.cache_fingerprint();
+        contract.print_profile = crate::render::PrintProfile::Print;
+        let contract_json = serde_json::to_string(&contract).expect("serialize contract");
+
+        let v = assert_envelope(
+            &backend_plan_arena_report_for_contract_json(&bytes, &contract_json, None).unwrap(),
+            "backend_plan_arena_report",
+        );
+
+        assert_eq!(v["report"]["page_number"], 1);
+        assert_eq!(v["report"]["arena_kind"], "print_cpu_packed");
+        assert_eq!(v["report"]["print_profile"], "Print");
+        assert_ne!(
+            v["report"]["render_contract_fingerprint"]
+                .as_str()
+                .expect("fingerprint"),
+            display_fingerprint
+        );
+        assert!(v["report"]["hot_operation_count"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn backend_document_plan_arena_report_exposes_owned_packed_plans() {
+        let v = assert_envelope(
+            &backend_document_plan_arena_report_json(&fixture(), 72, Some("compat"), None).unwrap(),
+            "backend_document_plan_arena_report",
+        );
+        assert_eq!(v["report"]["schema_version"], 1);
+        assert_eq!(v["report"]["render_mode"], "compat");
+        assert_eq!(v["report"]["arena_kind"], "display_cpu_packed");
+        assert_eq!(v["report"]["print_profile"], "Display");
+        assert_eq!(v["report"]["owns_backend_plans"], true);
+        assert!(v["report"]["owned_page_plan_count"].as_u64().unwrap() >= 1);
+        assert!(v["report"]["total_hot_operation_count"].as_u64().unwrap() > 0);
+        assert!(v["report"]["descriptor_kinds"].is_object());
+        assert!(v["report"]["total_resource_arena_entries"].is_object());
+        assert!(
+            v["report"]["total_resource_arena_entries"]["font"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(v["report"]["compile_refusals"].is_object());
+        assert!(!v["report"]["pages"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepress_plate_report_exposes_separation_framebuffer_shape() {
+        let v = assert_envelope(
+            &prepress_plate_report_json(&prepress_plate_pdf(), 1, 72, None).unwrap(),
+            "prepress_plate_report",
+        );
+        assert_eq!(v["report"]["true_separation_framebuffer"], true);
+        assert_eq!(v["report"]["page_number"], 1);
+        assert_eq!(v["report"]["plate_count"], 3);
+        assert_eq!(v["report"]["contribution_count"], 4);
+        assert_eq!(
+            v["report"]["deterministic_plane_order"],
+            serde_json::json!(["Cyan", "SpotGreen", "SpotOrange"])
+        );
+        assert!(v["report"]["cache_fingerprint"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
     }
 
     #[test]
@@ -4832,6 +5786,32 @@ mod tests {
             78
         );
         assert_eq!(
+            v["report"]["native_renderer"]["reference_renderer_multi_reference_audit"]
+                ["source_active_renderer_categories"][0],
+            "pattern/source_active_with_typed_limits"
+        );
+        assert_eq!(
+            v["report"]["native_renderer"]["reference_renderer_multi_reference_audit"]
+                ["deferred_external_validation_categories"][2],
+            "transparency/external_matrix_validation"
+        );
+        let feature_report_text =
+            serde_json::to_string(&v["report"]).expect("serialize feature report");
+        for stale_parts in [
+            &["pattern", "/later"][..],
+            &["shading", "/later"][..],
+            &["transparency", "/later"][..],
+            &["text_clipping", "/later"][..],
+            &["later", " binding work"][..],
+            &["complete cancellation policy", " remain later work"][..],
+        ] {
+            let stale = stale_parts.concat();
+            assert!(
+                !feature_report_text.contains(&stale),
+                "feature report still contains stale renderer status {stale}"
+            );
+        }
+        assert_eq!(
             v["report"]["transparency_rendering_transparency_compositing"]["status"],
             "native_foundation_with_transparency_closeout_closure"
         );
@@ -4908,6 +5888,13 @@ mod tests {
                 ["closure_gates"]["memory_cap_mb"],
             4096
         );
+        assert!(
+            v["report"]["annotation_ocg_rendering_annotation_ocg_progressive_cache"]
+                ["progressive_render"]["binding_limit"]
+                .as_str()
+                .unwrap()
+                .contains("external viewer runtime matrix validation is deferred")
+        );
         assert_eq!(
             v["report"]["renderer_validation_annotation_progressive_cache_validation"]["status"],
             "implemented_and_proven"
@@ -4922,6 +5909,18 @@ mod tests {
                 ["public_report_parity"]["schema_change"],
             "additive_section_only"
         );
+        assert_eq!(
+            v["report"]["progress"]["status"],
+            "engine_tile_progressive_resume_supported"
+        );
+        assert!(v["report"]["progress"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("source viewer queue execution JSON"));
+        assert!(v["report"]["cancellation"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("source cancellation and queue surfaces"));
         assert_eq!(
             v["report"]["multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness"]
                 ["status"],
@@ -5256,13 +6255,134 @@ mod tests {
         );
         assert_eq!(
             v["report"]["cancellation"]["status"],
-            "engine_render_cancellation_supported_binding_tokens_later"
+            "engine_render_cancellation_progressive_bindings_source_available"
         );
         assert!(v["report"]["cancellation"]["engine_observable_operations"]
             .as_array()
             .unwrap()
             .iter()
             .any(|op| op == "render_page_cancellable"));
+        assert!(v["report"]["cancellation"]["engine_observable_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "ProgressiveRenderJob::request_cancel"));
+        assert!(v["report"]["progress"]["engine_observable_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "ProgressiveRenderJob::revise_viewport_hint"));
+        assert!(v["report"]["progress"]["engine_observable_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "ProgressiveRenderJob::revise_render_context"));
+        assert!(v["report"]["progress"]["engine_observable_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "ProgressiveRenderJob::revise_render_contract"));
+        assert!(v["report"]["progress"]["engine_observable_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "ProgressiveRenderJob::viewer_queue_report"));
+        assert!(v["report"]["progress"]["engine_observable_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "ProgressiveRenderJob::viewer_callback_dispatch_report"));
+    }
+
+    #[test]
+    fn progressive_image_decode_lifecycle_report_envelope() {
+        let request = r#"{
+            "image_index": 0,
+            "max_retained_bytes": 2048,
+            "actions": ["start", "continue", "pause", "resume", "cancel", "continue", "close", "continue"]
+        }"#;
+        let v = assert_envelope(
+            &progressive_image_decode_lifecycle_report_json(&one_image_pdf(), request, None)
+                .unwrap(),
+            "progressive_image_decode_lifecycle_report",
+        );
+
+        assert_eq!(v["report"]["schema_version"], 1);
+        assert_eq!(v["report"]["image_count"], 1);
+        assert_eq!(v["report"]["image"]["name"], "Im1");
+        assert_eq!(v["report"]["reports"][1]["phase"], "full_decode_required");
+        assert_eq!(v["report"]["reports"][1]["full_decode_required"], true);
+        assert_eq!(v["report"]["reports"][4]["state"], "cancelled");
+        assert_eq!(v["report"]["reports"][5]["phase"], "continue_terminal");
+        assert_eq!(v["report"]["reports"][5]["state"], "cancelled");
+        assert_eq!(v["report"]["reports"][5]["full_decode_required"], false);
+        assert_eq!(v["report"]["reports"][6]["state"], "closed");
+        assert_eq!(v["report"]["reports"][7]["phase"], "continue_terminal");
+        assert_eq!(v["report"]["reports"][7]["state"], "closed");
+        assert_eq!(v["report"]["reports"][7]["full_decode_required"], false);
+
+        let document_close_request = r#"{
+            "image_index": 0,
+            "max_retained_bytes": 2048,
+            "actions": ["start", "continue", "document_close", "continue"]
+        }"#;
+        let document_close = assert_envelope(
+            &progressive_image_decode_lifecycle_report_json(
+                &one_image_pdf(),
+                document_close_request,
+                None,
+            )
+            .unwrap(),
+            "progressive_image_decode_lifecycle_report",
+        );
+        assert_eq!(
+            document_close["report"]["reports"][2]["phase"],
+            "document_close"
+        );
+        assert_eq!(document_close["report"]["reports"][2]["state"], "closed");
+        assert_eq!(
+            document_close["report"]["reports"][2]["release_reason"],
+            "document_close"
+        );
+        assert_eq!(document_close["report"]["reports"][2]["retained_bytes"], 0);
+        assert_eq!(
+            document_close["report"]["reports"][3]["phase"],
+            "continue_terminal"
+        );
+        assert_eq!(
+            document_close["report"]["reports"][3]["release_reason"],
+            "document_close"
+        );
+        assert_eq!(
+            document_close["report"]["reports"][3]["full_decode_required"],
+            false
+        );
+
+        let failed_request = r#"{
+            "image_index": 0,
+            "actions": ["start", "fail", "continue", "close"]
+        }"#;
+        let failed = assert_envelope(
+            &progressive_image_decode_lifecycle_report_json(&one_image_pdf(), failed_request, None)
+                .unwrap(),
+            "progressive_image_decode_lifecycle_report",
+        );
+        assert_eq!(failed["report"]["reports"][1]["state"], "failed");
+        assert_eq!(failed["report"]["reports"][1]["phase"], "fail");
+        assert_eq!(
+            failed["report"]["reports"][1]["release_reason"],
+            "render_failure"
+        );
+        assert_eq!(
+            failed["report"]["reports"][1]["full_decode_required"],
+            false
+        );
+        assert_eq!(failed["report"]["reports"][2]["phase"], "continue_terminal");
+        assert_eq!(failed["report"]["reports"][2]["state"], "failed");
+        assert_eq!(
+            failed["report"]["reports"][2]["full_decode_required"],
+            false
+        );
     }
 
     #[test]
@@ -5273,6 +6393,81 @@ mod tests {
             "text_semantic",
         );
         assert_envelope(&chunk_report_json(&bytes, None).unwrap(), "chunk_set");
+    }
+
+    #[test]
+    fn editing_transaction_apply_with_render_invalidation_exposes_dirty_tiles() {
+        let request = r#"{
+            "requested_mode":"operator_preserving",
+            "page":1,
+            "source_text":"HELLO",
+            "replacement_text":"WORLD"
+        }"#;
+        let options = r#"{
+            "page_number":1,
+            "dpi":72,
+            "tile_width":64,
+            "tile_height":64
+        }"#;
+        let (out, report) = editing_transactions_transaction_apply_with_render_invalidation_json(
+            &text_edit_fixture(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n"),
+            request,
+            Some(options),
+            None,
+        )
+        .unwrap();
+        assert!(out.starts_with(b"%PDF-"));
+        let v = assert_envelope(
+            &report,
+            "editing_transactions_transaction_apply_with_render_invalidation",
+        );
+        assert_eq!(
+            v["report"]["render_invalidation"]["schema_version"],
+            "render-transaction-invalidation-plan.v1"
+        );
+        assert_eq!(
+            v["report"]["render_invalidation"]["dirty_region_conversion"]["requested"],
+            true
+        );
+        assert_eq!(
+            v["report"]["render_invalidation"]["dirty_region_conversion"]["tile_width"],
+            64
+        );
+        assert_eq!(
+            v["report"]["render_invalidation"]["exact_tile_coverage_complete"],
+            true
+        );
+        assert_eq!(
+            v["report"]["render_invalidation"]["uncovered_affected_pages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert!(
+            v["report"]["render_invalidation"]["cache_application_entry_points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry == "ContentEngine::invalidate_for_transaction_with_tiles")
+        );
+        let source_cache_markers = v["report"]["render_invalidation"]["source_cache_markers"]
+            .as_array()
+            .unwrap();
+        assert!(!source_cache_markers.is_empty());
+        assert!(source_cache_markers.iter().any(|entry| {
+            entry["markers"]
+                .as_array()
+                .map(|markers| {
+                    markers.iter().any(|marker| {
+                        marker
+                            .as_str()
+                            .is_some_and(|value| value.starts_with("annotation-appearance:ref:"))
+                    })
+                })
+                .unwrap_or(false)
+        }));
+        assert!(v["report"]["transaction_report"]["transaction_id"].is_string());
     }
 
     #[test]

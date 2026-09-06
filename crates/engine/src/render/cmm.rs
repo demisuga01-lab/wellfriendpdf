@@ -9,16 +9,26 @@
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::mem::size_of;
 
 const D50: [f32; 3] = [0.96422, 1.0, 0.82521];
 pub(crate) const DEFAULT_MAX_ICC_PROFILE_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const DEFAULT_TRANSFORM_CACHE_ENTRIES: usize = 16;
+pub(crate) const DEFAULT_TRANSFORM_CACHE_ENTRY_BYTES: usize =
+    DEFAULT_MAX_ICC_PROFILE_BYTES + 64 * 1024;
+pub(crate) const DEFAULT_TRANSFORM_CACHE_BYTES: usize =
+    DEFAULT_TRANSFORM_CACHE_ENTRIES * DEFAULT_TRANSFORM_CACHE_ENTRY_BYTES;
 pub(crate) const NATIVE_CMM_FEATURE_FLAG: &str = "native-cmm-lcms2";
 pub(crate) const LCMS2_CRATE_VERSION: &str = "6.1.1";
 pub(crate) const LCMS2_SYS_CRATE_VERSION: &str = "4.0.7";
+const ICC_TRANSFORM_KIND_PROFILE_TO_SRGB: u8 = 0;
+const ICC_TRANSFORM_KIND_BUILTIN_SRGB_PROOF: u8 = 1;
+#[cfg(feature = "native-cmm-lcms2")]
+const ICC_TRANSFORM_KIND_OUTPUT_INTENT_PROOF: u8 = 2;
 
 thread_local! {
     static ICC_TRANSFORM_CACHE: RefCell<IccTransformCache> =
@@ -41,6 +51,22 @@ impl ColorIntent {
             Self::RelativeColorimetric => "relative_colorimetric",
             Self::Saturation => "saturation",
             Self::AbsoluteColorimetric => "absolute_colorimetric",
+        }
+    }
+
+    pub(crate) fn from_pdf_name(name: &str) -> Self {
+        let normalized = name
+            .trim_start_matches('/')
+            .chars()
+            .map(|ch| if matches!(ch, '-' | ' ') { '_' } else { ch })
+            .collect::<String>()
+            .to_ascii_lowercase();
+        match normalized.as_str() {
+            "absolute_colorimetric" | "absolutecolorimetric" => Self::AbsoluteColorimetric,
+            "perceptual" => Self::Perceptual,
+            "saturation" => Self::Saturation,
+            "relative_colorimetric" | "relativecolorimetric" => Self::RelativeColorimetric,
+            _ => Self::RelativeColorimetric,
         }
     }
 
@@ -77,6 +103,30 @@ pub(crate) const SUPPORTED_NATIVE_LCMS2_INTENTS: [ColorIntent; 4] = SUPPORTED_QC
 pub(crate) struct ColorTransformOptions {
     pub intent: ColorIntent,
     pub black_point_compensation: bool,
+    pub backend: ColorTransformBackend,
+    /// Render-contract/output-profile cache scope. Zero keeps standalone
+    /// color helpers deterministic; page rendering salts this with the active
+    /// schema-v1 render-contract fingerprint so display/print/proof transforms
+    /// never share a cached ICC transform accidentally.
+    pub cache_scope: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) enum ColorTransformBackend {
+    #[default]
+    PortableQcms,
+    NativeLittleCms,
+    DeterministicFallback,
+}
+
+impl ColorTransformBackend {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::PortableQcms => "portable-qcms",
+            Self::NativeLittleCms => "native-littlecms",
+            Self::DeterministicFallback => "deterministic-fallback",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -84,8 +134,12 @@ pub(crate) struct IccTransformCacheMetrics {
     pub hits: usize,
     pub misses: usize,
     pub evictions: usize,
+    pub admissions: usize,
+    pub rejections: usize,
     pub entries: usize,
     pub max_entries: usize,
+    pub bytes_used: usize,
+    pub max_bytes: usize,
     pub invalid_profiles: usize,
     pub unsupported_profiles: usize,
     pub native_lcms2_transforms: usize,
@@ -154,13 +208,19 @@ enum IccBackend {
 }
 
 impl IccBackend {
-    fn preferred() -> Self {
-        #[cfg(all(feature = "native-cmm-lcms2", not(target_arch = "wasm32")))]
-        {
-            return Self::NativeLcms2;
+    fn from_policy(policy: ColorTransformBackend) -> Option<Self> {
+        match policy {
+            ColorTransformBackend::PortableQcms => Some(Self::FallbackQcms),
+            ColorTransformBackend::DeterministicFallback => None,
+            ColorTransformBackend::NativeLittleCms => {
+                #[cfg(all(feature = "native-cmm-lcms2", not(target_arch = "wasm32")))]
+                {
+                    return Some(Self::NativeLcms2);
+                }
+                #[allow(unreachable_code)]
+                None
+            }
         }
-        #[allow(unreachable_code)]
-        Self::FallbackQcms
     }
 
     fn tag(self) -> u8 {
@@ -185,8 +245,10 @@ pub(crate) struct IccFidelityProbe {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct IccTransformKey {
+    kind: u8,
     backend: u8,
-    profile_hash: u64,
+    cache_scope: u64,
+    profile_digest: [u8; 32],
     profile_len: usize,
     components: u8,
     src_type: u8,
@@ -211,20 +273,52 @@ impl CachedIccTransform {
     }
 }
 
+fn icc_transform_entry_bytes(key: &IccTransformKey) -> usize {
+    key.profile_len
+        .saturating_add(DEFAULT_TRANSFORM_CACHE_ENTRY_BYTES - DEFAULT_MAX_ICC_PROFILE_BYTES)
+        .saturating_add(size_of::<IccTransformKey>())
+}
+
+fn icc_profile_digest(profile_bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(profile_bytes).into()
+}
+
+struct IccTransformCacheEntry {
+    key: IccTransformKey,
+    transform: CachedIccTransform,
+    byte_cost: usize,
+}
+
 pub(crate) struct IccTransformCache {
     max_entries: usize,
-    entries: Vec<(IccTransformKey, CachedIccTransform)>,
+    max_bytes: usize,
+    current_bytes: usize,
+    entries: Vec<IccTransformCacheEntry>,
     metrics: IccTransformCacheMetrics,
 }
 
 impl IccTransformCache {
     pub(crate) fn new(max_entries: usize) -> Self {
         let max_entries = max_entries.max(1);
+        let max_bytes = if max_entries == DEFAULT_TRANSFORM_CACHE_ENTRIES {
+            DEFAULT_TRANSFORM_CACHE_BYTES
+        } else {
+            max_entries.saturating_mul(DEFAULT_TRANSFORM_CACHE_ENTRY_BYTES)
+        };
+        Self::new_with_budget(max_entries, max_bytes)
+    }
+
+    fn new_with_budget(max_entries: usize, max_bytes: usize) -> Self {
+        let max_entries = max_entries.max(1);
+        let max_bytes = max_bytes.max(1);
         Self {
             max_entries,
+            max_bytes,
+            current_bytes: 0,
             entries: Vec::new(),
             metrics: IccTransformCacheMetrics {
                 max_entries,
+                max_bytes,
                 ..IccTransformCacheMetrics::default()
             },
         }
@@ -234,7 +328,51 @@ impl IccTransformCache {
         IccTransformCacheMetrics {
             entries: self.entries.len(),
             max_entries: self.max_entries,
+            bytes_used: self.current_bytes,
+            max_bytes: self.max_bytes,
             ..self.metrics
+        }
+    }
+
+    fn admit(
+        &mut self,
+        key: IccTransformKey,
+        transform: CachedIccTransform,
+        byte_cost: usize,
+    ) -> Result<usize, CachedIccTransform> {
+        if byte_cost == 0 || byte_cost > self.max_bytes {
+            self.metrics.rejections += 1;
+            return Err(transform);
+        }
+        while !self.entries.is_empty()
+            && (self.entries.len() >= self.max_entries
+                || self.current_bytes.saturating_add(byte_cost) > self.max_bytes)
+        {
+            let evicted = self.entries.remove(0);
+            self.current_bytes = self.current_bytes.saturating_sub(evicted.byte_cost);
+            self.metrics.evictions += 1;
+        }
+        if self.current_bytes.saturating_add(byte_cost) > self.max_bytes {
+            self.metrics.rejections += 1;
+            return Err(transform);
+        }
+        self.current_bytes = self.current_bytes.saturating_add(byte_cost);
+        self.entries.push(IccTransformCacheEntry {
+            key,
+            transform,
+            byte_cost,
+        });
+        self.metrics.admissions += 1;
+        Ok(self.entries.len() - 1)
+    }
+
+    fn touch(&mut self, idx: usize) -> usize {
+        if idx + 1 == self.entries.len() {
+            idx
+        } else {
+            let entry = self.entries.remove(idx);
+            self.entries.push(entry);
+            self.entries.len() - 1
         }
     }
 
@@ -245,8 +383,9 @@ impl IccTransformCache {
         pixels: &[u8],
         options: ColorTransformOptions,
     ) -> Option<(Vec<u8>, u8)> {
+        let backend = IccBackend::from_policy(options.backend)?;
         self.transform_profile_to_srgb_with_backend(
-            IccBackend::preferred(),
+            backend,
             profile_bytes,
             components,
             pixels,
@@ -271,8 +410,10 @@ impl IccTransformCache {
             return None;
         }
         let key = IccTransformKey {
+            kind: ICC_TRANSFORM_KIND_PROFILE_TO_SRGB,
             backend: backend.tag(),
-            profile_hash: stable_hash(profile_bytes),
+            cache_scope: options.cache_scope,
+            profile_digest: icc_profile_digest(profile_bytes),
             profile_len: profile_bytes.len(),
             components,
             src_type: qcms_data_type_for_components(components)
@@ -282,14 +423,10 @@ impl IccTransformCache {
             intent: options.intent,
             black_point_compensation: options.black_point_compensation,
         };
-        let idx = match self
-            .entries
-            .iter()
-            .position(|(existing, _)| *existing == key)
-        {
+        let idx = match self.entries.iter().position(|entry| entry.key == key) {
             Some(idx) => {
                 self.metrics.hits += 1;
-                idx
+                self.touch(idx)
             }
             None => {
                 self.metrics.misses += 1;
@@ -302,17 +439,26 @@ impl IccTransformCache {
                         self.create_lcms2_transform(profile_bytes, components, options)?
                     }
                 };
-                if self.entries.len() >= self.max_entries {
-                    self.entries.remove(0);
-                    self.metrics.evictions += 1;
+                let byte_cost = icc_transform_entry_bytes(&key);
+                match self.admit(key, transform, byte_cost) {
+                    Ok(idx) => idx,
+                    Err(transform) => {
+                        let pixel_count = pixels.len() / bytes_per_pixel;
+                        let mut rgb = vec![0u8; pixel_count * 3];
+                        transform.convert(pixels, &mut rgb);
+                        match backend {
+                            IccBackend::FallbackQcms => self.metrics.fallback_qcms_transforms += 1,
+                            #[cfg(feature = "native-cmm-lcms2")]
+                            IccBackend::NativeLcms2 => self.metrics.native_lcms2_transforms += 1,
+                        }
+                        return Some((rgb, 3));
+                    }
                 }
-                self.entries.push((key, transform));
-                self.entries.len() - 1
             }
         };
         let pixel_count = pixels.len() / bytes_per_pixel;
         let mut rgb = vec![0u8; pixel_count * 3];
-        self.entries[idx].1.convert(pixels, &mut rgb);
+        self.entries[idx].transform.convert(pixels, &mut rgb);
         match backend {
             IccBackend::FallbackQcms => self.metrics.fallback_qcms_transforms += 1,
             #[cfg(feature = "native-cmm-lcms2")]
@@ -328,6 +474,10 @@ impl IccTransformCache {
         options: ColorTransformOptions,
     ) -> Option<CachedIccTransform> {
         let src_type = qcms_data_type_for_components(components)?;
+        if !qcms_profile_shape_matches_components(profile_bytes, components) {
+            self.metrics.unsupported_profiles += 1;
+            return None;
+        }
         let input = match qcms::Profile::new_from_slice(profile_bytes, false) {
             Some(profile) => profile,
             None => {
@@ -337,13 +487,19 @@ impl IccTransformCache {
         };
         let mut output = qcms::Profile::new_sRGB();
         output.precache_output_transform();
-        let transform = qcms::Transform::new_to(
+        let transform = match qcms::Transform::new_to(
             &input,
             &output,
             src_type,
             qcms::DataType::RGB8,
             options.intent.to_qcms(),
-        )?;
+        ) {
+            Some(transform) => transform,
+            None => {
+                self.metrics.unsupported_profiles += 1;
+                return None;
+            }
+        };
         Some(CachedIccTransform::Qcms(transform))
     }
 
@@ -414,10 +570,12 @@ impl IccTransformCache {
         if !pixels.len().is_multiple_of(3) {
             return None;
         }
-        let backend = IccBackend::preferred();
+        let backend = IccBackend::from_policy(options.backend)?;
         let key = IccTransformKey {
+            kind: ICC_TRANSFORM_KIND_BUILTIN_SRGB_PROOF,
             backend: backend.tag(),
-            profile_hash: 0x5352_4742_5f42_5549,
+            cache_scope: options.cache_scope,
+            profile_digest: icc_profile_digest(b"wellfriendpdf:builtin-srgb-proof"),
             profile_len: 0,
             components: 3,
             src_type: qcms_data_type_tag(qcms::DataType::RGB8),
@@ -425,14 +583,10 @@ impl IccTransformCache {
             intent: options.intent,
             black_point_compensation: options.black_point_compensation,
         };
-        let idx = match self
-            .entries
-            .iter()
-            .position(|(existing, _)| *existing == key)
-        {
+        let idx = match self.entries.iter().position(|entry| entry.key == key) {
             Some(idx) => {
                 self.metrics.hits += 1;
-                idx
+                self.touch(idx)
             }
             None => {
                 self.metrics.misses += 1;
@@ -441,21 +595,85 @@ impl IccTransformCache {
                     #[cfg(feature = "native-cmm-lcms2")]
                     IccBackend::NativeLcms2 => self.create_builtin_srgb_lcms2_transform(options)?,
                 };
-                if self.entries.len() >= self.max_entries {
-                    self.entries.remove(0);
-                    self.metrics.evictions += 1;
+                let byte_cost = icc_transform_entry_bytes(&key);
+                match self.admit(key, transform, byte_cost) {
+                    Ok(idx) => idx,
+                    Err(transform) => {
+                        let mut out = vec![0u8; pixels.len()];
+                        transform.convert(pixels, &mut out);
+                        match backend {
+                            IccBackend::FallbackQcms => self.metrics.fallback_qcms_transforms += 1,
+                            #[cfg(feature = "native-cmm-lcms2")]
+                            IccBackend::NativeLcms2 => self.metrics.native_lcms2_transforms += 1,
+                        }
+                        return Some(out);
+                    }
                 }
-                self.entries.push((key, transform));
-                self.entries.len() - 1
             }
         };
         let mut out = vec![0u8; pixels.len()];
-        self.entries[idx].1.convert(pixels, &mut out);
+        self.entries[idx].transform.convert(pixels, &mut out);
         match backend {
             IccBackend::FallbackQcms => self.metrics.fallback_qcms_transforms += 1,
             #[cfg(feature = "native-cmm-lcms2")]
             IccBackend::NativeLcms2 => self.metrics.native_lcms2_transforms += 1,
         }
+        Some(out)
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    fn proof_srgb_via_output_intent(
+        &mut self,
+        output_intent_profile: &[u8],
+        pixels: &[u8],
+        options: ColorTransformOptions,
+    ) -> Option<Vec<u8>> {
+        if output_intent_profile.len() > DEFAULT_MAX_ICC_PROFILE_BYTES
+            || !pixels.len().is_multiple_of(3)
+        {
+            self.metrics.unsupported_profiles += 1;
+            return None;
+        }
+        let backend = IccBackend::from_policy(options.backend)?;
+        if !matches!(backend, IccBackend::NativeLcms2) {
+            return None;
+        }
+        let key = IccTransformKey {
+            kind: ICC_TRANSFORM_KIND_OUTPUT_INTENT_PROOF,
+            backend: backend.tag(),
+            cache_scope: options.cache_scope,
+            profile_digest: icc_profile_digest(output_intent_profile),
+            profile_len: output_intent_profile.len(),
+            components: 3,
+            src_type: qcms_data_type_tag(qcms::DataType::RGB8),
+            dst_type: qcms_data_type_tag(qcms::DataType::RGB8),
+            intent: options.intent,
+            black_point_compensation: options.black_point_compensation,
+        };
+        let idx = match self.entries.iter().position(|entry| entry.key == key) {
+            Some(idx) => {
+                self.metrics.hits += 1;
+                self.touch(idx)
+            }
+            None => {
+                self.metrics.misses += 1;
+                let transform =
+                    self.create_lcms2_proof_transform(output_intent_profile, options)?;
+                let byte_cost = icc_transform_entry_bytes(&key);
+                match self.admit(key, transform, byte_cost) {
+                    Ok(idx) => idx,
+                    Err(transform) => {
+                        let mut out = vec![0u8; pixels.len()];
+                        transform.convert(pixels, &mut out);
+                        self.metrics.native_lcms2_transforms += 1;
+                        return Some(out);
+                    }
+                }
+            }
+        };
+        let mut out = vec![0u8; pixels.len()];
+        self.entries[idx].transform.convert(pixels, &mut out);
+        self.metrics.native_lcms2_transforms += 1;
         Some(out)
     }
 
@@ -504,10 +722,53 @@ impl IccTransformCache {
         };
         Some(CachedIccTransform::Lcms2(transform))
     }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    fn create_lcms2_proof_transform(
+        &mut self,
+        output_intent_profile: &[u8],
+        options: ColorTransformOptions,
+    ) -> Option<CachedIccTransform> {
+        let proofing_profile = match lcms2::Profile::new_icc(output_intent_profile) {
+            Ok(profile) => profile,
+            Err(_) => {
+                self.metrics.invalid_profiles += 1;
+                self.metrics.native_lcms2_failures += 1;
+                return None;
+            }
+        };
+        let input = lcms2::Profile::new_srgb();
+        let output = lcms2::Profile::new_srgb();
+        let mut flags = lcms2::Flags::SOFT_PROOFING;
+        if options.black_point_compensation {
+            flags = flags | lcms2::Flags::BLACKPOINT_COMPENSATION;
+        }
+        let transform = match lcms2::Transform::new_proofing(
+            &input,
+            lcms2::PixelFormat::RGB_8,
+            &output,
+            lcms2::PixelFormat::RGB_8,
+            &proofing_profile,
+            options.intent.to_lcms2(),
+            options.intent.to_lcms2(),
+            flags,
+        ) {
+            Ok(transform) => transform,
+            Err(_) => {
+                self.metrics.native_lcms2_failures += 1;
+                return None;
+            }
+        };
+        Some(CachedIccTransform::Lcms2(transform))
+    }
 }
 
 pub(crate) fn icc_transform_cache_metrics() -> IccTransformCacheMetrics {
     ICC_TRANSFORM_CACHE.with(|cache| cache.borrow().metrics())
+}
+
+pub(crate) fn color_transform_cache_scope(render_contract_fingerprint: &str) -> u64 {
+    stable_hash(render_contract_fingerprint.as_bytes())
 }
 
 pub(crate) fn native_lcms2_profile_valid_for_components(
@@ -543,32 +804,11 @@ pub(crate) fn proof_srgb_via_output_intent(
 ) -> Option<Vec<u8>> {
     #[cfg(feature = "native-cmm-lcms2")]
     {
-        if output_intent_profile.len() > DEFAULT_MAX_ICC_PROFILE_BYTES
-            || !pixels.len().is_multiple_of(3)
-        {
-            return None;
-        }
-        let proofing_profile = lcms2::Profile::new_icc(output_intent_profile).ok()?;
-        let input = lcms2::Profile::new_srgb();
-        let output = lcms2::Profile::new_srgb();
-        let mut flags = lcms2::Flags::SOFT_PROOFING;
-        if options.black_point_compensation {
-            flags = flags | lcms2::Flags::BLACKPOINT_COMPENSATION;
-        }
-        let transform = lcms2::Transform::new_proofing(
-            &input,
-            lcms2::PixelFormat::RGB_8,
-            &output,
-            lcms2::PixelFormat::RGB_8,
-            &proofing_profile,
-            options.intent.to_lcms2(),
-            options.intent.to_lcms2(),
-            flags,
-        )
-        .ok()?;
-        let mut out = vec![0u8; pixels.len()];
-        transform.transform_pixels(pixels, &mut out);
-        Some(out)
+        ICC_TRANSFORM_CACHE.with(|cache| {
+            cache
+                .borrow_mut()
+                .proof_srgb_via_output_intent(output_intent_profile, pixels, options)
+        })
     }
     #[cfg(not(feature = "native-cmm-lcms2"))]
     {
@@ -842,41 +1082,43 @@ pub(crate) fn cal_rgb_bytes_to_rgb(pixels: &[u8], params: CalRgbParams) -> Vec<u
     rgb
 }
 
-pub(crate) fn icc_bytes_to_rgb(
+pub(crate) fn icc_bytes_to_rgb_with_options(
     pixels: &[u8],
     dict: &PdfDictionary,
     reader: &PdfReader,
+    options: ColorTransformOptions,
 ) -> Option<(Vec<u8>, u8)> {
     let (profile_dict, profile_bytes) = icc_profile_stream(dict, reader)?;
-    let n = profile_dict.get_integer("N").unwrap_or(3).clamp(1, 4) as u8;
+    let n = icc_profile_component_count(&profile_dict)?;
     ICC_TRANSFORM_CACHE.with(|cache| {
-        cache.borrow_mut().transform_profile_to_srgb(
-            &profile_bytes,
-            n,
-            pixels,
-            ColorTransformOptions::default(),
-        )
+        cache
+            .borrow_mut()
+            .transform_profile_to_srgb(&profile_bytes, n, pixels, options)
     })
 }
 
-pub(crate) fn icc_components_to_srgb(
+pub(crate) fn icc_components_to_srgb_with_options(
     space_obj: &PdfObject,
     components: &[f64],
     reader: &PdfReader,
+    options: ColorTransformOptions,
 ) -> Option<[f32; 3]> {
     let (profile_dict, profile_bytes) = icc_profile_stream_from_space(space_obj, reader)?;
-    let n = profile_dict.get_integer("N").unwrap_or(3).clamp(1, 4) as u8;
-    let mut src = vec![0u8; usize::from(n)];
+    let n = icc_profile_component_count(&profile_dict)?;
+    let component_count = usize::from(n);
+    if components.len() != component_count
+        || components.iter().any(|component| !component.is_finite())
+    {
+        return None;
+    }
+    let mut src = vec![0u8; component_count];
     for (i, byte) in src.iter_mut().enumerate() {
-        *byte = unit_to_u8(components.get(i).copied().unwrap_or(0.0) as f32);
+        *byte = unit_to_u8(components[i] as f32);
     }
     let (dst, _) = ICC_TRANSFORM_CACHE.with(|cache| {
-        cache.borrow_mut().transform_profile_to_srgb(
-            &profile_bytes,
-            n,
-            &src,
-            ColorTransformOptions::default(),
-        )
+        cache
+            .borrow_mut()
+            .transform_profile_to_srgb(&profile_bytes, n, &src, options)
     })?;
     Some([
         dst[0] as f32 / 255.0,
@@ -892,6 +1134,24 @@ fn qcms_data_type_for_components(components: u8) -> Option<qcms::DataType> {
         4 => Some(qcms::DataType::CMYK),
         _ => None,
     }
+}
+
+fn qcms_profile_shape_matches_components(profile_bytes: &[u8], components: u8) -> bool {
+    let Some(color_space) = icc_header_signature(profile_bytes, 16) else {
+        return false;
+    };
+    match components {
+        1 => color_space == *b"GRAY",
+        3 => color_space == *b"RGB ",
+        4 => false,
+        _ => false,
+    }
+}
+
+fn icc_header_signature(profile_bytes: &[u8], offset: usize) -> Option<[u8; 4]> {
+    let end = offset.checked_add(4)?;
+    let bytes = profile_bytes.get(offset..end)?;
+    Some([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
 fn qcms_data_type_tag(data_type: qcms::DataType) -> u8 {
@@ -942,34 +1202,276 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 
 pub(crate) fn icc_channel_count(dict: &PdfDictionary, reader: &PdfReader) -> Option<u8> {
     let (profile_dict, _) = icc_profile_object(dict, reader)?;
-    profile_dict.get_integer("N").map(|n| n.clamp(1, 4) as u8)
+    icc_profile_component_count(&profile_dict)
 }
 
-pub(crate) fn lab_params_from_image_dict(
-    dict: &PdfDictionary,
-    reader: Option<&PdfReader>,
-) -> LabParams {
-    dict.get("ColorSpace")
-        .and_then(|obj| lab_params_from_space(obj, reader))
-        .unwrap_or_default()
+fn icc_profile_component_count(profile_dict: &PdfDictionary) -> Option<u8> {
+    let n = profile_dict.get_integer("N")?;
+    if (1..=4).contains(&n) {
+        Some(n as u8)
+    } else {
+        None
+    }
 }
 
-pub(crate) fn cal_gray_params_from_image_dict(
+pub(crate) fn try_lab_params_from_image_dict(
     dict: &PdfDictionary,
     reader: Option<&PdfReader>,
-) -> CalGrayParams {
-    dict.get("ColorSpace")
-        .and_then(|obj| cal_gray_params_from_space(obj, reader))
-        .unwrap_or_default()
+) -> std::result::Result<LabParams, String> {
+    let color_space = image_color_space_object(dict, "Lab")?;
+    let param_dict = strict_calibrated_param_dict(color_space, reader, "Lab")?;
+    let white_point = required_xyz(&param_dict, "WhitePoint", "Lab")?;
+    optional_xyz(&param_dict, "BlackPoint", "Lab")?;
+    let range = optional_lab_range(&param_dict)?;
+    Ok(LabParams { white_point, range })
 }
 
-pub(crate) fn cal_rgb_params_from_image_dict(
+pub(crate) fn try_cal_gray_params_from_image_dict(
     dict: &PdfDictionary,
     reader: Option<&PdfReader>,
-) -> CalRgbParams {
+) -> std::result::Result<CalGrayParams, String> {
+    let color_space = image_color_space_object(dict, "CalGray")?;
+    let param_dict = strict_calibrated_param_dict(color_space, reader, "CalGray")?;
+    let white_point = required_xyz(&param_dict, "WhitePoint", "CalGray")?;
+    optional_xyz(&param_dict, "BlackPoint", "CalGray")?;
+    let gamma = optional_positive_number(&param_dict, "Gamma", "CalGray")?.unwrap_or(1.0);
+    Ok(CalGrayParams { white_point, gamma })
+}
+
+pub(crate) fn try_cal_rgb_params_from_image_dict(
+    dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+) -> std::result::Result<CalRgbParams, String> {
+    let color_space = image_color_space_object(dict, "CalRGB")?;
+    let param_dict = strict_calibrated_param_dict(color_space, reader, "CalRGB")?;
+    let white_point = required_xyz(&param_dict, "WhitePoint", "CalRGB")?;
+    optional_xyz(&param_dict, "BlackPoint", "CalRGB")?;
+    let gamma = optional_positive_number_array(&param_dict, "Gamma", "CalRGB")?.unwrap_or([1.0; 3]);
+    let matrix = optional_number_array9(&param_dict, "Matrix", "CalRGB")?
+        .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    Ok(CalRgbParams {
+        white_point,
+        gamma,
+        matrix,
+    })
+}
+
+fn image_color_space_object<'a>(
+    dict: &'a PdfDictionary,
+    family: &str,
+) -> std::result::Result<&'a PdfObject, String> {
     dict.get("ColorSpace")
-        .and_then(|obj| cal_rgb_params_from_space(obj, reader))
-        .unwrap_or_default()
+        .or_else(|| dict.get("CS"))
+        .ok_or_else(|| format!("{family} image ColorSpace is missing parameter array"))
+}
+
+fn strict_calibrated_param_dict(
+    space: &PdfObject,
+    reader: Option<&PdfReader>,
+    family: &str,
+) -> std::result::Result<PdfDictionary, String> {
+    let arr = resolve_space_array_strict(space, reader, family)?;
+    match arr.first().and_then(PdfObject::as_name) {
+        Some(name) if name == family => {}
+        Some(name) => {
+            return Err(format!(
+                "{family} image ColorSpace resolved to /{name}, expected /{family}"
+            ))
+        }
+        None => {
+            return Err(format!(
+                "{family} image ColorSpace array has no family name"
+            ))
+        }
+    }
+    if arr.len() != 2 {
+        return Err(format!(
+            "{family} image ColorSpace has {} entries, expected 2",
+            arr.len()
+        ));
+    }
+    let params = arr
+        .get(1)
+        .ok_or_else(|| format!("{family} image ColorSpace missing parameter dictionary"))?;
+    resolve_to_dict_strict(params, reader, family)
+}
+
+fn resolve_space_array_strict(
+    space: &PdfObject,
+    reader: Option<&PdfReader>,
+    family: &str,
+) -> std::result::Result<Vec<PdfObject>, String> {
+    let resolved = match (space, reader) {
+        (PdfObject::Reference { .. }, Some(reader)) => reader
+            .resolve(space.clone())
+            .map_err(|err| format!("{family} image ColorSpace reference failed: {err}"))?,
+        (PdfObject::Reference { .. }, None) => {
+            return Err(format!(
+                "{family} image ColorSpace reference requires a PdfReader"
+            ))
+        }
+        _ => space.clone(),
+    };
+    resolved.as_array().map(|arr| arr.to_vec()).ok_or_else(|| {
+        format!("{family} image ColorSpace must be an array with a parameter dictionary")
+    })
+}
+
+fn resolve_to_dict_strict(
+    obj: &PdfObject,
+    reader: Option<&PdfReader>,
+    family: &str,
+) -> std::result::Result<PdfDictionary, String> {
+    let resolved = match (obj, reader) {
+        (PdfObject::Reference { .. }, Some(reader)) => {
+            reader.resolve(obj.clone()).map_err(|err| {
+                format!("{family} image ColorSpace parameter dictionary reference failed: {err}")
+            })?
+        }
+        (PdfObject::Reference { .. }, None) => {
+            return Err(format!(
+                "{family} image ColorSpace parameter dictionary reference requires a PdfReader"
+            ))
+        }
+        _ => obj.clone(),
+    };
+    resolved.as_dict().cloned().ok_or_else(|| {
+        format!("{family} image ColorSpace parameter object must resolve to a dictionary")
+    })
+}
+
+fn required_xyz(
+    dict: &PdfDictionary,
+    key: &str,
+    family: &str,
+) -> std::result::Result<[f32; 3], String> {
+    let obj = dict
+        .get(key)
+        .ok_or_else(|| format!("{family} image ColorSpace missing /{key}"))?;
+    let values = numeric_array_exact(obj, 3)
+        .ok_or_else(|| format!("{family} image ColorSpace /{key} must have 3 numeric values"))?;
+    if !valid_xyz(&values) {
+        return Err(format!(
+            "{family} image ColorSpace /{key} contains invalid XYZ values"
+        ));
+    }
+    Ok([values[0] as f32, values[1] as f32, values[2] as f32])
+}
+
+fn optional_xyz(
+    dict: &PdfDictionary,
+    key: &str,
+    family: &str,
+) -> std::result::Result<Option<[f32; 3]>, String> {
+    let Some(obj) = dict.get(key) else {
+        return Ok(None);
+    };
+    let values = numeric_array_exact(obj, 3)
+        .ok_or_else(|| format!("{family} image ColorSpace /{key} must have 3 numeric values"))?;
+    if !valid_xyz(&values) {
+        return Err(format!(
+            "{family} image ColorSpace /{key} contains invalid XYZ values"
+        ));
+    }
+    Ok(Some([values[0] as f32, values[1] as f32, values[2] as f32]))
+}
+
+fn optional_positive_number(
+    dict: &PdfDictionary,
+    key: &str,
+    family: &str,
+) -> std::result::Result<Option<f32>, String> {
+    let Some(obj) = dict.get(key) else {
+        return Ok(None);
+    };
+    let value = obj
+        .as_number()
+        .ok_or_else(|| format!("{family} image ColorSpace /{key} must be numeric"))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!(
+            "{family} image ColorSpace /{key} must be finite and positive"
+        ));
+    }
+    Ok(Some(value as f32))
+}
+
+fn optional_positive_number_array(
+    dict: &PdfDictionary,
+    key: &str,
+    family: &str,
+) -> std::result::Result<Option<[f32; 3]>, String> {
+    let Some(obj) = dict.get(key) else {
+        return Ok(None);
+    };
+    let values = numeric_array_exact(obj, 3)
+        .ok_or_else(|| format!("{family} image ColorSpace /{key} must have 3 numeric values"))?;
+    if values
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return Err(format!(
+            "{family} image ColorSpace /{key} values must be finite and positive"
+        ));
+    }
+    Ok(Some([values[0] as f32, values[1] as f32, values[2] as f32]))
+}
+
+fn optional_number_array9(
+    dict: &PdfDictionary,
+    key: &str,
+    family: &str,
+) -> std::result::Result<Option<[f32; 9]>, String> {
+    let Some(obj) = dict.get(key) else {
+        return Ok(None);
+    };
+    let values = numeric_array_exact(obj, 9)
+        .ok_or_else(|| format!("{family} image ColorSpace /{key} must have 9 numeric values"))?;
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(format!(
+            "{family} image ColorSpace /{key} values must be finite"
+        ));
+    }
+    let mut out = [0.0; 9];
+    for (idx, dst) in out.iter_mut().enumerate() {
+        *dst = values[idx] as f32;
+    }
+    Ok(Some(out))
+}
+
+fn optional_lab_range(dict: &PdfDictionary) -> std::result::Result<[f32; 4], String> {
+    let Some(obj) = dict.get("Range") else {
+        return Ok([-100.0, 100.0, -100.0, 100.0]);
+    };
+    let values = numeric_array_exact(obj, 4)
+        .ok_or_else(|| "Lab image ColorSpace /Range must have 4 numeric values".to_string())?;
+    if values.iter().any(|value| !value.is_finite())
+        || values[0] > values[1]
+        || values[2] > values[3]
+    {
+        return Err("Lab image ColorSpace /Range contains invalid bounds".to_string());
+    }
+    Ok([
+        values[0] as f32,
+        values[1] as f32,
+        values[2] as f32,
+        values[3] as f32,
+    ])
+}
+
+fn numeric_array_exact(obj: &PdfObject, expected_len: usize) -> Option<Vec<f64>> {
+    let arr = obj.as_array()?;
+    if arr.len() != expected_len {
+        return None;
+    }
+    arr.iter().map(PdfObject::as_number).collect()
+}
+
+fn valid_xyz(values: &[f64]) -> bool {
+    values.len() == 3
+        && values.iter().all(|value| value.is_finite())
+        && values[0] >= 0.0
+        && values[1] > 0.0
+        && values[2] >= 0.0
 }
 
 fn icc_profile_stream(
@@ -1350,6 +1852,7 @@ mod tests {
         assert_eq!(metrics.entries, 1);
         let global_metrics = icc_transform_cache_metrics();
         assert_eq!(global_metrics.max_entries, DEFAULT_TRANSFORM_CACHE_ENTRIES);
+        assert_eq!(global_metrics.max_bytes, DEFAULT_TRANSFORM_CACHE_BYTES);
     }
 
     #[test]
@@ -1362,6 +1865,7 @@ mod tests {
                 ColorTransformOptions {
                     intent: ColorIntent::Perceptual,
                     black_point_compensation: false,
+                    ..ColorTransformOptions::default()
                 },
             )
             .unwrap();
@@ -1371,12 +1875,244 @@ mod tests {
                 ColorTransformOptions {
                     intent: ColorIntent::RelativeColorimetric,
                     black_point_compensation: false,
+                    ..ColorTransformOptions::default()
                 },
             )
             .unwrap();
         let metrics = cache.metrics();
         assert_eq!(metrics.entries, 1);
         assert_eq!(metrics.evictions, 1);
+        assert_eq!(metrics.admissions, 2);
+        assert_eq!(metrics.rejections, 0);
+        assert!(metrics.bytes_used > 0);
+        assert!(metrics.bytes_used <= metrics.max_bytes);
+    }
+
+    #[test]
+    fn transform_cache_rejects_entries_over_byte_budget() {
+        let pixels = [10u8, 20, 30];
+        let mut cache = IccTransformCache::new_with_budget(4, 1);
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, ColorTransformOptions::default())
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, ColorTransformOptions::default())
+            .unwrap();
+
+        let metrics = cache.metrics();
+        assert_eq!(metrics.entries, 0);
+        assert_eq!(metrics.admissions, 0);
+        assert_eq!(metrics.rejections, 2);
+        assert_eq!(metrics.misses, 2);
+        assert_eq!(metrics.hits, 0);
+        assert_eq!(metrics.bytes_used, 0);
+        assert_eq!(metrics.max_bytes, 1);
+    }
+
+    #[test]
+    fn transform_cache_hit_refreshes_lru_eviction_order() {
+        let pixels = [10u8, 20, 30];
+        let mut cache = IccTransformCache::new(2);
+        let relative = ColorTransformOptions {
+            intent: ColorIntent::RelativeColorimetric,
+            ..ColorTransformOptions::default()
+        };
+        let perceptual = ColorTransformOptions {
+            intent: ColorIntent::Perceptual,
+            ..ColorTransformOptions::default()
+        };
+        let saturation = ColorTransformOptions {
+            intent: ColorIntent::Saturation,
+            ..ColorTransformOptions::default()
+        };
+
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, relative)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, perceptual)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, relative)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, saturation)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, relative)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, perceptual)
+            .unwrap();
+
+        let metrics = cache.metrics();
+        assert_eq!(metrics.hits, 2);
+        assert_eq!(metrics.misses, 4);
+        assert_eq!(metrics.evictions, 2);
+        assert_eq!(metrics.entries, 2);
+    }
+
+    #[test]
+    fn transform_cache_key_uses_full_profile_digest_identity() {
+        fn key(profile_bytes: &[u8]) -> IccTransformKey {
+            IccTransformKey {
+                kind: ICC_TRANSFORM_KIND_PROFILE_TO_SRGB,
+                backend: 0,
+                cache_scope: 0,
+                profile_digest: icc_profile_digest(profile_bytes),
+                profile_len: profile_bytes.len(),
+                components: 3,
+                src_type: qcms_data_type_tag(qcms::DataType::RGB8),
+                dst_type: qcms_data_type_tag(qcms::DataType::RGB8),
+                intent: ColorIntent::RelativeColorimetric,
+                black_point_compensation: false,
+            }
+        }
+
+        let first = key(&[0, 1, 2, 3, 4, 5, 6, 7]);
+        let second = key(&[0, 1, 2, 3, 4, 5, 6, 8]);
+
+        assert_eq!(first.profile_len, second.profile_len);
+        assert_ne!(first.profile_digest, second.profile_digest);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn pdf_rendering_intent_names_map_to_cmm_intents() {
+        assert_eq!(
+            ColorIntent::from_pdf_name("RelativeColorimetric"),
+            ColorIntent::RelativeColorimetric
+        );
+        assert_eq!(
+            ColorIntent::from_pdf_name("/AbsoluteColorimetric"),
+            ColorIntent::AbsoluteColorimetric
+        );
+        assert_eq!(
+            ColorIntent::from_pdf_name("relative-colorimetric"),
+            ColorIntent::RelativeColorimetric
+        );
+        assert_eq!(
+            ColorIntent::from_pdf_name("Perceptual"),
+            ColorIntent::Perceptual
+        );
+        assert_eq!(
+            ColorIntent::from_pdf_name("UnknownIntent"),
+            ColorIntent::RelativeColorimetric
+        );
+    }
+
+    #[test]
+    fn transform_cache_key_includes_rendering_intent() {
+        let pixels = [10u8, 20, 30];
+        let mut cache = IccTransformCache::new(4);
+        let relative = ColorTransformOptions {
+            intent: ColorIntent::RelativeColorimetric,
+            black_point_compensation: false,
+            ..ColorTransformOptions::default()
+        };
+        let perceptual = ColorTransformOptions {
+            intent: ColorIntent::Perceptual,
+            black_point_compensation: false,
+            ..ColorTransformOptions::default()
+        };
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, relative)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, perceptual)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, relative)
+            .unwrap();
+
+        let metrics = cache.metrics();
+        assert_eq!(metrics.misses, 2);
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.entries, 2);
+    }
+
+    #[test]
+    fn transform_cache_key_includes_render_contract_scope() {
+        let pixels = [10u8, 20, 30];
+        let mut cache = IccTransformCache::new(4);
+        let display_scope = ColorTransformOptions {
+            cache_scope: color_transform_cache_scope("contract:display"),
+            ..ColorTransformOptions::default()
+        };
+        let print_scope = ColorTransformOptions {
+            cache_scope: color_transform_cache_scope("contract:print"),
+            ..ColorTransformOptions::default()
+        };
+
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, display_scope)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, print_scope)
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, display_scope)
+            .unwrap();
+
+        let metrics = cache.metrics();
+        assert_eq!(metrics.misses, 2);
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.entries, 2);
+    }
+
+    #[test]
+    fn deterministic_fallback_policy_disables_icc_backend() {
+        let pixels = [10u8, 20, 30];
+        let mut cache = IccTransformCache::new(4);
+        let portable = ColorTransformOptions {
+            intent: ColorIntent::RelativeColorimetric,
+            black_point_compensation: false,
+            backend: ColorTransformBackend::PortableQcms,
+            ..ColorTransformOptions::default()
+        };
+        assert!(
+            cache
+                .transform_builtin_srgb_to_srgb_for_proof(&pixels, portable)
+                .is_some(),
+            "portable qcms policy should provide the built-in proof transform"
+        );
+        let after_portable = cache.metrics();
+
+        let deterministic = ColorTransformOptions {
+            backend: ColorTransformBackend::DeterministicFallback,
+            ..portable
+        };
+        assert!(
+            cache
+                .transform_builtin_srgb_to_srgb_for_proof(&pixels, deterministic)
+                .is_none(),
+            "deterministic fallback policy must not silently use an ICC backend"
+        );
+        let after_deterministic = cache.metrics();
+        assert_eq!(after_deterministic.entries, after_portable.entries);
+        assert_eq!(after_deterministic.misses, after_portable.misses);
+    }
+
+    #[test]
+    fn portable_qcms_rejects_unsupported_cmyk_profile_without_panic() {
+        let profile = include_bytes!("../../../../tests/fixtures/icc/PRMG_v2.0.1_MR.icc");
+        let mut cache = IccTransformCache::new(4);
+        let options = ColorTransformOptions {
+            backend: ColorTransformBackend::PortableQcms,
+            ..ColorTransformOptions::default()
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.transform_profile_to_srgb(profile, 4, &[0, 0, 0, 0], options)
+        }));
+        assert!(
+            result.is_ok(),
+            "portable qcms admission must reject unsupported CMYK profiles before transform construction panics"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "unsupported CMYK qcms profile should fail closed"
+        );
+        assert!(cache.metrics().unsupported_profiles >= 1);
     }
 
     #[test]
@@ -1438,6 +2174,8 @@ mod tests {
         let options = ColorTransformOptions {
             intent: ColorIntent::RelativeColorimetric,
             black_point_compensation: true,
+            backend: ColorTransformBackend::NativeLittleCms,
+            ..ColorTransformOptions::default()
         };
 
         let rgb_profile = lcms2_srgb_profile_bytes();
@@ -1515,9 +2253,51 @@ mod tests {
             ColorTransformOptions {
                 intent: ColorIntent::AbsoluteColorimetric,
                 black_point_compensation: true,
+                backend: ColorTransformBackend::NativeLittleCms,
+                ..ColorTransformOptions::default()
             },
         )
         .unwrap();
         assert_eq!(proofed.len(), pixels.len());
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    #[test]
+    fn output_intent_proof_transform_uses_bounded_cache() {
+        let profile = lcms2_srgb_profile_bytes();
+        let pixels = [12u8, 40, 80, 200, 220, 240];
+        let mut cache = IccTransformCache::new(4);
+        let proof_scope = ColorTransformOptions {
+            intent: ColorIntent::AbsoluteColorimetric,
+            black_point_compensation: true,
+            backend: ColorTransformBackend::NativeLittleCms,
+            cache_scope: color_transform_cache_scope("contract:proof"),
+        };
+        let print_scope = ColorTransformOptions {
+            cache_scope: color_transform_cache_scope("contract:print"),
+            ..proof_scope
+        };
+
+        let first = cache
+            .proof_srgb_via_output_intent(&profile, &pixels, proof_scope)
+            .unwrap();
+        let second = cache
+            .proof_srgb_via_output_intent(&profile, &pixels, proof_scope)
+            .unwrap();
+        let other_scope = cache
+            .proof_srgb_via_output_intent(&profile, &pixels, print_scope)
+            .unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(other_scope.len(), pixels.len());
+        let metrics = cache.metrics();
+        assert_eq!(metrics.misses, 2);
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.entries, 2);
+        assert_eq!(metrics.admissions, 2);
+        assert_eq!(metrics.rejections, 0);
+        assert!(metrics.bytes_used > 0);
+        assert!(metrics.bytes_used <= metrics.max_bytes);
+        assert_eq!(metrics.native_lcms2_transforms, 3);
     }
 }

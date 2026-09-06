@@ -46,6 +46,270 @@ fn make_multipart(filename: &str, pdf: &[u8], extra: &[(&str, &str)]) -> (String
     (ct, body)
 }
 
+fn build_prepress_plate_pdf() -> Vec<u8> {
+    let content = "/CS1 cs 0.25 scn 10 10 20 20 re f\n\
+                   /CS1 CS 0.75 SCN 40 10 m 80 10 l S\n\
+                   /CS2 cs 0.20 0.80 scn 10 40 20 20 re f\n";
+    let type4 = "{ 0 }";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /ColorSpace << /CS1 [/Separation /SpotOrange /DeviceRGB 5 0 R] /CS2 [/DeviceN [/Cyan /SpotGreen] /DeviceRGB 6 0 R] >> >> /Contents 4 0 R >>".to_vec(),
+        format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content).into_bytes(),
+        b"<< /FunctionType 2 /Domain [0 1] /Range [0 1 0 1 0 1] /C0 [1 1 1] /C1 [1 0.5 0] /N 1 >>".to_vec(),
+        format!(
+            "<< /FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1] /Length {} >>\nstream\n{}\nendstream",
+            type4.len(),
+            type4
+        )
+        .into_bytes(),
+    ];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = vec![0usize];
+    for (idx, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+        pdf.extend_from_slice(object);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    let startxref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets.iter().skip(1) {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objects.len() + 1,
+            startxref
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
+fn build_text_edit_pdf(content: &[u8]) -> Vec<u8> {
+    use wellfriendpdf_engine::writer::{OutputObject, PdfWriter};
+    use wellfriendpdf_engine::PdfObject;
+
+    let mut catalog = wellfriendpdf_engine::PdfDictionary::empty();
+    catalog.insert("Type", PdfObject::Name("Catalog".into()));
+    catalog.insert(
+        "Pages",
+        PdfObject::Reference {
+            number: 2,
+            generation: 0,
+        },
+    );
+    let mut pages = wellfriendpdf_engine::PdfDictionary::empty();
+    pages.insert("Type", PdfObject::Name("Pages".into()));
+    pages.insert("Count", PdfObject::Integer(1));
+    pages.insert(
+        "Kids",
+        PdfObject::Array(vec![PdfObject::Reference {
+            number: 3,
+            generation: 0,
+        }]),
+    );
+    let mut font = wellfriendpdf_engine::PdfDictionary::empty();
+    font.insert("Type", PdfObject::Name("Font".into()));
+    font.insert("Subtype", PdfObject::Name("Type1".into()));
+    font.insert("BaseFont", PdfObject::Name("Courier".into()));
+    font.insert("Encoding", PdfObject::Name("WinAnsiEncoding".into()));
+    let mut fonts = wellfriendpdf_engine::PdfDictionary::empty();
+    fonts.insert(
+        "F1",
+        PdfObject::Reference {
+            number: 5,
+            generation: 0,
+        },
+    );
+    let mut resources = wellfriendpdf_engine::PdfDictionary::empty();
+    resources.insert("Font", PdfObject::Dictionary(fonts));
+    let mut page = wellfriendpdf_engine::PdfDictionary::empty();
+    page.insert("Type", PdfObject::Name("Page".into()));
+    page.insert(
+        "Parent",
+        PdfObject::Reference {
+            number: 2,
+            generation: 0,
+        },
+    );
+    page.insert(
+        "MediaBox",
+        PdfObject::Array(vec![
+            PdfObject::Integer(0),
+            PdfObject::Integer(0),
+            PdfObject::Integer(200),
+            PdfObject::Integer(200),
+        ]),
+    );
+    page.insert("Resources", PdfObject::Dictionary(resources));
+    page.insert(
+        "Contents",
+        PdfObject::Reference {
+            number: 4,
+            generation: 0,
+        },
+    );
+    let mut stream = wellfriendpdf_engine::PdfDictionary::empty();
+    stream.insert("Length", PdfObject::Integer(content.len() as i64));
+    PdfWriter::new(
+        vec![
+            OutputObject {
+                number: 1,
+                object: PdfObject::Dictionary(catalog),
+            },
+            OutputObject {
+                number: 2,
+                object: PdfObject::Dictionary(pages),
+            },
+            OutputObject {
+                number: 3,
+                object: PdfObject::Dictionary(page),
+            },
+            OutputObject {
+                number: 4,
+                object: PdfObject::Stream {
+                    dict: stream,
+                    raw: content.to_vec(),
+                },
+            },
+            OutputObject {
+                number: 5,
+                object: PdfObject::Dictionary(font),
+            },
+        ],
+        1,
+    )
+    .write()
+    .expect("text edit fixture")
+}
+
+fn build_one_image_pdf() -> Vec<u8> {
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+        b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /DCTDecode /Length 4 >>\nstream\nxxxx\nendstream".to_vec(),
+        b"<< /Length 19 >>\nstream\nq 1 0 0 1 0 0 cm /Im1 Do Q\nendstream".to_vec(),
+    ];
+    let mut offsets = vec![0usize];
+    for (idx, obj) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+        pdf.extend_from_slice(obj);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    let startxref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets.iter().skip(1) {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objects.len() + 1,
+            startxref
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
+fn multipart_report_response(
+    content_type: &str,
+    body: &[u8],
+    expected_part_name: &str,
+) -> (Value, Vec<u8>) {
+    let boundary = content_type
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("boundary="))
+        .unwrap();
+    let delimiter = format!("--{}", boundary).into_bytes();
+    let mut next_delimiter = b"\r\n".to_vec();
+    next_delimiter.extend_from_slice(&delimiter);
+    let mut cursor = find_bytes(body, &delimiter).unwrap();
+    let mut metadata = None;
+    let mut payload = None;
+
+    loop {
+        cursor += delimiter.len();
+        if body[cursor..].starts_with(b"--") {
+            break;
+        }
+        assert!(body[cursor..].starts_with(b"\r\n"));
+        cursor += 2;
+
+        let header_end = cursor + find_bytes(&body[cursor..], b"\r\n\r\n").unwrap();
+        let raw_headers = std::str::from_utf8(&body[cursor..header_end]).unwrap();
+        let body_start = header_end + 4;
+        let body_end = body_start + find_bytes(&body[body_start..], &next_delimiter).unwrap();
+        let part_body = &body[body_start..body_end];
+
+        if raw_headers.contains("name=\"metadata\"") {
+            metadata = Some(serde_json::from_slice::<Value>(part_body).unwrap());
+        } else if raw_headers.contains(&format!("name=\"{}\"", expected_part_name)) {
+            payload = Some(part_body.to_vec());
+        }
+        cursor = body_end + 2;
+    }
+
+    (metadata.unwrap(), payload.unwrap())
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn assert_report_metadata(metadata: &Value, expected_content_type: &str, expected_part: &str) {
+    assert_eq!(metadata["contract_schema_version"], 1);
+    assert_eq!(metadata["cache_fingerprint"].as_str().unwrap().len(), 64);
+    assert_eq!(metadata["rendered_content_type"], expected_content_type);
+    assert_eq!(metadata["body_part_name"], expected_part);
+    assert!(metadata["rendered_byte_length"].as_u64().unwrap() > 0);
+    assert!(metadata["font_substitution_report"]["events"].is_array());
+    let telemetry = &metadata["render_telemetry_report"];
+    assert_eq!(telemetry["scope"], "one_shot_render_contract_report");
+    assert_eq!(
+        telemetry["cache_fingerprint"],
+        metadata["cache_fingerprint"]
+    );
+    assert!(telemetry["resource_budget_max_cache_bytes"].is_number());
+    assert!(telemetry["aggregate_resource_cache_bytes"].is_number());
+    assert!(telemetry["glyph_cache"]["hits"].is_number());
+    assert!(telemetry["font_bytes_cache"]["misses"].is_number());
+    assert!(telemetry["display_list_cache"]["bytes"].is_number());
+    assert!(telemetry["display_list_raster_cache"]["bytes"].is_number());
+    assert!(telemetry["image_xobject_cache"]["evictions"].is_number());
+    assert!(telemetry["transparent_page_group_entries"].is_number());
+    if let Some(event) = metadata["font_substitution_report"]["events"]
+        .as_array()
+        .and_then(|events| events.first())
+    {
+        assert!(event["requested_pdf_font"].is_string());
+        assert!(event["selected_replacement"].is_string());
+        assert!(event["reason"].is_string());
+        assert!(event["metric_posture"].is_string());
+        assert!(event["embedded_state"].is_string());
+        assert!(event["encoding"].is_string());
+        assert!(event["resolution_source"].is_string());
+        assert!(event["selection_reason"].is_string());
+        assert!(event["required_glyph_coverage"].is_object());
+        assert!(event["missing_glyphs"].is_number());
+        assert!(event["visual_risk_category"].is_string());
+        assert!(event["extraction_impact"].is_string());
+        assert!(event["editing_impact"].is_string());
+        assert!(event["font_policy_identity"].is_string());
+    }
+    assert!(metadata["font_substitution_report"]["overflow_count"].is_number());
+}
+
 #[tokio::test]
 async fn health_check_returns_ok() {
     let app = wellfriendpdf_server::app::create_app();
@@ -140,6 +404,56 @@ async fn version_endpoint_returns_json() {
     let json: Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(json["product"], "Wellfriend");
     assert!(json["version"].is_string());
+}
+
+#[tokio::test]
+async fn capabilities_endpoint_exposes_renderer_cache_pressure_and_concurrency_policy() {
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::get("/api/v1/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let policy = &json["renderer_cache_pressure_policy"];
+    assert_eq!(policy["public_endpoint"], "/api/v1/capabilities");
+    assert!(policy["cache_classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value.as_str() == Some("render_tiles")));
+    assert!(policy["pressure_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value.as_str() == Some("evict_recomputable_tiles")));
+    assert_eq!(policy["correctness_preserved"], true);
+    assert!(policy["remaining_limitation"]
+        .as_str()
+        .unwrap()
+        .contains("external_runtime_cache_telemetry_validation_deferred"));
+    let matrix = &json["renderer_concurrency_cache_matrix"];
+    assert_eq!(matrix["public_endpoint"], "/api/v1/capabilities");
+    assert!(matrix["thread_classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value["name"].as_str() == Some("tile_render")));
+    assert!(matrix["cache_rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value["class"].as_str() == Some("render_tiles")));
+    assert_eq!(matrix["correctness_preserved"], true);
+    assert!(matrix["remaining_limitation"]
+        .as_str()
+        .unwrap()
+        .contains("external_runtime_thread_cache_matrix_validation_deferred"));
 }
 
 #[tokio::test]
@@ -642,6 +956,631 @@ async fn pdf2img_returns_zip_with_png_pages() {
     use std::io::Read;
     page_file.read_to_end(&mut content).unwrap();
     assert!(content.starts_with(&[0x89, b'P', b'N', b'G']));
+}
+
+#[tokio::test]
+async fn render_contract_builder_returns_valid_contract_json() {
+    let pdf = fixture_pdf("flate.pdf");
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[
+            ("page", "1"),
+            ("dpi", "72"),
+            ("render_mode", "high-quality"),
+            ("page_box", "Media"),
+            ("pixel_format", "Rgb8"),
+            ("alpha_mode", "Opaque"),
+            ("width", "12"),
+            ("height", "9"),
+            ("clip_x", "1"),
+            ("clip_y", "2"),
+            ("clip_width", "10"),
+            ("clip_height", "7"),
+            ("transform_a", "1"),
+            ("transform_b", "0"),
+            ("transform_c", "0"),
+            ("transform_d", "1"),
+            ("transform_e", "3"),
+            ("transform_f", "4"),
+            ("background_r", "12"),
+            ("background_g", "34"),
+            ("background_b", "56"),
+            ("background_a", "255"),
+            ("execution_mode", "Research"),
+            ("backend", "ScalarReference"),
+            ("compositing", "Compatibility"),
+            ("annotations", "Exclude"),
+            ("forms", "Exclude"),
+            ("optional_content", "ocg:server"),
+            ("smoothing", "Disabled"),
+            ("text_smoothing", "Subpixel"),
+            ("image_smoothing", "Antialiased"),
+            ("path_smoothing", "Disabled"),
+            ("subpixel_text", "Subpixel"),
+            ("color_scheme", "Dark"),
+            ("print_profile", "Print"),
+            ("halftone", "Screen"),
+            ("overprint", "Preview"),
+            ("rendering_intent", "Perceptual"),
+            ("color_management", "DeterministicFallback"),
+            ("exactness", "HighQualityExact"),
+            ("determinism", "BestEffortResearch"),
+            ("max_pixels", "1000000"),
+        ],
+    );
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/render-contract")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["surface_byte_length"], 12 * 9 * 3);
+    assert_eq!(json["builder"], "server_render_contract_builder");
+    assert_eq!(json["cache_fingerprint"].as_str().unwrap().len(), 64);
+    assert_eq!(json["contract"]["schema_version"], 1);
+    assert_eq!(json["contract"]["page_number"], 1);
+    assert_eq!(json["contract"]["dpi"], 72);
+    assert_eq!(json["contract"]["page_box"], "Media");
+    assert_eq!(json["contract"]["width"], 12);
+    assert_eq!(json["contract"]["height"], 9);
+    assert_eq!(json["contract"]["stride"], 36);
+    assert_eq!(json["contract"]["pixel_format"], "Rgb8");
+    assert_eq!(json["contract"]["alpha_mode"], "Opaque");
+    assert_eq!(json["contract"]["clip"]["x"], 1);
+    assert_eq!(json["contract"]["clip"]["y"], 2);
+    assert_eq!(json["contract"]["clip"]["width"], 10);
+    assert_eq!(json["contract"]["clip"]["height"], 7);
+    assert_eq!(json["contract"]["background"]["r"], 12);
+    assert_eq!(json["contract"]["background"]["g"], 34);
+    assert_eq!(json["contract"]["background"]["b"], 56);
+    assert_eq!(json["contract"]["background"]["a"], 255);
+    assert_eq!(json["contract"]["execution_mode"], "Research");
+    assert_eq!(json["contract"]["backend"], "ScalarReference");
+    assert_eq!(json["contract"]["compositing"], "Compatibility");
+    assert_eq!(json["contract"]["annotations"], "Exclude");
+    assert_eq!(json["contract"]["forms"], "Exclude");
+    assert_eq!(json["contract"]["optional_content"], "ocg:server");
+    assert_eq!(json["contract"]["text_smoothing"], "Subpixel");
+    assert_eq!(json["contract"]["image_smoothing"], "Antialiased");
+    assert_eq!(json["contract"]["path_smoothing"], "Disabled");
+    assert_eq!(json["contract"]["subpixel_text"], "Subpixel");
+    assert_eq!(json["contract"]["color_scheme"], "Dark");
+    assert_eq!(json["contract"]["print_profile"], "Print");
+    assert_eq!(json["contract"]["halftone"], "Screen");
+    assert_eq!(json["contract"]["overprint"], "Preview");
+    assert_eq!(json["contract"]["rendering_intent"], "Perceptual");
+    assert_eq!(
+        json["contract"]["color_management"],
+        "DeterministicFallback"
+    );
+    assert_eq!(json["contract"]["exactness"], "HighQualityExact");
+    assert_eq!(json["contract"]["determinism"], "BestEffortResearch");
+    assert_eq!(json["contract"]["resource_budget"]["max_pixels"], 1_000_000);
+
+    let contract_json = json["contract_json"].as_str().unwrap();
+    let round_trip: Value = serde_json::from_str(contract_json).unwrap();
+    assert_eq!(round_trip, json["contract"]);
+}
+
+#[tokio::test]
+async fn render_contract_builder_accepts_research_hybrid_backend() {
+    let pdf = fixture_pdf("flate.pdf");
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[("page", "1"), ("dpi", "72"), ("backend", "research-hybrid")],
+    );
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/render-contract")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["contract"]["backend"], "ResearchHybrid");
+    assert_eq!(json["contract"]["schema_version"], 1);
+    assert_eq!(json["cache_fingerprint"].as_str().unwrap().len(), 64);
+}
+
+#[tokio::test]
+async fn render_contract_backend_plan_arena_report_route_returns_json() {
+    let pdf = fixture_pdf("multi_stream.pdf");
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[("page", "1"), ("dpi", "72"), ("render_mode", "compat")],
+    );
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/render-contract/backend-plan-arena-report")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["kind"], "backend_plan_arena_report");
+    assert_eq!(json["report"]["schema_version"], 1);
+    assert_eq!(json["report"]["page_number"], 1);
+    assert!(json["report"]["document_revision"].as_u64().is_some());
+    assert!(json["report"]["hot_operation_count"].as_u64().unwrap() > 0);
+    assert!(json["report"]["descriptor_kinds"].as_object().is_some());
+}
+
+#[tokio::test]
+async fn prepress_plate_report_route_returns_json() {
+    let pdf = build_prepress_plate_pdf();
+    let (ct, body_bytes) = make_multipart("prepress.pdf", &pdf, &[("page", "1"), ("dpi", "72")]);
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/prepress/plate-report")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["kind"], "prepress_plate_report");
+    assert_eq!(json["report"]["true_separation_framebuffer"], true);
+    assert_eq!(json["report"]["page_number"], 1);
+    assert_eq!(json["report"]["plate_count"], 3);
+    assert_eq!(json["report"]["contribution_count"], 4);
+    assert_eq!(
+        json["report"]["deterministic_plane_order"],
+        serde_json::json!(["Cyan", "SpotGreen", "SpotOrange"])
+    );
+    assert!(json["report"]["cache_fingerprint"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+}
+
+#[tokio::test]
+async fn document_views_report_route_returns_json() {
+    let pdf = fixture_pdf("multi_stream.pdf");
+    let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[]);
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/document-views/report")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["kind"], "document_views_report");
+    assert_eq!(json["report"]["schema_version"], 1);
+    assert_eq!(json["report"]["views"].as_array().unwrap().len(), 5);
+    assert!(json["report"]["views"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|view| view["name"] == "render"));
+    assert_eq!(json["report"]["materialization"]["semantic_pages"], 0);
+}
+
+#[tokio::test]
+async fn render_contract_png_route_renders_canonical_contract() {
+    let pdf = fixture_pdf("flate.pdf");
+    let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("page", "1"), ("dpi", "72")]);
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/render-contract")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let contract_json = json["contract_json"].as_str().unwrap().to_string();
+
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[("contract_json", contract_json.as_str())],
+    );
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/render-contract/png")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get("content-type").unwrap(), "image/png");
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    assert!(body_bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+}
+
+#[tokio::test]
+async fn render_contract_png_report_route_returns_png_and_report_part() {
+    let pdf = fixture_pdf("flate.pdf");
+    let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("page", "1"), ("dpi", "72")]);
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/render-contract")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let contract_json = json["contract_json"].as_str().unwrap().to_string();
+
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[("contract_json", contract_json.as_str())],
+    );
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/render-contract/png-with-font-substitution-report")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(content_type.starts_with("multipart/mixed; boundary="));
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let (metadata, image) = multipart_report_response(&content_type, &body_bytes, "image");
+    assert_report_metadata(&metadata, "image/png", "image");
+    assert_eq!(
+        metadata["rendered_byte_length"].as_u64().unwrap() as usize,
+        image.len()
+    );
+    assert!(image.starts_with(&[0x89, b'P', b'N', b'G']));
+}
+
+#[tokio::test]
+async fn render_contract_raw_route_renders_caller_surface_contract() {
+    let pdf = fixture_pdf("flate.pdf");
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[
+            ("page", "1"),
+            ("dpi", "72"),
+            ("pixel_format", "Rgb8"),
+            ("alpha_mode", "Opaque"),
+            ("width", "12"),
+            ("height", "9"),
+            ("clip_x", "0"),
+            ("clip_y", "0"),
+            ("clip_width", "12"),
+            ("clip_height", "9"),
+        ],
+    );
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/render-contract")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let contract_json = json["contract_json"].as_str().unwrap().to_string();
+
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[("contract_json", contract_json.as_str())],
+    );
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/render-contract/raw")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-render-contract-pixel-format")
+            .unwrap(),
+        "Rgb8"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-render-contract-alpha-mode")
+            .unwrap(),
+        "Opaque"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-render-contract-surface-bytes")
+            .unwrap(),
+        "324"
+    );
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    assert_eq!(body_bytes.len(), 12 * 9 * 3);
+}
+
+#[tokio::test]
+async fn render_contract_raw_report_route_returns_surface_and_report_part() {
+    let pdf = fixture_pdf("flate.pdf");
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[
+            ("page", "1"),
+            ("dpi", "72"),
+            ("pixel_format", "Rgb8"),
+            ("alpha_mode", "Opaque"),
+            ("width", "12"),
+            ("height", "9"),
+            ("clip_x", "0"),
+            ("clip_y", "0"),
+            ("clip_width", "12"),
+            ("clip_height", "9"),
+        ],
+    );
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/render-contract")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let contract_json = json["contract_json"].as_str().unwrap().to_string();
+
+    let (ct, body_bytes) = make_multipart(
+        "test.pdf",
+        &pdf,
+        &[("contract_json", contract_json.as_str())],
+    );
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/render-contract/raw-with-font-substitution-report")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-render-contract-pixel-format")
+            .unwrap(),
+        "Rgb8"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-render-contract-alpha-mode")
+            .unwrap(),
+        "Opaque"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-render-contract-surface-bytes")
+            .unwrap(),
+        "324"
+    );
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(content_type.starts_with("multipart/mixed; boundary="));
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let (metadata, surface) = multipart_report_response(&content_type, &body_bytes, "surface");
+    assert_report_metadata(&metadata, "application/octet-stream", "surface");
+    assert_eq!(metadata["contract_surface_byte_length"], 12 * 9 * 3);
+    assert_eq!(
+        metadata["rendered_byte_length"].as_u64().unwrap() as usize,
+        surface.len()
+    );
+    assert_eq!(surface.len(), 12 * 9 * 3);
+}
+
+#[tokio::test]
+async fn editing_transaction_apply_route_returns_render_invalidation_plan() {
+    let pdf = build_text_edit_pdf(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n");
+    let request = r#"{
+        "requested_mode":"operator_preserving",
+        "page":1,
+        "source_text":"HELLO",
+        "replacement_text":"WORLD"
+    }"#;
+    let options = r#"{
+        "page_number":1,
+        "dpi":72,
+        "tile_width":64,
+        "tile_height":64
+    }"#;
+    let (ct, body_bytes) = make_multipart(
+        "edit.pdf",
+        &pdf,
+        &[
+            ("request_json", request),
+            ("render_invalidation_options_json", options),
+        ],
+    );
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/editing-transactions/apply-with-render-invalidation")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(content_type.starts_with("multipart/mixed; boundary="));
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let (metadata, document) = multipart_report_response(&content_type, &body_bytes, "document");
+    assert!(document.starts_with(b"%PDF-"));
+    assert_eq!(
+        metadata["kind"],
+        "editing_transactions_transaction_apply_with_render_invalidation"
+    );
+    assert_eq!(
+        metadata["report"]["render_invalidation"]["schema_version"],
+        "render-transaction-invalidation-plan.v1"
+    );
+    assert_eq!(
+        metadata["report"]["render_invalidation"]["dirty_region_conversion"]["requested"],
+        true
+    );
+    assert!(
+        metadata["report"]["render_invalidation"]["cache_application_entry_points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == "ContentEngine::invalidate_for_transaction_with_tiles")
+    );
+}
+
+#[tokio::test]
+async fn image_decode_capability_report_route_returns_json() {
+    let pdf = build_one_image_pdf();
+    let (ct, body_bytes) = make_multipart("image.pdf", &pdf, &[]);
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/image-decode/capability-report")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let value: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(value["kind"], "image_decode_capability_report");
+    assert_eq!(value["report"]["schema_version"], 1);
+    assert_eq!(value["report"]["image_count"], 1);
+    assert_eq!(value["report"]["images"][0]["name"], "Im1");
+    assert!(value["report"]["native_metadata_inspection_count"]
+        .as_u64()
+        .is_some());
+    assert!(value["report"]["renderer_boundary_memory_budget_count"]
+        .as_u64()
+        .is_some());
+}
+
+#[tokio::test]
+async fn progressive_image_decode_lifecycle_route_returns_report() {
+    let pdf = build_one_image_pdf();
+    let request = r#"{
+        "image_index":0,
+        "max_retained_bytes":2048,
+        "actions":["start","continue","pause","resume","cancel","close"]
+    }"#;
+    let (ct, body_bytes) = make_multipart("image.pdf", &pdf, &[("request_json", request)]);
+    let app = wellfriendpdf_server::app::create_app();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/progressive-image-decode/lifecycle-report")
+                .header("content-type", ct)
+                .body(Body::from(body_bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let value: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(value["kind"], "progressive_image_decode_lifecycle_report");
+    assert_eq!(value["report"]["image_count"], 1);
+    assert_eq!(value["report"]["image"]["name"], "Im1");
+    assert_eq!(
+        value["report"]["reports"][1]["phase"],
+        "full_decode_required"
+    );
+    assert_eq!(value["report"]["reports"][4]["state"], "cancelled");
+    assert_eq!(value["report"]["reports"][5]["state"], "closed");
 }
 
 #[tokio::test]

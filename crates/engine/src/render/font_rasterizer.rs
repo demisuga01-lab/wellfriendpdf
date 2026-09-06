@@ -263,6 +263,16 @@ pub(crate) mod cff_support {
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
+    pub(crate) fn outline_by_gid_required_width(
+        font_bytes: &[u8],
+        gid: u16,
+    ) -> Option<(Option<Path>, f64)> {
+        let table = parse(font_bytes)?;
+        let glyph_id = GlyphId(cid_keyed_gid_for_cid(font_bytes, gid).unwrap_or(gid));
+        let advance = table.glyph_width(glyph_id).map(f64::from)?;
+        Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
+    }
+
     /// In CID-keyed CFF fonts, PDF character codes map to CIDs and the CFF
     /// charset maps charstring GIDs back to those CIDs. Invert that charset so
     /// CIDFontType0 / Identity-H text paints the intended charstring instead of
@@ -285,6 +295,16 @@ pub(crate) mod cff_support {
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
+    pub(crate) fn outline_by_code_required_width(
+        font_bytes: &[u8],
+        code: u8,
+    ) -> Option<(Option<Path>, f64)> {
+        let table = parse(font_bytes)?;
+        let glyph_id = table.glyph_index(code)?;
+        let advance = table.glyph_width(glyph_id).map(f64::from)?;
+        Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
+    }
+
     /// Extract a glyph outline and advance by Adobe glyph name from a
     /// SID-keyed CFF font. PDF `/Encoding /Differences` entries are glyph-name
     /// based and override the CFF program's own 8-bit encoding, so this is the
@@ -296,6 +316,16 @@ pub(crate) mod cff_support {
         let table = parse(font_bytes)?;
         let glyph_id = glyph_index_by_name(&table, font_bytes, glyph_name)?;
         let advance = table.glyph_width(glyph_id).map(f64::from).unwrap_or(1000.0);
+        Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
+    }
+
+    pub(crate) fn outline_by_name_required_width(
+        font_bytes: &[u8],
+        glyph_name: &str,
+    ) -> Option<(Option<Path>, f64)> {
+        let table = parse(font_bytes)?;
+        let glyph_id = glyph_index_by_name(&table, font_bytes, glyph_name)?;
+        let advance = table.glyph_width(glyph_id).map(f64::from)?;
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 

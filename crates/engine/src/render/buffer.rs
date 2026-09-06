@@ -2,9 +2,12 @@ use crate::content::BlendMode;
 use crate::images::decoder::RawImage;
 use crate::render::cmm;
 use crate::render::path::{FillRule, FlatPath};
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc, OnceLock,
+use std::{
+    cell::Cell,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
+    },
 };
 
 /// Gamma-correct compositing helpers.
@@ -21,7 +24,6 @@ use std::sync::{
 /// The conversions use 8-bit â†’ f32 lookup tables (decode) and a 4096-entry
 /// linear â†’ 8-bit table (encode), so the hot path is two table lookups per
 /// channel with no `powf` calls.
-#[allow(dead_code)]
 pub(crate) mod gamma {
     use std::sync::OnceLock;
 
@@ -83,17 +85,6 @@ pub(crate) mod gamma {
             c / 12.92
         } else {
             ((c + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
-    /// Encode a linear-light value in [0, 1] back to a normalised sRGB f32.
-    #[inline]
-    pub fn to_srgb_f32(lin: f32) -> f32 {
-        let lin = lin.clamp(0.0, 1.0);
-        if lin <= 0.003_130_8 {
-            lin * 12.92
-        } else {
-            1.055 * lin.powf(1.0 / 2.4) - 0.055
         }
     }
 }
@@ -287,6 +278,46 @@ impl ClipMask {
             solid: None,
             partial_coverage: false,
             run_cache: Arc::new(lock),
+        }
+    }
+
+    pub(crate) fn from_alpha_bytes(width: u32, height: u32, bytes: Vec<u8>) -> Self {
+        let len = (width as usize).checked_mul(height as usize).unwrap_or(0);
+        if len == 0 {
+            return Self::empty(width, height);
+        }
+
+        let mut mask = vec![0; len];
+        let copy_len = bytes.len().min(len);
+        mask[..copy_len].copy_from_slice(&bytes[..copy_len]);
+
+        let mut all_visible = true;
+        let mut all_empty = true;
+        let mut partial_coverage = false;
+        for value in &mask {
+            all_visible &= *value == 255;
+            all_empty &= *value == 0;
+            partial_coverage |= *value != 0 && *value != 255;
+        }
+
+        let solid = if all_visible {
+            Some(true)
+        } else if all_empty {
+            Some(false)
+        } else {
+            None
+        };
+        if solid.is_some() {
+            mask.clear();
+        }
+
+        Self {
+            width,
+            height,
+            mask,
+            solid,
+            partial_coverage: solid.is_none() && partial_coverage,
+            run_cache: Arc::new(OnceLock::new()),
         }
     }
 
@@ -1305,7 +1336,7 @@ impl AlphaMask {
     }
 
     #[inline]
-    pub fn get(&self, x: i32, y: i32) -> f32 {
+    pub(crate) fn get_byte(&self, x: i32, y: i32) -> u8 {
         let local_x = x.saturating_sub(self.origin_x);
         let local_y = y.saturating_sub(self.origin_y);
         if local_x < 0
@@ -1313,15 +1344,71 @@ impl AlphaMask {
             || local_x >= self.width as i32
             || local_y >= self.height as i32
         {
-            return self.outside_alpha as f32 / 255.0;
+            return self.outside_alpha;
         }
         let Some(idx) = (local_y as usize)
             .checked_mul(self.width as usize)
             .and_then(|row| row.checked_add(local_x as usize))
         else {
-            return self.outside_alpha as f32 / 255.0;
+            return self.outside_alpha;
         };
-        self.data.get(idx).copied().unwrap_or(self.outside_alpha) as f32 / 255.0
+        self.data.get(idx).copied().unwrap_or(self.outside_alpha)
+    }
+
+    #[inline]
+    pub fn get(&self, x: i32, y: i32) -> f32 {
+        self.get_byte(x, y) as f32 / 255.0
+    }
+
+    pub(crate) fn fused_clip_window(
+        soft_mask: Option<&AlphaMask>,
+        clip: Option<&ClipMask>,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let clip = clip.filter(|clip| !clip.is_all_visible());
+        if soft_mask.is_none() && clip.is_none() {
+            return None;
+        }
+        let width_usize = width as usize;
+        let len = width_usize.checked_mul(height as usize)?;
+        let mut data = vec![255u8; len];
+        let mut clip_row = clip.map(|_| vec![255u8; width_usize]);
+        for local_y in 0..height as i32 {
+            let dest_y = y as i32 + local_y;
+            let row_start = (local_y as usize).checked_mul(width_usize)?;
+            let row_end = row_start.checked_add(width_usize)?;
+            let row = &mut data[row_start..row_end];
+            if let Some(soft_mask) = soft_mask {
+                for (local_x, alpha) in row.iter_mut().enumerate() {
+                    *alpha = soft_mask.get_byte(x as i32 + local_x as i32, dest_y);
+                }
+            }
+            if let (Some(clip), Some(clip_row)) = (clip, clip_row.as_mut()) {
+                for (local_x, alpha) in clip_row.iter_mut().enumerate() {
+                    *alpha = clip.opacity_byte(x as i32 + local_x as i32, dest_y);
+                }
+                if wellfriendpdf_render_simd::multiply_alpha_rows(row, clip_row) {
+                    continue;
+                }
+                for (alpha, clip_alpha) in row.iter_mut().zip(clip_row.iter().copied()) {
+                    *alpha = div255_round_u16(u16::from(*alpha) * u16::from(clip_alpha)) as u8;
+                }
+            }
+        }
+        Some(Self {
+            width,
+            height,
+            origin_x: 0,
+            origin_y: 0,
+            outside_alpha: 0,
+            data,
+        })
     }
 
     pub fn set(&mut self, x: i32, y: i32, alpha: u8) {
@@ -1590,6 +1677,9 @@ pub struct PixelCompositorStats {
     pub wide_solid_color_pixels: u64,
     pub wide_opaque_dst_pixels: u64,
     pub wide_uniform_alpha_pixels: u64,
+    pub wide_general_pixels: u64,
+    pub lcd_row_pixels: u64,
+    pub knockout_row_pixels: u64,
     pub wide_separable_blend_pixels: u64,
     pub scalar_solid_color_pixels: u64,
     pub scalar_opaque_dst_pixels: u64,
@@ -1598,6 +1688,7 @@ pub struct PixelCompositorStats {
     pub scalar_general_pixels: u64,
     pub soft_mask_opaque_dst_pixels: u64,
     pub wide_soft_mask_opaque_dst_pixels: u64,
+    pub wide_soft_mask_general_pixels: u64,
     pub scalar_soft_mask_opaque_dst_pixels: u64,
     pub soft_mask_general_pixels: u64,
 }
@@ -1607,6 +1698,7 @@ pub enum PixelCompositorBackend {
     Scalar,
     PortableWide,
     Sse2,
+    Ssse3,
     Avx2,
     Neon,
     WasmSimd,
@@ -1641,6 +1733,7 @@ impl PixelCompositorBackend {
             PixelCompositorBackend::Scalar => "scalar",
             PixelCompositorBackend::PortableWide => "portable_wide",
             PixelCompositorBackend::Sse2 => "sse2",
+            PixelCompositorBackend::Ssse3 => "ssse3",
             PixelCompositorBackend::Avx2 => "avx2",
             PixelCompositorBackend::Neon => "neon",
             PixelCompositorBackend::WasmSimd => "wasm_simd",
@@ -1649,6 +1742,9 @@ impl PixelCompositorBackend {
 }
 
 pub fn pixel_compositor_backend() -> PixelCompositorBackend {
+    if scalar_compositor_forced() {
+        return PixelCompositorBackend::Scalar;
+    }
     native_pixel_compositor_backend().unwrap_or(PixelCompositorBackend::PortableWide)
 }
 
@@ -1657,6 +1753,9 @@ pub fn pixel_compositor_detected_hardware_backend() -> PixelCompositorBackend {
     {
         if std::is_x86_feature_detected!("avx2") {
             return PixelCompositorBackend::Avx2;
+        }
+        if std::is_x86_feature_detected!("ssse3") {
+            return PixelCompositorBackend::Ssse3;
         }
         if std::is_x86_feature_detected!("sse2") {
             return PixelCompositorBackend::Sse2;
@@ -1690,9 +1789,49 @@ pub fn pixel_compositor_operation_backend(
     }
 }
 
+thread_local! {
+    static SCALAR_COMPOSITOR_GUARD_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Scoped render-contract guard that forces row compositors onto their scalar
+/// reference path for the current thread.
+pub(crate) struct ScalarCompositorGuard {
+    enabled: bool,
+}
+
+impl ScalarCompositorGuard {
+    pub(crate) fn enter(enabled: bool) -> Self {
+        if enabled {
+            SCALAR_COMPOSITOR_GUARD_DEPTH.with(|depth| {
+                depth.set(depth.get().saturating_add(1));
+            });
+        }
+        Self { enabled }
+    }
+}
+
+impl Drop for ScalarCompositorGuard {
+    fn drop(&mut self) {
+        if self.enabled {
+            SCALAR_COMPOSITOR_GUARD_DEPTH.with(|depth| {
+                depth.set(depth.get().saturating_sub(1));
+            });
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn scalar_compositor_forced() -> bool {
+    SCALAR_COMPOSITOR_GUARD_DEPTH.with(|depth| depth.get() > 0)
+}
+
 fn native_pixel_compositor_backend() -> Option<PixelCompositorBackend> {
+    if scalar_compositor_forced() {
+        return None;
+    }
     match wellfriendpdf_render_simd::active_backend() {
         wellfriendpdf_render_simd::SimdBackend::Avx2 => Some(PixelCompositorBackend::Avx2),
+        wellfriendpdf_render_simd::SimdBackend::Ssse3 => Some(PixelCompositorBackend::Ssse3),
         wellfriendpdf_render_simd::SimdBackend::Sse2 => Some(PixelCompositorBackend::Sse2),
         wellfriendpdf_render_simd::SimdBackend::Neon => Some(PixelCompositorBackend::Neon),
         wellfriendpdf_render_simd::SimdBackend::WasmSimd => Some(PixelCompositorBackend::WasmSimd),
@@ -1707,6 +1846,9 @@ static PIXEL_BUFFER_PEAK_LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_WIDE_SOLID_COLOR_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_WIDE_OPAQUE_DST_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_WIDE_UNIFORM_ALPHA_PIXELS: AtomicU64 = AtomicU64::new(0);
+static PIXEL_COMPOSITOR_WIDE_GENERAL_PIXELS: AtomicU64 = AtomicU64::new(0);
+static PIXEL_COMPOSITOR_LCD_ROW_PIXELS: AtomicU64 = AtomicU64::new(0);
+static PIXEL_COMPOSITOR_KNOCKOUT_ROW_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_SCALAR_SOLID_COLOR_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_SCALAR_OPAQUE_DST_PIXELS: AtomicU64 = AtomicU64::new(0);
@@ -1715,6 +1857,7 @@ static PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS: AtomicU64 = AtomicU64::ne
 static PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_SOFT_MASK_OPAQUE_DST_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_WIDE_SOFT_MASK_OPAQUE_DST_PIXELS: AtomicU64 = AtomicU64::new(0);
+static PIXEL_COMPOSITOR_WIDE_SOFT_MASK_GENERAL_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_SCALAR_SOFT_MASK_OPAQUE_DST_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PIXEL_COMPOSITOR_SOFT_MASK_GENERAL_PIXELS: AtomicU64 = AtomicU64::new(0);
 
@@ -1758,6 +1901,9 @@ pub fn pixel_compositor_stats() -> PixelCompositorStats {
         wide_opaque_dst_pixels: PIXEL_COMPOSITOR_WIDE_OPAQUE_DST_PIXELS.load(Ordering::Relaxed),
         wide_uniform_alpha_pixels: PIXEL_COMPOSITOR_WIDE_UNIFORM_ALPHA_PIXELS
             .load(Ordering::Relaxed),
+        wide_general_pixels: PIXEL_COMPOSITOR_WIDE_GENERAL_PIXELS.load(Ordering::Relaxed),
+        lcd_row_pixels: PIXEL_COMPOSITOR_LCD_ROW_PIXELS.load(Ordering::Relaxed),
+        knockout_row_pixels: PIXEL_COMPOSITOR_KNOCKOUT_ROW_PIXELS.load(Ordering::Relaxed),
         wide_separable_blend_pixels: PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS
             .load(Ordering::Relaxed),
         scalar_solid_color_pixels: PIXEL_COMPOSITOR_SCALAR_SOLID_COLOR_PIXELS
@@ -1771,6 +1917,8 @@ pub fn pixel_compositor_stats() -> PixelCompositorStats {
         soft_mask_opaque_dst_pixels: PIXEL_COMPOSITOR_SOFT_MASK_OPAQUE_DST_PIXELS
             .load(Ordering::Relaxed),
         wide_soft_mask_opaque_dst_pixels: PIXEL_COMPOSITOR_WIDE_SOFT_MASK_OPAQUE_DST_PIXELS
+            .load(Ordering::Relaxed),
+        wide_soft_mask_general_pixels: PIXEL_COMPOSITOR_WIDE_SOFT_MASK_GENERAL_PIXELS
             .load(Ordering::Relaxed),
         scalar_soft_mask_opaque_dst_pixels: PIXEL_COMPOSITOR_SCALAR_SOFT_MASK_OPAQUE_DST_PIXELS
             .load(Ordering::Relaxed),
@@ -1939,6 +2087,46 @@ impl PixelBuffer {
         Some(out)
     }
 
+    /// Copy a rectangle from this buffer into an existing destination buffer.
+    ///
+    /// The destination dimensions define the copy size. Clip and soft-mask
+    /// state are deliberately not copied; callers use this for bounded scratch
+    /// surfaces whose pixels, not graphics state, form the reusable backdrop.
+    pub(crate) fn copy_rect_into_buffer(&self, x: u32, y: u32, dst: &mut PixelBuffer) -> bool {
+        if dst.width == 0 || dst.height == 0 {
+            return false;
+        }
+        let Some(end_x) = x.checked_add(dst.width) else {
+            return false;
+        };
+        let Some(end_y) = y.checked_add(dst.height) else {
+            return false;
+        };
+        if end_x > self.width || end_y > self.height || dst.render_mode != self.render_mode {
+            return false;
+        }
+        let bytes_per_pixel = 4usize;
+        let src_stride = self.width as usize * bytes_per_pixel;
+        let dst_stride = dst.width as usize * bytes_per_pixel;
+        let src_x = x as usize * bytes_per_pixel;
+        for row in 0..dst.height as usize {
+            let src_start = (y as usize + row)
+                .saturating_mul(src_stride)
+                .saturating_add(src_x);
+            let src_end = src_start.saturating_add(dst_stride);
+            let dst_start = row.saturating_mul(dst_stride);
+            let dst_end = dst_start.saturating_add(dst_stride);
+            let Some(src_row) = self.data.get(src_start..src_end) else {
+                return false;
+            };
+            let Some(dst_row) = dst.data.get_mut(dst_start..dst_end) else {
+                return false;
+            };
+            dst_row.copy_from_slice(src_row);
+        }
+        true
+    }
+
     /// Copy an already-rasterized source buffer into this buffer at a pixel
     /// destination using row slices. The destination clip is deliberately not
     /// applied; callers use this for assembling completed render tiles into an
@@ -2075,6 +2263,9 @@ impl PixelBuffer {
         let Some(dst) = self.data.get_mut(start..start + pixels * 4) else {
             return 0;
         };
+        if !scalar_compositor_forced() && wellfriendpdf_render_simd::rgb8_to_opaque_rgba(rgb, dst) {
+            return pixels;
+        }
         for (out, src) in dst.chunks_exact_mut(4).zip(rgb.chunks_exact(3)) {
             out[0] = src[0];
             out[1] = src[1];
@@ -2255,9 +2446,10 @@ impl PixelBuffer {
     /// Cached glyph, Type3, and stroked-path masks hit this path repeatedly in
     /// display-list replay. Keeping the mask compositor row/run based avoids
     /// re-entering the full per-pixel clip/soft-mask/blend dispatcher for the
-    /// common normal-blend cases while preserving the existing `blend_pixel`
-    /// fallback for partial clips, soft masks, knockout groups, and high-quality
-    /// subpixel coverage.
+    /// common normal-blend cases. Compat partial clips and soft masks are fused
+    /// into bounded row-local coverage before the row compositor; knockout,
+    /// non-normal blending, and high-quality rendering keep the existing
+    /// `blend_pixel` fallback.
     pub(crate) fn blend_alpha_mask(
         &mut self,
         dst_x: i32,
@@ -2267,10 +2459,41 @@ impl PixelBuffer {
         alpha: &[u8],
         color: PixelColor,
     ) {
+        self.blend_alpha_mask_strided(
+            dst_x,
+            dst_y,
+            mask_width,
+            mask_height,
+            alpha,
+            mask_width as usize,
+            0,
+            color,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn blend_alpha_mask_strided(
+        &mut self,
+        dst_x: i32,
+        dst_y: i32,
+        mask_width: u32,
+        mask_height: u32,
+        alpha: &[u8],
+        alpha_stride: usize,
+        alpha_offset: usize,
+        color: PixelColor,
+    ) {
         if mask_width == 0
             || mask_height == 0
             || color[3] == 0
-            || alpha.len() != mask_width as usize * mask_height as usize
+            || alpha_stride < mask_width as usize
+            || !alpha_mask_window_fits(
+                alpha.len(),
+                alpha_offset,
+                alpha_stride,
+                mask_width as usize,
+                mask_height as usize,
+            )
         {
             return;
         }
@@ -2302,8 +2525,10 @@ impl PixelBuffer {
         if normal_unmasked {
             for row in y0..y1 {
                 let mask_row = (row - dst_y) as usize;
-                let src_start = mask_row * mask_width as usize + (x0 - dst_x) as usize;
-                let src_end = mask_row * mask_width as usize + (x1 - dst_x) as usize;
+                let src_start = alpha_offset
+                    .saturating_add(mask_row.saturating_mul(alpha_stride))
+                    .saturating_add((x0 - dst_x) as usize);
+                let src_end = src_start.saturating_add((x1 - x0) as usize);
                 let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
                     continue;
                 };
@@ -2318,60 +2543,14 @@ impl PixelBuffer {
                     );
                     continue;
                 }
-                let mut col = x0;
-                let mut idx = 0usize;
-                while idx < mask_row_alpha.len() {
-                    let mask_alpha = mask_row_alpha[idx];
-                    if mask_alpha == 0 {
-                        idx += 1;
-                        col += 1;
-                        continue;
-                    }
-                    let effective_alpha =
-                        ((u16::from(color[3]) * u16::from(mask_alpha) + 127) / 255) as u8;
-                    if effective_alpha == 0 {
-                        idx += 1;
-                        col += 1;
-                        continue;
-                    }
-                    let run_start = col;
-                    let mut run_len = 1usize;
-                    while idx + run_len < mask_row_alpha.len() {
-                        let next_alpha = mask_row_alpha[idx + run_len];
-                        let next_effective =
-                            ((u16::from(color[3]) * u16::from(next_alpha) + 127) / 255) as u8;
-                        if next_effective != effective_alpha {
-                            break;
-                        }
-                        run_len += 1;
-                    }
-                    let run_end = run_start.saturating_add(run_len as i32);
-                    if effective_alpha == 255 {
-                        fill_opaque_run(&mut self.data, self.width, row, run_start, run_end, color);
-                    } else if !self.render_mode.is_high_quality() {
-                        let mut run_color = color;
-                        run_color[3] = effective_alpha;
-                        blend_normal_compat_run(
-                            &mut self.data,
-                            self.width,
-                            row,
-                            run_start,
-                            run_end,
-                            run_color,
-                        );
-                    } else {
-                        for offset in 0..run_len {
-                            self.blend_pixel(
-                                run_start.saturating_add(offset as i32),
-                                row,
-                                color,
-                                f32::from(mask_row_alpha[idx + offset]) / 255.0,
-                            );
-                        }
-                    }
-                    idx += run_len;
-                    col = run_end;
-                }
+                blend_alpha_mask_run_high_quality_normal(
+                    &mut self.data,
+                    self.width,
+                    row,
+                    x0,
+                    mask_row_alpha,
+                    color,
+                );
             }
             return;
         }
@@ -2385,33 +2564,450 @@ impl PixelBuffer {
                 .as_ref()
                 .is_some_and(|clip| !clip.is_empty() && !clip.has_partial_coverage());
         if normal_binary_clip {
-            if let Some(clip) = self.clip.clone() {
-                for row in y0..y1 {
-                    let mask_row = (row - dst_y) as usize;
-                    clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
-                        let src_start = mask_row * mask_width as usize + (run_x0 - dst_x) as usize;
-                        let src_end = mask_row * mask_width as usize + (run_x1 - dst_x) as usize;
+            let Some(clip) = self.clip.as_ref() else {
+                return;
+            };
+            let width = self.width;
+            let data = &mut self.data;
+            for row in y0..y1 {
+                let mask_row = (row - dst_y) as usize;
+                clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                    let src_start = alpha_offset
+                        .saturating_add(mask_row.saturating_mul(alpha_stride))
+                        .saturating_add((run_x0 - dst_x) as usize);
+                    let src_end = src_start.saturating_add((run_x1 - run_x0) as usize);
+                    let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                        return;
+                    };
+                    blend_alpha_mask_run_normal(data, width, row, run_x0, mask_row_alpha, color);
+                });
+            }
+            return;
+        }
+
+        let high_quality_binary_clip = self.blend_mode == BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality()
+            && self.clip.as_ref().is_some_and(|clip| {
+                !clip.is_empty()
+                    && !clip.has_partial_coverage()
+                    && clip.width >= x1 as u32
+                    && clip.height >= y1 as u32
+            });
+        if high_quality_binary_clip {
+            let Some(clip) = self.clip.as_ref() else {
+                return;
+            };
+            let width = self.width;
+            let data = &mut self.data;
+            for row in y0..y1 {
+                let mask_row = (row - dst_y) as usize;
+                clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                    let src_start = alpha_offset
+                        .saturating_add(mask_row.saturating_mul(alpha_stride))
+                        .saturating_add((run_x0 - dst_x) as usize);
+                    let src_end = src_start.saturating_add((run_x1 - run_x0) as usize);
+                    let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                        return;
+                    };
+                    blend_alpha_mask_run_high_quality_normal(
+                        data,
+                        width,
+                        row,
+                        run_x0,
+                        mask_row_alpha,
+                        color,
+                    );
+                });
+            }
+            return;
+        }
+
+        let high_quality_partial_clip = self.blend_mode == BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality()
+            && self
+                .clip
+                .as_ref()
+                .is_some_and(|clip| clip.has_partial_coverage());
+        if high_quality_partial_clip {
+            let Some(clip) = self.clip.as_ref() else {
+                return;
+            };
+            let width = self.width;
+            let data = &mut self.data;
+            for row in y0..y1 {
+                let mask_row = (row - dst_y) as usize;
+                let src_start = alpha_offset
+                    .saturating_add(mask_row.saturating_mul(alpha_stride))
+                    .saturating_add((x0 - dst_x) as usize);
+                let src_end = src_start.saturating_add((x1 - x0) as usize);
+                let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                    continue;
+                };
+                blend_alpha_mask_run_high_quality_normal_partial_clip(
+                    data,
+                    width,
+                    row,
+                    x0,
+                    mask_row_alpha,
+                    color,
+                    clip,
+                );
+            }
+            return;
+        }
+
+        let high_quality_blend_mask = self.blend_mode != BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality();
+        if high_quality_blend_mask {
+            let blend_mode = self.blend_mode;
+            match self.clip.as_ref() {
+                None => {
+                    for row in y0..y1 {
+                        let mask_row = (row - dst_y) as usize;
+                        let src_start = alpha_offset
+                            .saturating_add(mask_row.saturating_mul(alpha_stride))
+                            .saturating_add((x0 - dst_x) as usize);
+                        let src_end = src_start.saturating_add((x1 - x0) as usize);
                         let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
-                            return;
+                            continue;
                         };
-                        blend_alpha_mask_run_normal(
+                        blend_alpha_mask_run_high_quality_blend(
                             &mut self.data,
                             self.width,
                             row,
-                            run_x0,
+                            x0,
                             mask_row_alpha,
                             color,
+                            blend_mode,
                         );
-                    });
+                    }
+                    return;
                 }
+                Some(clip) if clip.is_all_visible() => {
+                    for row in y0..y1 {
+                        let mask_row = (row - dst_y) as usize;
+                        let src_start = alpha_offset
+                            .saturating_add(mask_row.saturating_mul(alpha_stride))
+                            .saturating_add((x0 - dst_x) as usize);
+                        let src_end = src_start.saturating_add((x1 - x0) as usize);
+                        let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                            continue;
+                        };
+                        blend_alpha_mask_run_high_quality_blend(
+                            &mut self.data,
+                            self.width,
+                            row,
+                            x0,
+                            mask_row_alpha,
+                            color,
+                            blend_mode,
+                        );
+                    }
+                    return;
+                }
+                Some(clip)
+                    if !clip.has_partial_coverage()
+                        && clip.width >= x1 as u32
+                        && clip.height >= y1 as u32 =>
+                {
+                    let width = self.width;
+                    let data = &mut self.data;
+                    for row in y0..y1 {
+                        let mask_row = (row - dst_y) as usize;
+                        clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                            let src_start = alpha_offset
+                                .saturating_add(mask_row.saturating_mul(alpha_stride))
+                                .saturating_add((run_x0 - dst_x) as usize);
+                            let src_end = src_start.saturating_add((run_x1 - run_x0) as usize);
+                            let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                                return;
+                            };
+                            blend_alpha_mask_run_high_quality_blend(
+                                data,
+                                width,
+                                row,
+                                run_x0,
+                                mask_row_alpha,
+                                color,
+                                blend_mode,
+                            );
+                        });
+                    }
+                    return;
+                }
+                Some(clip) if clip.has_partial_coverage() => {
+                    for row in y0..y1 {
+                        let mask_row = (row - dst_y) as usize;
+                        let src_start = alpha_offset
+                            .saturating_add(mask_row.saturating_mul(alpha_stride))
+                            .saturating_add((x0 - dst_x) as usize);
+                        let src_end = src_start.saturating_add((x1 - x0) as usize);
+                        let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                            continue;
+                        };
+                        blend_alpha_mask_run_high_quality_blend_partial_clip(
+                            &mut self.data,
+                            self.width,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            mask_row_alpha,
+                            color,
+                            blend_mode,
+                            clip,
+                        );
+                    }
+                    return;
+                }
+                _ => {}
             }
+        }
+
+        let high_quality_knockout_alpha =
+            self.knockout_backdrop.is_some() && self.render_mode.is_high_quality();
+        if high_quality_knockout_alpha {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let blend_mode = self.blend_mode;
+            let Some(backdrop) = self.knockout_backdrop.as_ref() else {
+                return;
+            };
+            let smask = self.smask.as_ref();
+            let clip = self.clip.as_ref();
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for row in y0..y1 {
+                    let mask_row = (row - dst_y) as usize;
+                    let src_start = alpha_offset
+                        .saturating_add(mask_row.saturating_mul(alpha_stride))
+                        .saturating_add((x0 - dst_x) as usize);
+                    let src_end = src_start.saturating_add((x1 - x0) as usize);
+                    let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                        continue;
+                    };
+                    blend_alpha_mask_run_high_quality_knockout(
+                        &mut self.data,
+                        self.width,
+                        PaintRowRun {
+                            row,
+                            x_start: x0,
+                            x_end: x1,
+                        },
+                        mask_row_alpha,
+                        color,
+                        blend_mode,
+                        high_quality_backdrop_sources(backdrop, smask, None, None),
+                    );
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                if !clip.has_partial_coverage()
+                    && clip.width >= x1 as u32
+                    && clip.height >= y1 as u32
+                {
+                    let width = self.width;
+                    let data = &mut self.data;
+                    for row in y0..y1 {
+                        let mask_row = (row - dst_y) as usize;
+                        clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                            let src_start = alpha_offset
+                                .saturating_add(mask_row.saturating_mul(alpha_stride))
+                                .saturating_add((run_x0 - dst_x) as usize);
+                            let src_end = src_start.saturating_add((run_x1 - run_x0) as usize);
+                            let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                                return;
+                            };
+                            blend_alpha_mask_run_high_quality_knockout(
+                                data,
+                                width,
+                                PaintRowRun {
+                                    row,
+                                    x_start: run_x0,
+                                    x_end: run_x1,
+                                },
+                                mask_row_alpha,
+                                color,
+                                blend_mode,
+                                high_quality_backdrop_sources(backdrop, smask, None, None),
+                            );
+                        });
+                    }
+                    return;
+                }
+                for row in y0..y1 {
+                    let mask_row = (row - dst_y) as usize;
+                    let src_start = alpha_offset
+                        .saturating_add(mask_row.saturating_mul(alpha_stride))
+                        .saturating_add((x0 - dst_x) as usize);
+                    let src_end = src_start.saturating_add((x1 - x0) as usize);
+                    let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                        continue;
+                    };
+                    blend_alpha_mask_run_high_quality_knockout(
+                        &mut self.data,
+                        self.width,
+                        PaintRowRun {
+                            row,
+                            x_start: x0,
+                            x_end: x1,
+                        },
+                        mask_row_alpha,
+                        color,
+                        blend_mode,
+                        high_quality_backdrop_sources(backdrop, smask, None, Some(clip)),
+                    );
+                }
+                return;
+            }
+        }
+
+        let high_quality_masked_alpha = self.smask.is_some()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality();
+        if high_quality_masked_alpha {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let blend_mode = self.blend_mode;
+            let Some(smask) = self.smask.as_ref() else {
+                return;
+            };
+            let clip = self.clip.as_ref();
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for row in y0..y1 {
+                    let mask_row = (row - dst_y) as usize;
+                    let src_start = alpha_offset
+                        .saturating_add(mask_row.saturating_mul(alpha_stride))
+                        .saturating_add((x0 - dst_x) as usize);
+                    let src_end = src_start.saturating_add((x1 - x0) as usize);
+                    let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                        continue;
+                    };
+                    blend_alpha_mask_run_high_quality_masked(
+                        &mut self.data,
+                        self.width,
+                        PaintRowRun {
+                            row,
+                            x_start: x0,
+                            x_end: x1,
+                        },
+                        mask_row_alpha,
+                        color,
+                        blend_mode,
+                        high_quality_mask_sources(Some(smask), None, None),
+                    );
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                if !clip.has_partial_coverage()
+                    && clip.width >= x1 as u32
+                    && clip.height >= y1 as u32
+                {
+                    let width = self.width;
+                    let data = &mut self.data;
+                    for row in y0..y1 {
+                        let mask_row = (row - dst_y) as usize;
+                        clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                            let src_start = alpha_offset
+                                .saturating_add(mask_row.saturating_mul(alpha_stride))
+                                .saturating_add((run_x0 - dst_x) as usize);
+                            let src_end = src_start.saturating_add((run_x1 - run_x0) as usize);
+                            let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                                return;
+                            };
+                            blend_alpha_mask_run_high_quality_masked(
+                                data,
+                                width,
+                                PaintRowRun {
+                                    row,
+                                    x_start: run_x0,
+                                    x_end: run_x1,
+                                },
+                                mask_row_alpha,
+                                color,
+                                blend_mode,
+                                high_quality_mask_sources(Some(smask), None, None),
+                            );
+                        });
+                    }
+                    return;
+                }
+                for row in y0..y1 {
+                    let mask_row = (row - dst_y) as usize;
+                    let src_start = alpha_offset
+                        .saturating_add(mask_row.saturating_mul(alpha_stride))
+                        .saturating_add((x0 - dst_x) as usize);
+                    let src_end = src_start.saturating_add((x1 - x0) as usize);
+                    let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                        continue;
+                    };
+                    blend_alpha_mask_run_high_quality_masked(
+                        &mut self.data,
+                        self.width,
+                        PaintRowRun {
+                            row,
+                            x_start: x0,
+                            x_end: x1,
+                        },
+                        mask_row_alpha,
+                        color,
+                        blend_mode,
+                        high_quality_mask_sources(Some(smask), None, Some(clip)),
+                    );
+                }
+                return;
+            }
+        }
+
+        let normal_fused_mask = self.blend_mode == BlendMode::Normal
+            && self.knockout_backdrop.is_none()
+            && !self.render_mode.is_high_quality()
+            && (self.smask.is_some()
+                || self
+                    .clip
+                    .as_ref()
+                    .is_some_and(|clip| clip.has_partial_coverage()));
+        if normal_fused_mask {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            blend_alpha_mask_rows_normal_fused(
+                &mut self.data,
+                self.width,
+                alpha,
+                color,
+                self.smask.as_ref(),
+                self.clip.as_ref(),
+                AlphaMaskPaintWindow {
+                    dst_x,
+                    dst_y,
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    mask_stride: alpha_stride,
+                    mask_offset: alpha_offset,
+                },
+            );
             return;
         }
 
         for row in y0..y1 {
             let mask_row = (row - dst_y) as usize;
-            let src_start = mask_row * mask_width as usize + (x0 - dst_x) as usize;
-            let src_end = mask_row * mask_width as usize + (x1 - dst_x) as usize;
+            let src_start = alpha_offset
+                .saturating_add(mask_row.saturating_mul(alpha_stride))
+                .saturating_add((x0 - dst_x) as usize);
+            let src_end = src_start.saturating_add((x1 - x0) as usize);
             let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
                 continue;
             };
@@ -2427,6 +3023,147 @@ impl PixelBuffer {
                 );
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn blend_lcd_alpha_mask_strided(
+        &mut self,
+        dst_x: i32,
+        dst_y: i32,
+        mask_width: u32,
+        mask_height: u32,
+        alpha: &[u8],
+        alpha_stride: usize,
+        alpha_offset: usize,
+        color: PixelColor,
+    ) {
+        if mask_width == 0
+            || mask_height == 0
+            || color[3] == 0
+            || alpha_stride < mask_width as usize
+            || !alpha_mask_window_fits(
+                alpha.len(),
+                alpha_offset,
+                alpha_stride,
+                mask_width as usize,
+                mask_height as usize,
+            )
+        {
+            return;
+        }
+
+        if self.render_mode.is_high_quality()
+            || self.blend_mode != BlendMode::Normal
+            || self.knockout_backdrop.is_some()
+        {
+            self.blend_alpha_mask_strided(
+                dst_x,
+                dst_y,
+                mask_width,
+                mask_height,
+                alpha,
+                alpha_stride,
+                alpha_offset,
+                color,
+            );
+            return;
+        }
+
+        let x0 = dst_x.max(0).min(self.width as i32);
+        let y0 = dst_y.max(0).min(self.height as i32);
+        let x1 = dst_x
+            .saturating_add(mask_width as i32)
+            .max(0)
+            .min(self.width as i32);
+        let y1 = dst_y
+            .saturating_add(mask_height as i32)
+            .max(0)
+            .min(self.height as i32);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+
+        if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+            return;
+        }
+
+        for row in y0..y1 {
+            let mask_row = (row - dst_y) as usize;
+            let src_start = alpha_offset
+                .saturating_add(mask_row.saturating_mul(alpha_stride))
+                .saturating_add((x0 - dst_x) as usize);
+            let src_end = src_start.saturating_add((x1 - x0) as usize);
+            let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+                continue;
+            };
+            let Some(dst_start) = (row as usize)
+                .checked_mul(self.width as usize)
+                .and_then(|row_base| row_base.checked_add(x0 as usize))
+                .and_then(|pixel| pixel.checked_mul(4))
+            else {
+                continue;
+            };
+            let Some(dst_row) = self
+                .data
+                .get_mut(dst_start..dst_start.saturating_add(mask_row_alpha.len() * 4))
+            else {
+                continue;
+            };
+            let painted = blend_lcd_alpha_mask_row_normal(
+                dst_row,
+                mask_row_alpha,
+                x0,
+                row,
+                color,
+                self.smask.as_ref(),
+                self.clip.as_ref(),
+            );
+            if painted > 0 {
+                PIXEL_COMPOSITOR_LCD_ROW_PIXELS.fetch_add(painted, Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn blend_lcd_pixel(&mut self, x: i32, y: i32, color: PixelColor, channel_coverage: [u8; 3]) {
+        let clip_alpha = if let Some(clip) = &self.clip {
+            let clip_alpha = clip.opacity(x, y);
+            if clip_alpha <= 0.0 {
+                return;
+            }
+            clip_alpha
+        } else {
+            1.0
+        };
+        let idx = match self.pixel_index(x, y) {
+            Some(idx) => idx,
+            None => return,
+        };
+        let smask_alpha = self.smask.as_ref().map_or(1.0, |mask| mask.get(x, y));
+        let source_alpha = (color[3] as f32 / 255.0 * clip_alpha * smask_alpha).clamp(0.0, 1.0);
+        if source_alpha <= 0.0 {
+            return;
+        }
+
+        let alpha_coverage = (u16::from(channel_coverage[0])
+            + u16::from(channel_coverage[1])
+            + u16::from(channel_coverage[2])
+            + 1)
+            / 3;
+        let effective_alpha = source_alpha * (alpha_coverage as f32 / 255.0);
+        if effective_alpha <= 0.0 {
+            return;
+        }
+
+        let to_byte = |value: f32| (value * 255.0).round().clamp(0.0, 255.0) as u8;
+        for channel in 0..3 {
+            let coverage = source_alpha * (channel_coverage[channel] as f32 / 255.0);
+            let source = color[channel] as f32 / 255.0;
+            let destination = self.data[idx + channel] as f32 / 255.0;
+            self.data[idx + channel] = to_byte(source * coverage + destination * (1.0 - coverage));
+        }
+        let destination_alpha = self.data[idx + 3] as f32 / 255.0;
+        self.data[idx + 3] = to_byte(effective_alpha + destination_alpha * (1.0 - effective_alpha));
     }
 
     /// Composite a cached RGBA glyph/image fragment at a destination origin.
@@ -2527,6 +3264,516 @@ impl PixelBuffer {
                 .is_none_or(|clip| !clip.has_partial_coverage())
             {
                 return;
+            }
+        }
+
+        let normal_high_quality = self.blend_mode == BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality();
+        if normal_high_quality {
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src_width as usize * 4;
+            for row in y0..y1 {
+                let src_y = (row - dst_y) as usize;
+                let src_x0 = (x0 - dst_x) as usize;
+                let src_len = (x1 - x0) as usize * 4;
+                let src_start = src_y
+                    .saturating_mul(src_stride)
+                    .saturating_add(src_x0.saturating_mul(4));
+                let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len)) else {
+                    continue;
+                };
+                if row_alpha_class(src_row) == RowAlphaClass::AllTransparent {
+                    continue;
+                }
+                match self.clip.as_ref() {
+                    Some(clip) if clip.is_empty() => return,
+                    None => {
+                        let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                        if let Some(dst_row) = self
+                            .data
+                            .get_mut(dst_start..dst_start.saturating_add(src_len))
+                        {
+                            composite_normal_high_quality_row(dst_row, src_row, 1.0);
+                        }
+                    }
+                    Some(clip) if clip.is_all_visible() => {
+                        let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                        if let Some(dst_row) = self
+                            .data
+                            .get_mut(dst_start..dst_start.saturating_add(src_len))
+                        {
+                            composite_normal_high_quality_row(dst_row, src_row, 1.0);
+                        }
+                    }
+                    Some(clip)
+                        if !clip.has_partial_coverage()
+                            && clip.width >= x1 as u32
+                            && clip.height >= y1 as u32 =>
+                    {
+                        clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                            let local_x0 = (run_x0 - x0) as usize;
+                            let run_len = (run_x1 - run_x0) as usize * 4;
+                            let dst_start = row as usize * dst_stride + run_x0 as usize * 4;
+                            let src_start = local_x0 * 4;
+                            if let (Some(dst_row), Some(src_row)) = (
+                                self.data
+                                    .get_mut(dst_start..dst_start.saturating_add(run_len)),
+                                src_row.get(src_start..src_start.saturating_add(run_len)),
+                            ) {
+                                composite_normal_high_quality_row(dst_row, src_row, 1.0);
+                            }
+                        });
+                    }
+                    Some(clip) if clip.has_partial_coverage() => {
+                        let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                        if let Some(dst_row) = self
+                            .data
+                            .get_mut(dst_start..dst_start.saturating_add(src_len))
+                        {
+                            composite_normal_high_quality_row_partial_clip(
+                                dst_row, src_row, clip, row, x0, 1.0,
+                            );
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            if self.clip.as_ref().is_none_or(|clip| {
+                clip.is_all_visible()
+                    || clip.has_partial_coverage()
+                    || (!clip.has_partial_coverage()
+                        && clip.width >= x1 as u32
+                        && clip.height >= y1 as u32)
+            }) {
+                return;
+            }
+        }
+
+        let blend_high_quality = self.blend_mode != BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality();
+        if blend_high_quality {
+            let blend_mode = self.blend_mode;
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src_width as usize * 4;
+            for row in y0..y1 {
+                let src_y = (row - dst_y) as usize;
+                let src_x0 = (x0 - dst_x) as usize;
+                let src_len = (x1 - x0) as usize * 4;
+                let src_start = src_y
+                    .saturating_mul(src_stride)
+                    .saturating_add(src_x0.saturating_mul(4));
+                let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len)) else {
+                    continue;
+                };
+                if row_alpha_class(src_row) == RowAlphaClass::AllTransparent {
+                    continue;
+                }
+                match self.clip.as_ref() {
+                    Some(clip) if clip.is_empty() => return,
+                    None => {
+                        let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                        if let Some(dst_row) = self
+                            .data
+                            .get_mut(dst_start..dst_start.saturating_add(src_len))
+                        {
+                            composite_high_quality_blend_row(dst_row, src_row, 1.0, blend_mode);
+                        }
+                    }
+                    Some(clip) if clip.is_all_visible() => {
+                        let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                        if let Some(dst_row) = self
+                            .data
+                            .get_mut(dst_start..dst_start.saturating_add(src_len))
+                        {
+                            composite_high_quality_blend_row(dst_row, src_row, 1.0, blend_mode);
+                        }
+                    }
+                    Some(clip)
+                        if !clip.has_partial_coverage()
+                            && clip.width >= x1 as u32
+                            && clip.height >= y1 as u32 =>
+                    {
+                        clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                            let local_x0 = (run_x0 - x0) as usize;
+                            let run_len = (run_x1 - run_x0) as usize * 4;
+                            let dst_start = row as usize * dst_stride + run_x0 as usize * 4;
+                            let src_start = local_x0 * 4;
+                            if let (Some(dst_row), Some(src_row)) = (
+                                self.data
+                                    .get_mut(dst_start..dst_start.saturating_add(run_len)),
+                                src_row.get(src_start..src_start.saturating_add(run_len)),
+                            ) {
+                                composite_high_quality_blend_row(dst_row, src_row, 1.0, blend_mode);
+                            }
+                        });
+                    }
+                    Some(clip) if clip.has_partial_coverage() => {
+                        let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                        if let Some(dst_row) = self
+                            .data
+                            .get_mut(dst_start..dst_start.saturating_add(src_len))
+                        {
+                            composite_high_quality_blend_row_partial_clip(
+                                dst_row, src_row, clip, row, x0, 1.0, blend_mode,
+                            );
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            if self.clip.as_ref().is_none_or(|clip| {
+                clip.is_all_visible()
+                    || clip.has_partial_coverage()
+                    || (!clip.has_partial_coverage()
+                        && clip.width >= x1 as u32
+                        && clip.height >= y1 as u32)
+            }) {
+                return;
+            }
+        }
+
+        let knockout_high_quality =
+            self.knockout_backdrop.is_some() && self.render_mode.is_high_quality();
+        if knockout_high_quality {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let blend_mode = self.blend_mode;
+            let Some(backdrop) = self.knockout_backdrop.as_ref() else {
+                return;
+            };
+            let smask = self.smask.as_ref();
+            let clip = self.clip.as_ref();
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src_width as usize * 4;
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for row in y0..y1 {
+                    let src_y = (row - dst_y) as usize;
+                    let src_x0 = (x0 - dst_x) as usize;
+                    let src_len = (x1 - x0) as usize * 4;
+                    let src_start = src_y
+                        .saturating_mul(src_stride)
+                        .saturating_add(src_x0.saturating_mul(4));
+                    let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len))
+                    else {
+                        continue;
+                    };
+                    if row_alpha_class(src_row) == RowAlphaClass::AllTransparent {
+                        continue;
+                    }
+                    let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                    if let Some(dst_row) = self
+                        .data
+                        .get_mut(dst_start..dst_start.saturating_add(src_len))
+                    {
+                        composite_high_quality_masked_row_with_backdrop(
+                            dst_row,
+                            src_row,
+                            backdrop,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            1.0,
+                            blend_mode,
+                            high_quality_mask_sources(smask, None, None),
+                        );
+                    }
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                let data = &mut self.data;
+                for row in y0..y1 {
+                    let src_y = (row - dst_y) as usize;
+                    let src_x0 = (x0 - dst_x) as usize;
+                    let src_len = (x1 - x0) as usize * 4;
+                    let src_start = src_y
+                        .saturating_mul(src_stride)
+                        .saturating_add(src_x0.saturating_mul(4));
+                    let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len))
+                    else {
+                        continue;
+                    };
+                    if row_alpha_class(src_row) == RowAlphaClass::AllTransparent {
+                        continue;
+                    }
+                    if !clip.has_partial_coverage()
+                        && clip.width >= x1 as u32
+                        && clip.height >= y1 as u32
+                    {
+                        clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                            let local_x0 = (run_x0 - x0) as usize;
+                            let run_len = (run_x1 - run_x0) as usize * 4;
+                            let dst_start = row as usize * dst_stride + run_x0 as usize * 4;
+                            let src_start = local_x0 * 4;
+                            if let (Some(dst_run), Some(src_run)) = (
+                                data.get_mut(dst_start..dst_start.saturating_add(run_len)),
+                                src_row.get(src_start..src_start.saturating_add(run_len)),
+                            ) {
+                                composite_high_quality_masked_row_with_backdrop(
+                                    dst_run,
+                                    src_run,
+                                    backdrop,
+                                    PaintRowRun {
+                                        row,
+                                        x_start: run_x0,
+                                        x_end: run_x1,
+                                    },
+                                    1.0,
+                                    blend_mode,
+                                    high_quality_mask_sources(smask, None, None),
+                                );
+                            }
+                        });
+                        continue;
+                    }
+                    let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                    if let Some(dst_row) =
+                        data.get_mut(dst_start..dst_start.saturating_add(src_len))
+                    {
+                        composite_high_quality_masked_row_with_backdrop(
+                            dst_row,
+                            src_row,
+                            backdrop,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            1.0,
+                            blend_mode,
+                            high_quality_mask_sources(smask, None, Some(clip)),
+                        );
+                    }
+                }
+                return;
+            }
+        }
+
+        let masked_high_quality = self.smask.is_some()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality();
+        if masked_high_quality {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let blend_mode = self.blend_mode;
+            let Some(smask) = self.smask.as_ref() else {
+                return;
+            };
+            let clip = self.clip.as_ref();
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src_width as usize * 4;
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for row in y0..y1 {
+                    let src_y = (row - dst_y) as usize;
+                    let src_x0 = (x0 - dst_x) as usize;
+                    let src_len = (x1 - x0) as usize * 4;
+                    let src_start = src_y
+                        .saturating_mul(src_stride)
+                        .saturating_add(src_x0.saturating_mul(4));
+                    let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len))
+                    else {
+                        continue;
+                    };
+                    if row_alpha_class(src_row) == RowAlphaClass::AllTransparent {
+                        continue;
+                    }
+                    let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                    if let Some(dst_row) = self
+                        .data
+                        .get_mut(dst_start..dst_start.saturating_add(src_len))
+                    {
+                        composite_high_quality_masked_row(
+                            dst_row,
+                            src_row,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            1.0,
+                            blend_mode,
+                            high_quality_mask_sources(Some(smask), None, None),
+                        );
+                    }
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                let data = &mut self.data;
+                for row in y0..y1 {
+                    let src_y = (row - dst_y) as usize;
+                    let src_x0 = (x0 - dst_x) as usize;
+                    let src_len = (x1 - x0) as usize * 4;
+                    let src_start = src_y
+                        .saturating_mul(src_stride)
+                        .saturating_add(src_x0.saturating_mul(4));
+                    let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len))
+                    else {
+                        continue;
+                    };
+                    if row_alpha_class(src_row) == RowAlphaClass::AllTransparent {
+                        continue;
+                    }
+                    if !clip.has_partial_coverage()
+                        && clip.width >= x1 as u32
+                        && clip.height >= y1 as u32
+                    {
+                        clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                            let local_x0 = (run_x0 - x0) as usize;
+                            let run_len = (run_x1 - run_x0) as usize * 4;
+                            let dst_start = row as usize * dst_stride + run_x0 as usize * 4;
+                            let src_start = local_x0 * 4;
+                            if let (Some(dst_run), Some(src_run)) = (
+                                data.get_mut(dst_start..dst_start.saturating_add(run_len)),
+                                src_row.get(src_start..src_start.saturating_add(run_len)),
+                            ) {
+                                composite_high_quality_masked_row(
+                                    dst_run,
+                                    src_run,
+                                    PaintRowRun {
+                                        row,
+                                        x_start: run_x0,
+                                        x_end: run_x1,
+                                    },
+                                    1.0,
+                                    blend_mode,
+                                    high_quality_mask_sources(Some(smask), None, None),
+                                );
+                            }
+                        });
+                        continue;
+                    }
+                    let dst_start = row as usize * dst_stride + x0 as usize * 4;
+                    if let Some(dst_row) =
+                        data.get_mut(dst_start..dst_start.saturating_add(src_len))
+                    {
+                        composite_high_quality_masked_row(
+                            dst_row,
+                            src_row,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            1.0,
+                            blend_mode,
+                            high_quality_mask_sources(Some(smask), None, Some(clip)),
+                        );
+                    }
+                }
+                return;
+            }
+        }
+
+        let normal_fused = self.blend_mode == BlendMode::Normal
+            && self.knockout_backdrop.is_none()
+            && !self.render_mode.is_high_quality()
+            && (self.smask.is_some()
+                || self
+                    .clip
+                    .as_ref()
+                    .is_some_and(|clip| clip.has_partial_coverage()));
+        if normal_fused {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let saved_smask = self.smask.take();
+            blend_rgba_rows_normal_fused(
+                &mut self.data,
+                self.width,
+                rgba,
+                saved_smask.as_ref(),
+                self.clip.as_ref(),
+                RgbaPaintWindow {
+                    dst_x,
+                    dst_y,
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    src_width,
+                },
+            );
+            self.smask = saved_smask;
+            return;
+        }
+
+        let rgba_window = RgbaPaintWindow {
+            dst_x,
+            dst_y,
+            x0,
+            y0,
+            x1,
+            y1,
+            src_width,
+        };
+        let separable_compat = self.blend_mode != BlendMode::Normal
+            && self.blend_mode.is_separable()
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && !self.render_mode.is_high_quality();
+        if separable_compat {
+            match self.clip.as_ref() {
+                Some(clip) if clip.is_empty() => return,
+                None => {
+                    blend_rgba_rows_separable_src_over(
+                        &mut self.data,
+                        self.width,
+                        rgba,
+                        rgba_window,
+                        self.blend_mode,
+                    );
+                    return;
+                }
+                Some(clip) if clip.is_all_visible() => {
+                    blend_rgba_rows_separable_src_over(
+                        &mut self.data,
+                        self.width,
+                        rgba,
+                        rgba_window,
+                        self.blend_mode,
+                    );
+                    return;
+                }
+                Some(clip) if !clip.has_partial_coverage() => {
+                    for row in y0..y1 {
+                        clip.for_each_visible_run_in_span(row, x0, x1, |run_x0, run_x1| {
+                            blend_rgba_rows_separable_src_over(
+                                &mut self.data,
+                                self.width,
+                                rgba,
+                                RgbaPaintWindow {
+                                    x0: run_x0,
+                                    y0: row,
+                                    x1: run_x1,
+                                    y1: row.saturating_add(1),
+                                    ..rgba_window
+                                },
+                                self.blend_mode,
+                            );
+                        });
+                    }
+                    return;
+                }
+                Some(clip) => {
+                    blend_rgba_rows_separable_src_over_partial_clip(
+                        &mut self.data,
+                        self.width,
+                        rgba,
+                        rgba_window,
+                        self.blend_mode,
+                        clip,
+                    );
+                    return;
+                }
             }
         }
 
@@ -2660,6 +3907,170 @@ impl PixelBuffer {
             return;
         }
 
+        let normal_fused = self.blend_mode == BlendMode::Normal
+            && self.knockout_backdrop.is_none()
+            && !self.render_mode.is_high_quality()
+            && (self.smask.is_some()
+                || self
+                    .clip
+                    .as_ref()
+                    .is_some_and(|clip| clip.has_partial_coverage()));
+        if normal_fused {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            blend_solid_rows_normal_fused(
+                &mut self.data,
+                self.width,
+                color,
+                self.smask.as_ref(),
+                self.clip.as_ref(),
+                SolidPaintWindow { x0, y0, x1, y1 },
+            );
+            return;
+        }
+
+        if color[3] > 0 && self.render_mode.is_high_quality() && self.knockout_backdrop.is_some() {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let blend_mode = self.blend_mode;
+            let Some(backdrop) = self.knockout_backdrop.as_ref() else {
+                return;
+            };
+            let smask = self.smask.as_ref();
+            let clip = self.clip.as_ref();
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for row in y0..y1 {
+                    blend_solid_run_high_quality_knockout(
+                        &mut self.data,
+                        self.width,
+                        PaintRowRun {
+                            row,
+                            x_start: x0,
+                            x_end: x1,
+                        },
+                        color,
+                        blend_mode,
+                        backdrop,
+                        high_quality_mask_sources(smask, None, None),
+                    );
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                if !clip.has_partial_coverage()
+                    && clip.width >= x1 as u32
+                    && clip.height >= y1 as u32
+                {
+                    let width = self.width;
+                    let data = &mut self.data;
+                    for row in y0..y1 {
+                        clip.for_each_visible_run_in_span(row, x0, x1, |start, end| {
+                            blend_solid_run_high_quality_knockout(
+                                data,
+                                width,
+                                PaintRowRun {
+                                    row,
+                                    x_start: start,
+                                    x_end: end,
+                                },
+                                color,
+                                blend_mode,
+                                backdrop,
+                                high_quality_mask_sources(smask, None, None),
+                            );
+                        });
+                    }
+                    return;
+                }
+                for row in y0..y1 {
+                    blend_solid_run_high_quality_knockout(
+                        &mut self.data,
+                        self.width,
+                        PaintRowRun {
+                            row,
+                            x_start: x0,
+                            x_end: x1,
+                        },
+                        color,
+                        blend_mode,
+                        backdrop,
+                        high_quality_mask_sources(smask, None, Some(clip)),
+                    );
+                }
+                return;
+            }
+        }
+
+        if color[3] > 0
+            && self.render_mode.is_high_quality()
+            && self.knockout_backdrop.is_none()
+            && self.smask.is_some()
+        {
+            let blend_mode = self.blend_mode;
+            let Some(smask) = self.smask.as_ref() else {
+                return;
+            };
+            match self.clip.as_ref() {
+                None => {
+                    for row in y0..y1 {
+                        blend_solid_run_high_quality_masked(
+                            &mut self.data,
+                            self.width,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            color,
+                            blend_mode,
+                            smask,
+                            None,
+                        );
+                    }
+                    return;
+                }
+                Some(clip) if clip.is_empty() => return,
+                Some(clip) if clip.is_all_visible() => {
+                    for row in y0..y1 {
+                        blend_solid_run_high_quality_masked(
+                            &mut self.data,
+                            self.width,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            color,
+                            blend_mode,
+                            smask,
+                            None,
+                        );
+                    }
+                    return;
+                }
+                Some(clip) => {
+                    for row in y0..y1 {
+                        blend_solid_run_high_quality_masked(
+                            &mut self.data,
+                            self.width,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            color,
+                            blend_mode,
+                            smask,
+                            Some(clip),
+                        );
+                    }
+                    return;
+                }
+            }
+        }
+
         if color[3] < 255
             && self.blend_mode == BlendMode::Normal
             && self.smask.is_none()
@@ -2697,12 +4108,166 @@ impl PixelBuffer {
             return;
         }
 
+        if color[3] < 255
+            && self.blend_mode == BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality()
+        {
+            let Some(clip) = self.clip.as_ref() else {
+                for row in y0..y1 {
+                    blend_solid_run_high_quality_normal(
+                        &mut self.data,
+                        self.width,
+                        row,
+                        x0,
+                        x1,
+                        color,
+                    );
+                }
+                return;
+            };
+            if clip.is_empty() {
+                return;
+            }
+            if clip.is_all_visible() {
+                for row in y0..y1 {
+                    blend_solid_run_high_quality_normal(
+                        &mut self.data,
+                        self.width,
+                        row,
+                        x0,
+                        x1,
+                        color,
+                    );
+                }
+                return;
+            }
+            if !clip.has_partial_coverage() && clip.width >= x1 as u32 && clip.height >= y1 as u32 {
+                for row in y0..y1 {
+                    clip.for_each_visible_run_in_span(row, x0, x1, |start, end| {
+                        blend_solid_run_high_quality_normal(
+                            &mut self.data,
+                            self.width,
+                            row,
+                            start,
+                            end,
+                            color,
+                        );
+                    });
+                }
+                return;
+            }
+        }
+
+        if color[3] > 0
+            && self.blend_mode == BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality()
+            && self
+                .clip
+                .as_ref()
+                .is_some_and(|clip| clip.has_partial_coverage())
+        {
+            let Some(clip) = self.clip.as_ref() else {
+                return;
+            };
+            let width = self.width;
+            let data = &mut self.data;
+            for row in y0..y1 {
+                blend_solid_run_high_quality_normal_partial_clip(
+                    data,
+                    width,
+                    PaintRowRun {
+                        row,
+                        x_start: x0,
+                        x_end: x1,
+                    },
+                    color,
+                    clip,
+                );
+            }
+            return;
+        }
+
+        if color[3] > 0
+            && self.blend_mode != BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.render_mode.is_high_quality()
+        {
+            let blend_mode = self.blend_mode;
+            match self.clip.as_ref() {
+                None => {
+                    for row in y0..y1 {
+                        blend_solid_run_high_quality_blend(
+                            &mut self.data,
+                            self.width,
+                            row,
+                            x0,
+                            x1,
+                            color,
+                            blend_mode,
+                        );
+                    }
+                }
+                Some(clip) if clip.is_empty() => return,
+                Some(clip) if clip.is_all_visible() => {
+                    for row in y0..y1 {
+                        blend_solid_run_high_quality_blend(
+                            &mut self.data,
+                            self.width,
+                            row,
+                            x0,
+                            x1,
+                            color,
+                            blend_mode,
+                        );
+                    }
+                }
+                Some(clip)
+                    if !clip.has_partial_coverage()
+                        && clip.width >= x1 as u32
+                        && clip.height >= y1 as u32 =>
+                {
+                    let width = self.width;
+                    let data = &mut self.data;
+                    for row in y0..y1 {
+                        clip.for_each_visible_run_in_span(row, x0, x1, |start, end| {
+                            blend_solid_run_high_quality_blend(
+                                data, width, row, start, end, color, blend_mode,
+                            );
+                        });
+                    }
+                }
+                Some(clip) if clip.has_partial_coverage() => {
+                    for row in y0..y1 {
+                        blend_solid_run_high_quality_blend_partial_clip(
+                            &mut self.data,
+                            self.width,
+                            PaintRowRun {
+                                row,
+                                x_start: x0,
+                                x_end: x1,
+                            },
+                            color,
+                            blend_mode,
+                            clip,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let should_blend = color[3] < 255
             || self.blend_mode != BlendMode::Normal
             || self.smask.is_some()
             || self.knockout_backdrop.is_some();
         if should_blend {
-            if color[3] == 255
+            if color[3] > 0
                 && self.blend_mode != BlendMode::Normal
                 && self.blend_mode.is_separable()
                 && self.smask.is_none()
@@ -2710,70 +4275,72 @@ impl PixelBuffer {
                 && !self.render_mode.is_high_quality()
             {
                 let blend_mode = self.blend_mode;
-                let can_fast_path = match self.clip.as_ref() {
-                    None => rect_runs_have_opaque_alpha(&self.data, self.width, y0, y1, x0, x1),
+                match self.clip.as_ref() {
+                    None => {
+                        for row in y0..y1 {
+                            blend_separable_src_over_run(
+                                &mut self.data,
+                                self.width,
+                                row,
+                                x0,
+                                x1,
+                                color,
+                                blend_mode,
+                            );
+                        }
+                    }
                     Some(clip) if clip.is_empty() => return,
                     Some(clip) if clip.is_all_visible() => {
-                        rect_runs_have_opaque_alpha(&self.data, self.width, y0, y1, x0, x1)
+                        for row in y0..y1 {
+                            blend_separable_src_over_run(
+                                &mut self.data,
+                                self.width,
+                                row,
+                                x0,
+                                x1,
+                                color,
+                                blend_mode,
+                            );
+                        }
                     }
                     Some(clip) if !clip.has_partial_coverage() => {
-                        clipped_runs_have_opaque_alpha(&self.data, self.width, clip, y0, y1, x0, x1)
-                    }
-                    Some(_) => false,
-                };
-
-                if can_fast_path {
-                    let clip = self.clip.clone();
-                    match clip.as_ref() {
-                        None => {
-                            for row in y0..y1 {
-                                blend_separable_opaque_src_over_opaque_dst_run(
+                        let mut runs = Vec::new();
+                        for row in y0..y1 {
+                            runs.clear();
+                            clip.for_each_visible_run_in_span(row, x0, x1, |start, end| {
+                                runs.push((start, end));
+                            });
+                            for (start, end) in runs.iter().copied() {
+                                blend_separable_src_over_run(
                                     &mut self.data,
                                     self.width,
                                     row,
-                                    x0,
-                                    x1,
+                                    start,
+                                    end,
                                     color,
                                     blend_mode,
                                 );
                             }
                         }
-                        Some(clip) if clip.is_all_visible() => {
-                            for row in y0..y1 {
-                                blend_separable_opaque_src_over_opaque_dst_run(
-                                    &mut self.data,
-                                    self.width,
+                    }
+                    Some(clip) => {
+                        for row in y0..y1 {
+                            blend_separable_src_over_partial_clip_run(
+                                &mut self.data,
+                                self.width,
+                                PaintRowRun {
                                     row,
-                                    x0,
-                                    x1,
-                                    color,
-                                    blend_mode,
-                                );
-                            }
-                        }
-                        Some(clip) => {
-                            let mut runs = Vec::new();
-                            for row in y0..y1 {
-                                runs.clear();
-                                clip.for_each_visible_run_in_span(row, x0, x1, |start, end| {
-                                    runs.push((start, end));
-                                });
-                                for (start, end) in runs.iter().copied() {
-                                    blend_separable_opaque_src_over_opaque_dst_run(
-                                        &mut self.data,
-                                        self.width,
-                                        row,
-                                        start,
-                                        end,
-                                        color,
-                                        blend_mode,
-                                    );
-                                }
-                            }
+                                    x_start: x0,
+                                    x_end: x1,
+                                },
+                                color,
+                                blend_mode,
+                                clip,
+                            );
                         }
                     }
-                    return;
                 }
+                return;
             }
 
             for row in y0..y1 {
@@ -2863,6 +4430,10 @@ impl PixelBuffer {
 
     pub(crate) fn clear_knockout_backdrop(&mut self) {
         self.knockout_backdrop = None;
+    }
+
+    pub(crate) fn take_knockout_backdrop(&mut self) -> Option<PixelBuffer> {
+        self.knockout_backdrop.take().map(|backdrop| *backdrop)
     }
 
     /// True if the pixel at (x, y) is paintable under the current clip. With no
@@ -3090,6 +4661,344 @@ impl PixelBuffer {
             }
         }
 
+        if blend_mode == BlendMode::Normal
+            && self.render_mode.is_high_quality()
+            && self.knockout_backdrop.is_none()
+            && self.smask.is_none()
+            && soft_mask.is_none()
+        {
+            let w = self.width.min(src.width) as i32;
+            let h = self.height.min(src.height) as i32;
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src.width as usize * 4;
+            match self.clip.as_ref() {
+                Some(clip) if clip.is_empty() => return,
+                None | Some(_) if self.clip.as_ref().is_none_or(ClipMask::is_all_visible) => {
+                    for row in 0..h {
+                        let len = w as usize * 4;
+                        let dst_start = row as usize * dst_stride;
+                        let src_start = row as usize * src_stride;
+                        if let (Some(dst_row), Some(src_row)) = (
+                            self.data.get_mut(dst_start..dst_start + len),
+                            src.data.get(src_start..src_start + len),
+                        ) {
+                            composite_normal_high_quality_row(dst_row, src_row, alpha);
+                        }
+                    }
+                    return;
+                }
+                Some(clip)
+                    if !clip.has_partial_coverage()
+                        && clip.width >= w as u32
+                        && clip.height >= h as u32 =>
+                {
+                    for row in 0..h {
+                        clip.for_each_visible_run(row, w, |start, end| {
+                            let len = end.saturating_sub(start) as usize * 4;
+                            if len == 0 {
+                                return;
+                            }
+                            let dst_start = row as usize * dst_stride + start as usize * 4;
+                            let src_start = row as usize * src_stride + start as usize * 4;
+                            if let (Some(dst_row), Some(src_row)) = (
+                                self.data.get_mut(dst_start..dst_start + len),
+                                src.data.get(src_start..src_start + len),
+                            ) {
+                                composite_normal_high_quality_row(dst_row, src_row, alpha);
+                            }
+                        });
+                    }
+                    return;
+                }
+                Some(clip) if clip.has_partial_coverage() => {
+                    for row in 0..h {
+                        let len = w as usize * 4;
+                        let dst_start = row as usize * dst_stride;
+                        let src_start = row as usize * src_stride;
+                        if let (Some(dst_row), Some(src_row)) = (
+                            self.data.get_mut(dst_start..dst_start + len),
+                            src.data.get(src_start..src_start + len),
+                        ) {
+                            composite_normal_high_quality_row_partial_clip(
+                                dst_row, src_row, clip, row, 0, alpha,
+                            );
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if blend_mode != BlendMode::Normal
+            && self.render_mode.is_high_quality()
+            && self.knockout_backdrop.is_none()
+            && self.smask.is_none()
+            && soft_mask.is_none()
+        {
+            let w = self.width.min(src.width) as i32;
+            let h = self.height.min(src.height) as i32;
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src.width as usize * 4;
+            match self.clip.as_ref() {
+                Some(clip) if clip.is_empty() => return,
+                None | Some(_) if self.clip.as_ref().is_none_or(ClipMask::is_all_visible) => {
+                    for row in 0..h {
+                        let len = w as usize * 4;
+                        let dst_start = row as usize * dst_stride;
+                        let src_start = row as usize * src_stride;
+                        if let (Some(dst_row), Some(src_row)) = (
+                            self.data.get_mut(dst_start..dst_start + len),
+                            src.data.get(src_start..src_start + len),
+                        ) {
+                            composite_high_quality_blend_row(dst_row, src_row, alpha, blend_mode);
+                        }
+                    }
+                    return;
+                }
+                Some(clip)
+                    if !clip.has_partial_coverage()
+                        && clip.width >= w as u32
+                        && clip.height >= h as u32 =>
+                {
+                    for row in 0..h {
+                        clip.for_each_visible_run(row, w, |start, end| {
+                            let len = end.saturating_sub(start) as usize * 4;
+                            if len == 0 {
+                                return;
+                            }
+                            let dst_start = row as usize * dst_stride + start as usize * 4;
+                            let src_start = row as usize * src_stride + start as usize * 4;
+                            if let (Some(dst_row), Some(src_row)) = (
+                                self.data.get_mut(dst_start..dst_start + len),
+                                src.data.get(src_start..src_start + len),
+                            ) {
+                                composite_high_quality_blend_row(
+                                    dst_row, src_row, alpha, blend_mode,
+                                );
+                            }
+                        });
+                    }
+                    return;
+                }
+                Some(clip) if clip.has_partial_coverage() => {
+                    for row in 0..h {
+                        let len = w as usize * 4;
+                        let dst_start = row as usize * dst_stride;
+                        let src_start = row as usize * src_stride;
+                        if let (Some(dst_row), Some(src_row)) = (
+                            self.data.get_mut(dst_start..dst_start + len),
+                            src.data.get(src_start..src_start + len),
+                        ) {
+                            composite_high_quality_blend_row_partial_clip(
+                                dst_row, src_row, clip, row, 0, alpha, blend_mode,
+                            );
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.render_mode.is_high_quality()
+            && self.knockout_backdrop.is_none()
+            && soft_mask.is_some()
+        {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let Some(soft_mask) = soft_mask else {
+                return;
+            };
+            let w = self.width.min(src.width) as i32;
+            let h = self.height.min(src.height) as i32;
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src.width as usize * 4;
+            let clip = self.clip.as_ref();
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for row in 0..h {
+                    let len = w as usize * 4;
+                    let dst_start = row as usize * dst_stride;
+                    let src_start = row as usize * src_stride;
+                    if let (Some(dst_row), Some(src_row)) = (
+                        self.data.get_mut(dst_start..dst_start + len),
+                        src.data.get(src_start..src_start + len),
+                    ) {
+                        composite_high_quality_masked_row(
+                            dst_row,
+                            src_row,
+                            PaintRowRun {
+                                row,
+                                x_start: 0,
+                                x_end: w,
+                            },
+                            alpha,
+                            blend_mode,
+                            high_quality_mask_sources(None, Some(soft_mask), None),
+                        );
+                    }
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                let data = &mut self.data;
+                if !clip.has_partial_coverage() && clip.width >= w as u32 && clip.height >= h as u32
+                {
+                    for row in 0..h {
+                        clip.for_each_visible_run(row, w, |start, end| {
+                            let len = end.saturating_sub(start) as usize * 4;
+                            if len == 0 {
+                                return;
+                            }
+                            let dst_start = row as usize * dst_stride + start as usize * 4;
+                            let src_start = row as usize * src_stride + start as usize * 4;
+                            if let (Some(dst_row), Some(src_row)) = (
+                                data.get_mut(dst_start..dst_start + len),
+                                src.data.get(src_start..src_start + len),
+                            ) {
+                                composite_high_quality_masked_row(
+                                    dst_row,
+                                    src_row,
+                                    PaintRowRun {
+                                        row,
+                                        x_start: start,
+                                        x_end: end,
+                                    },
+                                    alpha,
+                                    blend_mode,
+                                    high_quality_mask_sources(None, Some(soft_mask), None),
+                                );
+                            }
+                        });
+                    }
+                    return;
+                }
+                for row in 0..h {
+                    let len = w as usize * 4;
+                    let dst_start = row as usize * dst_stride;
+                    let src_start = row as usize * src_stride;
+                    if let (Some(dst_row), Some(src_row)) = (
+                        data.get_mut(dst_start..dst_start + len),
+                        src.data.get(src_start..src_start + len),
+                    ) {
+                        composite_high_quality_masked_row(
+                            dst_row,
+                            src_row,
+                            PaintRowRun {
+                                row,
+                                x_start: 0,
+                                x_end: w,
+                            },
+                            alpha,
+                            blend_mode,
+                            high_quality_mask_sources(None, Some(soft_mask), Some(clip)),
+                        );
+                    }
+                }
+                return;
+            }
+        }
+
+        if self.render_mode.is_high_quality() && self.knockout_backdrop.is_some() {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let Some(backdrop) = self.knockout_backdrop.as_ref() else {
+                return;
+            };
+            let w = self.width.min(src.width) as i32;
+            let h = self.height.min(src.height) as i32;
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src.width as usize * 4;
+            let clip = self.clip.as_ref();
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for row in 0..h {
+                    let len = w as usize * 4;
+                    let dst_start = row as usize * dst_stride;
+                    let src_start = row as usize * src_stride;
+                    if let (Some(dst_row), Some(src_row)) = (
+                        self.data.get_mut(dst_start..dst_start + len),
+                        src.data.get(src_start..src_start + len),
+                    ) {
+                        composite_high_quality_masked_row_with_backdrop(
+                            dst_row,
+                            src_row,
+                            backdrop,
+                            PaintRowRun {
+                                row,
+                                x_start: 0,
+                                x_end: w,
+                            },
+                            alpha,
+                            blend_mode,
+                            high_quality_mask_sources(None, soft_mask, None),
+                        );
+                    }
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                let data = &mut self.data;
+                if !clip.has_partial_coverage() && clip.width >= w as u32 && clip.height >= h as u32
+                {
+                    for row in 0..h {
+                        clip.for_each_visible_run(row, w, |start, end| {
+                            let len = end.saturating_sub(start) as usize * 4;
+                            if len == 0 {
+                                return;
+                            }
+                            let dst_start = row as usize * dst_stride + start as usize * 4;
+                            let src_start = row as usize * src_stride + start as usize * 4;
+                            if let (Some(dst_row), Some(src_row)) = (
+                                data.get_mut(dst_start..dst_start + len),
+                                src.data.get(src_start..src_start + len),
+                            ) {
+                                composite_high_quality_masked_row_with_backdrop(
+                                    dst_row,
+                                    src_row,
+                                    backdrop,
+                                    PaintRowRun {
+                                        row,
+                                        x_start: start,
+                                        x_end: end,
+                                    },
+                                    alpha,
+                                    blend_mode,
+                                    high_quality_mask_sources(None, soft_mask, None),
+                                );
+                            }
+                        });
+                    }
+                    return;
+                }
+                for row in 0..h {
+                    let len = w as usize * 4;
+                    let dst_start = row as usize * dst_stride;
+                    let src_start = row as usize * src_stride;
+                    if let (Some(dst_row), Some(src_row)) = (
+                        data.get_mut(dst_start..dst_start + len),
+                        src.data.get(src_start..src_start + len),
+                    ) {
+                        composite_high_quality_masked_row_with_backdrop(
+                            dst_row,
+                            src_row,
+                            backdrop,
+                            PaintRowRun {
+                                row,
+                                x_start: 0,
+                                x_end: w,
+                            },
+                            alpha,
+                            blend_mode,
+                            high_quality_mask_sources(None, soft_mask, Some(clip)),
+                        );
+                    }
+                }
+                return;
+            }
+        }
+
         let saved_blend = self.blend_mode;
         self.blend_mode = blend_mode;
         // The caller passes the active page soft mask as `soft_mask`; that is the
@@ -3163,6 +5072,47 @@ impl PixelBuffer {
             let saved_smask = self.smask.take();
             let dst_stride = self.width as usize * 4;
             let src_stride = src.width as usize * 4;
+            let soft_mask_needs_window = soft_mask.is_some_and(|mask| {
+                mask.origin_x != 0
+                    || mask.origin_y != 0
+                    || mask.width < dst_x.saturating_add(width)
+                    || mask.height < dst_y.saturating_add(height)
+            });
+            let clip_needs_window = self.clip.as_ref().is_some_and(|clip| {
+                clip.is_empty()
+                    || clip.has_partial_coverage()
+                    || clip.width < dst_x.saturating_add(width)
+                    || clip.height < dst_y.saturating_add(height)
+            });
+            let fused_mask = if soft_mask_needs_window || clip_needs_window {
+                AlphaMask::fused_clip_window(
+                    soft_mask,
+                    self.clip.as_ref(),
+                    dst_x,
+                    dst_y,
+                    width,
+                    height,
+                )
+            } else {
+                None
+            };
+            if let Some(fused_mask) = fused_mask.as_ref() {
+                composite_normal_compat_buffer_at_local_mask(
+                    &mut self.data,
+                    src,
+                    fused_mask,
+                    CompatMaskCompositeWindow {
+                        dst_width: self.width,
+                        dst_x,
+                        dst_y,
+                        width,
+                        height,
+                        group_alpha: alpha,
+                    },
+                );
+                self.smask = saved_smask;
+                return;
+            }
             for local_y in 0..height as usize {
                 let dest_y = dst_y as usize + local_y;
                 let src_start = local_y * src_stride;
@@ -3239,7 +5189,7 @@ impl PixelBuffer {
                                     );
                                 }
                                 MaskRowClass::Mixed => {
-                                    composite_normal_compat_row_soft_mask_scalar(
+                                    composite_normal_compat_row_soft_mask_general(
                                         dst_row, src_row, mask_row, alpha_255,
                                     )
                                 }
@@ -3285,7 +5235,7 @@ impl PixelBuffer {
                                             );
                                         }
                                         MaskRowClass::Mixed => {
-                                            composite_normal_compat_row_soft_mask_scalar(
+                                            composite_normal_compat_row_soft_mask_general(
                                                 dst_run, src_run, mask_run, alpha_255,
                                             );
                                         }
@@ -3313,6 +5263,402 @@ impl PixelBuffer {
             return;
         }
 
+        if blend_mode == BlendMode::Normal
+            && self.render_mode.is_high_quality()
+            && self.knockout_backdrop.is_none()
+            && self.smask.is_none()
+            && soft_mask.is_none()
+        {
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src.width as usize * 4;
+            let src_len = width as usize * 4;
+            match self.clip.as_ref() {
+                Some(clip) if clip.is_empty() => return,
+                None | Some(_) if self.clip.as_ref().is_none_or(ClipMask::is_all_visible) => {
+                    for local_y in 0..height as usize {
+                        let dest_y = dst_y as usize + local_y;
+                        let dst_start = dest_y * dst_stride + dst_x as usize * 4;
+                        let src_start = local_y * src_stride;
+                        if let (Some(dst_row), Some(src_row)) = (
+                            self.data.get_mut(dst_start..dst_start + src_len),
+                            src.data.get(src_start..src_start + src_len),
+                        ) {
+                            composite_normal_high_quality_row(dst_row, src_row, alpha);
+                        }
+                    }
+                    return;
+                }
+                Some(clip)
+                    if !clip.has_partial_coverage()
+                        && clip.width >= dst_x.saturating_add(width)
+                        && clip.height >= dst_y.saturating_add(height) =>
+                {
+                    let dest_x0 = dst_x as i32;
+                    let dest_x1 = dst_x.saturating_add(width) as i32;
+                    for local_y in 0..height as usize {
+                        let dest_y = dst_y as usize + local_y;
+                        let dest_y_i32 = dest_y as i32;
+                        clip.for_each_visible_run_in_span(
+                            dest_y_i32,
+                            dest_x0,
+                            dest_x1,
+                            |run_start, run_end| {
+                                let local_start = run_start.saturating_sub(dest_x0) as usize;
+                                let pixels = run_end.saturating_sub(run_start) as usize;
+                                if pixels == 0 {
+                                    return;
+                                }
+                                let dst_start = dest_y * dst_stride + run_start as usize * 4;
+                                let src_start = local_y * src_stride + local_start * 4;
+                                let len = pixels * 4;
+                                if let (Some(dst_run), Some(src_run)) = (
+                                    self.data.get_mut(dst_start..dst_start + len),
+                                    src.data.get(src_start..src_start + len),
+                                ) {
+                                    composite_normal_high_quality_row(dst_run, src_run, alpha);
+                                }
+                            },
+                        );
+                    }
+                    return;
+                }
+                Some(clip) if clip.has_partial_coverage() => {
+                    for local_y in 0..height as usize {
+                        let dest_y = dst_y as usize + local_y;
+                        let dst_start = dest_y * dst_stride + dst_x as usize * 4;
+                        let src_start = local_y * src_stride;
+                        if let (Some(dst_row), Some(src_row)) = (
+                            self.data.get_mut(dst_start..dst_start + src_len),
+                            src.data.get(src_start..src_start + src_len),
+                        ) {
+                            composite_normal_high_quality_row_partial_clip(
+                                dst_row,
+                                src_row,
+                                clip,
+                                dest_y as i32,
+                                dst_x as i32,
+                                alpha,
+                            );
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if blend_mode != BlendMode::Normal
+            && self.render_mode.is_high_quality()
+            && self.knockout_backdrop.is_none()
+            && self.smask.is_none()
+            && soft_mask.is_none()
+        {
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src.width as usize * 4;
+            let src_len = width as usize * 4;
+            match self.clip.as_ref() {
+                Some(clip) if clip.is_empty() => return,
+                None | Some(_) if self.clip.as_ref().is_none_or(ClipMask::is_all_visible) => {
+                    for local_y in 0..height as usize {
+                        let dest_y = dst_y as usize + local_y;
+                        let dst_start = dest_y * dst_stride + dst_x as usize * 4;
+                        let src_start = local_y * src_stride;
+                        if let (Some(dst_row), Some(src_row)) = (
+                            self.data.get_mut(dst_start..dst_start + src_len),
+                            src.data.get(src_start..src_start + src_len),
+                        ) {
+                            composite_high_quality_blend_row(dst_row, src_row, alpha, blend_mode);
+                        }
+                    }
+                    return;
+                }
+                Some(clip)
+                    if !clip.has_partial_coverage()
+                        && clip.width >= dst_x.saturating_add(width)
+                        && clip.height >= dst_y.saturating_add(height) =>
+                {
+                    let dest_x0 = dst_x as i32;
+                    let dest_x1 = dst_x.saturating_add(width) as i32;
+                    for local_y in 0..height as usize {
+                        let dest_y = dst_y as usize + local_y;
+                        let dest_y_i32 = dest_y as i32;
+                        clip.for_each_visible_run_in_span(
+                            dest_y_i32,
+                            dest_x0,
+                            dest_x1,
+                            |run_start, run_end| {
+                                let local_start = run_start.saturating_sub(dest_x0) as usize;
+                                let pixels = run_end.saturating_sub(run_start) as usize;
+                                if pixels == 0 {
+                                    return;
+                                }
+                                let dst_start = dest_y * dst_stride + run_start as usize * 4;
+                                let src_start = local_y * src_stride + local_start * 4;
+                                let len = pixels * 4;
+                                if let (Some(dst_run), Some(src_run)) = (
+                                    self.data.get_mut(dst_start..dst_start + len),
+                                    src.data.get(src_start..src_start + len),
+                                ) {
+                                    composite_high_quality_blend_row(
+                                        dst_run, src_run, alpha, blend_mode,
+                                    );
+                                }
+                            },
+                        );
+                    }
+                    return;
+                }
+                Some(clip) if clip.has_partial_coverage() => {
+                    for local_y in 0..height as usize {
+                        let dest_y = dst_y as usize + local_y;
+                        let dst_start = dest_y * dst_stride + dst_x as usize * 4;
+                        let src_start = local_y * src_stride;
+                        if let (Some(dst_row), Some(src_row)) = (
+                            self.data.get_mut(dst_start..dst_start + src_len),
+                            src.data.get(src_start..src_start + src_len),
+                        ) {
+                            composite_high_quality_blend_row_partial_clip(
+                                dst_row,
+                                src_row,
+                                clip,
+                                dest_y as i32,
+                                dst_x as i32,
+                                alpha,
+                                blend_mode,
+                            );
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.render_mode.is_high_quality()
+            && self.knockout_backdrop.is_none()
+            && soft_mask.is_some()
+        {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let Some(soft_mask) = soft_mask else {
+                return;
+            };
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src.width as usize * 4;
+            let src_len = width as usize * 4;
+            let clip = self.clip.as_ref();
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for local_y in 0..height as usize {
+                    let dest_y = dst_y as usize + local_y;
+                    let dst_start = dest_y * dst_stride + dst_x as usize * 4;
+                    let src_start = local_y * src_stride;
+                    if let (Some(dst_row), Some(src_row)) = (
+                        self.data.get_mut(dst_start..dst_start + src_len),
+                        src.data.get(src_start..src_start + src_len),
+                    ) {
+                        composite_high_quality_masked_row(
+                            dst_row,
+                            src_row,
+                            PaintRowRun {
+                                row: dest_y as i32,
+                                x_start: dst_x as i32,
+                                x_end: dst_x.saturating_add(width) as i32,
+                            },
+                            alpha,
+                            blend_mode,
+                            high_quality_mask_sources(None, Some(soft_mask), None),
+                        );
+                    }
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                let data = &mut self.data;
+                let dest_x0 = dst_x as i32;
+                let dest_x1 = dst_x.saturating_add(width) as i32;
+                if !clip.has_partial_coverage()
+                    && clip.width >= dst_x.saturating_add(width)
+                    && clip.height >= dst_y.saturating_add(height)
+                {
+                    for local_y in 0..height as usize {
+                        let dest_y = dst_y as usize + local_y;
+                        let dest_y_i32 = dest_y as i32;
+                        clip.for_each_visible_run_in_span(
+                            dest_y_i32,
+                            dest_x0,
+                            dest_x1,
+                            |run_start, run_end| {
+                                let local_start = run_start.saturating_sub(dest_x0) as usize;
+                                let pixels = run_end.saturating_sub(run_start) as usize;
+                                if pixels == 0 {
+                                    return;
+                                }
+                                let dst_start = dest_y * dst_stride + run_start as usize * 4;
+                                let src_start = local_y * src_stride + local_start * 4;
+                                let len = pixels * 4;
+                                if let (Some(dst_run), Some(src_run)) = (
+                                    data.get_mut(dst_start..dst_start + len),
+                                    src.data.get(src_start..src_start + len),
+                                ) {
+                                    composite_high_quality_masked_row(
+                                        dst_run,
+                                        src_run,
+                                        PaintRowRun {
+                                            row: dest_y_i32,
+                                            x_start: run_start,
+                                            x_end: run_end,
+                                        },
+                                        alpha,
+                                        blend_mode,
+                                        high_quality_mask_sources(None, Some(soft_mask), None),
+                                    );
+                                }
+                            },
+                        );
+                    }
+                    return;
+                }
+                for local_y in 0..height as usize {
+                    let dest_y = dst_y as usize + local_y;
+                    let dst_start = dest_y * dst_stride + dst_x as usize * 4;
+                    let src_start = local_y * src_stride;
+                    if let (Some(dst_row), Some(src_row)) = (
+                        data.get_mut(dst_start..dst_start + src_len),
+                        src.data.get(src_start..src_start + src_len),
+                    ) {
+                        composite_high_quality_masked_row(
+                            dst_row,
+                            src_row,
+                            PaintRowRun {
+                                row: dest_y as i32,
+                                x_start: dst_x as i32,
+                                x_end: dst_x.saturating_add(width) as i32,
+                            },
+                            alpha,
+                            blend_mode,
+                            high_quality_mask_sources(None, Some(soft_mask), Some(clip)),
+                        );
+                    }
+                }
+                return;
+            }
+        }
+
+        if self.render_mode.is_high_quality() && self.knockout_backdrop.is_some() {
+            if self.clip.as_ref().is_some_and(ClipMask::is_empty) {
+                return;
+            }
+            let Some(backdrop) = self.knockout_backdrop.as_ref() else {
+                return;
+            };
+            let dst_stride = self.width as usize * 4;
+            let src_stride = src.width as usize * 4;
+            let src_len = width as usize * 4;
+            let clip = self.clip.as_ref();
+            if clip.is_none_or(ClipMask::is_all_visible) {
+                for local_y in 0..height as usize {
+                    let dest_y = dst_y as usize + local_y;
+                    let dst_start = dest_y * dst_stride + dst_x as usize * 4;
+                    let src_start = local_y * src_stride;
+                    if let (Some(dst_row), Some(src_row)) = (
+                        self.data.get_mut(dst_start..dst_start + src_len),
+                        src.data.get(src_start..src_start + src_len),
+                    ) {
+                        composite_high_quality_masked_row_with_backdrop(
+                            dst_row,
+                            src_row,
+                            backdrop,
+                            PaintRowRun {
+                                row: dest_y as i32,
+                                x_start: dst_x as i32,
+                                x_end: dst_x.saturating_add(width) as i32,
+                            },
+                            alpha,
+                            blend_mode,
+                            high_quality_mask_sources(None, soft_mask, None),
+                        );
+                    }
+                }
+                return;
+            }
+            if let Some(clip) = clip {
+                let data = &mut self.data;
+                let dest_x0 = dst_x as i32;
+                let dest_x1 = dst_x.saturating_add(width) as i32;
+                if !clip.has_partial_coverage()
+                    && clip.width >= dst_x.saturating_add(width)
+                    && clip.height >= dst_y.saturating_add(height)
+                {
+                    for local_y in 0..height as usize {
+                        let dest_y = dst_y as usize + local_y;
+                        let dest_y_i32 = dest_y as i32;
+                        clip.for_each_visible_run_in_span(
+                            dest_y_i32,
+                            dest_x0,
+                            dest_x1,
+                            |run_start, run_end| {
+                                let local_start = run_start.saturating_sub(dest_x0) as usize;
+                                let pixels = run_end.saturating_sub(run_start) as usize;
+                                if pixels == 0 {
+                                    return;
+                                }
+                                let dst_start = dest_y * dst_stride + run_start as usize * 4;
+                                let src_start = local_y * src_stride + local_start * 4;
+                                let len = pixels * 4;
+                                if let (Some(dst_run), Some(src_run)) = (
+                                    data.get_mut(dst_start..dst_start + len),
+                                    src.data.get(src_start..src_start + len),
+                                ) {
+                                    composite_high_quality_masked_row_with_backdrop(
+                                        dst_run,
+                                        src_run,
+                                        backdrop,
+                                        PaintRowRun {
+                                            row: dest_y_i32,
+                                            x_start: run_start,
+                                            x_end: run_end,
+                                        },
+                                        alpha,
+                                        blend_mode,
+                                        high_quality_mask_sources(None, soft_mask, None),
+                                    );
+                                }
+                            },
+                        );
+                    }
+                    return;
+                }
+                for local_y in 0..height as usize {
+                    let dest_y = dst_y as usize + local_y;
+                    let dst_start = dest_y * dst_stride + dst_x as usize * 4;
+                    let src_start = local_y * src_stride;
+                    if let (Some(dst_row), Some(src_row)) = (
+                        self.data.get_mut(dst_start..dst_start + src_len),
+                        src.data.get(src_start..src_start + src_len),
+                    ) {
+                        composite_high_quality_masked_row_with_backdrop(
+                            dst_row,
+                            src_row,
+                            backdrop,
+                            PaintRowRun {
+                                row: dest_y as i32,
+                                x_start: dst_x as i32,
+                                x_end: dst_x.saturating_add(width) as i32,
+                            },
+                            alpha,
+                            blend_mode,
+                            high_quality_mask_sources(None, soft_mask, Some(clip)),
+                        );
+                    }
+                }
+                return;
+            }
+        }
+
+        let saved_blend = self.blend_mode;
+        self.blend_mode = blend_mode;
+        let saved_smask = self.smask.take();
         for local_y in 0..height as i32 {
             let dest_y = dst_y as i32 + local_y;
             for local_x in 0..width as i32 {
@@ -3321,41 +5667,16 @@ impl PixelBuffer {
                 if sp[3] == 0 {
                     continue;
                 }
-                let clip_alpha = self
-                    .clip
-                    .as_ref()
-                    .map_or(1.0, |clip| clip.opacity(dest_x, dest_y));
-                if clip_alpha <= 0.0 {
-                    continue;
-                }
                 let smask_alpha = soft_mask.map_or(1.0, |mask| mask.get(dest_x, dest_y));
-                let eff_a =
-                    (sp[3] as f32 / 255.0 * alpha * smask_alpha * clip_alpha).clamp(0.0, 1.0);
-                if eff_a <= 0.0 {
+                let coverage = alpha * smask_alpha;
+                if coverage <= 0.0 {
                     continue;
                 }
-                if let Some(idx) = self.pixel_index(dest_x, dest_y) {
-                    let dst_rgb = [
-                        self.data[idx] as f32 / 255.0,
-                        self.data[idx + 1] as f32 / 255.0,
-                        self.data[idx + 2] as f32 / 255.0,
-                    ];
-                    let dst_a = self.data[idx + 3] as f32 / 255.0;
-                    let src_rgb = [
-                        sp[0] as f32 / 255.0,
-                        sp[1] as f32 / 255.0,
-                        sp[2] as f32 / 255.0,
-                    ];
-                    let blended_rgb = blend_backdrop_rgb(blend_mode, src_rgb, dst_rgb);
-                    let (out_rgb, out_a) =
-                        composite_source_over(blended_rgb, eff_a, dst_rgb, dst_a, blend_mode);
-                    self.data[idx] = (out_rgb[0] * 255.0).round().clamp(0.0, 255.0) as u8;
-                    self.data[idx + 1] = (out_rgb[1] * 255.0).round().clamp(0.0, 255.0) as u8;
-                    self.data[idx + 2] = (out_rgb[2] * 255.0).round().clamp(0.0, 255.0) as u8;
-                    self.data[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
-                }
+                self.blend_pixel(dest_x, dest_y, sp, coverage);
             }
         }
+        self.blend_mode = saved_blend;
+        self.smask = saved_smask;
     }
 
     /// Remove a backdrop's contribution from this buffer (a non-isolated
@@ -3415,32 +5736,162 @@ impl PixelBuffer {
         soft_mask: Option<&AlphaMask>,
     ) {
         let alpha = group_alpha.clamp(0.0, 1.0);
-        for y in 0..self.height.min(src.height) as i32 {
-            for x in 0..self.width.min(src.width) as i32 {
-                let clip_alpha = if let Some(clip) = &self.clip {
-                    let clip_alpha = clip.opacity(x, y);
-                    if clip_alpha <= 0.0 {
-                        continue;
-                    }
-                    clip_alpha
-                } else {
-                    1.0
-                };
-                let sp = src.get_pixel(x, y);
-                if sp[3] == 0 {
-                    continue;
-                }
-                let mask = soft_mask.map_or(1.0, |m| m.get(x, y));
-                let eff = (sp[3] as f32 / 255.0 * alpha * mask * clip_alpha).clamp(0.0, 1.0);
-                if let Some(idx) = self.pixel_index(x, y) {
-                    self.data[idx] = sp[0];
-                    self.data[idx + 1] = sp[1];
-                    self.data[idx + 2] = sp[2];
-                    self.data[idx + 3] = (eff * 255.0).round().clamp(0.0, 255.0) as u8;
-                }
-            }
+        let painted = knockout_rows(
+            &mut self.data,
+            self.width,
+            src,
+            alpha,
+            soft_mask,
+            self.clip.as_ref(),
+        );
+        if painted > 0 {
+            PIXEL_COMPOSITOR_KNOCKOUT_ROW_PIXELS.fetch_add(painted, Ordering::Relaxed);
         }
     }
+}
+
+fn lcd_weighted_channel_coverage(center: u8, neighbor: u8) -> u8 {
+    ((u16::from(center) * 2 + u16::from(neighbor) + 1) / 3).min(255) as u8
+}
+
+fn blend_lcd_alpha_mask_row_normal(
+    dst_row: &mut [u8],
+    mask_row_alpha: &[u8],
+    x0: i32,
+    row: i32,
+    color: PixelColor,
+    smask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+) -> u64 {
+    let pixels = mask_row_alpha.len().min(dst_row.len() / 4);
+    if pixels == 0 || color[3] == 0 {
+        return 0;
+    }
+
+    let mut painted = 0_u64;
+    let color_alpha = color[3] as f32 / 255.0;
+    let source_rgb = [
+        color[0] as f32 / 255.0,
+        color[1] as f32 / 255.0,
+        color[2] as f32 / 255.0,
+    ];
+    let to_byte = |value: f32| (value * 255.0).round().clamp(0.0, 255.0) as u8;
+
+    for offset in 0..pixels {
+        let green = mask_row_alpha[offset];
+        let left = if offset == 0 {
+            green
+        } else {
+            mask_row_alpha[offset - 1]
+        };
+        let right = mask_row_alpha.get(offset + 1).copied().unwrap_or(green);
+        let channel_coverage = [
+            lcd_weighted_channel_coverage(green, left),
+            green,
+            lcd_weighted_channel_coverage(green, right),
+        ];
+        if channel_coverage == [0, 0, 0] {
+            continue;
+        }
+
+        let x = x0.saturating_add(offset as i32);
+        let clip_alpha = match clip {
+            Some(clip) => {
+                let alpha = clip.opacity_byte(x, row);
+                if alpha == 0 {
+                    continue;
+                }
+                f32::from(alpha) / 255.0
+            }
+            None => 1.0,
+        };
+        let smask_alpha = smask.map_or(1.0, |mask| f32::from(mask.get_byte(x, row)) / 255.0);
+        let source_alpha = (color_alpha * clip_alpha * smask_alpha).clamp(0.0, 1.0);
+        if source_alpha <= 0.0 {
+            continue;
+        }
+
+        let alpha_coverage = (u16::from(channel_coverage[0])
+            + u16::from(channel_coverage[1])
+            + u16::from(channel_coverage[2])
+            + 1)
+            / 3;
+        let effective_alpha = source_alpha * (alpha_coverage as f32 / 255.0);
+        if effective_alpha <= 0.0 {
+            continue;
+        }
+
+        let idx = offset * 4;
+        for channel in 0..3 {
+            let coverage = source_alpha * (channel_coverage[channel] as f32 / 255.0);
+            let destination = dst_row[idx + channel] as f32 / 255.0;
+            dst_row[idx + channel] =
+                to_byte(source_rgb[channel] * coverage + destination * (1.0 - coverage));
+        }
+        let destination_alpha = dst_row[idx + 3] as f32 / 255.0;
+        dst_row[idx + 3] = to_byte(effective_alpha + destination_alpha * (1.0 - effective_alpha));
+        painted = painted.saturating_add(1);
+    }
+
+    painted
+}
+
+fn knockout_rows(
+    data: &mut [u8],
+    dst_width: u32,
+    src: &PixelBuffer,
+    group_alpha: f32,
+    soft_mask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+) -> u64 {
+    let width = dst_width.min(src.width) as usize;
+    let height = if dst_width == 0 {
+        0
+    } else {
+        data.len() / 4 / dst_width as usize
+    }
+    .min(src.height as usize);
+    if width == 0 || height == 0 {
+        return 0;
+    }
+
+    let dst_stride = dst_width as usize * 4;
+    let src_stride = src.width as usize * 4;
+    let mut painted = 0_u64;
+    for row in 0..height {
+        let Some(dst_row) = data.get_mut(row * dst_stride..row * dst_stride + width * 4) else {
+            continue;
+        };
+        let Some(src_row) = src.data.get(row * src_stride..row * src_stride + width * 4) else {
+            continue;
+        };
+        for x in 0..width {
+            let clip_alpha = match clip {
+                Some(clip) => {
+                    let alpha = clip.opacity_byte(x as i32, row as i32);
+                    if alpha == 0 {
+                        continue;
+                    }
+                    f32::from(alpha) / 255.0
+                }
+                None => 1.0,
+            };
+            let idx = x * 4;
+            let sp = &src_row[idx..idx + 4];
+            if sp[3] == 0 {
+                continue;
+            }
+            let mask =
+                soft_mask.map_or(1.0, |m| f32::from(m.get_byte(x as i32, row as i32)) / 255.0);
+            let eff = (sp[3] as f32 / 255.0 * group_alpha * mask * clip_alpha).clamp(0.0, 1.0);
+            dst_row[idx] = sp[0];
+            dst_row[idx + 1] = sp[1];
+            dst_row[idx + 2] = sp[2];
+            dst_row[idx + 3] = (eff * 255.0).round().clamp(0.0, 255.0) as u8;
+            painted = painted.saturating_add(1);
+        }
+    }
+    painted
 }
 
 fn flatten_compat_onto_opaque_background(data: &mut [u8], background: PixelColor) {
@@ -3468,8 +5919,14 @@ fn flatten_compat_onto_opaque_background(data: &mut [u8], background: PixelColor
 }
 
 fn flatten_compat_onto_opaque_background_wide(data: &mut [u8], background: PixelColor) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     if data.len() < 8 {
         return false;
+    }
+    if wellfriendpdf_render_simd::flatten_opaque_background(data, background) {
+        return true;
     }
     let bg = wide::u16x8::new([
         u16::from(background[0]),
@@ -3590,6 +6047,1120 @@ fn composite_normal_compat_row_run(
     composite_normal_compat_row(dst_row, src_row, group_alpha);
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AlphaMaskPaintWindow {
+    dst_x: i32,
+    dst_y: i32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    mask_stride: usize,
+    mask_offset: usize,
+}
+
+fn alpha_mask_window_fits(
+    alpha_len: usize,
+    offset: usize,
+    stride: usize,
+    width: usize,
+    height: usize,
+) -> bool {
+    if width == 0 || height == 0 || stride < width {
+        return false;
+    }
+    let Some(last_row) = height.checked_sub(1) else {
+        return false;
+    };
+    last_row
+        .checked_mul(stride)
+        .and_then(|row_offset| offset.checked_add(row_offset))
+        .and_then(|last_start| last_start.checked_add(width))
+        .is_some_and(|end| end <= alpha_len)
+}
+
+fn blend_alpha_mask_rows_normal_fused(
+    data: &mut [u8],
+    data_width: u32,
+    alpha: &[u8],
+    color: PixelColor,
+    smask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+    window: AlphaMaskPaintWindow,
+) {
+    let row_width = window.x1.saturating_sub(window.x0) as usize;
+    if row_width == 0 {
+        return;
+    }
+    let mut fused_row = vec![0u8; row_width];
+    let mut factor_row = vec![0u8; row_width];
+    for row in window.y0..window.y1 {
+        let mask_row = (row - window.dst_y) as usize;
+        let src_start = window
+            .mask_offset
+            .saturating_add(mask_row.saturating_mul(window.mask_stride))
+            .saturating_add((window.x0 - window.dst_x) as usize);
+        let src_end = src_start.saturating_add(row_width);
+        let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+            continue;
+        };
+        fuse_alpha_mask_paint_row(
+            mask_row_alpha,
+            window.x0,
+            row,
+            smask,
+            clip,
+            &mut fused_row,
+            &mut factor_row,
+        );
+        if mask_row_class(&fused_row) != MaskRowClass::AllTransparent {
+            blend_alpha_mask_run_normal(data, data_width, row, window.x0, &fused_row, color);
+        }
+    }
+}
+
+fn fuse_alpha_mask_paint_row(
+    mask_row_alpha: &[u8],
+    x0: i32,
+    row: i32,
+    smask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+    out: &mut [u8],
+    factor: &mut [u8],
+) {
+    let pixels = mask_row_alpha.len().min(out.len());
+    if pixels == 0 {
+        out.fill(0);
+        return;
+    }
+    out[..pixels].copy_from_slice(&mask_row_alpha[..pixels]);
+    if out.len() > pixels {
+        out[pixels..].fill(0);
+    }
+
+    if let Some(smask) = smask {
+        materialize_smask_row(smask, x0, row, &mut factor[..pixels]);
+        multiply_alpha_row_or_scalar(&mut out[..pixels], &factor[..pixels]);
+    }
+    if let Some(clip) = clip.filter(|clip| !clip.is_all_visible()) {
+        materialize_clip_opacity_row(clip, x0, row, &mut factor[..pixels]);
+        multiply_alpha_row_or_scalar(&mut out[..pixels], &factor[..pixels]);
+    }
+}
+
+fn materialize_smask_row(smask: &AlphaMask, x0: i32, row: i32, out: &mut [u8]) {
+    for (idx, value) in out.iter_mut().enumerate() {
+        *value = smask.get_byte(x0.saturating_add(idx as i32), row);
+    }
+}
+
+fn materialize_clip_opacity_row(clip: &ClipMask, x0: i32, row: i32, out: &mut [u8]) {
+    for (idx, value) in out.iter_mut().enumerate() {
+        *value = clip.opacity_byte(x0.saturating_add(idx as i32), row);
+    }
+}
+
+fn multiply_alpha_row_or_scalar(alpha: &mut [u8], factor: &[u8]) {
+    if scalar_compositor_forced() || !wellfriendpdf_render_simd::multiply_alpha_rows(alpha, factor)
+    {
+        multiply_alpha_row_scalar(alpha, factor);
+    }
+}
+
+fn multiply_alpha_row_scalar(alpha: &mut [u8], factor: &[u8]) {
+    for (value, multiplier) in alpha.iter_mut().zip(factor.iter().copied()) {
+        *value = div255_round_u16(u16::from(*value) * u16::from(multiplier)) as u8;
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SolidPaintWindow {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+}
+
+fn blend_solid_rows_normal_fused(
+    data: &mut [u8],
+    data_width: u32,
+    color: PixelColor,
+    smask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+    window: SolidPaintWindow,
+) {
+    let row_pixels = window.x1.saturating_sub(window.x0) as usize;
+    if row_pixels == 0 {
+        return;
+    }
+    let mut fused_row = vec![255u8; row_pixels];
+    let mut factor_row = vec![0u8; row_pixels];
+    for row in window.y0..window.y1 {
+        fuse_solid_paint_row(window.x0, row, smask, clip, &mut fused_row, &mut factor_row);
+        if mask_row_class(&fused_row) != MaskRowClass::AllTransparent {
+            blend_alpha_mask_run_normal(data, data_width, row, window.x0, &fused_row, color);
+        }
+    }
+}
+
+fn fuse_solid_paint_row(
+    x0: i32,
+    row: i32,
+    smask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+    out: &mut [u8],
+    factor: &mut [u8],
+) {
+    if out.is_empty() {
+        return;
+    }
+    if let Some(smask) = smask {
+        materialize_smask_row(smask, x0, row, out);
+    } else {
+        out.fill(255);
+    }
+    if let Some(clip) = clip.filter(|clip| !clip.is_all_visible()) {
+        let pixels = out.len().min(factor.len());
+        materialize_clip_opacity_row(clip, x0, row, &mut factor[..pixels]);
+        multiply_alpha_row_or_scalar(&mut out[..pixels], &factor[..pixels]);
+        if out.len() > pixels {
+            out[pixels..].fill(0);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RgbaPaintWindow {
+    dst_x: i32,
+    dst_y: i32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    src_width: u32,
+}
+
+fn blend_rgba_rows_normal_fused(
+    data: &mut [u8],
+    data_width: u32,
+    rgba: &[u8],
+    smask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+    window: RgbaPaintWindow,
+) {
+    let row_pixels = window.x1.saturating_sub(window.x0) as usize;
+    if row_pixels == 0 {
+        return;
+    }
+    let mut fused_row = vec![0u8; row_pixels.saturating_mul(4)];
+    let mut alpha_row = vec![0u8; row_pixels];
+    let mut factor_row = vec![0u8; row_pixels];
+    let dst_stride = data_width as usize * 4;
+    let src_stride = window.src_width as usize * 4;
+    for row in window.y0..window.y1 {
+        let src_y = (row - window.dst_y) as usize;
+        let src_x0 = (window.x0 - window.dst_x) as usize;
+        let src_len = row_pixels * 4;
+        let src_start = src_y
+            .saturating_mul(src_stride)
+            .saturating_add(src_x0.saturating_mul(4));
+        let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len)) else {
+            continue;
+        };
+        let scratch = RgbaFusionScratch {
+            alpha: &mut alpha_row,
+            factor: &mut factor_row,
+        };
+        fuse_rgba_paint_row(
+            src_row,
+            window.x0,
+            row,
+            smask,
+            clip,
+            &mut fused_row,
+            scratch,
+        );
+        if row_alpha_class(&fused_row) == RowAlphaClass::AllTransparent {
+            continue;
+        }
+        let dst_start = row as usize * dst_stride + window.x0 as usize * 4;
+        let Some(dst_row) = data.get_mut(dst_start..dst_start.saturating_add(src_len)) else {
+            continue;
+        };
+        composite_normal_compat_row(dst_row, &fused_row, 1.0);
+    }
+}
+
+fn blend_rgba_rows_separable_src_over(
+    data: &mut [u8],
+    data_width: u32,
+    rgba: &[u8],
+    window: RgbaPaintWindow,
+    blend_mode: BlendMode,
+) {
+    let row_pixels = window.x1.saturating_sub(window.x0) as usize;
+    if row_pixels == 0 {
+        return;
+    }
+    let dst_stride = data_width as usize * 4;
+    let src_stride = window.src_width as usize * 4;
+    let src_len = row_pixels * 4;
+    let mut painted = 0u64;
+    for row in window.y0..window.y1 {
+        let src_y = (row - window.dst_y) as usize;
+        let src_x0 = (window.x0 - window.dst_x) as usize;
+        let src_start = src_y
+            .saturating_mul(src_stride)
+            .saturating_add(src_x0.saturating_mul(4));
+        let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len)) else {
+            continue;
+        };
+        if row_alpha_class(src_row) == RowAlphaClass::AllTransparent {
+            continue;
+        }
+        let dst_start = row as usize * dst_stride + window.x0 as usize * 4;
+        let Some(dst_row) = data.get_mut(dst_start..dst_start.saturating_add(src_len)) else {
+            continue;
+        };
+        if row_alpha_is(dst_row, 255) {
+            if let Some(wide_painted) =
+                blend_rgba_row_separable_src_over_opaque_dst_wide(dst_row, src_row, blend_mode)
+            {
+                if wide_painted > 0 {
+                    PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS
+                        .fetch_add(wide_painted, Ordering::Relaxed);
+                }
+                continue;
+            }
+            let scalar_painted =
+                blend_rgba_row_separable_src_over_opaque_dst_scalar(dst_row, src_row, blend_mode);
+            if scalar_painted > 0 {
+                painted = painted.saturating_add(scalar_painted);
+            }
+            continue;
+        }
+
+        if let Some(wide_painted) =
+            blend_rgba_row_separable_src_over_general_wide(dst_row, src_row, blend_mode)
+        {
+            if wide_painted > 0 {
+                PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS
+                    .fetch_add(wide_painted, Ordering::Relaxed);
+            }
+            continue;
+        }
+        let scalar_painted =
+            blend_rgba_row_separable_src_over_general_scalar(dst_row, src_row, blend_mode);
+        if scalar_painted > 0 {
+            painted = painted.saturating_add(scalar_painted);
+        }
+    }
+    if painted > 0 {
+        PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(painted, Ordering::Relaxed);
+    }
+}
+
+fn blend_rgba_row_separable_src_over_opaque_dst_scalar(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    blend_mode: BlendMode,
+) -> u64 {
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut painted = 0u64;
+    for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+        let source_alpha = f32::from(src[3]) / 255.0;
+        if source_alpha <= 0.0 {
+            continue;
+        }
+        painted = painted.saturating_add(1);
+        let src_rgb = [
+            f32::from(src[0]) / 255.0,
+            f32::from(src[1]) / 255.0,
+            f32::from(src[2]) / 255.0,
+        ];
+        let dst_rgb = [
+            f32::from(dst[0]) / 255.0,
+            f32::from(dst[1]) / 255.0,
+            f32::from(dst[2]) / 255.0,
+        ];
+        for channel in 0..3 {
+            let blended = blend_mode.blend_channel(src_rgb[channel], dst_rgb[channel]);
+            let out = blended * source_alpha + dst_rgb[channel] * (1.0 - source_alpha);
+            dst[channel] = to_byte(out);
+        }
+        dst[3] = 255;
+    }
+    painted
+}
+
+fn blend_rgba_row_separable_src_over_opaque_dst_wide(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    blend_mode: BlendMode,
+) -> Option<u64> {
+    if scalar_compositor_forced() {
+        return None;
+    }
+    if dst_row.len() < 16 || src_row.len() < 16 || !separable_blend_mode_has_f32x4_path(blend_mode)
+    {
+        return None;
+    }
+
+    let pixel_count = (dst_row.len().min(src_row.len()) / 4) & !3;
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let mut painted = 0u64;
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let src_alpha = [
+            src_row[base + 3],
+            src_row[base + 7],
+            src_row[base + 11],
+            src_row[base + 15],
+        ];
+        let painted_lanes = [
+            src_alpha[0] != 0,
+            src_alpha[1] != 0,
+            src_alpha[2] != 0,
+            src_alpha[3] != 0,
+        ];
+        if !painted_lanes.iter().any(|painted| *painted) {
+            continue;
+        }
+        painted =
+            painted.saturating_add(painted_lanes.iter().filter(|&&painted| painted).count() as u64);
+        let src_alpha = f32x4_from_u8(src_alpha);
+        let inv_src_alpha = wide::f32x4::splat(1.0) - src_alpha;
+        let src_r = f32x4_from_u8([
+            src_row[base],
+            src_row[base + 4],
+            src_row[base + 8],
+            src_row[base + 12],
+        ]);
+        let src_g = f32x4_from_u8([
+            src_row[base + 1],
+            src_row[base + 5],
+            src_row[base + 9],
+            src_row[base + 13],
+        ]);
+        let src_b = f32x4_from_u8([
+            src_row[base + 2],
+            src_row[base + 6],
+            src_row[base + 10],
+            src_row[base + 14],
+        ]);
+        let dst_r = f32x4_from_u8([
+            dst_row[base],
+            dst_row[base + 4],
+            dst_row[base + 8],
+            dst_row[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            dst_row[base + 1],
+            dst_row[base + 5],
+            dst_row[base + 9],
+            dst_row[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            dst_row[base + 2],
+            dst_row[base + 6],
+            dst_row[base + 10],
+            dst_row[base + 14],
+        ]);
+        let out_r = f32x4_to_u8(
+            blend_separable_f32x4(src_r, dst_r, blend_mode) * src_alpha + dst_r * inv_src_alpha,
+        );
+        let out_g = f32x4_to_u8(
+            blend_separable_f32x4(src_g, dst_g, blend_mode) * src_alpha + dst_g * inv_src_alpha,
+        );
+        let out_b = f32x4_to_u8(
+            blend_separable_f32x4(src_b, dst_b, blend_mode) * src_alpha + dst_b * inv_src_alpha,
+        );
+        store_partial_clip_f32x4_rgba(dst_row, base, painted_lanes, out_r, out_g, out_b);
+    }
+
+    if pixel_count * 4 < dst_row.len().min(src_row.len()) {
+        let tail = blend_rgba_row_separable_src_over_opaque_dst_scalar(
+            &mut dst_row[pixel_count * 4..],
+            &src_row[pixel_count * 4..],
+            blend_mode,
+        );
+        if tail > 0 {
+            PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(tail, Ordering::Relaxed);
+        }
+    }
+
+    Some(painted)
+}
+
+fn blend_rgba_row_separable_src_over_general_scalar(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    blend_mode: BlendMode,
+) -> u64 {
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut painted = 0u64;
+    for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+        let source_alpha = f32::from(src[3]) / 255.0;
+        if source_alpha <= 0.0 {
+            continue;
+        }
+        painted = painted.saturating_add(1);
+        let src_rgb = [
+            f32::from(src[0]) / 255.0,
+            f32::from(src[1]) / 255.0,
+            f32::from(src[2]) / 255.0,
+        ];
+        let dst_rgb = [
+            f32::from(dst[0]) / 255.0,
+            f32::from(dst[1]) / 255.0,
+            f32::from(dst[2]) / 255.0,
+        ];
+        let dst_alpha = f32::from(dst[3]) / 255.0;
+        let (out_rgb, out_alpha) =
+            composite_source_over(src_rgb, source_alpha, dst_rgb, dst_alpha, blend_mode);
+        if out_alpha < 1.0e-6 {
+            dst.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        dst[0] = to_byte(out_rgb[0]);
+        dst[1] = to_byte(out_rgb[1]);
+        dst[2] = to_byte(out_rgb[2]);
+        dst[3] = (out_alpha * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    painted
+}
+
+fn blend_rgba_row_separable_src_over_general_wide(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    blend_mode: BlendMode,
+) -> Option<u64> {
+    if scalar_compositor_forced() {
+        return None;
+    }
+    if dst_row.len() < 16 || src_row.len() < 16 || !separable_blend_mode_has_f32x4_path(blend_mode)
+    {
+        return None;
+    }
+
+    let pixel_count = (dst_row.len().min(src_row.len()) / 4) & !3;
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let one = wide::f32x4::splat(1.0);
+    let min_denominator = wide::f32x4::splat(1.0e-6);
+    let mut painted = 0u64;
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let src_alpha = [
+            src_row[base + 3],
+            src_row[base + 7],
+            src_row[base + 11],
+            src_row[base + 15],
+        ];
+        let painted_lanes = [
+            src_alpha[0] != 0,
+            src_alpha[1] != 0,
+            src_alpha[2] != 0,
+            src_alpha[3] != 0,
+        ];
+        if !painted_lanes.iter().any(|painted| *painted) {
+            continue;
+        }
+        painted =
+            painted.saturating_add(painted_lanes.iter().filter(|&&painted| painted).count() as u64);
+        let src_alpha = f32x4_from_u8(src_alpha);
+        let inv_src_alpha = one - src_alpha;
+        let src_r = f32x4_from_u8([
+            src_row[base],
+            src_row[base + 4],
+            src_row[base + 8],
+            src_row[base + 12],
+        ]);
+        let src_g = f32x4_from_u8([
+            src_row[base + 1],
+            src_row[base + 5],
+            src_row[base + 9],
+            src_row[base + 13],
+        ]);
+        let src_b = f32x4_from_u8([
+            src_row[base + 2],
+            src_row[base + 6],
+            src_row[base + 10],
+            src_row[base + 14],
+        ]);
+        let dst_a = f32x4_from_u8([
+            dst_row[base + 3],
+            dst_row[base + 7],
+            dst_row[base + 11],
+            dst_row[base + 15],
+        ]);
+        let dst_r = f32x4_from_u8([
+            dst_row[base],
+            dst_row[base + 4],
+            dst_row[base + 8],
+            dst_row[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            dst_row[base + 1],
+            dst_row[base + 5],
+            dst_row[base + 9],
+            dst_row[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            dst_row[base + 2],
+            dst_row[base + 6],
+            dst_row[base + 10],
+            dst_row[base + 14],
+        ]);
+
+        let out_a = src_alpha + dst_a * inv_src_alpha;
+        let denom = out_a.max(min_denominator);
+        let inv_dst_a = one - dst_a;
+        let weighted_dst = dst_a * inv_src_alpha;
+        let blended_r = blend_separable_f32x4(src_r, dst_r, blend_mode);
+        let blended_g = blend_separable_f32x4(src_g, dst_g, blend_mode);
+        let blended_b = blend_separable_f32x4(src_b, dst_b, blend_mode);
+        let source_r = src_r * inv_dst_a + blended_r * dst_a;
+        let source_g = src_g * inv_dst_a + blended_g * dst_a;
+        let source_b = src_b * inv_dst_a + blended_b * dst_a;
+        let out_r = f32x4_to_u8((source_r * src_alpha + dst_r * weighted_dst) / denom);
+        let out_g = f32x4_to_u8((source_g * src_alpha + dst_g * weighted_dst) / denom);
+        let out_b = f32x4_to_u8((source_b * src_alpha + dst_b * weighted_dst) / denom);
+        let out_alpha = f32x4_to_trunc_u8(out_a);
+        let alpha_lanes = out_a.to_array();
+        for lane in 0..4 {
+            if !painted_lanes[lane] {
+                continue;
+            }
+            let offset = base + lane * 4;
+            if alpha_lanes[lane] < 1.0e-6 {
+                dst_row[offset..offset + 4].copy_from_slice(&TRANSPARENT);
+                continue;
+            }
+            dst_row[offset] = out_r[lane];
+            dst_row[offset + 1] = out_g[lane];
+            dst_row[offset + 2] = out_b[lane];
+            dst_row[offset + 3] = out_alpha[lane];
+        }
+    }
+
+    if pixel_count * 4 < dst_row.len().min(src_row.len()) {
+        let tail = blend_rgba_row_separable_src_over_general_scalar(
+            &mut dst_row[pixel_count * 4..],
+            &src_row[pixel_count * 4..],
+            blend_mode,
+        );
+        if tail > 0 {
+            PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(tail, Ordering::Relaxed);
+        }
+    }
+
+    Some(painted)
+}
+
+fn blend_rgba_rows_separable_src_over_partial_clip(
+    data: &mut [u8],
+    data_width: u32,
+    rgba: &[u8],
+    window: RgbaPaintWindow,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) {
+    let row_pixels = window.x1.saturating_sub(window.x0) as usize;
+    if row_pixels == 0 {
+        return;
+    }
+    let dst_stride = data_width as usize * 4;
+    let src_stride = window.src_width as usize * 4;
+    let src_len = row_pixels * 4;
+    let mut painted = 0u64;
+    for row in window.y0..window.y1 {
+        let src_y = (row - window.dst_y) as usize;
+        let src_x0 = (window.x0 - window.dst_x) as usize;
+        let src_start = src_y
+            .saturating_mul(src_stride)
+            .saturating_add(src_x0.saturating_mul(4));
+        let Some(src_row) = rgba.get(src_start..src_start.saturating_add(src_len)) else {
+            continue;
+        };
+        let dst_start = row as usize * dst_stride + window.x0 as usize * 4;
+        let Some(dst_row) = data.get_mut(dst_start..dst_start.saturating_add(src_len)) else {
+            continue;
+        };
+        if row_alpha_is(dst_row, 255) {
+            if let Some(wide_painted) =
+                blend_rgba_row_separable_src_over_opaque_dst_partial_clip_wide(
+                    dst_row, src_row, window.x0, row, blend_mode, clip,
+                )
+            {
+                if wide_painted > 0 {
+                    PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS
+                        .fetch_add(wide_painted, Ordering::Relaxed);
+                }
+                continue;
+            }
+            let scalar_painted = blend_rgba_row_separable_src_over_opaque_dst_partial_clip_scalar(
+                dst_row, src_row, window.x0, row, blend_mode, clip,
+            );
+            if scalar_painted > 0 {
+                painted = painted.saturating_add(scalar_painted);
+            }
+            continue;
+        }
+
+        if let Some(wide_painted) = blend_rgba_row_separable_src_over_general_partial_clip_wide(
+            dst_row, src_row, window.x0, row, blend_mode, clip,
+        ) {
+            if wide_painted > 0 {
+                PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS
+                    .fetch_add(wide_painted, Ordering::Relaxed);
+            }
+            continue;
+        }
+        let scalar_painted = blend_rgba_row_separable_src_over_general_partial_clip_scalar(
+            dst_row, src_row, window.x0, row, blend_mode, clip,
+        );
+        if scalar_painted > 0 {
+            painted = painted.saturating_add(scalar_painted);
+        }
+    }
+    if painted > 0 {
+        PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(painted, Ordering::Relaxed);
+    }
+}
+
+fn blend_rgba_row_separable_src_over_opaque_dst_partial_clip_scalar(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    x0: i32,
+    row: i32,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) -> u64 {
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut painted = 0u64;
+    for (offset, (src, dst)) in src_row
+        .chunks_exact(4)
+        .zip(dst_row.chunks_exact_mut(4))
+        .enumerate()
+    {
+        let x = x0.saturating_add(offset as i32);
+        let coverage = (f32::from(src[3]) / 255.0) * (f32::from(clip.opacity_byte(x, row)) / 255.0);
+        if coverage <= 0.0 {
+            continue;
+        }
+        painted = painted.saturating_add(1);
+        let src_rgb = [
+            src[0] as f32 / 255.0,
+            src[1] as f32 / 255.0,
+            src[2] as f32 / 255.0,
+        ];
+        let dst_rgb = [
+            dst[0] as f32 / 255.0,
+            dst[1] as f32 / 255.0,
+            dst[2] as f32 / 255.0,
+        ];
+        for channel in 0..3 {
+            let blended = blend_mode.blend_channel(src_rgb[channel], dst_rgb[channel]);
+            let out = blended * coverage + dst_rgb[channel] * (1.0 - coverage);
+            dst[channel] = to_byte(out);
+        }
+        dst[3] = 255;
+    }
+    painted
+}
+
+fn blend_rgba_row_separable_src_over_opaque_dst_partial_clip_wide(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    x0: i32,
+    row: i32,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) -> Option<u64> {
+    if scalar_compositor_forced() {
+        return None;
+    }
+    if dst_row.len() < 16 || src_row.len() < 16 || !separable_blend_mode_has_f32x4_path(blend_mode)
+    {
+        return None;
+    }
+
+    let pixel_count = (dst_row.len().min(src_row.len()) / 4) & !3;
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let mut painted = 0u64;
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let coverage = [
+            clip.opacity_byte(x0.saturating_add(pixel as i32), row),
+            clip.opacity_byte(x0.saturating_add(pixel as i32 + 1), row),
+            clip.opacity_byte(x0.saturating_add(pixel as i32 + 2), row),
+            clip.opacity_byte(x0.saturating_add(pixel as i32 + 3), row),
+        ];
+        let src_alpha = [
+            src_row[base + 3],
+            src_row[base + 7],
+            src_row[base + 11],
+            src_row[base + 15],
+        ];
+        let painted_lanes = [
+            coverage[0] != 0 && src_alpha[0] != 0,
+            coverage[1] != 0 && src_alpha[1] != 0,
+            coverage[2] != 0 && src_alpha[2] != 0,
+            coverage[3] != 0 && src_alpha[3] != 0,
+        ];
+        if !painted_lanes.iter().any(|painted| *painted) {
+            continue;
+        }
+        painted =
+            painted.saturating_add(painted_lanes.iter().filter(|&&painted| painted).count() as u64);
+        let cov = f32x4_from_u8(coverage) * f32x4_from_u8(src_alpha);
+        let inv_cov = wide::f32x4::splat(1.0) - cov;
+        let src_r = f32x4_from_u8([
+            src_row[base],
+            src_row[base + 4],
+            src_row[base + 8],
+            src_row[base + 12],
+        ]);
+        let src_g = f32x4_from_u8([
+            src_row[base + 1],
+            src_row[base + 5],
+            src_row[base + 9],
+            src_row[base + 13],
+        ]);
+        let src_b = f32x4_from_u8([
+            src_row[base + 2],
+            src_row[base + 6],
+            src_row[base + 10],
+            src_row[base + 14],
+        ]);
+        let dst_r = f32x4_from_u8([
+            dst_row[base],
+            dst_row[base + 4],
+            dst_row[base + 8],
+            dst_row[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            dst_row[base + 1],
+            dst_row[base + 5],
+            dst_row[base + 9],
+            dst_row[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            dst_row[base + 2],
+            dst_row[base + 6],
+            dst_row[base + 10],
+            dst_row[base + 14],
+        ]);
+        let out_r =
+            f32x4_to_u8(blend_separable_f32x4(src_r, dst_r, blend_mode) * cov + dst_r * inv_cov);
+        let out_g =
+            f32x4_to_u8(blend_separable_f32x4(src_g, dst_g, blend_mode) * cov + dst_g * inv_cov);
+        let out_b =
+            f32x4_to_u8(blend_separable_f32x4(src_b, dst_b, blend_mode) * cov + dst_b * inv_cov);
+        store_partial_clip_f32x4_rgba(dst_row, base, painted_lanes, out_r, out_g, out_b);
+    }
+
+    if pixel_count * 4 < dst_row.len().min(src_row.len()) {
+        let tail = blend_rgba_row_separable_src_over_opaque_dst_partial_clip_scalar(
+            &mut dst_row[pixel_count * 4..],
+            &src_row[pixel_count * 4..],
+            x0.saturating_add(pixel_count as i32),
+            row,
+            blend_mode,
+            clip,
+        );
+        if tail > 0 {
+            PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(tail, Ordering::Relaxed);
+        }
+    }
+
+    Some(painted)
+}
+
+fn blend_rgba_row_separable_src_over_general_partial_clip_scalar(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    x0: i32,
+    row: i32,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) -> u64 {
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut painted = 0u64;
+    for (offset, (src, dst)) in src_row
+        .chunks_exact(4)
+        .zip(dst_row.chunks_exact_mut(4))
+        .enumerate()
+    {
+        let x = x0.saturating_add(offset as i32);
+        let source_alpha =
+            (f32::from(src[3]) / 255.0) * (f32::from(clip.opacity_byte(x, row)) / 255.0);
+        if source_alpha <= 0.0 {
+            continue;
+        }
+        painted = painted.saturating_add(1);
+        let src_rgb = [
+            f32::from(src[0]) / 255.0,
+            f32::from(src[1]) / 255.0,
+            f32::from(src[2]) / 255.0,
+        ];
+        let dst_rgb = [
+            f32::from(dst[0]) / 255.0,
+            f32::from(dst[1]) / 255.0,
+            f32::from(dst[2]) / 255.0,
+        ];
+        let dst_alpha = f32::from(dst[3]) / 255.0;
+        let (out_rgb, out_alpha) =
+            composite_source_over(src_rgb, source_alpha, dst_rgb, dst_alpha, blend_mode);
+        if out_alpha < 1.0e-6 {
+            dst.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        dst[0] = to_byte(out_rgb[0]);
+        dst[1] = to_byte(out_rgb[1]);
+        dst[2] = to_byte(out_rgb[2]);
+        dst[3] = (out_alpha * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    painted
+}
+
+fn blend_rgba_row_separable_src_over_general_partial_clip_wide(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    x0: i32,
+    row: i32,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) -> Option<u64> {
+    if scalar_compositor_forced() {
+        return None;
+    }
+    if dst_row.len() < 16 || src_row.len() < 16 || !separable_blend_mode_has_f32x4_path(blend_mode)
+    {
+        return None;
+    }
+
+    let pixel_count = (dst_row.len().min(src_row.len()) / 4) & !3;
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let one = wide::f32x4::splat(1.0);
+    let min_denominator = wide::f32x4::splat(1.0e-6);
+    let mut painted = 0u64;
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let coverage = [
+            clip.opacity_byte(x0.saturating_add(pixel as i32), row),
+            clip.opacity_byte(x0.saturating_add(pixel as i32 + 1), row),
+            clip.opacity_byte(x0.saturating_add(pixel as i32 + 2), row),
+            clip.opacity_byte(x0.saturating_add(pixel as i32 + 3), row),
+        ];
+        let src_alpha = [
+            src_row[base + 3],
+            src_row[base + 7],
+            src_row[base + 11],
+            src_row[base + 15],
+        ];
+        let painted_lanes = [
+            coverage[0] != 0 && src_alpha[0] != 0,
+            coverage[1] != 0 && src_alpha[1] != 0,
+            coverage[2] != 0 && src_alpha[2] != 0,
+            coverage[3] != 0 && src_alpha[3] != 0,
+        ];
+        if !painted_lanes.iter().any(|painted| *painted) {
+            continue;
+        }
+        painted =
+            painted.saturating_add(painted_lanes.iter().filter(|&&painted| painted).count() as u64);
+        let src_alpha = f32x4_from_u8(src_alpha) * f32x4_from_u8(coverage);
+        let inv_src_alpha = one - src_alpha;
+        let src_r = f32x4_from_u8([
+            src_row[base],
+            src_row[base + 4],
+            src_row[base + 8],
+            src_row[base + 12],
+        ]);
+        let src_g = f32x4_from_u8([
+            src_row[base + 1],
+            src_row[base + 5],
+            src_row[base + 9],
+            src_row[base + 13],
+        ]);
+        let src_b = f32x4_from_u8([
+            src_row[base + 2],
+            src_row[base + 6],
+            src_row[base + 10],
+            src_row[base + 14],
+        ]);
+        let dst_a = f32x4_from_u8([
+            dst_row[base + 3],
+            dst_row[base + 7],
+            dst_row[base + 11],
+            dst_row[base + 15],
+        ]);
+        let dst_r = f32x4_from_u8([
+            dst_row[base],
+            dst_row[base + 4],
+            dst_row[base + 8],
+            dst_row[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            dst_row[base + 1],
+            dst_row[base + 5],
+            dst_row[base + 9],
+            dst_row[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            dst_row[base + 2],
+            dst_row[base + 6],
+            dst_row[base + 10],
+            dst_row[base + 14],
+        ]);
+
+        let out_a = src_alpha + dst_a * inv_src_alpha;
+        let denom = out_a.max(min_denominator);
+        let inv_dst_a = one - dst_a;
+        let weighted_dst = dst_a * inv_src_alpha;
+        let blended_r = blend_separable_f32x4(src_r, dst_r, blend_mode);
+        let blended_g = blend_separable_f32x4(src_g, dst_g, blend_mode);
+        let blended_b = blend_separable_f32x4(src_b, dst_b, blend_mode);
+        let source_r = src_r * inv_dst_a + blended_r * dst_a;
+        let source_g = src_g * inv_dst_a + blended_g * dst_a;
+        let source_b = src_b * inv_dst_a + blended_b * dst_a;
+        let out_r = f32x4_to_u8((source_r * src_alpha + dst_r * weighted_dst) / denom);
+        let out_g = f32x4_to_u8((source_g * src_alpha + dst_g * weighted_dst) / denom);
+        let out_b = f32x4_to_u8((source_b * src_alpha + dst_b * weighted_dst) / denom);
+        let out_alpha = f32x4_to_trunc_u8(out_a);
+        let alpha_lanes = out_a.to_array();
+        for lane in 0..4 {
+            if !painted_lanes[lane] {
+                continue;
+            }
+            let offset = base + lane * 4;
+            if alpha_lanes[lane] < 1.0e-6 {
+                dst_row[offset..offset + 4].copy_from_slice(&TRANSPARENT);
+                continue;
+            }
+            dst_row[offset] = out_r[lane];
+            dst_row[offset + 1] = out_g[lane];
+            dst_row[offset + 2] = out_b[lane];
+            dst_row[offset + 3] = out_alpha[lane];
+        }
+    }
+
+    if pixel_count * 4 < dst_row.len().min(src_row.len()) {
+        let tail = blend_rgba_row_separable_src_over_general_partial_clip_scalar(
+            &mut dst_row[pixel_count * 4..],
+            &src_row[pixel_count * 4..],
+            x0.saturating_add(pixel_count as i32),
+            row,
+            blend_mode,
+            clip,
+        );
+        if tail > 0 {
+            PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(tail, Ordering::Relaxed);
+        }
+    }
+
+    Some(painted)
+}
+
+struct RgbaFusionScratch<'a> {
+    alpha: &'a mut [u8],
+    factor: &'a mut [u8],
+}
+
+fn fuse_rgba_paint_row(
+    src_row: &[u8],
+    x0: i32,
+    row: i32,
+    smask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+    out: &mut [u8],
+    scratch: RgbaFusionScratch<'_>,
+) {
+    let pixels = (src_row.len() / 4)
+        .min(out.len() / 4)
+        .min(scratch.alpha.len());
+    if pixels == 0 {
+        out.fill(0);
+        return;
+    }
+    out[..pixels * 4].copy_from_slice(&src_row[..pixels * 4]);
+    if out.len() > pixels * 4 {
+        out[pixels * 4..].fill(0);
+    }
+    for (idx, src) in src_row.chunks_exact(4).take(pixels).enumerate() {
+        scratch.alpha[idx] = src[3];
+    }
+    if let Some(smask) = smask {
+        let factor_len = pixels.min(scratch.factor.len());
+        materialize_smask_row(smask, x0, row, &mut scratch.factor[..factor_len]);
+        multiply_alpha_row_or_scalar(
+            &mut scratch.alpha[..factor_len],
+            &scratch.factor[..factor_len],
+        );
+        if pixels > factor_len {
+            scratch.alpha[factor_len..pixels].fill(0);
+        }
+    }
+    if let Some(clip) = clip.filter(|clip| !clip.is_all_visible()) {
+        let factor_len = pixels.min(scratch.factor.len());
+        materialize_clip_opacity_row(clip, x0, row, &mut scratch.factor[..factor_len]);
+        multiply_alpha_row_or_scalar(
+            &mut scratch.alpha[..factor_len],
+            &scratch.factor[..factor_len],
+        );
+        if pixels > factor_len {
+            scratch.alpha[factor_len..pixels].fill(0);
+        }
+    }
+    for (dst, alpha) in out
+        .chunks_exact_mut(4)
+        .take(pixels)
+        .zip(scratch.alpha.iter().copied())
+    {
+        dst[3] = alpha;
+    }
+}
+
+#[cfg(test)]
+fn fuse_rgba_paint_row_scalar(
+    src_row: &[u8],
+    x0: i32,
+    row: i32,
+    smask: Option<&AlphaMask>,
+    clip: Option<&ClipMask>,
+    out: &mut [u8],
+) {
+    for (idx, (src, dst)) in src_row
+        .chunks_exact(4)
+        .zip(out.chunks_exact_mut(4))
+        .enumerate()
+    {
+        dst.copy_from_slice(src);
+        let x = x0.saturating_add(idx as i32);
+        let mut alpha = src[3];
+        if let Some(smask) = smask {
+            alpha = div255_round_u16(u16::from(alpha) * u16::from(smask.get_byte(x, row))) as u8;
+        }
+        if let Some(clip) = clip.filter(|clip| !clip.is_all_visible()) {
+            alpha = div255_round_u16(u16::from(alpha) * u16::from(clip.opacity_byte(x, row))) as u8;
+        }
+        dst[3] = alpha;
+    }
+}
+
 fn blend_alpha_mask_run_normal(
     data: &mut [u8],
     width: u32,
@@ -3611,6 +7182,13 @@ fn blend_alpha_mask_run_normal(
         };
         if let Some(slice) = data.get_mut(start..end) {
             if blend_alpha_mask_run_normal_opaque_dst_wide(slice, mask_alpha, color) {
+                return;
+            }
+            if !scalar_compositor_forced()
+                && wellfriendpdf_render_simd::blend_alpha_mask_normal(slice, mask_alpha, color)
+            {
+                PIXEL_COMPOSITOR_WIDE_SOLID_COLOR_PIXELS
+                    .fetch_add(mask_alpha.len() as u64, Ordering::Relaxed);
                 return;
             }
         }
@@ -3653,11 +7231,898 @@ fn blend_alpha_mask_run_normal(
     }
 }
 
+fn blend_alpha_mask_run_high_quality_normal(
+    data: &mut [u8],
+    width: u32,
+    row: i32,
+    run_x0: i32,
+    mask_alpha: &[u8],
+    color: PixelColor,
+) {
+    if row < 0 || width == 0 || mask_alpha.is_empty() || color[3] == 0 {
+        return;
+    }
+    let x0 = run_x0.max(0).min(width as i32);
+    let skip = x0.saturating_sub(run_x0) as usize;
+    if skip >= mask_alpha.len() {
+        return;
+    }
+    let pixels = mask_alpha
+        .len()
+        .saturating_sub(skip)
+        .min(width as usize - x0 as usize);
+    if pixels == 0 {
+        return;
+    }
+    let Some(row_start_pixel) = (row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = pixels * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let mask_row = &mask_alpha[skip..skip + pixels];
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
+    for (d, mask) in dst_row.chunks_exact_mut(4).zip(mask_row.iter().copied()) {
+        if mask == 0 {
+            continue;
+        }
+        let eff_a = (color[3] as f32 / 255.0 * mask as f32 / 255.0).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        if eff_a >= 1.0 {
+            d.copy_from_slice(&[color[0], color[1], color[2], 255]);
+            continue;
+        }
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) =
+            composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, BlendMode::Normal);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_alpha_mask_run_high_quality_normal_partial_clip(
+    data: &mut [u8],
+    width: u32,
+    row: i32,
+    run_x0: i32,
+    mask_alpha: &[u8],
+    color: PixelColor,
+    clip: &ClipMask,
+) {
+    if row < 0 || width == 0 || mask_alpha.is_empty() || color[3] == 0 {
+        return;
+    }
+    let x0 = run_x0.max(0).min(width as i32);
+    let skip = x0.saturating_sub(run_x0) as usize;
+    if skip >= mask_alpha.len() {
+        return;
+    }
+    let pixels = mask_alpha
+        .len()
+        .saturating_sub(skip)
+        .min(width as usize - x0 as usize);
+    if pixels == 0 {
+        return;
+    }
+    let Some(row_start_pixel) = (row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = pixels * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let mask_row = &mask_alpha[skip..skip + pixels];
+    let src_alpha = color[3] as f32 / 255.0;
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
+    for (idx, (d, mask)) in dst_row
+        .chunks_exact_mut(4)
+        .zip(mask_row.iter().copied())
+        .enumerate()
+    {
+        if mask == 0 {
+            continue;
+        }
+        let x = x0.saturating_add(idx as i32);
+        let clip_alpha = f32::from(clip.opacity_byte(x, row)) / 255.0;
+        let eff_a = (src_alpha * mask as f32 / 255.0 * clip_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        if eff_a >= 1.0 {
+            d.copy_from_slice(&[color[0], color[1], color[2], 255]);
+            continue;
+        }
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) =
+            composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, BlendMode::Normal);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_alpha_mask_run_high_quality_blend(
+    data: &mut [u8],
+    width: u32,
+    row: i32,
+    run_x0: i32,
+    mask_alpha: &[u8],
+    color: PixelColor,
+    blend_mode: BlendMode,
+) {
+    if row < 0 || width == 0 || mask_alpha.is_empty() || color[3] == 0 {
+        return;
+    }
+    let x0 = run_x0.max(0).min(width as i32);
+    let skip = x0.saturating_sub(run_x0) as usize;
+    if skip >= mask_alpha.len() {
+        return;
+    }
+    let pixels = mask_alpha
+        .len()
+        .saturating_sub(skip)
+        .min(width as usize - x0 as usize);
+    if pixels == 0 {
+        return;
+    }
+    let Some(row_start_pixel) = (row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = pixels * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let mask_row = &mask_alpha[skip..skip + pixels];
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
+    for (d, mask) in dst_row.chunks_exact_mut(4).zip(mask_row.iter().copied()) {
+        if mask == 0 {
+            continue;
+        }
+        let eff_a = (color[3] as f32 / 255.0 * mask as f32 / 255.0).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_alpha_mask_run_high_quality_blend_partial_clip(
+    data: &mut [u8],
+    width: u32,
+    run: PaintRowRun,
+    mask_alpha: &[u8],
+    color: PixelColor,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) {
+    if run.row < 0 || width == 0 || mask_alpha.is_empty() || color[3] == 0 {
+        return;
+    }
+    let x0 = run.x_start.max(0).min(width as i32);
+    let skip = x0.saturating_sub(run.x_start) as usize;
+    if skip >= mask_alpha.len() {
+        return;
+    }
+    let pixels = mask_alpha
+        .len()
+        .saturating_sub(skip)
+        .min(run.x_end.saturating_sub(x0) as usize)
+        .min(width as usize - x0 as usize);
+    if pixels == 0 {
+        return;
+    }
+    let Some(row_start_pixel) = (run.row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = pixels * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let mask_row = &mask_alpha[skip..skip + pixels];
+    let src_alpha = color[3] as f32 / 255.0;
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
+    for (idx, (d, mask)) in dst_row
+        .chunks_exact_mut(4)
+        .zip(mask_row.iter().copied())
+        .enumerate()
+    {
+        if mask == 0 {
+            continue;
+        }
+        let x = x0.saturating_add(idx as i32);
+        let clip_alpha = f32::from(clip.opacity_byte(x, run.row)) / 255.0;
+        let eff_a = (src_alpha * mask as f32 / 255.0 * clip_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_alpha_mask_run_high_quality_masked(
+    data: &mut [u8],
+    width: u32,
+    run: PaintRowRun,
+    mask_alpha: &[u8],
+    color: PixelColor,
+    blend_mode: BlendMode,
+    masks: HighQualityMaskSources<'_>,
+) {
+    if run.row < 0 || width == 0 || mask_alpha.is_empty() || color[3] == 0 {
+        return;
+    }
+    let x0 = run.x_start.max(0).min(width as i32);
+    let skip = x0.saturating_sub(run.x_start) as usize;
+    if skip >= mask_alpha.len() {
+        return;
+    }
+    let pixels = mask_alpha
+        .len()
+        .saturating_sub(skip)
+        .min(run.x_end.saturating_sub(x0) as usize)
+        .min(width as usize - x0 as usize);
+    if pixels == 0 {
+        return;
+    }
+    let Some(row_start_pixel) = (run.row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = pixels * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let mask_row = &mask_alpha[skip..skip + pixels];
+    let src_alpha = color[3] as f32 / 255.0;
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
+    for (idx, (d, mask)) in dst_row
+        .chunks_exact_mut(4)
+        .zip(mask_row.iter().copied())
+        .enumerate()
+    {
+        if mask == 0 {
+            continue;
+        }
+        let x = x0.saturating_add(idx as i32);
+        let mask_alpha = f32::from(mask) / 255.0;
+        let eff_a = (src_alpha * mask_alpha * masks.alpha_at(x, run.row)).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        if blend_mode == BlendMode::Normal && eff_a >= 1.0 {
+            d.copy_from_slice(&[color[0], color[1], color[2], 255]);
+            continue;
+        }
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_solid_run_high_quality_normal(
+    data: &mut [u8],
+    width: u32,
+    row: i32,
+    x_start: i32,
+    x_end: i32,
+    color: PixelColor,
+) {
+    if row < 0 || width == 0 || x_end <= x_start || color[3] == 0 {
+        return;
+    }
+    let x0 = x_start.max(0).min(width as i32);
+    let x1 = x_end.max(0).min(width as i32);
+    if x1 <= x0 {
+        return;
+    }
+    let Some(row_start_pixel) = (row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = x1.saturating_sub(x0) as usize * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let eff_a = (color[3] as f32 / 255.0).clamp(0.0, 1.0);
+    if eff_a <= 0.0 {
+        return;
+    }
+    if eff_a >= 1.0 {
+        for d in dst_row.chunks_exact_mut(4) {
+            d.copy_from_slice(&[color[0], color[1], color[2], 255]);
+        }
+        return;
+    }
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
+        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
+    for d in dst_row.chunks_exact_mut(4) {
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) =
+            composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, BlendMode::Normal);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_solid_run_high_quality_normal_partial_clip(
+    data: &mut [u8],
+    width: u32,
+    run: PaintRowRun,
+    color: PixelColor,
+    clip: &ClipMask,
+) {
+    if run.row < 0 || width == 0 || run.x_end <= run.x_start || color[3] == 0 {
+        return;
+    }
+    let x0 = run.x_start.max(0).min(width as i32);
+    let x1 = run.x_end.max(0).min(width as i32);
+    if x1 <= x0 {
+        return;
+    }
+    let Some(row_start_pixel) = (run.row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = x1.saturating_sub(x0) as usize * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let src_alpha = color[3] as f32 / 255.0;
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
+        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
+    for (idx, d) in dst_row.chunks_exact_mut(4).enumerate() {
+        let x = x0.saturating_add(idx as i32);
+        let clip_alpha = f32::from(clip.opacity_byte(x, run.row)) / 255.0;
+        let eff_a = (src_alpha * clip_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        if eff_a >= 1.0 {
+            d.copy_from_slice(&[color[0], color[1], color[2], 255]);
+            continue;
+        }
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) =
+            composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, BlendMode::Normal);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_solid_run_high_quality_blend(
+    data: &mut [u8],
+    width: u32,
+    row: i32,
+    x_start: i32,
+    x_end: i32,
+    color: PixelColor,
+    blend_mode: BlendMode,
+) {
+    if row < 0 || width == 0 || x_end <= x_start || color[3] == 0 {
+        return;
+    }
+    let x0 = x_start.max(0).min(width as i32);
+    let x1 = x_end.max(0).min(width as i32);
+    if x1 <= x0 {
+        return;
+    }
+    let Some(row_start_pixel) = (row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = x1.saturating_sub(x0) as usize * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let eff_a = (color[3] as f32 / 255.0).clamp(0.0, 1.0);
+    if eff_a <= 0.0 {
+        return;
+    }
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
+        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
+    for d in dst_row.chunks_exact_mut(4) {
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_solid_run_high_quality_blend_partial_clip(
+    data: &mut [u8],
+    width: u32,
+    run: PaintRowRun,
+    color: PixelColor,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) {
+    if run.row < 0 || width == 0 || run.x_end <= run.x_start || color[3] == 0 {
+        return;
+    }
+    let x0 = run.x_start.max(0).min(width as i32);
+    let x1 = run.x_end.max(0).min(width as i32);
+    if x1 <= x0 {
+        return;
+    }
+    let Some(row_start_pixel) = (run.row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = x1.saturating_sub(x0) as usize * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let src_alpha = color[3] as f32 / 255.0;
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
+        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
+    for (idx, d) in dst_row.chunks_exact_mut(4).enumerate() {
+        let x = x0.saturating_add(idx as i32);
+        let clip_alpha = f32::from(clip.opacity_byte(x, run.row)) / 255.0;
+        let eff_a = (src_alpha * clip_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_solid_run_high_quality_masked(
+    data: &mut [u8],
+    width: u32,
+    run: PaintRowRun,
+    color: PixelColor,
+    blend_mode: BlendMode,
+    smask: &AlphaMask,
+    clip: Option<&ClipMask>,
+) {
+    if run.row < 0 || width == 0 || run.x_end <= run.x_start || color[3] == 0 {
+        return;
+    }
+    let x0 = run.x_start.max(0).min(width as i32);
+    let x1 = run.x_end.max(0).min(width as i32);
+    if x1 <= x0 {
+        return;
+    }
+    let Some(row_start_pixel) = (run.row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = x1.saturating_sub(x0) as usize * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let src_alpha = color[3] as f32 / 255.0;
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
+        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
+    for (idx, d) in dst_row.chunks_exact_mut(4).enumerate() {
+        let x = x0.saturating_add(idx as i32);
+        let smask_alpha = f32::from(smask.get_byte(x, run.row)) / 255.0;
+        let clip_alpha = clip
+            .map(|clip| f32::from(clip.opacity_byte(x, run.row)) / 255.0)
+            .unwrap_or(1.0);
+        let eff_a = (src_alpha * smask_alpha * clip_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_solid_run_high_quality_knockout(
+    data: &mut [u8],
+    width: u32,
+    run: PaintRowRun,
+    color: PixelColor,
+    blend_mode: BlendMode,
+    backdrop: &PixelBuffer,
+    masks: HighQualityMaskSources<'_>,
+) {
+    if run.row < 0 || width == 0 || run.x_end <= run.x_start || color[3] == 0 {
+        return;
+    }
+    let x0 = run.x_start.max(0).min(width as i32);
+    let x1 = run.x_end.max(0).min(width as i32);
+    if x1 <= x0 {
+        return;
+    }
+    let Some(row_start_pixel) = (run.row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = x1.saturating_sub(x0) as usize * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let src_alpha = color[3] as f32 / 255.0;
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
+        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
+    for (idx, d) in dst_row.chunks_exact_mut(4).enumerate() {
+        let x = x0.saturating_add(idx as i32);
+        let eff_a = (src_alpha * masks.alpha_at(x, run.row)).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        let backdrop_pixel = backdrop.get_pixel(x, run.row);
+        let dst_rgb = [
+            gamma::to_linear(backdrop_pixel[0]),
+            gamma::to_linear(backdrop_pixel[1]),
+            gamma::to_linear(backdrop_pixel[2]),
+        ];
+        let dst_a = backdrop_pixel[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_alpha_mask_run_high_quality_knockout(
+    data: &mut [u8],
+    width: u32,
+    run: PaintRowRun,
+    mask_alpha: &[u8],
+    color: PixelColor,
+    blend_mode: BlendMode,
+    sources: HighQualityBackdropSources<'_>,
+) {
+    if run.row < 0 || width == 0 || mask_alpha.is_empty() || color[3] == 0 {
+        return;
+    }
+    let x0 = run.x_start.max(0).min(width as i32);
+    let skip = x0.saturating_sub(run.x_start) as usize;
+    if skip >= mask_alpha.len() {
+        return;
+    }
+    let pixels = mask_alpha
+        .len()
+        .saturating_sub(skip)
+        .min(run.x_end.saturating_sub(x0) as usize)
+        .min(width as usize - x0 as usize);
+    if pixels == 0 {
+        return;
+    }
+    let Some(row_start_pixel) = (run.row as usize).checked_mul(width as usize) else {
+        return;
+    };
+    let Some(start_pixel) = row_start_pixel.checked_add(x0 as usize) else {
+        return;
+    };
+    let Some(start) = start_pixel.checked_mul(4) else {
+        return;
+    };
+    let len = pixels * 4;
+    let Some(end) = start.checked_add(len) else {
+        return;
+    };
+    let Some(dst_row) = data.get_mut(start..end) else {
+        return;
+    };
+    let mask_row = &mask_alpha[skip..skip + pixels];
+    let src_alpha = color[3] as f32 / 255.0;
+    let src_rgb = [
+        gamma::to_linear(color[0]),
+        gamma::to_linear(color[1]),
+        gamma::to_linear(color[2]),
+    ];
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
+    for (idx, (d, mask)) in dst_row
+        .chunks_exact_mut(4)
+        .zip(mask_row.iter().copied())
+        .enumerate()
+    {
+        if mask == 0 {
+            continue;
+        }
+        let x = x0.saturating_add(idx as i32);
+        let eff_a = (src_alpha * (f32::from(mask) / 255.0) * sources.masks.alpha_at(x, run.row))
+            .clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        let backdrop_pixel = sources.backdrop.get_pixel(x, run.row);
+        let dst_rgb = [
+            gamma::to_linear(backdrop_pixel[0]),
+            gamma::to_linear(backdrop_pixel[1]),
+            gamma::to_linear(backdrop_pixel[2]),
+        ];
+        let dst_a = backdrop_pixel[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
 fn blend_alpha_mask_run_normal_opaque_dst_wide(
     slice: &mut [u8],
     mask_alpha: &[u8],
     color: PixelColor,
 ) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     let pixels = slice.chunks_exact(4).count().min(mask_alpha.len());
     if pixels < 2 || color[3] == 0 {
         return color[3] == 0;
@@ -3665,6 +8130,14 @@ fn blend_alpha_mask_run_normal_opaque_dst_wide(
     let slice_len = pixels.saturating_mul(4);
     if !row_alpha_is(&slice[..slice_len], 255) {
         return false;
+    }
+    if wellfriendpdf_render_simd::blend_alpha_mask_opaque_destination(
+        &mut slice[..slice_len],
+        &mask_alpha[..pixels],
+        color,
+    ) {
+        PIXEL_COMPOSITOR_WIDE_OPAQUE_DST_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
+        return true;
     }
 
     let color_alpha = u16::from(color[3]);
@@ -3787,6 +8260,9 @@ fn fill_opaque_run(
 }
 
 fn fill_opaque_run_arch(slice: &mut [u8], color: PixelColor) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     wellfriendpdf_render_simd::fill_opaque_run(slice, color)
 }
 
@@ -3839,45 +8315,6 @@ fn blend_normal_compat_run(
     blend_normal_compat_run_scalar(slice, color);
 }
 
-fn rect_runs_have_opaque_alpha(
-    data: &[u8],
-    width: u32,
-    y_start: i32,
-    y_end_exclusive: i32,
-    x_start: i32,
-    x_end_exclusive: i32,
-) -> bool {
-    for row in y_start..y_end_exclusive {
-        if !run_alpha_is(data, width, row, x_start, x_end_exclusive, 255) {
-            return false;
-        }
-    }
-    true
-}
-
-fn clipped_runs_have_opaque_alpha(
-    data: &[u8],
-    width: u32,
-    clip: &ClipMask,
-    y_start: i32,
-    y_end_exclusive: i32,
-    x_start: i32,
-    x_end_exclusive: i32,
-) -> bool {
-    for row in y_start..y_end_exclusive {
-        let mut row_ok = true;
-        clip.for_each_visible_run_in_span(row, x_start, x_end_exclusive, |start, end| {
-            if !run_alpha_is(data, width, row, start, end, 255) {
-                row_ok = false;
-            }
-        });
-        if !row_ok {
-            return false;
-        }
-    }
-    true
-}
-
 fn write_opaque_rgb_run_to_data(
     data: &mut [u8],
     dst_width: u32,
@@ -3906,6 +8343,11 @@ fn write_opaque_rgb_run_to_data(
     let Some(dst_row) = data.get_mut(dst_start..dst_start + dst_len) else {
         return 0;
     };
+    if !scalar_compositor_forced()
+        && wellfriendpdf_render_simd::rgb8_to_opaque_rgba(src_row, dst_row)
+    {
+        return x_end_exclusive.saturating_sub(x_start) as usize;
+    }
     let mut written = 0usize;
     for (out, src) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(3)) {
         out[0] = src[0];
@@ -3917,39 +8359,7 @@ fn write_opaque_rgb_run_to_data(
     written
 }
 
-fn run_alpha_is(
-    data: &[u8],
-    width: u32,
-    row: i32,
-    x_start: i32,
-    x_end_exclusive: i32,
-    alpha: u8,
-) -> bool {
-    if row < 0 || x_start < 0 || x_end_exclusive < x_start {
-        return false;
-    }
-    if x_end_exclusive == x_start {
-        return true;
-    }
-    let Some(start) = (row as usize)
-        .checked_mul(width as usize)
-        .and_then(|row_base| row_base.checked_add(x_start as usize))
-        .and_then(|pixel| pixel.checked_mul(4))
-    else {
-        return false;
-    };
-    let Some(end) = (row as usize)
-        .checked_mul(width as usize)
-        .and_then(|row_base| row_base.checked_add(x_end_exclusive as usize))
-        .and_then(|pixel| pixel.checked_mul(4))
-    else {
-        return false;
-    };
-    data.get(start..end)
-        .is_some_and(|slice| row_alpha_is(slice, alpha))
-}
-
-fn blend_separable_opaque_src_over_opaque_dst_run(
+fn blend_separable_src_over_run(
     data: &mut [u8],
     width: u32,
     row: i32,
@@ -3958,6 +8368,129 @@ fn blend_separable_opaque_src_over_opaque_dst_run(
     color: PixelColor,
     blend_mode: BlendMode,
 ) {
+    if color[3] == 0 || row < 0 || x_start < 0 || x_end_exclusive <= x_start {
+        return;
+    }
+    let Some(start) = (row as usize)
+        .checked_mul(width as usize)
+        .and_then(|row_base| row_base.checked_add(x_start as usize))
+        .and_then(|pixel| pixel.checked_mul(4))
+    else {
+        return;
+    };
+    let Some(end) = (row as usize)
+        .checked_mul(width as usize)
+        .and_then(|row_base| row_base.checked_add(x_end_exclusive as usize))
+        .and_then(|pixel| pixel.checked_mul(4))
+    else {
+        return;
+    };
+    let Some(slice) = data.get_mut(start..end) else {
+        return;
+    };
+    if row_alpha_is(slice, 255) {
+        if color[3] == 255 {
+            if blend_separable_opaque_src_over_opaque_dst_wide(slice, color, blend_mode) {
+                return;
+            }
+            blend_separable_opaque_src_over_opaque_dst_scalar(slice, color, blend_mode);
+            return;
+        }
+        if blend_separable_src_over_opaque_dst_uniform_alpha_wide(slice, color, blend_mode) {
+            return;
+        }
+        blend_separable_src_over_opaque_dst_uniform_alpha_scalar(slice, color, blend_mode);
+        return;
+    }
+
+    if let Some(wide_painted) = blend_separable_src_over_general_wide(slice, color, blend_mode) {
+        if wide_painted > 0 {
+            PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS.fetch_add(wide_painted, Ordering::Relaxed);
+        }
+        return;
+    }
+    let painted = blend_separable_src_over_general_scalar(slice, color, blend_mode);
+    if painted > 0 {
+        PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(painted, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PaintRowRun {
+    row: i32,
+    x_start: i32,
+    x_end: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HighQualityMaskSources<'a> {
+    smask: Option<&'a AlphaMask>,
+    soft_mask: Option<&'a AlphaMask>,
+    clip: Option<&'a ClipMask>,
+}
+
+impl HighQualityMaskSources<'_> {
+    #[inline]
+    fn alpha_at(self, x: i32, y: i32) -> f32 {
+        let mut alpha = 1.0;
+        if let Some(smask) = self.smask {
+            alpha *= f32::from(smask.get_byte(x, y)) / 255.0;
+        }
+        if let Some(soft_mask) = self.soft_mask {
+            alpha *= f32::from(soft_mask.get_byte(x, y)) / 255.0;
+        }
+        if let Some(clip) = self.clip {
+            alpha *= f32::from(clip.opacity_byte(x, y)) / 255.0;
+        }
+        alpha
+    }
+}
+
+#[inline]
+fn high_quality_mask_sources<'a>(
+    smask: Option<&'a AlphaMask>,
+    soft_mask: Option<&'a AlphaMask>,
+    clip: Option<&'a ClipMask>,
+) -> HighQualityMaskSources<'a> {
+    HighQualityMaskSources {
+        smask,
+        soft_mask,
+        clip,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HighQualityBackdropSources<'a> {
+    backdrop: &'a PixelBuffer,
+    masks: HighQualityMaskSources<'a>,
+}
+
+#[inline]
+fn high_quality_backdrop_sources<'a>(
+    backdrop: &'a PixelBuffer,
+    smask: Option<&'a AlphaMask>,
+    soft_mask: Option<&'a AlphaMask>,
+    clip: Option<&'a ClipMask>,
+) -> HighQualityBackdropSources<'a> {
+    HighQualityBackdropSources {
+        backdrop,
+        masks: high_quality_mask_sources(smask, soft_mask, clip),
+    }
+}
+
+fn blend_separable_src_over_partial_clip_run(
+    data: &mut [u8],
+    width: u32,
+    run: PaintRowRun,
+    color: PixelColor,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) {
+    let PaintRowRun {
+        row,
+        x_start,
+        x_end: x_end_exclusive,
+    } = run;
     if row < 0 || x_start < 0 || x_end_exclusive <= x_start {
         return;
     }
@@ -3978,13 +8511,687 @@ fn blend_separable_opaque_src_over_opaque_dst_run(
     let Some(slice) = data.get_mut(start..end) else {
         return;
     };
-    if !row_alpha_is(slice, 255) {
+    if row_alpha_is(slice, 255) {
+        if let Some(wide_painted) = blend_separable_src_over_opaque_dst_partial_clip_wide(
+            slice, x_start, row, color, blend_mode, clip,
+        ) {
+            if wide_painted > 0 {
+                PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS
+                    .fetch_add(wide_painted, Ordering::Relaxed);
+            }
+            return;
+        }
+
+        let painted = blend_separable_src_over_opaque_dst_partial_clip_scalar(
+            slice, x_start, row, color, blend_mode, clip,
+        );
+        if painted > 0 {
+            PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(painted, Ordering::Relaxed);
+        }
         return;
     }
-    if blend_separable_opaque_src_over_opaque_dst_wide(slice, color, blend_mode) {
+
+    if let Some(wide_painted) = blend_separable_src_over_general_partial_clip_wide(
+        slice, x_start, row, color, blend_mode, clip,
+    ) {
+        if wide_painted > 0 {
+            PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS.fetch_add(wide_painted, Ordering::Relaxed);
+        }
         return;
     }
-    blend_separable_opaque_src_over_opaque_dst_scalar(slice, color, blend_mode);
+
+    let painted = blend_separable_src_over_general_partial_clip_scalar(
+        slice, x_start, row, color, blend_mode, clip,
+    );
+    if painted > 0 {
+        PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(painted, Ordering::Relaxed);
+    }
+}
+
+fn blend_separable_src_over_opaque_dst_partial_clip_scalar(
+    slice: &mut [u8],
+    x_start: i32,
+    row: i32,
+    color: PixelColor,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) -> u64 {
+    let src = [
+        color[0] as f32 / 255.0,
+        color[1] as f32 / 255.0,
+        color[2] as f32 / 255.0,
+    ];
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut painted = 0u64;
+    let source_alpha = f32::from(color[3]) / 255.0;
+    for (offset, chunk) in slice.chunks_exact_mut(4).enumerate() {
+        let x = x_start.saturating_add(offset as i32);
+        let coverage = source_alpha * (f32::from(clip.opacity_byte(x, row)) / 255.0);
+        if coverage <= 0.0 {
+            continue;
+        }
+        painted = painted.saturating_add(1);
+        let dst = [
+            chunk[0] as f32 / 255.0,
+            chunk[1] as f32 / 255.0,
+            chunk[2] as f32 / 255.0,
+        ];
+        for channel in 0..3 {
+            let blended = blend_mode.blend_channel(src[channel], dst[channel]);
+            let out = blended * coverage + dst[channel] * (1.0 - coverage);
+            chunk[channel] = to_byte(out);
+        }
+        chunk[3] = 255;
+    }
+    painted
+}
+
+fn blend_separable_src_over_opaque_dst_partial_clip_wide(
+    slice: &mut [u8],
+    x_start: i32,
+    row: i32,
+    color: PixelColor,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) -> Option<u64> {
+    if scalar_compositor_forced() {
+        return None;
+    }
+    if slice.len() < 16 || color[3] == 0 || !separable_blend_mode_has_f32x4_path(blend_mode) {
+        return None;
+    }
+    let pixel_count = (slice.len() / 4) & !3;
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let mut painted = 0u64;
+    let src_r = wide::f32x4::splat(f32::from(color[0]) / 255.0);
+    let src_g = wide::f32x4::splat(f32::from(color[1]) / 255.0);
+    let src_b = wide::f32x4::splat(f32::from(color[2]) / 255.0);
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let coverage = [
+            clip.opacity_byte(x_start.saturating_add(pixel as i32), row),
+            clip.opacity_byte(x_start.saturating_add(pixel as i32 + 1), row),
+            clip.opacity_byte(x_start.saturating_add(pixel as i32 + 2), row),
+            clip.opacity_byte(x_start.saturating_add(pixel as i32 + 3), row),
+        ];
+        if coverage == [0, 0, 0, 0] {
+            continue;
+        }
+        let painted_lanes = [
+            coverage[0] != 0,
+            coverage[1] != 0,
+            coverage[2] != 0,
+            coverage[3] != 0,
+        ];
+        painted =
+            painted.saturating_add(painted_lanes.iter().filter(|&&painted| painted).count() as u64);
+        let cov = f32x4_from_u8(coverage) * wide::f32x4::splat(f32::from(color[3]) / 255.0);
+        let inv_cov = wide::f32x4::splat(1.0) - cov;
+        let dst_r = f32x4_from_u8([
+            slice[base],
+            slice[base + 4],
+            slice[base + 8],
+            slice[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            slice[base + 1],
+            slice[base + 5],
+            slice[base + 9],
+            slice[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            slice[base + 2],
+            slice[base + 6],
+            slice[base + 10],
+            slice[base + 14],
+        ]);
+        let out_r =
+            f32x4_to_u8(blend_separable_f32x4(src_r, dst_r, blend_mode) * cov + dst_r * inv_cov);
+        let out_g =
+            f32x4_to_u8(blend_separable_f32x4(src_g, dst_g, blend_mode) * cov + dst_g * inv_cov);
+        let out_b =
+            f32x4_to_u8(blend_separable_f32x4(src_b, dst_b, blend_mode) * cov + dst_b * inv_cov);
+        store_partial_clip_f32x4_rgba(slice, base, painted_lanes, out_r, out_g, out_b);
+    }
+
+    if pixel_count * 4 < slice.len() {
+        let tail = blend_separable_src_over_opaque_dst_partial_clip_scalar(
+            &mut slice[pixel_count * 4..],
+            x_start.saturating_add(pixel_count as i32),
+            row,
+            color,
+            blend_mode,
+            clip,
+        );
+        if tail > 0 {
+            PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(tail, Ordering::Relaxed);
+        }
+    }
+
+    Some(painted)
+}
+
+fn blend_separable_src_over_general_scalar(
+    slice: &mut [u8],
+    color: PixelColor,
+    blend_mode: BlendMode,
+) -> u64 {
+    if color[3] == 0 {
+        return 0;
+    }
+    let source_alpha = f32::from(color[3]) / 255.0;
+    let src_rgb = [
+        f32::from(color[0]) / 255.0,
+        f32::from(color[1]) / 255.0,
+        f32::from(color[2]) / 255.0,
+    ];
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut painted = 0u64;
+    for dst in slice.chunks_exact_mut(4) {
+        painted = painted.saturating_add(1);
+        let dst_rgb = [
+            f32::from(dst[0]) / 255.0,
+            f32::from(dst[1]) / 255.0,
+            f32::from(dst[2]) / 255.0,
+        ];
+        let dst_alpha = f32::from(dst[3]) / 255.0;
+        let (out_rgb, out_alpha) =
+            composite_source_over(src_rgb, source_alpha, dst_rgb, dst_alpha, blend_mode);
+        if out_alpha < 1.0e-6 {
+            dst.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        dst[0] = to_byte(out_rgb[0]);
+        dst[1] = to_byte(out_rgb[1]);
+        dst[2] = to_byte(out_rgb[2]);
+        dst[3] = (out_alpha * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    painted
+}
+
+fn blend_separable_src_over_general_wide(
+    slice: &mut [u8],
+    color: PixelColor,
+    blend_mode: BlendMode,
+) -> Option<u64> {
+    if scalar_compositor_forced() {
+        return None;
+    }
+    if slice.len() < 16 || color[3] == 0 || !separable_blend_mode_has_f32x4_path(blend_mode) {
+        return None;
+    }
+    let pixel_count = (slice.len() / 4) & !3;
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let one = wide::f32x4::splat(1.0);
+    let min_denominator = wide::f32x4::splat(1.0e-6);
+    let src_alpha = wide::f32x4::splat(f32::from(color[3]) / 255.0);
+    let inv_src_alpha = one - src_alpha;
+    let src_r = wide::f32x4::splat(f32::from(color[0]) / 255.0);
+    let src_g = wide::f32x4::splat(f32::from(color[1]) / 255.0);
+    let src_b = wide::f32x4::splat(f32::from(color[2]) / 255.0);
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let dst_a = f32x4_from_u8([
+            slice[base + 3],
+            slice[base + 7],
+            slice[base + 11],
+            slice[base + 15],
+        ]);
+        let dst_r = f32x4_from_u8([
+            slice[base],
+            slice[base + 4],
+            slice[base + 8],
+            slice[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            slice[base + 1],
+            slice[base + 5],
+            slice[base + 9],
+            slice[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            slice[base + 2],
+            slice[base + 6],
+            slice[base + 10],
+            slice[base + 14],
+        ]);
+
+        let out_a = src_alpha + dst_a * inv_src_alpha;
+        let denom = out_a.max(min_denominator);
+        let inv_dst_a = one - dst_a;
+        let weighted_dst = dst_a * inv_src_alpha;
+        let blended_r = blend_separable_f32x4(src_r, dst_r, blend_mode);
+        let blended_g = blend_separable_f32x4(src_g, dst_g, blend_mode);
+        let blended_b = blend_separable_f32x4(src_b, dst_b, blend_mode);
+        let source_r = src_r * inv_dst_a + blended_r * dst_a;
+        let source_g = src_g * inv_dst_a + blended_g * dst_a;
+        let source_b = src_b * inv_dst_a + blended_b * dst_a;
+        let out_r = f32x4_to_u8((source_r * src_alpha + dst_r * weighted_dst) / denom);
+        let out_g = f32x4_to_u8((source_g * src_alpha + dst_g * weighted_dst) / denom);
+        let out_b = f32x4_to_u8((source_b * src_alpha + dst_b * weighted_dst) / denom);
+        let out_alpha = f32x4_to_trunc_u8(out_a);
+        let alpha_lanes = out_a.to_array();
+        for lane in 0..4 {
+            let offset = base + lane * 4;
+            if alpha_lanes[lane] < 1.0e-6 {
+                slice[offset..offset + 4].copy_from_slice(&TRANSPARENT);
+                continue;
+            }
+            slice[offset] = out_r[lane];
+            slice[offset + 1] = out_g[lane];
+            slice[offset + 2] = out_b[lane];
+            slice[offset + 3] = out_alpha[lane];
+        }
+    }
+
+    if pixel_count * 4 < slice.len() {
+        let tail = blend_separable_src_over_general_scalar(
+            &mut slice[pixel_count * 4..],
+            color,
+            blend_mode,
+        );
+        if tail > 0 {
+            PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(tail, Ordering::Relaxed);
+        }
+    }
+
+    Some(pixel_count as u64)
+}
+
+fn blend_separable_src_over_general_partial_clip_scalar(
+    slice: &mut [u8],
+    x_start: i32,
+    row: i32,
+    color: PixelColor,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) -> u64 {
+    if color[3] == 0 {
+        return 0;
+    }
+    let color_alpha = f32::from(color[3]) / 255.0;
+    let src_rgb = [
+        f32::from(color[0]) / 255.0,
+        f32::from(color[1]) / 255.0,
+        f32::from(color[2]) / 255.0,
+    ];
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut painted = 0u64;
+    for (offset, dst) in slice.chunks_exact_mut(4).enumerate() {
+        let x = x_start.saturating_add(offset as i32);
+        let source_alpha = color_alpha * (f32::from(clip.opacity_byte(x, row)) / 255.0);
+        if source_alpha <= 0.0 {
+            continue;
+        }
+        painted = painted.saturating_add(1);
+        let dst_rgb = [
+            f32::from(dst[0]) / 255.0,
+            f32::from(dst[1]) / 255.0,
+            f32::from(dst[2]) / 255.0,
+        ];
+        let dst_alpha = f32::from(dst[3]) / 255.0;
+        let (out_rgb, out_alpha) =
+            composite_source_over(src_rgb, source_alpha, dst_rgb, dst_alpha, blend_mode);
+        if out_alpha < 1.0e-6 {
+            dst.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        dst[0] = to_byte(out_rgb[0]);
+        dst[1] = to_byte(out_rgb[1]);
+        dst[2] = to_byte(out_rgb[2]);
+        dst[3] = (out_alpha * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    painted
+}
+
+fn blend_separable_src_over_general_partial_clip_wide(
+    slice: &mut [u8],
+    x_start: i32,
+    row: i32,
+    color: PixelColor,
+    blend_mode: BlendMode,
+    clip: &ClipMask,
+) -> Option<u64> {
+    if scalar_compositor_forced() {
+        return None;
+    }
+    if slice.len() < 16 || color[3] == 0 || !separable_blend_mode_has_f32x4_path(blend_mode) {
+        return None;
+    }
+    let pixel_count = (slice.len() / 4) & !3;
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let one = wide::f32x4::splat(1.0);
+    let min_denominator = wide::f32x4::splat(1.0e-6);
+    let color_alpha = wide::f32x4::splat(f32::from(color[3]) / 255.0);
+    let src_r = wide::f32x4::splat(f32::from(color[0]) / 255.0);
+    let src_g = wide::f32x4::splat(f32::from(color[1]) / 255.0);
+    let src_b = wide::f32x4::splat(f32::from(color[2]) / 255.0);
+    let mut painted = 0u64;
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let coverage = [
+            clip.opacity_byte(x_start.saturating_add(pixel as i32), row),
+            clip.opacity_byte(x_start.saturating_add(pixel as i32 + 1), row),
+            clip.opacity_byte(x_start.saturating_add(pixel as i32 + 2), row),
+            clip.opacity_byte(x_start.saturating_add(pixel as i32 + 3), row),
+        ];
+        let painted_lanes = [
+            coverage[0] != 0,
+            coverage[1] != 0,
+            coverage[2] != 0,
+            coverage[3] != 0,
+        ];
+        if !painted_lanes.iter().any(|painted| *painted) {
+            continue;
+        }
+        painted =
+            painted.saturating_add(painted_lanes.iter().filter(|&&painted| painted).count() as u64);
+        let src_alpha = f32x4_from_u8(coverage) * color_alpha;
+        let inv_src_alpha = one - src_alpha;
+        let dst_a = f32x4_from_u8([
+            slice[base + 3],
+            slice[base + 7],
+            slice[base + 11],
+            slice[base + 15],
+        ]);
+        let dst_r = f32x4_from_u8([
+            slice[base],
+            slice[base + 4],
+            slice[base + 8],
+            slice[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            slice[base + 1],
+            slice[base + 5],
+            slice[base + 9],
+            slice[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            slice[base + 2],
+            slice[base + 6],
+            slice[base + 10],
+            slice[base + 14],
+        ]);
+
+        let out_a = src_alpha + dst_a * inv_src_alpha;
+        let denom = out_a.max(min_denominator);
+        let inv_dst_a = one - dst_a;
+        let weighted_dst = dst_a * inv_src_alpha;
+        let blended_r = blend_separable_f32x4(src_r, dst_r, blend_mode);
+        let blended_g = blend_separable_f32x4(src_g, dst_g, blend_mode);
+        let blended_b = blend_separable_f32x4(src_b, dst_b, blend_mode);
+        let source_r = src_r * inv_dst_a + blended_r * dst_a;
+        let source_g = src_g * inv_dst_a + blended_g * dst_a;
+        let source_b = src_b * inv_dst_a + blended_b * dst_a;
+        let out_r = f32x4_to_u8((source_r * src_alpha + dst_r * weighted_dst) / denom);
+        let out_g = f32x4_to_u8((source_g * src_alpha + dst_g * weighted_dst) / denom);
+        let out_b = f32x4_to_u8((source_b * src_alpha + dst_b * weighted_dst) / denom);
+        let out_alpha = f32x4_to_trunc_u8(out_a);
+        let alpha_lanes = out_a.to_array();
+        for lane in 0..4 {
+            if !painted_lanes[lane] {
+                continue;
+            }
+            let offset = base + lane * 4;
+            if alpha_lanes[lane] < 1.0e-6 {
+                slice[offset..offset + 4].copy_from_slice(&TRANSPARENT);
+                continue;
+            }
+            slice[offset] = out_r[lane];
+            slice[offset + 1] = out_g[lane];
+            slice[offset + 2] = out_b[lane];
+            slice[offset + 3] = out_alpha[lane];
+        }
+    }
+
+    if pixel_count * 4 < slice.len() {
+        let tail = blend_separable_src_over_general_partial_clip_scalar(
+            &mut slice[pixel_count * 4..],
+            x_start.saturating_add(pixel_count as i32),
+            row,
+            color,
+            blend_mode,
+            clip,
+        );
+        if tail > 0 {
+            PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS.fetch_add(tail, Ordering::Relaxed);
+        }
+    }
+
+    Some(painted)
+}
+
+fn blend_separable_src_over_opaque_dst_uniform_alpha_scalar(
+    slice: &mut [u8],
+    color: PixelColor,
+    blend_mode: BlendMode,
+) {
+    PIXEL_COMPOSITOR_SCALAR_SEPARABLE_BLEND_PIXELS
+        .fetch_add((slice.len() / 4) as u64, Ordering::Relaxed);
+    let src = [
+        color[0] as f32 / 255.0,
+        color[1] as f32 / 255.0,
+        color[2] as f32 / 255.0,
+    ];
+    let source_alpha = f32::from(color[3]) / 255.0;
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    for chunk in slice.chunks_exact_mut(4) {
+        let dst = [
+            chunk[0] as f32 / 255.0,
+            chunk[1] as f32 / 255.0,
+            chunk[2] as f32 / 255.0,
+        ];
+        for channel in 0..3 {
+            let blended = blend_mode.blend_channel(src[channel], dst[channel]);
+            let out = blended * source_alpha + dst[channel] * (1.0 - source_alpha);
+            chunk[channel] = to_byte(out);
+        }
+        chunk[3] = 255;
+    }
+}
+
+fn blend_separable_src_over_opaque_dst_uniform_alpha_wide(
+    slice: &mut [u8],
+    color: PixelColor,
+    blend_mode: BlendMode,
+) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
+    if slice.len() < 16 || color[3] == 0 || !separable_blend_mode_has_f32x4_path(blend_mode) {
+        return false;
+    }
+    let pixel_count = (slice.len() / 4) & !3;
+    if pixel_count == 0 {
+        return false;
+    }
+
+    let source_alpha = wide::f32x4::splat(f32::from(color[3]) / 255.0);
+    let inv_alpha = wide::f32x4::splat(1.0) - source_alpha;
+    let src_r = wide::f32x4::splat(f32::from(color[0]) / 255.0);
+    let src_g = wide::f32x4::splat(f32::from(color[1]) / 255.0);
+    let src_b = wide::f32x4::splat(f32::from(color[2]) / 255.0);
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let dst_r = f32x4_from_u8([
+            slice[base],
+            slice[base + 4],
+            slice[base + 8],
+            slice[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            slice[base + 1],
+            slice[base + 5],
+            slice[base + 9],
+            slice[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            slice[base + 2],
+            slice[base + 6],
+            slice[base + 10],
+            slice[base + 14],
+        ]);
+        let out_r = f32x4_to_u8(
+            blend_separable_f32x4(src_r, dst_r, blend_mode) * source_alpha + dst_r * inv_alpha,
+        );
+        let out_g = f32x4_to_u8(
+            blend_separable_f32x4(src_g, dst_g, blend_mode) * source_alpha + dst_g * inv_alpha,
+        );
+        let out_b = f32x4_to_u8(
+            blend_separable_f32x4(src_b, dst_b, blend_mode) * source_alpha + dst_b * inv_alpha,
+        );
+        store_partial_clip_f32x4_rgba(slice, base, [true; 4], out_r, out_g, out_b);
+    }
+
+    if pixel_count * 4 < slice.len() {
+        blend_separable_src_over_opaque_dst_uniform_alpha_scalar(
+            &mut slice[pixel_count * 4..],
+            color,
+            blend_mode,
+        );
+    }
+
+    PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS.fetch_add(pixel_count as u64, Ordering::Relaxed);
+    true
+}
+
+#[inline]
+fn separable_blend_mode_has_f32x4_path(blend_mode: BlendMode) -> bool {
+    matches!(
+        blend_mode,
+        BlendMode::Normal
+            | BlendMode::Multiply
+            | BlendMode::Screen
+            | BlendMode::Overlay
+            | BlendMode::Darken
+            | BlendMode::Lighten
+            | BlendMode::ColorDodge
+            | BlendMode::ColorBurn
+            | BlendMode::HardLight
+            | BlendMode::SoftLight
+            | BlendMode::Difference
+            | BlendMode::Exclusion
+    )
+}
+
+#[inline]
+fn f32x4_from_u8(values: [u8; 4]) -> wide::f32x4 {
+    wide::f32x4::new([
+        f32::from(values[0]) / 255.0,
+        f32::from(values[1]) / 255.0,
+        f32::from(values[2]) / 255.0,
+        f32::from(values[3]) / 255.0,
+    ])
+}
+
+#[inline]
+fn f32x4_to_u8(values: wide::f32x4) -> [u8; 4] {
+    let bytes = (values * wide::f32x4::splat(255.0))
+        .round()
+        .clamp(wide::f32x4::splat(0.0), wide::f32x4::splat(255.0))
+        .to_array();
+    [
+        bytes[0] as u8,
+        bytes[1] as u8,
+        bytes[2] as u8,
+        bytes[3] as u8,
+    ]
+}
+
+#[inline]
+fn f32x4_to_trunc_u8(values: wide::f32x4) -> [u8; 4] {
+    let bytes = (values * wide::f32x4::splat(255.0))
+        .clamp(wide::f32x4::splat(0.0), wide::f32x4::splat(255.0))
+        .to_array();
+    [
+        bytes[0] as u8,
+        bytes[1] as u8,
+        bytes[2] as u8,
+        bytes[3] as u8,
+    ]
+}
+
+#[inline]
+fn blend_separable_f32x4(src: wide::f32x4, dst: wide::f32x4, blend_mode: BlendMode) -> wide::f32x4 {
+    let zero = wide::f32x4::splat(0.0);
+    let one = wide::f32x4::splat(1.0);
+    match blend_mode {
+        BlendMode::Normal => src,
+        BlendMode::Multiply => src * dst,
+        BlendMode::Screen => src + dst - src * dst,
+        BlendMode::Overlay => hard_light_f32x4(dst, src),
+        BlendMode::Darken => src.min(dst),
+        BlendMode::Lighten => src.max(dst),
+        BlendMode::ColorDodge => {
+            let candidate = (dst / (one - src)).min(one);
+            dst.simd_le(zero)
+                .select(zero, src.simd_ge(one).select(one, candidate))
+        }
+        BlendMode::ColorBurn => {
+            let candidate = one - ((one - dst) / src).min(one);
+            dst.simd_ge(one)
+                .select(one, src.simd_le(zero).select(zero, candidate))
+        }
+        BlendMode::HardLight => hard_light_f32x4(src, dst),
+        BlendMode::SoftLight => soft_light_f32x4(src, dst),
+        BlendMode::Difference => (dst - src).abs(),
+        BlendMode::Exclusion => src + dst - wide::f32x4::splat(2.0) * src * dst,
+        BlendMode::Hue | BlendMode::Saturation | BlendMode::Color | BlendMode::Luminosity => src,
+    }
+}
+
+#[inline]
+fn hard_light_f32x4(src: wide::f32x4, dst: wide::f32x4) -> wide::f32x4 {
+    let one = wide::f32x4::splat(1.0);
+    let two = wide::f32x4::splat(2.0);
+    let low = two * src * dst;
+    let high = one - two * (one - src) * (one - dst);
+    src.simd_le(wide::f32x4::splat(0.5)).select(low, high)
+}
+
+#[inline]
+fn soft_light_f32x4(src: wide::f32x4, dst: wide::f32x4) -> wide::f32x4 {
+    let one = wide::f32x4::splat(1.0);
+    let two = wide::f32x4::splat(2.0);
+    let low = dst - (one - two * src) * dst * (one - dst);
+    let polynomial = ((wide::f32x4::splat(16.0) * dst - wide::f32x4::splat(12.0)) * dst
+        + wide::f32x4::splat(4.0))
+        * dst;
+    let curve = dst
+        .simd_le(wide::f32x4::splat(0.25))
+        .select(polynomial, dst.sqrt());
+    let high = dst + (two * src - one) * (curve - dst);
+    src.simd_le(wide::f32x4::splat(0.5)).select(low, high)
+}
+
+#[inline]
+fn store_partial_clip_f32x4_rgba(
+    dst_row: &mut [u8],
+    base: usize,
+    painted_lanes: [bool; 4],
+    red: [u8; 4],
+    green: [u8; 4],
+    blue: [u8; 4],
+) {
+    for lane in 0..4 {
+        if !painted_lanes[lane] {
+            continue;
+        }
+        let offset = base + lane * 4;
+        dst_row[offset] = red[lane];
+        dst_row[offset + 1] = green[lane];
+        dst_row[offset + 2] = blue[lane];
+        dst_row[offset + 3] = 255;
+    }
 }
 
 fn blend_separable_opaque_src_over_opaque_dst_scalar(
@@ -4018,14 +9225,52 @@ fn blend_separable_opaque_src_over_opaque_dst_wide(
     color: PixelColor,
     blend_mode: BlendMode,
 ) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     if slice.len() < 8 {
         return false;
     }
     if !matches!(
         blend_mode,
-        BlendMode::Multiply | BlendMode::Screen | BlendMode::Darken | BlendMode::Lighten
+        BlendMode::Multiply
+            | BlendMode::Screen
+            | BlendMode::Overlay
+            | BlendMode::Darken
+            | BlendMode::Lighten
+            | BlendMode::ColorDodge
+            | BlendMode::ColorBurn
+            | BlendMode::HardLight
+            | BlendMode::SoftLight
+            | BlendMode::Difference
+            | BlendMode::Exclusion
     ) {
         return false;
+    }
+    let simd_blend_mode = match blend_mode {
+        BlendMode::Multiply => Some(wellfriendpdf_render_simd::SeparableBlendMode::Multiply),
+        BlendMode::Screen => Some(wellfriendpdf_render_simd::SeparableBlendMode::Screen),
+        BlendMode::Overlay => Some(wellfriendpdf_render_simd::SeparableBlendMode::Overlay),
+        BlendMode::Darken => Some(wellfriendpdf_render_simd::SeparableBlendMode::Darken),
+        BlendMode::Lighten => Some(wellfriendpdf_render_simd::SeparableBlendMode::Lighten),
+        BlendMode::ColorDodge => Some(wellfriendpdf_render_simd::SeparableBlendMode::ColorDodge),
+        BlendMode::ColorBurn => Some(wellfriendpdf_render_simd::SeparableBlendMode::ColorBurn),
+        BlendMode::HardLight => Some(wellfriendpdf_render_simd::SeparableBlendMode::HardLight),
+        BlendMode::SoftLight => Some(wellfriendpdf_render_simd::SeparableBlendMode::SoftLight),
+        BlendMode::Difference => Some(wellfriendpdf_render_simd::SeparableBlendMode::Difference),
+        BlendMode::Exclusion => Some(wellfriendpdf_render_simd::SeparableBlendMode::Exclusion),
+        _ => unreachable!("blend mode filtered above"),
+    };
+    if let Some(simd_blend_mode) = simd_blend_mode {
+        if wellfriendpdf_render_simd::blend_separable_opaque_destination(
+            slice,
+            color,
+            simd_blend_mode,
+        ) {
+            PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS
+                .fetch_add((slice.len() / 4) as u64, Ordering::Relaxed);
+            return true;
+        }
     }
     let simd_len = (slice.len() / 8) * 8;
     if simd_len == 0 {
@@ -4056,8 +9301,15 @@ fn blend_separable_opaque_src_over_opaque_dst_wide(
         let out = match blend_mode {
             BlendMode::Multiply => div255_round_wide(src * dst),
             BlendMode::Screen => src + dst - div255_round_wide(src * dst),
+            BlendMode::Overlay
+            | BlendMode::ColorDodge
+            | BlendMode::ColorBurn
+            | BlendMode::HardLight
+            | BlendMode::SoftLight => blend_separable_u16x8(src, dst, blend_mode),
             BlendMode::Darken => min_u16x8(src, dst),
             BlendMode::Lighten => max_u16x8(src, dst),
+            BlendMode::Difference => difference_u16x8(src, dst),
+            BlendMode::Exclusion => exclusion_u16x8(src, dst),
             _ => unreachable!("blend mode filtered above"),
         }
         .to_array();
@@ -4074,6 +9326,31 @@ fn blend_separable_opaque_src_over_opaque_dst_wide(
     PIXEL_COMPOSITOR_WIDE_SEPARABLE_BLEND_PIXELS
         .fetch_add((simd_len / 4) as u64, Ordering::Relaxed);
     true
+}
+
+#[inline]
+fn blend_separable_u16x8(src: wide::u16x8, dst: wide::u16x8, blend_mode: BlendMode) -> wide::u16x8 {
+    let src = src.to_array();
+    let dst = dst.to_array();
+    wide::u16x8::new([
+        blend_separable_channel_u16(src[0], dst[0], blend_mode),
+        blend_separable_channel_u16(src[1], dst[1], blend_mode),
+        blend_separable_channel_u16(src[2], dst[2], blend_mode),
+        255,
+        blend_separable_channel_u16(src[4], dst[4], blend_mode),
+        blend_separable_channel_u16(src[5], dst[5], blend_mode),
+        blend_separable_channel_u16(src[6], dst[6], blend_mode),
+        255,
+    ])
+}
+
+#[inline]
+fn blend_separable_channel_u16(src: u16, dst: u16, blend_mode: BlendMode) -> u16 {
+    let out = blend_mode.blend_channel(
+        f32::from(src.min(255)) / 255.0,
+        f32::from(dst.min(255)) / 255.0,
+    );
+    (out * 255.0).round().clamp(0.0, 255.0) as u16
 }
 
 #[inline]
@@ -4115,6 +9392,38 @@ fn max_u16x8(a: wide::u16x8, b: wide::u16x8) -> wide::u16x8 {
     ])
 }
 
+#[inline]
+fn difference_u16x8(a: wide::u16x8, b: wide::u16x8) -> wide::u16x8 {
+    max_u16x8(a, b) - min_u16x8(a, b)
+}
+
+#[inline]
+fn exclusion_u16x8(src: wide::u16x8, dst: wide::u16x8) -> wide::u16x8 {
+    let src = src.to_array();
+    let dst = dst.to_array();
+    wide::u16x8::new([
+        exclusion_channel_u16(src[0], dst[0]),
+        exclusion_channel_u16(src[1], dst[1]),
+        exclusion_channel_u16(src[2], dst[2]),
+        255,
+        exclusion_channel_u16(src[4], dst[4]),
+        exclusion_channel_u16(src[5], dst[5]),
+        exclusion_channel_u16(src[6], dst[6]),
+        255,
+    ])
+}
+
+#[inline]
+fn exclusion_channel_u16(src: u16, dst: u16) -> u16 {
+    let src = u32::from(src.min(255));
+    let dst = u32::from(dst.min(255));
+    let product = src.saturating_mul(dst);
+    let doubled_scaled = (product.saturating_mul(4).saturating_add(255)) / 510;
+    src.saturating_add(dst)
+        .saturating_sub(doubled_scaled)
+        .min(255) as u16
+}
+
 fn blend_normal_compat_run_scalar(slice: &mut [u8], color: PixelColor) {
     PIXEL_COMPOSITOR_SCALAR_SOLID_COLOR_PIXELS
         .fetch_add((slice.len() / 4) as u64, Ordering::Relaxed);
@@ -4143,6 +9452,9 @@ fn blend_normal_compat_run_scalar(slice: &mut [u8], color: PixelColor) {
 }
 
 fn blend_normal_compat_opaque_dst_wide(slice: &mut [u8], color: PixelColor) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     if color[3] == 0 {
         return true;
     }
@@ -4209,7 +9521,10 @@ fn blend_normal_compat_opaque_dst_portable(slice: &mut [u8], color: PixelColor) 
 }
 
 fn blend_normal_compat_opaque_dst_arch(slice: &mut [u8], color: PixelColor) -> bool {
-    wellfriendpdf_render_simd::blend_normal_opaque_destination(slice, color)
+    if scalar_compositor_forced() {
+        return false;
+    }
+    wellfriendpdf_render_simd::fill_alpha_run(slice, color)
 }
 
 fn composite_normal_compat_buffer_unclipped(
@@ -4291,7 +9606,69 @@ fn composite_normal_compat_buffer_unclipped_soft_mask(
                 composite_normal_compat_row_soft_mask_opaque_dst(dst_row, src_row, mask_row, alpha);
             }
             MaskRowClass::Mixed => {
-                composite_normal_compat_row_soft_mask_scalar(dst_row, src_row, mask_row, alpha);
+                composite_normal_compat_row_soft_mask_general(dst_row, src_row, mask_row, alpha);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompatMaskCompositeWindow {
+    dst_width: u32,
+    dst_x: u32,
+    dst_y: u32,
+    width: u32,
+    height: u32,
+    group_alpha: f32,
+}
+
+fn composite_normal_compat_buffer_at_local_mask(
+    dst: &mut [u8],
+    src: &PixelBuffer,
+    soft_mask: &AlphaMask,
+    window: CompatMaskCompositeWindow,
+) {
+    let width = window.width.min(src.width).min(soft_mask.width) as usize;
+    let height = window.height.min(src.height).min(soft_mask.height) as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let dst_stride = window.dst_width as usize * 4;
+    let src_stride = src.width as usize * 4;
+    let mask_stride = soft_mask.width as usize;
+    let alpha = (window.group_alpha.clamp(0.0, 1.0) * 255.0).round() as u16;
+    if alpha == 0 {
+        return;
+    }
+    for row in 0..height {
+        let dst_start = (window.dst_y as usize + row)
+            .saturating_mul(dst_stride)
+            .saturating_add(window.dst_x as usize * 4);
+        let src_start = row * src_stride;
+        let mask_start = row * mask_stride;
+        let len = width * 4;
+        let Some(dst_row) = dst.get_mut(dst_start..dst_start + len) else {
+            return;
+        };
+        let Some(src_row) = src.data.get(src_start..src_start + len) else {
+            return;
+        };
+        let Some(mask_row) = soft_mask.data.get(mask_start..mask_start + width) else {
+            return;
+        };
+        if row_alpha_class(src_row) == RowAlphaClass::AllTransparent {
+            continue;
+        }
+        match mask_row_class(mask_row) {
+            MaskRowClass::AllTransparent => {}
+            MaskRowClass::AllOpaque => {
+                composite_normal_compat_row(dst_row, src_row, window.group_alpha)
+            }
+            MaskRowClass::Mixed if row_alpha_is(dst_row, 255) => {
+                composite_normal_compat_row_soft_mask_opaque_dst(dst_row, src_row, mask_row, alpha);
+            }
+            MaskRowClass::Mixed => {
+                composite_normal_compat_row_soft_mask_general(dst_row, src_row, mask_row, alpha);
             }
         }
     }
@@ -4360,9 +9737,155 @@ fn composite_normal_compat_row_run_soft_mask(
             composite_normal_compat_row_soft_mask_opaque_dst(dst_row, src_row, mask_row, alpha);
         }
         MaskRowClass::Mixed => {
-            composite_normal_compat_row_soft_mask_scalar(dst_row, src_row, mask_row, alpha);
+            composite_normal_compat_row_soft_mask_general(dst_row, src_row, mask_row, alpha);
         }
     }
+}
+
+fn composite_normal_compat_row_soft_mask_general(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    mask_row: &[u8],
+    group_alpha_255: u16,
+) {
+    if composite_normal_compat_row_soft_mask_general_wide(
+        dst_row,
+        src_row,
+        mask_row,
+        group_alpha_255,
+    ) {
+        return;
+    }
+    composite_normal_compat_row_soft_mask_scalar(dst_row, src_row, mask_row, group_alpha_255);
+}
+
+fn composite_normal_compat_row_soft_mask_general_wide(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    mask_row: &[u8],
+    group_alpha_255: u16,
+) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
+    if group_alpha_255 > 255 {
+        return false;
+    }
+    let pixels = dst_row
+        .chunks_exact(4)
+        .zip(src_row.chunks_exact(4))
+        .count()
+        .min(mask_row.len());
+    let pixel_count = pixels & !3;
+    if pixel_count == 0 {
+        return false;
+    }
+
+    let one = wide::f32x4::splat(1.0);
+    let min_denominator = wide::f32x4::splat(1.0e-6);
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let effective_alpha = [
+            soft_mask_effective_alpha(src_row[base + 3], mask_row[pixel], group_alpha_255) as u8,
+            soft_mask_effective_alpha(src_row[base + 7], mask_row[pixel + 1], group_alpha_255)
+                as u8,
+            soft_mask_effective_alpha(src_row[base + 11], mask_row[pixel + 2], group_alpha_255)
+                as u8,
+            soft_mask_effective_alpha(src_row[base + 15], mask_row[pixel + 3], group_alpha_255)
+                as u8,
+        ];
+        if effective_alpha == [0, 0, 0, 0] {
+            continue;
+        }
+        let src_a = f32x4_from_u8(effective_alpha);
+        let dst_a = f32x4_from_u8([
+            dst_row[base + 3],
+            dst_row[base + 7],
+            dst_row[base + 11],
+            dst_row[base + 15],
+        ]);
+        let inv_src_a = one - src_a;
+        let out_a = src_a + dst_a * inv_src_a;
+        let denom = out_a.max(min_denominator);
+        let src_r = f32x4_from_u8([
+            src_row[base],
+            src_row[base + 4],
+            src_row[base + 8],
+            src_row[base + 12],
+        ]);
+        let src_g = f32x4_from_u8([
+            src_row[base + 1],
+            src_row[base + 5],
+            src_row[base + 9],
+            src_row[base + 13],
+        ]);
+        let src_b = f32x4_from_u8([
+            src_row[base + 2],
+            src_row[base + 6],
+            src_row[base + 10],
+            src_row[base + 14],
+        ]);
+        let dst_r = f32x4_from_u8([
+            dst_row[base],
+            dst_row[base + 4],
+            dst_row[base + 8],
+            dst_row[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            dst_row[base + 1],
+            dst_row[base + 5],
+            dst_row[base + 9],
+            dst_row[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            dst_row[base + 2],
+            dst_row[base + 6],
+            dst_row[base + 10],
+            dst_row[base + 14],
+        ]);
+
+        let weighted_dst = dst_a * inv_src_a;
+        let out_r = f32x4_to_u8((src_r * src_a + dst_r * weighted_dst) / denom);
+        let out_g = f32x4_to_u8((src_g * src_a + dst_g * weighted_dst) / denom);
+        let out_b = f32x4_to_u8((src_b * src_a + dst_b * weighted_dst) / denom);
+        let out_alpha = f32x4_to_trunc_u8(out_a);
+        let source_alpha = src_a.to_array();
+        let output_alpha = out_a.to_array();
+
+        for lane in 0..4 {
+            let offset = base + lane * 4;
+            if source_alpha[lane] <= 0.0 {
+                continue;
+            }
+            if source_alpha[lane] >= 1.0 {
+                dst_row[offset] = src_row[offset];
+                dst_row[offset + 1] = src_row[offset + 1];
+                dst_row[offset + 2] = src_row[offset + 2];
+                dst_row[offset + 3] = 255;
+                continue;
+            }
+            if output_alpha[lane] < 1.0e-6 {
+                dst_row[offset..offset + 4].copy_from_slice(&TRANSPARENT);
+                continue;
+            }
+            dst_row[offset] = out_r[lane];
+            dst_row[offset + 1] = out_g[lane];
+            dst_row[offset + 2] = out_b[lane];
+            dst_row[offset + 3] = out_alpha[lane];
+        }
+    }
+
+    if pixel_count < pixels {
+        let offset = pixel_count * 4;
+        composite_normal_compat_row_soft_mask_scalar(
+            &mut dst_row[offset..pixels * 4],
+            &src_row[offset..pixels * 4],
+            &mask_row[pixel_count..pixels],
+            group_alpha_255,
+        );
+    }
+    PIXEL_COMPOSITOR_WIDE_SOFT_MASK_GENERAL_PIXELS.fetch_add(pixel_count as u64, Ordering::Relaxed);
+    true
 }
 
 fn composite_normal_compat_row_soft_mask_opaque_dst(
@@ -4405,8 +9928,7 @@ fn composite_normal_compat_row_soft_mask_opaque_dst_scalar(
         if s[3] == 0 || mask == 0 {
             continue;
         }
-        let eff =
-            (u32::from(s[3]) * u32::from(mask) * u32::from(group_alpha_255) + 32_512) / 65_025;
+        let eff = soft_mask_effective_alpha(s[3], mask, group_alpha_255);
         if eff == 0 {
             continue;
         }
@@ -4414,7 +9936,6 @@ fn composite_normal_compat_row_soft_mask_opaque_dst_scalar(
             d.copy_from_slice(&[s[0], s[1], s[2], 255]);
             continue;
         }
-        let eff = eff as u16;
         let inv = 255_u16.saturating_sub(eff);
         for channel in 0..3 {
             d[channel] =
@@ -4430,7 +9951,10 @@ fn composite_normal_compat_row_soft_mask_opaque_dst_wide(
     mask_row: &[u8],
     group_alpha_255: u16,
 ) -> bool {
-    if group_alpha_255 != 255 || mask_row.len() < 2 {
+    if scalar_compositor_forced() {
+        return false;
+    }
+    if group_alpha_255 > 255 || mask_row.len() < 2 {
         return false;
     }
     let pixels = dst_row
@@ -4457,9 +9981,12 @@ fn composite_normal_compat_row_soft_mask_opaque_dst_wide(
     for pixel in (0..simd_pixels).step_by(2) {
         let dst_offset = pixel * 4;
         let eff0 =
-            div255_round_u16(u16::from(src_row[dst_offset + 3]) * u16::from(mask_row[pixel]));
-        let eff1 =
-            div255_round_u16(u16::from(src_row[dst_offset + 7]) * u16::from(mask_row[pixel + 1]));
+            soft_mask_effective_alpha(src_row[dst_offset + 3], mask_row[pixel], group_alpha_255);
+        let eff1 = soft_mask_effective_alpha(
+            src_row[dst_offset + 7],
+            mask_row[pixel + 1],
+            group_alpha_255,
+        );
         let inv0 = 255_u16.saturating_sub(eff0);
         let inv1 = 255_u16.saturating_sub(eff1);
         let src = wide::u16x8::new([
@@ -4513,6 +10040,9 @@ fn composite_normal_compat_row_soft_mask_opaque_dst_arch(
     mask_row: &[u8],
     group_alpha_255: u16,
 ) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     wellfriendpdf_render_simd::composite_soft_mask_opaque_destination(
         dst_row,
         src_row,
@@ -4525,6 +10055,14 @@ fn composite_normal_compat_row_soft_mask_opaque_dst_arch(
 fn div255_round_u16(value: u16) -> u16 {
     let adjusted = value.saturating_add(128);
     (adjusted + (adjusted >> 8)) >> 8
+}
+
+#[inline]
+fn soft_mask_effective_alpha(src_alpha: u8, mask: u8, group_alpha_255: u16) -> u16 {
+    let product = u32::from(src_alpha)
+        .saturating_mul(u32::from(mask))
+        .saturating_mul(u32::from(group_alpha_255.min(255)));
+    ((product + 32_512) / 65_025).min(255) as u16
 }
 
 fn composite_normal_compat_row_soft_mask_scalar(
@@ -4542,8 +10080,7 @@ fn composite_normal_compat_row_soft_mask_scalar(
         if s[3] == 0 || mask == 0 {
             continue;
         }
-        let src_a =
-            (u32::from(s[3]) * u32::from(mask) * u32::from(group_alpha_255) + 32_512) / 65_025;
+        let src_a = u32::from(soft_mask_effective_alpha(s[3], mask, group_alpha_255));
         if src_a == 0 {
             continue;
         }
@@ -4585,16 +10122,478 @@ fn composite_normal_compat_row(dst_row: &mut [u8], src_row: &[u8], group_alpha: 
     }
     if row_alpha_is(dst_row, 255) {
         if alpha < 1.0
-            && src_alpha_class == RowAlphaClass::AllOpaque
-            && composite_normal_compat_row_opaque_src_dst_uniform_alpha_wide(
-                dst_row, src_row, alpha,
-            )
+            && composite_normal_compat_row_opaque_dst_uniform_alpha_wide(dst_row, src_row, alpha)
         {
             return;
         }
         if alpha >= 1.0 && composite_normal_compat_row_opaque_dst_wide(dst_row, src_row) {
             return;
         }
+    }
+    if composite_normal_compat_row_general_wide(dst_row, src_row, alpha) {
+        return;
+    }
+    composite_normal_compat_row_general_scalar(dst_row, src_row, alpha);
+}
+
+fn composite_normal_high_quality_row(dst_row: &mut [u8], src_row: &[u8], group_alpha: f32) {
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let len = dst_row.len().min(src_row.len());
+    if len < 4 {
+        return;
+    }
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
+    for (d, s) in dst_row[..len]
+        .chunks_exact_mut(4)
+        .zip(src_row[..len].chunks_exact(4))
+    {
+        if s[3] == 0 {
+            continue;
+        }
+        let eff_a = (s[3] as f32 / 255.0 * alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        if eff_a >= 1.0 {
+            d.copy_from_slice(&[s[0], s[1], s[2], 255]);
+            continue;
+        }
+
+        let src_rgb = [
+            gamma::to_linear(s[0]),
+            gamma::to_linear(s[1]),
+            gamma::to_linear(s[2]),
+        ];
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) =
+            composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, BlendMode::Normal);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn composite_normal_high_quality_row_partial_clip(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    clip: &ClipMask,
+    row: i32,
+    dst_x0: i32,
+    group_alpha: f32,
+) {
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let len = dst_row.len().min(src_row.len());
+    if len < 4 {
+        return;
+    }
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
+    for (pixel, (d, s)) in dst_row[..len]
+        .chunks_exact_mut(4)
+        .zip(src_row[..len].chunks_exact(4))
+        .enumerate()
+    {
+        if s[3] == 0 {
+            continue;
+        }
+        let clip_alpha =
+            f32::from(clip.opacity_byte(dst_x0.saturating_add(pixel as i32), row)) / 255.0;
+        let eff_a = (s[3] as f32 / 255.0 * alpha * clip_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        if eff_a >= 1.0 {
+            d.copy_from_slice(&[s[0], s[1], s[2], 255]);
+            continue;
+        }
+
+        let src_rgb = [
+            gamma::to_linear(s[0]),
+            gamma::to_linear(s[1]),
+            gamma::to_linear(s[2]),
+        ];
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) =
+            composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, BlendMode::Normal);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn composite_high_quality_blend_row(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    group_alpha: f32,
+    blend_mode: BlendMode,
+) {
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let len = dst_row.len().min(src_row.len());
+    if len < 4 {
+        return;
+    }
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
+    for (d, s) in dst_row[..len]
+        .chunks_exact_mut(4)
+        .zip(src_row[..len].chunks_exact(4))
+    {
+        if s[3] == 0 {
+            continue;
+        }
+        let eff_a = (s[3] as f32 / 255.0 * alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+
+        let src_rgb = [
+            gamma::to_linear(s[0]),
+            gamma::to_linear(s[1]),
+            gamma::to_linear(s[2]),
+        ];
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn composite_high_quality_blend_row_partial_clip(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    clip: &ClipMask,
+    row: i32,
+    dst_x0: i32,
+    group_alpha: f32,
+    blend_mode: BlendMode,
+) {
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let len = dst_row.len().min(src_row.len());
+    if len < 4 {
+        return;
+    }
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
+    for (pixel, (d, s)) in dst_row[..len]
+        .chunks_exact_mut(4)
+        .zip(src_row[..len].chunks_exact(4))
+        .enumerate()
+    {
+        if s[3] == 0 {
+            continue;
+        }
+        let clip_alpha =
+            f32::from(clip.opacity_byte(dst_x0.saturating_add(pixel as i32), row)) / 255.0;
+        let eff_a = (s[3] as f32 / 255.0 * alpha * clip_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+
+        let src_rgb = [
+            gamma::to_linear(s[0]),
+            gamma::to_linear(s[1]),
+            gamma::to_linear(s[2]),
+        ];
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn composite_high_quality_masked_row(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    run: PaintRowRun,
+    group_alpha: f32,
+    blend_mode: BlendMode,
+    masks: HighQualityMaskSources<'_>,
+) {
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 || run.row < 0 || run.x_end <= run.x_start {
+        return;
+    }
+    let requested_len = run.x_end.saturating_sub(run.x_start) as usize * 4;
+    let len = dst_row.len().min(src_row.len()).min(requested_len);
+    if len < 4 {
+        return;
+    }
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
+    for (pixel, (d, s)) in dst_row[..len]
+        .chunks_exact_mut(4)
+        .zip(src_row[..len].chunks_exact(4))
+        .enumerate()
+    {
+        if s[3] == 0 {
+            continue;
+        }
+        let x = run.x_start.saturating_add(pixel as i32);
+        let mask_alpha = masks.alpha_at(x, run.row);
+        let eff_a = (s[3] as f32 / 255.0 * alpha * mask_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        if blend_mode == BlendMode::Normal && eff_a >= 1.0 {
+            d.copy_from_slice(&[s[0], s[1], s[2], 255]);
+            continue;
+        }
+
+        let src_rgb = [
+            gamma::to_linear(s[0]),
+            gamma::to_linear(s[1]),
+            gamma::to_linear(s[2]),
+        ];
+        let dst_rgb = [
+            gamma::to_linear(d[0]),
+            gamma::to_linear(d[1]),
+            gamma::to_linear(d[2]),
+        ];
+        let dst_a = d[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn composite_high_quality_masked_row_with_backdrop(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    backdrop: &PixelBuffer,
+    run: PaintRowRun,
+    group_alpha: f32,
+    blend_mode: BlendMode,
+    masks: HighQualityMaskSources<'_>,
+) {
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 || run.row < 0 || run.x_end <= run.x_start {
+        return;
+    }
+    let requested_len = run.x_end.saturating_sub(run.x_start) as usize * 4;
+    let len = dst_row.len().min(src_row.len()).min(requested_len);
+    if len < 4 {
+        return;
+    }
+    PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
+    for (pixel, (d, s)) in dst_row[..len]
+        .chunks_exact_mut(4)
+        .zip(src_row[..len].chunks_exact(4))
+        .enumerate()
+    {
+        if s[3] == 0 {
+            continue;
+        }
+        let x = run.x_start.saturating_add(pixel as i32);
+        let mask_alpha = masks.alpha_at(x, run.row);
+        let eff_a = (s[3] as f32 / 255.0 * alpha * mask_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            continue;
+        }
+        let backdrop_pixel = backdrop.get_pixel(x, run.row);
+        let src_rgb = [
+            gamma::to_linear(s[0]),
+            gamma::to_linear(s[1]),
+            gamma::to_linear(s[2]),
+        ];
+        let dst_rgb = [
+            gamma::to_linear(backdrop_pixel[0]),
+            gamma::to_linear(backdrop_pixel[1]),
+            gamma::to_linear(backdrop_pixel[2]),
+        ];
+        let dst_a = backdrop_pixel[3] as f32 / 255.0;
+        let (out_rgb, out_a) = composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, blend_mode);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        d[0] = gamma::to_srgb(out_rgb[0]);
+        d[1] = gamma::to_srgb(out_rgb[1]);
+        d[2] = gamma::to_srgb(out_rgb[2]);
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn composite_normal_compat_row_general_wide(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    group_alpha: f32,
+) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
+    let len = dst_row.len().min(src_row.len());
+    let pixel_count = (len / 4) & !3;
+    if pixel_count == 0 {
+        return false;
+    }
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return true;
+    }
+
+    let alpha_v = wide::f32x4::splat(alpha);
+    let one = wide::f32x4::splat(1.0);
+    let min_denominator = wide::f32x4::splat(1.0e-6);
+    for pixel in (0..pixel_count).step_by(4) {
+        let base = pixel * 4;
+        let src_a = f32x4_from_u8([
+            src_row[base + 3],
+            src_row[base + 7],
+            src_row[base + 11],
+            src_row[base + 15],
+        ]) * alpha_v;
+        let dst_a = f32x4_from_u8([
+            dst_row[base + 3],
+            dst_row[base + 7],
+            dst_row[base + 11],
+            dst_row[base + 15],
+        ]);
+        let inv_src_a = one - src_a;
+        let out_a = src_a + dst_a * inv_src_a;
+        let denom = out_a.max(min_denominator);
+        let src_r = f32x4_from_u8([
+            src_row[base],
+            src_row[base + 4],
+            src_row[base + 8],
+            src_row[base + 12],
+        ]);
+        let src_g = f32x4_from_u8([
+            src_row[base + 1],
+            src_row[base + 5],
+            src_row[base + 9],
+            src_row[base + 13],
+        ]);
+        let src_b = f32x4_from_u8([
+            src_row[base + 2],
+            src_row[base + 6],
+            src_row[base + 10],
+            src_row[base + 14],
+        ]);
+        let dst_r = f32x4_from_u8([
+            dst_row[base],
+            dst_row[base + 4],
+            dst_row[base + 8],
+            dst_row[base + 12],
+        ]);
+        let dst_g = f32x4_from_u8([
+            dst_row[base + 1],
+            dst_row[base + 5],
+            dst_row[base + 9],
+            dst_row[base + 13],
+        ]);
+        let dst_b = f32x4_from_u8([
+            dst_row[base + 2],
+            dst_row[base + 6],
+            dst_row[base + 10],
+            dst_row[base + 14],
+        ]);
+
+        let weighted_dst = dst_a * inv_src_a;
+        let out_r = f32x4_to_u8((src_r * src_a + dst_r * weighted_dst) / denom);
+        let out_g = f32x4_to_u8((src_g * src_a + dst_g * weighted_dst) / denom);
+        let out_b = f32x4_to_u8((src_b * src_a + dst_b * weighted_dst) / denom);
+        let out_alpha = f32x4_to_trunc_u8(out_a);
+        let src_alpha = src_a.to_array();
+        let output_alpha = out_a.to_array();
+
+        for lane in 0..4 {
+            let offset = base + lane * 4;
+            if src_alpha[lane] <= 0.0 {
+                continue;
+            }
+            if src_alpha[lane] >= 1.0 {
+                dst_row[offset] = src_row[offset];
+                dst_row[offset + 1] = src_row[offset + 1];
+                dst_row[offset + 2] = src_row[offset + 2];
+                dst_row[offset + 3] = 255;
+                continue;
+            }
+            if output_alpha[lane] < 1.0e-6 {
+                dst_row[offset..offset + 4].copy_from_slice(&TRANSPARENT);
+                continue;
+            }
+            dst_row[offset] = out_r[lane];
+            dst_row[offset + 1] = out_g[lane];
+            dst_row[offset + 2] = out_b[lane];
+            dst_row[offset + 3] = out_alpha[lane];
+        }
+    }
+
+    if pixel_count * 4 < len {
+        composite_normal_compat_row_general_scalar(
+            &mut dst_row[pixel_count * 4..len],
+            &src_row[pixel_count * 4..len],
+            alpha,
+        );
+    }
+    PIXEL_COMPOSITOR_WIDE_GENERAL_PIXELS.fetch_add(pixel_count as u64, Ordering::Relaxed);
+    true
+}
+
+fn composite_normal_compat_row_general_scalar(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    group_alpha: f32,
+) {
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
     }
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(
@@ -4631,6 +10630,9 @@ fn composite_normal_compat_row(dst_row: &mut [u8], src_row: &[u8], group_alpha: 
 }
 
 fn composite_normal_compat_row_opaque_dst_wide(dst_row: &mut [u8], src_row: &[u8]) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     let len = dst_row.len().min(src_row.len());
     if len < 8 {
         return false;
@@ -4689,14 +10691,20 @@ fn composite_normal_compat_row_opaque_dst_wide(dst_row: &mut [u8], src_row: &[u8
 }
 
 fn composite_normal_compat_row_opaque_dst_arch(dst_row: &mut [u8], src_row: &[u8]) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     wellfriendpdf_render_simd::composite_normal_opaque_destination(dst_row, src_row)
 }
 
-fn composite_normal_compat_row_opaque_src_dst_uniform_alpha_wide(
+fn composite_normal_compat_row_opaque_dst_uniform_alpha_wide(
     dst_row: &mut [u8],
     src_row: &[u8],
     group_alpha: f32,
 ) -> bool {
+    if scalar_compositor_forced() {
+        return false;
+    }
     let len = dst_row.len().min(src_row.len());
     if len < 8 {
         return false;
@@ -4706,18 +10714,16 @@ fn composite_normal_compat_row_opaque_src_dst_uniform_alpha_wide(
         return true;
     }
     if alpha == 255 {
-        dst_row[..len].copy_from_slice(&src_row[..len]);
-        return true;
+        return composite_normal_compat_row_opaque_dst_wide(dst_row, src_row);
     }
-    let inv_alpha = 255_u16.saturating_sub(alpha);
-    let alpha_v = wide::u16x8::new([alpha, alpha, alpha, 255, alpha, alpha, alpha, 255]);
-    let inv_v = wide::u16x8::new([
-        inv_alpha, inv_alpha, inv_alpha, 0, inv_alpha, inv_alpha, inv_alpha, 0,
-    ]);
     let round = wide::u16x8::splat(128);
     let mut offset = 0usize;
     let simd_len = (len / 8) * 8;
     while offset < simd_len {
+        let eff0 = scale_alpha_byte(src_row[offset + 3], alpha);
+        let eff1 = scale_alpha_byte(src_row[offset + 7], alpha);
+        let inv0 = 255_u16.saturating_sub(eff0);
+        let inv1 = 255_u16.saturating_sub(eff1);
         let src = wide::u16x8::new([
             u16::from(src_row[offset]),
             u16::from(src_row[offset + 1]),
@@ -4738,7 +10744,9 @@ fn composite_normal_compat_row_opaque_src_dst_uniform_alpha_wide(
             u16::from(dst_row[offset + 6]),
             255,
         ]);
-        let mixed = src * alpha_v + dst * inv_v + round;
+        let eff = wide::u16x8::new([eff0, eff0, eff0, 255, eff1, eff1, eff1, 255]);
+        let inv = wide::u16x8::new([inv0, inv0, inv0, 0, inv1, inv1, inv1, 0]);
+        let mixed = src * eff + dst * inv + round;
         let out = ((mixed + (mixed >> 8_u32)) >> 8_u32).to_array();
         for lane in 0..8 {
             dst_row[offset + lane] = out[lane].min(255) as u8;
@@ -4748,7 +10756,7 @@ fn composite_normal_compat_row_opaque_src_dst_uniform_alpha_wide(
         offset += 8;
     }
     if offset < len {
-        composite_normal_compat_row_scalar_opaque_src_dst_uniform_alpha(
+        composite_normal_compat_row_scalar_opaque_dst_uniform_alpha(
             &mut dst_row[offset..len],
             &src_row[offset..len],
             alpha,
@@ -4758,7 +10766,12 @@ fn composite_normal_compat_row_opaque_src_dst_uniform_alpha_wide(
     true
 }
 
-fn composite_normal_compat_row_scalar_opaque_src_dst_uniform_alpha(
+#[inline]
+fn scale_alpha_byte(src_alpha: u8, group_alpha: u16) -> u16 {
+    ((u16::from(src_alpha) * group_alpha + 127) / 255).min(255)
+}
+
+fn composite_normal_compat_row_scalar_opaque_dst_uniform_alpha(
     dst_row: &mut [u8],
     src_row: &[u8],
     alpha: u16,
@@ -4767,8 +10780,16 @@ fn composite_normal_compat_row_scalar_opaque_src_dst_uniform_alpha(
         dst_row.chunks_exact(4).zip(src_row.chunks_exact(4)).count() as u64,
         Ordering::Relaxed,
     );
-    let inv_alpha = 255_u16.saturating_sub(alpha);
     for (d, s) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
+        let alpha = scale_alpha_byte(s[3], alpha);
+        if alpha == 0 {
+            continue;
+        }
+        if alpha == 255 {
+            d.copy_from_slice(&[s[0], s[1], s[2], 255]);
+            continue;
+        }
+        let inv_alpha = 255_u16.saturating_sub(alpha);
         for channel in 0..3 {
             let src = u16::from(s[channel]);
             let dst = u16::from(d[channel]);
@@ -4864,6 +10885,25 @@ fn mask_row_class(row: &[u8]) -> MaskRowClass {
 mod tests {
     use super::*;
 
+    fn mixed_alpha_destination_row(width: u32) -> PixelBuffer {
+        let alphas = [0, 31, 79, 127, 163, 211, 254, 17];
+        let mut buffer = PixelBuffer::new(width, 1);
+        for x in 0..width {
+            let index = x as usize % alphas.len();
+            buffer.set_pixel(
+                x as i32,
+                0,
+                [
+                    20u8.saturating_add((index as u8).saturating_mul(17)),
+                    170u8.saturating_sub((index as u8).saturating_mul(9)),
+                    40u8.saturating_add((index as u8).saturating_mul(13)),
+                    alphas[index],
+                ],
+            );
+        }
+        buffer
+    }
+
     #[test]
     fn new_buffer_is_transparent() {
         let buf = PixelBuffer::new(4, 4);
@@ -4893,6 +10933,46 @@ mod tests {
         assert_eq!(cropped.get_pixel(0, 1), src.get_pixel(1, 2));
         assert_eq!(cropped.get_pixel(1, 1), src.get_pixel(2, 2));
         assert!(src.copy_rect_to_new_buffer(3, 2, 2, 1).is_none());
+    }
+
+    #[test]
+    fn copy_rect_into_buffer_reuses_existing_surface() {
+        let mut src = PixelBuffer::new(4, 3);
+        for y in 0..3 {
+            for x in 0..4 {
+                src.set_pixel(
+                    x,
+                    y,
+                    [(40 + x) as u8, (50 + y) as u8, (60 + x + y) as u8, 255],
+                );
+            }
+        }
+        let mut dst = PixelBuffer::new_filled(2, 2, BLUE);
+        dst.set_clip(ClipMask::empty(2, 2));
+        dst.set_smask(AlphaMask::filled(2, 2, 128));
+
+        assert!(src.copy_rect_into_buffer(1, 1, &mut dst));
+        assert_eq!(dst.get_pixel(0, 0), src.get_pixel(1, 1));
+        assert_eq!(dst.get_pixel(1, 0), src.get_pixel(2, 1));
+        assert_eq!(dst.get_pixel(0, 1), src.get_pixel(1, 2));
+        assert_eq!(dst.get_pixel(1, 1), src.get_pixel(2, 2));
+        assert!(dst.clip_mask().is_some());
+        assert!(dst.smask_mask().is_some());
+        assert!(!src.copy_rect_into_buffer(3, 2, &mut dst));
+    }
+
+    #[test]
+    fn knockout_backdrop_can_be_extracted_for_reuse() {
+        let mut buf = PixelBuffer::new_transparent_with_mode(2, 2, RenderMode::HighQuality);
+        let mut backdrop = PixelBuffer::new_filled_with_mode(2, 2, RED, RenderMode::HighQuality);
+        backdrop.set_pixel(1, 1, GREEN);
+
+        buf.set_knockout_backdrop(backdrop);
+        let returned = buf
+            .take_knockout_backdrop()
+            .expect("knockout backdrop should be returned");
+        assert_eq!(returned.get_pixel(1, 1), GREEN);
+        assert!(buf.take_knockout_backdrop().is_none());
     }
 
     #[test]
@@ -5075,6 +11155,695 @@ mod tests {
     }
 
     #[test]
+    fn high_quality_fill_rect_uses_row_oracle() {
+        let color = [210, 40, 90, 173];
+        let mut rect =
+            PixelBuffer::new_filled_with_mode(4, 1, [30, 60, 90, 180], RenderMode::HighQuality);
+        let mut pixel = rect.clone();
+        for x in 0..4 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        rect.fill_rect(0, 0, 4, 1, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality translucent solid fills should use the row oracle"
+        );
+        assert_eq!(
+            rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_fill_rect_binary_clip_uses_row_oracle() {
+        let color = [40, 210, 90, 190];
+        let mut clip = ClipMask::empty(6, 1);
+        clip.fill_rect(2, 0, 2, 1, true);
+
+        let mut rect =
+            PixelBuffer::new_filled_with_mode(6, 1, [30, 60, 90, 180], RenderMode::HighQuality);
+        rect.set_clip(clip.clone());
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(6, 1, [30, 60, 90, 180], RenderMode::HighQuality);
+        pixel.set_clip(clip);
+        for x in 1..5 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        rect.fill_rect(1, 0, 4, 1, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality translucent solid binary-clip fills should use the row oracle"
+        );
+        assert_eq!(
+            rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_fill_rect_partial_clip_uses_row_oracle() {
+        let color = [0, 0, 0, 255];
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+
+        let mut rect = PixelBuffer::new_filled_with_mode(4, 1, WHITE, RenderMode::HighQuality);
+        rect.set_clip(clip.clone());
+        let mut pixel = PixelBuffer::new_filled_with_mode(4, 1, WHITE, RenderMode::HighQuality);
+        pixel.set_clip(clip);
+        for x in 0..4 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        rect.fill_rect(0, 0, 4, 1, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality solid partial-clip fills should use the row oracle"
+        );
+        assert_eq!(
+            rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+        assert!(
+            rect.get_pixel(1, 0)[0] > 170,
+            "partial high-quality clip should preserve linear-light output"
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_fill_rect_uses_row_oracle() {
+        let color = [220, 40, 180, 207];
+        let mut rect =
+            PixelBuffer::new_filled_with_mode(5, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        rect.blend_mode = BlendMode::Multiply;
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(5, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        pixel.blend_mode = BlendMode::Multiply;
+        for x in 0..5 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        rect.fill_rect(0, 0, 5, 1, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality separable solid fills should use the row oracle"
+        );
+        assert_eq!(
+            rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_fill_rect_partial_clip_uses_row_oracle() {
+        let color = [220, 40, 180, 255];
+        let clip = ClipMask::from_alpha_bytes(5, 1, vec![255, 64, 128, 0, 192]);
+
+        let mut rect =
+            PixelBuffer::new_filled_with_mode(5, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        rect.blend_mode = BlendMode::Color;
+        rect.set_clip(clip.clone());
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(5, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        pixel.blend_mode = BlendMode::Color;
+        pixel.set_clip(clip);
+        for x in 0..5 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        rect.fill_rect(0, 0, 5, 1, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality non-separable solid partial clips should use the row oracle"
+        );
+        assert_eq!(
+            rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_smask_fill_rect_uses_row_oracle() {
+        let color = [0, 0, 0, 255];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 0, 64].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+
+        let mut rect = PixelBuffer::new_filled_with_mode(4, 1, WHITE, RenderMode::HighQuality);
+        rect.set_smask(smask.clone());
+        let mut pixel = PixelBuffer::new_filled_with_mode(4, 1, WHITE, RenderMode::HighQuality);
+        pixel.set_smask(smask);
+        for x in 0..4 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        rect.fill_rect(0, 0, 4, 1, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality SMask solid fills should use the row oracle"
+        );
+        assert_eq!(
+            rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_smask_fill_rect_partial_clip_uses_row_oracle() {
+        let color = [220, 40, 180, 207];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 255].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+
+        let mut rect =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        rect.blend_mode = BlendMode::Screen;
+        rect.set_smask(smask.clone());
+        rect.set_clip(clip.clone());
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        pixel.blend_mode = BlendMode::Screen;
+        pixel.set_smask(smask);
+        pixel.set_clip(clip);
+        for x in 0..4 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        rect.fill_rect(0, 0, 4, 1, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality blend SMask partial-clip solid fills should use the row oracle"
+        );
+        assert_eq!(
+            rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_knockout_smask_fill_rect_partial_clip_uses_row_oracle() {
+        let color = [220, 40, 180, 207];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 255].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+        let backdrop =
+            PixelBuffer::new_filled_with_mode(4, 1, [30, 70, 120, 255], RenderMode::HighQuality);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        row_path.blend_mode = BlendMode::Multiply;
+        row_path.set_smask(smask.clone());
+        row_path.set_clip(clip.clone());
+        row_path.set_knockout_backdrop(backdrop.clone());
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(4, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        pixel.blend_mode = BlendMode::Multiply;
+        pixel.set_smask(smask);
+        pixel.set_clip(clip);
+        pixel.set_knockout_backdrop(backdrop);
+        for x in 0..4 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.fill_rect(0, 0, 4, 1, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality knockout SMask solid partial clips should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_knockout_rgba_pixels_at_partial_clip_uses_row_oracle() {
+        let rgba = [
+            220, 20, 40, 255, 20, 220, 40, 192, 20, 40, 220, 128, 240, 240, 0, 64,
+        ];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 255].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+        let backdrop =
+            PixelBuffer::new_filled_with_mode(4, 1, [30, 70, 120, 255], RenderMode::HighQuality);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        row_path.blend_mode = BlendMode::Color;
+        row_path.set_smask(smask.clone());
+        row_path.set_clip(clip.clone());
+        row_path.set_knockout_backdrop(backdrop.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Color;
+        expected.set_smask(smask);
+        expected.set_clip(clip);
+        expected.set_knockout_backdrop(backdrop);
+        for (x, src) in rgba.chunks_exact(4).enumerate() {
+            expected.blend_pixel(x as i32, 0, [src[0], src[1], src[2], src[3]], 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_rgba_pixels_at(0, 0, 4, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality knockout RGBA partial clips should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_knockout_alpha_mask_partial_clip_uses_row_oracle() {
+        let color = [220, 40, 180, 207];
+        let alpha = [255, 128, 64, 255];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 255].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+        let backdrop =
+            PixelBuffer::new_filled_with_mode(4, 1, [30, 70, 120, 255], RenderMode::HighQuality);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        row_path.blend_mode = BlendMode::Screen;
+        row_path.set_smask(smask.clone());
+        row_path.set_clip(clip.clone());
+        row_path.set_knockout_backdrop(backdrop.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Screen;
+        expected.set_smask(smask);
+        expected.set_clip(clip);
+        expected.set_knockout_backdrop(backdrop);
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, color, f32::from(alpha[x as usize]) / 255.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(0, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality knockout alpha-mask partial clips should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_smask_rgba_pixels_at_uses_row_oracle() {
+        let rgba = [
+            220, 20, 40, 255, 20, 220, 40, 192, 20, 40, 220, 128, 240, 240, 0, 64,
+        ];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 0].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row_path.set_smask(smask.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.set_smask(smask);
+        for (x, src) in rgba.chunks_exact(4).enumerate() {
+            expected.blend_pixel(x as i32, 0, [src[0], src[1], src[2], src[3]], 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_rgba_pixels_at(0, 0, 4, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality SMask RGBA rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_smask_rgba_pixels_at_partial_clip_uses_row_oracle() {
+        let rgba = [
+            220, 20, 40, 255, 20, 220, 40, 192, 20, 40, 220, 128, 240, 240, 0, 64,
+        ];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 255].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row_path.blend_mode = BlendMode::Color;
+        row_path.set_smask(smask.clone());
+        row_path.set_clip(clip.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Color;
+        expected.set_smask(smask);
+        expected.set_clip(clip);
+        for (x, src) in rgba.chunks_exact(4).enumerate() {
+            expected.blend_pixel(x as i32, 0, [src[0], src[1], src[2], src[3]], 1.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_rgba_pixels_at(0, 0, 4, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality blend SMask RGBA partial clips should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_smask_alpha_mask_uses_row_oracle() {
+        let color = [210, 40, 90, 173];
+        let alpha = [0, 64, 192, 255];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 255].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row_path.set_smask(smask.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.set_smask(smask);
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, color, f32::from(alpha[x as usize]) / 255.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(0, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality SMask alpha-mask rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_smask_alpha_mask_partial_clip_uses_row_oracle() {
+        let color = [220, 40, 180, 207];
+        let alpha = [255, 128, 64, 255];
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 255].iter().copied().enumerate() {
+            smask.set(x as i32, 0, alpha);
+        }
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row_path.blend_mode = BlendMode::Screen;
+        row_path.set_smask(smask.clone());
+        row_path.set_clip(clip.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Screen;
+        expected.set_smask(smask);
+        expected.set_clip(clip);
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, color, f32::from(alpha[x as usize]) / 255.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(0, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality blend SMask alpha-mask partial clips should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_group_soft_mask_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [220, 20, 40, 255],
+            [20, 220, 40, 192],
+            [20, 40, 220, 128],
+            [240, 240, 0, 64],
+        ]
+        .iter()
+        .copied()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, sample);
+        }
+        let mut soft_mask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 0].iter().copied().enumerate() {
+            soft_mask.set(x as i32, 0, alpha);
+        }
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Multiply;
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, src.get_pixel(x, 0), 0.75 * soft_mask.get(x, 0));
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.composite_from(&src, 0.75, BlendMode::Multiply, Some(&soft_mask));
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality group soft-mask rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn compact_high_quality_group_soft_mask_partial_clip_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [220, 20, 40, 255],
+            [20, 220, 40, 192],
+            [20, 40, 220, 128],
+            [240, 240, 0, 64],
+        ]
+        .iter()
+        .copied()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, sample);
+        }
+        let mut soft_mask = AlphaMask::all_opaque(6, 1);
+        for (x, alpha) in [255, 255, 128, 64, 255, 0].iter().copied().enumerate() {
+            soft_mask.set(x as i32, 0, alpha);
+        }
+        let clip = ClipMask::from_alpha_bytes(6, 1, vec![255, 255, 128, 0, 64, 255]);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row_path.set_clip(clip.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.set_clip(clip);
+        for local_x in 0..4 {
+            let dest_x = 1 + local_x;
+            expected.blend_pixel(
+                dest_x,
+                0,
+                src.get_pixel(local_x, 0),
+                0.75 * soft_mask.get(dest_x, 0),
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.composite_from_at(&src, 1, 0, 0.75, BlendMode::Normal, Some(&soft_mask));
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "compact high-quality group soft-mask partial clips should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_knockout_group_soft_mask_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [220, 20, 40, 255],
+            [20, 220, 40, 192],
+            [20, 40, 220, 128],
+            [240, 240, 0, 64],
+        ]
+        .iter()
+        .copied()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, sample);
+        }
+        let mut soft_mask = AlphaMask::all_opaque(4, 1);
+        for (x, alpha) in [255, 128, 64, 0].iter().copied().enumerate() {
+            soft_mask.set(x as i32, 0, alpha);
+        }
+        let backdrop =
+            PixelBuffer::new_filled_with_mode(4, 1, [30, 70, 120, 255], RenderMode::HighQuality);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        row_path.set_knockout_backdrop(backdrop.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Multiply;
+        expected.set_knockout_backdrop(backdrop);
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, src.get_pixel(x, 0), 0.75 * soft_mask.get(x, 0));
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.composite_from(&src, 0.75, BlendMode::Multiply, Some(&soft_mask));
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality knockout group soft-mask rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn compact_high_quality_knockout_group_soft_mask_partial_clip_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [220, 20, 40, 255],
+            [20, 220, 40, 192],
+            [20, 40, 220, 128],
+            [240, 240, 0, 64],
+        ]
+        .iter()
+        .copied()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, sample);
+        }
+        let mut soft_mask = AlphaMask::all_opaque(6, 1);
+        for (x, alpha) in [255, 255, 128, 64, 255, 0].iter().copied().enumerate() {
+            soft_mask.set(x as i32, 0, alpha);
+        }
+        let clip = ClipMask::from_alpha_bytes(6, 1, vec![255, 255, 128, 0, 64, 255]);
+        let backdrop =
+            PixelBuffer::new_filled_with_mode(6, 1, [30, 70, 120, 255], RenderMode::HighQuality);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(6, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        row_path.set_clip(clip.clone());
+        row_path.set_knockout_backdrop(backdrop.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(6, 1, [190, 190, 190, 255], RenderMode::HighQuality);
+        expected.set_clip(clip);
+        expected.set_knockout_backdrop(backdrop);
+        for local_x in 0..4 {
+            let dest_x = 1 + local_x;
+            expected.blend_pixel(
+                dest_x,
+                0,
+                src.get_pixel(local_x, 0),
+                0.75 * soft_mask.get(dest_x, 0),
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.composite_from_at(&src, 1, 0, 0.75, BlendMode::Normal, Some(&soft_mask));
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "compact high-quality knockout group soft-mask partial clips should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
     fn wide_opaque_destination_blend_matches_pixel_blend() {
         let color = [113, 23, 211, 97];
         let mut wide_path = PixelBuffer::new_filled(7, 1, [17, 83, 149, 255]);
@@ -5115,6 +11884,165 @@ mod tests {
     }
 
     #[test]
+    fn separable_difference_exclusion_fill_rect_uses_wide_row_path() {
+        let color = [152, 242, 17, 255];
+        for blend_mode in [BlendMode::Difference, BlendMode::Exclusion] {
+            let mut rect = PixelBuffer::new_filled(7, 1, [30, 120, 200, 255]);
+            rect.blend_mode = blend_mode;
+            let before = pixel_compositor_stats();
+            rect.fill_rect(0, 0, 7, 1, color);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = PixelBuffer::new_filled(7, 1, [30, 120, 200, 255]);
+            pixel.blend_mode = blend_mode;
+            for x in 0..7 {
+                pixel.blend_pixel(x, 0, color, 1.0);
+            }
+
+            assert_eq!(
+                rect.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} should use the portable-wide separable row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_extended_modes_fill_rect_uses_wide_row_path() {
+        let color = [152, 242, 17, 255];
+        for blend_mode in [
+            BlendMode::Overlay,
+            BlendMode::ColorDodge,
+            BlendMode::ColorBurn,
+            BlendMode::HardLight,
+            BlendMode::SoftLight,
+        ] {
+            let mut rect = PixelBuffer::new_filled(7, 1, [30, 120, 200, 255]);
+            rect.blend_mode = blend_mode;
+            let before = pixel_compositor_stats();
+            rect.fill_rect(0, 0, 7, 1, color);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = PixelBuffer::new_filled(7, 1, [30, 120, 200, 255]);
+            pixel.blend_mode = blend_mode;
+            for x in 0..7 {
+                pixel.blend_pixel(x, 0, color, 1.0);
+            }
+
+            assert_eq!(
+                rect.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} should use the portable-wide separable row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_fill_rect_mixed_destination_uses_wide_row_path() {
+        let color = [152, 242, 17, 157];
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::Darken,
+            BlendMode::Lighten,
+            BlendMode::ColorDodge,
+            BlendMode::ColorBurn,
+            BlendMode::HardLight,
+            BlendMode::SoftLight,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+        ] {
+            let mut rect = mixed_alpha_destination_row(8);
+            rect.blend_mode = blend_mode;
+            let before = pixel_compositor_stats();
+            rect.fill_rect(0, 0, 8, 1, color);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = mixed_alpha_destination_row(8);
+            pixel.blend_mode = blend_mode;
+            for x in 0..8 {
+                pixel.blend_pixel(x, 0, color, 1.0);
+            }
+
+            assert_eq!(
+                rect.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} mixed-destination separable fill should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_fill_rect_mixed_destination_partial_clip_uses_wide_row_path() {
+        let color = [64, 220, 100, 128];
+        let clip = ClipMask::from_alpha_bytes(8, 1, vec![255, 64, 128, 255, 32, 200, 17, 0]);
+
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::ColorBurn,
+            BlendMode::SoftLight,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+        ] {
+            let mut rect = mixed_alpha_destination_row(8);
+            rect.blend_mode = blend_mode;
+            rect.set_clip(clip.clone());
+            let before = pixel_compositor_stats();
+            rect.fill_rect(0, 0, 8, 1, color);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = mixed_alpha_destination_row(8);
+            pixel.blend_mode = blend_mode;
+            pixel.set_clip(clip.clone());
+            for x in 0..8 {
+                pixel.blend_pixel(x, 0, color, 1.0);
+            }
+
+            assert_eq!(
+                rect.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} mixed-destination partial-clip separable fill should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn exclusion_channel_matches_scalar_byte_contract() {
+        let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        for src in 0..=255u16 {
+            for dst in 0..=255u16 {
+                let expected = to_byte(
+                    BlendMode::Exclusion.blend_channel(src as f32 / 255.0, dst as f32 / 255.0),
+                );
+                assert_eq!(
+                    exclusion_channel_u16(src, dst) as u8,
+                    expected,
+                    "src={src} dst={dst}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn separable_opaque_fill_rect_binary_clip_matches_pixel_blend() {
         let color = [64, 220, 100, 255];
         let mut clip = ClipMask::empty(6, 1);
@@ -5135,6 +12063,434 @@ mod tests {
 
         assert_eq!(
             rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn separable_opaque_fill_rect_partial_clip_uses_wide_row_path() {
+        let color = [64, 220, 100, 255];
+        let clip = ClipMask::from_alpha_bytes(8, 1, vec![0, 64, 128, 255, 32, 200, 17, 0]);
+
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::Darken,
+            BlendMode::Lighten,
+            BlendMode::ColorDodge,
+            BlendMode::ColorBurn,
+            BlendMode::HardLight,
+            BlendMode::SoftLight,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+        ] {
+            let mut rect = PixelBuffer::new_filled(8, 1, [90, 80, 70, 255]);
+            rect.blend_mode = blend_mode;
+            rect.set_clip(clip.clone());
+            let before = pixel_compositor_stats();
+            rect.fill_rect(0, 0, 8, 1, color);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = PixelBuffer::new_filled(8, 1, [90, 80, 70, 255]);
+            pixel.blend_mode = blend_mode;
+            pixel.set_clip(clip.clone());
+            for x in 0..8 {
+                pixel.blend_pixel(x, 0, color, 1.0);
+            }
+
+            assert_eq!(
+                rect.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} partial clip separable fill should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_translucent_fill_rect_uses_wide_row_path() {
+        let color = [64, 220, 100, 128];
+
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::ColorDodge,
+            BlendMode::SoftLight,
+            BlendMode::Exclusion,
+        ] {
+            let mut rect = PixelBuffer::new_filled(8, 1, [90, 80, 70, 255]);
+            rect.blend_mode = blend_mode;
+            let before = pixel_compositor_stats();
+            rect.fill_rect(0, 0, 8, 1, color);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = PixelBuffer::new_filled(8, 1, [90, 80, 70, 255]);
+            pixel.blend_mode = blend_mode;
+            for x in 0..8 {
+                pixel.blend_pixel(x, 0, color, 1.0);
+            }
+
+            assert_eq!(
+                rect.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} translucent separable fill should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_translucent_fill_rect_partial_clip_uses_wide_row_path() {
+        let color = [64, 220, 100, 128];
+        let clip = ClipMask::from_alpha_bytes(8, 1, vec![255, 64, 128, 255, 32, 200, 17, 0]);
+
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::ColorBurn,
+            BlendMode::SoftLight,
+            BlendMode::Difference,
+        ] {
+            let mut rect = PixelBuffer::new_filled(8, 1, [90, 80, 70, 255]);
+            rect.blend_mode = blend_mode;
+            rect.set_clip(clip.clone());
+            let before = pixel_compositor_stats();
+            rect.fill_rect(0, 0, 8, 1, color);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = PixelBuffer::new_filled(8, 1, [90, 80, 70, 255]);
+            pixel.blend_mode = blend_mode;
+            pixel.set_clip(clip.clone());
+            for x in 0..8 {
+                pixel.blend_pixel(x, 0, color, 1.0);
+            }
+
+            assert_eq!(
+                rect.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} translucent partial-clip separable fill should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_rgba_pixels_at_partial_clip_uses_wide_row_path() {
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![0, 64, 128, 255]);
+        let rgba = [
+            64, 220, 100, 255, 120, 80, 200, 255, 10, 200, 240, 255, 250, 20, 40, 255,
+        ];
+
+        for blend_mode in [
+            BlendMode::Screen,
+            BlendMode::ColorDodge,
+            BlendMode::ColorBurn,
+            BlendMode::SoftLight,
+            BlendMode::Exclusion,
+        ] {
+            let mut row = PixelBuffer::new_filled(4, 1, [90, 80, 70, 255]);
+            row.blend_mode = blend_mode;
+            row.set_clip(clip.clone());
+            let before = pixel_compositor_stats();
+            row.blend_rgba_pixels_at(0, 0, 4, 1, &rgba);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = PixelBuffer::new_filled(4, 1, [90, 80, 70, 255]);
+            pixel.blend_mode = blend_mode;
+            pixel.set_clip(clip.clone());
+            for x in 0..4 {
+                let idx = x as usize * 4;
+                pixel.blend_pixel(
+                    x,
+                    0,
+                    [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                    1.0,
+                );
+            }
+
+            assert_eq!(
+                row.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} partial clip separable RGBA paint should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_rgba_pixels_at_mixed_alpha_partial_clip_uses_wide_row_path() {
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 64, 128, 255]);
+        let rgba = [
+            64, 220, 100, 255, 120, 80, 200, 128, 10, 200, 240, 64, 250, 20, 40, 0,
+        ];
+
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::ColorDodge,
+            BlendMode::SoftLight,
+            BlendMode::Exclusion,
+        ] {
+            let mut row = PixelBuffer::new_filled(4, 1, [90, 80, 70, 255]);
+            row.blend_mode = blend_mode;
+            row.set_clip(clip.clone());
+            let before = pixel_compositor_stats();
+            row.blend_rgba_pixels_at(0, 0, 4, 1, &rgba);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = PixelBuffer::new_filled(4, 1, [90, 80, 70, 255]);
+            pixel.blend_mode = blend_mode;
+            pixel.set_clip(clip.clone());
+            for x in 0..4 {
+                let idx = x as usize * 4;
+                pixel.blend_pixel(
+                    x,
+                    0,
+                    [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                    1.0,
+                );
+            }
+
+            assert_eq!(
+                row.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} mixed-alpha partial clip separable RGBA paint should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_rgba_pixels_at_mixed_destination_uses_wide_row_path() {
+        let rgba = [
+            64, 220, 100, 255, 120, 80, 200, 128, 10, 200, 240, 64, 250, 20, 40, 0, 90, 140, 30,
+            200, 180, 40, 160, 91, 30, 220, 120, 255, 240, 90, 10, 47,
+        ];
+
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::ColorBurn,
+            BlendMode::SoftLight,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+        ] {
+            let mut row = mixed_alpha_destination_row(8);
+            row.blend_mode = blend_mode;
+            let before = pixel_compositor_stats();
+            row.blend_rgba_pixels_at(0, 0, 8, 1, &rgba);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = mixed_alpha_destination_row(8);
+            pixel.blend_mode = blend_mode;
+            for x in 0..8 {
+                let idx = x as usize * 4;
+                pixel.blend_pixel(
+                    x,
+                    0,
+                    [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                    1.0,
+                );
+            }
+
+            assert_eq!(
+                row.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} mixed-destination separable RGBA paint should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_rgba_pixels_at_binary_clip_mixed_destination_uses_wide_row_path() {
+        let mut clip = ClipMask::empty(8, 1);
+        clip.fill_rect(1, 0, 4, 1, true);
+        let rgba = [
+            64, 220, 100, 255, 120, 80, 200, 128, 10, 200, 240, 64, 250, 20, 40, 255, 90, 140, 30,
+            200, 180, 40, 160, 91, 30, 220, 120, 255, 240, 90, 10, 47,
+        ];
+
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::ColorBurn,
+            BlendMode::SoftLight,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+        ] {
+            let mut row = mixed_alpha_destination_row(8);
+            row.blend_mode = blend_mode;
+            row.set_clip(clip.clone());
+            let before = pixel_compositor_stats();
+            row.blend_rgba_pixels_at(0, 0, 8, 1, &rgba);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = mixed_alpha_destination_row(8);
+            pixel.blend_mode = blend_mode;
+            pixel.set_clip(clip.clone());
+            for x in 0..8 {
+                let idx = x as usize * 4;
+                pixel.blend_pixel(
+                    x,
+                    0,
+                    [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                    1.0,
+                );
+            }
+
+            assert_eq!(
+                row.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} binary-clip mixed-destination separable RGBA paint should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn separable_rgba_pixels_at_mixed_destination_partial_clip_uses_wide_row_path() {
+        let clip = ClipMask::from_alpha_bytes(8, 1, vec![255, 64, 128, 255, 32, 200, 17, 0]);
+        let rgba = [
+            64, 220, 100, 255, 120, 80, 200, 128, 10, 200, 240, 64, 250, 20, 40, 0, 90, 140, 30,
+            200, 180, 40, 160, 91, 30, 220, 120, 255, 240, 90, 10, 47,
+        ];
+
+        for blend_mode in [
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::ColorBurn,
+            BlendMode::SoftLight,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+        ] {
+            let mut row = mixed_alpha_destination_row(8);
+            row.blend_mode = blend_mode;
+            row.set_clip(clip.clone());
+            let before = pixel_compositor_stats();
+            row.blend_rgba_pixels_at(0, 0, 8, 1, &rgba);
+            let after = pixel_compositor_stats();
+
+            let mut pixel = mixed_alpha_destination_row(8);
+            pixel.blend_mode = blend_mode;
+            pixel.set_clip(clip.clone());
+            for x in 0..8 {
+                let idx = x as usize * 4;
+                pixel.blend_pixel(
+                    x,
+                    0,
+                    [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                    1.0,
+                );
+            }
+
+            assert_eq!(
+                row.to_raw_image_rgba().pixels,
+                pixel.to_raw_image_rgba().pixels,
+                "{blend_mode:?}"
+            );
+            assert!(
+                after.wide_separable_blend_pixels > before.wide_separable_blend_pixels,
+                "{blend_mode:?} mixed-destination partial clip separable RGBA paint should use the f32x4 row compositor"
+            );
+        }
+    }
+
+    #[test]
+    fn high_quality_rgba_pixels_at_uses_row_oracle() {
+        let rgba = [
+            200, 10, 20, 0, 200, 10, 20, 64, 20, 200, 10, 127, 20, 10, 200, 192, 240, 240, 0, 255,
+        ];
+
+        let mut row =
+            PixelBuffer::new_filled_with_mode(5, 1, [30, 60, 90, 191], RenderMode::HighQuality);
+        let mut pixel = row.clone();
+        for x in 0..5 {
+            let idx = x as usize * 4;
+            pixel.blend_pixel(
+                x,
+                0,
+                [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                1.0,
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row.blend_rgba_pixels_at(0, 0, 5, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality cached RGBA rows should use the row oracle"
+        );
+        assert_eq!(
+            row.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_rgba_pixels_at_binary_clip_uses_row_oracle() {
+        let rgba = [
+            255, 0, 0, 160, 0, 255, 0, 127, 0, 0, 255, 191, 255, 255, 0, 64,
+        ];
+        let mut clip = ClipMask::empty(6, 1);
+        clip.fill_rect(2, 0, 2, 1, true);
+
+        let mut row =
+            PixelBuffer::new_filled_with_mode(6, 1, [40, 70, 100, 180], RenderMode::HighQuality);
+        row.set_clip(clip.clone());
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(6, 1, [40, 70, 100, 180], RenderMode::HighQuality);
+        pixel.set_clip(clip);
+        for local_x in 0..4 {
+            let idx = local_x as usize * 4;
+            pixel.blend_pixel(
+                1 + local_x,
+                0,
+                [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                1.0,
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row.blend_rgba_pixels_at(1, 0, 4, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality cached RGBA binary-clip rows should use the row oracle"
+        );
+        assert_eq!(
+            row.to_raw_image_rgba().pixels,
             pixel.to_raw_image_rgba().pixels
         );
     }
@@ -5183,6 +12539,495 @@ mod tests {
 
         assert_eq!(
             fast.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_rgba_pixels_at_partial_clip_uses_row_oracle() {
+        let rgba = [
+            255, 20, 20, 255, 20, 255, 20, 191, 20, 20, 255, 127, 255, 255, 20, 64,
+        ];
+        let clip = ClipMask::from_alpha_bytes(6, 1, vec![0, 64, 128, 255, 0, 192]);
+
+        let mut row =
+            PixelBuffer::new_filled_with_mode(6, 1, [50, 80, 110, 171], RenderMode::HighQuality);
+        row.set_clip(clip.clone());
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(6, 1, [50, 80, 110, 171], RenderMode::HighQuality);
+        pixel.set_clip(clip);
+        for local_x in 0..4 {
+            let idx = local_x as usize * 4;
+            pixel.blend_pixel(
+                1 + local_x,
+                0,
+                [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                1.0,
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row.blend_rgba_pixels_at(1, 0, 4, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality cached RGBA partial-clip rows should use the row oracle"
+        );
+        assert_eq!(
+            row.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_rgba_pixels_at_uses_row_oracle() {
+        let rgba = [
+            220, 40, 180, 207, 40, 220, 180, 160, 40, 180, 220, 127, 240, 200, 20, 64,
+        ];
+        let mut row =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row.blend_mode = BlendMode::Multiply;
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        pixel.blend_mode = BlendMode::Multiply;
+        for x in 0..4 {
+            let idx = x as usize * 4;
+            pixel.blend_pixel(
+                x,
+                0,
+                [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                1.0,
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row.blend_rgba_pixels_at(0, 0, 4, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality cached RGBA blend rows should use the row oracle"
+        );
+        assert_eq!(
+            row.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_rgba_pixels_at_binary_clip_uses_row_oracle() {
+        let rgba = [
+            220, 40, 180, 207, 40, 220, 180, 160, 40, 180, 220, 127, 240, 200, 20, 64,
+        ];
+        let mut clip = ClipMask::empty(6, 1);
+        clip.fill_rect(2, 0, 2, 1, true);
+
+        let mut row =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row.blend_mode = BlendMode::Screen;
+        row.set_clip(clip.clone());
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        pixel.blend_mode = BlendMode::Screen;
+        pixel.set_clip(clip);
+        for local_x in 0..4 {
+            let idx = local_x as usize * 4;
+            pixel.blend_pixel(
+                1 + local_x,
+                0,
+                [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                1.0,
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row.blend_rgba_pixels_at(1, 0, 4, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality cached RGBA binary-clip blend rows should use the row oracle"
+        );
+        assert_eq!(
+            row.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_rgba_pixels_at_partial_clip_uses_row_oracle() {
+        let rgba = [
+            220, 40, 180, 255, 40, 220, 180, 160, 40, 180, 220, 127, 240, 200, 20, 64,
+        ];
+        let clip = ClipMask::from_alpha_bytes(6, 1, vec![0, 64, 128, 255, 0, 192]);
+
+        let mut row =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row.blend_mode = BlendMode::Color;
+        row.set_clip(clip.clone());
+
+        let mut pixel =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        pixel.blend_mode = BlendMode::Color;
+        pixel.set_clip(clip);
+        for local_x in 0..4 {
+            let idx = local_x as usize * 4;
+            pixel.blend_pixel(
+                1 + local_x,
+                0,
+                [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]],
+                1.0,
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row.blend_rgba_pixels_at(1, 0, 4, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality cached RGBA partial-clip blend rows should use the row oracle"
+        );
+        assert_eq!(
+            row.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_group_composite_row_matches_blend_pixel_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(5, 1, RenderMode::HighQuality);
+        let samples = [
+            [200, 10, 20, 0],
+            [200, 10, 20, 64],
+            [20, 200, 10, 127],
+            [20, 10, 200, 192],
+            [240, 240, 0, 255],
+        ];
+        for (x, sample) in samples.iter().enumerate() {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+
+        let mut dst =
+            PixelBuffer::new_filled_with_mode(5, 1, [30, 60, 90, 191], RenderMode::HighQuality);
+        let mut expected = dst.clone();
+        for x in 0..5 {
+            expected.blend_pixel(x, 0, src.get_pixel(x, 0), 0.625);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from(&src, 0.625, BlendMode::Normal, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality normal group rows should use the row oracle instead of per-pixel dispatch"
+        );
+        assert_eq!(
+            dst.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_group_composite_partial_clip_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(5, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [240, 40, 20, 255],
+            [20, 220, 40, 191],
+            [20, 40, 240, 127],
+            [240, 220, 20, 64],
+            [10, 20, 30, 0],
+        ]
+        .iter()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+        let clip = ClipMask::from_alpha_bytes(5, 1, vec![255, 128, 0, 64, 255]);
+
+        let mut dst =
+            PixelBuffer::new_filled_with_mode(5, 1, [35, 65, 95, 181], RenderMode::HighQuality);
+        dst.set_clip(clip.clone());
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(5, 1, [35, 65, 95, 181], RenderMode::HighQuality);
+        expected.set_clip(clip);
+        for x in 0..5 {
+            expected.blend_pixel(x, 0, src.get_pixel(x, 0), 0.625);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from(&src, 0.625, BlendMode::Normal, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality normal group partial clips should use the row oracle"
+        );
+        assert_eq!(
+            dst.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_group_composite_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [220, 40, 180, 207],
+            [40, 220, 180, 160],
+            [40, 180, 220, 127],
+            [240, 200, 20, 64],
+        ]
+        .iter()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+
+        let mut dst =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        let mut expected = dst.clone();
+        expected.blend_mode = BlendMode::Multiply;
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, src.get_pixel(x, 0), 0.625);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from(&src, 0.625, BlendMode::Multiply, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality non-normal group rows should use the row oracle"
+        );
+        assert_eq!(
+            dst.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_group_composite_partial_clip_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(5, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [220, 40, 180, 255],
+            [40, 220, 180, 160],
+            [40, 180, 220, 127],
+            [240, 200, 20, 64],
+            [10, 20, 30, 0],
+        ]
+        .iter()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+        let clip = ClipMask::from_alpha_bytes(5, 1, vec![255, 64, 128, 0, 192]);
+
+        let mut dst =
+            PixelBuffer::new_filled_with_mode(5, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        dst.set_clip(clip.clone());
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(5, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Color;
+        expected.set_clip(clip);
+        for x in 0..5 {
+            expected.blend_pixel(x, 0, src.get_pixel(x, 0), 0.625);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from(&src, 0.625, BlendMode::Color, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality non-normal group partial clips should use the row oracle"
+        );
+        assert_eq!(
+            dst.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn compact_non_normal_group_composite_matches_blend_pixel_oracle() {
+        let mut src = PixelBuffer::new_transparent(2, 1);
+        src.set_pixel(0, 0, [200, 30, 20, 160]);
+        src.set_pixel(1, 0, [20, 120, 240, 207]);
+
+        for blend_mode in [BlendMode::Multiply, BlendMode::Color] {
+            let mut base = PixelBuffer::new_transparent(4, 1);
+            let samples = [
+                [30, 60, 90, 255],
+                [80, 130, 20, 180],
+                [200, 40, 160, 127],
+                [10, 20, 30, 64],
+            ];
+            for (x, sample) in samples.iter().enumerate() {
+                base.set_pixel(x as i32, 0, *sample);
+            }
+
+            let mut compact = base.clone();
+            compact.composite_from_at(&src, 1, 0, 0.625, blend_mode, None);
+
+            let mut expected = base;
+            expected.blend_mode = blend_mode;
+            for local_x in 0..2 {
+                expected.blend_pixel(1 + local_x, 0, src.get_pixel(local_x, 0), 0.625);
+            }
+
+            assert_eq!(
+                compact.to_raw_image_rgba().pixels,
+                expected.to_raw_image_rgba().pixels,
+                "{blend_mode:?} compact group composite should use the blend_pixel oracle"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_high_quality_group_composite_matches_blend_pixel_oracle() {
+        let mut src = PixelBuffer::new_transparent(1, 1);
+        src.set_pixel(0, 0, [0, 0, 0, 128]);
+
+        let mut compact = PixelBuffer::new_filled_with_mode(3, 1, WHITE, RenderMode::HighQuality);
+        compact.composite_from_at(&src, 1, 0, 1.0, BlendMode::Normal, None);
+
+        let mut expected = PixelBuffer::new_filled_with_mode(3, 1, WHITE, RenderMode::HighQuality);
+        expected.blend_pixel(1, 0, src.get_pixel(0, 0), 1.0);
+
+        assert_eq!(
+            compact.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+        assert!(
+            compact.get_pixel(1, 0)[0] > 170,
+            "high-quality compact group compositing should use linear-light output"
+        );
+    }
+
+    #[test]
+    fn compact_high_quality_binary_clip_group_composite_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [255, 0, 0, 160],
+            [0, 255, 0, 127],
+            [0, 0, 255, 191],
+            [255, 255, 0, 64],
+        ]
+        .iter()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+
+        let mut clip = ClipMask::empty(6, 1);
+        clip.fill_rect(2, 0, 2, 1, true);
+
+        let mut dst =
+            PixelBuffer::new_filled_with_mode(6, 1, [40, 70, 100, 180], RenderMode::HighQuality);
+        dst.set_clip(clip.clone());
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(6, 1, [40, 70, 100, 180], RenderMode::HighQuality);
+        expected.set_clip(clip);
+        for local_x in 0..4 {
+            expected.blend_pixel(1 + local_x, 0, src.get_pixel(local_x, 0), 0.75);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from_at(&src, 1, 0, 0.75, BlendMode::Normal, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "compact high-quality binary-clip groups should use the row oracle"
+        );
+        assert_eq!(
+            dst.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn compact_high_quality_partial_clip_group_composite_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [255, 0, 0, 160],
+            [0, 255, 0, 127],
+            [0, 0, 255, 191],
+            [255, 255, 0, 64],
+        ]
+        .iter()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+        let clip = ClipMask::from_alpha_bytes(6, 1, vec![0, 64, 128, 255, 0, 192]);
+
+        let mut dst =
+            PixelBuffer::new_filled_with_mode(6, 1, [40, 70, 100, 180], RenderMode::HighQuality);
+        dst.set_clip(clip.clone());
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(6, 1, [40, 70, 100, 180], RenderMode::HighQuality);
+        expected.set_clip(clip);
+        for local_x in 0..4 {
+            expected.blend_pixel(1 + local_x, 0, src.get_pixel(local_x, 0), 0.75);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from_at(&src, 1, 0, 0.75, BlendMode::Normal, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "compact high-quality partial-clip groups should use the row oracle"
+        );
+        assert_eq!(
+            dst.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn compact_high_quality_blend_group_composite_partial_clip_uses_row_oracle() {
+        let mut src = PixelBuffer::new_transparent_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, sample) in [
+            [220, 40, 180, 207],
+            [40, 220, 180, 160],
+            [40, 180, 220, 127],
+            [240, 200, 20, 64],
+        ]
+        .iter()
+        .enumerate()
+        {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+        let clip = ClipMask::from_alpha_bytes(6, 1, vec![0, 64, 128, 255, 0, 192]);
+
+        let mut dst =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        dst.set_clip(clip.clone());
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Screen;
+        expected.set_clip(clip);
+        for local_x in 0..4 {
+            expected.blend_pixel(1 + local_x, 0, src.get_pixel(local_x, 0), 0.75);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from_at(&src, 1, 0, 0.75, BlendMode::Screen, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "compact high-quality non-normal group partial clips should use the row oracle"
+        );
+        assert_eq!(
+            dst.to_raw_image_rgba().pixels,
             expected.to_raw_image_rgba().pixels
         );
     }
@@ -5826,6 +13671,139 @@ mod tests {
     }
 
     #[test]
+    fn composite_from_mixed_source_uniform_alpha_opaque_dst_uses_wide_row() {
+        let mut dst = PixelBuffer::new_filled(5, 1, [30, 60, 90, 255]);
+        let mut src = PixelBuffer::new_transparent(5, 1);
+        let samples = [
+            [200, 10, 20, 0],
+            [200, 10, 20, 64],
+            [20, 200, 10, 127],
+            [20, 10, 200, 192],
+            [240, 240, 0, 255],
+        ];
+        for (x, sample) in samples.iter().enumerate() {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from(&src, 0.375, BlendMode::Normal, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.wide_uniform_alpha_pixels > before.wide_uniform_alpha_pixels,
+            "mixed source alpha plus partial group alpha should use the wide uniform-alpha path"
+        );
+
+        let group_alpha = (0.375_f32 * 255.0).round() as u16;
+        for (x, sample) in samples.iter().enumerate() {
+            let alpha = scale_alpha_byte(sample[3], group_alpha);
+            let inv_alpha = 255_u16.saturating_sub(alpha);
+            let expected = [
+                ((u16::from(sample[0]) * alpha + 30 * inv_alpha + 127) / 255) as u8,
+                ((u16::from(sample[1]) * alpha + 60 * inv_alpha + 127) / 255) as u8,
+                ((u16::from(sample[2]) * alpha + 90 * inv_alpha + 127) / 255) as u8,
+                255,
+            ];
+            assert_eq!(dst.get_pixel(x as i32, 0), expected);
+        }
+    }
+
+    #[test]
+    fn composite_from_mixed_destination_general_row_uses_wide_path() {
+        let mut dst = PixelBuffer::new_transparent(5, 1);
+        let mut expected = PixelBuffer::new_transparent(5, 1);
+        let dst_samples = [
+            [30, 60, 90, 0],
+            [60, 20, 180, 51],
+            [10, 140, 30, 127],
+            [200, 100, 40, 203],
+            [90, 80, 70, 255],
+        ];
+        for (x, sample) in dst_samples.iter().enumerate() {
+            dst.set_pixel(x as i32, 0, *sample);
+            expected.set_pixel(x as i32, 0, *sample);
+        }
+
+        let mut src = PixelBuffer::new_transparent(5, 1);
+        let src_samples = [
+            [200, 10, 20, 0],
+            [200, 10, 20, 64],
+            [20, 200, 10, 127],
+            [20, 10, 200, 192],
+            [240, 240, 0, 255],
+        ];
+        for (x, sample) in src_samples.iter().enumerate() {
+            src.set_pixel(x as i32, 0, *sample);
+            expected.blend_pixel(x as i32, 0, *sample, 0.625);
+        }
+
+        let before = pixel_compositor_stats();
+        dst.composite_from(&src, 0.625, BlendMode::Normal, None);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.wide_general_pixels > before.wide_general_pixels,
+            "mixed destination alpha source-over rows should use the wide general path"
+        );
+        for x in 0..5 {
+            assert_eq!(dst.get_pixel(x, 0), expected.get_pixel(x, 0));
+        }
+    }
+
+    #[test]
+    fn composite_from_soft_mask_mixed_destination_general_row_uses_wide_path() {
+        let mut dst = PixelBuffer::new_transparent(5, 1);
+        let mut expected = PixelBuffer::new_transparent(5, 1);
+        let dst_samples = [
+            [30, 60, 90, 0],
+            [60, 20, 180, 51],
+            [10, 140, 30, 127],
+            [200, 100, 40, 203],
+            [90, 80, 70, 255],
+        ];
+        for (x, sample) in dst_samples.iter().enumerate() {
+            dst.set_pixel(x as i32, 0, *sample);
+            expected.set_pixel(x as i32, 0, *sample);
+        }
+
+        let mut src = PixelBuffer::new_transparent(5, 1);
+        let src_samples = [
+            [200, 10, 20, 0],
+            [200, 10, 20, 64],
+            [20, 200, 10, 127],
+            [20, 10, 200, 192],
+            [240, 240, 0, 255],
+        ];
+        for (x, sample) in src_samples.iter().enumerate() {
+            src.set_pixel(x as i32, 0, *sample);
+        }
+
+        let mut soft_mask = AlphaMask::all_opaque(5, 1);
+        for (x, mask) in [0, 64, 127, 201, 255].iter().copied().enumerate() {
+            soft_mask.set(x as i32, 0, mask);
+        }
+        let group_alpha_255 = (0.625_f32 * 255.0).round() as u16;
+        composite_normal_compat_row_soft_mask_scalar(
+            &mut expected.data,
+            &src.data,
+            &soft_mask.data,
+            group_alpha_255,
+        );
+
+        let before = pixel_compositor_stats();
+        dst.composite_from(&src, 0.625, BlendMode::Normal, Some(&soft_mask));
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.wide_soft_mask_general_pixels > before.wide_soft_mask_general_pixels,
+            "soft-mask rows with mixed destination alpha should use the wide general path"
+        );
+        for x in 0..5 {
+            assert_eq!(dst.get_pixel(x, 0), expected.get_pixel(x, 0));
+        }
+    }
+
+    #[test]
     fn composite_from_opaque_destination_wide_row_matches_source_over_math() {
         let mut dst = PixelBuffer::new_filled(5, 1, [30, 60, 90, 255]);
         let mut src = PixelBuffer::new_transparent(5, 1);
@@ -5881,6 +13859,573 @@ mod tests {
         assert_eq!(mask_row_class(&[255, 255, 255]), MaskRowClass::AllOpaque);
         assert_eq!(mask_row_class(&[0, 255]), MaskRowClass::Mixed);
         assert_eq!(mask_row_class(&[255, 128, 255]), MaskRowClass::Mixed);
+    }
+
+    #[test]
+    fn alpha_mask_fused_clip_window_multiplies_soft_mask_and_partial_clip() {
+        let mut soft_mask = AlphaMask::all_opaque(4, 1);
+        soft_mask.set(1, 0, 128);
+        soft_mask.set(2, 0, 64);
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 64, 0]);
+
+        let fused =
+            AlphaMask::fused_clip_window(Some(&soft_mask), Some(&clip), 1, 0, 2, 1).unwrap();
+
+        assert_eq!(fused.width, 2);
+        assert_eq!(fused.height, 1);
+        assert_eq!(fused.data, vec![64, 16]);
+    }
+
+    #[test]
+    fn alpha_mask_fused_clip_window_wide_row_matches_scalar_product() {
+        let mut soft_mask = AlphaMask::all_opaque(20, 1);
+        let soft_values: Vec<u8> = (0..20)
+            .map(|idx| (idx as u8).wrapping_mul(17).wrapping_add(5))
+            .collect();
+        for (idx, alpha) in soft_values.iter().copied().enumerate() {
+            soft_mask.set(idx as i32, 0, alpha);
+        }
+        let clip_values: Vec<u8> = (0..20).map(|idx| [0u8, 31, 127, 255][idx % 4]).collect();
+        let clip = ClipMask::from_alpha_bytes(20, 1, clip_values.clone());
+
+        let fused =
+            AlphaMask::fused_clip_window(Some(&soft_mask), Some(&clip), 0, 0, 20, 1).unwrap();
+        let expected: Vec<u8> = soft_values
+            .iter()
+            .copied()
+            .zip(clip_values)
+            .map(|(soft, clip)| div255_round_u16(u16::from(soft) * u16::from(clip)) as u8)
+            .collect();
+
+        assert_eq!(fused.data, expected);
+    }
+
+    #[test]
+    fn composite_from_at_fuses_partial_clip_and_soft_mask_into_row_path() {
+        let mut dst = PixelBuffer::new_filled(4, 1, [10, 20, 30, 255]);
+        let mut src = PixelBuffer::new(2, 1);
+        src.set_pixel(0, 0, [220, 20, 40, 255]);
+        src.set_pixel(1, 0, [20, 220, 40, 255]);
+
+        let mut soft_mask = AlphaMask::all_opaque(4, 1);
+        soft_mask.set(1, 0, 128);
+        soft_mask.set(2, 0, 255);
+        dst.set_clip(ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 255]));
+
+        let before = pixel_compositor_stats();
+        dst.composite_from_at(&src, 1, 0, 1.0, BlendMode::Normal, Some(&soft_mask));
+        let after = pixel_compositor_stats();
+
+        let source_over_opaque_dst = |src: PixelColor, dst: PixelColor, eff: u32| -> PixelColor {
+            let inv = 255_u32.saturating_sub(eff);
+            [
+                ((u32::from(src[0]) * eff + u32::from(dst[0]) * inv + 127) / 255) as u8,
+                ((u32::from(src[1]) * eff + u32::from(dst[1]) * inv + 127) / 255) as u8,
+                ((u32::from(src[2]) * eff + u32::from(dst[2]) * inv + 127) / 255) as u8,
+                255,
+            ]
+        };
+
+        assert_eq!(dst.get_pixel(0, 0), [10, 20, 30, 255]);
+        assert_eq!(
+            dst.get_pixel(1, 0),
+            source_over_opaque_dst([220, 20, 40, 255], [10, 20, 30, 255], 64)
+        );
+        assert_eq!(dst.get_pixel(2, 0), [10, 20, 30, 255]);
+        assert_eq!(dst.get_pixel(3, 0), [10, 20, 30, 255]);
+        assert!(
+            after.soft_mask_opaque_dst_pixels > before.soft_mask_opaque_dst_pixels
+                || after.soft_mask_general_pixels > before.soft_mask_general_pixels,
+            "partial clip plus soft mask should use the fused row compositor"
+        );
+    }
+
+    #[test]
+    fn blend_alpha_mask_fuses_partial_clip_and_smask_into_row_path() {
+        let mut dst = PixelBuffer::new_filled(3, 1, WHITE);
+        let mut smask = AlphaMask::all_opaque(3, 1);
+        smask.set(1, 0, 128);
+        smask.set(2, 0, 255);
+        dst.set_smask(smask);
+        dst.set_clip(ClipMask::from_alpha_bytes(3, 1, vec![255, 128, 0]));
+
+        let before = pixel_compositor_stats();
+        dst.blend_alpha_mask(1, 0, 2, 1, &[128, 255], RED);
+        let after = pixel_compositor_stats();
+
+        assert_eq!(dst.get_pixel(0, 0), WHITE);
+        assert_eq!(dst.get_pixel(1, 0), [255, 223, 223, 255]);
+        assert_eq!(dst.get_pixel(2, 0), WHITE);
+        assert!(
+            after.wide_opaque_dst_pixels > before.wide_opaque_dst_pixels
+                || after.scalar_opaque_dst_pixels > before.scalar_opaque_dst_pixels,
+            "direct alpha-mask paint should use fused row compositing"
+        );
+    }
+
+    #[test]
+    fn alpha_mask_paint_fusion_wide_row_matches_scalar_product() {
+        let width = 40usize;
+        let mask: Vec<u8> = (0..width)
+            .map(|idx| (idx as u8).wrapping_mul(17).wrapping_add(3))
+            .collect();
+        let smask_bytes: Vec<u8> = (0..width)
+            .map(|idx| (255u8).wrapping_sub((idx as u8).wrapping_mul(5)))
+            .collect();
+        let clip_bytes: Vec<u8> = (0..width)
+            .map(|idx| (idx as u8).wrapping_mul(11).wrapping_add(29))
+            .collect();
+        let mut smask = AlphaMask::all_opaque(width as u32, 1);
+        for (x, value) in smask_bytes.iter().copied().enumerate() {
+            smask.set(x as i32, 0, value);
+        }
+        let clip = ClipMask::from_alpha_bytes(width as u32, 1, clip_bytes.clone());
+
+        let mut fused = vec![0u8; width];
+        let mut factor = vec![0u8; width];
+        fuse_alpha_mask_paint_row(
+            &mask,
+            0,
+            0,
+            Some(&smask),
+            Some(&clip),
+            &mut fused,
+            &mut factor,
+        );
+
+        let expected: Vec<u8> = mask
+            .iter()
+            .copied()
+            .zip(smask_bytes.iter().copied())
+            .zip(clip_bytes.iter().copied())
+            .map(|((mask_alpha, soft), clip)| {
+                let soft_product = div255_round_u16(u16::from(mask_alpha) * u16::from(soft));
+                div255_round_u16(soft_product * u16::from(clip)) as u8
+            })
+            .collect();
+        assert_eq!(fused, expected);
+    }
+
+    #[test]
+    fn solid_paint_fusion_wide_row_matches_scalar_product() {
+        let width = 40usize;
+        let smask_bytes: Vec<u8> = (0..width)
+            .map(|idx| (255u8).wrapping_sub((idx as u8).wrapping_mul(3)))
+            .collect();
+        let clip_bytes: Vec<u8> = (0..width)
+            .map(|idx| (idx as u8).wrapping_mul(7).wrapping_add(11))
+            .collect();
+        let mut smask = AlphaMask::all_opaque(width as u32, 1);
+        for (x, value) in smask_bytes.iter().copied().enumerate() {
+            smask.set(x as i32, 0, value);
+        }
+        let clip = ClipMask::from_alpha_bytes(width as u32, 1, clip_bytes.clone());
+
+        let mut fused = vec![0u8; width];
+        let mut factor = vec![0u8; width];
+        fuse_solid_paint_row(0, 0, Some(&smask), Some(&clip), &mut fused, &mut factor);
+
+        let expected: Vec<u8> = smask_bytes
+            .iter()
+            .copied()
+            .zip(clip_bytes.iter().copied())
+            .map(|(soft, clip)| div255_round_u16(u16::from(soft) * u16::from(clip)) as u8)
+            .collect();
+        assert_eq!(fused, expected);
+    }
+
+    #[test]
+    fn rgba_paint_fusion_wide_row_matches_scalar_product() {
+        let width = 40usize;
+        let mut rgba = Vec::with_capacity(width * 4);
+        for idx in 0..width {
+            rgba.extend([
+                (idx as u8).wrapping_mul(3),
+                (idx as u8).wrapping_mul(5).wrapping_add(9),
+                (idx as u8).wrapping_mul(7).wrapping_add(13),
+                (idx as u8).wrapping_mul(17).wrapping_add(31),
+            ]);
+        }
+        let smask_bytes: Vec<u8> = (0..width)
+            .map(|idx| (255u8).wrapping_sub((idx as u8).wrapping_mul(4)))
+            .collect();
+        let clip_bytes: Vec<u8> = (0..width)
+            .map(|idx| (idx as u8).wrapping_mul(9).wrapping_add(23))
+            .collect();
+        let mut smask = AlphaMask::all_opaque(width as u32, 1);
+        for (x, value) in smask_bytes.iter().copied().enumerate() {
+            smask.set(x as i32, 0, value);
+        }
+        let clip = ClipMask::from_alpha_bytes(width as u32, 1, clip_bytes);
+
+        let mut fused = vec![0u8; width * 4];
+        let mut alpha = vec![0u8; width];
+        let mut factor = vec![0u8; width];
+        let scratch = RgbaFusionScratch {
+            alpha: &mut alpha,
+            factor: &mut factor,
+        };
+        fuse_rgba_paint_row(&rgba, 0, 0, Some(&smask), Some(&clip), &mut fused, scratch);
+
+        let mut expected = vec![0u8; width * 4];
+        fuse_rgba_paint_row_scalar(&rgba, 0, 0, Some(&smask), Some(&clip), &mut expected);
+        assert_eq!(fused, expected);
+    }
+
+    #[test]
+    fn lcd_alpha_mask_fuses_partial_clip_and_smask_into_row_path() {
+        let color = [20, 40, 220, 192];
+        let alpha = [64, 128, 255, 32];
+        let clip = ClipMask::from_alpha_bytes(5, 1, vec![255, 128, 0, 255, 64]);
+        let mut smask = AlphaMask::all_opaque(5, 1);
+        smask.set(1, 0, 255);
+        smask.set(2, 0, 128);
+        smask.set(3, 0, 255);
+        smask.set(4, 0, 64);
+
+        let mut row_path = PixelBuffer::new_filled(5, 1, [230, 220, 210, 255]);
+        row_path.set_clip(clip.clone());
+        row_path.set_smask(smask.clone());
+
+        let mut expected = PixelBuffer::new_filled(5, 1, [230, 220, 210, 255]);
+        expected.set_clip(clip);
+        expected.set_smask(smask);
+        for (offset, green) in alpha.iter().copied().enumerate() {
+            let left = if offset == 0 {
+                green
+            } else {
+                alpha[offset - 1]
+            };
+            let right = alpha.get(offset + 1).copied().unwrap_or(green);
+            expected.blend_lcd_pixel(
+                1 + offset as i32,
+                0,
+                color,
+                [
+                    lcd_weighted_channel_coverage(green, left),
+                    green,
+                    lcd_weighted_channel_coverage(green, right),
+                ],
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_lcd_alpha_mask_strided(1, 0, 4, 1, &alpha, 4, 0, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.lcd_row_pixels > before.lcd_row_pixels,
+            "LCD glyph masks should use the fused row compositor"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn blend_alpha_mask_normal_row_matches_mixed_destination_alpha() {
+        let color = [210, 40, 90, 173];
+        let alpha = [0, 64, 192, 255];
+        let mut row_path = PixelBuffer::new(4, 1);
+        let base = [
+            [11, 29, 47, 0],
+            [53, 71, 89, 64],
+            [97, 113, 131, 171],
+            [149, 167, 191, 255],
+        ];
+        for (x, pixel) in base.iter().enumerate() {
+            row_path.set_pixel(x as i32, 0, *pixel);
+        }
+        row_path.blend_alpha_mask(0, 0, 4, 1, &alpha, color);
+
+        let mut expected = Vec::new();
+        for (pixel, mask) in base.iter().zip(alpha.iter().copied()) {
+            let mut out = *pixel;
+            let src_alpha = ((u16::from(color[3]) * u16::from(mask) + 127) / 255) as u8;
+            if src_alpha != 0 {
+                let src_a = f32::from(src_alpha) / 255.0;
+                let dst_a = f32::from(out[3]) / 255.0;
+                let out_a = src_a + dst_a * (1.0 - src_a);
+                if out_a < 1e-6 {
+                    out = TRANSPARENT;
+                } else {
+                    let inv_alpha = 1.0 / out_a;
+                    for channel in 0..3 {
+                        let src = f32::from(color[channel]) / 255.0;
+                        let dst = f32::from(out[channel]) / 255.0;
+                        let value = (src * src_a + dst * dst_a * (1.0 - src_a)) * inv_alpha;
+                        out[channel] = (value * 255.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                    out[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+                }
+            }
+            expected.extend_from_slice(&out);
+        }
+
+        assert_eq!(row_path.to_raw_image_rgba().pixels, expected);
+    }
+
+    #[test]
+    fn high_quality_alpha_mask_uses_row_oracle() {
+        let color = [210, 40, 90, 173];
+        let alpha = [0, 64, 192, 255];
+        let base = [
+            [11, 29, 47, 0],
+            [53, 71, 89, 64],
+            [97, 113, 131, 171],
+            [149, 167, 191, 255],
+        ];
+        let mut row_path = PixelBuffer::new_with_mode(4, 1, RenderMode::HighQuality);
+        let mut expected = PixelBuffer::new_with_mode(4, 1, RenderMode::HighQuality);
+        for (x, pixel) in base.iter().enumerate() {
+            row_path.set_pixel(x as i32, 0, *pixel);
+            expected.set_pixel(x as i32, 0, *pixel);
+            expected.blend_pixel(x as i32, 0, color, f32::from(alpha[x]) / 255.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(0, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality alpha-mask rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_alpha_mask_binary_clip_uses_row_oracle() {
+        let color = [40, 210, 90, 190];
+        let alpha = [255, 128, 64, 255];
+        let mut clip = ClipMask::empty(6, 1);
+        clip.fill_rect(2, 0, 2, 1, true);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(6, 1, [30, 60, 90, 180], RenderMode::HighQuality);
+        row_path.set_clip(clip.clone());
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(6, 1, [30, 60, 90, 180], RenderMode::HighQuality);
+        expected.set_clip(clip);
+        for local_x in 0..4 {
+            expected.blend_pixel(
+                1 + local_x,
+                0,
+                color,
+                f32::from(alpha[local_x as usize]) / 255.0,
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(1, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality alpha-mask binary-clip rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_alpha_mask_partial_clip_uses_row_oracle() {
+        let color = [0, 0, 0, 255];
+        let alpha = [255, 128, 64, 255];
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+        let mut row_path = PixelBuffer::new_filled_with_mode(4, 1, WHITE, RenderMode::HighQuality);
+        row_path.set_clip(clip.clone());
+        let mut expected = PixelBuffer::new_filled_with_mode(4, 1, WHITE, RenderMode::HighQuality);
+        expected.set_clip(clip);
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, color, f32::from(alpha[x as usize]) / 255.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(0, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality alpha-mask partial-clip rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_alpha_mask_uses_row_oracle() {
+        let color = [220, 40, 180, 207];
+        let alpha = [0, 64, 192, 255];
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row_path.blend_mode = BlendMode::Multiply;
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Multiply;
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, color, f32::from(alpha[x as usize]) / 255.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(0, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality alpha-mask blend rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_alpha_mask_binary_clip_uses_row_oracle() {
+        let color = [220, 40, 180, 207];
+        let alpha = [255, 128, 64, 255];
+        let mut clip = ClipMask::empty(6, 1);
+        clip.fill_rect(2, 0, 2, 1, true);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row_path.blend_mode = BlendMode::Screen;
+        row_path.set_clip(clip.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(6, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Screen;
+        expected.set_clip(clip);
+        for local_x in 0..4 {
+            expected.blend_pixel(
+                1 + local_x,
+                0,
+                color,
+                f32::from(alpha[local_x as usize]) / 255.0,
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(1, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality alpha-mask binary-clip blend rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn high_quality_blend_alpha_mask_partial_clip_uses_row_oracle() {
+        let color = [220, 40, 180, 255];
+        let alpha = [255, 128, 64, 255];
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+
+        let mut row_path =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        row_path.blend_mode = BlendMode::Color;
+        row_path.set_clip(clip.clone());
+
+        let mut expected =
+            PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
+        expected.blend_mode = BlendMode::Color;
+        expected.set_clip(clip);
+        for x in 0..4 {
+            expected.blend_pixel(x, 0, color, f32::from(alpha[x as usize]) / 255.0);
+        }
+
+        let before = pixel_compositor_stats();
+        row_path.blend_alpha_mask(0, 0, 4, 1, &alpha, color);
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.scalar_general_pixels > before.scalar_general_pixels,
+            "high-quality alpha-mask partial-clip blend rows should use the row oracle"
+        );
+        assert_eq!(
+            row_path.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn blend_alpha_mask_strided_matches_compact_alpha_rows() {
+        let color = [40, 120, 220, 200];
+        let compact = [0, 64, 255, 128, 255, 32];
+        let strided = [9, 9, 0, 64, 255, 9, 9, 128, 255, 32, 9, 9];
+        let mut compact_buf = PixelBuffer::new_filled(3, 2, WHITE);
+        let mut strided_buf = PixelBuffer::new_filled(3, 2, WHITE);
+
+        compact_buf.blend_alpha_mask(0, 0, 3, 2, &compact, color);
+        strided_buf.blend_alpha_mask_strided(0, 0, 3, 2, &strided, 5, 2, color);
+
+        assert_eq!(
+            strided_buf.to_raw_image_rgba().pixels,
+            compact_buf.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn blend_rgba_pixels_at_fuses_partial_clip_and_smask_into_row_path() {
+        let mut dst = PixelBuffer::new_filled(4, 1, [10, 20, 30, 255]);
+        let mut smask = AlphaMask::all_opaque(4, 1);
+        smask.set(1, 0, 128);
+        smask.set(2, 0, 255);
+        dst.set_smask(smask);
+        dst.set_clip(ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 255]));
+
+        let rgba = [220, 20, 40, 255, 20, 220, 40, 255];
+        let before = pixel_compositor_stats();
+        dst.blend_rgba_pixels_at(1, 0, 2, 1, &rgba);
+        let after = pixel_compositor_stats();
+
+        assert_eq!(dst.get_pixel(0, 0), [10, 20, 30, 255]);
+        assert_eq!(dst.get_pixel(1, 0), [63, 20, 33, 255]);
+        assert_eq!(dst.get_pixel(2, 0), [10, 20, 30, 255]);
+        assert_eq!(dst.get_pixel(3, 0), [10, 20, 30, 255]);
+        assert!(
+            after.wide_opaque_dst_pixels > before.wide_opaque_dst_pixels
+                || after.scalar_opaque_dst_pixels > before.scalar_opaque_dst_pixels
+                || after.scalar_general_pixels > before.scalar_general_pixels,
+            "RGBA fragment paint should use fused row compositing"
+        );
+    }
+
+    #[test]
+    fn fill_rect_fuses_partial_clip_and_smask_into_row_path() {
+        let mut dst = PixelBuffer::new_filled(3, 1, WHITE);
+        let mut smask = AlphaMask::all_opaque(3, 1);
+        smask.set(1, 0, 128);
+        smask.set(2, 0, 255);
+        dst.set_smask(smask);
+        dst.set_clip(ClipMask::from_alpha_bytes(3, 1, vec![255, 128, 0]));
+
+        let before = pixel_compositor_stats();
+        dst.fill_rect(1, 0, 2, 1, RED);
+        let after = pixel_compositor_stats();
+
+        assert_eq!(dst.get_pixel(0, 0), WHITE);
+        assert_eq!(dst.get_pixel(1, 0), [255, 191, 191, 255]);
+        assert_eq!(dst.get_pixel(2, 0), WHITE);
+        assert!(
+            after.wide_opaque_dst_pixels > before.wide_opaque_dst_pixels
+                || after.scalar_opaque_dst_pixels > before.scalar_opaque_dst_pixels,
+            "solid fill should use fused row compositing"
+        );
     }
 
     #[test]
@@ -5943,7 +14488,14 @@ mod tests {
             mask.set(x as i32, 0, value);
         }
 
+        let before = pixel_compositor_stats();
         dst.composite_from(&src, 0.75, BlendMode::Normal, Some(&mask));
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.wide_soft_mask_opaque_dst_pixels > before.wide_soft_mask_opaque_dst_pixels,
+            "soft-mask rows with non-opaque group alpha should stay on the wide row path"
+        );
 
         let group_alpha = (0.75_f32 * 255.0).round() as u32;
         for (x, sample) in samples.iter().enumerate() {
@@ -6104,6 +14656,73 @@ mod tests {
         let p = dst.get_pixel(0, 0);
         assert_eq!([p[0], p[1], p[2]], [10, 20, 30], "color replaced outright");
         assert!((p[3] as i32 - 128).abs() <= 1, "alpha scaled, got {}", p[3]);
+    }
+
+    #[test]
+    fn knockout_from_fuses_partial_clip_and_soft_mask_into_row_path() {
+        let mut dst = PixelBuffer::new_filled(4, 1, [10, 20, 30, 255]);
+        let mut expected = dst.clone();
+        let mut src = PixelBuffer::new_transparent(4, 1);
+        let samples = [
+            [200, 0, 0, 255],
+            [0, 200, 0, 128],
+            [0, 0, 200, 255],
+            [50, 60, 70, 255],
+        ];
+        for (x, sample) in samples.iter().copied().enumerate() {
+            src.set_pixel(x as i32, 0, sample);
+        }
+        let clip = ClipMask::from_alpha_bytes(4, 1, vec![255, 128, 0, 64]);
+        let mut soft_mask = AlphaMask::all_opaque(4, 1);
+        soft_mask.set(1, 0, 128);
+        soft_mask.set(3, 0, 0);
+        dst.set_clip(clip.clone());
+
+        for x in 0..4 {
+            let clip_alpha = f32::from(clip.opacity_byte(x, 0)) / 255.0;
+            if clip_alpha <= 0.0 {
+                continue;
+            }
+            let sp = src.get_pixel(x, 0);
+            if sp[3] == 0 {
+                continue;
+            }
+            let mask = soft_mask.get(x, 0);
+            let eff = (sp[3] as f32 / 255.0 * 0.5 * mask * clip_alpha).clamp(0.0, 1.0);
+            expected.set_pixel(
+                x,
+                0,
+                [
+                    sp[0],
+                    sp[1],
+                    sp[2],
+                    (eff * 255.0).round().clamp(0.0, 255.0) as u8,
+                ],
+            );
+        }
+
+        let before = pixel_compositor_stats();
+        dst.knockout_from(&src, 0.5, Some(&soft_mask));
+        let after = pixel_compositor_stats();
+
+        assert!(
+            after.knockout_row_pixels > before.knockout_row_pixels,
+            "knockout group flattening should use the row replacement path"
+        );
+        assert_eq!(
+            dst.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+        assert_eq!(
+            dst.get_pixel(2, 0),
+            [10, 20, 30, 255],
+            "clip-zero knockout source must leave the destination unchanged"
+        );
+        assert_eq!(
+            dst.get_pixel(3, 0),
+            [50, 60, 70, 0],
+            "zero soft-mask knockout source preserves replacement RGB with transparent alpha"
+        );
     }
 
     #[test]

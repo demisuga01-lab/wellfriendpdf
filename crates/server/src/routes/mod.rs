@@ -1,8 +1,13 @@
 pub mod analyze;
+pub mod document_views;
+pub mod editing_transactions;
 pub mod extract_images;
 pub mod extract_text;
 pub mod health;
+pub mod image_decode;
 pub mod jobs;
 pub mod parse_ops;
 pub mod pdf2img;
+pub mod prepress;
 pub mod progressive;
+pub mod render_contract;

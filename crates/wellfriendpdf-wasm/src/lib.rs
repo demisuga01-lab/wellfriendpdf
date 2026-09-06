@@ -7,13 +7,19 @@
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
+    use js_sys::{Function, Reflect};
+    use serde::de::DeserializeOwned;
     use wasm_bindgen::prelude::*;
 
+    use wellfriendpdf_engine::render::{
+        apply_render_invalidation_plan_json_to_cache, AlphaMode, ContractColor, DeviceClip,
+        DeviceMatrix, PixelFormat, RenderContract,
+    };
     use wellfriendpdf_engine::{
         sdk, CancelToken, ChunkOptions, ContentEngine, DocType, EvidenceBundle, ExtractOptions,
         IncrementalSigner, IncrementalSigningOptions, IntermediateStore, NetworkBudget,
-        ParseOptions, PdfSigner, RetrievalPolicy, SignatureOptions, SignatureRevocationMode,
-        SigningIntent, TrustStore, VerifyOptions,
+        ParseOptions, PdfSigner, RenderDocumentCache, RetrievalPolicy, SignatureOptions,
+        SignatureRevocationMode, SigningIntent, TrustStore, VerifyOptions,
     };
 
     #[wasm_bindgen]
@@ -203,6 +209,30 @@ mod wasm_api {
         #[wasm_bindgen(constructor)]
         pub fn new() -> SignatureValidationCancellation {
             SignatureValidationCancellation {
+                token: CancelToken::new(),
+            }
+        }
+
+        pub fn cancel(&self) {
+            self.token.cancel();
+        }
+
+        #[wasm_bindgen(js_name = isCancelled)]
+        pub fn is_cancelled(&self) -> bool {
+            self.token.is_cancelled()
+        }
+    }
+
+    #[wasm_bindgen]
+    pub struct RenderCancellation {
+        token: CancelToken,
+    }
+
+    #[wasm_bindgen]
+    impl RenderCancellation {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> RenderCancellation {
+            RenderCancellation {
                 token: CancelToken::new(),
             }
         }
@@ -461,9 +491,49 @@ mod wasm_api {
     }
 
     #[wasm_bindgen]
+    pub struct AdjacentPagePrefetchExecution {
+        report_json: String,
+        job: Option<ProgressiveRenderJob>,
+    }
+
+    #[wasm_bindgen]
     pub struct WellfriendOutput {
         bytes: Vec<u8>,
         report_json: String,
+    }
+
+    #[wasm_bindgen]
+    pub struct WellfriendRenderContract {
+        contract: RenderContract,
+    }
+
+    #[wasm_bindgen]
+    pub struct RenderCache {
+        cache: RenderDocumentCache,
+    }
+
+    #[wasm_bindgen]
+    impl RenderCache {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> RenderCache {
+            RenderCache {
+                cache: RenderDocumentCache::new(),
+            }
+        }
+
+        pub fn clear(&mut self) {
+            self.cache.clear();
+        }
+
+        #[wasm_bindgen(js_name = applyRenderInvalidationPlanJson)]
+        pub fn apply_render_invalidation_plan_json(
+            &mut self,
+            plan_json: &str,
+        ) -> Result<String, JsValue> {
+            let report = apply_render_invalidation_plan_json_to_cache(&mut self.cache, plan_json)
+                .map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
     }
 
     #[wasm_bindgen]
@@ -481,6 +551,359 @@ mod wasm_api {
         #[wasm_bindgen(js_name = reportJson)]
         pub fn report_json(&self) -> String {
             self.report_json.clone()
+        }
+    }
+
+    #[wasm_bindgen]
+    impl AdjacentPagePrefetchExecution {
+        #[wasm_bindgen(js_name = reportJson)]
+        pub fn report_json(&self) -> String {
+            self.report_json.clone()
+        }
+
+        #[wasm_bindgen(js_name = hasJob)]
+        pub fn has_job(&self) -> bool {
+            self.job.is_some()
+        }
+
+        #[wasm_bindgen(js_name = takeJob)]
+        pub fn take_job(&mut self) -> Option<ProgressiveRenderJob> {
+            self.job.take()
+        }
+    }
+
+    #[wasm_bindgen]
+    impl WellfriendRenderContract {
+        #[wasm_bindgen(js_name = fromJson)]
+        pub fn from_json(json: &str) -> Result<WellfriendRenderContract, JsValue> {
+            Ok(WellfriendRenderContract {
+                contract: parse_render_contract_json(json)?,
+            })
+        }
+
+        #[wasm_bindgen(js_name = toJson)]
+        pub fn to_json(&self) -> Result<String, JsValue> {
+            serde_json::to_string(&self.contract)
+                .map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = surfaceByteLength)]
+        pub fn surface_byte_length(&self) -> Result<usize, JsValue> {
+            self.contract
+                .stride
+                .checked_mul(self.contract.height as usize)
+                .ok_or_else(|| JsValue::from_str("render contract surface byte length overflows"))
+        }
+
+        #[wasm_bindgen(js_name = withSurface)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn with_surface(
+            &self,
+            width: u32,
+            height: u32,
+            pixel_format: Option<String>,
+            alpha_mode: Option<String>,
+            stride: Option<usize>,
+            grayscale: Option<bool>,
+            reverse_byte_order: Option<bool>,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            if width == 0 || height == 0 {
+                return Err(JsValue::from_str(
+                    "render contract surface dimensions must be positive",
+                ));
+            }
+            let pixel_format = parse_pixel_format(pixel_format.as_deref())?;
+            let alpha_mode = parse_alpha_mode(alpha_mode.as_deref())?;
+            let minimum_stride = width as usize * pixel_format.bytes_per_pixel();
+            let stride = stride.unwrap_or(minimum_stride);
+            if stride < minimum_stride {
+                return Err(JsValue::from_str(&format!(
+                    "render contract stride {stride} is below the required {minimum_stride} bytes"
+                )));
+            }
+
+            let mut contract = self.contract.clone();
+            contract.width = width;
+            contract.height = height;
+            contract.pixel_format = pixel_format;
+            contract.alpha_mode = alpha_mode;
+            contract.stride = stride;
+            contract.grayscale = grayscale.unwrap_or(contract.grayscale);
+            contract.reverse_byte_order = reverse_byte_order.unwrap_or(contract.reverse_byte_order);
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withClip)]
+        pub fn with_clip(
+            &self,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            if width == 0 || height == 0 {
+                return Err(JsValue::from_str("render contract clip must be non-empty"));
+            }
+            let mut contract = self.contract.clone();
+            contract.clip = Some(DeviceClip {
+                x,
+                y,
+                width,
+                height,
+            });
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withoutClip)]
+        pub fn without_clip(&self) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.clip = None;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withDeviceTransform)]
+        pub fn with_device_transform(
+            &self,
+            a: f64,
+            b: f64,
+            c: f64,
+            d: f64,
+            e: f64,
+            f: f64,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.transform = DeviceMatrix::from_f64([a, b, c, d, e, f]);
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withBackground)]
+        pub fn with_background(
+            &self,
+            r: u8,
+            g: u8,
+            b: u8,
+            a: Option<u8>,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.background = ContractColor {
+                r,
+                g,
+                b,
+                a: a.unwrap_or(255),
+            };
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withPageBox)]
+        pub fn with_page_box(&self, page_box: &str) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.page_box = parse_contract_enum("page_box", page_box)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withExecutionMode)]
+        pub fn with_execution_mode(
+            &self,
+            execution_mode: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.execution_mode = parse_contract_enum("execution_mode", execution_mode)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withBackend)]
+        pub fn with_backend(&self, backend: &str) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.backend = parse_contract_enum("backend", backend)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withCompositing)]
+        pub fn with_compositing(
+            &self,
+            compositing: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.compositing = parse_contract_enum("compositing", compositing)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withAnnotations)]
+        pub fn with_annotations(
+            &self,
+            annotations: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.annotations = parse_contract_enum("annotations", annotations)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withForms)]
+        pub fn with_forms(&self, forms: &str) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.forms = parse_contract_enum("forms", forms)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withOptionalContent)]
+        pub fn with_optional_content(
+            &self,
+            optional_content: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            if optional_content.trim().is_empty() {
+                return Err(JsValue::from_str(
+                    "render contract optional_content must be present",
+                ));
+            }
+            let mut contract = self.contract.clone();
+            contract.optional_content =
+                wellfriendpdf_engine::render::OptionalContentStateId(optional_content.to_string());
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withSmoothing)]
+        pub fn with_smoothing(&self, smoothing: &str) -> Result<WellfriendRenderContract, JsValue> {
+            let smoothing = parse_contract_enum("smoothing", smoothing)?;
+            let mut contract = self.contract.clone();
+            contract.text_smoothing = smoothing;
+            contract.image_smoothing = smoothing;
+            contract.path_smoothing = smoothing;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withTextSmoothing)]
+        pub fn with_text_smoothing(
+            &self,
+            text_smoothing: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.text_smoothing = parse_contract_enum("text_smoothing", text_smoothing)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withImageSmoothing)]
+        pub fn with_image_smoothing(
+            &self,
+            image_smoothing: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.image_smoothing = parse_contract_enum("image_smoothing", image_smoothing)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withPathSmoothing)]
+        pub fn with_path_smoothing(
+            &self,
+            path_smoothing: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.path_smoothing = parse_contract_enum("path_smoothing", path_smoothing)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withSubpixelText)]
+        pub fn with_subpixel_text(
+            &self,
+            subpixel_text: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.subpixel_text = parse_contract_enum("subpixel_text", subpixel_text)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withColorScheme)]
+        pub fn with_color_scheme(
+            &self,
+            color_scheme: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.color_scheme = parse_contract_enum("color_scheme", color_scheme)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withPrintProfile)]
+        pub fn with_print_profile(
+            &self,
+            print_profile: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.print_profile = parse_contract_enum("print_profile", print_profile)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withHalftone)]
+        pub fn with_halftone(&self, halftone: &str) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.halftone = parse_contract_enum("halftone", halftone)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withOverprint)]
+        pub fn with_overprint(&self, overprint: &str) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.overprint = parse_contract_enum("overprint", overprint)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withRenderingIntent)]
+        pub fn with_rendering_intent(
+            &self,
+            rendering_intent: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.rendering_intent = parse_contract_enum("rendering_intent", rendering_intent)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withColorManagement)]
+        pub fn with_color_management(
+            &self,
+            color_management: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.color_management = parse_contract_enum("color_management", color_management)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withExactness)]
+        pub fn with_exactness(&self, exactness: &str) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.exactness = parse_contract_enum("exactness", exactness)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withDeterminism)]
+        pub fn with_determinism(
+            &self,
+            determinism: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.determinism = parse_contract_enum("determinism", determinism)?;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withResourceBudget)]
+        pub fn with_resource_budget(
+            &self,
+            max_pixels: Option<u64>,
+            max_decoded_bytes: Option<u64>,
+            max_temporary_bytes: Option<u64>,
+            max_cache_bytes: Option<u64>,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            if let Some(max_pixels) = max_pixels {
+                contract.resource_budget.max_pixels = max_pixels;
+            }
+            if let Some(max_decoded_bytes) = max_decoded_bytes {
+                contract.resource_budget.max_decoded_bytes = max_decoded_bytes;
+            }
+            if let Some(max_temporary_bytes) = max_temporary_bytes {
+                contract.resource_budget.max_temporary_bytes = max_temporary_bytes;
+            }
+            if let Some(max_cache_bytes) = max_cache_bytes {
+                contract.resource_budget.max_cache_bytes = max_cache_bytes;
+            }
+            validate_render_contract(contract)
         }
     }
 
@@ -507,6 +930,18 @@ mod wasm_api {
                 bytes: bytes.to_vec(),
                 closed: false,
             })
+        }
+
+        #[wasm_bindgen(js_name = registerFontBytes)]
+        pub fn register_font_bytes(
+            &mut self,
+            name: &str,
+            font_bytes: &[u8],
+        ) -> Result<(), JsValue> {
+            self.ensure_open()?;
+            self.engine
+                .register_font_bytes(name.to_string(), font_bytes.to_vec())
+                .map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = sdkVersion)]
@@ -697,6 +1132,22 @@ mod wasm_api {
             Ok(fields.to_json())
         }
 
+        #[wasm_bindgen(js_name = imageDecodeCapabilityReportJson)]
+        pub fn image_decode_capability_report_json(&self) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            sdk::image_decode_capability_report_json(&self.bytes, None).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = progressiveImageDecodeLifecycleReportJson)]
+        pub fn progressive_image_decode_lifecycle_report_json(
+            &self,
+            request_json: &str,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            sdk::progressive_image_decode_lifecycle_report_json(&self.bytes, request_json, None)
+                .map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = infoJson)]
         pub fn info_json(&self) -> Result<String, JsValue> {
             self.ensure_open()?;
@@ -708,6 +1159,26 @@ mod wasm_api {
         pub fn render_page_png(&self, page: usize, dpi: u32) -> Result<Vec<u8>, JsValue> {
             self.ensure_open()?;
             self.engine.render_page_png_fast(page, dpi).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderPagePngWithFontSubstitutionReport)]
+        pub fn render_page_png_with_font_substitution_report(
+            &self,
+            page: usize,
+            dpi: u32,
+            mode: Option<String>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let mode = mode.unwrap_or_else(|| "compat".to_string());
+            let render_mode = wellfriendpdf_engine::RenderMode::from_name(&mode)
+                .ok_or_else(|| JsValue::from_str("mode must be compat or high"))?;
+            let (bytes, log) = self
+                .engine
+                .render_page_png_fast_with_font_substitution_report(page, dpi, render_mode)
+                .map_err(js_err)?;
+            let report_json = serde_json::to_string(&log)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            Ok(WellfriendOutput { bytes, report_json })
         }
 
         #[wasm_bindgen(js_name = defaultRenderContractJson)]
@@ -728,16 +1199,281 @@ mod wasm_api {
             serde_json::to_string(&contract).map_err(|error| JsValue::from_str(&error.to_string()))
         }
 
+        #[wasm_bindgen(js_name = defaultRenderContract)]
+        pub fn default_render_contract(
+            &self,
+            page: usize,
+            dpi: u32,
+            mode: Option<String>,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            self.ensure_open()?;
+            let mode = mode.unwrap_or_else(|| "compat".to_string());
+            let render_mode = wellfriendpdf_engine::RenderMode::from_name(&mode)
+                .ok_or_else(|| JsValue::from_str("mode must be compat or high"))?;
+            let contract = self
+                .engine
+                .default_render_contract(page, dpi, render_mode)
+                .map_err(js_err)?;
+            Ok(WellfriendRenderContract { contract })
+        }
+
         #[wasm_bindgen(js_name = renderContractPng)]
         pub fn render_contract_png(&self, contract_json: &str) -> Result<Vec<u8>, JsValue> {
             self.ensure_open()?;
-            let contract: wellfriendpdf_engine::RenderContract =
-                serde_json::from_str(contract_json).map_err(|error| {
-                    JsValue::from_str(&format!("render contract JSON: {error}"))
-                })?;
+            let contract = parse_render_contract_json(contract_json)?;
             self.engine
                 .render_page_png_with_contract(&contract, &CancelToken::none())
                 .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractPngWithRenderCache)]
+        pub fn render_contract_png_with_render_cache(
+            &self,
+            contract_json: &str,
+            cache: &mut RenderCache,
+        ) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            self.engine
+                .render_page_png_with_contract_and_cache(
+                    &contract,
+                    &CancelToken::none(),
+                    &mut cache.cache,
+                )
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractPngWithCancellation)]
+        pub fn render_contract_png_with_cancellation(
+            &self,
+            contract_json: &str,
+            cancellation: &RenderCancellation,
+        ) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            self.engine
+                .render_page_png_with_contract(&contract, &cancellation.token)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectPng)]
+        pub fn render_contract_object_png(
+            &self,
+            contract: &WellfriendRenderContract,
+        ) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
+            self.engine
+                .render_page_png_with_contract(&contract.contract, &CancelToken::none())
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectPngWithRenderCache)]
+        pub fn render_contract_object_png_with_render_cache(
+            &self,
+            contract: &WellfriendRenderContract,
+            cache: &mut RenderCache,
+        ) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
+            self.engine
+                .render_page_png_with_contract_and_cache(
+                    &contract.contract,
+                    &CancelToken::none(),
+                    &mut cache.cache,
+                )
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectPngWithCancellation)]
+        pub fn render_contract_object_png_with_cancellation(
+            &self,
+            contract: &WellfriendRenderContract,
+            cancellation: &RenderCancellation,
+        ) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
+            self.engine
+                .render_page_png_with_contract(&contract.contract, &cancellation.token)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractPngWithFontSubstitutionReport)]
+        pub fn render_contract_png_with_font_substitution_report(
+            &self,
+            contract_json: &str,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let (bytes, log) = self
+                .engine
+                .render_page_png_with_contract_and_font_substitution_report(
+                    &contract,
+                    &CancelToken::none(),
+                )
+                .map_err(js_err)?;
+            let report_json = serde_json::to_string(&log)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractPngWithFontSubstitutionReportWithCancellation)]
+        pub fn render_contract_png_with_font_substitution_report_with_cancellation(
+            &self,
+            contract_json: &str,
+            cancellation: &RenderCancellation,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let (bytes, log) = self
+                .engine
+                .render_page_png_with_contract_and_font_substitution_report(
+                    &contract,
+                    &cancellation.token,
+                )
+                .map_err(js_err)?;
+            let report_json = serde_json::to_string(&log)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractPngWithRenderReport)]
+        pub fn render_contract_png_with_render_report(
+            &self,
+            contract_json: &str,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let (bytes, log, telemetry_report) = self
+                .engine
+                .render_page_png_with_contract_and_telemetry_report(&contract, &CancelToken::none())
+                .map_err(js_err)?;
+            let report_json = contract_render_report_json(&log, &telemetry_report)?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractPngWithRenderCacheReport)]
+        pub fn render_contract_png_with_render_cache_report(
+            &self,
+            contract_json: &str,
+            cache: &mut RenderCache,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let (bytes, log, telemetry_report) = self
+                .engine
+                .render_page_png_with_contract_and_telemetry_report_and_cache(
+                    &contract,
+                    &CancelToken::none(),
+                    &mut cache.cache,
+                )
+                .map_err(js_err)?;
+            let report_json = contract_render_report_json(&log, &telemetry_report)?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractPngWithRenderReportWithCancellation)]
+        pub fn render_contract_png_with_render_report_with_cancellation(
+            &self,
+            contract_json: &str,
+            cancellation: &RenderCancellation,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let (bytes, log, telemetry_report) = self
+                .engine
+                .render_page_png_with_contract_and_telemetry_report(&contract, &cancellation.token)
+                .map_err(js_err)?;
+            let report_json = contract_render_report_json(&log, &telemetry_report)?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectPngWithFontSubstitutionReport)]
+        pub fn render_contract_object_png_with_font_substitution_report(
+            &self,
+            contract: &WellfriendRenderContract,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let (bytes, log) = self
+                .engine
+                .render_page_png_with_contract_and_font_substitution_report(
+                    &contract.contract,
+                    &CancelToken::none(),
+                )
+                .map_err(js_err)?;
+            let report_json = serde_json::to_string(&log)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectPngWithFontSubstitutionReportWithCancellation)]
+        pub fn render_contract_object_png_with_font_substitution_report_with_cancellation(
+            &self,
+            contract: &WellfriendRenderContract,
+            cancellation: &RenderCancellation,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let (bytes, log) = self
+                .engine
+                .render_page_png_with_contract_and_font_substitution_report(
+                    &contract.contract,
+                    &cancellation.token,
+                )
+                .map_err(js_err)?;
+            let report_json = serde_json::to_string(&log)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectPngWithRenderReport)]
+        pub fn render_contract_object_png_with_render_report(
+            &self,
+            contract: &WellfriendRenderContract,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let (bytes, log, telemetry_report) = self
+                .engine
+                .render_page_png_with_contract_and_telemetry_report(
+                    &contract.contract,
+                    &CancelToken::none(),
+                )
+                .map_err(js_err)?;
+            let report_json = contract_render_report_json(&log, &telemetry_report)?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectPngWithRenderCacheReport)]
+        pub fn render_contract_object_png_with_render_cache_report(
+            &self,
+            contract: &WellfriendRenderContract,
+            cache: &mut RenderCache,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let (bytes, log, telemetry_report) = self
+                .engine
+                .render_page_png_with_contract_and_telemetry_report_and_cache(
+                    &contract.contract,
+                    &CancelToken::none(),
+                    &mut cache.cache,
+                )
+                .map_err(js_err)?;
+            let report_json = contract_render_report_json(&log, &telemetry_report)?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectPngWithRenderReportWithCancellation)]
+        pub fn render_contract_object_png_with_render_report_with_cancellation(
+            &self,
+            contract: &WellfriendRenderContract,
+            cancellation: &RenderCancellation,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let (bytes, log, telemetry_report) = self
+                .engine
+                .render_page_png_with_contract_and_telemetry_report(
+                    &contract.contract,
+                    &cancellation.token,
+                )
+                .map_err(js_err)?;
+            let report_json = contract_render_report_json(&log, &telemetry_report)?;
+            Ok(WellfriendOutput { bytes, report_json })
         }
 
         #[wasm_bindgen(js_name = renderContractInto)]
@@ -747,13 +1483,201 @@ mod wasm_api {
             output: &mut [u8],
         ) -> Result<(), JsValue> {
             self.ensure_open()?;
-            let contract: wellfriendpdf_engine::RenderContract =
-                serde_json::from_str(contract_json).map_err(|error| {
-                    JsValue::from_str(&format!("render contract JSON: {error}"))
-                })?;
+            let contract = parse_render_contract_json(contract_json)?;
             self.engine
                 .render_page_into_buffer(&contract, &CancelToken::none(), output)
                 .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractIntoWithCancellation)]
+        pub fn render_contract_into_with_cancellation(
+            &self,
+            contract_json: &str,
+            output: &mut [u8],
+            cancellation: &RenderCancellation,
+        ) -> Result<(), JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            self.engine
+                .render_page_into_buffer(&contract, &cancellation.token, output)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectInto)]
+        pub fn render_contract_object_into(
+            &self,
+            contract: &WellfriendRenderContract,
+            output: &mut [u8],
+        ) -> Result<(), JsValue> {
+            self.ensure_open()?;
+            self.engine
+                .render_page_into_buffer(&contract.contract, &CancelToken::none(), output)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectIntoWithCancellation)]
+        pub fn render_contract_object_into_with_cancellation(
+            &self,
+            contract: &WellfriendRenderContract,
+            output: &mut [u8],
+            cancellation: &RenderCancellation,
+        ) -> Result<(), JsValue> {
+            self.ensure_open()?;
+            self.engine
+                .render_page_into_buffer(&contract.contract, &cancellation.token, output)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = renderContractIntoWithFontSubstitutionReport)]
+        pub fn render_contract_into_with_font_substitution_report(
+            &self,
+            contract_json: &str,
+            output: &mut [u8],
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let log = self
+                .engine
+                .render_page_into_buffer_with_font_substitution_report(
+                    &contract,
+                    &CancelToken::none(),
+                    output,
+                )
+                .map_err(js_err)?;
+            serde_json::to_string(&log).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = renderContractIntoWithFontSubstitutionReportWithCancellation)]
+        pub fn render_contract_into_with_font_substitution_report_with_cancellation(
+            &self,
+            contract_json: &str,
+            output: &mut [u8],
+            cancellation: &RenderCancellation,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let log = self
+                .engine
+                .render_page_into_buffer_with_font_substitution_report(
+                    &contract,
+                    &cancellation.token,
+                    output,
+                )
+                .map_err(js_err)?;
+            serde_json::to_string(&log).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = renderContractIntoWithRenderReport)]
+        pub fn render_contract_into_with_render_report(
+            &self,
+            contract_json: &str,
+            output: &mut [u8],
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let (log, telemetry_report) = self
+                .engine
+                .render_page_into_buffer_with_telemetry_report(
+                    &contract,
+                    &CancelToken::none(),
+                    output,
+                )
+                .map_err(js_err)?;
+            contract_render_report_json(&log, &telemetry_report)
+        }
+
+        #[wasm_bindgen(js_name = renderContractIntoWithRenderReportWithCancellation)]
+        pub fn render_contract_into_with_render_report_with_cancellation(
+            &self,
+            contract_json: &str,
+            output: &mut [u8],
+            cancellation: &RenderCancellation,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let (log, telemetry_report) = self
+                .engine
+                .render_page_into_buffer_with_telemetry_report(
+                    &contract,
+                    &cancellation.token,
+                    output,
+                )
+                .map_err(js_err)?;
+            contract_render_report_json(&log, &telemetry_report)
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectIntoWithFontSubstitutionReport)]
+        pub fn render_contract_object_into_with_font_substitution_report(
+            &self,
+            contract: &WellfriendRenderContract,
+            output: &mut [u8],
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let log = self
+                .engine
+                .render_page_into_buffer_with_font_substitution_report(
+                    &contract.contract,
+                    &CancelToken::none(),
+                    output,
+                )
+                .map_err(js_err)?;
+            serde_json::to_string(&log).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectIntoWithFontSubstitutionReportWithCancellation)]
+        pub fn render_contract_object_into_with_font_substitution_report_with_cancellation(
+            &self,
+            contract: &WellfriendRenderContract,
+            output: &mut [u8],
+            cancellation: &RenderCancellation,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let log = self
+                .engine
+                .render_page_into_buffer_with_font_substitution_report(
+                    &contract.contract,
+                    &cancellation.token,
+                    output,
+                )
+                .map_err(js_err)?;
+            serde_json::to_string(&log).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectIntoWithRenderReport)]
+        pub fn render_contract_object_into_with_render_report(
+            &self,
+            contract: &WellfriendRenderContract,
+            output: &mut [u8],
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let (log, telemetry_report) = self
+                .engine
+                .render_page_into_buffer_with_telemetry_report(
+                    &contract.contract,
+                    &CancelToken::none(),
+                    output,
+                )
+                .map_err(js_err)?;
+            contract_render_report_json(&log, &telemetry_report)
+        }
+
+        #[wasm_bindgen(js_name = renderContractObjectIntoWithRenderReportWithCancellation)]
+        pub fn render_contract_object_into_with_render_report_with_cancellation(
+            &self,
+            contract: &WellfriendRenderContract,
+            output: &mut [u8],
+            cancellation: &RenderCancellation,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let (log, telemetry_report) = self
+                .engine
+                .render_page_into_buffer_with_telemetry_report(
+                    &contract.contract,
+                    &cancellation.token,
+                    output,
+                )
+                .map_err(js_err)?;
+            contract_render_report_json(&log, &telemetry_report)
         }
 
         #[wasm_bindgen(js_name = progressiveRenderJob)]
@@ -776,9 +1700,57 @@ mod wasm_api {
             Ok(ProgressiveRenderJob { job })
         }
 
+        #[wasm_bindgen(js_name = progressiveRenderJobWithContractJson)]
+        pub fn progressive_render_job_with_contract_json(
+            &self,
+            contract_json: &str,
+            tile_width: u32,
+            tile_height: u32,
+        ) -> Result<ProgressiveRenderJob, JsValue> {
+            self.ensure_open()?;
+            let contract = parse_render_contract_json(contract_json)?;
+            let job = self
+                .engine
+                .progressive_render_job_with_contract(contract, tile_width, tile_height)
+                .map_err(js_err)?;
+            Ok(ProgressiveRenderJob { job })
+        }
+
         #[wasm_bindgen(js_name = documentInfoJson)]
         pub fn document_info_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::document_info_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = documentViewsReportJson)]
+        pub fn document_views_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_views_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = backendPlanArenaReportJson)]
+        pub fn backend_plan_arena_report_json(
+            &self,
+            page: usize,
+            dpi: u32,
+            mode: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| {
+                sdk::backend_plan_arena_report_json(b, page, dpi, mode.as_deref(), None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = backendPlanArenaReportForContractJson)]
+        pub fn backend_plan_arena_report_for_contract_json(
+            &self,
+            contract_json: &str,
+        ) -> Result<String, JsValue> {
+            self.report(|b| {
+                sdk::backend_plan_arena_report_for_contract_json(b, contract_json, None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = prepressPlateReportJson)]
+        pub fn prepress_plate_report_json(&self, page: usize, dpi: u32) -> Result<String, JsValue> {
+            self.report(|b| sdk::prepress_plate_report_json(b, page, dpi, None))
         }
 
         #[wasm_bindgen(js_name = securityReportJson)]
@@ -1543,6 +2515,22 @@ mod wasm_api {
             })
         }
 
+        #[wasm_bindgen(js_name = editing_transactionsTransactionApplyWithRenderInvalidation)]
+        pub fn editing_transactions_transaction_apply_with_render_invalidation(
+            &self,
+            request_json: String,
+            render_invalidation_options_json: Option<String>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| {
+                sdk::editing_transactions_transaction_apply_with_render_invalidation_json(
+                    b,
+                    &request_json,
+                    render_invalidation_options_json.as_deref(),
+                    None,
+                )
+            })
+        }
+
         #[wasm_bindgen(js_name = editing_transactionsSceneEditText)]
         pub fn editing_transactions_scene_edit_text(
             &self,
@@ -1950,6 +2938,28 @@ mod wasm_api {
             serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
         }
 
+        #[wasm_bindgen(js_name = stepWithCancellation)]
+        pub fn step_with_cancellation(
+            &mut self,
+            max_tiles: usize,
+            cancellation: JsValue,
+        ) -> Result<String, JsValue> {
+            if wasm_cancellation_requested(&cancellation) {
+                self.job.request_cancel();
+                return Err(JsValue::from_str(
+                    "Wellfriend progressive render step was cancelled",
+                ));
+            }
+            let report = self.step(max_tiles)?;
+            if wasm_cancellation_requested(&cancellation) {
+                self.job.request_cancel();
+                return Err(JsValue::from_str(
+                    "Wellfriend progressive render step was cancelled",
+                ));
+            }
+            Ok(report)
+        }
+
         #[wasm_bindgen(js_name = tokenJson)]
         pub fn token_json(&self) -> Result<String, JsValue> {
             serde_json::to_string(&self.job.token())
@@ -1976,16 +2986,213 @@ mod wasm_api {
             self.job.cancel();
         }
 
+        #[wasm_bindgen(js_name = requestCancel)]
+        pub fn request_cancel(&self) {
+            self.job.request_cancel();
+        }
+
+        #[wasm_bindgen(js_name = reviseViewportHintJson)]
+        pub fn revise_viewport_hint_json(
+            &mut self,
+            hint_present: bool,
+            x: u32,
+            y: u32,
+            width: u32,
+            height: u32,
+        ) -> Result<String, JsValue> {
+            let viewport_hint = hint_present.then_some(wellfriendpdf_engine::RenderTile {
+                x,
+                y,
+                width,
+                height,
+            });
+            let report = self
+                .job
+                .revise_viewport_hint(viewport_hint)
+                .map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = reviseDirtyRegionJson)]
+        pub fn revise_dirty_region_json(
+            &mut self,
+            dirty_present: bool,
+            x: u32,
+            y: u32,
+            width: u32,
+            height: u32,
+        ) -> Result<String, JsValue> {
+            let dirty_region = dirty_present.then_some(wellfriendpdf_engine::RenderTile {
+                x,
+                y,
+                width,
+                height,
+            });
+            let report = self.job.revise_dirty_region(dirty_region).map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = reviseRenderContextJson)]
+        pub fn revise_render_context_json(
+            &mut self,
+            render_contract_fingerprint: Option<String>,
+            visibility_fingerprint: Option<String>,
+        ) -> Result<String, JsValue> {
+            let report = self
+                .job
+                .revise_render_context(render_contract_fingerprint, visibility_fingerprint)
+                .map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = reviseRenderContractJson)]
+        pub fn revise_render_contract_json(
+            &mut self,
+            contract_json: &str,
+        ) -> Result<String, JsValue> {
+            let contract: wellfriendpdf_engine::RenderContract =
+                serde_json::from_str(contract_json).map_err(|error| {
+                    JsValue::from_str(&format!("progressive render contract JSON: {error}"))
+                })?;
+            let report = self.job.revise_render_contract(contract).map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = applyRenderInvalidationPlanJson)]
+        pub fn apply_render_invalidation_plan_json(
+            &mut self,
+            plan_json: &str,
+        ) -> Result<String, JsValue> {
+            let report = self
+                .job
+                .apply_render_invalidation_plan_json(plan_json)
+                .map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = evaluateTilePublicationJson)]
+        pub fn evaluate_tile_publication_json(
+            &self,
+            publication_json: &str,
+        ) -> Result<String, JsValue> {
+            let publication: wellfriendpdf_engine::ProgressiveTilePublication =
+                serde_json::from_str(publication_json).map_err(|error| {
+                    JsValue::from_str(&format!("progressive tile publication JSON: {error}"))
+                })?;
+            let report = self.job.evaluate_tile_publication(&publication);
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = viewerQueueJson)]
+        pub fn viewer_queue_json(&self) -> Result<String, JsValue> {
+            let report = self.job.viewer_queue_report();
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = executeViewerQueueJson)]
+        pub fn execute_viewer_queue_json(&mut self, max_items: usize) -> Result<String, JsValue> {
+            let report = self
+                .job
+                .execute_viewer_queue(max_items, &CancelToken::none())
+                .map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = executeViewerQueueJsonWithCancellation)]
+        pub fn execute_viewer_queue_json_with_cancellation(
+            &mut self,
+            max_items: usize,
+            cancellation: &RenderCancellation,
+        ) -> Result<String, JsValue> {
+            let report = self
+                .job
+                .execute_viewer_queue(max_items, &cancellation.token)
+                .map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = executeAdjacentPagePrefetch)]
+        pub fn execute_adjacent_page_prefetch(
+            &self,
+            prefetch_identity: &str,
+            max_tiles: usize,
+        ) -> Result<AdjacentPagePrefetchExecution, JsValue> {
+            let execution = self
+                .job
+                .execute_adjacent_page_prefetch(prefetch_identity, max_tiles, &CancelToken::none())
+                .map_err(js_err)?;
+            let report_json = serde_json::to_string(&execution.report)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            Ok(AdjacentPagePrefetchExecution {
+                report_json,
+                job: execution.job.map(|job| ProgressiveRenderJob { job }),
+            })
+        }
+
+        #[wasm_bindgen(js_name = executeAdjacentPagePrefetchWithCancellation)]
+        pub fn execute_adjacent_page_prefetch_with_cancellation(
+            &self,
+            prefetch_identity: &str,
+            max_tiles: usize,
+            cancellation: &RenderCancellation,
+        ) -> Result<AdjacentPagePrefetchExecution, JsValue> {
+            let execution = self
+                .job
+                .execute_adjacent_page_prefetch(prefetch_identity, max_tiles, &cancellation.token)
+                .map_err(js_err)?;
+            let report_json = serde_json::to_string(&execution.report)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            Ok(AdjacentPagePrefetchExecution {
+                report_json,
+                job: execution.job.map(|job| ProgressiveRenderJob { job }),
+            })
+        }
+
+        #[wasm_bindgen(js_name = viewerCallbackDispatchJson)]
+        pub fn viewer_callback_dispatch_json(&self) -> Result<String, JsValue> {
+            let report = self.job.viewer_callback_dispatch_report();
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = dispatchViewerCallbacks)]
+        pub fn dispatch_viewer_callbacks(&self, callback: &Function) -> Result<String, JsValue> {
+            let report = self.job.viewer_callback_dispatch_report();
+            for event in &report.events {
+                let event_json = serde_json::to_string(event)
+                    .map_err(|error| JsValue::from_str(&error.to_string()))?;
+                callback.call1(&JsValue::NULL, &JsValue::from_str(&event_json))?;
+            }
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
         #[wasm_bindgen(js_name = finishPng)]
-        pub fn finish_png(&self) -> Result<Option<Vec<u8>>, JsValue> {
-            let Some(buffer) = self.job.finish() else {
-                return Ok(None);
-            };
+        pub fn finish_png(&self) -> Result<Vec<u8>, JsValue> {
+            let buffer = self.job.finish_checked().map_err(js_err)?;
             wellfriendpdf_engine::images::encoder::ImageEncoder::encode_png_fast(
                 &buffer.to_raw_image(),
             )
-            .map(Some)
             .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = finishPngWithCancellation)]
+        pub fn finish_png_with_cancellation(
+            &self,
+            cancellation: JsValue,
+        ) -> Result<Vec<u8>, JsValue> {
+            if wasm_cancellation_requested(&cancellation) {
+                self.job.request_cancel();
+                return Err(JsValue::from_str(
+                    "Wellfriend progressive render finish was cancelled",
+                ));
+            }
+            let png = self.finish_png()?;
+            if wasm_cancellation_requested(&cancellation) {
+                self.job.request_cancel();
+                return Err(JsValue::from_str(
+                    "Wellfriend progressive render finish was cancelled",
+                ));
+            }
+            Ok(png)
         }
 
         #[wasm_bindgen(js_name = close)]
@@ -1994,8 +3201,111 @@ mod wasm_api {
         }
     }
 
+    fn wasm_cancellation_requested(cancellation: &JsValue) -> bool {
+        cancellation.as_bool().unwrap_or_else(|| {
+            Reflect::get(cancellation, &JsValue::from_str("aborted"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+    }
+
     fn js_err(err: wellfriendpdf_engine::WellfriendError) -> JsValue {
         JsValue::from_str(&err.to_string())
+    }
+
+    fn contract_render_report_json(
+        log: &wellfriendpdf_engine::FontSubstitutionLog,
+        telemetry_report: &wellfriendpdf_engine::RenderContractTelemetryReport,
+    ) -> Result<String, JsValue> {
+        let report = serde_json::json!({
+            "font_substitution_report": log,
+            "render_telemetry_report": telemetry_report,
+        });
+        serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    fn parse_render_contract_json(json: &str) -> Result<RenderContract, JsValue> {
+        let contract: RenderContract = serde_json::from_str(json)
+            .map_err(|error| JsValue::from_str(&format!("render contract JSON: {error}")))?;
+        contract
+            .validate()
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        Ok(contract)
+    }
+
+    fn validate_render_contract(
+        contract: RenderContract,
+    ) -> Result<WellfriendRenderContract, JsValue> {
+        contract
+            .validate()
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        Ok(WellfriendRenderContract { contract })
+    }
+
+    fn parse_pixel_format(value: Option<&str>) -> Result<PixelFormat, JsValue> {
+        match value.unwrap_or("Rgba8") {
+            "Rgba8" | "rgba8" | "rgba" => Ok(PixelFormat::Rgba8),
+            "Bgra8" | "bgra8" | "bgra" => Ok(PixelFormat::Bgra8),
+            "Rgb8" | "rgb8" | "rgb" => Ok(PixelFormat::Rgb8),
+            "Bgr8" | "bgr8" | "bgr" => Ok(PixelFormat::Bgr8),
+            "Gray8" | "gray8" | "gray" | "grey8" | "grey" => Ok(PixelFormat::Gray8),
+            other => Err(JsValue::from_str(&format!(
+                "unsupported render contract pixel_format '{other}'"
+            ))),
+        }
+    }
+
+    fn parse_alpha_mode(value: Option<&str>) -> Result<AlphaMode, JsValue> {
+        match value.unwrap_or("Premultiplied") {
+            "Premultiplied" | "premultiplied" => Ok(AlphaMode::Premultiplied),
+            "Straight" | "straight" => Ok(AlphaMode::Straight),
+            "Opaque" | "opaque" => Ok(AlphaMode::Opaque),
+            other => Err(JsValue::from_str(&format!(
+                "unsupported render contract alpha_mode '{other}'"
+            ))),
+        }
+    }
+
+    fn parse_contract_enum<T>(field: &str, value: &str) -> Result<T, JsValue>
+    where
+        T: DeserializeOwned,
+    {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(JsValue::from_str(&format!(
+                "render contract {field} must be present"
+            )));
+        }
+        let canonical = canonical_contract_enum_name(trimmed);
+        for candidate in [trimmed, canonical.as_str()] {
+            if let Ok(parsed) =
+                serde_json::from_value(serde_json::Value::String(candidate.to_string()))
+            {
+                return Ok(parsed);
+            }
+        }
+        Err(JsValue::from_str(&format!(
+            "unsupported render contract {field} '{value}'"
+        )))
+    }
+
+    fn canonical_contract_enum_name(value: &str) -> String {
+        let mut out = String::new();
+        let mut uppercase_next = true;
+        for ch in value.chars() {
+            if ch.is_ascii_alphanumeric() {
+                if uppercase_next {
+                    out.push(ch.to_ascii_uppercase());
+                    uppercase_next = false;
+                } else {
+                    out.push(ch);
+                }
+            } else {
+                uppercase_next = true;
+            }
+        }
+        out
     }
 
     fn incremental_options(placeholder_size: usize, certify: i32) -> IncrementalSigningOptions {

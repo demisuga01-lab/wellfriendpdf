@@ -217,7 +217,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     },
     CodecBackendRegistryEntry {
         codec_kind: "JPXDecode",
-        aliases: &[],
+        aliases: &["JPX"],
         backend_name: "wellfriendpdf-rust-hayro-jpeg2000",
         implementation_language: "rust",
         rust_dependency: Some("hayro-jpeg2000"),
@@ -1469,6 +1469,7 @@ fn canonical_filter_name(name: &str) -> &str {
         "A85" => "ASCII85Decode",
         "RL" => "RunLengthDecode",
         "DCT" => "DCTDecode",
+        "JPX" => "JPXDecode",
         "CCF" => "CCITTFaxDecode",
         other => other,
     }
@@ -1491,20 +1492,29 @@ fn elapsed_ms(started: Instant) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn decode_timer_start() -> Instant {
+type DecodeTimer = Instant;
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Copy, Clone, Debug)]
+struct DecodeTimer;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_timer_start() -> DecodeTimer {
     Instant::now()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn decode_elapsed_ms(started: Instant) -> u64 {
+fn decode_elapsed_ms(started: DecodeTimer) -> u64 {
     elapsed_ms(started)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn decode_timer_start() {}
+fn decode_timer_start() -> DecodeTimer {
+    DecodeTimer
+}
 
 #[cfg(target_arch = "wasm32")]
-fn decode_elapsed_ms(_: ()) -> u64 {
+fn decode_elapsed_ms(_: DecodeTimer) -> u64 {
     0
 }
 
@@ -1537,4 +1547,39 @@ pub fn write_worker_response(path: &Path, response: &CodecWorkerResponse) -> std
     let json = serde_json::to_vec(response).map_err(std::io::Error::other)?;
     file.write_all(&json)?;
     file.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jpx_abbreviation_selects_registered_jpx_backend() {
+        let entry = codec_backend_registry()
+            .iter()
+            .find(|entry| entry.codec_kind == "JPXDecode")
+            .expect("JPX backend registry entry");
+        assert!(entry.aliases.contains(&"JPX"));
+
+        let selection = select_codec_backend(
+            "JPX",
+            CodecBackendPreference::Default,
+            &CodecIsolationPolicy::InProcess,
+        );
+        assert!(selection.ok);
+        assert_eq!(selection.codec_kind, "JPXDecode");
+        assert_eq!(
+            selection.selected_backend.as_deref(),
+            Some("wellfriendpdf-rust-hayro-jpeg2000")
+        );
+
+        let report = CodecIsolationReport::new(
+            "JPX",
+            &CodecIsolationPolicy::InProcess,
+            "jpx-alias-test".to_string(),
+            None,
+        );
+        assert_eq!(report.codec_kind, "JPXDecode");
+        assert_eq!(report.backend_selection.codec_kind, "JPXDecode");
+    }
 }

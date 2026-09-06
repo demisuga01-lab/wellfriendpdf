@@ -313,7 +313,7 @@ fn build_zip(
             .compression_method(CompressionMethod::Deflated)
             .compression_level(Some(6));
 
-        // TODO: parallelise image encoding using rayon, then write ZIP entries sequentially.
+        // Keep ZIP assembly sequential so route memory and CPU use stay bounded.
         for (idx, img_ref) in images.iter().enumerate() {
             let (image_bytes, ext) = match encode_image(engine, img_ref, params) {
                 Ok(pair) => pair,

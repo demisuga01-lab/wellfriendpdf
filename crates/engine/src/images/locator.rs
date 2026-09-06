@@ -48,7 +48,9 @@ pub struct InlineImageData {
     /// filters still applied — i.e. exactly the inline image stream payload.
     pub bytes: Vec<u8>,
 
-    /// Bits per component, resolved from `/BPC` or `/BitsPerComponent` (or 8).
+    /// Bits per component, resolved from `/BPC` or `/BitsPerComponent`.
+    /// Non-mask images must declare this unless the terminal JPX filter carries
+    /// sample depth in the codestream.
     pub bits_per_component: u8,
 
     /// The filter chain (`/F` or `/Filter`), in application order. Both
@@ -116,10 +118,7 @@ impl ImageReference {
 /// Scalar/array parameters parsed from an inline image's BI...ID dictionary.
 #[derive(Debug, Default)]
 struct InlineParams {
-    nums: HashMap<String, i64>,
-    strs: HashMap<String, String>,
-    bools: HashMap<String, bool>,
-    name_arrays: HashMap<String, Vec<String>>,
+    values: HashMap<String, Operand>,
 }
 
 pub struct ImageLocator;
@@ -180,7 +179,7 @@ impl ImageLocator {
             &mut soft_mask_objects,
             options,
             &mut refs,
-        );
+        )?;
 
         if options.include_inline {
             let inline_refs = Self::find_inline_images(engine, page_number)?;
@@ -227,73 +226,170 @@ impl ImageLocator {
         object_number: u32,
         generation_number: u16,
         dict: &PdfDictionary,
-    ) -> ImageReference {
-        let width = dict
-            .get_integer("Width")
-            .or_else(|| dict.get_integer("W"))
-            .unwrap_or(0)
-            .max(0) as u32;
-        let height = dict
-            .get_integer("Height")
-            .or_else(|| dict.get_integer("H"))
-            .unwrap_or(0)
-            .max(0) as u32;
-        let bpc = dict
-            .get_integer("BitsPerComponent")
-            .or_else(|| dict.get_integer("BPC"))
-            .unwrap_or(8)
-            .clamp(0, 16) as u8;
-        let is_mask = Self::get_image_mask(dict);
+    ) -> Result<ImageReference> {
+        let label = format!("image XObject /{xobject_name}");
+        let filters = Self::extract_filters(dict, &label)?;
+        let width = Self::required_positive_u32(dict, "Width", "W", &label)?;
+        let height = Self::required_positive_u32(dict, "Height", "H", &label)?;
+        let is_mask = Self::get_image_mask(dict, &label)?;
+        let bpc = Self::image_bits_per_component(dict, &filters, is_mask, &label)?;
+        let color_space = Self::extract_color_space(dict, &filters, is_mask, &label)?;
 
-        ImageReference {
+        Ok(ImageReference {
             page_number,
             xobject_name,
             object_number,
             generation_number,
             width,
             height,
-            bits_per_component: if is_mask { 1 } else { bpc },
-            color_space: Self::extract_color_space(dict),
-            filter: Self::extract_filters(dict),
+            bits_per_component: bpc,
+            color_space,
+            filter: filters,
             is_inline: false,
             is_mask,
             is_smask: false,
             inline_data: None,
+        })
+    }
+
+    fn required_positive_u32(
+        dict: &PdfDictionary,
+        key: &str,
+        short_key: &str,
+        label: &str,
+    ) -> Result<u32> {
+        let value = dict
+            .get_integer(key)
+            .or_else(|| dict.get_integer(short_key));
+        match value {
+            Some(number) if number > 0 => u32::try_from(number).map_err(|_| {
+                WellfriendError::MalformedPdf(format!("{label} /{key} exceeds dimension limit"))
+            }),
+            Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /{key} must be a positive integer"
+            ))),
+            None if dict.contains_key(key) || dict.contains_key(short_key) => Err(
+                WellfriendError::MalformedPdf(format!("{label} /{key} is not an integer")),
+            ),
+            None => Err(WellfriendError::MalformedPdf(format!(
+                "{label} missing /{key}"
+            ))),
         }
     }
 
-    fn extract_color_space(dict: &PdfDictionary) -> String {
-        let value = dict.get("ColorSpace").or_else(|| dict.get("CS"));
+    fn image_bits_per_component(
+        dict: &PdfDictionary,
+        filters: &[String],
+        is_mask: bool,
+        label: &str,
+    ) -> Result<u8> {
+        let value = dict
+            .get_integer("BitsPerComponent")
+            .or_else(|| dict.get_integer("BPC"));
+        if is_mask {
+            return match value {
+                Some(1) => Ok(1),
+                Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                    "{label} /BitsPerComponent must be 1 for /ImageMask true"
+                ))),
+                None if dict.contains_key("BitsPerComponent") || dict.contains_key("BPC") => {
+                    Err(WellfriendError::MalformedPdf(format!(
+                        "{label} /BitsPerComponent is not an integer"
+                    )))
+                }
+                None => Ok(1),
+            };
+        }
+
         match value {
-            Some(PdfObject::Name(name)) => Self::expand_color_space_name(name),
+            Some(number @ (1 | 2 | 4 | 8 | 16)) => Ok(number as u8),
+            Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /BitsPerComponent must be one of 1, 2, 4, 8, or 16"
+            ))),
+            None if !dict.contains_key("BitsPerComponent")
+                && !dict.contains_key("BPC")
+                && Self::terminal_filter_carries_sample_depth(filters) =>
+            {
+                Ok(8)
+            }
+            None if dict.contains_key("BitsPerComponent") || dict.contains_key("BPC") => {
+                Err(WellfriendError::MalformedPdf(format!(
+                    "{label} /BitsPerComponent is not an integer"
+                )))
+            }
+            None => Err(WellfriendError::MalformedPdf(format!(
+                "{label} missing /BitsPerComponent"
+            ))),
+        }
+    }
+
+    fn extract_color_space(
+        dict: &PdfDictionary,
+        filters: &[String],
+        is_mask: bool,
+        label: &str,
+    ) -> Result<String> {
+        if is_mask {
+            return Ok("DeviceGray".to_string());
+        }
+
+        match dict.get("ColorSpace").or_else(|| dict.get("CS")) {
+            Some(PdfObject::Name(name)) => Ok(Self::expand_color_space_name(name)),
             Some(PdfObject::Array(arr)) => arr
                 .first()
                 .and_then(PdfObject::as_name)
-                .unwrap_or("Unknown")
-                .to_string(),
-            _ => "Unknown".to_string(),
+                .map(Self::expand_color_space_name)
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf(format!("{label} has malformed /ColorSpace"))
+                }),
+            Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /ColorSpace is not a name or array"
+            ))),
+            None if Self::terminal_filter_carries_sample_depth(filters) => {
+                Ok("JPXDecode".to_string())
+            }
+            None => Err(WellfriendError::MalformedPdf(format!(
+                "{label} missing /ColorSpace"
+            ))),
         }
     }
 
-    fn extract_filters(dict: &PdfDictionary) -> Vec<String> {
+    fn extract_filters(dict: &PdfDictionary, label: &str) -> Result<Vec<String>> {
         let value = dict.get("Filter").or_else(|| dict.get("F"));
         match value {
-            Some(PdfObject::Name(name)) => vec![name.clone()],
+            Some(PdfObject::Name(name)) => Ok(vec![name.clone()]),
             Some(PdfObject::Array(arr)) => arr
                 .iter()
-                .filter_map(PdfObject::as_name)
-                .map(str::to_string)
+                .map(|value| {
+                    value.as_name().map(str::to_string).ok_or_else(|| {
+                        WellfriendError::MalformedPdf(format!(
+                            "{label} /Filter array contains a non-name entry"
+                        ))
+                    })
+                })
                 .collect(),
-            _ => vec![],
+            Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /Filter is not a name or name array"
+            ))),
+            _ => Ok(vec![]),
         }
     }
 
-    fn get_image_mask(dict: &PdfDictionary) -> bool {
+    fn get_image_mask(dict: &PdfDictionary, label: &str) -> Result<bool> {
         match dict.get("ImageMask").or_else(|| dict.get("IM")) {
-            Some(PdfObject::Boolean(value)) => *value,
-            Some(PdfObject::Name(name)) => name.eq_ignore_ascii_case("true"),
-            _ => false,
+            Some(PdfObject::Boolean(value)) => Ok(*value),
+            Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /ImageMask is not a boolean"
+            ))),
+            _ => Ok(false),
         }
+    }
+
+    fn terminal_filter_carries_sample_depth(filters: &[String]) -> bool {
+        matches!(
+            filters.last().map(String::as_str),
+            Some("JPXDecode" | "JPX")
+        )
     }
 
     fn expand_color_space_name(name: &str) -> String {
@@ -325,64 +421,12 @@ impl ImageLocator {
                     None
                 };
 
-                let xobject_name = format!("inline_{}_{}", page_number, inline_index);
-                let width = params
-                    .nums
-                    .get("W")
-                    .or_else(|| params.nums.get("Width"))
-                    .copied()
-                    .unwrap_or(0)
-                    .max(0) as u32;
-                let height = params
-                    .nums
-                    .get("H")
-                    .or_else(|| params.nums.get("Height"))
-                    .copied()
-                    .unwrap_or(0)
-                    .max(0) as u32;
-                let bpc = params
-                    .nums
-                    .get("BPC")
-                    .or_else(|| params.nums.get("BitsPerComponent"))
-                    .copied()
-                    .unwrap_or(8)
-                    .clamp(0, 16) as u8;
-                let cs_key = params
-                    .strs
-                    .get("CS")
-                    .or_else(|| params.strs.get("ColorSpace"))
-                    .map(String::as_str)
-                    .unwrap_or("DeviceRGB");
-                let filter = Self::inline_filters(&params);
-                let is_mask = params
-                    .bools
-                    .get("IM")
-                    .or_else(|| params.bools.get("ImageMask"))
-                    .copied()
-                    .unwrap_or(false);
-                let effective_bpc = if is_mask { 1 } else { bpc };
-
-                let inline_data = pixel_bytes.map(|bytes| InlineImageData {
-                    bytes,
-                    bits_per_component: effective_bpc,
-                    filters: filter.clone(),
-                });
-
-                inline_refs.push(ImageReference {
+                inline_refs.push(Self::inline_ref_from_params(
                     page_number,
-                    xobject_name,
-                    object_number: 0,
-                    generation_number: 0,
-                    width,
-                    height,
-                    bits_per_component: effective_bpc,
-                    color_space: Self::expand_color_space_name(cs_key),
-                    filter,
-                    is_inline: true,
-                    is_mask,
-                    is_smask: false,
-                    inline_data,
-                });
+                    inline_index,
+                    &params,
+                    pixel_bytes,
+                )?);
                 inline_index += 1;
             }
             i += 1;
@@ -391,43 +435,56 @@ impl ImageLocator {
         Ok(inline_refs)
     }
 
+    fn inline_ref_from_params(
+        page_number: usize,
+        inline_index: usize,
+        params: &InlineParams,
+        pixel_bytes: Option<Vec<u8>>,
+    ) -> Result<ImageReference> {
+        let label = format!("inline image {page_number}:{inline_index}");
+        let filter = Self::inline_filters_strict(params, &label)?;
+        let filter_refs: Vec<&str> = filter.iter().map(String::as_str).collect();
+        let is_mask = Self::inline_bool(params, "IM", "ImageMask", &label)?;
+        let width = Self::inline_required_positive_u32(params, "W", "Width", &label)?;
+        let height = Self::inline_required_positive_u32(params, "H", "Height", &label)?;
+        let bits_per_component = if is_mask {
+            Self::inline_mask_bits_per_component(params, &label)?
+        } else {
+            Self::inline_bits_per_component(params, &filter_refs, &label)?
+        };
+        let color_space = Self::inline_color_space(params, &filter_refs, is_mask, &label)?;
+
+        let inline_data = pixel_bytes.map(|bytes| InlineImageData {
+            bytes,
+            bits_per_component,
+            filters: filter.clone(),
+        });
+
+        Ok(ImageReference {
+            page_number,
+            xobject_name: format!("inline_{}_{}", page_number, inline_index),
+            object_number: 0,
+            generation_number: 0,
+            width,
+            height,
+            bits_per_component,
+            color_space,
+            filter,
+            is_inline: true,
+            is_mask,
+            is_smask: false,
+            inline_data,
+        })
+    }
+
     fn parse_inline_image_params(operands: &[Operand]) -> InlineParams {
         let mut params = InlineParams::default();
 
-        let mut iter = operands.iter().peekable();
+        let mut iter = operands.iter();
         while let Some(op) = iter.next() {
             if let Some(key) = op.as_name() {
-                if let Some(next) = iter.peek() {
-                    match *next {
-                        Operand::Integer(n) => {
-                            params.nums.insert(key.to_string(), *n);
-                            iter.next();
-                        }
-                        Operand::Real(r) => {
-                            params.nums.insert(key.to_string(), *r as i64);
-                            iter.next();
-                        }
-                        Operand::Name(s) => {
-                            params.strs.insert(key.to_string(), s.clone());
-                            iter.next();
-                        }
-                        Operand::Boolean(b) => {
-                            params.bools.insert(key.to_string(), *b);
-                            iter.next();
-                        }
-                        Operand::Array(items) => {
-                            // Filter chains may be expressed as a name array,
-                            // e.g. /F [/AHx /Fl]. Capture every name in order.
-                            let names: Vec<String> = items
-                                .iter()
-                                .filter_map(Operand::as_name)
-                                .map(str::to_string)
-                                .collect();
-                            params.name_arrays.insert(key.to_string(), names);
-                            iter.next();
-                        }
-                        _ => {}
-                    }
+                if let Some(next) = iter.next() {
+                    params.values.insert(key.to_string(), next.clone());
                 }
             }
         }
@@ -435,26 +492,158 @@ impl ImageLocator {
         params
     }
 
-    /// Resolve the inline image filter chain from `/F` or `/Filter`, accepting
-    /// either a single name or a name array. Returns names verbatim (the decode
-    /// path understands both abbreviated and full forms).
-    fn inline_filters(params: &InlineParams) -> Vec<String> {
-        if let Some(arr) = params
-            .name_arrays
-            .get("F")
-            .or_else(|| params.name_arrays.get("Filter"))
-        {
-            return arr.clone();
+    fn inline_value<'a>(
+        params: &'a InlineParams,
+        short_key: &str,
+        key: &str,
+    ) -> Option<&'a Operand> {
+        params
+            .values
+            .get(short_key)
+            .or_else(|| params.values.get(key))
+    }
+
+    fn inline_required_positive_u32(
+        params: &InlineParams,
+        short_key: &str,
+        key: &str,
+        label: &str,
+    ) -> Result<u32> {
+        let Some(value) = Self::inline_value(params, short_key, key) else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} missing /{key}"
+            )));
+        };
+        let Some(number) = value.as_number() else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} /{key} is not numeric"
+            )));
+        };
+        if !number.is_finite() || number <= 0.0 || number.fract() != 0.0 {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} /{key} must be a positive integer"
+            )));
         }
-        match params
-            .strs
-            .get("F")
-            .or_else(|| params.strs.get("Filter"))
-            .map(String::as_str)
-        {
-            Some(name) if !name.is_empty() => vec![name.to_string()],
-            _ => vec![],
+        if number > f64::from(u32::MAX) {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} /{key} exceeds dimension limit"
+            )));
         }
+        Ok(number as u32)
+    }
+
+    fn inline_bits_per_component(
+        params: &InlineParams,
+        filters: &[&str],
+        label: &str,
+    ) -> Result<u8> {
+        let Some(value) = Self::inline_value(params, "BPC", "BitsPerComponent") else {
+            if Self::inline_terminal_filter_carries_sample_depth(filters) {
+                return Ok(8);
+            }
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} missing /BitsPerComponent"
+            )));
+        };
+        let Some(number) = value.as_number() else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} /BitsPerComponent is not numeric"
+            )));
+        };
+        if !number.is_finite() || number.fract() != 0.0 {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} /BitsPerComponent must be one of 1, 2, 4, 8, or 16"
+            )));
+        }
+        match number as i64 {
+            1 | 2 | 4 | 8 | 16 => Ok(number as u8),
+            _ => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /BitsPerComponent must be one of 1, 2, 4, 8, or 16"
+            ))),
+        }
+    }
+
+    fn inline_mask_bits_per_component(params: &InlineParams, label: &str) -> Result<u8> {
+        let Some(value) = Self::inline_value(params, "BPC", "BitsPerComponent") else {
+            return Ok(1);
+        };
+        let Some(number) = value.as_number() else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} /BitsPerComponent is not numeric"
+            )));
+        };
+        if number == 1.0 {
+            Ok(1)
+        } else {
+            Err(WellfriendError::MalformedPdf(format!(
+                "{label} /BitsPerComponent must be 1 for /ImageMask true"
+            )))
+        }
+    }
+
+    fn inline_color_space(
+        params: &InlineParams,
+        filters: &[&str],
+        is_mask: bool,
+        label: &str,
+    ) -> Result<String> {
+        if is_mask {
+            return Ok("DeviceGray".to_string());
+        }
+
+        match Self::inline_value(params, "CS", "ColorSpace") {
+            Some(Operand::Name(name)) => Ok(Self::expand_color_space_name(name)),
+            Some(Operand::Array(items)) => items
+                .first()
+                .and_then(Operand::as_name)
+                .map(Self::expand_color_space_name)
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf(format!("{label} has malformed /ColorSpace"))
+                }),
+            Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /ColorSpace is not a name or array"
+            ))),
+            None if Self::inline_terminal_filter_carries_sample_depth(filters) => {
+                Ok("JPXDecode".to_string())
+            }
+            None => Err(WellfriendError::MalformedPdf(format!(
+                "{label} missing /ColorSpace"
+            ))),
+        }
+    }
+
+    fn inline_bool(params: &InlineParams, short_key: &str, key: &str, label: &str) -> Result<bool> {
+        match Self::inline_value(params, short_key, key) {
+            Some(Operand::Boolean(value)) => Ok(*value),
+            Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /{key} is not a boolean"
+            ))),
+            None => Ok(false),
+        }
+    }
+
+    fn inline_filters_strict(params: &InlineParams, label: &str) -> Result<Vec<String>> {
+        match Self::inline_value(params, "F", "Filter") {
+            Some(Operand::Name(name)) => Ok(vec![name.clone()]),
+            Some(Operand::Array(items)) => items
+                .iter()
+                .map(|value| {
+                    value.as_name().map(str::to_string).ok_or_else(|| {
+                        WellfriendError::MalformedPdf(format!(
+                            "{label} /Filter array contains a non-name entry"
+                        ))
+                    })
+                })
+                .collect(),
+            Some(_) => Err(WellfriendError::MalformedPdf(format!(
+                "{label} /Filter is not a name or name array"
+            ))),
+            None => Ok(vec![]),
+        }
+    }
+
+    fn inline_terminal_filter_carries_sample_depth(filters: &[&str]) -> bool {
+        matches!(filters.last().copied(), Some("JPXDecode" | "JPX"))
     }
 
     fn walk_xobject_dict(
@@ -465,7 +654,7 @@ impl ImageLocator {
         soft_mask_objects: &mut HashSet<u32>,
         options: &ImageLocateOptions,
         results: &mut Vec<ImageReference>,
-    ) {
+    ) -> Result<()> {
         let _ = options;
         for (name, &(obj_num, gen_num)) in xobjects {
             if !visited.insert(obj_num) {
@@ -504,7 +693,7 @@ impl ImageLocator {
                         obj_num,
                         gen_num,
                         &dict,
-                    ));
+                    )?);
                 }
                 Some("Form") => {
                     log::debug!("XObject '{}' is a Form; walking nested images", name);
@@ -526,7 +715,7 @@ impl ImageLocator {
                                 soft_mask_objects,
                                 options,
                                 results,
-                            );
+                            )?;
                         }
                     }
                 }
@@ -542,6 +731,7 @@ impl ImageLocator {
                 }
             }
         }
+        Ok(())
     }
 
     fn resolve_resource_dict(dict: &PdfDictionary, reader: &PdfReader) -> Option<PdfDictionary> {
@@ -568,13 +758,27 @@ impl ImageLocator {
 mod tests {
     use super::*;
 
+    fn valid_image_dict() -> PdfDictionary {
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Width", PdfObject::Integer(10));
+        dict.insert("Height", PdfObject::Integer(10));
+        dict.insert("BitsPerComponent", PdfObject::Integer(8));
+        dict.insert("ColorSpace", PdfObject::Name("DeviceRGB".to_string()));
+        dict
+    }
+
     fn image_ref(dict: &PdfDictionary) -> ImageReference {
-        ImageLocator::image_ref_from_dict(1, "Im1".to_string(), 5, 0, dict)
+        ImageLocator::image_ref_from_dict(1, "Im1".to_string(), 5, 0, dict).unwrap()
+    }
+
+    fn inline_ref(operands: Vec<Operand>) -> Result<ImageReference> {
+        let params = ImageLocator::parse_inline_image_params(&operands);
+        ImageLocator::inline_ref_from_params(1, 0, &params, Some(vec![0]))
     }
 
     #[test]
     fn extract_color_space_handles_names() {
-        let mut d = PdfDictionary::empty();
+        let mut d = valid_image_dict();
         d.insert("ColorSpace", PdfObject::Name("DeviceRGB".to_string()));
         let img = image_ref(&d);
         assert_eq!(img.color_space, "DeviceRGB");
@@ -582,7 +786,7 @@ mod tests {
 
     #[test]
     fn extract_filters_handles_single_name() {
-        let mut d = PdfDictionary::empty();
+        let mut d = valid_image_dict();
         d.insert("Filter", PdfObject::Name("DCTDecode".to_string()));
         let img = image_ref(&d);
         assert_eq!(img.filter, vec!["DCTDecode"]);
@@ -590,7 +794,7 @@ mod tests {
 
     #[test]
     fn extract_filters_handles_array() {
-        let mut d = PdfDictionary::empty();
+        let mut d = valid_image_dict();
         d.insert(
             "Filter",
             PdfObject::Array(vec![
@@ -611,27 +815,29 @@ mod tests {
         let img = image_ref(&d);
         assert!(img.is_mask);
         assert_eq!(img.bits_per_component, 1);
+        assert_eq!(img.color_space, "DeviceGray");
     }
 
     #[test]
-    fn image_mask_name_true_is_detected() {
+    fn image_mask_non_boolean_is_rejected() {
         let mut d = PdfDictionary::empty();
         d.insert("IM", PdfObject::Name("true".to_string()));
-        let img = image_ref(&d);
-        assert!(img.is_mask);
-        assert_eq!(img.bits_per_component, 1);
+        d.insert("Width", PdfObject::Integer(10));
+        d.insert("Height", PdfObject::Integer(10));
+        let error = ImageLocator::image_ref_from_dict(1, "Im1".to_string(), 5, 0, &d).unwrap_err();
+        assert!(format!("{error}").contains("/ImageMask is not a boolean"));
     }
 
     #[test]
     fn abbreviated_color_space_names_expanded() {
-        let mut d = PdfDictionary::empty();
+        let mut d = valid_image_dict();
         d.insert("ColorSpace", PdfObject::Name("G".to_string()));
         let img = image_ref(&d);
         assert_eq!(img.color_space, "DeviceGray");
 
-        let mut d2 = PdfDictionary::empty();
+        let mut d2 = valid_image_dict();
         d2.insert("ColorSpace", PdfObject::Name("RGB".to_string()));
-        let img2 = ImageLocator::image_ref_from_dict(1, "Im2".to_string(), 6, 0, &d2);
+        let img2 = ImageLocator::image_ref_from_dict(1, "Im2".to_string(), 6, 0, &d2).unwrap();
         assert_eq!(img2.color_space, "DeviceRGB");
     }
 
@@ -736,10 +942,13 @@ mod tests {
             Operand::Boolean(false),
         ];
         let params = ImageLocator::parse_inline_image_params(&operands);
-        assert_eq!(params.nums.get("W"), Some(&200i64));
-        assert_eq!(params.nums.get("H"), Some(&150i64));
-        assert_eq!(params.strs.get("CS"), Some(&"RGB".to_string()));
-        assert_eq!(params.bools.get("IM"), Some(&false));
+        assert_eq!(params.values.get("W"), Some(&Operand::Integer(200)));
+        assert_eq!(params.values.get("H"), Some(&Operand::Integer(150)));
+        assert_eq!(
+            params.values.get("CS"),
+            Some(&Operand::Name("RGB".to_string()))
+        );
+        assert_eq!(params.values.get("IM"), Some(&Operand::Boolean(false)));
     }
 
     #[test]
@@ -750,7 +959,7 @@ mod tests {
         ];
         let params = ImageLocator::parse_inline_image_params(&operands);
         assert_eq!(
-            ImageLocator::inline_filters(&params),
+            ImageLocator::inline_filters_strict(&params, "inline image").unwrap(),
             vec!["Fl".to_string()]
         );
     }
@@ -763,7 +972,7 @@ mod tests {
         ];
         let params = ImageLocator::parse_inline_image_params(&operands);
         assert_eq!(
-            ImageLocator::inline_filters(&params),
+            ImageLocator::inline_filters_strict(&params, "inline image").unwrap(),
             vec!["FlateDecode".to_string()]
         );
     }
@@ -780,7 +989,7 @@ mod tests {
         ];
         let params = ImageLocator::parse_inline_image_params(&operands);
         assert_eq!(
-            ImageLocator::inline_filters(&params),
+            ImageLocator::inline_filters_strict(&params, "inline image").unwrap(),
             vec!["AHx".to_string(), "Fl".to_string()]
         );
     }
@@ -789,12 +998,14 @@ mod tests {
     fn inline_filters_empty_when_absent() {
         let operands = vec![Operand::Name("W".to_string()), Operand::Integer(2)];
         let params = ImageLocator::parse_inline_image_params(&operands);
-        assert!(ImageLocator::inline_filters(&params).is_empty());
+        assert!(ImageLocator::inline_filters_strict(&params, "inline image")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn extract_filters_handles_missing_filter_gracefully() {
-        let d = PdfDictionary::empty();
+        let d = valid_image_dict();
         let img = image_ref(&d);
         assert!(img.filter.is_empty());
     }
@@ -810,15 +1021,108 @@ mod tests {
     }
 
     #[test]
-    fn image_ref_from_dict_clamps_negative_dimensions() {
+    fn image_ref_from_dict_rejects_malformed_metadata() {
         let mut d = PdfDictionary::empty();
         d.insert("Width", PdfObject::Integer(-10));
         d.insert("Height", PdfObject::Integer(-1));
         d.insert("BitsPerComponent", PdfObject::Integer(20));
+        d.insert("ColorSpace", PdfObject::Name("DeviceRGB".to_string()));
+        let error = ImageLocator::image_ref_from_dict(1, "Im1".to_string(), 5, 0, &d).unwrap_err();
+        assert!(format!("{error}").contains("/Width must be a positive integer"));
+
+        let mut unsupported_bpc = valid_image_dict();
+        unsupported_bpc.insert("BitsPerComponent", PdfObject::Integer(20));
+        let error = ImageLocator::image_ref_from_dict(1, "Im1".to_string(), 5, 0, &unsupported_bpc)
+            .unwrap_err();
+        assert!(format!("{error}").contains("/BitsPerComponent must be one of"));
+
+        let mut missing_color_space = valid_image_dict();
+        missing_color_space.remove("ColorSpace");
+        let error =
+            ImageLocator::image_ref_from_dict(1, "Im1".to_string(), 5, 0, &missing_color_space)
+                .unwrap_err();
+        assert!(format!("{error}").contains("missing /ColorSpace"));
+    }
+
+    #[test]
+    fn image_ref_from_dict_allows_jpx_to_carry_sample_depth() {
+        let mut d = PdfDictionary::empty();
+        d.insert("Width", PdfObject::Integer(10));
+        d.insert("Height", PdfObject::Integer(10));
+        d.insert("Filter", PdfObject::Name("JPXDecode".to_string()));
         let img = image_ref(&d);
-        assert_eq!(img.width, 0);
-        assert_eq!(img.height, 0);
-        assert_eq!(img.bits_per_component, 16);
+        assert_eq!(img.bits_per_component, 8);
+        assert_eq!(img.color_space, "JPXDecode");
+    }
+
+    #[test]
+    fn image_ref_from_dict_rejects_malformed_filter_metadata() {
+        let mut d = valid_image_dict();
+        d.insert(
+            "Filter",
+            PdfObject::Array(vec![
+                PdfObject::Name("FlateDecode".to_string()),
+                PdfObject::Integer(7),
+            ]),
+        );
+        let error = ImageLocator::image_ref_from_dict(1, "Im1".to_string(), 5, 0, &d).unwrap_err();
+        assert!(format!("{error}").contains("/Filter array contains a non-name entry"));
+    }
+
+    #[test]
+    fn inline_ref_from_params_rejects_defaulted_metadata() {
+        let missing_bpc = inline_ref(vec![
+            Operand::Name("W".to_string()),
+            Operand::Integer(1),
+            Operand::Name("H".to_string()),
+            Operand::Integer(1),
+            Operand::Name("CS".to_string()),
+            Operand::Name("RGB".to_string()),
+        ])
+        .unwrap_err();
+        assert!(format!("{missing_bpc}").contains("missing /BitsPerComponent"));
+
+        let missing_color_space = inline_ref(vec![
+            Operand::Name("W".to_string()),
+            Operand::Integer(1),
+            Operand::Name("H".to_string()),
+            Operand::Integer(1),
+            Operand::Name("BPC".to_string()),
+            Operand::Integer(8),
+        ])
+        .unwrap_err();
+        assert!(format!("{missing_color_space}").contains("missing /ColorSpace"));
+
+        let malformed_filter = inline_ref(vec![
+            Operand::Name("W".to_string()),
+            Operand::Integer(1),
+            Operand::Name("H".to_string()),
+            Operand::Integer(1),
+            Operand::Name("BPC".to_string()),
+            Operand::Integer(8),
+            Operand::Name("CS".to_string()),
+            Operand::Name("RGB".to_string()),
+            Operand::Name("F".to_string()),
+            Operand::Array(vec![Operand::Name("Fl".to_string()), Operand::Integer(7)]),
+        ])
+        .unwrap_err();
+        assert!(format!("{malformed_filter}").contains("/Filter array contains a non-name entry"));
+    }
+
+    #[test]
+    fn inline_ref_from_params_allows_mask_defaults() {
+        let img = inline_ref(vec![
+            Operand::Name("W".to_string()),
+            Operand::Integer(1),
+            Operand::Name("H".to_string()),
+            Operand::Integer(1),
+            Operand::Name("IM".to_string()),
+            Operand::Boolean(true),
+        ])
+        .unwrap();
+        assert!(img.is_mask);
+        assert_eq!(img.bits_per_component, 1);
+        assert_eq!(img.color_space, "DeviceGray");
     }
 
     #[test]

@@ -1077,6 +1077,257 @@ fn font_descriptor_number(
     }
 }
 
+pub(crate) fn validate_visual_font_metrics(
+    font_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+) -> std::result::Result<(), String> {
+    let font_type = font_dict
+        .get_name("Subtype")
+        .map(FontType::from_name)
+        .unwrap_or_else(|| FontType::Unknown("Unknown".to_string()));
+    if font_type.is_cid() {
+        let Some(descendant) = get_descendant_font_optional(font_dict, reader) else {
+            return Ok(());
+        };
+        validate_cid_horizontal_metrics(&descendant, reader)?;
+        validate_cid_vertical_metrics(&descendant, reader)
+    } else {
+        validate_simple_width_metrics(font_dict, reader)
+    }
+}
+
+fn validate_simple_width_metrics(
+    font_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+) -> std::result::Result<(), String> {
+    let Some(widths_obj) = font_dict.get("Widths") else {
+        return Ok(());
+    };
+    let first_char = required_nonnegative_integer(font_dict, "FirstChar", "simple font")?;
+    let last_char = required_nonnegative_integer(font_dict, "LastChar", "simple font")?;
+    if last_char < first_char {
+        return Err("simple font malformed /Widths: /LastChar precedes /FirstChar".to_string());
+    }
+    let expected_len = last_char
+        .checked_sub(first_char)
+        .and_then(|value| value.checked_add(1))
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| "simple font malformed /Widths: declared span is too large".to_string())?;
+    let widths_obj = resolve_optional(widths_obj, reader)
+        .map_err(|_| "simple font malformed /Widths: could not resolve array".to_string())?;
+    let PdfObject::Array(widths) = widths_obj else {
+        return Err("simple font malformed /Widths: expected number array".to_string());
+    };
+    if widths.len() != expected_len {
+        return Err(format!(
+            "simple font malformed /Widths: expected {expected_len} entries, got {}",
+            widths.len()
+        ));
+    }
+    for (idx, width_obj) in widths.iter().enumerate() {
+        let width = finite_metric_number(width_obj, reader).ok_or_else(|| {
+            format!(
+                "simple font malformed /Widths: entry {} is not a finite number",
+                idx + 1
+            )
+        })?;
+        if width < 0.0 {
+            return Err(format!(
+                "simple font malformed /Widths: entry {} is negative",
+                idx + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_cid_horizontal_metrics(
+    desc_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+) -> std::result::Result<(), String> {
+    if let Some(dw) = desc_dict.get("DW") {
+        let value = finite_metric_number(dw, reader)
+            .ok_or_else(|| "CID font malformed /DW: expected finite number".to_string())?;
+        if value < 0.0 {
+            return Err("CID font malformed /DW: width is negative".to_string());
+        }
+    }
+    let Some(w_obj) = desc_dict.get("W") else {
+        return Ok(());
+    };
+    let w_obj = resolve_optional(w_obj, reader)
+        .map_err(|_| "CID font malformed /W: could not resolve array".to_string())?;
+    let PdfObject::Array(widths) = w_obj else {
+        return Err("CID font malformed /W: expected array".to_string());
+    };
+    let mut idx = 0usize;
+    while idx < widths.len() {
+        let c1 = nonnegative_metric_integer(&widths[idx], reader)
+            .ok_or_else(|| "CID font malformed /W: expected starting CID".to_string())?;
+        idx += 1;
+        if idx >= widths.len() {
+            return Err("CID font malformed /W: missing width entry".to_string());
+        }
+        let entry = resolve_optional(&widths[idx], reader)
+            .map_err(|_| "CID font malformed /W: could not resolve width entry".to_string())?;
+        match entry {
+            PdfObject::Array(values) => {
+                for (offset, width_obj) in values.iter().enumerate() {
+                    let width = finite_metric_number(width_obj, reader).ok_or_else(|| {
+                        format!(
+                            "CID font malformed /W: array width entry {} is not finite",
+                            offset + 1
+                        )
+                    })?;
+                    if width < 0.0 {
+                        return Err(format!(
+                            "CID font malformed /W: array width entry {} is negative",
+                            offset + 1
+                        ));
+                    }
+                }
+                idx += 1;
+            }
+            other => {
+                let c2 = nonnegative_metric_integer(&other, reader)
+                    .ok_or_else(|| "CID font malformed /W: expected ending CID".to_string())?;
+                if c2 < c1 {
+                    return Err("CID font malformed /W: ending CID precedes start".to_string());
+                }
+                idx += 1;
+                if idx >= widths.len() {
+                    return Err("CID font malformed /W: missing range width".to_string());
+                }
+                let width = finite_metric_number(&widths[idx], reader).ok_or_else(|| {
+                    "CID font malformed /W: range width is not finite".to_string()
+                })?;
+                if width < 0.0 {
+                    return Err("CID font malformed /W: range width is negative".to_string());
+                }
+                idx += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_cid_vertical_metrics(
+    desc_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+) -> std::result::Result<(), String> {
+    if let Some(dw2_obj) = desc_dict.get("DW2") {
+        let dw2_obj = resolve_optional(dw2_obj, reader)
+            .map_err(|_| "CID font malformed /DW2: could not resolve array".to_string())?;
+        let PdfObject::Array(values) = dw2_obj else {
+            return Err("CID font malformed /DW2: expected two-number array".to_string());
+        };
+        if values.len() != 2 {
+            return Err(format!(
+                "CID font malformed /DW2: expected 2 entries, got {}",
+                values.len()
+            ));
+        }
+        for (idx, value) in values.iter().enumerate() {
+            if finite_metric_number(value, reader).is_none() {
+                return Err(format!(
+                    "CID font malformed /DW2: entry {} is not finite",
+                    idx + 1
+                ));
+            }
+        }
+    }
+    let Some(w2_obj) = desc_dict.get("W2") else {
+        return Ok(());
+    };
+    let w2_obj = resolve_optional(w2_obj, reader)
+        .map_err(|_| "CID font malformed /W2: could not resolve array".to_string())?;
+    let PdfObject::Array(metrics) = w2_obj else {
+        return Err("CID font malformed /W2: expected array".to_string());
+    };
+    let mut idx = 0usize;
+    while idx < metrics.len() {
+        let c1 = nonnegative_metric_integer(&metrics[idx], reader)
+            .ok_or_else(|| "CID font malformed /W2: expected starting CID".to_string())?;
+        idx += 1;
+        if idx >= metrics.len() {
+            return Err("CID font malformed /W2: missing metric entry".to_string());
+        }
+        let entry = resolve_optional(&metrics[idx], reader)
+            .map_err(|_| "CID font malformed /W2: could not resolve metric entry".to_string())?;
+        match entry {
+            PdfObject::Array(values) => {
+                if !values.len().is_multiple_of(3) {
+                    return Err(
+                        "CID font malformed /W2: array entry length is not a multiple of 3"
+                            .to_string(),
+                    );
+                }
+                for (entry_idx, value) in values.iter().enumerate() {
+                    if finite_metric_number(value, reader).is_none() {
+                        return Err(format!(
+                            "CID font malformed /W2: array metric entry {} is not finite",
+                            entry_idx + 1
+                        ));
+                    }
+                }
+                idx += 1;
+            }
+            other => {
+                let c2 = nonnegative_metric_integer(&other, reader)
+                    .ok_or_else(|| "CID font malformed /W2: expected ending CID".to_string())?;
+                if c2 < c1 {
+                    return Err("CID font malformed /W2: ending CID precedes start".to_string());
+                }
+                idx += 1;
+                if idx + 2 >= metrics.len() {
+                    return Err(
+                        "CID font malformed /W2: range metric triple is incomplete".to_string()
+                    );
+                }
+                for offset in 0..3 {
+                    if finite_metric_number(&metrics[idx + offset], reader).is_none() {
+                        return Err(format!(
+                            "CID font malformed /W2: range metric entry {} is not finite",
+                            offset + 1
+                        ));
+                    }
+                }
+                idx += 3;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn required_nonnegative_integer(
+    dict: &PdfDictionary,
+    key: &str,
+    label: &str,
+) -> std::result::Result<u32, String> {
+    let Some(value) = dict.get_integer(key) else {
+        return Err(format!("{label} malformed /Widths: missing /{key}"));
+    };
+    if value < 0 {
+        return Err(format!("{label} malformed /Widths: /{key} is negative"));
+    }
+    u32::try_from(value).map_err(|_| format!("{label} malformed /Widths: /{key} is too large"))
+}
+
+fn finite_metric_number(obj: &PdfObject, reader: Option<&PdfReader>) -> Option<f64> {
+    let resolved = resolve_optional(obj, reader).ok()?;
+    let value = resolved.as_number()?;
+    value.is_finite().then_some(value)
+}
+
+fn nonnegative_metric_integer(obj: &PdfObject, reader: Option<&PdfReader>) -> Option<u32> {
+    let resolved = resolve_optional(obj, reader).ok()?;
+    let value = resolved.as_integer()?;
+    if value < 0 {
+        return None;
+    }
+    u32::try_from(value).ok()
+}
+
 fn pdf_objects_to_operands(objects: &[PdfObject]) -> Vec<Operand> {
     objects
         .iter()
@@ -1387,6 +1638,30 @@ mod cid_font_tests {
     }
 
     #[test]
+    fn visual_font_metrics_reject_malformed_simple_widths() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        dict.insert("FirstChar", PdfObject::Integer(0));
+        dict.insert("LastChar", PdfObject::Integer(2));
+        dict.insert(
+            "Widths",
+            PdfObject::Array(vec![
+                PdfObject::Integer(250),
+                PdfObject::Name("bad".to_string()),
+                PdfObject::Real(333.5),
+            ]),
+        );
+
+        let err = validate_visual_font_metrics(&dict, None)
+            .expect_err("visual rendering must not filter malformed width entries");
+
+        assert!(
+            err.contains("simple font malformed /Widths"),
+            "unexpected width validation error: {err}"
+        );
+    }
+
+    #[test]
     fn simple_font_missing_width_uses_font_descriptor_before_average_width() {
         let mut descriptor = PdfDictionary::empty();
         descriptor.insert("MissingWidth", PdfObject::Integer(420));
@@ -1479,6 +1754,37 @@ mod cid_font_tests {
         assert_eq!(
             lookup_cid_vertical(50, 1000.0, &dict),
             (-1000.0, 500.0, 880.0)
+        );
+    }
+
+    #[test]
+    fn visual_font_metrics_reject_malformed_cid_vertical_metrics() {
+        let mut descendant = PdfDictionary::empty();
+        descendant.insert("Subtype", PdfObject::Name("CIDFontType2".to_string()));
+        descendant.insert(
+            "W2",
+            PdfObject::Array(vec![
+                PdfObject::Integer(10),
+                PdfObject::Array(vec![
+                    PdfObject::Integer(-900),
+                    PdfObject::Integer(400),
+                    PdfObject::Name("bad".to_string()),
+                ]),
+            ]),
+        );
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Subtype", PdfObject::Name("Type0".to_string()));
+        dict.insert(
+            "DescendantFonts",
+            PdfObject::Array(vec![PdfObject::Dictionary(descendant)]),
+        );
+
+        let err = validate_visual_font_metrics(&dict, None)
+            .expect_err("visual rendering must not default malformed W2 triples");
+
+        assert!(
+            err.contains("CID font malformed /W2"),
+            "unexpected W2 validation error: {err}"
         );
     }
 

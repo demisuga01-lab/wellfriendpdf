@@ -17,6 +17,7 @@ use crate::{ContentEngine, Result, WellfriendError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -31,7 +32,7 @@ pub enum EditingTransactionsStatus {
     Verified,
     VerifiedWithLimits,
     UnsupportedExact,
-    DeferredTextReflow,
+    TextReflowRouted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +178,69 @@ pub struct SceneTextEditRequest {
     pub normalization_policy: Option<String>,
     #[serde(default)]
     pub direction: Option<String>,
+    #[serde(default)]
+    pub region: Option<[f64; 4]>,
+    #[serde(default)]
+    pub allowed_expansion_region: Option<[f64; 4]>,
+    #[serde(default)]
+    pub next_region: Option<[f64; 4]>,
+    #[serde(default)]
+    pub next_column: Option<[f64; 4]>,
+    #[serde(default)]
+    pub downstream_vector_moves: Vec<crate::text_reflow::DownstreamVectorMove>,
+    #[serde(default)]
+    pub downstream_link_moves: Vec<crate::text_reflow::DownstreamLinkMove>,
+    #[serde(default)]
+    pub layout_constraints: Vec<crate::text_reflow::LayoutConstraint>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default = "default_alignment")]
+    pub alignment: String,
+    #[serde(default)]
+    pub justify_last_line: bool,
+    #[serde(default)]
+    pub hyphenation: bool,
+    #[serde(default)]
+    pub allow_page_creation: bool,
+    #[serde(default)]
+    pub allow_font_reduction: bool,
+    #[serde(default)]
+    pub approve_low_confidence_structure: bool,
+    #[serde(default = "default_line_height")]
+    pub line_height: f64,
+    #[serde(default = "default_max_downstream_blocks")]
+    pub max_downstream_blocks: usize,
+}
+
+impl Default for SceneTextEditRequest {
+    fn default() -> Self {
+        Self {
+            requested_mode: default_operator_preserving(),
+            page: 1,
+            source_text: String::new(),
+            replacement_text: String::new(),
+            signature_policy_override: false,
+            font_policy: default_font_policy(),
+            normalization_policy: None,
+            direction: None,
+            region: None,
+            allowed_expansion_region: None,
+            next_region: None,
+            next_column: None,
+            downstream_vector_moves: Vec::new(),
+            downstream_link_moves: Vec::new(),
+            layout_constraints: Vec::new(),
+            language: None,
+            alignment: default_alignment(),
+            justify_last_line: false,
+            hyphenation: false,
+            allow_page_creation: false,
+            allow_font_reduction: false,
+            approve_low_confidence_structure: false,
+            line_height: default_line_height(),
+            max_downstream_blocks: default_max_downstream_blocks(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -249,6 +313,18 @@ fn default_font_policy() -> String {
     "preserve_original_or_refuse".to_string()
 }
 
+fn default_alignment() -> String {
+    "left".to_string()
+}
+
+fn default_line_height() -> f64 {
+    14.0
+}
+
+fn default_max_downstream_blocks() -> usize {
+    8
+}
+
 fn stable_id(kind: &str, values: &[impl AsRef<[u8]>]) -> String {
     let mut digest = Sha256::new();
     digest.update(kind.as_bytes());
@@ -280,15 +356,297 @@ fn snapshot_id(input: &[u8]) -> String {
     )
 }
 
-fn mode_from_request(requested: TrueEditingMode) -> Result<()> {
-    if requested == TrueEditingMode::OperatorPreserving {
-        Ok(())
-    } else {
-        Err(WellfriendError::UnsupportedFeature(format!(
-            "editing_transactions {:?} is routed but not implemented until text reflow",
-            requested
-        )))
+fn request_uses_text_reflow(requested: TrueEditingMode) -> bool {
+    matches!(
+        requested,
+        TrueEditingMode::GeometricBlock | TrueEditingMode::SemanticDocument
+    )
+}
+
+fn scene_text_reflow_font_policy(policy: &str) -> String {
+    match policy {
+        "" | "preserve_original_or_refuse" => "preserve_original_per_run".to_string(),
+        other => other.to_string(),
     }
+}
+
+fn scene_text_reflow_request(
+    request: &SceneTextEditRequest,
+) -> crate::text_reflow::GeometricReflowRequest {
+    crate::text_reflow::GeometricReflowRequest {
+        requested_mode: request.requested_mode,
+        page: request.page,
+        source_text: request.source_text.clone(),
+        replacement_text: request.replacement_text.clone(),
+        region: request.region,
+        allowed_expansion_region: request.allowed_expansion_region,
+        next_region: request.next_region,
+        next_column: request.next_column,
+        downstream_vector_moves: request.downstream_vector_moves.clone(),
+        downstream_link_moves: request.downstream_link_moves.clone(),
+        layout_constraints: request.layout_constraints.clone(),
+        language: request.language.clone(),
+        direction: request.direction.clone(),
+        font_policy: scene_text_reflow_font_policy(&request.font_policy),
+        alignment: request.alignment.clone(),
+        justify_last_line: request.justify_last_line,
+        hyphenation: request.hyphenation,
+        allow_page_creation: request.allow_page_creation,
+        allow_font_reduction: request.allow_font_reduction,
+        approve_low_confidence_structure: request.approve_low_confidence_structure,
+        signature_policy_override: request.signature_policy_override,
+        line_height: request.line_height,
+        max_downstream_blocks: request.max_downstream_blocks,
+    }
+}
+
+fn text_source_object_refs(input: &[u8], request: &SceneTextEditRequest) -> Vec<String> {
+    let mut refs = BTreeSet::new();
+    if let Ok(provenance) = operator_text_provenance(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+    ) {
+        for instruction in provenance.source_instructions {
+            refs.insert(instruction.object_identity);
+            refs.insert(instruction.stream_identity);
+        }
+    }
+    refs.into_iter().collect()
+}
+
+fn page_numbers_from_reflow_report(
+    report: &crate::text_reflow::ReflowTransactionReport,
+) -> Vec<usize> {
+    let mut pages = BTreeSet::new();
+    pages.insert(report.region.page_id);
+    for change in &report.pages_columns_affected {
+        if let Some(page) = change.get("page").and_then(Value::as_u64) {
+            pages.insert(page as usize);
+        }
+    }
+    pages.into_iter().collect()
+}
+
+fn bounds_from_points(points: &[[f64; 2]]) -> Option<[f64; 4]> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for [x, y] in points {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        min_x = min_x.min(*x);
+        min_y = min_y.min(*y);
+        max_x = max_x.max(*x);
+        max_y = max_y.max(*y);
+    }
+    (max_x > min_x && max_y > min_y).then_some([min_x, min_y, max_x, max_y])
+}
+
+fn rect_from_json(value: &Value) -> Option<[f64; 4]> {
+    let array = value.as_array()?;
+    if array.len() != 4 {
+        return None;
+    }
+    let mut rect = [0.0; 4];
+    for (index, item) in array.iter().enumerate() {
+        let coordinate = item.as_f64()?;
+        if !coordinate.is_finite() {
+            return None;
+        }
+        rect[index] = coordinate;
+    }
+    let x0 = rect[0].min(rect[2]);
+    let x1 = rect[0].max(rect[2]);
+    let y0 = rect[1].min(rect[3]);
+    let y1 = rect[1].max(rect[3]);
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
+}
+
+fn push_reflow_dirty_region(
+    regions: &mut Vec<Value>,
+    seen: &mut BTreeSet<String>,
+    pages_with_regions: &mut BTreeSet<usize>,
+    page: usize,
+    region: [f64; 4],
+    reason: &str,
+) {
+    let key = format!(
+        "{page}:{:.6}:{:.6}:{:.6}:{:.6}:{reason}",
+        region[0], region[1], region[2], region[3]
+    );
+    if seen.insert(key) {
+        pages_with_regions.insert(page);
+        regions.push(json!({
+            "page": page,
+            "region": region,
+            "reason": reason,
+        }));
+    }
+}
+
+fn reflow_dirty_regions(
+    input: &[u8],
+    report: &crate::text_reflow::ReflowTransactionReport,
+) -> Vec<Value> {
+    if report.refusal.is_some() {
+        return Vec::new();
+    }
+    let mut regions = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut pages_with_regions = BTreeSet::new();
+
+    if let Some(region) = bounds_from_points(&report.region.polygon_or_rect) {
+        push_reflow_dirty_region(
+            &mut regions,
+            &mut seen,
+            &mut pages_with_regions,
+            report.region.page_id,
+            region,
+            "text_reflow_source_region_changed",
+        );
+    }
+    for change in &report.pages_columns_affected {
+        let page = change
+            .get("page")
+            .and_then(Value::as_u64)
+            .map(|page| page as usize)
+            .unwrap_or(report.region.page_id);
+        for (key, reason) in [
+            ("effective_region", "text_reflow_effective_region_changed"),
+            ("source_region", "text_reflow_source_region_changed"),
+            ("target_region", "text_reflow_target_region_changed"),
+            ("next_region", "text_reflow_next_region_changed"),
+        ] {
+            if let Some(region) = change.get(key).and_then(rect_from_json) {
+                push_reflow_dirty_region(
+                    &mut regions,
+                    &mut seen,
+                    &mut pages_with_regions,
+                    page,
+                    region,
+                    reason,
+                );
+            }
+        }
+    }
+    let engine = ContentEngine::open_bytes(input.to_vec()).ok();
+    for page in page_numbers_from_reflow_report(report) {
+        if pages_with_regions.contains(&page) {
+            continue;
+        }
+        if let Some(engine) = engine.as_ref() {
+            push_reflow_dirty_region(
+                &mut regions,
+                &mut seen,
+                &mut pages_with_regions,
+                page,
+                page_bounds(engine, page),
+                "text_reflow_page_scope_changed",
+            );
+        }
+    }
+    regions
+}
+
+fn text_reflow_transaction_report(
+    input: &[u8],
+    request: &SceneTextEditRequest,
+    report: &crate::text_reflow::ReflowTransactionReport,
+    applied_output: Option<&[u8]>,
+) -> Result<EditTransactionReport> {
+    let object_refs = text_source_object_refs(input, request);
+    let affected_pages = page_numbers_from_reflow_report(report);
+    let dirty_regions = reflow_dirty_regions(input, report);
+    let mut read_set = report.region.source_instructions.clone();
+    read_set.extend(object_refs.clone());
+    read_set.sort();
+    read_set.dedup();
+    let mut lifecycle = if report.refusal.is_some() {
+        vec![
+            TransactionState::Created,
+            TransactionState::Planned,
+            TransactionState::RefusedNoChange,
+        ]
+    } else {
+        vec![
+            TransactionState::Created,
+            TransactionState::Planned,
+            TransactionState::ValidatedPreconditions,
+        ]
+    };
+    if applied_output.is_some() {
+        lifecycle.extend([
+            TransactionState::AppliedInMemory,
+            TransactionState::ValidatedPostconditions,
+            TransactionState::CommittedSnapshot,
+            TransactionState::Serialized,
+            TransactionState::ReopenedValidated,
+        ]);
+    }
+    let output_hash = applied_output.map(digest_hex);
+    Ok(EditTransactionReport {
+        schema_version: EDITING_TRANSACTIONS_SCHEMA_VERSION.to_string(),
+        transaction_id: report.transaction_id.clone(),
+        base_snapshot_id: report.input_snapshot.snapshot_id.clone(),
+        requested_mode: request.requested_mode,
+        applied_mode: report.applied_mode,
+        lifecycle,
+        preconditions: vec![
+            json!({"kind": "text_reflow_mode_routed", "status": "active", "schema_version": report.schema_version}),
+            json!({"kind": "source_mapping", "status": if report.region.source_instructions.is_empty() { "unavailable_or_refused" } else { "validated" }, "source_instruction_count": report.region.source_instructions.len()}),
+            json!({"kind": "confidence_policy", "decision": report.confidence["decision"], "approved_low_confidence_structure": request.approve_low_confidence_structure}),
+            json!({"kind": "font_policy", "status": "passed_to_text_reflow", "policy": scene_text_reflow_font_policy(&request.font_policy)}),
+        ],
+        read_set,
+        write_set: object_refs.clone(),
+        affected_objects: object_refs,
+        affected_pages: if report.refusal.is_some() {
+            Vec::new()
+        } else {
+            affected_pages
+        },
+        affected_scene_nodes: report.region.source_scene_nodes.clone(),
+        cloned_resources: report.objects_moved.clone(),
+        dirty_regions,
+        signature_impact: report.signature_impact.clone(),
+        conformance_impact: report.conformance_impact.clone(),
+        validation_plan: vec![
+            "route_requested_mode_to_text_reflow".to_string(),
+            "apply_source_linked_reflow_without_overlay".to_string(),
+            "reopen_output".to_string(),
+            "preserve_text_reflow_validation_evidence".to_string(),
+            "drive_render_invalidation_from_source_refs_pages_and_dirty_regions".to_string(),
+        ],
+        inverse_operations: report
+            .inverse_operation
+            .as_ref()
+            .map(|inverse| {
+                json!({
+                    "kind": "text_reflow_inverse_operation",
+                    "detail": inverse,
+                    "output_sha256": output_hash,
+                })
+            })
+            .into_iter()
+            .collect(),
+        commit_policy: "atomic_text_reflow_source_transaction_then_render_invalidation_plan"
+            .to_string(),
+        operation_log_hash: stable_id(
+            "operation-log",
+            &[
+                report.transaction_id.as_bytes(),
+                request.source_text.as_bytes(),
+                request.replacement_text.as_bytes(),
+            ],
+        ),
+        deterministic: true,
+        refusal: report.refusal.clone(),
+        source_editing_operation: None,
+    })
 }
 
 fn page_bounds(engine: &ContentEngine, page: usize) -> [f64; 4] {
@@ -879,7 +1237,11 @@ pub fn plan_scene_text_transaction(
     input: &[u8],
     request: &SceneTextEditRequest,
 ) -> Result<EditTransactionReport> {
-    mode_from_request(request.requested_mode)?;
+    if request_uses_text_reflow(request.requested_mode) {
+        let reflow_request = scene_text_reflow_request(request);
+        let report = crate::text_reflow::preview_reflow(input, &reflow_request)?;
+        return text_reflow_transaction_report(input, request, &report, None);
+    }
     let snapshot = build_document_snapshot(input, None)?;
     let eligibility = operator_text_eligibility(
         input,
@@ -1021,6 +1383,20 @@ pub fn apply_scene_text_transaction(
     input: &[u8],
     request: &SceneTextEditRequest,
 ) -> Result<(Vec<u8>, EditTransactionReport)> {
+    if request_uses_text_reflow(request.requested_mode) {
+        let reflow_request = scene_text_reflow_request(request);
+        let (output, reflow_report) = match request.requested_mode {
+            TrueEditingMode::GeometricBlock => {
+                crate::text_reflow::apply_reflow_region(input, &reflow_request)?
+            }
+            TrueEditingMode::SemanticDocument => {
+                crate::text_reflow::apply_reflow_document(input, &reflow_request)?
+            }
+            TrueEditingMode::OperatorPreserving => unreachable!(),
+        };
+        let report = text_reflow_transaction_report(input, request, &reflow_report, Some(&output))?;
+        return Ok((output, report));
+    }
     let mut report = plan_scene_text_transaction(input, request)?;
     if let Some(refusal) = report.refusal.as_ref() {
         return Err(WellfriendError::UnsupportedFeature(format!(
@@ -1050,6 +1426,9 @@ pub fn apply_scene_text_transaction(
         TransactionState::Serialized,
         TransactionState::ReopenedValidated,
     ]);
+    report.write_set = source_editing.changed_objects.clone();
+    report.affected_objects = source_editing.changed_objects.clone();
+    report.affected_pages = source_editing.changed_pages.clone();
     report.source_editing_operation = Some(source_editing);
     report.inverse_operations.push(json!({
         "kind": "exact_preimage_restore",
@@ -1150,11 +1529,11 @@ pub fn editing_transactions_report(input: &[u8]) -> Result<Value> {
             "image": "exact refusal unless source occurrence identity is available",
             "forms": "clone-on-write planned through AdvancedEditing shared Form policy",
         },
-        "text_reflow_deferrals": [
-            "geometric block reflow",
-            "semantic document reflow",
-            "broad paragraph/column/cross-page layout movement"
-        ],
+        "text_reflow_routing": {
+            "geometric_block": "routes through TextReflow apply_reflow_region with EditingTransactions source refs, pages, and dirty regions",
+            "semantic_document": "routes through TextReflow apply_reflow_document and preserves TextReflow typed refusals/review gates",
+            "scene_request_boundary": "SceneTextEditRequest forwards explicit TextReflow region, allowed expansion, next-flow target, downstream move, layout, language, alignment, line-height, hyphenation, page-creation, font-reduction, signature, and review-approval fields"
+        },
         "exact_limits": scene.exact_limits,
         "no_duplicate_architecture": true,
     }))
@@ -1175,7 +1554,7 @@ pub fn editing_transactions_feature_matrix() -> Value {
             {"area": "type3_fonts", "status": EditingTransactionsStatus::UnsupportedExact, "canonical_extension": "Type3 CharProcs are content streams; arbitrary Unicode insertion is refused"},
             {"area": "grapheme_bidi_shaping", "status": EditingTransactionsStatus::ImplementedWithLimits, "canonical_extension": "unicode-segmentation + unicode-bidi + rustybuzz"},
             {"area": "subset_reconstruction", "status": EditingTransactionsStatus::ImplementedWithLimits, "canonical_extension": "deterministic planning; table rebuild limits are explicit"},
-            {"area": "text_reflow_reflow", "status": EditingTransactionsStatus::DeferredTextReflow, "canonical_extension": "mode routing only"}
+            {"area": "text_reflow_reflow", "status": EditingTransactionsStatus::ImplementedWithLimits, "canonical_extension": "geometric_block and semantic_document route to TextReflow source mutations with EditingTransactions invalidation reports and compact scene requests forward explicit TextReflow region, flow, layout, and review fields"}
         ],
         "no_blocked_editing_transactions_rows": true
     })
@@ -1355,13 +1734,20 @@ mod tests {
             font_policy: "preserve_original_or_refuse".into(),
             normalization_policy: Some("preserve_exact_sequence".into()),
             direction: None,
+            ..SceneTextEditRequest::default()
         };
         let (output, report) = apply_scene_text_transaction(&input, &request).expect("apply");
         assert!(output.starts_with(&input));
         assert!(report
             .lifecycle
             .contains(&TransactionState::ReopenedValidated));
-        assert!(report.source_editing_operation.is_some());
+        let source_editing = report
+            .source_editing_operation
+            .as_ref()
+            .expect("source editing operation");
+        assert_eq!(report.write_set, source_editing.changed_objects);
+        assert_eq!(report.affected_objects, source_editing.changed_objects);
+        assert_eq!(report.affected_pages, source_editing.changed_pages);
         let undo = undo_restoration_report(&input, &output, &report);
         assert_eq!(undo["byte_exact_restoration"], true);
     }
@@ -1377,7 +1763,67 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_text_reflow_modes_do_not_silently_escalate() {
+    fn geometric_block_routes_to_text_reflow_transaction_adapter() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n");
+        let request = SceneTextEditRequest {
+            requested_mode: TrueEditingMode::GeometricBlock,
+            page: 1,
+            source_text: "HELLO".into(),
+            replacement_text: "WORLD".into(),
+            signature_policy_override: false,
+            font_policy: "preserve_original_or_refuse".into(),
+            normalization_policy: None,
+            direction: None,
+            ..SceneTextEditRequest::default()
+        };
+        let (output, report) =
+            apply_scene_text_transaction(&input, &request).expect("geometric text reflow route");
+        let reopened = ContentEngine::open_bytes(output).expect("reopen reflow output");
+        let text = reopened.get_page_text(1).expect("extract reflow output");
+        assert!(text.contains("WORLD"));
+        assert_eq!(report.requested_mode, TrueEditingMode::GeometricBlock);
+        assert_eq!(report.applied_mode, Some(TrueEditingMode::GeometricBlock));
+        assert!(report
+            .lifecycle
+            .contains(&TransactionState::ReopenedValidated));
+        assert!(report
+            .preconditions
+            .iter()
+            .any(|item| item["kind"] == "text_reflow_mode_routed"));
+        assert!(!report.affected_pages.is_empty());
+        assert!(!report.dirty_regions.is_empty());
+        assert!(report.source_editing_operation.is_none());
+    }
+
+    #[test]
+    fn geometric_block_scene_request_forwards_explicit_reflow_region() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n");
+        let region = [10.0, 110.0, 190.0, 180.0];
+        let request = SceneTextEditRequest {
+            requested_mode: TrueEditingMode::GeometricBlock,
+            page: 1,
+            source_text: "HELLO".into(),
+            replacement_text: "WORLD".into(),
+            font_policy: "rebuild_subset_or_generated_type0".into(),
+            region: Some(region),
+            language: Some("en".into()),
+            alignment: "center".into(),
+            line_height: 12.0,
+            hyphenation: true,
+            ..SceneTextEditRequest::default()
+        };
+
+        let report = plan_scene_text_transaction(&input, &request).expect("geometric plan");
+
+        assert_eq!(report.applied_mode, Some(TrueEditingMode::GeometricBlock));
+        assert_eq!(report.dirty_regions[0]["region"], serde_json::json!(region));
+        assert!(report.preconditions.iter().any(|item| {
+            item["kind"] == "font_policy" && item["policy"] == "rebuild_subset_or_generated_type0"
+        }));
+    }
+
+    #[test]
+    fn semantic_document_route_preserves_text_reflow_review_refusal() {
         let input = fixture(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n");
         let request = SceneTextEditRequest {
             requested_mode: TrueEditingMode::SemanticDocument,
@@ -1388,9 +1834,43 @@ mod tests {
             font_policy: "preserve_original_or_refuse".into(),
             normalization_policy: None,
             direction: None,
+            ..SceneTextEditRequest::default()
         };
-        let err = plan_scene_text_transaction(&input, &request).expect_err("text_reflow mode");
-        assert_eq!(err.code(), "unsupported_feature");
+        let report = plan_scene_text_transaction(&input, &request).expect("semantic plan");
+        assert_eq!(report.requested_mode, TrueEditingMode::SemanticDocument);
+        assert_eq!(report.applied_mode, None);
+        assert!(report.refusal.is_some());
+        assert!(report
+            .preconditions
+            .iter()
+            .any(|item| item["kind"] == "text_reflow_mode_routed"));
+    }
+
+    #[test]
+    fn semantic_document_scene_request_forwards_review_approval() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n");
+        let request = SceneTextEditRequest {
+            requested_mode: TrueEditingMode::SemanticDocument,
+            page: 1,
+            source_text: "HELLO".into(),
+            replacement_text: "WORLD".into(),
+            font_policy: "rebuild_subset_or_generated_type0".into(),
+            region: Some([10.0, 110.0, 190.0, 180.0]),
+            approve_low_confidence_structure: true,
+            ..SceneTextEditRequest::default()
+        };
+
+        let (output, report) =
+            apply_scene_text_transaction(&input, &request).expect("approved semantic apply");
+        let reopened = ContentEngine::open_bytes(output).expect("reopen semantic output");
+        let text = reopened.get_page_text(1).expect("extract semantic output");
+
+        assert!(text.contains("WORLD"));
+        assert_eq!(report.applied_mode, Some(TrueEditingMode::SemanticDocument));
+        assert!(report.refusal.is_none());
+        assert!(report.preconditions.iter().any(|item| {
+            item["kind"] == "confidence_policy" && item["approved_low_confidence_structure"] == true
+        }));
     }
 
     #[test]
@@ -1436,6 +1916,7 @@ mod tests {
             font_policy: "preserve_original_or_refuse".into(),
             normalization_policy: Some("preserve_exact_sequence".into()),
             direction: None,
+            ..SceneTextEditRequest::default()
         };
 
         let (output, report, inv_result) =
@@ -1446,20 +1927,69 @@ mod tests {
         assert!(report.affected_pages.contains(&1));
         assert!(!report.affected_pages.contains(&2));
 
-        // The invalidation should have evicted page 1 tiles but NOT page 2.
-        // Note: the actual narrow invalidation depends on the transaction's
-        // affected_objects containing refs that map to known identities in the
-        // fixture. If refs are found, page 1 is invalidated narrowly. If not,
-        // conservative reset kicks in (which is also correct behavior).
         assert!(!output.is_empty());
-        assert!(
-            inv_result.invalidation.invalidated_pages.contains(&1)
-                || inv_result.invalidation.cache_must_reset
+        assert_eq!(inv_result.mapped_ids, vec![ObjectIdentityId(4)]);
+        assert!(inv_result.unmapped_refs.is_empty());
+        assert!(!inv_result.invalidation.cache_must_reset);
+        assert!(inv_result.invalidation.invalidated_pages.contains(&1));
+        assert!(!inv_result.invalidation.invalidated_pages.contains(&2));
+    }
+
+    #[test]
+    fn geometric_block_text_reflow_transaction_drives_render_invalidation() {
+        use crate::render::contract::{ObjectIdentityId, RevisionId};
+        use crate::render::display_list::RenderTile;
+        use crate::render::page_renderer::RenderDocumentCache;
+
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n");
+        let mut cache = RenderDocumentCache::new();
+        cache.bind_document_revision(RevisionId(1));
+        cache.record_page_source_dependency(1, ObjectIdentityId(4));
+        cache.record_page_source_dependency(2, ObjectIdentityId(5));
+        cache.record_tile_dependency(
+            1,
+            RenderTile {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 200,
+            },
         );
-        // If narrow invalidation succeeded, page 2 is not touched.
-        if !inv_result.invalidation.cache_must_reset {
-            assert!(!inv_result.invalidation.invalidated_pages.contains(&2));
-        }
+        cache.record_tile_dependency(
+            2,
+            RenderTile {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 200,
+            },
+        );
+        let request = SceneTextEditRequest {
+            requested_mode: TrueEditingMode::GeometricBlock,
+            page: 1,
+            source_text: "HELLO".into(),
+            replacement_text: "WORLD".into(),
+            signature_policy_override: false,
+            font_policy: "preserve_original_or_refuse".into(),
+            normalization_policy: None,
+            direction: None,
+            ..SceneTextEditRequest::default()
+        };
+
+        let (_output, report, inv_result) =
+            apply_transaction_with_invalidation(&input, &request, &mut cache)
+                .expect("text reflow invalidation");
+
+        assert_eq!(report.applied_mode, Some(TrueEditingMode::GeometricBlock));
+        assert!(report
+            .preconditions
+            .iter()
+            .any(|item| item["kind"] == "text_reflow_mode_routed"));
+        assert_eq!(inv_result.mapped_ids, vec![ObjectIdentityId(4)]);
+        assert!(inv_result.unmapped_refs.is_empty());
+        assert!(!inv_result.invalidation.cache_must_reset);
+        assert!(inv_result.invalidation.invalidated_pages.contains(&1));
+        assert!(!inv_result.invalidation.invalidated_pages.contains(&2));
     }
 
     #[test]

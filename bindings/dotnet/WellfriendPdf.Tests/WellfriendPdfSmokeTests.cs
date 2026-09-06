@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Threading;
 using WellfriendPdf;
 using Xunit;
 
@@ -8,6 +9,117 @@ namespace WellfriendPdf.Tests;
 
 public sealed class WellfriendPdfSmokeTests
 {
+    [Fact]
+    public void RenderContractBuilderRoundTripsSchemaJson()
+    {
+        var contract = RenderContract.FromJson(
+            """
+            {
+              "schema_version": 1,
+              "document_revision": 9,
+              "page_identity": 7,
+              "page_number": 1,
+              "dpi": 72,
+              "page_box": "Crop",
+              "transform": {"values":[4607182418800017408,0,0,4607182418800017408,0,0]},
+              "clip": null,
+              "width": 2,
+              "height": 3,
+              "stride": 8,
+              "pixel_format": "Rgba8",
+              "alpha_mode": "Premultiplied",
+              "background": {"r":255,"g":255,"b":255,"a":255},
+              "execution_mode": "Standard",
+              "backend": "StandardCpu",
+              "compositing": "Compatibility",
+              "annotations": "Include",
+              "forms": "Include",
+              "optional_content": "ocg:test",
+              "text_smoothing": "Antialiased",
+              "image_smoothing": "Antialiased",
+              "path_smoothing": "Antialiased",
+              "subpixel_text": "Disabled",
+              "grayscale": false,
+              "color_scheme": "Light",
+              "reverse_byte_order": false,
+              "print_profile": "Display",
+              "halftone": "Disabled",
+              "overprint": "Disabled",
+              "rendering_intent": "RelativeColorimetric",
+              "color_management": "PortableQcms",
+              "exactness": "Compatibility",
+              "determinism": "Required",
+              "resource_budget": {
+                "max_pixels": 100000000,
+                "max_decoded_bytes": 536870912,
+                "max_temporary_bytes": 268435456,
+                "max_cache_bytes": 268435456
+              }
+            }
+            """);
+
+        var built = contract
+            .WithSurface(
+                width: 5,
+                height: 4,
+                pixelFormat: RenderContractPixelFormat.Rgb8,
+                alphaMode: RenderContractAlphaMode.Opaque)
+            .WithClip(1, 2, 3, 4)
+            .WithDeviceTransform(1, 0, 0, 1, 2, 3)
+            .WithBackground(12, 34, 56)
+            .WithPageBox(RenderContractPageBox.Trim)
+            .WithExecutionMode(RenderContractExecutionMode.Research)
+            .WithBackend(RenderContractBackendSelection.ScalarReference)
+            .WithCompositing(RenderContractCompositingPolicy.HighQuality)
+            .WithAnnotations(RenderContractAnnotationPolicy.Exclude)
+            .WithForms(RenderContractFormPolicy.Exclude)
+            .WithOptionalContent("ocg:parity")
+            .WithSmoothing(RenderContractSmoothingPolicy.Disabled)
+            .WithTextSmoothing(RenderContractSmoothingPolicy.Subpixel)
+            .WithImageSmoothing(RenderContractSmoothingPolicy.Antialiased)
+            .WithPathSmoothing(RenderContractSmoothingPolicy.Disabled)
+            .WithSubpixelText(RenderContractSmoothingPolicy.Subpixel)
+            .WithColorScheme(RenderContractColorScheme.Dark)
+            .WithPrintProfile(RenderContractPrintProfile.Proof)
+            .WithHalftone(RenderContractHalftonePolicy.Screen)
+            .WithOverprint(RenderContractOverprintPolicy.Preview)
+            .WithRenderingIntent(RenderContractRenderingIntent.Perceptual)
+            .WithColorManagement(RenderContractColorManagementPolicy.DeterministicFallback)
+            .WithExactness(RenderContractExactnessPolicy.HighQualityExact)
+            .WithDeterminism(RenderContractDeterminismPolicy.BestEffortResearch)
+            .WithResourceBudget(maxPixels: 20);
+
+        using var parsed = JsonDocument.Parse(built.ToJson());
+        var root = parsed.RootElement;
+        Assert.Equal("Rgb8", root.GetProperty("pixel_format").GetString());
+        Assert.Equal("Opaque", root.GetProperty("alpha_mode").GetString());
+        Assert.Equal(15UL, root.GetProperty("stride").GetUInt64());
+        Assert.Equal(20UL, root.GetProperty("resource_budget").GetProperty("max_pixels").GetUInt64());
+        Assert.Equal(12, root.GetProperty("background").GetProperty("r").GetByte());
+        Assert.Equal(3, root.GetProperty("clip").GetProperty("width").GetInt32());
+        Assert.Equal("Trim", root.GetProperty("page_box").GetString());
+        Assert.Equal("Research", root.GetProperty("execution_mode").GetString());
+        Assert.Equal("ScalarReference", root.GetProperty("backend").GetString());
+        Assert.Equal("HighQuality", root.GetProperty("compositing").GetString());
+        Assert.Equal("Exclude", root.GetProperty("annotations").GetString());
+        Assert.Equal("Exclude", root.GetProperty("forms").GetString());
+        Assert.Equal("ocg:parity", root.GetProperty("optional_content").GetString());
+        Assert.Equal("Subpixel", root.GetProperty("text_smoothing").GetString());
+        Assert.Equal("Antialiased", root.GetProperty("image_smoothing").GetString());
+        Assert.Equal("Disabled", root.GetProperty("path_smoothing").GetString());
+        Assert.Equal("Subpixel", root.GetProperty("subpixel_text").GetString());
+        Assert.Equal("Dark", root.GetProperty("color_scheme").GetString());
+        Assert.Equal("Proof", root.GetProperty("print_profile").GetString());
+        Assert.Equal("Screen", root.GetProperty("halftone").GetString());
+        Assert.Equal("Preview", root.GetProperty("overprint").GetString());
+        Assert.Equal("Perceptual", root.GetProperty("rendering_intent").GetString());
+        Assert.Equal("DeterministicFallback", root.GetProperty("color_management").GetString());
+        Assert.Equal("HighQualityExact", root.GetProperty("exactness").GetString());
+        Assert.Equal("BestEffortResearch", root.GetProperty("determinism").GetString());
+        Assert.Equal(5UL * 4UL * 3UL, checked((ulong)built.Width * built.Height * RenderContract.BytesPerPixel(built.PixelFormat)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => contract.WithPageBox((RenderContractPageBox)999));
+    }
+
     [Fact]
     public void OpenExtractAndConvert()
     {
@@ -19,6 +131,8 @@ public sealed class WellfriendPdfSmokeTests
         {
             ["feature"] = WellfriendDocument.FeatureReportJson(),
             ["security"] = doc.SecurityReportJson(),
+            ["document_views"] = doc.DocumentViewsReportJson(),
+            ["prepress_plate"] = doc.PrepressPlateReportJson(1),
             ["parser"] = doc.ParserReportJson(),
             ["color"] = doc.ColorReportJson(),
             ["validate_security"] = doc.ValidateJson("security"),
@@ -149,16 +263,65 @@ public sealed class WellfriendPdfSmokeTests
         var png = doc.GetPage(1).RenderPng();
         var jpeg = doc.GetPage(1).RenderJpeg();
         var contract = doc.DefaultRenderContractJson(1);
+        var typedContract = doc.DefaultRenderContract(1);
+        var blueTypedContract = typedContract.WithBackground(12, 34, 56);
+        using var parsedTypedContract = JsonDocument.Parse(blueTypedContract.ToJson());
+        Assert.Equal(12, parsedTypedContract.RootElement.GetProperty("background").GetProperty("r").GetByte());
         var contractPng = doc.RenderPagePngWithContractJson(contract);
+        var typedContractPng = doc.RenderPagePng(blueTypedContract);
+        var pngWithFontReport = doc.RenderPagePngWithFontSubstitutionReportJson(1);
+        var contractPngWithFontReport =
+            doc.RenderPagePngWithContractAndFontSubstitutionReportJson(contract);
+        var contractPngWithRenderReport =
+            doc.RenderPagePngWithContractAndRenderReportJson(contract);
         using var parsedContract = JsonDocument.Parse(contract);
         var stride = parsedContract.RootElement.GetProperty("stride").GetInt32();
         var height = parsedContract.RootElement.GetProperty("height").GetInt32();
         var callerSurface = Enumerable.Repeat((byte)0xAA, checked(stride * height)).ToArray();
-        doc.RenderPageIntoBufferWithContractJson(contract, callerSurface);
+        doc.RenderPageIntoBuffer(typedContract, callerSurface);
+        var callerFontReport =
+            doc.RenderPageIntoBufferWithFontSubstitutionReport(typedContract, callerSurface);
+        var callerRenderReport =
+            doc.RenderPageIntoBufferWithRenderReport(typedContract, callerSurface);
         Assert.Contains(callerSurface, value => value != 0xAA);
         Assert.True(png.Length > 8);
         Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, png[..4]);
         Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, contractPng[..4]);
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, typedContractPng[..4]);
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, pngWithFontReport.Bytes[..4]);
+        Assert.Equal(
+            new byte[] { 0x89, 0x50, 0x4E, 0x47 },
+            contractPngWithFontReport.Bytes[..4]);
+        Assert.Equal(
+            new byte[] { 0x89, 0x50, 0x4E, 0x47 },
+            contractPngWithRenderReport.Bytes[..4]);
+        Assert.Contains("\"events\"", pngWithFontReport.ReportJson);
+        Assert.Contains("\"events\"", contractPngWithFontReport.ReportJson);
+        Assert.Contains("\"events\"", callerFontReport);
+        Assert.Contains("\"font_substitution_report\"", contractPngWithRenderReport.ReportJson);
+        Assert.Contains("\"render_telemetry_report\"", contractPngWithRenderReport.ReportJson);
+        Assert.Contains("\"one_shot_render_contract_report\"", contractPngWithRenderReport.ReportJson);
+        Assert.Contains("\"render_telemetry_report\"", callerRenderReport);
+        Assert.Contains("\"resource_budget_max_cache_bytes\"", callerRenderReport);
+        using var renderCache = new RenderCache();
+        var cachedRenderReport =
+            doc.RenderPagePngWithContractAndRenderCacheReportJson(contract, renderCache);
+        Assert.True(cachedRenderReport.Bytes.Length > 8);
+        Assert.Contains("\"caller_owned_render_cache_report\"", cachedRenderReport.ReportJson);
+        var cacheInvalidation = renderCache.ApplyRenderInvalidationPlanJson(
+            """
+            {
+              "schema_version": "render-transaction-invalidation-plan.v1",
+              "next_revision": 42,
+              "mapped_source_ids": [],
+              "source_cache_markers": [],
+              "affected_pages": [1],
+              "affected_tiles": [],
+              "conservative_reset_required": false
+            }
+            """);
+        Assert.Contains("\"current_revision\":42", cacheInvalidation);
+        renderCache.Clear();
         Assert.True(jpeg.Length > 4);
         Assert.Equal(new byte[] { 0xFF, 0xD8 }, jpeg[..2]);
     }
@@ -178,6 +341,21 @@ public sealed class WellfriendPdfSmokeTests
         }
         var png = session.FinishPng();
         Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, png[..4]);
+
+        using var cancelledSession = doc.CreateProgressiveRenderSession(1, 72, 64, 64);
+        cancelledSession.RequestCancel();
+        using var cancelledReport = JsonDocument.Parse(cancelledSession.StepJson(4));
+        Assert.True(cancelledReport.RootElement.GetProperty("cancelled").GetBoolean());
+        Assert.Equal(
+            "cancelled_resumable",
+            cancelledReport.RootElement.GetProperty("phase").GetString());
+
+        using var tokenSession = doc.CreateProgressiveRenderSession(1, 72, 64, 64);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Assert.Throws<OperationCanceledException>(() => tokenSession.StepJson(4, cancellation.Token));
+        using var tokenCancelledReport = JsonDocument.Parse(tokenSession.StepJson(4));
+        Assert.True(tokenCancelledReport.RootElement.GetProperty("cancelled").GetBoolean());
     }
 
     [Fact]
@@ -333,7 +511,7 @@ public sealed class WellfriendPdfSmokeTests
         Assert.Contains("\"progress\"", feature);
         Assert.Contains("engine_tile_progressive_resume_supported", feature);
         Assert.Contains("\"cancellation\"", feature);
-        Assert.Contains("engine_render_cancellation_supported_binding_tokens_later", feature);
+        Assert.Contains("engine_render_cancellation_progressive_bindings_source_available", feature);
         Assert.Contains("\"codec_isolation\"", feature);
         Assert.Contains("\"transparency_rendering_transparency_compositing\"", feature);
         Assert.Contains("native_foundation_with_transparency_closeout_closure", feature);

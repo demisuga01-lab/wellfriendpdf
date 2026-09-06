@@ -12,9 +12,9 @@ The audit inspected the clean local checkpoint, the synchronized authorized VPS 
 ## Active call paths
 
 - Standard immediate: `ContentEngine::render_page_cancellable_with_mode` → `PageRenderer::render_page_cancellable_with_mode` → `RenderState::dispatch_all`.
-- Cached retained: `ContentEngine::render_page_cancellable_with_mode_and_cache` → `PageRenderer::get_or_build_display_list_with_cache` → native replay when captured, explicit immediate path only for unsupported lists.
-- Retained tile: `render_page_display_list_tile_cancellable_with_mode_and_cache` → tile-local `RenderState::replay_display_list`.
-- Progressive: `ProgressiveRenderJob::render_next` → retained tile replay, then explicit immediate tile handling only for unsupported display lists.
+- Cached retained: `ContentEngine::render_page_cancellable_with_mode_and_cache` -> `PageRenderer::get_or_build_display_list_with_cache` -> packed retained replay when captured, typed unsupported refusal for unsupported lists.
+- Retained tile: `render_page_display_list_tile_cancellable_with_mode_and_cache` -> tile-local packed retained replay, typed unsupported refusal for unsupported lists.
+- Progressive: `ProgressiveRenderJob::render_next` -> retained tile replay with typed unsupported refusal for unsupported display lists.
 
 ## Stable subsystem inventory
 
@@ -25,9 +25,9 @@ The audit inspected the clean local checkpoint, the synchronized authorized VPS 
 | RV-03 | Backend boundary | `RenderDevice`, `CpuRenderDevice` | PARTIAL | Add backend-neutral plan/capability boundary and caller-surface policy. |
 | RV-04 | Parsed page program | `ContentEngine::get_page_content` | PARTIAL | Link decoded program to compact source/resource IDs. |
 | RV-05 | Retained display list | `DisplayList { ops: Vec<DisplayOp> }` | PARTIAL | Compile packed hot ops and immutable arenas. |
-| RV-06 | Hot/cold separation | `DisplayOp` holds paths, state and raw ops | PARTIAL | Move raw high-level payloads/cold diagnostics out of hot commands. |
+| RV-06 | Hot/cold separation | `DisplayOp` retained state and stateful pattern-path classes now carry typed `GraphicsStateDescriptor` and `PatternPathDescriptor` payloads; text, inline-image, and image/Form/shading display ops also retain typed payloads/names, and packed cold tables are diagnostics-only | PARTIAL_ADVANCED | Complete the remaining source-program and backend-specialized packed arena split beyond the retained display-command boundary. |
 | RV-07 | Backend render plan | no plan symbol | MISSING | Compile contract + packed list + spatial batches. |
-| RV-08 | Native retained replay | `RenderState::replay_display_list` | PARTIAL | Keep unsupported delegation explicit; compile native resource payloads incrementally. |
+| RV-08 | Native retained replay | `render_packed_vector_plan`, `unsupported_retained_display_list_error` | PARTIAL_ADVANCED | Unsupported retained replay now fails typed instead of dispatching raw/immediate work; complete remaining backend-native payload coverage. |
 | RV-09 | Pre-resolved retained state | `RenderState` resolves resources during replay | PARTIAL | Intern states/paths and introduce native payload compile boundary. |
 | RV-10 | Safe optimizations | bounds and rectangle specializations | PARTIAL | Make plan-level culling/batching explicit and testable. |
 | RV-11 | Dependency/invalidation graph | page/DPI cache strings | MISSING | Add revision/source/page/tile graph and stale-cache prevention. |
@@ -44,7 +44,7 @@ The audit inspected the clean local checkpoint, the synchronized authorized VPS 
 | RV-22 | Images/JPX | image decoder/painter | PARTIAL | Metadata-first region/progressive strategy and full identity. |
 | RV-23 | Colour/CMM | qcms/lcms2 paths | PARTIAL | Explicit backend policy, print/proof contract, native feature validation. |
 | RV-24 | Form XObjects | Form program cache | PARTIAL | Contract/revision/resource-aware retained sublists. |
-| RV-25 | Annotations/widgets | appearance/synthesis paths | PARTIAL | Appearance cache and independent contract controls. |
+| RV-25 | Annotations/widgets | appearance/synthesis paths | PARTIAL_ADVANCED | Bounded appearance program cache exists and retained annotation replay honors active print/annotation/form contract policies; full dirty invalidation routing and telemetry remain incomplete. |
 | RV-26 | Cache hierarchy | `RenderDocumentCache` | PARTIAL | Bound all maps, define revision/tenant/invalidation policy. |
 | RV-27 | Allocation discipline | display ops/replay/cache cloning | PARTIAL | Packed arenas/scratch/no-copy cache views and invariants. |
 | RV-28 | Tile scheduling | tile/band APIs | PARTIAL | Deterministic adaptive size/priority policy. |
@@ -63,7 +63,7 @@ The audit inspected the clean local checkpoint, the synchronized authorized VPS 
 
 ## Exact active fallback baseline
 
-Twelve active decisions were identified: retained-list, retained-tile, and progressive unsupported-list delegation; recursive-pattern and excessive-cell solid fallback; Type 3 compatibility substitution; bundled-font substitution; missing named-shading no-op; JPX compatibility path; portable qcms mode; SVG raster embedding; and PS raster embedding. Eight are materially degraded. The new implementation must either remove each one or make a typed, capability-reported exact policy; it must not silently relabel an approximation as completion.
+Twelve active decisions were identified at preaudit start: retained-list, retained-tile, and progressive unsupported-list delegation; recursive-pattern and excessive-cell solid fallback; Type 3 compatibility substitution; bundled-font substitution; missing named-shading no-op; a JPX-specific sampler branch; portable qcms mode; SVG raster embedding; and PS raster embedding. Eight were materially degraded. The new implementation must either remove each one or make a typed, capability-reported exact policy; it must not silently relabel an approximation as completion.
 
 ## Initial conclusion
 

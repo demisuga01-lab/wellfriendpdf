@@ -42,8 +42,9 @@ the source of truth.
 
 Public report methods include document info, security, risky-content, parser,
 color, validation, forms, annotations, page operations, interactive content,
-signature, font, semantic text, semantic document, chunks, and decode-budget
-reports, plus `WellfriendPdf.codecIsolationReportJson(filter, bytes, policy)` for
+signature, font, semantic text, semantic document, chunks, image decode
+capability/lifecycle, and decode-budget reports, plus
+`WellfriendPdf.codecIsolationReportJson(filter, bytes, policy)` for
 Release Packaging codec policy diagnostics. Output-producing methods include
 `sanitize`, `canonicalize`, and `redactTermsJson`.
 
@@ -56,6 +57,28 @@ Legacy parser and extraction methods remain available: `parseJson`,
 `parseMarkdown`, `chunk`, `extractText`, `extractStructuredText`,
 `extractFieldsJson`, and `renderPagePng`.
 
+Editing transaction apply can return the shared render-invalidation plan through
+`editing_transactionsTransactionApplyWithRenderInvalidation(requestJson,
+renderInvalidationOptionsJson)`, including mapped source IDs and optional dirty
+render tiles for caller-side cache invalidation.
+
+`RenderCache` exposes caller-owned render-cache handles in JavaScript. Contract
+PNG renders can use `renderContractPngWithRenderCache` or
+`renderContractPngWithRenderCacheReport`, and cache owners can apply the
+SDK/server `report.render_invalidation` JSON with
+`RenderCache.applyRenderInvalidationPlanJson`.
+
+Image decode lifecycle reporting is available through
+`progressiveImageDecodeLifecycleReportJson(requestJson)`, which returns bounded
+start/continue/pause/resume/cancel/fail/close/document_close reports for a
+discovered image without decoding pixels when current codec adapters report
+full-decode-only.
+
+Contract rendering exposes cooperative cancellation through `RenderCancellation`
+for JSON and typed-object PNG renders, report-returning renders, caller-owned
+buffer renders, and caller-owned buffer report renders. Existing compatibility
+methods remain non-cancellable.
+
 ## Ownership and Limits
 
 Input bytes remain owned by the JavaScript caller; the WASM object keeps its own
@@ -65,9 +88,23 @@ document closed; further calls return an exception instead of silently reusing a
 dead handle.
 
 The WASM surface does not read host file paths, fetch URLs, spawn OCR processes,
-write output files, or expose native library loading. Progress callbacks and
-cancellation tokens are not advertised because the current facade calls are
-synchronous and do not observe binding-level cancellation.
+write output files, or expose native library loading. Progressive jobs expose
+`reviseRenderContractJson(contractJson)` for full live schema-v1 contract
+revision, plus `requestCancel`,
+`stepWithCancellation(maxTiles, booleanOrAbortSignal)`, and
+`finishPngWithCancellation(booleanOrAbortSignal)` for synchronous pre/post
+cancellation checks. `finishPng()` and the cancellation variant surface checked
+tile-assembly diagnostics if called before all tiles are complete, plus
+`viewerQueueJson()` and
+`executeViewerQueueJson(maxItems)` for source-visible viewer scheduling and
+owned current-page queue execution, `executeAdjacentPagePrefetch(prefetchIdentity,
+maxTiles)` for bounded adjacent-page child-job prefetch execution,
+`executeViewerQueueJsonWithCancellation(maxItems, cancellation)` and
+`executeAdjacentPagePrefetchWithCancellation(prefetchIdentity, maxTiles,
+cancellation)` for cancellable queue/prefetch execution, plus
+`viewerCallbackDispatchJson()` and `dispatchViewerCallbacks(callback)` for
+synchronous host callback execution. External viewer runtime matrices and
+broader cross-language queue policy validation are deferred verification work.
 
 Subprocess codec isolation is not available in WASM because the target cannot
 spawn the OS codec worker. Use `policy = "in_process"` for browser/Node local

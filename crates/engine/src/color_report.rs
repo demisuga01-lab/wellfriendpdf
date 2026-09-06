@@ -51,6 +51,8 @@ pub struct ColorLimits {
     pub max_type4_tokens: usize,
     pub max_type4_stack: usize,
     pub max_devicen_components: usize,
+    pub max_tint_transform_cache_entries: usize,
+    pub max_tint_transform_cache_bytes: usize,
     pub max_prepress_plates: usize,
     pub separation_framebuffer_memory_budget_bytes: usize,
     pub max_content_stream_color_scan_bytes: usize,
@@ -64,6 +66,8 @@ impl Default for ColorLimits {
             max_type4_tokens: function::MAX_TYPE4_TOKENS,
             max_type4_stack: function::MAX_TYPE4_STACK,
             max_devicen_components: colorspace::MAX_DEVICEN_COMPONENTS,
+            max_tint_transform_cache_entries: colorspace::DEFAULT_TINT_TRANSFORM_CACHE_ENTRIES,
+            max_tint_transform_cache_bytes: colorspace::DEFAULT_TINT_TRANSFORM_CACHE_BYTES,
             max_prepress_plates: prepress::MAX_PREPRESS_PLATES,
             separation_framebuffer_memory_budget_bytes:
                 prepress::DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
@@ -111,9 +115,9 @@ impl Default for ColorBackendDecision {
             backend_selected: native.selected_backend.to_string(),
             default_build_unsafe_ffi: false,
             icc_backend: if native.available {
-                "lcms2 for ICCBased Gray/RGB/CMYK profile-to-sRGB preview transforms; qcms remains the default portable fallback".to_string()
+                "lcms2 for ICCBased Gray/RGB/CMYK profile-to-sRGB preview transforms; qcms remains the default portable Gray/RGB fallback".to_string()
             } else {
-                "qcms for ICCBased profile-to-sRGB preview transforms".to_string()
+                "qcms for ICCBased Gray/RGB profile-to-sRGB preview transforms; CMYK ICC requires native LittleCMS".to_string()
             },
             supported_rendering_intents: cmm::SUPPORTED_NATIVE_LCMS2_INTENTS
                 .iter()
@@ -193,13 +197,30 @@ pub struct IccTransformCacheReport {
     pub hits: usize,
     pub misses: usize,
     pub evictions: usize,
+    pub admissions: usize,
+    pub rejections: usize,
     pub entries: usize,
     pub max_entries: usize,
+    pub bytes_used: usize,
+    pub max_bytes: usize,
     pub invalid_profiles: usize,
     pub unsupported_profiles: usize,
     pub native_lcms2_transforms: usize,
     pub native_lcms2_failures: usize,
     pub fallback_qcms_transforms: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TintTransformCacheReport {
+    pub hits: usize,
+    pub misses: usize,
+    pub evictions: usize,
+    pub admissions: usize,
+    pub rejections: usize,
+    pub entries: usize,
+    pub max_entries: usize,
+    pub bytes_used: usize,
+    pub max_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,13 +248,33 @@ fn cache_report(metrics: cmm::IccTransformCacheMetrics) -> IccTransformCacheRepo
         hits: metrics.hits,
         misses: metrics.misses,
         evictions: metrics.evictions,
+        admissions: metrics.admissions,
+        rejections: metrics.rejections,
         entries: metrics.entries,
         max_entries: metrics.max_entries,
+        bytes_used: metrics.bytes_used,
+        max_bytes: metrics.max_bytes,
         invalid_profiles: metrics.invalid_profiles,
         unsupported_profiles: metrics.unsupported_profiles,
         native_lcms2_transforms: metrics.native_lcms2_transforms,
         native_lcms2_failures: metrics.native_lcms2_failures,
         fallback_qcms_transforms: metrics.fallback_qcms_transforms,
+    }
+}
+
+fn tint_transform_cache_report(
+    metrics: colorspace::TintTransformCacheMetrics,
+) -> TintTransformCacheReport {
+    TintTransformCacheReport {
+        hits: metrics.hits,
+        misses: metrics.misses,
+        evictions: metrics.evictions,
+        admissions: metrics.admissions,
+        rejections: metrics.rejections,
+        entries: metrics.entries,
+        max_entries: metrics.max_entries,
+        bytes_used: metrics.bytes_used,
+        max_bytes: metrics.max_bytes,
     }
 }
 
@@ -243,6 +284,7 @@ pub struct ColorReport {
     pub backend: ColorBackendDecision,
     pub limits: ColorLimits,
     pub icc_transform_cache: IccTransformCacheReport,
+    pub tint_transform_cache: TintTransformCacheReport,
     pub icc_fidelity_vectors: Vec<IccFidelityVector>,
     pub color_spaces: Vec<ColorSpaceUsage>,
     pub spot_colorants: Vec<String>,
@@ -266,6 +308,9 @@ impl ColorReport {
             backend: ColorBackendDecision::default(),
             limits: ColorLimits::default(),
             icc_transform_cache: cache_report(cmm::icc_transform_cache_metrics()),
+            tint_transform_cache: tint_transform_cache_report(
+                colorspace::tint_transform_cache_metrics(),
+            ),
             icc_fidelity_vectors: cmm::srgb_identity_fidelity_probes()
                 .into_iter()
                 .map(|probe| IccFidelityVector {
@@ -367,6 +412,8 @@ impl ColorReportBuilder {
             });
         }
         report.icc_transform_cache = cache_report(cmm::icc_transform_cache_metrics());
+        report.tint_transform_cache =
+            tint_transform_cache_report(colorspace::tint_transform_cache_metrics());
         report.standards.device_color_policy_checked = matches!(
             report.validation_profile,
             ColorValidationProfile::PdfA | ColorValidationProfile::PdfX
@@ -1257,6 +1304,45 @@ mod tests {
             .rendering_intents
             .iter()
             .any(|intent| intent.family == "Perceptual"));
+    }
+
+    #[test]
+    fn reports_tint_transform_cache_limits() {
+        let pdf = build_pdf(
+            &[
+                "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj",
+                "2 0 obj\n<< /Type /Pages /Count 0 >>\nendobj",
+            ],
+            "1 0 R",
+        );
+        let report = color_report_bytes(&pdf, ColorValidationProfile::Generic).unwrap();
+        assert_eq!(
+            report.limits.max_tint_transform_cache_entries,
+            colorspace::DEFAULT_TINT_TRANSFORM_CACHE_ENTRIES
+        );
+        assert_eq!(
+            report.limits.max_tint_transform_cache_bytes,
+            colorspace::DEFAULT_TINT_TRANSFORM_CACHE_BYTES
+        );
+        assert_eq!(
+            report.tint_transform_cache.max_entries,
+            colorspace::DEFAULT_TINT_TRANSFORM_CACHE_ENTRIES
+        );
+        assert_eq!(
+            report.tint_transform_cache.max_bytes,
+            colorspace::DEFAULT_TINT_TRANSFORM_CACHE_BYTES
+        );
+        assert_eq!(
+            report.icc_transform_cache.max_entries,
+            cmm::DEFAULT_TRANSFORM_CACHE_ENTRIES
+        );
+        assert_eq!(
+            report.icc_transform_cache.max_bytes,
+            cmm::DEFAULT_TRANSFORM_CACHE_BYTES
+        );
+        assert_eq!(report.icc_transform_cache.bytes_used, 0);
+        assert_eq!(report.icc_transform_cache.admissions, 0);
+        assert_eq!(report.icc_transform_cache.rejections, 0);
     }
 
     #[test]

@@ -87,6 +87,9 @@ pub struct ColorSpaceHandler;
 impl ColorSpaceHandler {
     /// Convert a graphics-state color to final render color.
     pub fn to_render_color(color: &GsColor, alpha: f32) -> RenderColor {
+        if let Ok(color) = Self::strict_to_render_color(color, alpha) {
+            return color;
+        }
         let comps = &color.components;
         match &color.space {
             GsColorSpace::DeviceGray => {
@@ -114,6 +117,61 @@ impl ColorSpaceHandler {
                 );
                 RenderColor::new(0.0, 0.0, 0.0, alpha)
             }
+        }
+    }
+
+    /// Convert a graphics-state device color only when the state carries the
+    /// exact finite component vector required by its color space.
+    pub fn strict_to_render_color(
+        color: &GsColor,
+        alpha: f32,
+    ) -> std::result::Result<RenderColor, String> {
+        fn reject(space: &str, expected: usize, components: &[f64]) -> String {
+            if components.len() != expected {
+                format!(
+                    "malformed {space} color: expected exactly {expected} finite component(s), got {}",
+                    components.len()
+                )
+            } else {
+                format!("malformed {space} color: component vector contains non-finite values")
+            }
+        }
+
+        let comps = &color.components;
+        match &color.space {
+            GsColorSpace::DeviceGray => {
+                if comps.len() != 1 || comps.iter().any(|component| !component.is_finite()) {
+                    return Err(reject("DeviceGray", 1, comps));
+                }
+                let g = comps[0] as f32;
+                Ok(RenderColor::new(g, g, g, alpha))
+            }
+            GsColorSpace::DeviceRGB => {
+                if comps.len() != 3 || comps.iter().any(|component| !component.is_finite()) {
+                    return Err(reject("DeviceRGB", 3, comps));
+                }
+                Ok(RenderColor::new(
+                    comps[0] as f32,
+                    comps[1] as f32,
+                    comps[2] as f32,
+                    alpha,
+                ))
+            }
+            GsColorSpace::DeviceCMYK => {
+                if comps.len() != 4 || comps.iter().any(|component| !component.is_finite()) {
+                    return Err(reject("DeviceCMYK", 4, comps));
+                }
+                let [r, g, b] = cmm::device_cmyk_to_srgb(
+                    comps[0].clamp(0.0, 1.0) as f32,
+                    comps[1].clamp(0.0, 1.0) as f32,
+                    comps[2].clamp(0.0, 1.0) as f32,
+                    comps[3].clamp(0.0, 1.0) as f32,
+                );
+                Ok(RenderColor::new(r, g, b, alpha))
+            }
+            GsColorSpace::Named(name) => Err(format!(
+                "named color space /{name} requires resource-backed resolution"
+            )),
         }
     }
 
@@ -167,6 +225,33 @@ impl ColorSpaceHandler {
                 RenderColor::black().with_alpha(alpha)
             }
         }
+    }
+
+    /// Convert component vectors only for color spaces that do not require a
+    /// separate parameter dictionary. Callers that only have a family name can
+    /// use this to avoid silently applying default calibrated parameters,
+    /// padding/truncating malformed device component vectors, or using the
+    /// unknown-space black fallback.
+    pub fn try_from_components(
+        space_name: &str,
+        components: &[f64],
+        alpha: f32,
+    ) -> Option<RenderColor> {
+        let expected = device_component_count(space_name)?;
+        if components.len() != expected || components.iter().any(|component| !component.is_finite())
+        {
+            return None;
+        }
+        Some(Self::from_components(space_name, components, alpha))
+    }
+}
+
+fn device_component_count(space_name: &str) -> Option<usize> {
+    match space_name {
+        "DeviceGray" | "G" => Some(1),
+        "DeviceRGB" | "RGB" | "sRGB" => Some(3),
+        "DeviceCMYK" | "CMYK" => Some(4),
+        _ => None,
     }
 }
 
@@ -271,11 +356,66 @@ mod tests {
     }
 
     #[test]
+    fn strict_to_render_color_requires_exact_finite_device_state() {
+        assert!(ColorSpaceHandler::strict_to_render_color(
+            &GsColor {
+                space: ColorSpace::DeviceRGB,
+                components: vec![0.2, 0.4, 0.6],
+            },
+            0.5,
+        )
+        .is_ok());
+        assert!(ColorSpaceHandler::strict_to_render_color(
+            &GsColor {
+                space: ColorSpace::DeviceRGB,
+                components: vec![0.2, 0.4],
+            },
+            1.0,
+        )
+        .is_err());
+        assert!(ColorSpaceHandler::strict_to_render_color(
+            &GsColor {
+                space: ColorSpace::DeviceCMYK,
+                components: vec![0.0, 0.0, f64::NAN, 1.0],
+            },
+            1.0,
+        )
+        .is_err());
+        assert!(ColorSpaceHandler::strict_to_render_color(
+            &GsColor {
+                space: ColorSpace::Named("Spot".to_string()),
+                components: vec![0.5],
+            },
+            1.0,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn from_components_device_rgb() {
         let rc = ColorSpaceHandler::from_components("DeviceRGB", &[0.2, 0.4, 0.6], 1.0);
         assert!((rc.r - 0.2).abs() < 0.001);
         assert!((rc.g - 0.4).abs() < 0.001);
         assert!((rc.b - 0.6).abs() < 0.001);
+    }
+
+    #[test]
+    fn try_from_components_requires_exact_finite_device_components() {
+        assert!(
+            ColorSpaceHandler::try_from_components("DeviceRGB", &[0.2, 0.4, 0.6], 1.0).is_some()
+        );
+        assert!(ColorSpaceHandler::try_from_components("DeviceRGB", &[0.2, 0.4], 1.0).is_none());
+        assert!(
+            ColorSpaceHandler::try_from_components("DeviceRGB", &[0.2, 0.4, 0.6, 0.8], 1.0)
+                .is_none()
+        );
+        assert!(ColorSpaceHandler::try_from_components(
+            "DeviceCMYK",
+            &[0.0, 0.0, f64::NAN, 1.0],
+            1.0
+        )
+        .is_none());
+        assert!(ColorSpaceHandler::try_from_components("CalRGB", &[0.2, 0.4, 0.6], 1.0).is_none());
     }
 
     #[test]

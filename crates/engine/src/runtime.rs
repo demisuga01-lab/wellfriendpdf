@@ -1028,6 +1028,71 @@ pub struct RuntimeCapabilityReport {
     pub standard_feature_complete_under_supported_boundaries: bool,
     pub gpu_required_for_standard: bool,
     pub entries: Vec<RuntimeCapability>,
+    pub renderer_fallback_policies: Vec<RuntimeFallbackPolicy>,
+    pub renderer_cache_pressure_policy: RendererCachePressurePolicy,
+    pub renderer_concurrency_cache_matrix: RendererConcurrencyCacheMatrix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeFallbackPolicy {
+    pub id: String,
+    pub source: String,
+    pub trigger: String,
+    pub policy: String,
+    pub material_degradation: bool,
+    pub calls_canonical_immediate: bool,
+    pub status: String,
+    pub high_quality_policy: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendererCachePressurePolicy {
+    pub source: String,
+    pub public_endpoint: String,
+    pub cache_classes: Vec<MemoryClass>,
+    pub render_contract_budget_field: String,
+    pub runtime_cache_config_fields: Vec<String>,
+    pub admission_aware: bool,
+    pub spill_eligible: bool,
+    pub pressure_actions: Vec<MemoryPressureAction>,
+    pub correctness_preserved: bool,
+    pub remaining_limitation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendererConcurrencyCacheMatrix {
+    pub source: String,
+    pub public_endpoint: String,
+    pub host_vcpu: u16,
+    pub effective_cpu_workers: u16,
+    pub max_concurrent_documents: Option<u16>,
+    pub mutation_serial_per_document: bool,
+    pub work_stealing_enabled: bool,
+    pub thread_classes: Vec<RendererThreadClass>,
+    pub cache_rows: Vec<RendererCacheConcurrencyRow>,
+    pub obsolete_work_cancellation: Vec<String>,
+    pub correctness_preserved: bool,
+    pub remaining_limitation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendererThreadClass {
+    pub name: String,
+    pub permits: u16,
+    pub bounded_by_effective_cpu_workers: bool,
+    pub cancel_token_observed: bool,
+    pub stale_publication_guarded: bool,
+    pub mutable_cache_owner: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendererCacheConcurrencyRow {
+    pub class: MemoryClass,
+    pub owner: String,
+    pub sharing_model: String,
+    pub invalidation_model: String,
+    pub budget_field: String,
+    pub document_boundary: bool,
 }
 
 pub fn runtime_capabilities_for(
@@ -1084,7 +1149,13 @@ pub fn runtime_capabilities_for(
             name: "versioned_render_contract_v1".to_string(),
             state: CapabilityState::Active,
             mode: ExecutionMode::Standard,
-            reason: "canonical_revision_aware_contract_is_active_for_full_page_rgba_rendering_and_binding_json_adapters; unsupported policy combinations are rejected rather than silently ignored".to_string(),
+            reason: "canonical_revision_aware_contract_is_active_for_full_page_rgba_rendering_binding_json_adapters_research_execution_mode_contract_identity_scalar_reference_CPU_backend_selection_research_hybrid_CPU_dispatch_identity_subpixel_smoothing_policy_execution_and_source_owned_field_effect_matrix_covering_every_schema_v1_contract_field; unsupported_policy_combinations_are_rejected_rather_than_silently_ignored".to_string(),
+        },
+        RuntimeCapability {
+            name: "caller_owned_render_surfaces".to_string(),
+            state: CapabilityState::Active,
+            mode: ExecutionMode::Standard,
+            reason: "schema_v1_render_contract_supports_caller_owned_buffers_with_explicit_pixel_format_stride_alpha_mode_grayscale_and_byte_order_validation; RGB_BGR_reverse_byte_order_rows_route_through_channel_order_kernels; RGBA_BGRA_rows_honor_premultiplied_straight_opaque_alpha_modes_and_reverse_4byte_word_routing; ScalarReference_backend_routes_caller_surface_rows_through_the_scalar_row_encoder; external_binding_runtime_validation_deferred".to_string(),
         },
         RuntimeCapability {
             name: "packed_vector_render_plan".to_string(),
@@ -1104,13 +1175,25 @@ pub fn runtime_capabilities_for(
                 CapabilityState::InactivePolicy
             },
             mode: ExecutionMode::Standard,
-            reason: "retained replay is available for captured operations; unsupported display lists use explicit counted canonical immediate fallback".to_string(),
+            reason: "retained replay is available for captured operations; unsupported retained display lists now fail closed with typed UnsupportedFeature instead of using canonical immediate fallback".to_string(),
         },
         RuntimeCapability {
             name: "renderer_fallback_reporting".to_string(),
             state: CapabilityState::Active,
             mode: ExecutionMode::Standard,
-            reason: "display-list and render-corpus reports expose compatibility fallback counters; exact fallback closure remains a documented limitation".to_string(),
+            reason: "runtime_capabilities_expose_structured_fallback_policy_matrix_with_material_degradation_and_vector-output_rasterization_flags; unsupported_retained_replay_is_reported_as_typed_refusal".to_string(),
+        },
+        RuntimeCapability {
+            name: "font_resolution_and_substitution_reporting".to_string(),
+            state: CapabilityState::Active,
+            mode: ExecutionMode::Standard,
+            reason: "deterministic_font_resolution_orders_valid_embedded_document_registered_system_mapping_bundled_fallback_typed_missing_font; caller_registered_font_bytes_resolve_before_bundled_fallback_with_registered_provider_fingerprint_in_font_policy_and_cache_identity; deterministic_system_mappings_report_distinct_resolution_source; high_quality_exact_accepts_registered_or_deterministic_system_faces_and_refuses_generic_bundled_replacement; C_Python_WASM_DotNet_Java_CLI_server_source_surfaces_expose_registered_font_registration_and_font_substitution_report_JSON".to_string(),
+        },
+        RuntimeCapability {
+            name: "type3_charproc_typed_refusal".to_string(),
+            state: CapabilityState::Active,
+            mode: ExecutionMode::Standard,
+            reason: "Type3 glyphs render only from PDF Encoding CharProc names; parsed CharProc_geometry_and_retained_CharProc_plan_caches preserve negative entries and use bounded LRU admission including child render-state absorption; retained_CharProc_plans_are_immutable_contract_resource_and_source_keyed_sublists_with_reuse_failure_caching_and_source_marker_pruning; Unicode-derived aliases and ordinary font fallback bytes are refused with typed UnsupportedFeature while unsupported_CharProc_content_remains_typed_refusal".to_string(),
         },
         RuntimeCapability {
             name: "progressive_renderer_core".to_string(),
@@ -1120,7 +1203,7 @@ pub fn runtime_capabilities_for(
                 CapabilityState::InactivePolicy
             },
             mode: ExecutionMode::Standard,
-            reason: "tile-boundary lifecycle states pause_resume_cancel_close and revision-bound tokens are available in the Rust core; cross-binding progressive session adapters remain incomplete".to_string(),
+            reason: "canonical_schema_v1_render_contract_construction_and_live_contract_revision_tile-boundary_lifecycle_states_pause_resume_cancel_close_revision-bound_tokens_deterministic_publication_identities_visible_adjacent_background_priority_bands_dirty_region_tile_rescheduling_render_contract_tile_rescheduling_source_session_tile_publication_acceptance_adjacent_page_prefetch_preview_viewer_queue_JSON_viewer_callback_dispatch_JSON_and_C_Python_WASM_DotNet_Java_callback_execution_helpers_are_available_in_the_Rust_server_and_source-binding_core; external_viewer_runtime_matrix_validation_deferred_after_source_queue_callback_helpers".to_string(),
         },
         RuntimeCapability {
             name: "cpu_simd_compositor".to_string(),
@@ -1130,7 +1213,25 @@ pub fn runtime_capabilities_for(
                 CapabilityState::InactivePolicy
             },
             mode: ExecutionMode::Standard,
-            reason: "runtime-dispatched CPU SIMD is used for verified operations with an exact scalar fallback for unsupported or declined kernels".to_string(),
+            reason: "runtime-dispatched_CPU_SIMD_and_wasm32_simd128_cover_verified_opaque_source_over_alpha_fill_rows_clip_mask_fusion_rows_image_glyph_mask_clip_smask_fusion_rows_solid_rgba_clip_smask_fusion_rows_mixed_source_group_alpha_opaque_destination_mixed_destination_source_over_f32x4_alpha_mask_opaque_and_mixed_destination_soft_mask_group_alpha_soft_mask_mixed_destination_f32x4_common_separable_blend_kernels_and_translucent_solid_partial_clip_separable_mixed_alpha_f32x4_rows_separable_solid_mixed_destination_f32x4_rows_separable_rgba_mixed_destination_f32x4_rows_and_separable_rgba_mixed_destination_partial_clip_f32x4_rows_opaque_background_flatten_rows_with_true_lanes_for_Multiply_Screen_Overlay_Darken_Lighten_ColorDodge_ColorBurn_HardLight_SoftLight_Difference_Exclusion_copy_RGBA_opaque_RGBA_premultiply_RGBA_premultiply_BGRA_unpremultiply_RGBA_reverse_4byte_word_rows_RGBA_to_RGB8_BGR8_BGRA8_RGB8_to_opaque_RGBA_image_rows_Gray8_gray_RGB_RGBA_BGRA_and_premultiplied_gray_RGBA_BGRA_expansion_rows_with_exact_scalar_fallbacks_for_unsupported_or_declined_kernels; render_contract_BackendSelection_ScalarReference_installs_a_scoped_scalar_compositor_guard_that_declines_SIMD_and_portable_wide_rows_for_that_render; BackendSelection_ResearchHybrid_uses_the_active_guarded_CPU_hybrid_dispatcher_with_separate_contract_and_decode_cache_identity".to_string(),
+        },
+        RuntimeCapability {
+            name: "image_decode_capability_reporting".to_string(),
+            state: CapabilityState::Active,
+            mode: ExecutionMode::Standard,
+            reason: "image_decode_planner_reports_current_JBIG2_filtered_lossless_paths_as_full_decode_only_with_explicit_metadata_region_reduction_progressive_component_codestream_tile_cancellation_and_memory_budget_control_status; guarded_DCT_JPEG_plans_use_jpeg_decoder_metadata_and_reduced_IDCT_for_1_2_1_4_and_1_8_downscale_tiers_when_no_full_image_mask_or_postprocessing_step_requires_the_original_sample_grid; guarded_JPX_plans_use_hayro_jpeg2000_metadata_inspection_and_target_resolution_decode_for_downscale_when_no_full_image_mask_or_postprocessing_step_requires_the_original_sample_grid; JPEG_and_JPX_region_codestream_tile_component_and_progressive_decode_remain_unavailable_unless_reported_native; active_decode_cancellation_is_renderer_boundary_not_codec_native_and_decode_memory_budgeting_is_enforced_at_scheduler_adapter_and_finalizer_boundaries; active_CCITT_axis_aligned_XObject_and_inline_source_window_decode_uses_bounded_grayscale_window_output_for_1bpc_DeviceGray_G_or_ImageMask_shapes_when_no_reduction_or_full_image_postprocessing_is_required; active_CCITT_non_monochrome_terminal_shapes_report_MonochromeTerminalShapeUnsupported_instead_of_native_region_decode; active_CCITT_single_component_selection_is_trivial_native_for_1bpc_DeviceGray_or_ImageMask_shapes; active_raw_unfiltered_1_2_4_8_16_bpc_XObject_and_inline_source_window_decode_uses_bounded_source_window_output_when_no_reduction_or_full_image_postprocessing_is_required; active_raw_unfiltered_component_selected_XObject_and_inline_decode_returns_selected_1_2_4_8_16_bpc_source_components_with_decode_arrays_applied_by_original_component_index; active_raw_unfiltered_1bpc_ImageMask_XObject_and_inline_source_window_decode_uses_bounded_stencil_window_output_when_no_reduction_or_full_image_postprocessing_is_required; active_raw_unfiltered_crop_aligned_explicit_Mask_source_window_decode_crops_referenced_1bpc_stencil_masks_with_the_main_image_when_no_SMask_reduction_or_non_axis_transform_is_required; active_raw_and_CCITT_crop_aligned_SMask_source_window_decode_crops_same_sized_unfiltered_grayscale_soft_masks_with_the_main_image_when_no_Mask_reduction_or_non_axis_transform_is_required; CCITT_reduction_progressive_non_axis_aligned_and_unsupported_postprocessing_window_paths_remain_unavailable; raw_filtered_or_incompatible_smask_reduction_unsupported_explicit_mask_postprocessing_non_axis_aligned_window_paths_remain_unavailable; ProgressiveImageDecodeSession_exposes_bounded_start_continue_pause_resume_cancel_fail_close_lifecycle_reports_full_decode_required_only_for_nonterminal_nonprogressive_work_preserves_completed_cancelled_failed_and_closed_terminal_states_and_completes_native_window_reduction_or_requires_component_decode_work_as_planned_partial_decode_complete; per_image_capability_JSON_and_progressive_image_lifecycle_JSON_are_source_visible_through_Rust_SDK_C_Python_WASM_DotNet_Java_CLI_and_server; codec_native_ROI_codestream_tile_and_native_progressive_pixel_output_report_unavailable_for_codecs_that_do_not_expose_native_partial_support".to_string(),
+        },
+        RuntimeCapability {
+            name: "render_document_cache_byte_accounting".to_string(),
+            state: CapabilityState::Active,
+            mode: ExecutionMode::Standard,
+            reason: "RenderDocumentCache_resource_bounds_cover_byte_accounted_raw_images_scaled_images_SMask_groups_meshes_Form_programs_tiling_programs_annotation_appearance_programs_transformed_path_clip_nodes_font_bytes_font_resolvers_glyph_outline_entries_device_glyph_masks_glyph_mask_atlas_pages_Type3_parsed_geometry_programs_Type3_parsed_charproc_programs_Type3_masks_Type3_rendered_glyphs_path_fill_masks_path_stroke_masks_and_retained_display_lists_under_RenderResourceBudget_max_cache_bytes_plus_entry_capped_transparent_page_group_decisions; tenant_server_memory_pressure_policy_is_structured_in_runtime_capabilities; Rust_server_C_Python_WASM_DotNet_and_Java_render_contract_report_surfaces_expose_one_shot_cache_telemetry; external_runtime_cache_telemetry_validation_deferred".to_string(),
+        },
+        RuntimeCapability {
+            name: "renderer_structured_concurrency_matrix".to_string(),
+            state: CapabilityState::Active,
+            mode: ExecutionMode::Standard,
+            reason: "runtime_capabilities_expose_renderer_thread_permit_rows_cache_ownership_rows_serial_mutation_policy_cancel_token_obsolete_publication_guards_and_document_boundary_cache_invalidation; external_runtime_thread_cache_matrix_validation_deferred".to_string(),
         },
     ];
     for name in [
@@ -1179,6 +1280,463 @@ pub fn runtime_capabilities_for(
         standard_feature_complete_under_supported_boundaries: true,
         gpu_required_for_standard: false,
         entries,
+        renderer_fallback_policies: renderer_fallback_policy_matrix(),
+        renderer_cache_pressure_policy: renderer_cache_pressure_policy(config),
+        renderer_concurrency_cache_matrix: renderer_concurrency_cache_matrix(config, host),
+    }
+}
+
+fn renderer_cache_pressure_policy(config: &RuntimeConfig) -> RendererCachePressurePolicy {
+    RendererCachePressurePolicy {
+        source: "RenderDocumentCache_RenderResourceBudget_and_MemoryCoordinator".to_string(),
+        public_endpoint: "/api/v1/capabilities".to_string(),
+        cache_classes: vec![
+            MemoryClass::DisplayLists,
+            MemoryClass::SpatialIndexes,
+            MemoryClass::RenderTiles,
+            MemoryClass::FontsShapingGlyphs,
+            MemoryClass::ImagesMasks,
+            MemoryClass::DecodedStreams,
+        ],
+        render_contract_budget_field: "resource_budget.max_cache_bytes".to_string(),
+        runtime_cache_config_fields: vec![
+            format!("display_list_bytes={}", config.caches.display_list_bytes),
+            format!("render_tile_bytes={}", config.caches.render_tile_bytes),
+            format!("font_shape_bytes={}", config.caches.font_shape_bytes),
+            format!("image_mask_bytes={}", config.caches.image_mask_bytes),
+            format!(
+                "decoded_stream_bytes={}",
+                config.caches.decoded_stream_bytes
+            ),
+        ],
+        admission_aware: config.caches.admission_aware,
+        spill_eligible: config.caches.spill_eligible,
+        pressure_actions: pressure_actions(),
+        correctness_preserved: true,
+        remaining_limitation: "external_runtime_cache_telemetry_validation_deferred".to_string(),
+    }
+}
+
+fn renderer_concurrency_cache_matrix(
+    config: &RuntimeConfig,
+    host: HostRuntimeProfile,
+) -> RendererConcurrencyCacheMatrix {
+    let effective_cpu_workers = config
+        .resources
+        .cpu_workers
+        .unwrap_or(host.vcpu)
+        .max(1)
+        .min(host.vcpu.max(1));
+    RendererConcurrencyCacheMatrix {
+        source: "RuntimeConfig_ConcurrencyConfig_RenderDocumentCache_ProgressiveRenderJob"
+            .to_string(),
+        public_endpoint: "/api/v1/capabilities".to_string(),
+        host_vcpu: host.vcpu,
+        effective_cpu_workers,
+        max_concurrent_documents: config.resources.max_concurrent_documents,
+        mutation_serial_per_document: config.concurrency.mutation_serial_per_document,
+        work_stealing_enabled: config.concurrency.work_stealing_enabled,
+        thread_classes: vec![
+            renderer_thread_class(
+                "page_program_parse",
+                config.concurrency.parser_permits,
+                true,
+                false,
+                "none_read_only_parse_state",
+            ),
+            renderer_thread_class(
+                "image_decode",
+                config.concurrency.decode_permits,
+                true,
+                false,
+                "RenderDocumentCache_decoded_image_admission",
+            ),
+            renderer_thread_class(
+                "tile_render",
+                config.concurrency.render_permits,
+                true,
+                true,
+                "caller_or_session_owned_RenderDocumentCache",
+            ),
+            renderer_thread_class(
+                "font_shaping",
+                config.concurrency.shaping_permits,
+                true,
+                false,
+                "font_resolver_and_glyph_cache_budgeted_tables",
+            ),
+            renderer_thread_class(
+                "progressive_publication",
+                config.concurrency.render_permits,
+                true,
+                true,
+                "session_owned_RenderDocumentCache_revision_checked_publications",
+            ),
+            renderer_thread_class(
+                "document_mutation",
+                1,
+                false,
+                true,
+                "per_document_serial_transaction_cache_invalidation",
+            ),
+        ],
+        cache_rows: vec![
+            renderer_cache_concurrency_row(
+                MemoryClass::DisplayLists,
+                "RenderDocumentCache",
+                "document_owned_lru_shared_by_render_threads_after_admission",
+                "revision_and_source_dependency_invalidation",
+                "caches.display_list_bytes",
+                true,
+            ),
+            renderer_cache_concurrency_row(
+                MemoryClass::RenderTiles,
+                "RenderDocumentCache",
+                "document_or_progressive_session_owned_tile_entries",
+                "exact_tile_source_and_page_invalidation",
+                "caches.render_tile_bytes",
+                true,
+            ),
+            renderer_cache_concurrency_row(
+                MemoryClass::ImagesMasks,
+                "RenderDocumentCache",
+                "document_owned_decoded_scaled_image_smask_mask_tables",
+                "source_cache_marker_and_render_contract_identity_invalidation",
+                "caches.image_mask_bytes",
+                true,
+            ),
+            renderer_cache_concurrency_row(
+                MemoryClass::FontsShapingGlyphs,
+                "RenderDocumentCache",
+                "document_owned_font_resolver_glyph_outline_mask_atlas_tables",
+                "font_policy_contract_and_source_dependency_invalidation",
+                "caches.font_shape_bytes",
+                true,
+            ),
+            renderer_cache_concurrency_row(
+                MemoryClass::DecodedStreams,
+                "MemoryCoordinator",
+                "bounded_decoded_stream_reservations",
+                "source_revision_and_pressure_eviction",
+                "caches.decoded_stream_bytes",
+                true,
+            ),
+            renderer_cache_concurrency_row(
+                MemoryClass::TransactionsProvenance,
+                "transaction_report",
+                "per_document_serial_mutation_report",
+                "next_revision_render_invalidation_plan",
+                "caches.transaction_provenance_bytes",
+                true,
+            ),
+        ],
+        obsolete_work_cancellation: vec![
+            "CancelToken_shared_by_preparation_decode_tile_and_progressive_steps".to_string(),
+            "progressive_tile_publication_identity_rejects_stale_viewport_dirty_revision_context"
+                .to_string(),
+            "request_cancel_prevents_new_progressive_work".to_string(),
+        ],
+        correctness_preserved: true,
+        remaining_limitation: "external_runtime_thread_cache_matrix_validation_deferred"
+            .to_string(),
+    }
+}
+
+fn renderer_thread_class(
+    name: &str,
+    permits: u16,
+    cancel_token_observed: bool,
+    stale_publication_guarded: bool,
+    mutable_cache_owner: &str,
+) -> RendererThreadClass {
+    RendererThreadClass {
+        name: name.to_string(),
+        permits,
+        bounded_by_effective_cpu_workers: true,
+        cancel_token_observed,
+        stale_publication_guarded,
+        mutable_cache_owner: mutable_cache_owner.to_string(),
+    }
+}
+
+fn renderer_cache_concurrency_row(
+    class: MemoryClass,
+    owner: &str,
+    sharing_model: &str,
+    invalidation_model: &str,
+    budget_field: &str,
+    document_boundary: bool,
+) -> RendererCacheConcurrencyRow {
+    RendererCacheConcurrencyRow {
+        class,
+        owner: owner.to_string(),
+        sharing_model: sharing_model.to_string(),
+        invalidation_model: invalidation_model.to_string(),
+        budget_field: budget_field.to_string(),
+        document_boundary,
+    }
+}
+
+fn renderer_fallback_policy_matrix() -> Vec<RuntimeFallbackPolicy> {
+    vec![
+        fallback_policy(
+            [
+                "FB-01",
+                "render/page_renderer.rs",
+                "unsupported_retained_display_list",
+                "typed_unsupported_feature_no_canonical_raw_dispatch",
+                "complete_active_source",
+                "compatibility_and_high_quality_refuse_unsupported_retained_display_list_replay",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-02",
+                "render/page_renderer.rs",
+                "retained_tile_plan_unavailable",
+                "typed_unsupported_feature_no_canonical_immediate_tile",
+                "complete_active_source",
+                "compatibility_and_high_quality_refuse_unsupported_retained_tile_replay",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-03",
+                "render/progressive.rs",
+                "progressive_tile_display_list_unsupported",
+                "typed_unsupported_feature_no_fallback_publication",
+                "complete_active_source",
+                "compatibility_and_high_quality_progressive_jobs_fail_closed_without_publishing_immediate_tiles",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-04",
+                "render/page_renderer.rs",
+                "recursive_tiling_pattern",
+                "typed_recursive_pattern_refusal_no_solid_paint",
+                "complete_active_source",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-05",
+                "render/page_renderer.rs",
+                "tiling_pattern_visible_cell_limit_exceeded",
+                "typed_render_resource_limit_no_solid_paint",
+                "complete_active_source",
+                "exact_typed_resource_limit",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-06",
+                "render/page_renderer.rs",
+                "type3_charproc_unresolved_or_unsupported",
+                "typed_unsupported_feature_no_ordinary_font_substitution",
+                "bounded_immutable_type3_retained_charproc_plan_cache",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-07",
+                "render/font_rasterizer.rs",
+                "embedded_or_mapped_font_unavailable",
+                "compatibility_mode_deterministic_registered_system_or_bundled_replacement_with_substitution_report",
+                "complete_active_source",
+                "high_quality_exact_accepts_registered_or_deterministic_system_and_refuses_generic_bundled_replacement",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-08",
+                "render/display_list.rs",
+                "missing_named_shading_resource",
+                "explicit_unsupported_shading_diagnostic",
+                "resolved_diagnostic",
+                "exact_missing_resource_diagnostic",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-09",
+                "images/jpx.rs",
+                "jpx_codec_native_roi_progressive_unavailable_reduction_guarded",
+                "visible_capability_report_for_jpx_target_resolution_path",
+                "sampler_specific_fallback_removed",
+                "must_remain_reported_until_codec_native_roi_and_progressive_output_are_available",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-10",
+                "render/cmm.rs",
+                "native_littlecms_backend_unavailable",
+                "portable_qcms_backend_with_reported_identity",
+                "complete_not_default_unverified_native_feature",
+                "backend_identity_reported_no_pixel_equivalence_claim",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-11",
+                "render/svg.rs",
+                "svg_unsupported_local_vector_construct",
+                "compatibility_svg_export_may_embed_explicit_whole_page_raster_when_bounded_native_representation_is_not_available; strict_svg_export_refuses_that_path; image_xobject_stencils_safe_extgstate_text_outline_text_clips_noop_transparency_group_forms_calibrated_opaque_group_forms_indexed_opaque_group_forms_iccbased_opaque_group_forms_composed_svg_clips_and_dead_pattern_state_are_native; active_pattern_paint_fails_closed",
+                "partial_advanced",
+                "strict_svg_vector_output_typed_refusal_no_whole_page_raster_degradation",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-12",
+                "render/postscript.rs",
+                "postscript_unsupported_local_vector_construct",
+                "compatibility_postscript_export_may_embed_explicit_whole_page_raster_when_bounded_native_representation_is_not_available; strict_postscript_export_refuses_that_path; image_xobject_stencils_direct_DeviceRGB_DeviceGray_Type2_exponent_RGB_function_array_and_Type3_stitching_shfill_safe_extgstate_stateful_zero_alpha_blend_noop_text_outline_text_clips_noop_transparency_group_forms_calibrated_opaque_group_forms_indexed_opaque_group_forms_iccbased_opaque_group_forms_and_dead_pattern_state_are_native; visible_fractional_alpha_or_non_normal_blend_paint_fails_closed; active_pattern_paint_fails_closed",
+                "partial_advanced",
+                "strict_postscript_vector_output_typed_refusal_no_whole_page_raster_degradation",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-13",
+                "render/page_renderer.rs",
+                "active_pattern_paint_missing_malformed_or_unsupported",
+                "typed_refusal_no_solid_color_or_noop_substitution",
+                "complete_active_source",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-14",
+                "render/page_renderer.rs",
+                "tiling_pattern_required_metadata_malformed",
+                "typed_refusal_no_default_pattern_bbox_step_or_type",
+                "complete_active_source",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-15",
+                "render/colorspace.rs",
+                "active_named_color_metadata_malformed_or_unsupported",
+                "typed_refusal_no_black_default_or_component_padding",
+                "complete_active_source",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-16",
+                "render/shading.rs",
+                "active_shading_metadata_malformed_or_unsupported",
+                "typed_refusal_no_black_default_or_empty_shading",
+                "complete_active_source",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-17",
+                "render/page_renderer.rs",
+                "active_inline_image_metadata_malformed",
+                "typed_refusal_no_zero_sized_noop_or_default_gray",
+                "complete_active_source",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-18",
+                "render/page_renderer.rs",
+                "active_image_xobject_metadata_malformed",
+                "typed_refusal_no_default_dimensions_bpc_or_rgb",
+                "complete_active_source",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-19",
+                "render/page_renderer.rs",
+                "extgstate_render_state_metadata_malformed_or_visible_paint_dependent_semantics",
+                "typed_refusal_no_default_state_clamping_array_filtering_or_visible_unimplemented_semantic_paint",
+                "complete_active_source",
+                "exact_typed_refusal_for_malformed_metadata_and_visible_SA_AIS_TK_semantics",
+            ],
+            false,
+            false,
+        ),
+        fallback_policy(
+            [
+                "FB-20",
+                "render/page_renderer.rs",
+                "active_content_operand_or_sequence_malformed",
+                "typed_refusal_no_default_path_text_marked_content_or_resource_state",
+                "complete_active_source",
+                "exact_typed_refusal",
+            ],
+            false,
+            false,
+        ),
+    ]
+}
+
+fn fallback_policy(
+    text: [&str; 6],
+    material_degradation: bool,
+    calls_canonical_immediate: bool,
+) -> RuntimeFallbackPolicy {
+    let [id, source, trigger, policy, status, high_quality_policy] = text;
+    RuntimeFallbackPolicy {
+        id: id.to_string(),
+        source: source.to_string(),
+        trigger: trigger.to_string(),
+        policy: policy.to_string(),
+        material_degradation,
+        calls_canonical_immediate,
+        status: status.to_string(),
+        high_quality_policy: high_quality_policy.to_string(),
     }
 }
 
@@ -1817,14 +2375,455 @@ mod tests {
         );
         for name in [
             "versioned_render_contract_v1",
+            "caller_owned_render_surfaces",
             "packed_vector_render_plan",
             "retained_display_list_renderer",
             "renderer_fallback_reporting",
+            "font_resolution_and_substitution_reporting",
+            "type3_charproc_typed_refusal",
             "progressive_renderer_core",
             "cpu_simd_compositor",
+            "image_decode_capability_reporting",
+            "render_document_cache_byte_accounting",
+            "renderer_structured_concurrency_matrix",
         ] {
             assert!(report.entries.iter().any(|entry| entry.name == name));
         }
+        let contract_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "versioned_render_contract_v1")
+            .expect("render contract capability entry");
+        assert_eq!(contract_entry.state, CapabilityState::Active);
+        assert!(contract_entry
+            .reason
+            .contains("research_execution_mode_contract_identity"));
+        assert!(contract_entry
+            .reason
+            .contains("research_hybrid_CPU_dispatch_identity"));
+        assert!(contract_entry
+            .reason
+            .contains("unsupported_policy_combinations"));
+        let type3_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "type3_charproc_typed_refusal")
+            .expect("type3 capability entry");
+        assert_eq!(type3_entry.state, CapabilityState::Active);
+        assert!(type3_entry.reason.contains("bounded LRU admission"));
+        assert!(type3_entry.reason.contains("Unicode-derived aliases"));
+        assert!(type3_entry
+            .reason
+            .contains("retained_CharProc_plans_are_immutable"));
+        assert!(type3_entry.reason.contains("source_marker_pruning"));
+        let progressive_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "progressive_renderer_core")
+            .expect("progressive renderer capability entry");
+        assert!(progressive_entry
+            .reason
+            .contains("visible_adjacent_background_priority_bands"));
+        assert!(progressive_entry
+            .reason
+            .contains("dirty_region_tile_rescheduling"));
+        assert!(progressive_entry.reason.contains("live_contract_revision"));
+        assert!(progressive_entry
+            .reason
+            .contains("source_session_tile_publication_acceptance"));
+        assert!(progressive_entry
+            .reason
+            .contains("adjacent_page_prefetch_preview"));
+        assert!(progressive_entry
+            .reason
+            .contains("viewer_callback_dispatch_JSON"));
+        assert!(progressive_entry
+            .reason
+            .contains("callback_execution_helpers"));
+        assert!(progressive_entry
+            .reason
+            .contains("external_viewer_runtime_matrix_validation_deferred"));
+        let image_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "image_decode_capability_reporting")
+            .expect("image decode capability entry");
+        assert_eq!(image_entry.state, CapabilityState::Active);
+        assert!(image_entry.reason.contains("full_decode_only"));
+        assert!(image_entry
+            .reason
+            .contains("explicit_metadata_region_reduction"));
+        assert!(image_entry
+            .reason
+            .contains("guarded_JPX_plans_use_hayro_jpeg2000_metadata_inspection"));
+        assert!(image_entry
+            .reason
+            .contains("active_CCITT_axis_aligned_XObject_and_inline_source_window_decode"));
+        assert!(image_entry
+            .reason
+            .contains("active_CCITT_single_component_selection_is_trivial_native"));
+        assert!(image_entry.reason.contains(
+            "active_raw_unfiltered_1_2_4_8_16_bpc_XObject_and_inline_source_window_decode"
+        ));
+        assert!(image_entry
+            .reason
+            .contains("active_raw_unfiltered_component_selected_XObject_and_inline_decode"));
+        assert!(image_entry.reason.contains(
+            "active_raw_unfiltered_1bpc_ImageMask_XObject_and_inline_source_window_decode"
+        ));
+        assert!(image_entry
+            .reason
+            .contains("active_raw_unfiltered_crop_aligned_explicit_Mask_source_window_decode"));
+        assert!(image_entry
+            .reason
+            .contains("active_raw_and_CCITT_crop_aligned_SMask_source_window_decode"));
+        assert!(image_entry.reason.contains(
+            "active_CCITT_non_monochrome_terminal_shapes_report_MonochromeTerminalShapeUnsupported"
+        ));
+        assert!(image_entry.reason.contains(
+            "CCITT_reduction_progressive_non_axis_aligned_and_unsupported_postprocessing_window_paths_remain_unavailable"
+        ));
+        assert!(image_entry
+            .reason
+            .contains("active_decode_cancellation_is_renderer_boundary"));
+        assert!(image_entry.reason.contains(
+            "raw_filtered_or_incompatible_smask_reduction_unsupported_explicit_mask_postprocessing_non_axis_aligned"
+        ));
+        assert!(image_entry
+            .reason
+            .contains("planned_partial_decode_complete"));
+        assert!(image_entry.reason.contains("requires_component_decode"));
+        assert!(image_entry.reason.contains("per_image_capability_JSON"));
+        assert!(image_entry.reason.contains("codec_native_ROI"));
+        let caller_surface = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "caller_owned_render_surfaces")
+            .expect("caller-owned surface capability entry");
+        assert_eq!(caller_surface.state, CapabilityState::Active);
+        assert!(caller_surface.reason.contains("caller_owned_buffers"));
+        assert!(caller_surface.reason.contains("alpha_mode"));
+        assert!(caller_surface.reason.contains("reverse_4byte_word_routing"));
+        assert!(caller_surface.reason.contains("ScalarReference_backend"));
+        let simd_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "cpu_simd_compositor")
+            .expect("simd capability entry");
+        assert_eq!(simd_entry.state, CapabilityState::Available);
+        assert!(simd_entry.reason.contains("wasm32_simd128"));
+        assert!(simd_entry.reason.contains("copy_RGBA"));
+        assert!(simd_entry
+            .reason
+            .contains("alpha_mask_opaque_and_mixed_destination"));
+        assert!(simd_entry
+            .reason
+            .contains("mixed_source_group_alpha_opaque_destination"));
+        assert!(simd_entry
+            .reason
+            .contains("mixed_destination_source_over_f32x4"));
+        assert!(simd_entry.reason.contains("alpha_fill_rows"));
+        assert!(simd_entry.reason.contains("clip_mask_fusion_rows"));
+        assert!(simd_entry
+            .reason
+            .contains("image_glyph_mask_clip_smask_fusion_rows"));
+        assert!(simd_entry
+            .reason
+            .contains("solid_rgba_clip_smask_fusion_rows"));
+        assert!(simd_entry.reason.contains("soft_mask_group_alpha"));
+        assert!(simd_entry
+            .reason
+            .contains("soft_mask_mixed_destination_f32x4"));
+        assert!(simd_entry
+            .reason
+            .contains("BackendSelection_ResearchHybrid"));
+        assert!(simd_entry.reason.contains("common_separable_blend_kernels"));
+        assert!(simd_entry
+            .reason
+            .contains("translucent_solid_partial_clip_separable_mixed_alpha_f32x4_rows"));
+        assert!(simd_entry
+            .reason
+            .contains("separable_solid_mixed_destination_f32x4_rows"));
+        assert!(simd_entry
+            .reason
+            .contains("separable_rgba_mixed_destination_f32x4_rows"));
+        assert!(simd_entry
+            .reason
+            .contains("separable_rgba_mixed_destination_partial_clip_f32x4_rows"));
+        assert!(simd_entry.reason.contains("opaque_background_flatten_rows"));
+        assert!(simd_entry.reason.contains(
+            "true_lanes_for_Multiply_Screen_Overlay_Darken_Lighten_ColorDodge_ColorBurn_HardLight_SoftLight_Difference_Exclusion"
+        ));
+        assert!(simd_entry.reason.contains("opaque_RGBA"));
+        assert!(simd_entry.reason.contains("premultiply_RGBA"));
+        assert!(simd_entry.reason.contains("premultiply_BGRA"));
+        assert!(simd_entry.reason.contains("unpremultiply_RGBA"));
+        assert!(simd_entry.reason.contains("reverse_4byte_word_rows"));
+        assert!(simd_entry.reason.contains("RGBA_to_RGB8_BGR8_BGRA8"));
+        assert!(simd_entry.reason.contains("RGB8_to_opaque_RGBA_image_rows"));
+        assert!(simd_entry.reason.contains("Gray8"));
+        assert!(simd_entry.reason.contains("gray_RGB_RGBA_BGRA"));
+        assert!(simd_entry
+            .reason
+            .contains("premultiplied_gray_RGBA_BGRA_expansion"));
+        let cache_accounting = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "render_document_cache_byte_accounting")
+            .expect("cache accounting capability entry");
+        assert_eq!(cache_accounting.state, CapabilityState::Active);
+        assert!(cache_accounting.reason.contains("font_resolvers"));
+        assert!(cache_accounting.reason.contains("glyph_outline_entries"));
+        assert!(cache_accounting.reason.contains("glyph_mask_atlas_pages"));
+        assert!(cache_accounting
+            .reason
+            .contains("Type3_parsed_charproc_programs"));
+        assert!(cache_accounting.reason.contains("path_fill_masks"));
+        assert!(cache_accounting
+            .reason
+            .contains("transformed_path_clip_nodes"));
+        assert!(cache_accounting
+            .reason
+            .contains("annotation_appearance_programs"));
+        assert!(cache_accounting.reason.contains("retained_display_lists"));
+        assert!(cache_accounting
+            .reason
+            .contains("transparent_page_group_decisions"));
+        assert!(cache_accounting
+            .reason
+            .contains("tenant_server_memory_pressure_policy_is_structured"));
+        assert_eq!(
+            report.renderer_cache_pressure_policy.public_endpoint,
+            "/api/v1/capabilities"
+        );
+        assert!(report
+            .renderer_cache_pressure_policy
+            .cache_classes
+            .contains(&MemoryClass::RenderTiles));
+        assert!(report
+            .renderer_cache_pressure_policy
+            .cache_classes
+            .contains(&MemoryClass::ImagesMasks));
+        assert!(report
+            .renderer_cache_pressure_policy
+            .pressure_actions
+            .contains(&MemoryPressureAction::EvictRecomputableTiles));
+        assert!(report
+            .renderer_cache_pressure_policy
+            .pressure_actions
+            .contains(&MemoryPressureAction::PreserveCorrectness));
+        assert!(report.renderer_cache_pressure_policy.correctness_preserved);
+        assert!(report
+            .renderer_cache_pressure_policy
+            .remaining_limitation
+            .contains("external_runtime_cache_telemetry_validation_deferred"));
+        let fallback_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "renderer_fallback_reporting")
+            .expect("fallback reporting capability entry");
+        assert!(fallback_entry
+            .reason
+            .contains("structured_fallback_policy_matrix"));
+        let concurrency_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "renderer_structured_concurrency_matrix")
+            .expect("renderer concurrency capability entry");
+        assert_eq!(concurrency_entry.state, CapabilityState::Active);
+        assert!(concurrency_entry
+            .reason
+            .contains("renderer_thread_permit_rows_cache_ownership_rows"));
+        let font_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "font_resolution_and_substitution_reporting")
+            .expect("font resolution capability entry");
+        assert_eq!(font_entry.state, CapabilityState::Active);
+        assert!(font_entry
+            .reason
+            .contains("valid_embedded_document_registered_system_mapping"));
+        assert!(font_entry
+            .reason
+            .contains("registered_provider_fingerprint"));
+        assert!(font_entry
+            .reason
+            .contains("deterministic_system_mappings_report_distinct_resolution_source"));
+        assert!(font_entry
+            .reason
+            .contains("high_quality_exact_accepts_registered_or_deterministic_system_faces"));
+        assert!(font_entry
+            .reason
+            .contains("C_Python_WASM_DotNet_Java_CLI_server_source_surfaces"));
+        assert_eq!(report.renderer_fallback_policies.len(), 20);
+        let unsupported_retained = report
+            .renderer_fallback_policies
+            .iter()
+            .find(|policy| policy.id == "FB-01")
+            .expect("unsupported retained-list policy");
+        assert_eq!(unsupported_retained.status, "complete_active_source");
+        assert!(!unsupported_retained.material_degradation);
+        assert!(!unsupported_retained.calls_canonical_immediate);
+        assert!(unsupported_retained
+            .high_quality_policy
+            .contains("compatibility_and_high_quality_refuse"));
+        let recursive_pattern = report
+            .renderer_fallback_policies
+            .iter()
+            .find(|policy| policy.id == "FB-04")
+            .expect("recursive pattern policy");
+        assert_eq!(recursive_pattern.status, "complete_active_source");
+        assert!(!recursive_pattern.material_degradation);
+        let font_policy = report
+            .renderer_fallback_policies
+            .iter()
+            .find(|policy| policy.id == "FB-07")
+            .expect("font substitution policy");
+        assert!(font_policy
+            .policy
+            .contains("deterministic_registered_system_or_bundled_replacement"));
+        assert!(font_policy
+            .high_quality_policy
+            .contains("accepts_registered_or_deterministic_system"));
+        assert!(font_policy
+            .high_quality_policy
+            .contains("refuses_generic_bundled_replacement"));
+        assert_eq!(font_policy.status, "complete_active_source");
+        assert!(!font_policy.material_degradation);
+        assert!(!font_policy.calls_canonical_immediate);
+        assert_eq!(
+            report
+                .renderer_fallback_policies
+                .iter()
+                .filter(|policy| policy.material_degradation)
+                .count(),
+            0
+        );
+        assert_eq!(
+            report
+                .renderer_fallback_policies
+                .iter()
+                .filter(|policy| policy.calls_canonical_immediate)
+                .count(),
+            0
+        );
+        let svg_policy = report
+            .renderer_fallback_policies
+            .iter()
+            .find(|policy| policy.id == "FB-11")
+            .expect("SVG fallback policy");
+        assert!(svg_policy
+            .policy
+            .contains("strict_svg_export_refuses_that_path"));
+        assert!(svg_policy.policy.contains("calibrated_opaque_group_forms"));
+        assert!(svg_policy.policy.contains("indexed_opaque_group_forms"));
+        assert!(svg_policy.policy.contains("iccbased_opaque_group_forms"));
+        assert!(svg_policy.high_quality_policy.contains("typed_refusal"));
+        let ps_policy = report
+            .renderer_fallback_policies
+            .iter()
+            .find(|policy| policy.id == "FB-12")
+            .expect("PostScript fallback policy");
+        assert!(ps_policy.policy.contains("stateful_zero_alpha_blend_noop"));
+        assert!(ps_policy
+            .policy
+            .contains("visible_fractional_alpha_or_non_normal_blend_paint_fails_closed"));
+        assert!(ps_policy.policy.contains("calibrated_opaque_group_forms"));
+        assert!(ps_policy.policy.contains("indexed_opaque_group_forms"));
+        assert!(ps_policy.policy.contains("iccbased_opaque_group_forms"));
+        assert!(ps_policy.high_quality_policy.contains("typed_refusal"));
+        let content_operand_policy = report
+            .renderer_fallback_policies
+            .iter()
+            .find(|policy| policy.id == "FB-20")
+            .expect("content operand policy");
+        assert_eq!(content_operand_policy.status, "complete_active_source");
+        assert!(!content_operand_policy.material_degradation);
+        assert!(!content_operand_policy.calls_canonical_immediate);
+    }
+
+    #[test]
+    fn renderer_concurrency_matrix_reports_thread_and_cache_boundaries() {
+        let mut config = RuntimeConfig::standard();
+        config.resources.cpu_workers = Some(3);
+        config.resources.max_concurrent_documents = Some(2);
+        config.concurrency.render_permits = 3;
+        config.concurrency.decode_permits = 2;
+        let report = runtime_capabilities_for(
+            &config,
+            HostRuntimeProfile {
+                vcpu: 4,
+                ram_bytes: MINIMUM_STANDARD_RAM_BYTES,
+                gpu_present: false,
+                wasm: false,
+            },
+            &HostRuntimePolicy::default(),
+        );
+        let matrix = &report.renderer_concurrency_cache_matrix;
+
+        assert_eq!(matrix.public_endpoint, "/api/v1/capabilities");
+        assert_eq!(matrix.effective_cpu_workers, 3);
+        assert_eq!(matrix.max_concurrent_documents, Some(2));
+        assert!(matrix.mutation_serial_per_document);
+        assert!(matrix.work_stealing_enabled);
+        assert!(matrix.correctness_preserved);
+        assert!(matrix
+            .remaining_limitation
+            .contains("external_runtime_thread_cache_matrix_validation_deferred"));
+
+        let tile_render = matrix
+            .thread_classes
+            .iter()
+            .find(|row| row.name == "tile_render")
+            .expect("tile render row");
+        assert_eq!(tile_render.permits, 3);
+        assert!(tile_render.bounded_by_effective_cpu_workers);
+        assert!(tile_render.cancel_token_observed);
+        assert!(tile_render.stale_publication_guarded);
+        assert!(tile_render
+            .mutable_cache_owner
+            .contains("RenderDocumentCache"));
+
+        let image_decode = matrix
+            .thread_classes
+            .iter()
+            .find(|row| row.name == "image_decode")
+            .expect("image decode row");
+        assert_eq!(image_decode.permits, 2);
+
+        let mutation = matrix
+            .thread_classes
+            .iter()
+            .find(|row| row.name == "document_mutation")
+            .expect("document mutation row");
+        assert_eq!(mutation.permits, 1);
+        assert!(mutation
+            .mutable_cache_owner
+            .contains("serial_transaction_cache_invalidation"));
+
+        let tile_cache = matrix
+            .cache_rows
+            .iter()
+            .find(|row| row.class == MemoryClass::RenderTiles)
+            .expect("render tile cache row");
+        assert_eq!(tile_cache.owner, "RenderDocumentCache");
+        assert!(tile_cache.document_boundary);
+        assert!(tile_cache.invalidation_model.contains("exact_tile_source"));
+        assert_eq!(tile_cache.budget_field, "caches.render_tile_bytes");
+
+        let image_cache = matrix
+            .cache_rows
+            .iter()
+            .find(|row| row.class == MemoryClass::ImagesMasks)
+            .expect("image/mask cache row");
+        assert!(image_cache
+            .invalidation_model
+            .contains("render_contract_identity"));
+
+        assert!(matrix
+            .obsolete_work_cancellation
+            .iter()
+            .any(|item| item.contains("CancelToken")));
     }
 
     #[test]

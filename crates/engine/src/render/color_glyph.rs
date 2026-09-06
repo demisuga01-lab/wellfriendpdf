@@ -187,8 +187,10 @@ pub(crate) fn color_glyph_kind(font_bytes: &[u8], glyph_id: GlyphId) -> ColorGly
     if face.glyph_raster_image(glyph_id, ppem).is_some() {
         return ColorGlyphKind::RasterBitmap;
     }
-    if sbix_payload_kind(font_bytes, glyph_id).is_some() {
-        return ColorGlyphKind::UnsupportedBitmapPayload;
+    match sbix_payload_kind(font_bytes, glyph_id) {
+        Ok(Some(_)) => return ColorGlyphKind::UnsupportedBitmapPayload,
+        Err(_) => return ColorGlyphKind::UnsupportedBitmapPayload,
+        Ok(None) => {}
     }
     if face.glyph_svg_image(glyph_id).is_some() {
         return ColorGlyphKind::SvgBlocked;
@@ -281,7 +283,7 @@ pub(crate) fn decode_raster_glyph_image(
         Err(_) => return Ok(None),
     };
     let Some(image) = face.glyph_raster_image(glyph_id, target_ppem.max(1)) else {
-        if let Some(payload) = sbix_payload(font_bytes, glyph_id, target_ppem.max(1)) {
+        if let Some(payload) = sbix_payload(font_bytes, glyph_id, target_ppem.max(1))? {
             let image = decode_sbix_payload(&payload)?;
             return Ok(Some(DecodedRasterGlyph {
                 x: payload.x,
@@ -511,11 +513,19 @@ impl ColorFontTableSummary {
 pub(crate) fn sbix_payload_kind(
     font_bytes: &[u8],
     glyph_id: GlyphId,
-) -> Option<ColorBitmapPayloadKind> {
-    let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
+) -> Result<Option<ColorBitmapPayloadKind>> {
+    let face = match ttf_parser::Face::parse(font_bytes, 0) {
+        Ok(face) => face,
+        Err(_) => return Ok(None),
+    };
     let raw = face.raw_face();
-    let sbix = raw.table(Tag::from_bytes(b"sbix"))?;
-    sbix_payload_inner(sbix, face.number_of_glyphs(), glyph_id, 0, 0).map(|payload| payload.kind)
+    let Some(sbix) = raw.table(Tag::from_bytes(b"sbix")) else {
+        return Ok(None);
+    };
+    Ok(
+        sbix_payload_inner(sbix, face.number_of_glyphs(), glyph_id, 0, 0)?
+            .map(|payload| payload.kind),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1045,14 +1055,10 @@ fn parse_static_svg_paint_paths(
                 push_svg_paint_path(&mut paths, path, &state, graphics_alpha)?;
             }
             "rect" => {
-                let x = parse_attr_number(&attrs, "x").unwrap_or(0.0);
-                let y = parse_attr_number(&attrs, "y").unwrap_or(0.0);
-                let w = parse_attr_number(&attrs, "width").ok_or_else(|| {
-                    WellfriendError::MalformedPdf("SVG rect missing width".to_string())
-                })?;
-                let h = parse_attr_number(&attrs, "height").ok_or_else(|| {
-                    WellfriendError::MalformedPdf("SVG rect missing height".to_string())
-                })?;
+                let x = optional_attr_number(&attrs, "x", 0.0)?;
+                let y = optional_attr_number(&attrs, "y", 0.0)?;
+                let w = required_attr_number(&attrs, "width", "SVG rect missing width")?;
+                let h = required_attr_number(&attrs, "height", "SVG rect missing height")?;
                 if !(w.is_finite() && h.is_finite()) || w < 0.0 || h < 0.0 {
                     return Err(WellfriendError::MalformedPdf(
                         "SVG rect has invalid dimensions".to_string(),
@@ -1063,11 +1069,9 @@ fn parse_static_svg_paint_paths(
                 push_svg_paint_path(&mut paths, path, &state, graphics_alpha)?;
             }
             "circle" => {
-                let cx = parse_attr_number(&attrs, "cx").unwrap_or(0.0);
-                let cy = parse_attr_number(&attrs, "cy").unwrap_or(0.0);
-                let r = parse_attr_number(&attrs, "r").ok_or_else(|| {
-                    WellfriendError::MalformedPdf("SVG circle missing r".to_string())
-                })?;
+                let cx = optional_attr_number(&attrs, "cx", 0.0)?;
+                let cy = optional_attr_number(&attrs, "cy", 0.0)?;
+                let r = required_attr_number(&attrs, "r", "SVG circle missing r")?;
                 push_svg_paint_path(
                     &mut paths,
                     ellipse_path(cx, cy, r, r)?,
@@ -1076,14 +1080,10 @@ fn parse_static_svg_paint_paths(
                 )?;
             }
             "ellipse" => {
-                let cx = parse_attr_number(&attrs, "cx").unwrap_or(0.0);
-                let cy = parse_attr_number(&attrs, "cy").unwrap_or(0.0);
-                let rx = parse_attr_number(&attrs, "rx").ok_or_else(|| {
-                    WellfriendError::MalformedPdf("SVG ellipse missing rx".to_string())
-                })?;
-                let ry = parse_attr_number(&attrs, "ry").ok_or_else(|| {
-                    WellfriendError::MalformedPdf("SVG ellipse missing ry".to_string())
-                })?;
+                let cx = optional_attr_number(&attrs, "cx", 0.0)?;
+                let cy = optional_attr_number(&attrs, "cy", 0.0)?;
+                let rx = required_attr_number(&attrs, "rx", "SVG ellipse missing rx")?;
+                let ry = required_attr_number(&attrs, "ry", "SVG ellipse missing ry")?;
                 push_svg_paint_path(
                     &mut paths,
                     ellipse_path(cx, cy, rx, ry)?,
@@ -1092,10 +1092,10 @@ fn parse_static_svg_paint_paths(
                 )?;
             }
             "line" => {
-                let x1 = parse_attr_number(&attrs, "x1").unwrap_or(0.0);
-                let y1 = parse_attr_number(&attrs, "y1").unwrap_or(0.0);
-                let x2 = parse_attr_number(&attrs, "x2").unwrap_or(0.0);
-                let y2 = parse_attr_number(&attrs, "y2").unwrap_or(0.0);
+                let x1 = optional_attr_number(&attrs, "x1", 0.0)?;
+                let y1 = optional_attr_number(&attrs, "y1", 0.0)?;
+                let x2 = optional_attr_number(&attrs, "x2", 0.0)?;
+                let y2 = optional_attr_number(&attrs, "y2", 0.0)?;
                 let mut path = Path::new();
                 path.move_to(x1, y1);
                 path.line_to(x2, y2);
@@ -1135,9 +1135,12 @@ fn push_svg_paint_path(
     if path.is_empty() {
         return Ok(());
     }
-    if !finite_transform(state.transform) || !state.stroke_width.is_finite() {
+    if !finite_transform(state.transform)
+        || !state.stroke_width.is_finite()
+        || state.stroke_width < 0.0
+    {
         return Err(WellfriendError::UnsupportedFeature(
-            "SVG-in-OpenType static subset contains non-finite transform or stroke width"
+            "SVG-in-OpenType static subset contains non-finite transform or invalid stroke width"
                 .to_string(),
         ));
     }
@@ -1265,7 +1268,15 @@ fn apply_svg_paint_attr(
     match key {
         "fill" => state.fill = parse_svg_color(value, foreground)?,
         "stroke" => state.stroke = parse_svg_color(value, foreground)?,
-        "stroke-width" => state.stroke_width = parse_svg_number(value)?.max(0.0),
+        "stroke-width" => {
+            let stroke_width = parse_svg_number(value)?;
+            if stroke_width < 0.0 {
+                return Err(WellfriendError::MalformedPdf(
+                    "SVG-in-OpenType stroke-width is negative".to_string(),
+                ));
+            }
+            state.stroke_width = stroke_width;
+        }
         "opacity" => state.opacity = parse_unit_interval(value)?,
         "fill-opacity" => state.fill_opacity = parse_unit_interval(value)?,
         "stroke-opacity" => state.stroke_opacity = parse_unit_interval(value)?,
@@ -1293,8 +1304,29 @@ fn attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
-fn parse_attr_number(attrs: &[(String, String)], name: &str) -> Option<f64> {
-    attr(attrs, name).and_then(|value| parse_svg_number(value).ok())
+fn optional_attr_number(attrs: &[(String, String)], name: &str, default: f64) -> Result<f64> {
+    let Some(value) = attr(attrs, name) else {
+        return Ok(default);
+    };
+    parse_svg_number(value).map_err(|err| svg_attr_number_err(name, err))
+}
+
+fn required_attr_number(attrs: &[(String, String)], name: &str, missing: &str) -> Result<f64> {
+    let value =
+        attr(attrs, name).ok_or_else(|| WellfriendError::MalformedPdf(missing.to_string()))?;
+    parse_svg_number(value).map_err(|err| svg_attr_number_err(name, err))
+}
+
+fn svg_attr_number_err(name: &str, err: WellfriendError) -> WellfriendError {
+    match err {
+        WellfriendError::MalformedPdf(message) => WellfriendError::MalformedPdf(format!(
+            "SVG-in-OpenType numeric attribute '{name}' is malformed: {message}"
+        )),
+        WellfriendError::UnsupportedFeature(message) => WellfriendError::UnsupportedFeature(
+            format!("SVG-in-OpenType numeric attribute '{name}' is unsupported: {message}"),
+        ),
+        other => other,
+    }
 }
 
 fn parse_svg_color(value: &str, foreground: PixelColor) -> Result<Option<PixelColor>> {
@@ -1371,14 +1403,31 @@ fn parse_color_component(value: &str) -> Result<u8> {
     let value = value.trim();
     if let Some(percent) = value.strip_suffix('%') {
         let pct = parse_svg_number(percent)?;
-        Ok(((pct.clamp(0.0, 100.0) / 100.0) * 255.0).round() as u8)
+        if !(0.0..=100.0).contains(&pct) {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "SVG-in-OpenType color percentage out of range: {value}"
+            )));
+        }
+        Ok(((pct / 100.0) * 255.0).round() as u8)
     } else {
-        Ok(parse_svg_number(value)?.round().clamp(0.0, 255.0) as u8)
+        let component = parse_svg_number(value)?;
+        if !(0.0..=255.0).contains(&component) {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "SVG-in-OpenType color component out of range: {value}"
+            )));
+        }
+        Ok(component.round() as u8)
     }
 }
 
 fn parse_unit_interval(value: &str) -> Result<f64> {
-    Ok(parse_svg_number(value)?.clamp(0.0, 1.0))
+    let parsed = parse_svg_number(value)?;
+    if !(0.0..=1.0).contains(&parsed) {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "SVG-in-OpenType opacity value out of range: {value}"
+        )));
+    }
+    Ok(parsed)
 }
 
 fn parse_svg_number(value: &str) -> Result<f64> {
@@ -1707,10 +1756,15 @@ fn sbix_payload<'a>(
     font_bytes: &'a [u8],
     glyph_id: GlyphId,
     target_ppem: u16,
-) -> Option<SbixPayload<'a>> {
-    let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
+) -> Result<Option<SbixPayload<'a>>> {
+    let face = match ttf_parser::Face::parse(font_bytes, 0) {
+        Ok(face) => face,
+        Err(_) => return Ok(None),
+    };
     let raw = face.raw_face();
-    let sbix = raw.table(Tag::from_bytes(b"sbix"))?;
+    let Some(sbix) = raw.table(Tag::from_bytes(b"sbix")) else {
+        return Ok(None);
+    };
     sbix_payload_inner(sbix, face.number_of_glyphs(), glyph_id, target_ppem, 0)
 }
 
@@ -1720,40 +1774,145 @@ fn sbix_payload_inner<'a>(
     glyph_id: GlyphId,
     target_ppem: u16,
     depth: u8,
-) -> Option<SbixPayload<'a>> {
+) -> Result<Option<SbixPayload<'a>>> {
     if depth >= 10 || glyph_id.0 >= glyph_count {
-        return None;
+        return Ok(None);
     }
-    let strike_count = read_u32(sbix, 4)? as usize;
+    if sbix.len() < 8 {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "sbix color glyph table truncated: {} bytes, expected at least 8",
+            sbix.len()
+        )));
+    }
+    let strike_count = read_u32_checked(sbix, 4, "strike count")? as usize;
     let strike_offsets_start = 8usize;
+    let strike_offsets_end = strike_offsets_start
+        .checked_add(strike_count.checked_mul(4).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "sbix color glyph strike-offset table length overflows".to_string(),
+            )
+        })?)
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "sbix color glyph strike-offset table end overflows".to_string(),
+            )
+        })?;
+    if strike_offsets_end > sbix.len() {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "sbix color glyph strike-offset table truncated: need {strike_offsets_end} bytes, have {}",
+            sbix.len()
+        )));
+    }
     let mut best: Option<SbixPayload<'a>> = None;
     let mut best_distance = u16::MAX;
     for strike_index in 0..strike_count {
-        let strike_offset = read_u32(sbix, strike_offsets_start + strike_index * 4)? as usize;
-        let pixels_per_em = read_u16(sbix, strike_offset).unwrap_or(0).max(1);
-        let offsets_start = strike_offset.checked_add(4)?;
-        let glyph_offset_index = offsets_start.checked_add(usize::from(glyph_id.0) * 4)?;
-        let start = read_u32(sbix, glyph_offset_index)? as usize;
-        let end = read_u32(sbix, glyph_offset_index.checked_add(4)?)? as usize;
+        let strike_offset = read_u32_checked(
+            sbix,
+            strike_offsets_start + strike_index * 4,
+            "strike offset",
+        )? as usize;
+        let strike_header_end = strike_offset.checked_add(4).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "sbix color glyph strike header end overflows".to_string(),
+            )
+        })?;
+        if strike_header_end > sbix.len() {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "sbix color glyph strike header truncated at offset {strike_offset}"
+            )));
+        }
+        let pixels_per_em = read_u16_checked(sbix, strike_offset, "strike pixels-per-em")?;
+        if pixels_per_em == 0 {
+            return Err(WellfriendError::MalformedPdf(
+                "sbix color glyph strike pixels-per-em is zero".to_string(),
+            ));
+        }
+        let offsets_start = strike_header_end;
+        let offsets_len = usize::from(glyph_count)
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(4))
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "sbix color glyph glyph-offset table length overflows".to_string(),
+                )
+            })?;
+        let offsets_end = offsets_start.checked_add(offsets_len).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "sbix color glyph glyph-offset table end overflows".to_string(),
+            )
+        })?;
+        if offsets_end > sbix.len() {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "sbix color glyph glyph-offset table truncated: need {offsets_end} bytes, have {}",
+                sbix.len()
+            )));
+        }
+        let glyph_offset_index = offsets_start
+            .checked_add(usize::from(glyph_id.0).checked_mul(4).ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "sbix color glyph glyph-offset index overflows".to_string(),
+                )
+            })?)
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "sbix color glyph glyph-offset index end overflows".to_string(),
+                )
+            })?;
+        let start = read_u32_checked(sbix, glyph_offset_index, "glyph start offset")? as usize;
+        let end = read_u32_checked(
+            sbix,
+            glyph_offset_index.checked_add(4).ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "sbix color glyph glyph-end offset index overflows".to_string(),
+                )
+            })?,
+            "glyph end offset",
+        )? as usize;
         if start == end {
             continue;
         }
-        if end <= start || end.checked_sub(start)? < 8 {
-            return Some(SbixPayload {
-                kind: ColorBitmapPayloadKind::Other("sbix malformed strike record".to_string()),
-                data: &[],
-                x: 0,
-                y: 0,
-                pixels_per_em,
-            });
+        if end <= start || end - start < 8 {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "sbix color glyph strike record malformed: start={start} end={end}"
+            )));
         }
-        let record_start = strike_offset.checked_add(start)?;
-        let record_end = strike_offset.checked_add(end)?;
-        let x = read_i16(sbix, record_start).unwrap_or(0);
-        let y = read_i16(sbix, record_start.checked_add(2)?).unwrap_or(0);
-        let tag_bytes = sbix.get(record_start.checked_add(4)?..record_start.checked_add(8)?)?;
-        let payload_start = record_start.checked_add(8)?;
-        let data = sbix.get(payload_start..record_end)?;
+        let record_start = strike_offset.checked_add(start).ok_or_else(|| {
+            WellfriendError::MalformedPdf("sbix color glyph record start overflows".to_string())
+        })?;
+        let record_end = strike_offset.checked_add(end).ok_or_else(|| {
+            WellfriendError::MalformedPdf("sbix color glyph record end overflows".to_string())
+        })?;
+        if record_end > sbix.len() {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "sbix color glyph record extends past table: end {record_end}, len {}",
+                sbix.len()
+            )));
+        }
+        let x = read_i16_checked(sbix, record_start, "glyph x origin")?;
+        let y = read_i16_checked(
+            sbix,
+            record_start.checked_add(2).ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "sbix color glyph y-origin offset overflows".to_string(),
+                )
+            })?,
+            "glyph y origin",
+        )?;
+        let tag_start = record_start.checked_add(4).ok_or_else(|| {
+            WellfriendError::MalformedPdf("sbix color glyph tag start overflows".to_string())
+        })?;
+        let tag_end = record_start.checked_add(8).ok_or_else(|| {
+            WellfriendError::MalformedPdf("sbix color glyph tag end overflows".to_string())
+        })?;
+        let tag_bytes = sbix.get(tag_start..tag_end).ok_or_else(|| {
+            WellfriendError::MalformedPdf("sbix color glyph graphic type truncated".to_string())
+        })?;
+        let payload_start = record_start.checked_add(8).ok_or_else(|| {
+            WellfriendError::MalformedPdf("sbix color glyph payload start overflows".to_string())
+        })?;
+        let data = sbix.get(payload_start..record_end).ok_or_else(|| {
+            WellfriendError::MalformedPdf("sbix color glyph payload bounds invalid".to_string())
+        })?;
         let kind = match tag_bytes {
             b"png " => ColorBitmapPayloadKind::Png,
             b"jpg " | b"jpeg" => ColorBitmapPayloadKind::Jpeg,
@@ -1761,7 +1920,13 @@ fn sbix_payload_inner<'a>(
             b"pdf " => ColorBitmapPayloadKind::Pdf,
             b"mask" => ColorBitmapPayloadKind::Mask,
             b"dupe" => {
-                let dupe_gid = read_u16(sbix, payload_start)?;
+                if data.len() != 2 {
+                    return Err(WellfriendError::MalformedPdf(format!(
+                        "sbix color glyph duplicate record has {} bytes, expected 2",
+                        data.len()
+                    )));
+                }
+                let dupe_gid = read_u16_checked(sbix, payload_start, "duplicate glyph id")?;
                 return sbix_payload_inner(
                     sbix,
                     glyph_count,
@@ -1769,13 +1934,15 @@ fn sbix_payload_inner<'a>(
                     target_ppem,
                     depth + 1,
                 )
-                .or(Some(SbixPayload {
-                    kind: ColorBitmapPayloadKind::Dupe,
-                    data,
-                    x,
-                    y,
-                    pixels_per_em,
-                }));
+                .map(|payload| {
+                    payload.or(Some(SbixPayload {
+                        kind: ColorBitmapPayloadKind::Dupe,
+                        data,
+                        x,
+                        y,
+                        pixels_per_em,
+                    }))
+                });
             }
             other => {
                 ColorBitmapPayloadKind::Other(String::from_utf8_lossy(other).trim().to_string())
@@ -1793,7 +1960,7 @@ fn sbix_payload_inner<'a>(
             });
         }
     }
-    best
+    Ok(best)
 }
 
 fn decode_sbix_payload(payload: &SbixPayload<'_>) -> Result<RawImage> {
@@ -1819,11 +1986,7 @@ fn decode_jpeg(data: &[u8]) -> Result<RawImage> {
         )));
     }
     let (mut pixels, width, height, channels) = ImageDecoder::decode_jpeg_with_info(data)?;
-    if width.saturating_mul(height) > MAX_COLOR_GLYPH_PIXELS {
-        return Err(WellfriendError::UnsupportedFeature(format!(
-            "color glyph JPEG decoded dimensions too large: {width}x{height}"
-        )));
-    }
+    ensure_color_glyph_jpeg_invariants(width, height, channels, pixels.len())?;
     let channels = if channels == 4 {
         pixels = ColorSpaceConverter::cmyk_to_rgb(&pixels);
         3
@@ -1839,6 +2002,63 @@ fn decode_jpeg(data: &[u8]) -> Result<RawImage> {
     })
 }
 
+fn ensure_color_glyph_jpeg_invariants(
+    width: u32,
+    height: u32,
+    channels: u8,
+    actual_len: usize,
+) -> Result<()> {
+    ensure_color_glyph_image_invariants("JPEG", width, height, channels, actual_len, false)
+}
+
+fn ensure_color_glyph_png_invariants(
+    width: u32,
+    height: u32,
+    channels: u8,
+    actual_len: usize,
+) -> Result<()> {
+    ensure_color_glyph_image_invariants("PNG", width, height, channels, actual_len, true)
+}
+
+fn ensure_color_glyph_image_invariants(
+    codec: &str,
+    width: u32,
+    height: u32,
+    channels: u8,
+    actual_len: usize,
+    allow_gray_alpha: bool,
+) -> Result<()> {
+    let pixels = width.checked_mul(height).ok_or_else(|| {
+        WellfriendError::MalformedPdf(format!(
+            "color glyph {codec} decoded dimensions overflow: {width}x{height}"
+        ))
+    })?;
+    if pixels > MAX_COLOR_GLYPH_PIXELS {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "color glyph {codec} decoded dimensions too large: {width}x{height}"
+        )));
+    }
+    if !(matches!(channels, 1 | 3 | 4) || allow_gray_alpha && channels == 2) {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "color glyph {codec} decoded unsupported channel count {channels}"
+        )));
+    }
+    let expected = usize::try_from(pixels)
+        .ok()
+        .and_then(|pixels| pixels.checked_mul(channels as usize))
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(format!(
+                "color glyph {codec} decoded byte count overflows for {width}x{height} x{channels} channels"
+            ))
+        })?;
+    if actual_len != expected {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "color glyph {codec} decoded {actual_len} bytes, expected {expected} for {width}x{height} x{channels} channels"
+        )));
+    }
+    Ok(())
+}
+
 fn read_i16(data: &[u8], offset: usize) -> Option<i16> {
     let bytes = data.get(offset..offset.checked_add(2)?)?;
     Some(i16::from_be_bytes([bytes[0], bytes[1]]))
@@ -1852,6 +2072,30 @@ fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
 fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
     let bytes = data.get(offset..offset.checked_add(4)?)?;
     Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn read_i16_checked(data: &[u8], offset: usize, field: &str) -> Result<i16> {
+    read_i16(data, offset).ok_or_else(|| {
+        WellfriendError::MalformedPdf(format!(
+            "sbix color glyph {field} truncated at offset {offset}"
+        ))
+    })
+}
+
+fn read_u16_checked(data: &[u8], offset: usize, field: &str) -> Result<u16> {
+    read_u16(data, offset).ok_or_else(|| {
+        WellfriendError::MalformedPdf(format!(
+            "sbix color glyph {field} truncated at offset {offset}"
+        ))
+    })
+}
+
+fn read_u32_checked(data: &[u8], offset: usize, field: &str) -> Result<u32> {
+    read_u32(data, offset).ok_or_else(|| {
+        WellfriendError::MalformedPdf(format!(
+            "sbix color glyph {field} truncated at offset {offset}"
+        ))
+    })
 }
 
 fn decode_raster_image_payload(image: RasterGlyphImage<'_>) -> Result<RawImage> {
@@ -1898,6 +2142,7 @@ fn decode_png(data: &[u8]) -> Result<RawImage> {
         png::ColorType::Rgba => 4,
         png::ColorType::Grayscale => 1,
         png::ColorType::GrayscaleAlpha => {
+            ensure_color_glyph_png_invariants(info.width, info.height, 2, pixels.len())?;
             pixels = gray_alpha_to_rgba(&pixels);
             4
         }
@@ -1907,6 +2152,7 @@ fn decode_png(data: &[u8]) -> Result<RawImage> {
             ))
         }
     };
+    ensure_color_glyph_png_invariants(info.width, info.height, channels, pixels.len())?;
     Ok(RawImage {
         width: info.width,
         height: info.height,
@@ -1920,14 +2166,7 @@ fn decode_premul_bgra32(image: RasterGlyphImage<'_>) -> Result<RawImage> {
     let expected = usize::from(image.width)
         .saturating_mul(usize::from(image.height))
         .saturating_mul(4);
-    if image.data.len() < expected || expected > MAX_COLOR_GLYPH_BYTES {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "color glyph BGRA payload length {} does not match {}x{}",
-            image.data.len(),
-            image.width,
-            image.height
-        )));
-    }
+    ensure_color_glyph_raster_payload_len("BGRA", image, expected)?;
     let mut pixels = Vec::with_capacity(expected);
     for chunk in image.data[..expected].chunks_exact(4) {
         let b = unpremultiply(chunk[0], chunk[3]);
@@ -1948,11 +2187,7 @@ fn decode_premul_bgra32(image: RasterGlyphImage<'_>) -> Result<RawImage> {
 fn decode_gray8(image: RasterGlyphImage<'_>) -> Result<RawImage> {
     let row_len = usize::from(image.width);
     let expected = row_len.saturating_mul(usize::from(image.height));
-    if image.data.len() < expected || expected > MAX_COLOR_GLYPH_BYTES {
-        return Err(WellfriendError::MalformedPdf(
-            "color glyph gray8 payload is truncated".to_string(),
-        ));
-    }
+    ensure_color_glyph_raster_payload_len("gray8", image, expected)?;
     Ok(RawImage {
         width: u32::from(image.width),
         height: u32::from(image.height),
@@ -1980,11 +2215,7 @@ fn decode_gray_subbyte(image: RasterGlyphImage<'_>, bits: u8, packed: bool) -> R
             "color glyph packed gray rows with non-byte-aligned width are unsupported".to_string(),
         ));
     }
-    if image.data.len() < expected || expected > MAX_COLOR_GLYPH_BYTES {
-        return Err(WellfriendError::MalformedPdf(
-            "color glyph gray payload is truncated".to_string(),
-        ));
-    }
+    ensure_color_glyph_raster_payload_len("gray", image, expected)?;
     let mut pixels = Vec::with_capacity(width.saturating_mul(height));
     let mask = (1u8 << bits) - 1;
     let max = u16::from(mask);
@@ -2021,11 +2252,7 @@ fn decode_mono(image: RasterGlyphImage<'_>, packed: bool) -> Result<RawImage> {
             "color glyph packed mono rows with non-byte-aligned width are unsupported".to_string(),
         ));
     }
-    if image.data.len() < expected || expected > MAX_COLOR_GLYPH_BYTES {
-        return Err(WellfriendError::MalformedPdf(
-            "color glyph mono payload is truncated".to_string(),
-        ));
-    }
+    ensure_color_glyph_raster_payload_len("mono", image, expected)?;
     let mut pixels = Vec::with_capacity(width.saturating_mul(height));
     for row in 0..height {
         let start = row * row_bytes;
@@ -2042,6 +2269,22 @@ fn decode_mono(image: RasterGlyphImage<'_>, packed: bool) -> Result<RawImage> {
         bits_per_sample: 8,
         pixels,
     })
+}
+
+fn ensure_color_glyph_raster_payload_len(
+    label: &str,
+    image: RasterGlyphImage<'_>,
+    expected: usize,
+) -> Result<()> {
+    if image.data.len() != expected || expected > MAX_COLOR_GLYPH_BYTES {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "color glyph {label} payload length {} does not match expected {expected} for {}x{}",
+            image.data.len(),
+            image.width,
+            image.height
+        )));
+    }
+    Ok(())
 }
 
 fn gray_alpha_to_rgba(data: &[u8]) -> Vec<u8> {
@@ -2068,6 +2311,141 @@ fn multiply_alpha(a: u8, b: u8) -> u8 {
 mod tests {
     use super::*;
 
+    fn raster_image<'a>(
+        format: RasterImageFormat,
+        width: u16,
+        height: u16,
+        data: &'a [u8],
+    ) -> RasterGlyphImage<'a> {
+        RasterGlyphImage {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            pixels_per_em: 16,
+            format,
+            data,
+        }
+    }
+
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_i16(bytes: &mut Vec<u8>, value: i16) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn sbix_table_with_record(ppem: u16, tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let strike_offset = 12u32;
+        let record_offset = 12u32;
+        let record_end = record_offset + 8 + payload.len() as u32;
+        let mut bytes = Vec::new();
+        push_u16(&mut bytes, 1);
+        push_u16(&mut bytes, 0);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, strike_offset);
+        push_u16(&mut bytes, ppem);
+        push_u16(&mut bytes, 72);
+        push_u32(&mut bytes, record_offset);
+        push_u32(&mut bytes, record_end);
+        push_i16(&mut bytes, 3);
+        push_i16(&mut bytes, -4);
+        bytes.extend_from_slice(tag);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn sbix_table_with_offsets(start: u32, end: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_u16(&mut bytes, 1);
+        push_u16(&mut bytes, 0);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 12);
+        push_u16(&mut bytes, 16);
+        push_u16(&mut bytes, 72);
+        push_u32(&mut bytes, start);
+        push_u32(&mut bytes, end);
+        bytes
+    }
+
+    #[test]
+    fn sbix_parser_returns_exact_payload_metadata() {
+        let sbix = sbix_table_with_record(16, b"png ", &[1, 2, 3]);
+        let payload = sbix_payload_inner(&sbix, 1, GlyphId(0), 16, 0)
+            .unwrap()
+            .expect("valid sbix record must resolve");
+
+        assert_eq!(payload.kind, ColorBitmapPayloadKind::Png);
+        assert_eq!(payload.data, &[1, 2, 3]);
+        assert_eq!(payload.x, 3);
+        assert_eq!(payload.y, -4);
+        assert_eq!(payload.pixels_per_em, 16);
+    }
+
+    #[test]
+    fn sbix_parser_rejects_zero_pixels_per_em() {
+        let sbix = sbix_table_with_record(0, b"png ", &[1, 2, 3]);
+        let err = sbix_payload_inner(&sbix, 1, GlyphId(0), 16, 0)
+            .expect_err("zero ppem must not be silently coerced to one");
+
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}").contains("pixels-per-em is zero"),
+            "unexpected sbix ppem error: {err}"
+        );
+    }
+
+    #[test]
+    fn sbix_parser_rejects_truncated_glyph_offset_table() {
+        let mut sbix = Vec::new();
+        push_u16(&mut sbix, 1);
+        push_u16(&mut sbix, 0);
+        push_u32(&mut sbix, 1);
+        push_u32(&mut sbix, 12);
+        push_u16(&mut sbix, 16);
+        push_u16(&mut sbix, 72);
+
+        let err = sbix_payload_inner(&sbix, 1, GlyphId(0), 16, 0)
+            .expect_err("truncated glyph offsets must fail typed");
+
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}").contains("glyph-offset table truncated"),
+            "unexpected sbix offset error: {err}"
+        );
+    }
+
+    #[test]
+    fn sbix_parser_rejects_short_strike_record() {
+        let sbix = sbix_table_with_offsets(12, 19);
+        let err = sbix_payload_inner(&sbix, 1, GlyphId(0), 16, 0)
+            .expect_err("short records must not be converted to an unsupported dummy payload");
+
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}").contains("strike record malformed"),
+            "unexpected sbix record error: {err}"
+        );
+    }
+
+    #[test]
+    fn sbix_parser_rejects_overlong_duplicate_record() {
+        let sbix = sbix_table_with_record(16, b"dupe", &[0, 0, 1]);
+        let err = sbix_payload_inner(&sbix, 1, GlyphId(0), 16, 0)
+            .expect_err("duplicate records must be exactly one glyph id");
+
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}").contains("duplicate record has 3 bytes, expected 2"),
+            "unexpected sbix duplicate error: {err}"
+        );
+    }
+
     #[test]
     fn svg_static_subset_parses_path_shape_transform_and_opacity() {
         let svg = r##"
@@ -2085,6 +2463,179 @@ mod tests {
         assert!(paths[1].stroke.is_some());
         assert_eq!(paths[1].stroke_width, 3.0);
         assert!(!paths[0].transform.is_identity());
+    }
+
+    #[test]
+    fn svg_static_subset_preserves_optional_geometry_defaults() {
+        let svg = r#"<svg><rect width="10" height="20" fill="red"/></svg>"#;
+        let paths = parse_static_svg_paint_paths(svg, rgba(0, 0, 0, 255), 255).unwrap();
+
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].fill.is_some());
+    }
+
+    #[test]
+    fn svg_static_subset_rejects_malformed_optional_geometry_attribute() {
+        let svg = r#"<svg><rect x="bad" width="10" height="20" fill="red"/></svg>"#;
+        let err = parse_static_svg_paint_paths(svg, rgba(0, 0, 0, 255), 255).unwrap_err();
+
+        assert!(err.to_string().contains("numeric attribute 'x'"));
+    }
+
+    #[test]
+    fn svg_static_subset_rejects_malformed_required_geometry_attribute() {
+        let svg = r#"<svg><circle r="bad" fill="red"/></svg>"#;
+        let err = parse_static_svg_paint_paths(svg, rgba(0, 0, 0, 255), 255).unwrap_err();
+
+        assert!(err.to_string().contains("numeric attribute 'r'"));
+    }
+
+    #[test]
+    fn svg_static_subset_rejects_negative_stroke_width() {
+        let svg = r#"<svg><rect width="10" height="20" fill="none" stroke="red" stroke-width="-1"/></svg>"#;
+        let err = parse_static_svg_paint_paths(svg, rgba(0, 0, 0, 255), 255).unwrap_err();
+
+        assert!(err.to_string().contains("stroke-width"));
+    }
+
+    #[test]
+    fn svg_static_subset_rejects_out_of_range_rgb_component() {
+        let svg = r#"<svg><rect width="10" height="20" fill="rgb(300 0 0)"/></svg>"#;
+        let err = parse_static_svg_paint_paths(svg, rgba(0, 0, 0, 255), 255).unwrap_err();
+
+        assert!(err.to_string().contains("color component out of range"));
+    }
+
+    #[test]
+    fn svg_static_subset_rejects_out_of_range_rgb_percentage() {
+        let svg = r#"<svg><rect width="10" height="20" fill="rgb(101% 0% 0%)"/></svg>"#;
+        let err = parse_static_svg_paint_paths(svg, rgba(0, 0, 0, 255), 255).unwrap_err();
+
+        assert!(err.to_string().contains("color percentage out of range"));
+    }
+
+    #[test]
+    fn svg_static_subset_rejects_out_of_range_opacity() {
+        let svg = r#"<svg><rect width="10" height="20" fill="red" opacity="2"/></svg>"#;
+        let err = parse_static_svg_paint_paths(svg, rgba(0, 0, 0, 255), 255).unwrap_err();
+
+        assert!(err.to_string().contains("opacity value out of range"));
+    }
+
+    #[test]
+    fn color_glyph_jpeg_invariants_reject_short_cmyk_output() {
+        let err = ensure_color_glyph_jpeg_invariants(1, 1, 4, 3)
+            .expect_err("CMYK JPEG color glyph output must not drop trailing bytes");
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}")
+                .contains("color glyph JPEG decoded 3 bytes, expected 4 for 1x1 x4 channels"),
+            "unexpected color glyph JPEG length error: {err}"
+        );
+    }
+
+    #[test]
+    fn color_glyph_jpeg_invariants_reject_unsupported_channels() {
+        let err = ensure_color_glyph_jpeg_invariants(1, 1, 2, 2)
+            .expect_err("unsupported JPEG channel count must fail typed");
+        assert!(matches!(err, WellfriendError::UnsupportedFeature(_)));
+        assert!(
+            format!("{err}").contains("unsupported channel count 2"),
+            "unexpected color glyph JPEG channel error: {err}"
+        );
+    }
+
+    #[test]
+    fn color_glyph_jpeg_invariants_apply_pixel_cap() {
+        let err = ensure_color_glyph_jpeg_invariants(5000, 5000, 3, 0)
+            .expect_err("oversized JPEG color glyph dimensions must fail typed");
+        assert!(matches!(err, WellfriendError::UnsupportedFeature(_)));
+        assert!(
+            format!("{err}").contains("decoded dimensions too large: 5000x5000"),
+            "unexpected color glyph JPEG pixel-cap error: {err}"
+        );
+    }
+
+    #[test]
+    fn color_glyph_png_invariants_reject_short_gray_alpha_output() {
+        let err = ensure_color_glyph_png_invariants(1, 1, 2, 1)
+            .expect_err("gray-alpha PNG color glyph output must not drop trailing bytes");
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}")
+                .contains("color glyph PNG decoded 1 bytes, expected 2 for 1x1 x2 channels"),
+            "unexpected color glyph PNG length error: {err}"
+        );
+    }
+
+    #[test]
+    fn color_glyph_png_invariants_reject_unsupported_channels() {
+        let err = ensure_color_glyph_png_invariants(1, 1, 5, 5)
+            .expect_err("unsupported PNG channel count must fail typed");
+        assert!(matches!(err, WellfriendError::UnsupportedFeature(_)));
+        assert!(
+            format!("{err}").contains("unsupported channel count 5"),
+            "unexpected color glyph PNG channel error: {err}"
+        );
+    }
+
+    #[test]
+    fn color_glyph_png_invariants_apply_pixel_cap() {
+        let err = ensure_color_glyph_png_invariants(5000, 5000, 4, 0)
+            .expect_err("oversized PNG color glyph dimensions must fail typed");
+        assert!(matches!(err, WellfriendError::UnsupportedFeature(_)));
+        assert!(
+            format!("{err}").contains("decoded dimensions too large: 5000x5000"),
+            "unexpected color glyph PNG pixel-cap error: {err}"
+        );
+    }
+
+    #[test]
+    fn color_glyph_bgra_bitmap_rejects_trailing_payload_bytes() {
+        let data = [0, 0, 0, 255, 1];
+        let err = decode_premul_bgra32(raster_image(
+            RasterImageFormat::BitmapPremulBgra32,
+            1,
+            1,
+            &data,
+        ))
+        .expect_err("BGRA bitmap payloads must be exact");
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}").contains("BGRA payload length 5 does not match expected 4"),
+            "unexpected BGRA bitmap payload error: {err}"
+        );
+    }
+
+    #[test]
+    fn color_glyph_gray_bitmap_rejects_trailing_payload_bytes() {
+        let data = [0xF0, 0x0F];
+        let err = decode_gray_subbyte(
+            raster_image(RasterImageFormat::BitmapGray4, 2, 1, &data),
+            4,
+            false,
+        )
+        .expect_err("gray bitmap payloads must be exact");
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}").contains("gray payload length 2 does not match expected 1"),
+            "unexpected gray bitmap payload error: {err}"
+        );
+    }
+
+    #[test]
+    fn color_glyph_mono_bitmap_rejects_trailing_payload_bytes() {
+        let data = [0xFF, 0x00];
+        let err = decode_mono(
+            raster_image(RasterImageFormat::BitmapMono, 8, 1, &data),
+            false,
+        )
+        .expect_err("mono bitmap payloads must be exact");
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+        assert!(
+            format!("{err}").contains("mono payload length 2 does not match expected 1"),
+            "unexpected mono bitmap payload error: {err}"
+        );
     }
 
     #[test]

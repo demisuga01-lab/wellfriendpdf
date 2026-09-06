@@ -10,9 +10,18 @@
 //! POST /api/v1/progressive/:id/step - Render the next batch of tiles
 //! POST /api/v1/progressive/:id/pause - Pause the session
 //! POST /api/v1/progressive/:id/resume - Resume the session with its token
+//! POST /api/v1/progressive/:id/viewport - Revise visible-work priority
+//! POST /api/v1/progressive/:id/dirty-region - Reschedule dirty tiles
+//! POST /api/v1/progressive/:id/render-context - Revise render identity or render contract state
+//! POST /api/v1/progressive/:id/apply-render-invalidation - Apply source-edit cache invalidation
+//! POST /api/v1/progressive/:id/evaluate-publication - Accept/reject a tile publication
+//! POST /api/v1/progressive/:id/queue/execute - Execute owned viewer queue work
+//! POST /api/v1/progressive/:id/adjacent-prefetch/execute - Execute adjacent-page prefetch
 //! POST /api/v1/progressive/:id/cancel - Cancel the session
 //! POST /api/v1/progressive/:id/close - Close and release a session
 //! GET  /api/v1/progressive/:id/status - Get current session status/token
+//! GET  /api/v1/progressive/:id/queue - Get current viewer queue preview
+//! GET  /api/v1/progressive/:id/callbacks - Get deterministic viewer callback dispatch plan
 //! GET  /api/v1/progressive/:id/finish - Finish and download the composited PNG
 //!
 //! Sessions are subject to a configurable idle timeout; expired sessions are
@@ -25,11 +34,11 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use wellfriendpdf_engine::{
-    CancelToken, ContentEngine, ImageEncoder, ProgressiveRenderToken, RenderMode, RenderTile,
-    WellfriendError,
+    CancelToken, ContentEngine, ImageEncoder, ProgressiveRenderStepReport, ProgressiveRenderToken,
+    ProgressiveTilePublication, RenderContract, RenderMode, RenderTile, WellfriendError,
 };
 
 use crate::auth::caller_identity;
@@ -52,10 +61,13 @@ pub struct StartParams {
     pub tile_width: Option<u32>,
     pub tile_height: Option<u32>,
     pub render_mode: Option<String>,
+    pub render_contract_json: Option<String>,
     pub viewport_hint_x: Option<u32>,
     pub viewport_hint_y: Option<u32>,
     pub viewport_hint_w: Option<u32>,
     pub viewport_hint_h: Option<u32>,
+    #[serde(skip)]
+    pub registered_fonts: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Deserialize)]
@@ -64,8 +76,49 @@ pub struct StepParams {
 }
 
 #[derive(Deserialize)]
+pub struct QueueExecuteParams {
+    pub max_items: Option<usize>,
+    pub max_tiles: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct AdjacentPrefetchExecuteParams {
+    pub prefetch_identity: String,
+    pub max_tiles: Option<usize>,
+}
+
+#[derive(Deserialize)]
 pub struct ResumeParams {
     pub token: ProgressiveRenderToken,
+}
+
+#[derive(Deserialize)]
+pub struct ViewportParams {
+    pub viewport_hint_x: Option<u32>,
+    pub viewport_hint_y: Option<u32>,
+    pub viewport_hint_w: Option<u32>,
+    pub viewport_hint_h: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct DirtyRegionParams {
+    pub dirty_region_x: Option<u32>,
+    pub dirty_region_y: Option<u32>,
+    pub dirty_region_w: Option<u32>,
+    pub dirty_region_h: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct RenderContextParams {
+    pub render_contract_json: Option<String>,
+    pub contract_json: Option<String>,
+    pub render_contract_fingerprint: Option<String>,
+    pub visibility_fingerprint: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct EvaluatePublicationParams {
+    pub publication: ProgressiveTilePublication,
 }
 
 #[derive(Serialize)]
@@ -79,6 +132,7 @@ pub struct StatusResponse {
     pub session_id: String,
     pub state: String,
     pub token: ProgressiveRenderToken,
+    pub viewer_queue_report: ProgressiveRenderStepReport,
 }
 
 // ---------- Handlers ----------
@@ -106,6 +160,23 @@ pub async fn start(
     let page = params.page.unwrap_or(1);
     let dpi = params.dpi.unwrap_or(150);
     let (tile_width, tile_height) = resolve_tile_request(&params)?;
+    let render_contract = params
+        .render_contract_json
+        .as_deref()
+        .map(|json| {
+            serde_json::from_str::<RenderContract>(json).map_err(|err| {
+                ServerError::InvalidParameter(format!("render_contract_json is invalid: {err}"))
+            })
+        })
+        .transpose()?;
+    let page = render_contract
+        .as_ref()
+        .map(|contract| contract.page_number)
+        .unwrap_or(page);
+    let dpi = render_contract
+        .as_ref()
+        .map(|contract| contract.dpi)
+        .unwrap_or(dpi);
 
     if dpi < 24 || dpi > config.max_dpi {
         return Err(ServerError::InvalidParameter(format!(
@@ -119,46 +190,45 @@ pub async fn start(
         ));
     }
 
-    let render_mode = match params.render_mode.as_deref() {
-        None | Some("") | Some("compat") => RenderMode::Compat,
-        Some("high_quality") | Some("high-quality") => RenderMode::HighQuality,
-        Some(other) => {
-            return Err(ServerError::InvalidParameter(format!(
-                "render_mode must be 'compat' or 'high_quality', got '{}'",
-                other
-            )));
-        }
-    };
+    let render_mode = parse_start_render_mode(params.render_mode.as_deref())?;
 
-    let viewport_hint = match (
+    let viewport_hint = parse_viewport_hint(
         params.viewport_hint_x,
         params.viewport_hint_y,
         params.viewport_hint_w,
         params.viewport_hint_h,
-    ) {
-        (Some(x), Some(y), Some(w), Some(h)) => Some(RenderTile {
-            x,
-            y,
-            width: w,
-            height: h,
-        }),
-        _ => None,
-    };
+    )?;
 
-    let engine = ContentEngine::open_bytes(pdf_bytes.to_vec()).map_err(ServerError::from)?;
-    let viewport = engine.page_viewport(page, dpi).map_err(ServerError::from)?;
+    let mut engine = ContentEngine::open_bytes(pdf_bytes.to_vec()).map_err(ServerError::from)?;
+    register_uploaded_fonts(&mut engine, &params.registered_fonts)?;
+    let viewport = match render_contract.as_ref() {
+        Some(contract) => engine
+            .page_viewport_for_box(contract.page_number, contract.dpi, contract.page_box)
+            .map_err(ServerError::from)?,
+        None => engine.page_viewport(page, dpi).map_err(ServerError::from)?,
+    };
     crate::processing::check_render_pixels(config, page, viewport.width_px, viewport.height_px)?;
 
-    let job = engine
-        .progressive_render_job_with_viewport_hint(
-            page,
-            dpi,
-            tile_width,
-            tile_height,
-            render_mode,
-            viewport_hint,
-        )
-        .map_err(ServerError::from)?;
+    let job = match render_contract {
+        Some(contract) => engine
+            .progressive_render_job_with_contract_and_viewport_hint(
+                contract,
+                tile_width,
+                tile_height,
+                viewport_hint,
+            )
+            .map_err(ServerError::from)?,
+        None => engine
+            .progressive_render_job_with_viewport_hint(
+                page,
+                dpi,
+                tile_width,
+                tile_height,
+                render_mode,
+                viewport_hint,
+            )
+            .map_err(ServerError::from)?,
+    };
 
     let token = job.token();
     let session_id = state.store.insert(caller_identity(&headers), job)?;
@@ -221,6 +291,137 @@ pub async fn resume(
     Ok((StatusCode::OK, Json(json!({ "token": token }))).into_response())
 }
 
+/// POST /api/v1/progressive/:id/viewport
+pub async fn revise_viewport(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(params): Json<ViewportParams>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let viewport_hint = parse_viewport_hint(
+        params.viewport_hint_x,
+        params.viewport_hint_y,
+        params.viewport_hint_w,
+        params.viewport_hint_h,
+    )?;
+    let report = state
+        .store
+        .revise_viewport_hint(&session_id, &owner, viewport_hint)?
+        .map_err(ServerError::from)?;
+
+    Ok((StatusCode::OK, Json(report)).into_response())
+}
+
+/// POST /api/v1/progressive/:id/dirty-region
+pub async fn revise_dirty_region(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(params): Json<DirtyRegionParams>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let dirty_region = parse_viewport_hint(
+        params.dirty_region_x,
+        params.dirty_region_y,
+        params.dirty_region_w,
+        params.dirty_region_h,
+    )?;
+    let report = state
+        .store
+        .revise_dirty_region(&session_id, &owner, dirty_region)?
+        .map_err(ServerError::from)?;
+
+    Ok((StatusCode::OK, Json(report)).into_response())
+}
+
+/// POST /api/v1/progressive/:id/render-context
+pub async fn revise_render_context(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(params): Json<RenderContextParams>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let RenderContextParams {
+        render_contract_json,
+        contract_json,
+        render_contract_fingerprint,
+        visibility_fingerprint,
+    } = params;
+    let contract_json = match (render_contract_json, contract_json) {
+        (Some(render_contract_json), Some(contract_json))
+            if render_contract_json != contract_json =>
+        {
+            return Err(ServerError::InvalidParameter(
+                "render_contract_json and contract_json disagree".to_string(),
+            ));
+        }
+        (Some(render_contract_json), _) => Some(render_contract_json),
+        (None, Some(contract_json)) => Some(contract_json),
+        (None, None) => None,
+    };
+    let report = if let Some(contract_json) = contract_json {
+        if render_contract_fingerprint.is_some() || visibility_fingerprint.is_some() {
+            return Err(ServerError::InvalidParameter(
+                "render_contract_json cannot be combined with fingerprint-only render context fields"
+                    .to_string(),
+            ));
+        }
+        let contract = serde_json::from_str::<RenderContract>(&contract_json).map_err(|err| {
+            ServerError::InvalidParameter(format!("render_contract_json is invalid: {err}"))
+        })?;
+        state
+            .store
+            .revise_render_contract(&session_id, &owner, contract)?
+            .map_err(ServerError::from)?
+    } else {
+        state
+            .store
+            .revise_render_context(
+                &session_id,
+                &owner,
+                render_contract_fingerprint,
+                visibility_fingerprint,
+            )?
+            .map_err(ServerError::from)?
+    };
+
+    Ok((StatusCode::OK, Json(report)).into_response())
+}
+
+/// POST /api/v1/progressive/:id/apply-render-invalidation
+pub async fn apply_render_invalidation(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(body): Json<Value>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let plan_json = render_invalidation_plan_body_json(&body)?;
+    let report = state
+        .store
+        .apply_render_invalidation_plan_json(&session_id, &owner, &plan_json)?
+        .map_err(ServerError::from)?;
+
+    Ok((StatusCode::OK, Json(report)).into_response())
+}
+
+/// POST /api/v1/progressive/:id/evaluate-publication
+pub async fn evaluate_publication(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(params): Json<EvaluatePublicationParams>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let report = state
+        .store
+        .evaluate_tile_publication(&session_id, &owner, &params.publication)?;
+
+    Ok((StatusCode::OK, Json(report)).into_response())
+}
+
 /// POST /api/v1/progressive/:id/cancel
 pub async fn cancel(
     State(state): State<ProgressiveState>,
@@ -228,9 +429,7 @@ pub async fn cancel(
     Path(session_id): Path<String>,
 ) -> ServerResult<Response> {
     let owner = caller_identity(&headers);
-    state.store.with_session_mut(&session_id, &owner, |job| {
-        job.cancel();
-    })?;
+    state.store.cancel(&session_id, &owner)?;
 
     Ok((StatusCode::OK, Json(json!({ "cancelled": true }))).into_response())
 }
@@ -262,13 +461,82 @@ pub async fn status(
     let token = state
         .store
         .with_session(&session_id, &owner, |job| job.token())?;
+    let viewer_queue_report = state.store.viewer_queue_report(&session_id, &owner)?;
 
     let resp = StatusResponse {
         session_id,
         state: token.lifecycle_state.clone(),
         token,
+        viewer_queue_report,
     };
     Ok((StatusCode::OK, Json(resp)).into_response())
+}
+
+/// GET /api/v1/progressive/:id/queue
+pub async fn queue(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let report = state.store.viewer_queue_report(&session_id, &owner)?;
+
+    Ok((StatusCode::OK, Json(report)).into_response())
+}
+
+/// POST /api/v1/progressive/:id/queue/execute
+pub async fn execute_queue(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    body: Option<Json<QueueExecuteParams>>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let max_items = body
+        .as_ref()
+        .and_then(|b| b.max_items.or(b.max_tiles))
+        .unwrap_or(4);
+    let report = state
+        .store
+        .execute_viewer_queue(&session_id, &owner, max_items)?
+        .map_err(ServerError::from)?;
+
+    Ok((StatusCode::OK, Json(report)).into_response())
+}
+
+/// POST /api/v1/progressive/:id/adjacent-prefetch/execute
+pub async fn execute_adjacent_prefetch(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(params): Json<AdjacentPrefetchExecuteParams>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let report = state
+        .store
+        .execute_adjacent_page_prefetch(
+            &session_id,
+            &owner,
+            &params.prefetch_identity,
+            params.max_tiles.unwrap_or(1),
+        )?
+        .map_err(ServerError::from)?;
+
+    Ok((StatusCode::OK, Json(report)).into_response())
+}
+
+/// GET /api/v1/progressive/:id/callbacks
+pub async fn callbacks(
+    State(state): State<ProgressiveState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ServerResult<Response> {
+    let owner = caller_identity(&headers);
+    let report = state
+        .store
+        .viewer_callback_dispatch_report(&session_id, &owner)?;
+
+    Ok((StatusCode::OK, Json(report)).into_response())
 }
 
 /// GET /api/v1/progressive/:id/finish
@@ -282,16 +550,8 @@ pub async fn finish_png(
     let owner = caller_identity(&headers);
     let buffer = state
         .store
-        .with_session(&session_id, &owner, |job| job.finish())?;
-
-    let buffer = match buffer {
-        Some(buf) => buf,
-        None => {
-            return Err(ServerError::InvalidParameter(
-                "progressive render is not yet complete; keep stepping or check status".to_string(),
-            ));
-        }
-    };
+        .with_session(&session_id, &owner, |job| job.finish_checked())?
+        .map_err(|err| ServerError::InvalidParameter(err.to_string()))?;
 
     let raw = buffer.to_raw_image();
     let png_bytes = ImageEncoder::encode_png_fast(&raw)
@@ -318,10 +578,12 @@ async fn extract_start_fields(mut multipart: Multipart) -> ServerResult<(Vec<u8>
     let mut tile_width: Option<u32> = None;
     let mut tile_height: Option<u32> = None;
     let mut render_mode: Option<String> = None;
+    let mut render_contract_json: Option<String> = None;
     let mut vh_x: Option<u32> = None;
     let mut vh_y: Option<u32> = None;
     let mut vh_w: Option<u32> = None;
     let mut vh_h: Option<u32> = None;
+    let mut registered_fonts: Vec<(String, Vec<u8>)> = Vec::new();
 
     while let Some(field) = multipart
         .next_field()
@@ -336,6 +598,22 @@ async fn extract_start_fields(mut multipart: Multipart) -> ServerResult<(Vec<u8>
                     .await
                     .map_err(|err| ServerError::InvalidParameter(format!("{}", err)))?;
                 file_bytes = Some(bytes.to_vec());
+            }
+            Some(field_name) if field_name.starts_with("registered_font:") => {
+                let font_name = field_name
+                    .trim_start_matches("registered_font:")
+                    .trim()
+                    .to_string();
+                if font_name.is_empty() {
+                    return Err(ServerError::InvalidParameter(
+                        "registered_font field name must include a non-empty font name".to_string(),
+                    ));
+                }
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|err| ServerError::InvalidParameter(format!("{}", err)))?;
+                registered_fonts.push((font_name, bytes.to_vec()));
             }
             Some("page") => {
                 let text = read_text_field(field).await?;
@@ -360,6 +638,10 @@ async fn extract_start_fields(mut multipart: Multipart) -> ServerResult<(Vec<u8>
             Some("render_mode") => {
                 let text = read_text_field(field).await?;
                 render_mode = Some(text.trim().to_string());
+            }
+            Some("render_contract_json") | Some("contract_json") => {
+                let text = read_text_field(field).await?;
+                render_contract_json = Some(text.trim().to_string());
             }
             Some("viewport_hint_x") => {
                 let text = read_text_field(field).await?;
@@ -394,12 +676,47 @@ async fn extract_start_fields(mut multipart: Multipart) -> ServerResult<(Vec<u8>
             tile_width,
             tile_height,
             render_mode,
+            render_contract_json,
             viewport_hint_x: vh_x,
             viewport_hint_y: vh_y,
             viewport_hint_w: vh_w,
             viewport_hint_h: vh_h,
+            registered_fonts,
         },
     ))
+}
+
+fn parse_start_render_mode(value: Option<&str>) -> ServerResult<RenderMode> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(RenderMode::Compat),
+        Some(value) => RenderMode::from_name(&value.replace('_', "-")).ok_or_else(|| {
+            ServerError::InvalidParameter(format!(
+                "render_mode must be 'compat' or 'high_quality', got '{}'",
+                value
+            ))
+        }),
+    }
+}
+
+fn register_uploaded_fonts(
+    engine: &mut ContentEngine,
+    registered_fonts: &[(String, Vec<u8>)],
+) -> ServerResult<()> {
+    let max_size = crate::config::get_config().max_file_size;
+    for (name, bytes) in registered_fonts {
+        if bytes.len() > max_size {
+            return Err(ServerError::InvalidParameter(format!(
+                "registered font '{}' is too large: {} bytes (max {})",
+                name,
+                bytes.len(),
+                max_size
+            )));
+        }
+        engine
+            .register_font_bytes(name.clone(), bytes.clone())
+            .map_err(ServerError::from)?;
+    }
+    Ok(())
 }
 
 fn resolve_tile_request(params: &StartParams) -> ServerResult<(u32, u32)> {
@@ -422,6 +739,55 @@ fn resolve_tile_request(params: &StartParams) -> ServerResult<(u32, u32)> {
         params.tile_width.unwrap_or(256),
         params.tile_height.unwrap_or(256),
     ))
+}
+
+fn parse_viewport_hint(
+    x: Option<u32>,
+    y: Option<u32>,
+    w: Option<u32>,
+    h: Option<u32>,
+) -> ServerResult<Option<RenderTile>> {
+    match (x, y, w, h) {
+        (Some(x), Some(y), Some(width), Some(height)) => Ok(Some(RenderTile {
+            x,
+            y,
+            width,
+            height,
+        })),
+        (None, None, None, None) => Ok(None),
+        _ => Err(ServerError::InvalidParameter(
+            "viewport_hint_x, viewport_hint_y, viewport_hint_w, and viewport_hint_h must be supplied together"
+                .to_string(),
+        )),
+    }
+}
+
+fn render_invalidation_plan_body_json(value: &Value) -> ServerResult<String> {
+    if let Some(plan_json) = value.as_str() {
+        return Ok(plan_json.to_string());
+    }
+    if !value.is_object() {
+        return Err(ServerError::InvalidParameter(
+            "render invalidation body must be a JSON plan object, SDK envelope, or string field"
+                .to_string(),
+        ));
+    }
+    if let Some(plan_json) = value
+        .get("render_invalidation_plan_json")
+        .or_else(|| value.get("plan_json"))
+        .and_then(Value::as_str)
+    {
+        return Ok(plan_json.to_string());
+    }
+    let plan_value = value
+        .get("render_invalidation")
+        .or_else(|| value.get("plan"))
+        .unwrap_or(value);
+    serde_json::to_string(plan_value).map_err(|err| {
+        ServerError::InvalidParameter(format!(
+            "render invalidation JSON serialization failed: {err}"
+        ))
+    })
 }
 
 async fn read_text_field(field: axum::extract::multipart::Field<'_>) -> ServerResult<String> {

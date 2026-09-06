@@ -181,6 +181,14 @@ impl DashState {
         }
     }
 
+    pub(crate) fn approximate_bytes(&self) -> usize {
+        std::mem::size_of::<Self>().saturating_add(
+            self.pattern
+                .len()
+                .saturating_mul(std::mem::size_of::<f64>()),
+        )
+    }
+
     /// Solid line (no dashing).
     pub fn solid() -> Self {
         Self {

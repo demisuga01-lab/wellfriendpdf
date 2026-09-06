@@ -481,7 +481,7 @@ impl PrepressProofingPrepressCloseoutReport {
                     .to_string(),
                 "unsafe_high_channel_ICC_or_image_pixel_formats_not_exposed_by_the_safe_native_wrapper_fail_closed"
                     .to_string(),
-                "resource_heavy_recursive_Type3_charprocs_that_invoke_nested_XObjects_shadings_or_images_remain_fail_closed"
+                "unsupported_Type3_charproc_state_resource_matrices_remain_guarded_limits"
                     .to_string(),
                 "certification_grade_PDFX_validation_is_owned_by_the_later_standards_phase"
                     .to_string(),
@@ -595,7 +595,7 @@ impl NchannelPlatePrepressPrepressReport {
             remaining_exact_limits: vec![
                 "Prepress Proofing owns bounded overprint close-out; Nchannel Plate Prepress remains the n-channel baseline".to_string(),
                 "certification-grade PDF/X validation remains later standards work".to_string(),
-                "resource-heavy Type3 charprocs that invoke XObjects/shadings/images are fail-closed until the recursive Type3 interpreter owns those resources".to_string(),
+                "Type3 charprocs with typed resource ops and per-paint inherited/explicit path colors now use guarded retained plans".to_string(),
                 "ICC profiles whose n-channel pixel format is not exposed by the safe LittleCMS wrapper are inventory plus unsupported_reported_unsafe_profile rather than transformed".to_string(),
             ],
         }
@@ -1282,7 +1282,9 @@ fn preview_rgb(
             let px = color.to_pixel_color();
             Some([px[0], px[1], px[2]])
         }
-        colorspace::NamedColor::NoPaint | colorspace::NamedColor::Unhandled => None,
+        colorspace::NamedColor::NoPaint
+        | colorspace::NamedColor::Invalid(_)
+        | colorspace::NamedColor::Unhandled => None,
     }
 }
 

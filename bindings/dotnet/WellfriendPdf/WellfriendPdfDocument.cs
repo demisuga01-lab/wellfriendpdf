@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace WellfriendPdf;
 
@@ -100,6 +101,28 @@ public sealed class WellfriendDocument : IDisposable
             NativeMethods.ThrowIfError(2, error);
         }
         return new WellfriendDocument(handle);
+    }
+
+    public void RegisterFontBytes(string name, byte[] fontBytes)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(fontBytes);
+        var namePtr = NativeMethods.StringToNativeOrNull(name);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_register_font_bytes(
+                _handle,
+                namePtr,
+                fontBytes,
+                (UIntPtr)fontBytes.Length,
+                out var error);
+            NativeMethods.ThrowIfError(status, error);
+        }
+        finally
+        {
+            if (namePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(namePtr);
+        }
     }
 
     public static string FeatureReportJson()
@@ -227,6 +250,28 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeBuffer(buffer);
     }
 
+    public WellfriendBinaryResult RenderPagePngWithFontSubstitutionReportJson(
+        int pageNumber,
+        uint dpi = 72,
+        string? mode = null)
+    {
+        ThrowIfDisposed();
+        if (pageNumber < 1 || dpi == 0) throw new ArgumentOutOfRangeException(nameof(pageNumber));
+        var modePtr = NativeMethods.StringToNativeOrNull(mode);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_page_png_with_font_substitution_report_json(
+                    _handle, (UIntPtr)pageNumber, dpi, modePtr, out var buffer, out var json,
+                    out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
+        }
+    }
+
     public byte[] RenderPageJpeg(int pageNumber, uint dpi = 72, byte quality = 85)
     {
         ThrowIfDisposed();
@@ -254,6 +299,60 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
+    public RenderContract DefaultRenderContract(int pageNumber, uint dpi = 72, string? mode = null)
+    {
+        return RenderContract.FromJson(DefaultRenderContractJson(pageNumber, dpi, mode));
+    }
+
+    public string BackendPlanArenaReportJson(int pageNumber, uint dpi = 72, string? mode = null)
+    {
+        ThrowIfDisposed();
+        if (pageNumber < 1 || dpi == 0) throw new ArgumentOutOfRangeException(nameof(pageNumber));
+        var modePtr = NativeMethods.StringToNativeOrNull(mode);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_backend_plan_arena_report_json(
+                _handle, (UIntPtr)pageNumber, dpi, modePtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
+        }
+    }
+
+    public string BackendPlanArenaReportForContractJson(string contractJson)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_backend_plan_arena_report_for_contract_json(
+                _handle, contractPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (contractPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public string BackendPlanArenaReport(RenderContract contract)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return BackendPlanArenaReportForContractJson(contract.ToJson());
+    }
+
+    public string PrepressPlateReportJson(int pageNumber, uint dpi = 72)
+    {
+        ThrowIfDisposed();
+        if (pageNumber < 1 || dpi == 0) throw new ArgumentOutOfRangeException(nameof(pageNumber));
+        var status = NativeMethods.wellfriendpdf_document_prepress_plate_report_json(
+            _handle, (UIntPtr)pageNumber, dpi, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public byte[] RenderPagePngWithContractJson(string contractJson)
     {
         ThrowIfDisposed();
@@ -272,6 +371,276 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
+    public byte[] RenderPagePngWithContractJson(string contractJson, RenderCache cache)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(cache);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_page_png_with_contract_and_render_cache_json(
+                    _handle, contractPtr, cache.Handle, out var buffer, out var error);
+            NativeMethods.ThrowIfError(status, error);
+            return NativeMethods.TakeBuffer(buffer);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public byte[] RenderPagePngWithContractJson(string contractJson, RenderCancellation cancellation)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(cancellation);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_render_page_png_with_contract_json_and_cancellation(
+                _handle, contractPtr, cancellation.Handle, out var buffer, out var error);
+            NativeMethods.ThrowIfError(status, error);
+            return NativeMethods.TakeBuffer(buffer);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public byte[] RenderPagePngWithContractJson(string contractJson, CancellationToken cancellationToken)
+    {
+        using var cancellation = new RenderCancellation();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            cancellation.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        using var registration = cancellationToken.Register(
+            static state =>
+            {
+                try
+                {
+                    ((RenderCancellation)state!).Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            },
+            cancellation);
+        var png = RenderPagePngWithContractJson(contractJson, cancellation);
+        cancellationToken.ThrowIfCancellationRequested();
+        return png;
+    }
+
+    public byte[] RenderPagePng(RenderContract contract)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractJson(contract.ToJson());
+    }
+
+    public byte[] RenderPagePng(RenderContract contract, RenderCache cache)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractJson(contract.ToJson(), cache);
+    }
+
+    public byte[] RenderPagePng(RenderContract contract, RenderCancellation cancellation)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractJson(contract.ToJson(), cancellation);
+    }
+
+    public byte[] RenderPagePng(RenderContract contract, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractJson(contract.ToJson(), cancellationToken);
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithContractAndFontSubstitutionReportJson(
+        string contractJson)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json(
+                    _handle, contractPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithContractAndFontSubstitutionReportJson(
+        string contractJson,
+        RenderCancellation cancellation)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(cancellation);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json_and_cancellation(
+                    _handle, contractPtr, cancellation.Handle, out var buffer, out var json,
+                    out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithContractAndFontSubstitutionReportJson(
+        string contractJson,
+        CancellationToken cancellationToken)
+    {
+        using var cancellation = new RenderCancellation();
+        using var registration = RegisterRenderCancellation(cancellation, cancellationToken);
+        var result = RenderPagePngWithContractAndFontSubstitutionReportJson(
+            contractJson, cancellation);
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithFontSubstitutionReport(RenderContract contract)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractAndFontSubstitutionReportJson(contract.ToJson());
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithFontSubstitutionReport(
+        RenderContract contract,
+        RenderCancellation cancellation)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractAndFontSubstitutionReportJson(
+            contract.ToJson(), cancellation);
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithFontSubstitutionReport(
+        RenderContract contract,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractAndFontSubstitutionReportJson(
+            contract.ToJson(), cancellationToken);
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithContractAndRenderReportJson(string contractJson)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_page_png_with_contract_and_render_report_json(
+                    _handle, contractPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithContractAndRenderCacheReportJson(
+        string contractJson,
+        RenderCache cache)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(cache);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_page_png_with_contract_and_render_cache_report_json(
+                    _handle, contractPtr, cache.Handle, out var buffer, out var json,
+                    out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithContractAndRenderReportJson(
+        string contractJson,
+        RenderCancellation cancellation)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(cancellation);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_page_png_with_contract_and_render_report_json_and_cancellation(
+                    _handle, contractPtr, cancellation.Handle, out var buffer, out var json,
+                    out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithContractAndRenderReportJson(
+        string contractJson,
+        CancellationToken cancellationToken)
+    {
+        using var cancellation = new RenderCancellation();
+        using var registration = RegisterRenderCancellation(cancellation, cancellationToken);
+        var result = RenderPagePngWithContractAndRenderReportJson(contractJson, cancellation);
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithRenderReport(RenderContract contract)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractAndRenderReportJson(contract.ToJson());
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithRenderCacheReport(
+        RenderContract contract,
+        RenderCache cache)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractAndRenderCacheReportJson(contract.ToJson(), cache);
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithRenderReport(
+        RenderContract contract,
+        RenderCancellation cancellation)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractAndRenderReportJson(contract.ToJson(), cancellation);
+    }
+
+    public WellfriendBinaryResult RenderPagePngWithRenderReport(
+        RenderContract contract,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPagePngWithContractAndRenderReportJson(
+            contract.ToJson(), cancellationToken);
+    }
+
     public void RenderPageIntoBufferWithContractJson(string contractJson, byte[] output)
     {
         ThrowIfDisposed();
@@ -288,6 +657,74 @@ public sealed class WellfriendDocument : IDisposable
         {
             Marshal.FreeCoTaskMem(contractPtr);
         }
+    }
+
+    public void RenderPageIntoBufferWithContractJson(
+        string contractJson,
+        byte[] output,
+        RenderCancellation cancellation)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(cancellation);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_render_into_buffer_with_contract_json_and_cancellation(
+                _handle, contractPtr, cancellation.Handle, output, (UIntPtr)output.Length, out var error);
+            NativeMethods.ThrowIfError(status, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public void RenderPageIntoBufferWithContractJson(
+        string contractJson,
+        byte[] output,
+        CancellationToken cancellationToken)
+    {
+        using var cancellation = new RenderCancellation();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            cancellation.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        using var registration = cancellationToken.Register(
+            static state =>
+            {
+                try
+                {
+                    ((RenderCancellation)state!).Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            },
+            cancellation);
+        RenderPageIntoBufferWithContractJson(contractJson, output, cancellation);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    public void RenderPageIntoBuffer(RenderContract contract, byte[] output)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        RenderPageIntoBufferWithContractJson(contract.ToJson(), output);
+    }
+
+    public void RenderPageIntoBuffer(RenderContract contract, byte[] output, RenderCancellation cancellation)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        RenderPageIntoBufferWithContractJson(contract.ToJson(), output, cancellation);
+    }
+
+    public void RenderPageIntoBuffer(RenderContract contract, byte[] output, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        RenderPageIntoBufferWithContractJson(contract.ToJson(), output, cancellationToken);
     }
 
     public ProgressiveRenderSession CreateProgressiveRenderSession(
@@ -317,6 +754,204 @@ public sealed class WellfriendDocument : IDisposable
         {
             if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
         }
+    }
+
+    public ProgressiveRenderSession ProgressiveRenderSession(
+        RenderContract contract,
+        uint tileWidth = 256,
+        uint tileHeight = 256)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contract);
+        if ((tileWidth == 0) != (tileHeight == 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(tileWidth));
+        }
+        var contractPtr = NativeMethods.StringToNativeOrNull(contract.ToJson());
+        try
+        {
+            var handle = NativeMethods.wellfriendpdf_document_progressive_render_new_with_contract_json(
+                _handle, contractPtr, tileWidth, tileHeight, out var error);
+            if (handle.IsInvalid)
+            {
+                NativeMethods.ThrowIfError(2, error);
+            }
+            return new ProgressiveRenderSession(handle);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public string RenderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+        string contractJson,
+        byte[] output)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(output);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json(
+                    _handle, contractPtr, output, (UIntPtr)output.Length, out var json,
+                    out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public string RenderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+        string contractJson,
+        byte[] output,
+        RenderCancellation cancellation)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(cancellation);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json_and_cancellation(
+                    _handle, contractPtr, cancellation.Handle, output, (UIntPtr)output.Length,
+                    out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public string RenderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+        string contractJson,
+        byte[] output,
+        CancellationToken cancellationToken)
+    {
+        using var cancellation = new RenderCancellation();
+        using var registration = RegisterRenderCancellation(cancellation, cancellationToken);
+        var result = RenderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+            contractJson, output, cancellation);
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
+    }
+
+    public string RenderPageIntoBufferWithFontSubstitutionReport(RenderContract contract, byte[] output)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPageIntoBufferWithContractAndFontSubstitutionReportJson(contract.ToJson(), output);
+    }
+
+    public string RenderPageIntoBufferWithFontSubstitutionReport(
+        RenderContract contract,
+        byte[] output,
+        RenderCancellation cancellation)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+            contract.ToJson(), output, cancellation);
+    }
+
+    public string RenderPageIntoBufferWithFontSubstitutionReport(
+        RenderContract contract,
+        byte[] output,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+            contract.ToJson(), output, cancellationToken);
+    }
+
+    public string RenderPageIntoBufferWithContractAndRenderReportJson(
+        string contractJson,
+        byte[] output)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(output);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json(
+                    _handle, contractPtr, output, (UIntPtr)output.Length, out var json,
+                    out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public string RenderPageIntoBufferWithContractAndRenderReportJson(
+        string contractJson,
+        byte[] output,
+        RenderCancellation cancellation)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(cancellation);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status =
+                NativeMethods.wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json_and_cancellation(
+                    _handle, contractPtr, cancellation.Handle, output, (UIntPtr)output.Length,
+                    out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
+    public string RenderPageIntoBufferWithContractAndRenderReportJson(
+        string contractJson,
+        byte[] output,
+        CancellationToken cancellationToken)
+    {
+        using var cancellation = new RenderCancellation();
+        using var registration = RegisterRenderCancellation(cancellation, cancellationToken);
+        var result = RenderPageIntoBufferWithContractAndRenderReportJson(
+            contractJson, output, cancellation);
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
+    }
+
+    public string RenderPageIntoBufferWithRenderReport(RenderContract contract, byte[] output)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPageIntoBufferWithContractAndRenderReportJson(contract.ToJson(), output);
+    }
+
+    public string RenderPageIntoBufferWithRenderReport(
+        RenderContract contract,
+        byte[] output,
+        RenderCancellation cancellation)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPageIntoBufferWithContractAndRenderReportJson(
+            contract.ToJson(), output, cancellation);
+    }
+
+    public string RenderPageIntoBufferWithRenderReport(
+        RenderContract contract,
+        byte[] output,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        return RenderPageIntoBufferWithContractAndRenderReportJson(
+            contract.ToJson(), output, cancellationToken);
     }
 
     public ProgressiveRenderSession CreateAdaptiveProgressiveRenderSession(
@@ -359,6 +994,31 @@ public sealed class WellfriendDocument : IDisposable
         ThrowIfDisposed();
         var status = NativeMethods.wellfriendpdf_document_security_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string DocumentViewsReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_views_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string ImageDecodeCapabilityReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_image_decode_capability_report_json(
+            _handle,
+            out var json,
+            out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string ProgressiveImageDecodeLifecycleReportJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        return ReportWithString(
+            requestJson,
+            NativeMethods.wellfriendpdf_document_progressive_image_decode_lifecycle_report_json);
     }
 
     public string ParserReportJson(string mode = "repair")
@@ -1049,6 +1709,27 @@ public sealed class WellfriendDocument : IDisposable
         finally
         {
             if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public WellfriendBinaryResult EditingTransactionsTransactionApplyWithRenderInvalidation(
+        string requestJson,
+        string? renderInvalidationOptionsJson = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(renderInvalidationOptionsJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_transaction_apply_with_render_invalidation_json(
+                _handle, requestPtr, optionsPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
         }
     }
 
@@ -2110,6 +2791,30 @@ public sealed class WellfriendDocument : IDisposable
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private static CancellationTokenRegistration RegisterRenderCancellation(
+        RenderCancellation cancellation,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            cancellation.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        return cancellationToken.Register(
+            static state =>
+            {
+                try
+                {
+                    ((RenderCancellation)state!).Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            },
+            cancellation);
     }
 
     private delegate int StringReportCall(

@@ -33,6 +33,7 @@ pub struct PathRasterStats {
     pub scanline_crossing_reuses: u64,
     pub scanline_span_pixels: u64,
     pub solid_run_pixels: u64,
+    pub convex_fast_pixels: u64,
     pub edge_bucket_builds: u64,
     pub edge_bucket_links: u64,
     pub edge_bucket_rows: u64,
@@ -46,6 +47,7 @@ static PATH_RASTER_SCANLINE_FAST_ROWS: AtomicU64 = AtomicU64::new(0);
 static PATH_RASTER_SCANLINE_CROSSING_REUSES: AtomicU64 = AtomicU64::new(0);
 static PATH_RASTER_SCANLINE_SPAN_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PATH_RASTER_SOLID_RUN_PIXELS: AtomicU64 = AtomicU64::new(0);
+static PATH_RASTER_CONVEX_FAST_PIXELS: AtomicU64 = AtomicU64::new(0);
 static PATH_RASTER_EDGE_BUCKET_BUILDS: AtomicU64 = AtomicU64::new(0);
 static PATH_RASTER_EDGE_BUCKET_LINKS: AtomicU64 = AtomicU64::new(0);
 static PATH_RASTER_EDGE_BUCKET_ROWS: AtomicU64 = AtomicU64::new(0);
@@ -60,6 +62,7 @@ pub fn path_raster_stats() -> PathRasterStats {
         scanline_crossing_reuses: PATH_RASTER_SCANLINE_CROSSING_REUSES.load(Ordering::Relaxed),
         scanline_span_pixels: PATH_RASTER_SCANLINE_SPAN_PIXELS.load(Ordering::Relaxed),
         solid_run_pixels: PATH_RASTER_SOLID_RUN_PIXELS.load(Ordering::Relaxed),
+        convex_fast_pixels: PATH_RASTER_CONVEX_FAST_PIXELS.load(Ordering::Relaxed),
         edge_bucket_builds: PATH_RASTER_EDGE_BUCKET_BUILDS.load(Ordering::Relaxed),
         edge_bucket_links: PATH_RASTER_EDGE_BUCKET_LINKS.load(Ordering::Relaxed),
         edge_bucket_rows: PATH_RASTER_EDGE_BUCKET_ROWS.load(Ordering::Relaxed),
@@ -197,8 +200,47 @@ fn midpoint(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0)
 }
 
+type CubicControlPoints = ((f64, f64), (f64, f64), (f64, f64), (f64, f64));
+
 /// Flatten a cubic Bezier curve into endpoint/intermediate points.
 pub fn flatten_cubic(
+    p0: (f64, f64),
+    p1: (f64, f64),
+    p2: (f64, f64),
+    p3: (f64, f64),
+    threshold: f64,
+    max_depth: u32,
+    out: &mut Vec<(f64, f64)>,
+) {
+    let mut splits = cubic_monotonic_split_parameters(p0, p1, p2, p3);
+    if splits.is_empty() {
+        flatten_cubic_recursive(p0, p1, p2, p3, threshold, max_depth, out);
+        return;
+    }
+
+    let mut curve = (p0, p1, p2, p3);
+    let mut previous = 0.0;
+    for split in splits.drain(..) {
+        let denom = 1.0_f64 - previous;
+        if denom <= 1e-12 {
+            break;
+        }
+        let local_t = ((split - previous) / denom).clamp(0.0, 1.0);
+        if local_t <= 1e-12 || local_t >= 1.0 - 1e-12 {
+            previous = split;
+            continue;
+        }
+        let (left, right) = split_cubic(curve, local_t);
+        flatten_cubic_recursive(left.0, left.1, left.2, left.3, threshold, max_depth, out);
+        curve = right;
+        previous = split;
+    }
+    flatten_cubic_recursive(
+        curve.0, curve.1, curve.2, curve.3, threshold, max_depth, out,
+    );
+}
+
+fn flatten_cubic_recursive(
     p0: (f64, f64),
     p1: (f64, f64),
     p2: (f64, f64),
@@ -227,8 +269,75 @@ pub fn flatten_cubic(
     let q123 = midpoint(q12, q23);
     let q0123 = midpoint(q012, q123);
 
-    flatten_cubic(p0, q01, q012, q0123, threshold, max_depth - 1, out);
-    flatten_cubic(q0123, q123, q23, p3, threshold, max_depth - 1, out);
+    flatten_cubic_recursive(p0, q01, q012, q0123, threshold, max_depth - 1, out);
+    flatten_cubic_recursive(q0123, q123, q23, p3, threshold, max_depth - 1, out);
+}
+
+fn split_cubic(curve: CubicControlPoints, t: f64) -> (CubicControlPoints, CubicControlPoints) {
+    let (p0, p1, p2, p3) = curve;
+    let q01 = lerp_point(p0, p1, t);
+    let q12 = lerp_point(p1, p2, t);
+    let q23 = lerp_point(p2, p3, t);
+    let q012 = lerp_point(q01, q12, t);
+    let q123 = lerp_point(q12, q23, t);
+    let q0123 = lerp_point(q012, q123, t);
+    ((p0, q01, q012, q0123), (q0123, q123, q23, p3))
+}
+
+fn lerp_point(a: (f64, f64), b: (f64, f64), t: f64) -> (f64, f64) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
+fn cubic_monotonic_split_parameters(
+    p0: (f64, f64),
+    p1: (f64, f64),
+    p2: (f64, f64),
+    p3: (f64, f64),
+) -> Vec<f64> {
+    let mut roots = Vec::with_capacity(4);
+    append_cubic_axis_derivative_roots(p0.0, p1.0, p2.0, p3.0, &mut roots);
+    append_cubic_axis_derivative_roots(p0.1, p1.1, p2.1, p3.1, &mut roots);
+    roots.sort_by(f64::total_cmp);
+    roots.dedup_by(|a, b| (*a - *b).abs() <= 1e-9);
+    roots
+}
+
+fn append_cubic_axis_derivative_roots(p0: f64, p1: f64, p2: f64, p3: f64, roots: &mut Vec<f64>) {
+    if [p0, p1, p2, p3].iter().any(|v| !v.is_finite()) {
+        return;
+    }
+    let a = -p0 + 3.0 * p1 - 3.0 * p2 + p3;
+    let b = 3.0 * p0 - 6.0 * p1 + 3.0 * p2;
+    let c = -3.0 * p0 + 3.0 * p1;
+    let qa = 3.0 * a;
+    let qb = 2.0 * b;
+    let qc = c;
+    let eps = 1e-12;
+
+    if qa.abs() <= eps {
+        if qb.abs() > eps {
+            push_unit_interval_root(-qc / qb, roots);
+        }
+        return;
+    }
+
+    let discriminant = qb * qb - 4.0 * qa * qc;
+    if discriminant < -eps {
+        return;
+    }
+    if discriminant.abs() <= eps {
+        push_unit_interval_root(-qb / (2.0 * qa), roots);
+        return;
+    }
+    let sqrt_d = discriminant.sqrt();
+    push_unit_interval_root((-qb - sqrt_d) / (2.0 * qa), roots);
+    push_unit_interval_root((-qb + sqrt_d) / (2.0 * qa), roots);
+}
+
+fn push_unit_interval_root(t: f64, roots: &mut Vec<f64>) {
+    if t.is_finite() && t > 1e-9 && t < 1.0 - 1e-9 {
+        roots.push(t);
+    }
 }
 
 /// Flatten a path from PDF user space to pixel-space polylines.
@@ -238,65 +347,9 @@ pub fn flatten_path(
     viewport: &Viewport,
     bezier_threshold: f64,
 ) -> FlatPath {
-    let mut flat = FlatPath::default();
-    let mut current_subpath = Vec::new();
-    let mut current_start: Option<(f64, f64)> = None;
-    let mut is_closed = false;
-    let mut pen = (0.0, 0.0);
-
-    let to_px = |x: f64, y: f64| -> (f64, f64) {
-        let (ux, uy) = ctm.transform_point(x, y);
-        viewport.page_to_pixel_f64(ux, uy)
-    };
-
-    for seg in &path.segments {
-        match *seg {
-            PathSegment::MoveTo(x, y) => {
-                if !current_subpath.is_empty() {
-                    flat.subpaths.push(std::mem::take(&mut current_subpath));
-                    flat.closed.push(is_closed);
-                }
-                is_closed = false;
-                let px = to_px(x, y);
-                pen = (x, y);
-                current_start = Some(px);
-                current_subpath.push(px);
-            }
-            PathSegment::LineTo(x, y) => {
-                let px = to_px(x, y);
-                current_subpath.push(px);
-                pen = (x, y);
-            }
-            PathSegment::CubicTo {
-                cp1x,
-                cp1y,
-                cp2x,
-                cp2y,
-                x,
-                y,
-            } => {
-                let p0 = to_px(pen.0, pen.1);
-                let p1 = to_px(cp1x, cp1y);
-                let p2 = to_px(cp2x, cp2y);
-                let p3 = to_px(x, y);
-                flatten_cubic(p0, p1, p2, p3, bezier_threshold, 16, &mut current_subpath);
-                pen = (x, y);
-            }
-            PathSegment::ClosePath => {
-                if let Some(start) = current_start {
-                    current_subpath.push(start);
-                }
-                is_closed = true;
-            }
-        }
-    }
-
-    if !current_subpath.is_empty() {
-        flat.subpaths.push(current_subpath);
-        flat.closed.push(is_closed);
-    }
-
-    flat
+    flatten_path_with_point_mapper(path, bezier_threshold, |x, y| {
+        path_point_to_device(x, y, ctm, viewport)
+    })
 }
 
 pub(crate) fn flatten_path_device_transform(
@@ -304,31 +357,45 @@ pub(crate) fn flatten_path_device_transform(
     device_t: &Transform2D,
     bezier_threshold: f64,
 ) -> FlatPath {
+    flatten_path_with_point_mapper(path, bezier_threshold, |x, y| {
+        finite_point(device_t.transform_point(x, y))
+    })
+}
+
+fn flatten_path_with_point_mapper<F>(path: &Path, bezier_threshold: f64, mut to_px: F) -> FlatPath
+where
+    F: FnMut(f64, f64) -> Option<(f64, f64)>,
+{
     let mut flat = FlatPath::default();
     let mut current_subpath = Vec::new();
     let mut current_start: Option<(f64, f64)> = None;
     let mut is_closed = false;
-    let mut pen = (0.0, 0.0);
-
-    let to_px = |x: f64, y: f64| -> (f64, f64) { device_t.transform_point(x, y) };
+    let mut pen: Option<(f64, f64)> = None;
 
     for seg in &path.segments {
         match *seg {
             PathSegment::MoveTo(x, y) => {
-                if !current_subpath.is_empty() {
-                    flat.subpaths.push(std::mem::take(&mut current_subpath));
-                    flat.closed.push(is_closed);
-                }
+                finish_flat_subpath(&mut flat, &mut current_subpath, is_closed);
                 is_closed = false;
-                let px = to_px(x, y);
-                pen = (x, y);
-                current_start = Some(px);
-                current_subpath.push(px);
+                current_start = None;
+                pen = Some((x, y));
+                if let Some(px) = to_px(x, y) {
+                    current_start = Some(px);
+                    current_subpath.push(px);
+                }
             }
             PathSegment::LineTo(x, y) => {
-                let px = to_px(x, y);
-                current_subpath.push(px);
-                pen = (x, y);
+                if let Some(px) = to_px(x, y) {
+                    if current_subpath.is_empty() {
+                        current_start = Some(px);
+                    }
+                    current_subpath.push(px);
+                } else {
+                    finish_flat_subpath(&mut flat, &mut current_subpath, is_closed);
+                    current_start = None;
+                    is_closed = false;
+                }
+                pen = Some((x, y));
             }
             PathSegment::CubicTo {
                 cp1x,
@@ -338,28 +405,59 @@ pub(crate) fn flatten_path_device_transform(
                 x,
                 y,
             } => {
-                let p0 = to_px(pen.0, pen.1);
+                let p0 = pen.and_then(|(x, y)| to_px(x, y));
                 let p1 = to_px(cp1x, cp1y);
                 let p2 = to_px(cp2x, cp2y);
                 let p3 = to_px(x, y);
-                flatten_cubic(p0, p1, p2, p3, bezier_threshold, 16, &mut current_subpath);
-                pen = (x, y);
+                if let (Some(p0), Some(p1), Some(p2), Some(p3)) = (p0, p1, p2, p3) {
+                    if current_subpath.is_empty() {
+                        current_start = Some(p0);
+                        current_subpath.push(p0);
+                    }
+                    flatten_cubic(p0, p1, p2, p3, bezier_threshold, 16, &mut current_subpath);
+                } else {
+                    finish_flat_subpath(&mut flat, &mut current_subpath, is_closed);
+                    current_start = None;
+                    is_closed = false;
+                    if let Some(p3) = p3 {
+                        current_start = Some(p3);
+                        current_subpath.push(p3);
+                    }
+                }
+                pen = Some((x, y));
             }
             PathSegment::ClosePath => {
-                if let Some(start) = current_start {
-                    current_subpath.push(start);
+                if !current_subpath.is_empty() {
+                    if let Some(start) = current_start {
+                        current_subpath.push(start);
+                    }
+                    is_closed = true;
                 }
-                is_closed = true;
             }
         }
     }
 
+    finish_flat_subpath(&mut flat, &mut current_subpath, is_closed);
+    flat
+}
+
+fn finish_flat_subpath(
+    flat: &mut FlatPath,
+    current_subpath: &mut Vec<(f64, f64)>,
+    is_closed: bool,
+) {
     if !current_subpath.is_empty() {
-        flat.subpaths.push(current_subpath);
+        flat.subpaths.push(std::mem::take(current_subpath));
         flat.closed.push(is_closed);
     }
+}
 
-    flat
+fn finite_point(point: (f64, f64)) -> Option<(f64, f64)> {
+    if point.0.is_finite() && point.1.is_finite() {
+        Some(point)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -402,12 +500,37 @@ impl RasterizedGlyphMask {
         );
     }
 
+    pub(crate) fn paint_subpixel_rgb(
+        &self,
+        buf: &mut PixelBuffer,
+        dx: i32,
+        dy: i32,
+        color: PixelColor,
+    ) {
+        buf.blend_lcd_alpha_mask_strided(
+            dx.saturating_add(self.x),
+            dy.saturating_add(self.y),
+            self.width,
+            self.height,
+            &self.alpha,
+            self.width as usize,
+            0,
+            color,
+        );
+    }
+
     pub(crate) fn approximate_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + self.alpha.len()
     }
 
     pub(crate) fn alpha_slice(&self) -> &[u8] {
         &self.alpha
+    }
+
+    pub(crate) fn force_binary_alpha(&mut self) {
+        for alpha in &mut self.alpha {
+            *alpha = if *alpha >= 128 { 255 } else { 0 };
+        }
     }
 
     pub(crate) fn union_into_clip_mask(&self, clip: &mut ClipMask, dx: i32, dy: i32) {
@@ -430,6 +553,19 @@ pub(crate) fn rasterize_glyph_alpha_mask(
     if hinting.should_apply() {
         light_grid_fit_flat_glyph(&mut flat, device_t);
     }
+    rasterize_flat_alpha_mask(&flat, rule)
+}
+
+pub(crate) fn rasterize_path_alpha_mask(
+    path: &Path,
+    device_t: &Transform2D,
+    rule: FillRule,
+    bezier_threshold: f64,
+) -> Option<RasterizedGlyphMask> {
+    if path.is_empty() {
+        return None;
+    }
+    let flat = flatten_path_device_transform(path, device_t, bezier_threshold);
     rasterize_flat_alpha_mask(&flat, rule)
 }
 
@@ -525,10 +661,75 @@ impl PathPainter {
         miter_limit: f64,
         cancel: &CancelToken,
     ) -> bool {
+        Self::stroke_with_style_cancellable_with_flatness(
+            buf,
+            path,
+            ctm,
+            viewport,
+            color,
+            stroke_width,
+            dash,
+            cap,
+            join,
+            miter_limit,
+            0.2,
+            cancel,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn stroke_with_style_cancellable_with_flatness(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        stroke_width: f64,
+        dash: &DashState,
+        cap: &LineCap,
+        join: &LineJoin,
+        miter_limit: f64,
+        bezier_threshold: f64,
+        cancel: &CancelToken,
+    ) -> bool {
         if cancel.is_cancelled() {
             return false;
         }
-        let flat = flatten_path(path, ctm, viewport, 0.2);
+        if color[3] == 255 {
+            if let Some(regions) = axis_aligned_solid_rect_stroke_regions(
+                path,
+                ctm,
+                viewport,
+                stroke_width,
+                dash,
+                join,
+                miter_limit,
+            ) {
+                for (x, y, w, h) in regions {
+                    buf.fill_rect(x, y, w, h, color);
+                }
+                return true;
+            }
+        }
+        if paint_axis_aligned_solid_hairline(
+            buf,
+            path,
+            ctm,
+            viewport,
+            color,
+            stroke_width,
+            dash,
+            cap,
+        ) {
+            return true;
+        }
+        if let Some((x, y, w, h)) =
+            axis_aligned_solid_stroke_rect(path, ctm, viewport, stroke_width, dash, cap)
+        {
+            buf.fill_rect(x, y, w, h, color);
+            return true;
+        }
+        let flat = flatten_path(path, ctm, viewport, bezier_threshold);
         if cancel.is_cancelled() {
             return false;
         }
@@ -558,10 +759,75 @@ impl PathPainter {
         miter_limit: f64,
         cancel: &CancelToken,
     ) -> bool {
+        Self::stroke_with_style_fast_cancellable_with_flatness(
+            buf,
+            path,
+            ctm,
+            viewport,
+            color,
+            stroke_width,
+            dash,
+            cap,
+            join,
+            miter_limit,
+            0.5,
+            cancel,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn stroke_with_style_fast_cancellable_with_flatness(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        stroke_width: f64,
+        dash: &DashState,
+        cap: &LineCap,
+        join: &LineJoin,
+        miter_limit: f64,
+        bezier_threshold: f64,
+        cancel: &CancelToken,
+    ) -> bool {
         if cancel.is_cancelled() {
             return false;
         }
-        let flat = flatten_path(path, ctm, viewport, 0.5);
+        if color[3] == 255 {
+            if let Some(regions) = axis_aligned_solid_rect_stroke_regions(
+                path,
+                ctm,
+                viewport,
+                stroke_width,
+                dash,
+                join,
+                miter_limit,
+            ) {
+                for (x, y, w, h) in regions {
+                    buf.fill_rect(x, y, w, h, color);
+                }
+                return true;
+            }
+        }
+        if paint_axis_aligned_solid_hairline(
+            buf,
+            path,
+            ctm,
+            viewport,
+            color,
+            stroke_width,
+            dash,
+            cap,
+        ) {
+            return true;
+        }
+        if let Some((x, y, w, h)) =
+            axis_aligned_solid_stroke_rect(path, ctm, viewport, stroke_width, dash, cap)
+        {
+            buf.fill_rect(x, y, w, h, color);
+            return true;
+        }
+        let flat = flatten_path(path, ctm, viewport, bezier_threshold);
         if cancel.is_cancelled() {
             return false;
         }
@@ -591,6 +857,43 @@ impl PathPainter {
         miter_limit: f64,
     ) {
         if path.is_empty() || buf.width == 0 || buf.height == 0 {
+            return;
+        }
+
+        if color[3] == 255 {
+            if let Some(regions) = axis_aligned_solid_rect_stroke_regions(
+                path,
+                ctm,
+                viewport,
+                stroke_width,
+                dash,
+                &join,
+                miter_limit,
+            ) {
+                for (x, y, w, h) in regions {
+                    buf.fill_rect(x, y, w, h, color);
+                }
+                return;
+            }
+        }
+
+        if paint_axis_aligned_solid_hairline(
+            buf,
+            path,
+            ctm,
+            viewport,
+            color,
+            stroke_width,
+            dash,
+            &cap,
+        ) {
+            return;
+        }
+
+        if let Some((x, y, w, h)) =
+            axis_aligned_solid_stroke_rect(path, ctm, viewport, stroke_width, dash, &cap)
+        {
+            buf.fill_rect(x, y, w, h, color);
             return;
         }
 
@@ -625,6 +928,18 @@ impl PathPainter {
         color: PixelColor,
         rule: FillRule,
     ) {
+        Self::fill_with_flatness(buf, path, ctm, viewport, color, rule, 0.3);
+    }
+
+    pub fn fill_with_flatness(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        rule: FillRule,
+        bezier_threshold: f64,
+    ) {
         if path.is_empty() || buf.width == 0 || buf.height == 0 {
             return;
         }
@@ -632,7 +947,7 @@ impl PathPainter {
             buf.fill_rect(x, y, w, h, color);
             return;
         }
-        let flat = flatten_path(path, ctm, viewport, 0.3);
+        let flat = flatten_path(path, ctm, viewport, bezier_threshold);
         if should_route_general_path_to_scanline(&flat) {
             let cancel = CancelToken::new();
             let _ = fill_flat_scanline_fast(buf, &flat, color, rule, &cancel);
@@ -650,6 +965,20 @@ impl PathPainter {
         rule: FillRule,
         cancel: &CancelToken,
     ) -> bool {
+        Self::fill_cancellable_with_flatness(buf, path, ctm, viewport, color, rule, 0.3, cancel)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_cancellable_with_flatness(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        rule: FillRule,
+        bezier_threshold: f64,
+        cancel: &CancelToken,
+    ) -> bool {
         if cancel.is_cancelled() {
             return false;
         }
@@ -657,7 +986,7 @@ impl PathPainter {
             buf.fill_rect(x, y, w, h, color);
             return true;
         }
-        let flat = flatten_path(path, ctm, viewport, 0.3);
+        let flat = flatten_path(path, ctm, viewport, bezier_threshold);
         if should_route_general_path_to_scanline(&flat) {
             return fill_flat_scanline_fast(buf, &flat, color, rule, cancel);
         }
@@ -673,6 +1002,22 @@ impl PathPainter {
         rule: FillRule,
         cancel: &CancelToken,
     ) -> bool {
+        Self::fill_fast_cancellable_with_flatness(
+            buf, path, ctm, viewport, color, rule, 0.5, cancel,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_fast_cancellable_with_flatness(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        rule: FillRule,
+        bezier_threshold: f64,
+        cancel: &CancelToken,
+    ) -> bool {
         if cancel.is_cancelled() {
             return false;
         }
@@ -680,12 +1025,12 @@ impl PathPainter {
             buf.fill_rect(x, y, w, h, color);
             return true;
         }
-        let flat = flatten_path(path, ctm, viewport, 0.5);
+        let flat = flatten_path(path, ctm, viewport, bezier_threshold);
         fill_flat_scanline_fast(buf, &flat, color, rule, cancel)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn fill_device_cmyk_overprint_preview(
+    pub(crate) fn fill_device_cmyk_overprint_preview_with_flatness(
         buf: &mut PixelBuffer,
         path: &Path,
         ctm: &Transform2D,
@@ -694,16 +1039,29 @@ impl PathPainter {
         alpha: f32,
         overprint_mode: i32,
         rule: FillRule,
+        bezier_threshold: f64,
+        binary_alpha: bool,
     ) {
         if path.is_empty() || buf.width == 0 || buf.height == 0 {
             return;
         }
-        let flat = flatten_path(path, ctm, viewport, 0.3);
-        fill_flat_cmyk_overprint_preview(buf, &flat, cmyk, alpha, overprint_mode, rule);
+        let flat = flatten_path(path, ctm, viewport, bezier_threshold);
+        if binary_alpha {
+            let _ = fill_flat_cmyk_overprint_preview_scanline(
+                buf,
+                &flat,
+                cmyk,
+                alpha,
+                overprint_mode,
+                rule,
+            );
+        } else {
+            fill_flat_cmyk_overprint_preview(buf, &flat, cmyk, alpha, overprint_mode, rule);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn stroke_device_cmyk_overprint_preview(
+    pub(crate) fn stroke_device_cmyk_overprint_preview_with_flatness(
         buf: &mut PixelBuffer,
         path: &Path,
         ctm: &Transform2D,
@@ -716,11 +1074,13 @@ impl PathPainter {
         cap: &LineCap,
         join: &LineJoin,
         miter_limit: f64,
+        bezier_threshold: f64,
+        binary_alpha: bool,
     ) {
         if path.is_empty() || buf.width == 0 || buf.height == 0 {
             return;
         }
-        let flat = flatten_path(path, ctm, viewport, 0.2);
+        let flat = flatten_path(path, ctm, viewport, bezier_threshold);
         let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
         let outline = stroke_flat_path(
             &flat,
@@ -731,14 +1091,25 @@ impl PathPainter {
             miter_limit,
         );
         if !outline.subpaths.is_empty() {
-            fill_flat_cmyk_overprint_preview(
-                buf,
-                &outline,
-                cmyk,
-                alpha,
-                overprint_mode,
-                FillRule::NonZero,
-            );
+            if binary_alpha {
+                let _ = fill_flat_cmyk_overprint_preview_scanline(
+                    buf,
+                    &outline,
+                    cmyk,
+                    alpha,
+                    overprint_mode,
+                    FillRule::NonZero,
+                );
+            } else {
+                fill_flat_cmyk_overprint_preview(
+                    buf,
+                    &outline,
+                    cmyk,
+                    alpha,
+                    overprint_mode,
+                    FillRule::NonZero,
+                );
+            }
         }
     }
 
@@ -768,6 +1139,31 @@ impl PathPainter {
             light_grid_fit_flat_glyph(&mut flat, &device_t);
         }
         fill_flat_aa(buf, &flat, color, rule);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_glyph_binary_cancellable(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        rule: FillRule,
+        hinting: GlyphHinting,
+        cancel: &CancelToken,
+    ) -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        if path.is_empty() || buf.width == 0 || buf.height == 0 {
+            return true;
+        }
+        let mut flat = flatten_path(path, ctm, viewport, 0.2);
+        if hinting.should_apply() {
+            let device_t = ctm.concat(&viewport.to_transform());
+            light_grid_fit_flat_glyph(&mut flat, &device_t);
+        }
+        fill_flat_scanline_fast(buf, &flat, color, rule, cancel)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -864,6 +1260,103 @@ fn fill_flat_cmyk_overprint_preview(
     });
 }
 
+fn fill_flat_cmyk_overprint_preview_scanline(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    cmyk: [f32; 4],
+    alpha: f32,
+    overprint_mode: i32,
+    rule: FillRule,
+) -> bool {
+    let bw = buf.width as i32;
+    let bh = buf.height as i32;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for sp in &flat.subpaths {
+        for &(_, y) in sp {
+            if y.is_finite() {
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if !min_y.is_finite() || !max_y.is_finite() {
+        return true;
+    }
+    let y0 = safe_floor_i32(min_y).max(0);
+    let y1 = safe_ceil_i32(max_y).saturating_add(1).min(bh);
+    if y1 <= y0 {
+        return true;
+    }
+
+    let mut crossings = take_scanline_crossing_vec();
+    let h = (y1 - y0) as usize;
+    let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let mut active_edges = ScanlineActiveEdges::default();
+    for y in y0..y1 {
+        PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
+        let scan_y = y as f64 + 0.5;
+        crossings.clear();
+        if let Some(buckets) = edge_buckets.as_ref() {
+            let row = (y - y0) as usize;
+            if !active_edges.collect_row(buckets, row, scan_y, &mut crossings) {
+                collect_scanline_crossings_from_bucket(buckets, row, scan_y, &mut crossings);
+            }
+        } else {
+            for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
+                collect_scanline_crossings(sp, closed, scan_y, &mut crossings);
+            }
+        }
+        if !prepare_scanline_crossings(&mut crossings) {
+            continue;
+        }
+        match rule {
+            FillRule::EvenOdd => {
+                let mut i = 0usize;
+                while i + 1 < crossings.len() {
+                    fill_scanline_cmyk_overprint_span(
+                        buf,
+                        y,
+                        crossings[i].0,
+                        crossings[i + 1].0,
+                        bw,
+                        cmyk,
+                        alpha,
+                        overprint_mode,
+                    );
+                    i += 2;
+                }
+            }
+            FillRule::NonZero => {
+                let mut winding = 0i32;
+                let mut start_x: Option<f64> = None;
+                for (x, dir) in crossings.iter().copied() {
+                    if winding != 0 {
+                        if let Some(sx) = start_x.take() {
+                            fill_scanline_cmyk_overprint_span(
+                                buf,
+                                y,
+                                sx,
+                                x,
+                                bw,
+                                cmyk,
+                                alpha,
+                                overprint_mode,
+                            );
+                        }
+                    }
+                    winding += dir;
+                    if winding != 0 {
+                        start_x = Some(x);
+                    }
+                }
+            }
+        }
+    }
+    return_scanline_crossing_vec(crossings);
+    true
+}
+
 fn fill_flat_color(
     buf: &mut PixelBuffer,
     flat: &FlatPath,
@@ -908,6 +1401,7 @@ fn fill_flat_scanline_fast(
     let mut crossings = take_scanline_crossing_vec();
     let h = (y1 - y0) as usize;
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let mut active_edges = ScanlineActiveEdges::default();
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_cancelled() {
             return_scanline_crossing_vec(crossings);
@@ -917,21 +1411,18 @@ fn fill_flat_scanline_fast(
         let scan_y = y as f64 + 0.5;
         crossings.clear();
         if let Some(buckets) = edge_buckets.as_ref() {
-            collect_scanline_crossings_from_bucket(
-                buckets,
-                (y - y0) as usize,
-                scan_y,
-                &mut crossings,
-            );
+            let row = (y - y0) as usize;
+            if !active_edges.collect_row(buckets, row, scan_y, &mut crossings) {
+                collect_scanline_crossings_from_bucket(buckets, row, scan_y, &mut crossings);
+            }
         } else {
             for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
                 collect_scanline_crossings(sp, closed, scan_y, &mut crossings);
             }
         }
-        if crossings.len() < 2 {
+        if !prepare_scanline_crossings(&mut crossings) {
             continue;
         }
-        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
         match rule {
             FillRule::EvenOdd => {
                 let mut i = 0usize;
@@ -1093,6 +1584,468 @@ pub(crate) fn axis_aligned_integer_rect(
     Some((x0, y0, x1 - x0, y1 - y0))
 }
 
+fn axis_aligned_solid_stroke_rect(
+    path: &Path,
+    ctm: &Transform2D,
+    viewport: &Viewport,
+    stroke_width: f64,
+    dash: &DashState,
+    cap: &LineCap,
+) -> Option<(i32, i32, i32, i32)> {
+    if !ctm.is_axis_aligned()
+        || !dash.is_solid()
+        || !matches!(cap, LineCap::Butt | LineCap::ProjectingSquare)
+        || !stroke_width.is_finite()
+    {
+        return None;
+    }
+
+    let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
+    if !width_px.is_finite() {
+        return None;
+    }
+    let points = axis_aligned_stroke_device_points(path, ctm, viewport)?;
+    let eps = 1e-7;
+    let first = *points.first()?;
+    let last = *points.last()?;
+    let half = width_px / 2.0;
+    let (min_x, min_y, max_x, max_y) = if points.iter().all(|(_, y)| (*y - first.1).abs() <= eps) {
+        if !axis_values_are_monotonic(points.iter().map(|(x, _)| *x)) {
+            return None;
+        }
+        let min_x = points.iter().map(|(x, _)| *x).fold(f64::INFINITY, f64::min);
+        let max_x = points
+            .iter()
+            .map(|(x, _)| *x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if max_x - min_x <= eps {
+            return None;
+        }
+        let cap_pad = if matches!(cap, LineCap::ProjectingSquare) {
+            half
+        } else {
+            0.0
+        };
+        (
+            min_x - cap_pad,
+            first.1 - half,
+            max_x + cap_pad,
+            first.1 + half,
+        )
+    } else if points.iter().all(|(x, _)| (*x - first.0).abs() <= eps) {
+        if !axis_values_are_monotonic(points.iter().map(|(_, y)| *y)) {
+            return None;
+        }
+        let min_y = points.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
+        let max_y = points
+            .iter()
+            .map(|(_, y)| *y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if max_y - min_y <= eps {
+            return None;
+        }
+        let cap_pad = if matches!(cap, LineCap::ProjectingSquare) {
+            half
+        } else {
+            0.0
+        };
+        (
+            first.0 - half,
+            min_y - cap_pad,
+            first.0 + half,
+            max_y + cap_pad,
+        )
+    } else {
+        return None;
+    };
+
+    if points.len() > 2 {
+        let endpoints_span = if (first.1 - last.1).abs() <= eps {
+            (first.0.min(last.0), first.0.max(last.0))
+        } else {
+            (first.1.min(last.1), first.1.max(last.1))
+        };
+        let all_span = if (first.1 - last.1).abs() <= eps {
+            (
+                min_x
+                    + if matches!(cap, LineCap::ProjectingSquare) {
+                        half
+                    } else {
+                        0.0
+                    },
+                max_x
+                    - if matches!(cap, LineCap::ProjectingSquare) {
+                        half
+                    } else {
+                        0.0
+                    },
+            )
+        } else {
+            (
+                min_y
+                    + if matches!(cap, LineCap::ProjectingSquare) {
+                        half
+                    } else {
+                        0.0
+                    },
+                max_y
+                    - if matches!(cap, LineCap::ProjectingSquare) {
+                        half
+                    } else {
+                        0.0
+                    },
+            )
+        };
+        if (endpoints_span.0 - all_span.0).abs() > eps
+            || (endpoints_span.1 - all_span.1).abs() > eps
+        {
+            return None;
+        }
+    }
+
+    if [min_x, min_y, max_x, max_y]
+        .iter()
+        .any(|v| !v.is_finite() || (v - v.round()).abs() > eps)
+    {
+        return None;
+    }
+    let x0 = min_x.round() as i32;
+    let y0 = min_y.round() as i32;
+    let x1 = max_x.round() as i32;
+    let y1 = max_y.round() as i32;
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
+fn axis_aligned_stroke_device_points(
+    path: &Path,
+    ctm: &Transform2D,
+    viewport: &Viewport,
+) -> Option<Vec<(f64, f64)>> {
+    let mut points = Vec::new();
+    for segment in &path.segments {
+        match *segment {
+            PathSegment::MoveTo(x, y) if points.is_empty() => {
+                points.push(path_point_to_device(x, y, ctm, viewport)?);
+            }
+            PathSegment::LineTo(x, y) if !points.is_empty() => {
+                let point = path_point_to_device(x, y, ctm, viewport)?;
+                if points
+                    .last()
+                    .is_none_or(|last| distance(*last, point) > 1e-8)
+                {
+                    points.push(point);
+                }
+            }
+            _ => return None,
+        }
+    }
+    (points.len() >= 2).then_some(points)
+}
+
+fn path_point_to_device(
+    x: f64,
+    y: f64,
+    ctm: &Transform2D,
+    viewport: &Viewport,
+) -> Option<(f64, f64)> {
+    let (ux, uy) = ctm.transform_point(x, y);
+    let point = viewport.page_to_pixel_f64(ux, uy);
+    (point.0.is_finite() && point.1.is_finite()).then_some(point)
+}
+
+fn axis_values_are_monotonic(values: impl Iterator<Item = f64>) -> bool {
+    let mut last = None;
+    let mut direction = 0i32;
+    for value in values {
+        let Some(prev) = last.replace(value) else {
+            continue;
+        };
+        let delta = value - prev;
+        if delta.abs() <= 1e-7 {
+            continue;
+        }
+        let step = if delta > 0.0 { 1 } else { -1 };
+        if direction == 0 {
+            direction = step;
+        } else if direction != step {
+            return false;
+        }
+    }
+    direction != 0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_axis_aligned_solid_hairline(
+    buf: &mut PixelBuffer,
+    path: &Path,
+    ctm: &Transform2D,
+    viewport: &Viewport,
+    color: PixelColor,
+    stroke_width: f64,
+    dash: &DashState,
+    cap: &LineCap,
+) -> bool {
+    if !ctm.is_axis_aligned()
+        || !dash.is_solid()
+        || !matches!(cap, LineCap::Butt)
+        || !stroke_width.is_finite()
+        || stroke_width > 0.0
+    {
+        return false;
+    }
+
+    let Some(points) = axis_aligned_stroke_device_points(path, ctm, viewport) else {
+        return false;
+    };
+    let eps = 1e-7;
+    let first = points[0];
+    if points.iter().all(|(_, y)| (*y - first.1).abs() <= eps) {
+        if !axis_values_are_monotonic(points.iter().map(|(x, _)| *x)) {
+            return false;
+        }
+        let x0 = points.iter().map(|(x, _)| *x).fold(f64::INFINITY, f64::min);
+        let x1 = points
+            .iter()
+            .map(|(x, _)| *x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if (x0 - x0.round()).abs() > eps || (x1 - x1.round()).abs() > eps {
+            return false;
+        }
+        paint_horizontal_hairline_run(buf, x0.round() as i32, x1.round() as i32, first.1, color);
+        return true;
+    }
+
+    if points.iter().all(|(x, _)| (*x - first.0).abs() <= eps) {
+        if !axis_values_are_monotonic(points.iter().map(|(_, y)| *y)) {
+            return false;
+        }
+        let y0 = points.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
+        let y1 = points
+            .iter()
+            .map(|(_, y)| *y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if (y0 - y0.round()).abs() > eps || (y1 - y1.round()).abs() > eps {
+            return false;
+        }
+        paint_vertical_hairline_run(buf, first.0, y0.round() as i32, y1.round() as i32, color);
+        return true;
+    }
+
+    false
+}
+
+fn paint_horizontal_hairline_run(
+    buf: &mut PixelBuffer,
+    x0: i32,
+    x1: i32,
+    center_y: f64,
+    color: PixelColor,
+) {
+    if x1 <= x0 {
+        return;
+    }
+    let y_min = center_y - 0.5;
+    let y_max = center_y + 0.5;
+    let row_start = safe_floor_i32(y_min);
+    let row_end = safe_ceil_i32(y_max);
+    for y in row_start..row_end {
+        let samples = vertical_samples_in_range(y, y_min, y_max);
+        if samples == 0 {
+            continue;
+        }
+        let alpha = sampled_span_alpha(1.0, samples);
+        paint_coverage_span(buf, x0, y, x1 - x0, 1, color, alpha);
+    }
+}
+
+fn paint_vertical_hairline_run(
+    buf: &mut PixelBuffer,
+    center_x: f64,
+    y0: i32,
+    y1: i32,
+    color: PixelColor,
+) {
+    if y1 <= y0 {
+        return;
+    }
+    let x_min = center_x - 0.5;
+    let x_max = center_x + 0.5;
+    let col_start = safe_floor_i32(x_min);
+    let col_end = safe_ceil_i32(x_max);
+    for x in col_start..col_end {
+        let coverage = (x_max.min(x as f64 + 1.0) - x_min.max(x as f64)).clamp(0.0, 1.0);
+        if coverage <= 0.0 {
+            continue;
+        }
+        let alpha = sampled_span_alpha(coverage, PATH_SCANLINE_COLOR_VERTICAL_SAMPLES);
+        paint_coverage_span(buf, x, y0, 1, y1 - y0, color, alpha);
+    }
+}
+
+fn vertical_samples_in_range(row: i32, y_min: f64, y_max: f64) -> usize {
+    let mut samples = 0usize;
+    for sample in 0..PATH_SCANLINE_COLOR_VERTICAL_SAMPLES {
+        let sample_y =
+            row as f64 + (sample as f64 + 0.5) / PATH_SCANLINE_COLOR_VERTICAL_SAMPLES as f64;
+        if sample_y >= y_min && sample_y < y_max {
+            samples += 1;
+        }
+    }
+    samples
+}
+
+fn sampled_span_alpha(horizontal_coverage: f64, vertical_samples: usize) -> u8 {
+    if horizontal_coverage <= 0.0 || vertical_samples == 0 {
+        return 0;
+    }
+    let sample_weight = 255.0 / PATH_SCANLINE_COLOR_VERTICAL_SAMPLES as f64;
+    let per_sample = (horizontal_coverage.clamp(0.0, 1.0) * sample_weight)
+        .round()
+        .clamp(0.0, 255.0) as u16;
+    per_sample.saturating_mul(vertical_samples as u16).min(255) as u8
+}
+
+fn paint_coverage_span(
+    buf: &mut PixelBuffer,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: PixelColor,
+    alpha: u8,
+) {
+    if alpha == 0 {
+        return;
+    }
+    if alpha == 255 {
+        buf.fill_rect(x, y, w, h, color);
+        return;
+    }
+    let coverage = f32::from(alpha) / 255.0;
+    for row in y..y.saturating_add(h) {
+        for col in x..x.saturating_add(w) {
+            buf.blend_pixel(col, row, color, coverage);
+        }
+    }
+}
+
+fn axis_aligned_solid_rect_stroke_regions(
+    path: &Path,
+    ctm: &Transform2D,
+    viewport: &Viewport,
+    stroke_width: f64,
+    dash: &DashState,
+    join: &LineJoin,
+    miter_limit: f64,
+) -> Option<[(i32, i32, i32, i32); 4]> {
+    if !ctm.is_axis_aligned()
+        || !dash.is_solid()
+        || !matches!(join, LineJoin::Miter)
+        || !stroke_width.is_finite()
+        || miter_limit + 1e-7 < std::f64::consts::SQRT_2
+    {
+        return None;
+    }
+
+    let corners = match path.segments.as_slice() {
+        [PathSegment::MoveTo(x0, y0), PathSegment::LineTo(x1, y1), PathSegment::LineTo(x2, y2), PathSegment::LineTo(x3, y3), PathSegment::ClosePath] => {
+            [(*x0, *y0), (*x1, *y1), (*x2, *y2), (*x3, *y3)]
+        }
+        _ => return None,
+    };
+
+    let mut px_points = [(0.0, 0.0); 4];
+    for (idx, (x, y)) in corners.into_iter().enumerate() {
+        let (ux, uy) = ctm.transform_point(x, y);
+        let point = viewport.page_to_pixel_f64(ux, uy);
+        if !point.0.is_finite() || !point.1.is_finite() {
+            return None;
+        }
+        px_points[idx] = point;
+    }
+
+    let min_x = px_points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = px_points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = px_points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = px_points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if max_x <= min_x || max_y <= min_y {
+        return None;
+    }
+
+    let eps = 1e-7;
+    if px_points.iter().any(|(x, y)| {
+        ((*x - min_x).abs() > eps && (*x - max_x).abs() > eps)
+            || ((*y - min_y).abs() > eps && (*y - max_y).abs() > eps)
+    }) {
+        return None;
+    }
+
+    let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
+    if !width_px.is_finite() {
+        return None;
+    }
+    let half = width_px / 2.0;
+    let boundaries = [
+        min_x - half,
+        min_x + half,
+        max_x - half,
+        max_x + half,
+        min_y - half,
+        min_y + half,
+        max_y - half,
+        max_y + half,
+    ];
+    if boundaries
+        .iter()
+        .any(|v| !v.is_finite() || (v - v.round()).abs() > eps)
+    {
+        return None;
+    }
+
+    let outer_x0 = (min_x - half).round() as i32;
+    let inner_x0 = (min_x + half).round() as i32;
+    let inner_x1 = (max_x - half).round() as i32;
+    let outer_x1 = (max_x + half).round() as i32;
+    let outer_y0 = (min_y - half).round() as i32;
+    let inner_y0 = (min_y + half).round() as i32;
+    let inner_y1 = (max_y - half).round() as i32;
+    let outer_y1 = (max_y + half).round() as i32;
+
+    if outer_x1 <= outer_x0
+        || outer_y1 <= outer_y0
+        || inner_x1 <= inner_x0
+        || inner_y1 <= inner_y0
+        || inner_x0 <= outer_x0
+        || outer_x1 <= inner_x1
+        || inner_y0 <= outer_y0
+        || outer_y1 <= inner_y1
+    {
+        return None;
+    }
+
+    Some([
+        (outer_x0, outer_y0, outer_x1 - outer_x0, inner_y0 - outer_y0),
+        (outer_x0, inner_y1, outer_x1 - outer_x0, outer_y1 - inner_y1),
+        (outer_x0, inner_y0, inner_x0 - outer_x0, inner_y1 - inner_y0),
+        (inner_x1, inner_y0, outer_x1 - inner_x1, inner_y1 - inner_y0),
+    ])
+}
+
 fn collect_scanline_crossings(
     sp: &[(f64, f64)],
     closed: bool,
@@ -1142,13 +2095,47 @@ fn push_scanline_crossing(
 #[derive(Clone, Copy)]
 struct ScanlineEdge {
     p0: (f64, f64),
-    p1: (f64, f64),
+    ymin: f64,
+    ymax: f64,
+    dir: i32,
+    dx_dy: f64,
+}
+
+impl ScanlineEdge {
+    fn new(p0: (f64, f64), p1: (f64, f64)) -> Option<Self> {
+        let (x0, y0) = p0;
+        let (x1, y1) = p1;
+        if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+            return None;
+        }
+        if (y0 - y1).abs() < 1e-12 {
+            return None;
+        }
+        Some(Self {
+            p0,
+            ymin: y0.min(y1),
+            ymax: y0.max(y1),
+            dir: if y0 < y1 { 1 } else { -1 },
+            dx_dy: (x1 - x0) / (y1 - y0),
+        })
+    }
+
+    fn crossing_at(self, scan_y: f64) -> Option<(f64, i32)> {
+        if scan_y < self.ymin || scan_y >= self.ymax {
+            return None;
+        }
+        Some((self.p0.0 + (scan_y - self.p0.1) * self.dx_dy, self.dir))
+    }
 }
 
 struct ScanlineEdgeBuckets {
     edges: Vec<ScanlineEdge>,
     row_offsets: Vec<usize>,
     links: Vec<usize>,
+    start_offsets: Vec<usize>,
+    start_links: Vec<usize>,
+    end_offsets: Vec<usize>,
+    end_links: Vec<usize>,
 }
 
 fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<ScanlineEdgeBuckets> {
@@ -1223,12 +2210,60 @@ fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<Sca
             *slot = slot.saturating_add(1);
         }
     }
+    let (start_offsets, start_links) = build_scanline_edge_events(
+        h,
+        spans
+            .iter()
+            .enumerate()
+            .map(|(edge_index, (row_start, _))| (edge_index, *row_start)),
+    );
+    let (end_offsets, end_links) = build_scanline_edge_events(
+        h,
+        spans
+            .iter()
+            .enumerate()
+            .filter_map(|(edge_index, (_, row_end))| {
+                (*row_end < h).then_some((edge_index, *row_end))
+            }),
+    );
 
     Some(ScanlineEdgeBuckets {
         edges,
         row_offsets,
         links: flat_links,
+        start_offsets,
+        start_links,
+        end_offsets,
+        end_links,
     })
+}
+
+fn build_scanline_edge_events(
+    h: usize,
+    events: impl Iterator<Item = (usize, usize)> + Clone,
+) -> (Vec<usize>, Vec<usize>) {
+    let mut row_counts = vec![0usize; h];
+    for (_, row) in events.clone() {
+        if let Some(count) = row_counts.get_mut(row) {
+            *count = count.saturating_add(1);
+        }
+    }
+    let mut offsets = vec![0usize; h + 1];
+    for (idx, count) in row_counts.iter().copied().enumerate() {
+        offsets[idx + 1] = offsets[idx].saturating_add(count);
+    }
+    let mut links = vec![0usize; offsets[h]];
+    let mut cursor = offsets[..h].to_vec();
+    for (edge_index, row) in events {
+        let Some(slot) = cursor.get_mut(row) else {
+            continue;
+        };
+        if let Some(dst) = links.get_mut(*slot) {
+            *dst = edge_index;
+        }
+        *slot = slot.saturating_add(1);
+    }
+    (offsets, links)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1242,18 +2277,11 @@ fn push_scanline_edge_bucket(
     row_counts: &mut [usize],
     links: &mut usize,
 ) -> bool {
-    let (x0, ey0) = p0;
-    let (x1, ey1) = p1;
-    if !x0.is_finite() || !ey0.is_finite() || !x1.is_finite() || !ey1.is_finite() {
+    let Some(edge) = ScanlineEdge::new(p0, p1) else {
         return true;
-    }
-    if (ey0 - ey1).abs() < 1e-12 {
-        return true;
-    }
-    let ymin = ey0.min(ey1);
-    let ymax = ey0.max(ey1);
-    let row_start = safe_floor_i32(ymin - y0 as f64).max(0) as usize;
-    let row_end = safe_ceil_i32(ymax - y0 as f64).max(0).min(h as i32) as usize;
+    };
+    let row_start = safe_floor_i32(edge.ymin - y0 as f64).max(0) as usize;
+    let row_end = safe_ceil_i32(edge.ymax - y0 as f64).max(0).min(h as i32) as usize;
     if row_start >= row_end || row_start >= h {
         return true;
     }
@@ -1262,7 +2290,7 @@ fn push_scanline_edge_bucket(
     if links.saturating_add(span_len) > SCANLINE_EDGE_BUCKET_MAX_LINKS {
         return false;
     }
-    edges.push(ScanlineEdge { p0, p1 });
+    edges.push(edge);
     spans.push((row_start, end));
     *links = links.saturating_add(span_len);
     for row in &mut row_counts[row_start..end] {
@@ -1288,9 +2316,95 @@ fn collect_scanline_crossings_from_bucket(
     };
     for edge_index in edge_indices {
         if let Some(edge) = bucket.edges.get(*edge_index) {
-            push_scanline_crossing(edge.p0, edge.p1, scan_y, crossings);
+            if let Some(crossing) = edge.crossing_at(scan_y) {
+                crossings.push(crossing);
+            }
         }
     }
+}
+
+#[derive(Default)]
+struct ScanlineActiveEdges {
+    next_row: usize,
+    active: Vec<usize>,
+}
+
+impl ScanlineActiveEdges {
+    fn advance_to_row(&mut self, buckets: &ScanlineEdgeBuckets, row: usize) -> bool {
+        if row != self.next_row || row + 1 >= buckets.start_offsets.len() {
+            return false;
+        }
+        self.remove_ended_edges(buckets, row);
+        self.add_starting_edges(buckets, row);
+        self.next_row = self.next_row.saturating_add(1);
+        true
+    }
+
+    fn collect_current_crossings(
+        &self,
+        buckets: &ScanlineEdgeBuckets,
+        scan_y: f64,
+        crossings: &mut Vec<(f64, i32)>,
+    ) {
+        for edge_index in &self.active {
+            if let Some(edge) = buckets.edges.get(*edge_index) {
+                if let Some(crossing) = edge.crossing_at(scan_y) {
+                    crossings.push(crossing);
+                }
+            }
+        }
+    }
+
+    fn collect_row(
+        &mut self,
+        buckets: &ScanlineEdgeBuckets,
+        row: usize,
+        scan_y: f64,
+        crossings: &mut Vec<(f64, i32)>,
+    ) -> bool {
+        if !self.advance_to_row(buckets, row) {
+            return false;
+        }
+        self.collect_current_crossings(buckets, scan_y, crossings);
+        true
+    }
+
+    fn remove_ended_edges(&mut self, buckets: &ScanlineEdgeBuckets, row: usize) {
+        let Some(ended) = scanline_row_events(&buckets.end_offsets, &buckets.end_links, row) else {
+            return;
+        };
+        if ended.is_empty() {
+            return;
+        }
+        self.active.retain(|edge_index| !ended.contains(edge_index));
+    }
+
+    fn add_starting_edges(&mut self, buckets: &ScanlineEdgeBuckets, row: usize) {
+        let Some(starting) = scanline_row_events(&buckets.start_offsets, &buckets.start_links, row)
+        else {
+            return;
+        };
+        self.active.extend_from_slice(starting);
+    }
+}
+
+fn scanline_row_events<'a>(
+    offsets: &[usize],
+    links: &'a [usize],
+    row: usize,
+) -> Option<&'a [usize]> {
+    let start = offsets.get(row).copied()?;
+    let end = offsets.get(row + 1).copied()?;
+    links.get(start..end)
+}
+
+fn prepare_scanline_crossings(crossings: &mut Vec<(f64, i32)>) -> bool {
+    crossings.retain(|(x, dir)| x.is_finite() && *dir != 0);
+    if crossings.len() < 2 {
+        return false;
+    }
+    crossings.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    true
 }
 
 fn fill_scanline_span(buf: &mut PixelBuffer, y: i32, x0: f64, x1: f64, bw: i32, color: PixelColor) {
@@ -1303,6 +2417,30 @@ fn fill_scanline_span(buf: &mut PixelBuffer, y: i32, x0: f64, x1: f64, bw: i32, 
         return;
     }
     buf.fill_rect(start, y, end - start + 1, 1, color);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_scanline_cmyk_overprint_span(
+    buf: &mut PixelBuffer,
+    y: i32,
+    x0: f64,
+    x1: f64,
+    bw: i32,
+    cmyk: [f32; 4],
+    alpha: f32,
+    overprint_mode: i32,
+) {
+    if x1 <= x0 {
+        return;
+    }
+    let start = safe_ceil_i32(x0).max(0);
+    let end = safe_floor_i32(x1).min(bw - 1);
+    if end < start {
+        return;
+    }
+    for x in start..=end {
+        buf.blend_device_cmyk_overprint_preview(x, y, cmyk, alpha, 1.0, overprint_mode);
+    }
 }
 
 pub(crate) fn rasterize_flat_binary_clip_mask(
@@ -1341,6 +2479,7 @@ pub(crate) fn rasterize_flat_binary_clip_mask(
     let mut crossings = take_scanline_crossing_vec();
     let h = (y1 - y0) as usize;
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let mut active_edges = ScanlineActiveEdges::default();
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
             return_scanline_crossing_vec(crossings);
@@ -1349,21 +2488,18 @@ pub(crate) fn rasterize_flat_binary_clip_mask(
         let scan_y = y as f64 + 0.5;
         crossings.clear();
         if let Some(buckets) = edge_buckets.as_ref() {
-            collect_scanline_crossings_from_bucket(
-                buckets,
-                (y - y0) as usize,
-                scan_y,
-                &mut crossings,
-            );
+            let row = (y - y0) as usize;
+            if !active_edges.collect_row(buckets, row, scan_y, &mut crossings) {
+                collect_scanline_crossings_from_bucket(buckets, row, scan_y, &mut crossings);
+            }
         } else {
             for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
                 collect_scanline_crossings(sp, closed, scan_y, &mut crossings);
             }
         }
-        if crossings.len() < 2 {
+        if !prepare_scanline_crossings(&mut crossings) {
             continue;
         }
-        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
         match rule {
             FillRule::EvenOdd => {
                 let mut i = 0usize;
@@ -1545,6 +2681,17 @@ fn fill_flat_with_color_compositor(
     if w == 0 || h == 0 {
         return true;
     }
+    if let Some(handled) = fill_convex_flat_with_color_compositor_scanline(
+        buf,
+        flat,
+        color,
+        rule,
+        cancel,
+        (x0, y0, x1, y1),
+        PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+    ) {
+        return handled;
+    }
     // General page paths now use the edge-bucket scanline route by default.
     // This avoids falling back to accumulator grids on the pathological vector
     // pages that motivated this closure pass while preserving cancellation and
@@ -1558,6 +2705,130 @@ fn fill_flat_with_color_compositor(
         (x0, y0, x1, y1),
         PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
     )
+}
+
+fn fill_convex_flat_with_color_compositor_scanline(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    color: PixelColor,
+    _rule: FillRule,
+    cancel: Option<&CancelToken>,
+    bounds: (i32, i32, i32, i32),
+    vertical_samples: usize,
+) -> Option<bool> {
+    let edges = convex_flat_edges(flat)?;
+    let (x0, y0, x1, y1) = bounds;
+    if x1 <= x0 || y1 <= y0 || vertical_samples == 0 {
+        return Some(true);
+    }
+    let w = (x1 - x0) as usize;
+    let mut row_accum = take_scanline_u16_vec(w);
+    let sample_weight = 255.0 / vertical_samples as f64;
+    for y in y0..y1 {
+        if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+            return_scanline_u16_vec(row_accum);
+            return Some(false);
+        }
+        row_accum.fill(0);
+        for sample in 0..vertical_samples {
+            let scan_y = y as f64 + (sample as f64 + 0.5) / vertical_samples as f64;
+            if let Some((left, right)) = convex_scanline_span(&edges, scan_y) {
+                PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
+                add_alpha_span(
+                    &mut row_accum,
+                    0,
+                    w,
+                    left - x0 as f64,
+                    right - x0 as f64,
+                    sample_weight,
+                );
+            }
+        }
+        paint_alpha_row_runs(buf, &row_accum, x0, y, color, |pixels| {
+            PATH_RASTER_CONVEX_FAST_PIXELS.fetch_add(pixels, Ordering::Relaxed);
+        });
+    }
+    return_scanline_u16_vec(row_accum);
+    Some(true)
+}
+
+fn convex_flat_points(flat: &FlatPath) -> Option<Vec<(f64, f64)>> {
+    if flat.subpaths.len() != 1 {
+        return None;
+    }
+    let sp = flat.subpaths.first()?;
+    let mut points = Vec::with_capacity(sp.len());
+    for &point in sp {
+        if !point.0.is_finite() || !point.1.is_finite() {
+            return None;
+        }
+        if points
+            .last()
+            .is_none_or(|last| distance(*last, point) > 1e-8)
+        {
+            points.push(point);
+        }
+    }
+    if points.len() > 1 && distance(points[0], *points.last()?) <= 1e-8 {
+        points.pop();
+    }
+    if points.len() < 3 || !is_convex_polygon(&points) {
+        return None;
+    }
+    Some(points)
+}
+
+fn convex_flat_edges(flat: &FlatPath) -> Option<Vec<ScanlineEdge>> {
+    let points = convex_flat_points(flat)?;
+    let mut edges = Vec::with_capacity(points.len());
+    for index in 0..points.len() {
+        if let Some(edge) = ScanlineEdge::new(points[index], points[(index + 1) % points.len()]) {
+            edges.push(edge);
+        }
+    }
+    (edges.len() >= 2).then_some(edges)
+}
+
+fn is_convex_polygon(points: &[(f64, f64)]) -> bool {
+    if points.len() < 3 {
+        return false;
+    }
+    let mut area = 0.0;
+    let mut orientation = 0i32;
+    for index in 0..points.len() {
+        let a = points[index];
+        let b = points[(index + 1) % points.len()];
+        let c = points[(index + 2) % points.len()];
+        area += a.0 * b.1 - a.1 * b.0;
+        let turn = cross(sub(b, a), sub(c, b));
+        if turn.abs() <= 1e-8 {
+            continue;
+        }
+        let sign = if turn > 0.0 { 1 } else { -1 };
+        if orientation == 0 {
+            orientation = sign;
+        } else if orientation != sign {
+            return false;
+        }
+    }
+    area.abs() > 1e-8 && orientation != 0
+}
+
+fn convex_scanline_span(edges: &[ScanlineEdge], scan_y: f64) -> Option<(f64, f64)> {
+    let mut left = f64::INFINITY;
+    let mut right = f64::NEG_INFINITY;
+    let mut crossings = 0usize;
+    for edge in edges {
+        if let Some((x, _dir)) = edge.crossing_at(scan_y) {
+            if !x.is_finite() {
+                return None;
+            }
+            left = left.min(x);
+            right = right.max(x);
+            crossings += 1;
+        }
+    }
+    (crossings >= 2 && right > left).then_some((left, right))
 }
 
 pub(crate) fn rasterize_flat_alpha_mask(
@@ -1627,23 +2898,31 @@ fn rasterize_flat_alpha_mask_scanline(
     let mut accum = take_scanline_u16_vec(w.saturating_mul(h));
     let mut crossings = take_scanline_crossing_vec();
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let mut active_edges = ScanlineActiveEdges::default();
     let sample_weight = 255.0 / vertical_samples as f64;
     for row in 0..h {
+        let mut active_ready = false;
+        if let Some(buckets) = edge_buckets.as_ref() {
+            active_ready = active_edges.advance_to_row(buckets, row);
+        }
         for sample in 0..vertical_samples {
             let scan_y = y0 as f64 + row as f64 + (sample as f64 + 0.5) / vertical_samples as f64;
             crossings.clear();
             if let Some(buckets) = edge_buckets.as_ref() {
-                collect_scanline_crossings_from_bucket(buckets, row, scan_y, &mut crossings);
+                if active_ready {
+                    active_edges.collect_current_crossings(buckets, scan_y, &mut crossings);
+                } else {
+                    collect_scanline_crossings_from_bucket(buckets, row, scan_y, &mut crossings);
+                }
             } else {
                 for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
                     collect_scanline_crossings(sp, closed, scan_y, &mut crossings);
                 }
             }
-            if crossings.len() < 2 {
+            if !prepare_scanline_crossings(&mut crossings) {
                 continue;
             }
             PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
-            crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
             let row_base = row * w;
             match rule {
                 FillRule::EvenOdd => {
@@ -1780,10 +3059,33 @@ fn should_route_general_path_to_scanline(flat: &FlatPath) -> bool {
         && points >= PATH_SCANLINE_COMPLEX_POINT_THRESHOLD
 }
 
+type ScanlineEdgeRowSource<'a> = (
+    &'a ScanlineEdgeBuckets,
+    usize,
+    Option<&'a ScanlineActiveEdges>,
+);
+
+fn collect_scanline_crossings_from_row_source(
+    flat: &FlatPath,
+    edge_source: Option<ScanlineEdgeRowSource<'_>>,
+    scan_y: f64,
+    crossings: &mut Vec<(f64, i32)>,
+) {
+    if let Some((buckets, _row, Some(active_edges))) = edge_source {
+        active_edges.collect_current_crossings(buckets, scan_y, crossings);
+    } else if let Some((buckets, row, None)) = edge_source {
+        collect_scanline_crossings_from_bucket(buckets, row, scan_y, crossings);
+    } else {
+        for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
+            collect_scanline_crossings(sp, closed, scan_y, crossings);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn accumulate_scanline_row(
     flat: &FlatPath,
-    edge_buckets: Option<(&ScanlineEdgeBuckets, usize)>,
+    edge_source: Option<ScanlineEdgeRowSource<'_>>,
     rule: FillRule,
     scan_y: f64,
     x0: i32,
@@ -1792,18 +3094,11 @@ fn accumulate_scanline_row(
     row_accum: &mut [u16],
 ) {
     crossings.clear();
-    if let Some((buckets, row)) = edge_buckets {
-        collect_scanline_crossings_from_bucket(buckets, row, scan_y, crossings);
-    } else {
-        for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
-            collect_scanline_crossings(sp, closed, scan_y, crossings);
-        }
-    }
-    if crossings.len() < 2 {
+    collect_scanline_crossings_from_row_source(flat, edge_source, scan_y, crossings);
+    if !prepare_scanline_crossings(crossings) {
         return;
     }
     PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
-    crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
     match rule {
         FillRule::EvenOdd => {
             let mut i = 0usize;
@@ -1840,7 +3135,7 @@ fn accumulate_scanline_row(
 #[allow(clippy::too_many_arguments)]
 fn accumulate_scanline_row_subsampled(
     flat: &FlatPath,
-    edge_buckets: Option<(&ScanlineEdgeBuckets, usize)>,
+    edge_source: Option<ScanlineEdgeRowSource<'_>>,
     rule: FillRule,
     row_y: i32,
     x0: i32,
@@ -1853,7 +3148,7 @@ fn accumulate_scanline_row_subsampled(
     if vertical_samples <= 1 {
         accumulate_scanline_row(
             flat,
-            edge_buckets,
+            edge_source,
             rule,
             row_y as f64 + 0.5,
             x0,
@@ -1867,18 +3162,11 @@ fn accumulate_scanline_row_subsampled(
     for sample in 0..vertical_samples {
         let scan_y = row_y as f64 + (sample as f64 + 0.5) * sample_scale;
         crossings.clear();
-        if let Some((buckets, row)) = edge_buckets {
-            collect_scanline_crossings_from_bucket(buckets, row, scan_y, crossings);
-        } else {
-            for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
-                collect_scanline_crossings(sp, closed, scan_y, crossings);
-            }
-        }
-        if crossings.len() < 2 {
+        collect_scanline_crossings_from_row_source(flat, edge_source, scan_y, crossings);
+        if !prepare_scanline_crossings(crossings) {
             continue;
         }
         PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
-        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
         let sample_weight = 255.0 * sample_scale;
         match rule {
             FillRule::EvenOdd => {
@@ -1942,17 +3230,22 @@ where
     let mut row_accum = take_scanline_u16_vec(w);
     let h = (y1 - y0) as usize;
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let mut active_edges = ScanlineActiveEdges::default();
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
             return_scanline_u16_vec(row_accum);
             return_scanline_crossing_vec(crossings);
             return false;
         }
+        let mut edge_source = None;
+        if let Some(buckets) = edge_buckets.as_ref() {
+            let row = (y - y0) as usize;
+            let active = active_edges.advance_to_row(buckets, row);
+            edge_source = Some((buckets, row, active.then_some(&active_edges)));
+        }
         accumulate_scanline_row_subsampled(
             flat,
-            edge_buckets
-                .as_ref()
-                .map(|buckets| (buckets, (y - y0) as usize)),
+            edge_source,
             rule,
             y,
             x0,
@@ -1992,17 +3285,22 @@ fn fill_flat_with_color_compositor_scanline(
     let mut row_accum = take_scanline_u16_vec(w);
     let h = (y1 - y0) as usize;
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let mut active_edges = ScanlineActiveEdges::default();
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
             return_scanline_u16_vec(row_accum);
             return_scanline_crossing_vec(crossings);
             return false;
         }
+        let mut edge_source = None;
+        if let Some(buckets) = edge_buckets.as_ref() {
+            let row = (y - y0) as usize;
+            let active = active_edges.advance_to_row(buckets, row);
+            edge_source = Some((buckets, row, active.then_some(&active_edges)));
+        }
         accumulate_scanline_row_subsampled(
             flat,
-            edge_buckets
-                .as_ref()
-                .map(|buckets| (buckets, (y - y0) as usize)),
+            edge_source,
             rule,
             y,
             x0,
@@ -2012,38 +3310,49 @@ fn fill_flat_with_color_compositor_scanline(
             &mut row_accum,
         );
 
-        let mut col = 0usize;
-        while col < row_accum.len() {
-            let alpha = row_accum[col].min(255) as u8;
-            if alpha == 0 {
-                col += 1;
-                continue;
-            }
-            let run_start = col;
-            let mut run_end = col + 1;
-            while run_end < row_accum.len() && row_accum[run_end].min(255) as u8 == alpha {
-                run_end += 1;
-            }
-            let px0 = x0 + run_start as i32;
-            let px1 = x0 + run_end as i32;
-            PATH_RASTER_SCANLINE_SPAN_PIXELS
-                .fetch_add((px1 - px0).max(0) as u64, Ordering::Relaxed);
-            if alpha == 255 {
-                PATH_RASTER_SOLID_RUN_PIXELS
-                    .fetch_add((px1 - px0).max(0) as u64, Ordering::Relaxed);
-                buf.fill_rect(px0, y, px1 - px0, 1, color);
-            } else {
-                let coverage = f32::from(alpha) / 255.0;
-                for px in px0..px1 {
-                    buf.blend_pixel(px, y, color, coverage);
-                }
-            }
-            col = run_end;
-        }
+        paint_alpha_row_runs(buf, &row_accum, x0, y, color, |_| {});
     }
     return_scanline_u16_vec(row_accum);
     return_scanline_crossing_vec(crossings);
     true
+}
+
+fn paint_alpha_row_runs(
+    buf: &mut PixelBuffer,
+    row_accum: &[u16],
+    x0: i32,
+    y: i32,
+    color: PixelColor,
+    mut on_run: impl FnMut(u64),
+) {
+    let mut col = 0usize;
+    while col < row_accum.len() {
+        let alpha = row_accum[col].min(255) as u8;
+        if alpha == 0 {
+            col += 1;
+            continue;
+        }
+        let run_start = col;
+        let mut run_end = col + 1;
+        while run_end < row_accum.len() && row_accum[run_end].min(255) as u8 == alpha {
+            run_end += 1;
+        }
+        let px0 = x0 + run_start as i32;
+        let px1 = x0 + run_end as i32;
+        let pixels = (px1 - px0).max(0) as u64;
+        PATH_RASTER_SCANLINE_SPAN_PIXELS.fetch_add(pixels, Ordering::Relaxed);
+        on_run(pixels);
+        if alpha == 255 {
+            PATH_RASTER_SOLID_RUN_PIXELS.fetch_add(pixels, Ordering::Relaxed);
+            buf.fill_rect(px0, y, px1 - px0, 1, color);
+        } else {
+            let coverage = f32::from(alpha) / 255.0;
+            for px in px0..px1 {
+                buf.blend_pixel(px, y, color, coverage);
+            }
+        }
+        col = run_end;
+    }
 }
 
 fn light_grid_fit_flat_glyph(flat: &mut FlatPath, device_t: &Transform2D) {
@@ -2112,6 +3421,9 @@ struct StrokeSegment {
     normal: (f64, f64),
 }
 
+type StrokeOutlineContour = Vec<(f64, f64)>;
+type StrokeOutlineContours = (StrokeOutlineContour, StrokeOutlineContour);
+
 const MAX_DASH_POLYLINE_PIECES: usize = 1024;
 
 pub(crate) fn stroke_flat_path(
@@ -2141,8 +3453,13 @@ pub(crate) fn stroke_flat_path(
         };
 
         if closed && dash.is_solid() {
-            if let Some(poly) = stroked_polyline_outline(&points, true, &style) {
-                push_outline_subpath(&mut outline, poly);
+            if let Some(segments) = build_stroke_segments(&points, true) {
+                if let Some((outer_side, inner_side)) =
+                    stroked_closed_outline_contours(&points, &segments, &style)
+                {
+                    push_outline_subpath(&mut outline, outer_side);
+                    push_outline_subpath(&mut outline, inner_side);
+                }
             }
             continue;
         }
@@ -2277,7 +3594,10 @@ fn stroked_polyline_outline(
 ) -> Option<Vec<(f64, f64)>> {
     let segments = build_stroke_segments(points, closed)?;
     if closed {
-        stroked_closed_outline(points, &segments, style)
+        let (outer_side, inner_side) = stroked_closed_outline_contours(points, &segments, style)?;
+        let mut poly = outer_side;
+        poly.extend(inner_side);
+        Some(poly)
     } else {
         stroked_open_outline(points, &segments, style)
     }
@@ -2378,11 +3698,11 @@ fn stroked_open_outline(
     Some(poly)
 }
 
-fn stroked_closed_outline(
+fn stroked_closed_outline_contours(
     points: &[(f64, f64)],
     segments: &[StrokeSegment],
     style: &StrokeStyle,
-) -> Option<Vec<(f64, f64)>> {
+) -> Option<StrokeOutlineContours> {
     if points.len() < 3 || segments.len() < 3 {
         return None;
     }
@@ -2396,9 +3716,8 @@ fn stroked_closed_outline(
         right.extend(join_points(points[i], prev, next, -1.0, style));
     }
 
-    let mut poly = left;
-    poly.extend(right.into_iter().rev());
-    Some(poly)
+    right.reverse();
+    Some((left, right))
 }
 
 fn join_points(
@@ -2567,6 +3886,33 @@ mod tests {
     use super::*;
     use crate::render::buffer::{RenderMode, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE};
 
+    fn assert_pixel_buffers_eq(actual: &PixelBuffer, expected: &PixelBuffer) {
+        let actual_bytes = actual.rgba_bytes();
+        let expected_bytes = expected.rgba_bytes();
+        if actual_bytes == expected_bytes {
+            return;
+        }
+
+        let mut mismatches = 0usize;
+        let mut samples = Vec::new();
+        for (pixel, (a, e)) in actual_bytes
+            .chunks_exact(4)
+            .zip(expected_bytes.chunks_exact(4))
+            .enumerate()
+        {
+            if a != e {
+                mismatches += 1;
+                if samples.len() < 12 {
+                    let x = (pixel as u32 % actual.width) as i32;
+                    let y = (pixel as u32 / actual.width) as i32;
+                    samples.push((x, y, [a[0], a[1], a[2], a[3]], [e[0], e[1], e[2], e[3]]));
+                }
+            }
+        }
+
+        panic!("pixel buffers differ; mismatched pixels: {mismatches}; first samples: {samples:?}");
+    }
+
     #[test]
     fn empty_path_is_empty() {
         assert!(Path::new().is_empty());
@@ -2644,11 +3990,241 @@ mod tests {
     }
 
     #[test]
+    fn cubic_monotonic_split_parameters_find_axis_extrema() {
+        let p0 = (0.0, 0.0);
+        let p1 = (10.0, 10.0);
+        let p2 = (-10.0, 10.0);
+        let p3 = (0.0, 0.0);
+        let roots = cubic_monotonic_split_parameters(p0, p1, p2, p3);
+
+        assert_eq!(roots.len(), 3);
+        assert!((roots[0] - 0.211_324_865_405_187_1).abs() < 1e-9);
+        assert!((roots[1] - 0.5).abs() < 1e-9);
+        assert!((roots[2] - 0.788_675_134_594_812_9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn flatten_cubic_emits_monotonic_piece_boundaries() {
+        fn cubic_point(
+            p0: (f64, f64),
+            p1: (f64, f64),
+            p2: (f64, f64),
+            p3: (f64, f64),
+            t: f64,
+        ) -> (f64, f64) {
+            let mt = 1.0 - t;
+            let a = mt * mt * mt;
+            let b = 3.0 * mt * mt * t;
+            let c = 3.0 * mt * t * t;
+            let d = t * t * t;
+            (
+                a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0,
+                a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1,
+            )
+        }
+
+        let p0 = (0.0, 0.0);
+        let p1 = (10.0, 10.0);
+        let p2 = (-10.0, 10.0);
+        let p3 = (0.0, 0.0);
+        let roots = cubic_monotonic_split_parameters(p0, p1, p2, p3);
+        let mut out = Vec::new();
+
+        flatten_cubic(p0, p1, p2, p3, 10_000.0, 16, &mut out);
+
+        assert_eq!(out.len(), roots.len() + 1);
+        for (point, root) in out.iter().zip(roots.iter()) {
+            let expected = cubic_point(p0, p1, p2, p3, *root);
+            assert!((point.0 - expected.0).abs() < 1e-9);
+            assert!((point.1 - expected.1).abs() < 1e-9);
+        }
+        assert_eq!(out.last().copied(), Some(p3));
+    }
+
+    #[test]
+    fn split_cubic_pieces_have_no_internal_axis_extrema() {
+        let p0 = (0.0, 0.0);
+        let p1 = (10.0, 10.0);
+        let p2 = (-10.0, 10.0);
+        let p3 = (0.0, 0.0);
+        let roots = cubic_monotonic_split_parameters(p0, p1, p2, p3);
+        let mut curve = (p0, p1, p2, p3);
+        let mut previous = 0.0;
+
+        for root in roots {
+            let local_t = (root - previous) / (1.0 - previous);
+            let (left, right) = split_cubic(curve, local_t);
+            assert!(cubic_monotonic_split_parameters(left.0, left.1, left.2, left.3).is_empty());
+            curve = right;
+            previous = root;
+        }
+
+        assert!(cubic_monotonic_split_parameters(curve.0, curve.1, curve.2, curve.3).is_empty());
+    }
+
+    #[test]
     fn point_to_line_dist_for_known_geometry() {
         let d = point_to_line_dist((0.0, 1.0), (0.0, 0.0), (1.0, 0.0));
         assert!((d - 1.0).abs() < 1e-10);
         let d2 = point_to_line_dist((0.5, 0.0), (0.0, 0.0), (1.0, 0.0));
         assert!(d2 < 1e-10);
+    }
+
+    #[test]
+    fn scanline_crossings_prepare_sorted_monotonic_active_edge_row() {
+        let mut crossings = vec![
+            (5.0, 1),
+            (f64::NAN, 1),
+            (2.0, -1),
+            (5.0, -1),
+            (3.0, 0),
+            (4.0, 1),
+        ];
+
+        assert!(prepare_scanline_crossings(&mut crossings));
+        assert_eq!(crossings, vec![(2.0, -1), (4.0, 1), (5.0, -1), (5.0, 1)]);
+
+        crossings.clear();
+        crossings.extend([(f64::INFINITY, 1), (7.0, 0), (9.0, -1)]);
+        assert!(!prepare_scanline_crossings(&mut crossings));
+    }
+
+    #[test]
+    fn scanline_active_edges_match_bucket_crossings_across_rows() {
+        let mut flat = FlatPath::default();
+        flat.subpaths.push(vec![
+            (2.25, 1.0),
+            (12.0, 4.25),
+            (9.5, 12.0),
+            (1.0, 9.75),
+            (2.25, 1.0),
+        ]);
+        flat.closed.push(true);
+        let y0 = 0;
+        let h = 14;
+        let buckets = build_scanline_edge_buckets(&flat, y0, h).expect("edge buckets");
+        let mut active_edges = ScanlineActiveEdges::default();
+
+        for row in 0..h {
+            let scan_y = y0 as f64 + row as f64 + 0.5;
+            let mut from_bucket = Vec::new();
+            collect_scanline_crossings_from_bucket(&buckets, row, scan_y, &mut from_bucket);
+            let bucket_has_crossings = prepare_scanline_crossings(&mut from_bucket);
+
+            let mut from_active = Vec::new();
+            assert!(active_edges.collect_row(&buckets, row, scan_y, &mut from_active));
+            let active_has_crossings = prepare_scanline_crossings(&mut from_active);
+
+            assert_eq!(active_has_crossings, bucket_has_crossings);
+            assert_eq!(from_active, from_bucket);
+        }
+    }
+
+    #[test]
+    fn scanline_active_edges_match_bucket_crossings_across_subsamples() {
+        let mut flat = FlatPath::default();
+        flat.subpaths.push(vec![
+            (1.5, 0.25),
+            (13.0, 3.75),
+            (11.25, 11.5),
+            (3.0, 13.25),
+            (1.5, 0.25),
+        ]);
+        flat.closed.push(true);
+        let y0 = 0;
+        let h = 15;
+        let vertical_samples = 4;
+        let buckets = build_scanline_edge_buckets(&flat, y0, h).expect("edge buckets");
+        let mut active_edges = ScanlineActiveEdges::default();
+
+        for row in 0..h {
+            assert!(active_edges.advance_to_row(&buckets, row));
+            for sample in 0..vertical_samples {
+                let scan_y =
+                    y0 as f64 + row as f64 + (sample as f64 + 0.5) / vertical_samples as f64;
+                let mut from_bucket = Vec::new();
+                collect_scanline_crossings_from_bucket(&buckets, row, scan_y, &mut from_bucket);
+                let bucket_has_crossings = prepare_scanline_crossings(&mut from_bucket);
+
+                let mut from_active = Vec::new();
+                active_edges.collect_current_crossings(&buckets, scan_y, &mut from_active);
+                let active_has_crossings = prepare_scanline_crossings(&mut from_active);
+
+                assert_eq!(active_has_crossings, bucket_has_crossings);
+                assert_eq!(from_active, from_bucket);
+            }
+        }
+    }
+
+    #[test]
+    fn scanline_active_edges_require_sequential_rows() {
+        let mut flat = FlatPath::default();
+        flat.subpaths.push(vec![(1.0, 0.0), (5.0, 6.0), (9.0, 0.0)]);
+        flat.closed.push(false);
+        let buckets = build_scanline_edge_buckets(&flat, 0, 8).expect("edge buckets");
+        let mut active_edges = ScanlineActiveEdges::default();
+        let mut crossings = Vec::new();
+
+        assert!(!active_edges.collect_row(&buckets, 1, 1.5, &mut crossings));
+        assert!(active_edges.collect_row(&buckets, 0, 0.5, &mut crossings));
+    }
+
+    #[test]
+    fn scanline_active_edges_drop_ended_edges_before_later_rows() {
+        let mut flat = FlatPath::default();
+        flat.subpaths.push(vec![
+            (2.0, 1.0),
+            (10.0, 1.0),
+            (10.0, 5.0),
+            (2.0, 5.0),
+            (2.0, 1.0),
+        ]);
+        flat.closed.push(true);
+        let buckets = build_scanline_edge_buckets(&flat, 0, 8).expect("edge buckets");
+        let mut active_edges = ScanlineActiveEdges::default();
+        let mut crossings = Vec::new();
+
+        assert!(active_edges.collect_row(&buckets, 0, 0.5, &mut crossings));
+        assert!(crossings.is_empty());
+
+        assert!(active_edges.collect_row(&buckets, 1, 1.5, &mut crossings));
+        assert_eq!(active_edges.active.len(), 2);
+        assert!(prepare_scanline_crossings(&mut crossings));
+        assert_eq!(crossings, vec![(2.0, -1), (10.0, 1)]);
+
+        for row in 2..=4 {
+            crossings.clear();
+            assert!(active_edges.collect_row(&buckets, row, row as f64 + 0.5, &mut crossings));
+            assert_eq!(active_edges.active.len(), 2);
+        }
+
+        crossings.clear();
+        assert!(active_edges.collect_row(&buckets, 5, 5.5, &mut crossings));
+        assert!(crossings.is_empty());
+        assert!(active_edges.active.is_empty());
+    }
+
+    #[test]
+    fn scanline_scratch_pools_return_empty_bounded_vectors() {
+        let mut crossings = take_scanline_crossing_vec();
+        crossings.extend([(1.0, 1), (2.0, -1), (3.0, 1)]);
+        let crossing_capacity = crossings.capacity();
+        return_scanline_crossing_vec(crossings);
+
+        let reused_crossings = take_scanline_crossing_vec();
+        assert!(reused_crossings.is_empty());
+        assert!(reused_crossings.capacity() >= crossing_capacity);
+        return_scanline_crossing_vec(reused_crossings);
+
+        let mut accum = take_scanline_u16_vec(4);
+        accum.extend([1, 2, 3, 4]);
+        let accum_capacity = accum.capacity();
+        return_scanline_u16_vec(accum);
+
+        let reused_accum = take_scanline_u16_vec(2);
+        assert_eq!(reused_accum, vec![0, 0]);
+        assert!(reused_accum.capacity() >= accum_capacity);
+        return_scanline_u16_vec(reused_accum);
     }
 
     #[test]
@@ -2680,6 +4256,469 @@ mod tests {
     }
 
     #[test]
+    fn axis_aligned_horizontal_hairline_fast_path_matches_outline_fill() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(10.0, 50.0);
+        path.line_to(90.0, 50.0);
+
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke(&mut fast, &path, &ctm, &vp, BLACK, 0.0, &DashState::solid());
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            1.0,
+            &DashState::solid(),
+            LineCap::Butt,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, BLACK, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
+    fn axis_aligned_vertical_hairline_fast_path_matches_outline_fill() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(50.0, 10.0);
+        path.line_to(50.0, 90.0);
+
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke(&mut fast, &path, &ctm, &vp, BLACK, 0.0, &DashState::solid());
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            1.0,
+            &DashState::solid(),
+            LineCap::Butt,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, BLACK, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
+    fn translucent_axis_aligned_hairline_fast_path_matches_outline_fill() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let color = [0, 0, 0, 128];
+        let mut path = Path::new();
+        path.move_to(10.0, 50.0);
+        path.line_to(90.0, 50.0);
+
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke(&mut fast, &path, &ctm, &vp, color, 0.0, &DashState::solid());
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            1.0,
+            &DashState::solid(),
+            LineCap::Butt,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, color, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
+    fn axis_aligned_polyline_hairline_fast_path_matches_outline_fill() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(10.0, 50.0);
+        path.line_to(35.0, 50.0);
+        path.line_to(90.0, 50.0);
+
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke(&mut fast, &path, &ctm, &vp, BLACK, 0.0, &DashState::solid());
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            1.0,
+            &DashState::solid(),
+            LineCap::Butt,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, BLACK, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
+    fn axis_aligned_hairline_fast_path_rejects_semantic_cases() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(10.0, 50.0);
+        path.line_to(90.0, 50.0);
+
+        let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
+        assert!(!paint_axis_aligned_solid_hairline(
+            &mut buf,
+            &path,
+            &ctm,
+            &vp,
+            BLACK,
+            0.0,
+            &DashState::new(vec![2.0, 1.0], 0.0),
+            &LineCap::Butt,
+        ));
+        assert!(!paint_axis_aligned_solid_hairline(
+            &mut buf,
+            &path,
+            &ctm,
+            &vp,
+            BLACK,
+            0.0,
+            &DashState::solid(),
+            &LineCap::Round,
+        ));
+        assert!(!paint_axis_aligned_solid_hairline(
+            &mut buf,
+            &path,
+            &ctm,
+            &vp,
+            BLACK,
+            1.0,
+            &DashState::solid(),
+            &LineCap::Butt,
+        ));
+
+        path.clear();
+        path.move_to(10.25, 50.0);
+        path.line_to(90.0, 50.0);
+        assert!(!paint_axis_aligned_solid_hairline(
+            &mut buf,
+            &path,
+            &ctm,
+            &vp,
+            BLACK,
+            0.0,
+            &DashState::solid(),
+            &LineCap::Butt,
+        ));
+
+        path.clear();
+        path.move_to(10.0, 50.0);
+        path.line_to(35.0, 50.0);
+        path.line_to(20.0, 50.0);
+        assert!(!paint_axis_aligned_solid_hairline(
+            &mut buf,
+            &path,
+            &ctm,
+            &vp,
+            BLACK,
+            0.0,
+            &DashState::solid(),
+            &LineCap::Butt,
+        ));
+
+        path.clear();
+        path.move_to(10.0, 50.0);
+        path.line_to(35.0, 50.0);
+        path.line_to(35.0, 70.0);
+        assert!(!paint_axis_aligned_solid_hairline(
+            &mut buf,
+            &path,
+            &ctm,
+            &vp,
+            BLACK,
+            0.0,
+            &DashState::solid(),
+            &LineCap::Butt,
+        ));
+    }
+
+    #[test]
+    fn axis_aligned_solid_stroke_rect_detects_integer_device_spans() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut horizontal = Path::new();
+        horizontal.move_to(10.0, 50.0);
+        horizontal.line_to(90.0, 50.0);
+        assert_eq!(
+            axis_aligned_solid_stroke_rect(
+                &horizontal,
+                &ctm,
+                &vp,
+                2.0,
+                &DashState::solid(),
+                &LineCap::Butt,
+            ),
+            Some((10, 49, 80, 2))
+        );
+
+        let mut vertical = Path::new();
+        vertical.move_to(50.0, 10.0);
+        vertical.line_to(50.0, 90.0);
+        assert_eq!(
+            axis_aligned_solid_stroke_rect(
+                &vertical,
+                &ctm,
+                &vp,
+                2.0,
+                &DashState::solid(),
+                &LineCap::Butt,
+            ),
+            Some((49, 10, 2, 80))
+        );
+    }
+
+    #[test]
+    fn axis_aligned_projecting_square_stroke_rect_extends_integer_device_spans() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut horizontal = Path::new();
+        horizontal.move_to(10.0, 50.0);
+        horizontal.line_to(90.0, 50.0);
+        assert_eq!(
+            axis_aligned_solid_stroke_rect(
+                &horizontal,
+                &ctm,
+                &vp,
+                2.0,
+                &DashState::solid(),
+                &LineCap::ProjectingSquare,
+            ),
+            Some((9, 49, 82, 2))
+        );
+
+        let mut vertical = Path::new();
+        vertical.move_to(50.0, 10.0);
+        vertical.line_to(50.0, 90.0);
+        assert_eq!(
+            axis_aligned_solid_stroke_rect(
+                &vertical,
+                &ctm,
+                &vp,
+                2.0,
+                &DashState::solid(),
+                &LineCap::ProjectingSquare,
+            ),
+            Some((49, 9, 2, 82))
+        );
+    }
+
+    #[test]
+    fn axis_aligned_solid_stroke_rect_detects_monotonic_collinear_polyline() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut horizontal = Path::new();
+        horizontal.move_to(10.0, 50.0);
+        horizontal.line_to(35.0, 50.0);
+        horizontal.line_to(90.0, 50.0);
+        assert_eq!(
+            axis_aligned_solid_stroke_rect(
+                &horizontal,
+                &ctm,
+                &vp,
+                2.0,
+                &DashState::solid(),
+                &LineCap::Butt,
+            ),
+            Some((10, 49, 80, 2))
+        );
+
+        let mut vertical = Path::new();
+        vertical.move_to(50.0, 10.0);
+        vertical.line_to(50.0, 45.0);
+        vertical.line_to(50.0, 90.0);
+        assert_eq!(
+            axis_aligned_solid_stroke_rect(
+                &vertical,
+                &ctm,
+                &vp,
+                2.0,
+                &DashState::solid(),
+                &LineCap::ProjectingSquare,
+            ),
+            Some((49, 9, 2, 82))
+        );
+    }
+
+    #[test]
+    fn axis_aligned_solid_stroke_rect_rejects_fractional_or_semantic_cases() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(10.0, 50.25);
+        path.line_to(90.0, 50.25);
+        assert!(axis_aligned_solid_stroke_rect(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::solid(),
+            &LineCap::Butt,
+        )
+        .is_none());
+
+        path.clear();
+        path.move_to(10.0, 50.0);
+        path.line_to(90.0, 50.0);
+        assert!(axis_aligned_solid_stroke_rect(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::solid(),
+            &LineCap::ProjectingSquare,
+        )
+        .is_some());
+        assert!(axis_aligned_solid_stroke_rect(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::new(vec![2.0, 1.0], 0.0),
+            &LineCap::Butt,
+        )
+        .is_none());
+        assert!(axis_aligned_solid_stroke_rect(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::solid(),
+            &LineCap::Round,
+        )
+        .is_none());
+
+        path.clear();
+        path.move_to(10.0, 50.0);
+        path.line_to(35.0, 50.0);
+        path.line_to(20.0, 50.0);
+        assert!(axis_aligned_solid_stroke_rect(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::solid(),
+            &LineCap::Butt,
+        )
+        .is_none());
+
+        path.clear();
+        path.move_to(10.0, 50.0);
+        path.line_to(35.0, 50.0);
+        path.line_to(35.0, 70.0);
+        assert!(axis_aligned_solid_stroke_rect(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::solid(),
+            &LineCap::Butt,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn integer_axis_aligned_butt_stroke_fast_path_matches_outline_fill() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(10.0, 50.0);
+        path.line_to(90.0, 50.0);
+
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke(&mut fast, &path, &ctm, &vp, BLACK, 2.0, &DashState::solid());
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            2.0,
+            &DashState::solid(),
+            LineCap::Butt,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, BLACK, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
+    fn integer_axis_aligned_projecting_square_stroke_fast_path_matches_outline_fill() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(10.0, 50.0);
+        path.line_to(90.0, 50.0);
+
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke_with_cap(
+            &mut fast,
+            &path,
+            &ctm,
+            &vp,
+            BLACK,
+            2.0,
+            &DashState::solid(),
+            &LineCap::ProjectingSquare,
+        );
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            2.0,
+            &DashState::solid(),
+            LineCap::ProjectingSquare,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, BLACK, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
+    fn integer_axis_aligned_polyline_stroke_fast_path_matches_outline_fill() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(10.0, 50.0);
+        path.line_to(35.0, 50.0);
+        path.line_to(90.0, 50.0);
+
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke(&mut fast, &path, &ctm, &vp, BLACK, 2.0, &DashState::solid());
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            2.0,
+            &DashState::solid(),
+            LineCap::Butt,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, BLACK, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
     fn fill_rectangle_produces_filled_region() {
         let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
         let ctm = Transform2D::identity();
@@ -2708,6 +4747,135 @@ mod tests {
         assert_eq!(buf.get_pixel(10, 75), BLUE);
         assert_eq!(buf.get_pixel(29, 89), BLUE);
         assert_eq!(buf.get_pixel(30, 89), WHITE);
+    }
+
+    #[test]
+    fn axis_aligned_solid_rect_stroke_regions_detects_integer_miter_border() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.rect(20.0, 20.0, 60.0, 60.0);
+
+        assert_eq!(
+            axis_aligned_solid_rect_stroke_regions(
+                &path,
+                &ctm,
+                &vp,
+                2.0,
+                &DashState::solid(),
+                &LineJoin::Miter,
+                10.0,
+            ),
+            Some([
+                (19, 19, 62, 2),
+                (19, 79, 62, 2),
+                (19, 21, 2, 58),
+                (79, 21, 2, 58)
+            ])
+        );
+    }
+
+    #[test]
+    fn axis_aligned_solid_rect_stroke_regions_rejects_non_exact_or_semantic_cases() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.rect(20.25, 20.0, 60.0, 60.0);
+        assert!(axis_aligned_solid_rect_stroke_regions(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::solid(),
+            &LineJoin::Miter,
+            10.0,
+        )
+        .is_none());
+
+        path.clear();
+        path.rect(20.0, 20.0, 60.0, 60.0);
+        assert!(axis_aligned_solid_rect_stroke_regions(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::new(vec![2.0, 1.0], 0.0),
+            &LineJoin::Miter,
+            10.0,
+        )
+        .is_none());
+        assert!(axis_aligned_solid_rect_stroke_regions(
+            &path,
+            &ctm,
+            &vp,
+            2.0,
+            &DashState::solid(),
+            &LineJoin::Bevel,
+            10.0,
+        )
+        .is_none());
+        assert!(axis_aligned_solid_rect_stroke_regions(
+            &path,
+            &ctm,
+            &vp,
+            70.0,
+            &DashState::solid(),
+            &LineJoin::Miter,
+            10.0,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn integer_axis_aligned_rect_stroke_fast_path_matches_outline_fill() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let color = BLACK;
+        let mut path = Path::new();
+        path.rect(20.0, 20.0, 60.0, 60.0);
+
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke_rect(&mut fast, 20.0, 20.0, 60.0, 60.0, &ctm, &vp, color, 2.0);
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            2.0,
+            &DashState::solid(),
+            LineCap::Butt,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, color, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
+    fn translucent_axis_aligned_rect_stroke_keeps_outline_blending_path() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let color = [0, 0, 0, 128];
+        let mut path = Path::new();
+        path.rect(20.0, 20.0, 60.0, 60.0);
+
+        let mut rendered = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::stroke_rect(&mut rendered, 20.0, 20.0, 60.0, 60.0, &ctm, &vp, color, 2.0);
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let outline = stroke_flat_path(
+            &flat,
+            2.0,
+            &DashState::solid(),
+            LineCap::Butt,
+            LineJoin::Miter,
+            10.0,
+        );
+        fill_flat_aa(&mut reference, &outline, color, FillRule::NonZero);
+
+        assert_pixel_buffers_eq(&rendered, &reference);
     }
 
     #[test]
@@ -2785,6 +4953,69 @@ mod tests {
         assert!(nz_has_red);
         assert_eq!(buf_eo.get_pixel(40, 50), WHITE);
         assert_eq!(buf_nz.get_pixel(40, 50), RED);
+    }
+
+    #[test]
+    fn convex_polygon_fill_fast_path_matches_general_scanline() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let color = [20, 80, 220, 230];
+        let mut path = Path::new();
+        path.move_to(20.25, 20.25);
+        path.line_to(75.5, 24.5);
+        path.line_to(68.75, 72.25);
+        path.line_to(25.25, 80.5);
+        path.close();
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        let Some((min_x, min_y, max_x, max_y)) = flat_bounds(&flat) else {
+            panic!("convex fixture should have finite bounds");
+        };
+        let bounds = (
+            safe_floor_i32(min_x).max(0),
+            safe_floor_i32(min_y).max(0),
+            safe_ceil_i32(max_x).saturating_add(1).min(100),
+            safe_ceil_i32(max_y).saturating_add(1).min(100),
+        );
+
+        let mut reference = PixelBuffer::new_filled(100, 100, WHITE);
+        assert!(fill_flat_with_color_compositor_scanline(
+            &mut reference,
+            &flat,
+            color,
+            FillRule::NonZero,
+            None,
+            bounds,
+            PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+        ));
+
+        let before = path_raster_stats().convex_fast_pixels;
+        let mut fast = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::fill(&mut fast, &path, &ctm, &vp, color, FillRule::NonZero);
+        let after = path_raster_stats().convex_fast_pixels;
+
+        assert_pixel_buffers_eq(&fast, &reference);
+        assert!(after > before);
+    }
+
+    #[test]
+    fn concave_polygon_fill_rejects_convex_fast_path() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(20.0, 20.0);
+        path.line_to(80.0, 20.0);
+        path.line_to(50.0, 50.0);
+        path.line_to(80.0, 80.0);
+        path.line_to(20.0, 80.0);
+        path.close();
+
+        let before = path_raster_stats().convex_fast_pixels;
+        let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
+        PathPainter::fill(&mut buf, &path, &ctm, &vp, BLUE, FillRule::NonZero);
+        let after = path_raster_stats().convex_fast_pixels;
+
+        assert_eq!(after, before);
+        assert_eq!(buf.get_pixel(35, 35), BLUE);
     }
 
     #[test]
@@ -2871,6 +5102,47 @@ mod tests {
         let (px1, _) = flat.subpaths[0][1];
         assert!((px0 - 20.0).abs() < 1.0);
         assert!(((px1 - px0).abs() - 20.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn flatten_path_filters_nonfinite_transformed_points() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut p = Path::new();
+        p.move_to(10.0, 10.0);
+        p.line_to(20.0, 10.0);
+        p.line_to(f64::NAN, 20.0);
+        p.curve_to(30.0, 20.0, f64::INFINITY, 40.0, 50.0, 50.0);
+        p.line_to(60.0, 60.0);
+
+        let flat = flatten_path(&p, &ctm, &vp, 0.5);
+
+        assert!(!flat.subpaths.is_empty());
+        assert!(flat
+            .subpaths
+            .iter()
+            .flatten()
+            .all(|(x, y)| x.is_finite() && y.is_finite()));
+    }
+
+    #[test]
+    fn flatten_path_device_transform_filters_nonfinite_points() {
+        let ctm = Transform2D::identity();
+        let mut p = Path::new();
+        p.move_to(10.0, 10.0);
+        p.line_to(f64::INFINITY, 20.0);
+        p.line_to(30.0, 30.0);
+        p.curve_to(40.0, 40.0, 50.0, f64::NAN, 60.0, 60.0);
+        p.line_to(70.0, 70.0);
+
+        let flat = flatten_path_device_transform(&p, &ctm, 0.2);
+
+        assert!(!flat.subpaths.is_empty());
+        assert!(flat
+            .subpaths
+            .iter()
+            .flatten()
+            .all(|(x, y)| x.is_finite() && y.is_finite()));
     }
 
     #[test]
@@ -3150,6 +5422,22 @@ mod tests {
         assert!(
             tight.subpaths[0].len() > loose.subpaths[0].len(),
             "0.2px glyph tolerance should keep more curve samples than 0.5px"
+        );
+    }
+
+    #[test]
+    fn path_flattening_respects_supplied_flatness_tolerance() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.move_to(10.0, 10.0);
+        path.curve_to(10.0, 90.0, 90.0, 90.0, 90.0, 10.0);
+
+        let loose = flatten_path(&path, &ctm, &vp, 10.0);
+        let tight = flatten_path(&path, &ctm, &vp, 0.1);
+        assert!(
+            tight.subpaths[0].len() > loose.subpaths[0].len(),
+            "lower flatness tolerance should keep more curve samples"
         );
     }
 

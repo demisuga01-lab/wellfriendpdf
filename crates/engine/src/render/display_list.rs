@@ -9,15 +9,22 @@ use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, Color, ColorSpace, GraphicsState, LineCap, LineJoin};
 use crate::engine::PageResources;
-use crate::object::PdfObject;
+use crate::error::{Result, WellfriendError};
+use crate::object::{PdfDictionary, PdfObject};
 use crate::render::buffer::{ClipMask, PixelBuffer, PixelColor, RenderMode, WHITE};
 use crate::render::clip_dag::{ClipDag, ClipNode, ClipState};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::line::DashState;
 use crate::render::path::{
     axis_aligned_integer_rect, flatten_path, flatten_path_device_transform,
-    rasterize_flat_alpha_mask, rasterize_glyph_alpha_mask, stroke_flat_path, FillRule,
-    GlyphHinting, Path, PathPainter, RasterizedGlyphMask,
+    rasterize_flat_alpha_mask, rasterize_path_alpha_mask, stroke_flat_path, FillRule, Path,
+    PathPainter, RasterizedGlyphMask,
+};
+use crate::render::plan::{
+    graphics_state_color_component_arity_refusal, graphics_state_operand_refusal,
+    marked_content_operand_refusal, path_operand_refusal, resource_invocation_operand_refusal,
+    text_operand_refusal, type3_glyph_metric_operand_refusal, GraphicsStateDescriptor,
+    PatternPaintPhase, PatternPathDescriptor,
 };
 use crate::render::transform::{Transform2D, Viewport};
 use std::collections::hash_map::DefaultHasher;
@@ -40,14 +47,8 @@ impl DisplayList {
         self.supported && self.unsupported.is_empty()
     }
 
-    pub fn has_compatibility_runs(&self) -> bool {
-        self.stats.compatibility_runs != 0
-    }
-
     pub fn native_vector_only(&self) -> bool {
-        self.is_fully_supported()
-            && !self.has_compatibility_runs()
-            && !self.ops.iter().any(DisplayOp::is_native_high_level)
+        self.is_fully_supported() && !self.ops.iter().any(DisplayOp::is_native_high_level)
     }
 
     pub fn approximate_memory_bytes(&self) -> usize {
@@ -105,25 +106,25 @@ pub enum DisplayOp {
     /// carry captured draw state. RenderState replay dispatches it before native
     /// text, image, and Form XObject operations.
     StateOp {
-        op: ContentOperation,
+        state: GraphicsStateDescriptor,
         approx_bytes: usize,
     },
     /// Native replay of one text/text-state operation through the page
     /// renderer's glyph path.
     NativeTextOp {
-        op: ContentOperation,
+        text: RetainedTextOp,
         approx_bytes: usize,
         bounds: Option<RenderBounds>,
     },
     /// Native replay of an Image XObject `Do` operation.
     NativeImageXObject {
-        op: ContentOperation,
+        name: String,
         approx_bytes: usize,
         bounds: Option<RenderBounds>,
     },
     /// Native replay of a named shading `sh` operation.
     NativeShadingOp {
-        op: ContentOperation,
+        name: String,
         approx_bytes: usize,
         bounds: Option<RenderBounds>,
     },
@@ -134,22 +135,178 @@ pub enum DisplayOp {
     /// soft mask. Direct vector replay intentionally bypasses `RenderState`, so
     /// it must not be used for those stateful cases.
     NativePatternPathOp {
-        ops: Vec<ContentOperation>,
+        pattern: PatternPathDescriptor,
         approx_bytes: usize,
         bounds: Option<RenderBounds>,
     },
     /// Native replay of an inline image `ID` plus payload operation.
     NativeInlineImage {
-        ops: Vec<ContentOperation>,
+        image: RetainedInlineImage,
         approx_bytes: usize,
         bounds: Option<RenderBounds>,
     },
     /// Native replay of a Form XObject `Do` operation.
     NativeFormXObject {
-        op: ContentOperation,
+        name: String,
         approx_bytes: usize,
         bounds: Option<RenderBounds>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RetainedTextArrayItem {
+    Bytes(Vec<u8>),
+    Adjustment(f64),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RetainedTextOp {
+    BeginText,
+    EndText,
+    SetFont {
+        name: String,
+        size: f64,
+    },
+    MoveTextPosition {
+        tx: f64,
+        ty: f64,
+    },
+    MoveTextPositionSetLeading {
+        tx: f64,
+        ty: f64,
+    },
+    SetTextMatrix {
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    },
+    NextLine,
+    SetCharSpacing(f64),
+    SetWordSpacing(f64),
+    SetHorizontalScaling(f64),
+    SetTextLeading(f64),
+    SetTextRenderingMode(i32),
+    SetTextRise(f64),
+    Show(Vec<u8>),
+    ShowArray(Vec<RetainedTextArrayItem>),
+    NextLineShow(Vec<u8>),
+    SpacingNextLineShow {
+        word_spacing: f64,
+        char_spacing: f64,
+        text: Vec<u8>,
+    },
+    Unsupported {
+        operator: String,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetainedInlineImage {
+    pub params: Vec<Operand>,
+    pub data: Vec<u8>,
+}
+
+impl RetainedTextOp {
+    pub fn from_content_operation(op: &ContentOperation) -> Self {
+        if let Some(reason) = text_operand_refusal(op) {
+            return Self::Unsupported {
+                operator: op.operator.clone(),
+                reason,
+            };
+        }
+
+        match op.operator.as_str() {
+            "BT" => Self::BeginText,
+            "ET" => Self::EndText,
+            "Tf" => Self::SetFont {
+                name: op.name(0).unwrap_or("").to_string(),
+                size: op.number(1).unwrap_or(0.0),
+            },
+            "Td" => Self::MoveTextPosition {
+                tx: op.number(0).unwrap_or(0.0),
+                ty: op.number(1).unwrap_or(0.0),
+            },
+            "TD" => Self::MoveTextPositionSetLeading {
+                tx: op.number(0).unwrap_or(0.0),
+                ty: op.number(1).unwrap_or(0.0),
+            },
+            "Tm" => Self::SetTextMatrix {
+                a: op.number(0).unwrap_or(1.0),
+                b: op.number(1).unwrap_or(0.0),
+                c: op.number(2).unwrap_or(0.0),
+                d: op.number(3).unwrap_or(1.0),
+                e: op.number(4).unwrap_or(0.0),
+                f: op.number(5).unwrap_or(0.0),
+            },
+            "T*" => Self::NextLine,
+            "Tc" => Self::SetCharSpacing(op.number(0).unwrap_or(0.0)),
+            "Tw" => Self::SetWordSpacing(op.number(0).unwrap_or(0.0)),
+            "Tz" => Self::SetHorizontalScaling(op.number(0).unwrap_or(100.0)),
+            "TL" => Self::SetTextLeading(op.number(0).unwrap_or(0.0)),
+            "Tr" => Self::SetTextRenderingMode(op.number(0).unwrap_or(0.0) as i32),
+            "Ts" => Self::SetTextRise(op.number(0).unwrap_or(0.0)),
+            "Tj" => Self::Show(op.string_bytes(0).unwrap_or(&[]).to_vec()),
+            "TJ" => Self::ShowArray(
+                op.operand(0)
+                    .and_then(Operand::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| match item {
+                                Operand::String(bytes) => {
+                                    Some(RetainedTextArrayItem::Bytes(bytes.clone()))
+                                }
+                                Operand::Integer(value) => {
+                                    Some(RetainedTextArrayItem::Adjustment(-(*value as f64)))
+                                }
+                                Operand::Real(value) => {
+                                    Some(RetainedTextArrayItem::Adjustment(-*value))
+                                }
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
+            "'" => Self::NextLineShow(op.string_bytes(0).unwrap_or(&[]).to_vec()),
+            "\"" => Self::SpacingNextLineShow {
+                word_spacing: op.number(0).unwrap_or(0.0),
+                char_spacing: op.number(1).unwrap_or(0.0),
+                text: op.string_bytes(2).unwrap_or(&[]).to_vec(),
+            },
+            operator => Self::Unsupported {
+                operator: operator.to_string(),
+                reason: format!("unsupported retained text operator '{operator}'"),
+            },
+        }
+    }
+
+    pub fn operator_name(&self) -> &'static str {
+        match self {
+            Self::BeginText => "BT",
+            Self::EndText => "ET",
+            Self::SetFont { .. } => "Tf",
+            Self::MoveTextPosition { .. } => "Td",
+            Self::MoveTextPositionSetLeading { .. } => "TD",
+            Self::SetTextMatrix { .. } => "Tm",
+            Self::NextLine => "T*",
+            Self::SetCharSpacing(_) => "Tc",
+            Self::SetWordSpacing(_) => "Tw",
+            Self::SetHorizontalScaling(_) => "Tz",
+            Self::SetTextLeading(_) => "TL",
+            Self::SetTextRenderingMode(_) => "Tr",
+            Self::SetTextRise(_) => "Ts",
+            Self::Show(_) => "Tj",
+            Self::ShowArray(_) => "TJ",
+            Self::NextLineShow(_) => "'",
+            Self::SpacingNextLineShow { .. } => "\"",
+            Self::Unsupported { .. } => "unsupported-text",
+        }
+    }
 }
 
 impl DisplayOp {
@@ -164,6 +321,21 @@ impl DisplayOp {
                 | DisplayOp::NativeFormXObject { .. }
         )
     }
+
+    pub fn bounds(&self) -> Option<RenderBounds> {
+        match self {
+            DisplayOp::Clip { bounds, .. }
+            | DisplayOp::FillPath { bounds, .. }
+            | DisplayOp::StrokePath { bounds, .. }
+            | DisplayOp::NativeTextOp { bounds, .. }
+            | DisplayOp::NativeImageXObject { bounds, .. }
+            | DisplayOp::NativeShadingOp { bounds, .. }
+            | DisplayOp::NativePatternPathOp { bounds, .. }
+            | DisplayOp::NativeInlineImage { bounds, .. }
+            | DisplayOp::NativeFormXObject { bounds, .. } => *bounds,
+            DisplayOp::Save | DisplayOp::Restore | DisplayOp::StateOp { .. } => None,
+        }
+    }
 }
 
 /// Paint and geometry state needed to replay one operation.
@@ -172,6 +344,8 @@ pub struct DrawState {
     pub ctm: Transform2D,
     pub fill_color: PixelColor,
     pub stroke_color: PixelColor,
+    pub fill_color_explicit: bool,
+    pub stroke_color_explicit: bool,
     pub fill_cmyk: Option<[f32; 4]>,
     pub stroke_cmyk: Option<[f32; 4]>,
     pub blend_mode: BlendMode,
@@ -179,11 +353,15 @@ pub struct DrawState {
     pub stroke_overprint: bool,
     pub fill_overprint: bool,
     pub overprint_mode: i32,
+    pub stroke_adjustment: bool,
+    pub alpha_source: bool,
+    pub text_knockout: bool,
     pub line_width: f64,
     pub line_cap: LineCap,
     pub line_join: LineJoin,
     pub miter_limit: f64,
     pub dash: DashState,
+    pub flatness: f64,
 }
 
 /// Display-list feature counters.
@@ -204,11 +382,8 @@ pub struct DisplayListStats {
     pub shadings: usize,
     pub patterns: usize,
     pub transparency_ops: usize,
+    pub requires_transparent_page_group: bool,
     pub optional_content_ops: usize,
-    pub compatibility_runs: usize,
-    pub compatibility_ops: usize,
-    pub compatibility_bytes: usize,
-    pub compatibility_fallback_reasons: BTreeMap<String, usize>,
     pub native_text_ops: usize,
     pub native_image_xobjects: usize,
     pub native_shading_ops: usize,
@@ -219,8 +394,7 @@ pub struct DisplayListStats {
     pub max_stack_depth: usize,
 }
 
-/// A drawing operation the current display-list subset intentionally leaves on
-/// the existing immediate renderer.
+/// A drawing operation the current display-list subset cannot replay natively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedRenderOp {
     pub operator: String,
@@ -381,6 +555,14 @@ impl RenderBounds {
         let vx1 = i32_from_u32(viewport.origin_x_px.saturating_add(viewport.width_px));
         let vy1 = i32_from_u32(viewport.origin_y_px.saturating_add(viewport.height_px));
         self.x1 > vx0 && self.x0 < vx1 && self.y1 > vy0 && self.y0 < vy1
+    }
+
+    pub fn intersects_tile(&self, tile: RenderTile) -> bool {
+        let tx0 = i32_from_u32(tile.x);
+        let ty0 = i32_from_u32(tile.y);
+        let tx1 = i32_from_u32(tile.x.saturating_add(tile.width));
+        let ty1 = i32_from_u32(tile.y.saturating_add(tile.height));
+        self.x1 > tx0 && self.x0 < tx1 && self.y1 > ty0 && self.y0 < ty1
     }
 
     pub fn intersect(self, other: Self) -> Option<Self> {
@@ -570,7 +752,7 @@ impl RenderCacheKey {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct RenderCacheMetrics {
     pub hits: usize,
     pub misses: usize,
@@ -704,6 +886,34 @@ impl RenderCache {
         }
         removed_count
     }
+
+    /// Evict exact page/tile raster artifacts without discarding unrelated
+    /// tiles from the same page. This is used when the dependency graph can
+    /// prove a source edit affects only spatial cache entries.
+    pub fn invalidate_tiles(&mut self, page_tiles: &[(usize, RenderTile)]) -> usize {
+        if page_tiles.is_empty() {
+            return 0;
+        }
+        let keys: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|key| {
+                page_tiles
+                    .iter()
+                    .any(|(page, tile)| key.page_number == *page && key.tile == *tile)
+            })
+            .cloned()
+            .collect();
+        let mut removed_count = 0;
+        for key in keys {
+            if let Some(removed) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(removed.bytes);
+                self.metrics.evictions = self.metrics.evictions.saturating_add(1);
+                removed_count += 1;
+            }
+        }
+        removed_count
+    }
 }
 
 /// Concrete rendering target for display-list replay.
@@ -713,48 +923,16 @@ pub trait RenderDevice {
     fn clip_path(&mut self, path: &Path, ctm: &Transform2D, rule: FillRule);
     fn fill_path(&mut self, path: &Path, state: &DrawState, rule: FillRule);
     fn stroke_path(&mut self, path: &Path, state: &DrawState);
-    fn state_op(&mut self, op: &ContentOperation) {
-        log::trace!(
-            "DisplayList device ignored state op '{}' because vector ops carry captured state",
-            op.operator
-        );
+    fn supports_native_high_level_ops(&self) -> bool {
+        false
     }
-    fn native_text_op(&mut self, op: &ContentOperation) {
-        log::warn!(
-            "DisplayList device cannot replay native text op '{}' without page context",
-            op.operator
-        );
-    }
-    fn native_image_xobject(&mut self, op: &ContentOperation) {
-        log::warn!(
-            "DisplayList device cannot replay native image op '{}' without page context",
-            op.operator
-        );
-    }
-    fn native_shading_op(&mut self, op: &ContentOperation) {
-        log::warn!(
-            "DisplayList device cannot replay native shading op '{}' without page context",
-            op.operator
-        );
-    }
-    fn native_pattern_path_op(&mut self, ops: &[ContentOperation]) {
-        log::warn!(
-            "DisplayList device cannot replay native pattern path ({} ops) without page context",
-            ops.len()
-        );
-    }
-    fn native_inline_image(&mut self, ops: &[ContentOperation]) {
-        log::warn!(
-            "DisplayList device cannot replay native inline image ({} ops) without page context",
-            ops.len()
-        );
-    }
-    fn native_form_xobject(&mut self, op: &ContentOperation) {
-        log::warn!(
-            "DisplayList device cannot replay native Form XObject op '{}' without page context",
-            op.operator
-        );
-    }
+    fn state_op(&mut self, state: &GraphicsStateDescriptor);
+    fn native_text_op(&mut self, text: &RetainedTextOp);
+    fn native_image_xobject(&mut self, name: &str);
+    fn native_shading_op(&mut self, name: &str);
+    fn native_pattern_path_op(&mut self, pattern: &PatternPathDescriptor);
+    fn native_inline_image(&mut self, image: &RetainedInlineImage);
+    fn native_form_xobject(&mut self, name: &str);
 }
 
 /// CPU raster device backed by the existing [`PixelBuffer`] rasterizer.
@@ -763,12 +941,15 @@ pub struct CpuRenderDevice {
     viewport: Viewport,
     clip_stack: Vec<Arc<ClipNode>>,
     clip_dag: ClipDag,
+    current_clip: Arc<ClipNode>,
     path_fill_mask_cache: CpuPathFillMaskCache,
     path_stroke_mask_cache: CpuPathStrokeMaskCache,
 }
 
 impl CpuRenderDevice {
     pub fn new(viewport: Viewport, render_mode: RenderMode) -> Self {
+        let clip_dag = ClipDag::new();
+        let current_clip = clip_dag.full();
         Self {
             buf: PixelBuffer::new_filled_with_mode(
                 viewport.width_px,
@@ -778,7 +959,8 @@ impl CpuRenderDevice {
             ),
             viewport,
             clip_stack: Vec::new(),
-            clip_dag: ClipDag::new(),
+            clip_dag,
+            current_clip,
             path_fill_mask_cache: CpuPathFillMaskCache::default(),
             path_stroke_mask_cache: CpuPathStrokeMaskCache::default(),
         }
@@ -787,12 +969,26 @@ impl CpuRenderDevice {
     pub fn into_buffer(self) -> PixelBuffer {
         self.buf
     }
+
+    fn install_clip_node(&mut self, node: Arc<ClipNode>) {
+        let mask = match &node.state {
+            ClipState::Full => None,
+            _ => Some(
+                node.materialize(self.buf.width, self.buf.height)
+                    .as_ref()
+                    .clone(),
+            ),
+        };
+        self.current_clip = node;
+        self.buf.restore_clip(mask);
+    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct CpuPathFillMaskCacheKey {
     path_hash: u64,
     fill_rule: u8,
+    flatness: i64,
     a: i64,
     b: i64,
     c: i64,
@@ -801,40 +997,92 @@ struct CpuPathFillMaskCacheKey {
     frac_f: i64,
 }
 
-#[derive(Default)]
-struct CpuPathFillMaskCache {
-    entries: HashMap<CpuPathFillMaskCacheKey, Arc<RasterizedGlyphMask>>,
+struct CpuPathMaskCache<K> {
+    entries: HashMap<K, (Arc<RasterizedGlyphMask>, u64, usize)>,
+    order: BTreeMap<u64, K>,
     bytes: usize,
+    next_seq: u64,
 }
 
-impl CpuPathFillMaskCache {
+impl<K> Default for CpuPathMaskCache<K> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: BTreeMap::new(),
+            bytes: 0,
+            next_seq: 0,
+        }
+    }
+}
+
+impl<K> CpuPathMaskCache<K>
+where
+    K: Clone + Eq + Hash,
+{
     const MAX_ENTRIES: usize = 4096;
     const MAX_BYTES: usize = 64 * 1024 * 1024;
 
-    fn get(&self, key: &CpuPathFillMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
-        self.entries.get(key).cloned()
+    fn get(&mut self, key: &K) -> Option<Arc<RasterizedGlyphMask>> {
+        let (mask, old_seq, _) = self.entries.get(key)?;
+        let mask = Arc::clone(mask);
+        let old_seq = *old_seq;
+        let new_seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+        self.order.remove(&old_seq);
+        self.order.insert(new_seq, key.clone());
+        if let Some((_, seq, _)) = self.entries.get_mut(key) {
+            *seq = new_seq;
+        }
+        Some(mask)
     }
 
-    fn insert(&mut self, key: CpuPathFillMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
+    fn insert(&mut self, key: K, mask: Arc<RasterizedGlyphMask>) {
         let bytes = mask.approximate_bytes();
         if bytes > Self::MAX_BYTES / 4 {
             return;
         }
-        if self.entries.len() >= Self::MAX_ENTRIES
+
+        if let Some((_, old_seq, old_bytes)) = self.entries.remove(&key) {
+            self.order.remove(&old_seq);
+            self.bytes = self.bytes.saturating_sub(old_bytes);
+        }
+
+        while self.entries.len() >= Self::MAX_ENTRIES
             || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
         {
-            self.entries.clear();
-            self.bytes = 0;
+            if !self.evict_one() {
+                break;
+            }
         }
+
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+        self.order.insert(seq, key.clone());
         self.bytes = self.bytes.saturating_add(bytes);
-        self.entries.insert(key, mask);
+        self.entries.insert(key, (mask, seq, bytes));
+    }
+
+    fn evict_one(&mut self) -> bool {
+        let Some((&lru_seq, _)) = self.order.iter().next() else {
+            return false;
+        };
+        let Some(lru_key) = self.order.remove(&lru_seq) else {
+            return false;
+        };
+        if let Some((_, _, bytes)) = self.entries.remove(&lru_key) {
+            self.bytes = self.bytes.saturating_sub(bytes);
+        }
+        true
     }
 }
+
+type CpuPathFillMaskCache = CpuPathMaskCache<CpuPathFillMaskCacheKey>;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct CpuPathStrokeMaskCacheKey {
     path_hash: u64,
     width: i64,
+    flatness: i64,
     cap: u8,
     join: u8,
     miter_limit: i64,
@@ -846,45 +1094,30 @@ struct CpuPathStrokeMaskCacheKey {
     frac_f: i64,
 }
 
-#[derive(Default)]
-struct CpuPathStrokeMaskCache {
-    entries: HashMap<CpuPathStrokeMaskCacheKey, Arc<RasterizedGlyphMask>>,
-    bytes: usize,
-}
+type CpuPathStrokeMaskCache = CpuPathMaskCache<CpuPathStrokeMaskCacheKey>;
 
-impl CpuPathStrokeMaskCache {
-    const MAX_ENTRIES: usize = 4096;
-    const MAX_BYTES: usize = 64 * 1024 * 1024;
-
-    fn get(&self, key: &CpuPathStrokeMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
-        self.entries.get(key).cloned()
-    }
-
-    fn insert(&mut self, key: CpuPathStrokeMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
-        let bytes = mask.approximate_bytes();
-        if bytes > Self::MAX_BYTES / 4 {
-            return;
-        }
-        if self.entries.len() >= Self::MAX_ENTRIES
-            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
-        {
-            self.entries.clear();
-            self.bytes = 0;
-        }
-        self.bytes = self.bytes.saturating_add(bytes);
-        self.entries.insert(key, mask);
-    }
+struct CpuPathFillMaskRequest<'a> {
+    viewport: &'a Viewport,
+    path: &'a Path,
+    ctm: &'a Transform2D,
+    rule: FillRule,
+    color: PixelColor,
+    flatness: f64,
 }
 
 fn cpu_paint_cached_path_fill(
     cache: &mut CpuPathFillMaskCache,
     buf: &mut PixelBuffer,
-    viewport: &Viewport,
-    path: &Path,
-    ctm: &Transform2D,
-    rule: FillRule,
-    color: PixelColor,
+    request: CpuPathFillMaskRequest<'_>,
 ) -> bool {
+    let CpuPathFillMaskRequest {
+        viewport,
+        path,
+        ctm,
+        rule,
+        color,
+        flatness,
+    } = request;
     if path.segments.is_empty() || path.segments.len() > 16_384 {
         return false;
     }
@@ -909,6 +1142,7 @@ fn cpu_paint_cached_path_fill(
             FillRule::NonZero => 0,
             FillRule::EvenOdd => 1,
         },
+        flatness: cpu_quantize_mask_value(flatness),
         a: cpu_quantize_mask_value(normalized_t.a),
         b: cpu_quantize_mask_value(normalized_t.b),
         c: cpu_quantize_mask_value(normalized_t.c),
@@ -922,9 +1156,7 @@ fn cpu_paint_cached_path_fill(
         mask.paint(buf, dx, dy, color);
         return true;
     }
-    let Some(mask) =
-        rasterize_glyph_alpha_mask(path, &normalized_t, rule, GlyphHinting::disabled())
-    else {
+    let Some(mask) = rasterize_path_alpha_mask(path, &normalized_t, rule, flatness) else {
         return false;
     };
     let mask = Arc::new(mask);
@@ -946,6 +1178,7 @@ fn cpu_paint_cached_path_stroke(
     cap: &LineCap,
     join: &LineJoin,
     miter_limit: f64,
+    flatness: f64,
 ) -> bool {
     if path.segments.is_empty()
         || path.segments.len() > 16_384
@@ -969,6 +1202,7 @@ fn cpu_paint_cached_path_stroke(
     let key = CpuPathStrokeMaskCacheKey {
         path_hash: cpu_hash_path_for_mask_cache(path),
         width: cpu_quantize_mask_value(stroke_width * device_t.scale_factor()),
+        flatness: cpu_quantize_mask_value(flatness),
         cap: cpu_line_cap_id(cap),
         join: cpu_line_join_id(join),
         miter_limit: cpu_quantize_mask_value(miter_limit),
@@ -985,7 +1219,7 @@ fn cpu_paint_cached_path_stroke(
         mask.paint(buf, dx, dy, color);
         return true;
     }
-    let flat = flatten_path_device_transform(path, &normalized_t, 0.5);
+    let flat = flatten_path_device_transform(path, &normalized_t, flatness);
     let outline = stroke_flat_path(
         &flat,
         (stroke_width * normalized_t.scale_factor()).max(1.0),
@@ -1105,37 +1339,31 @@ fn cpu_quantize_mask_fraction(value: f64) -> i64 {
 
 impl RenderDevice for CpuRenderDevice {
     fn save(&mut self) {
-        let node = self.clip_dag.intern_option(self.buf.clip_mask());
-        self.clip_stack.push(node);
+        self.clip_stack.push(Arc::clone(&self.current_clip));
     }
 
     fn restore(&mut self) {
         if let Some(saved) = self.clip_stack.pop() {
-            let mask = match &saved.state {
-                ClipState::Full => None,
-                _ => Some(saved.materialize(self.buf.width, self.buf.height).clone()),
-            };
-            self.buf.restore_clip(mask);
+            self.install_clip_node(saved);
         } else {
             log::warn!("DisplayList CpuRenderDevice: restore with empty clip stack");
         }
     }
 
     fn clip_path(&mut self, path: &Path, ctm: &Transform2D, rule: FillRule) {
-        if let Some((x, y, width, height)) = axis_aligned_integer_rect(path, ctm, &self.viewport) {
-            self.buf.set_clip(ClipMask::from_visible_rect(
-                self.buf.width,
-                self.buf.height,
-                x,
-                y,
-                width,
-                height,
-            ));
-            return;
-        }
-        let flat = flatten_path(path, ctm, &self.viewport, 0.5);
-        let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
-        self.buf.set_clip(clip);
+        let clip_node = if let Some((x, y, width, height)) =
+            axis_aligned_integer_rect(path, ctm, &self.viewport)
+        {
+            self.clip_dag
+                .rectangle(x, y, width, height, self.buf.width, self.buf.height)
+        } else {
+            let flat = flatten_path(path, ctm, &self.viewport, 0.5);
+            let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
+            self.clip_dag.intern_mask(&clip)
+        };
+        let current = Arc::clone(&self.current_clip);
+        let next = self.clip_dag.intersect(&current, &clip_node);
+        self.install_clip_node(next);
     }
 
     fn fill_path(&mut self, path: &Path, state: &DrawState, rule: FillRule) {
@@ -1143,7 +1371,7 @@ impl RenderDevice for CpuRenderDevice {
         self.buf.blend_mode = state.blend_mode;
         if state.fill_overprint {
             if let Some(cmyk) = state.fill_cmyk {
-                PathPainter::fill_device_cmyk_overprint_preview(
+                PathPainter::fill_device_cmyk_overprint_preview_with_flatness(
                     &mut self.buf,
                     path,
                     &state.ctm,
@@ -1152,6 +1380,8 @@ impl RenderDevice for CpuRenderDevice {
                     state.fill_color[3] as f32 / 255.0,
                     state.overprint_mode,
                     rule,
+                    state.flatness,
+                    false,
                 );
                 self.buf.blend_mode = saved_blend;
                 return;
@@ -1160,11 +1390,14 @@ impl RenderDevice for CpuRenderDevice {
         if !cpu_paint_cached_path_fill(
             &mut self.path_fill_mask_cache,
             &mut self.buf,
-            &self.viewport,
-            path,
-            &state.ctm,
-            rule,
-            state.fill_color,
+            CpuPathFillMaskRequest {
+                viewport: &self.viewport,
+                path,
+                ctm: &state.ctm,
+                rule,
+                color: state.fill_color,
+                flatness: state.flatness,
+            },
         ) {
             // General-path fallback is retained only for transforms/path
             // shapes outside the bounded replay-mask cache contract. Route it
@@ -1172,13 +1405,14 @@ impl RenderDevice for CpuRenderDevice {
             // page renderer so CpuRenderDevice does not regress to the old
             // accumulator-heavy paint for large retained-list paths.
             let cancel = CancelToken::new();
-            let _ = PathPainter::fill_fast_cancellable(
+            let _ = PathPainter::fill_fast_cancellable_with_flatness(
                 &mut self.buf,
                 path,
                 &state.ctm,
                 &self.viewport,
                 state.fill_color,
                 rule,
+                state.flatness,
                 &cancel,
             );
         }
@@ -1200,13 +1434,14 @@ impl RenderDevice for CpuRenderDevice {
             &state.line_cap,
             &state.line_join,
             state.miter_limit,
+            state.flatness,
         ) {
             // General-path fallback is retained only for dash/transform/path
             // shapes outside the bounded replay-mask cache contract. Use the
             // bounded scanline-capable fast path instead of the legacy
             // accumulator-heavy stroke replay.
             let cancel = CancelToken::new();
-            let _ = PathPainter::stroke_with_style_fast_cancellable(
+            let _ = PathPainter::stroke_with_style_fast_cancellable_with_flatness(
                 &mut self.buf,
                 path,
                 &state.ctm,
@@ -1217,14 +1452,80 @@ impl RenderDevice for CpuRenderDevice {
                 &state.line_cap,
                 &state.line_join,
                 state.miter_limit,
+                state.flatness,
                 &cancel,
             );
         }
         self.buf.blend_mode = saved_blend;
     }
+
+    fn state_op(&mut self, state: &GraphicsStateDescriptor) {
+        log::trace!(
+            "DisplayList CpuRenderDevice ignored state op '{:?}' because vector ops carry captured state",
+            state
+        );
+    }
+
+    fn native_text_op(&mut self, text: &RetainedTextOp) {
+        log::warn!(
+            "DisplayList CpuRenderDevice cannot replay native text op '{}' without page context",
+            text.operator_name()
+        );
+    }
+
+    fn native_image_xobject(&mut self, name: &str) {
+        log::warn!(
+            "DisplayList CpuRenderDevice cannot replay native image XObject '/{}' without page context",
+            name
+        );
+    }
+
+    fn native_shading_op(&mut self, name: &str) {
+        log::warn!(
+            "DisplayList CpuRenderDevice cannot replay native shading '/{}' without page context",
+            name
+        );
+    }
+
+    fn native_pattern_path_op(&mut self, pattern: &PatternPathDescriptor) {
+        log::warn!(
+            "DisplayList CpuRenderDevice cannot replay native pattern path ({} segments, {:?}) without page context",
+            pattern.path.segments.len(),
+            pattern.phase
+        );
+    }
+
+    fn native_inline_image(&mut self, image: &RetainedInlineImage) {
+        log::warn!(
+            "DisplayList CpuRenderDevice cannot replay native inline image ({} params, {} bytes) without page context",
+            image.params.len(),
+            image.data.len()
+        );
+    }
+
+    fn native_form_xobject(&mut self, name: &str) {
+        log::warn!(
+            "DisplayList CpuRenderDevice cannot replay native Form XObject '/{}' without page context",
+            name
+        );
+    }
 }
 
-pub fn replay_display_list(list: &DisplayList, device: &mut dyn RenderDevice) {
+pub fn replay_display_list(list: &DisplayList, device: &mut dyn RenderDevice) -> Result<()> {
+    if !list.is_fully_supported() {
+        let reason = display_list_unsupported_replay_reason(list);
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "display-list replay refused unsupported list: {reason}"
+        )));
+    }
+    if let Some(kind) = native_high_level_replay_kind(list) {
+        if !device.supports_native_high_level_ops() {
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "display-list replay device cannot render native {kind} without page context"
+            )));
+        }
+    }
+
     for op in &list.ops {
         match op {
             DisplayOp::Save => device.save(),
@@ -1236,21 +1537,54 @@ pub fn replay_display_list(list: &DisplayList, device: &mut dyn RenderDevice) {
                 path, state, rule, ..
             } => device.fill_path(path, state, *rule),
             DisplayOp::StrokePath { path, state, .. } => device.stroke_path(path, state),
-            DisplayOp::StateOp { op, .. } => device.state_op(op),
-            DisplayOp::NativeTextOp { op, .. } => device.native_text_op(op),
-            DisplayOp::NativeImageXObject { op, .. } => device.native_image_xobject(op),
-            DisplayOp::NativeShadingOp { op, .. } => device.native_shading_op(op),
-            DisplayOp::NativePatternPathOp { ops, .. } => device.native_pattern_path_op(ops),
-            DisplayOp::NativeInlineImage { ops, .. } => device.native_inline_image(ops),
-            DisplayOp::NativeFormXObject { op, .. } => device.native_form_xobject(op),
+            DisplayOp::StateOp { state, .. } => device.state_op(state),
+            DisplayOp::NativeTextOp { text, .. } => device.native_text_op(text),
+            DisplayOp::NativeImageXObject { name, .. } => device.native_image_xobject(name),
+            DisplayOp::NativeShadingOp { name, .. } => device.native_shading_op(name),
+            DisplayOp::NativePatternPathOp { pattern, .. } => {
+                device.native_pattern_path_op(pattern)
+            }
+            DisplayOp::NativeInlineImage { image, .. } => device.native_inline_image(image),
+            DisplayOp::NativeFormXObject { name, .. } => device.native_form_xobject(name),
         }
     }
+    Ok(())
 }
 
-pub fn render_display_list(list: &DisplayList, render_mode: RenderMode) -> PixelBuffer {
+fn display_list_unsupported_replay_reason(list: &DisplayList) -> String {
+    list.unsupported
+        .first()
+        .map(|item| format!("{}: {}", item.operator, item.reason))
+        .unwrap_or_else(|| "display list is marked unsupported".to_string())
+}
+
+fn native_high_level_replay_kind(list: &DisplayList) -> Option<&'static str> {
+    list.ops.iter().find_map(|op| match op {
+        DisplayOp::NativeTextOp { .. } => Some("text"),
+        DisplayOp::NativeImageXObject { .. } => Some("image XObject"),
+        DisplayOp::NativeShadingOp { .. } => Some("shading"),
+        DisplayOp::NativePatternPathOp { .. } => Some("pattern path"),
+        DisplayOp::NativeInlineImage { .. } => Some("inline image"),
+        DisplayOp::NativeFormXObject { .. } => Some("Form XObject"),
+        _ => None,
+    })
+}
+
+pub fn render_display_list(list: &DisplayList, render_mode: RenderMode) -> Result<PixelBuffer> {
+    if !list.is_fully_supported() {
+        let reason = display_list_unsupported_replay_reason(list);
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "standalone display-list CPU replay refused unsupported list: {reason}"
+        )));
+    }
+    if let Some(kind) = native_high_level_replay_kind(list) {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "standalone display-list CPU replay cannot render native {kind} without page context; use PageRenderer display-list replay"
+        )));
+    }
     let mut device = CpuRenderDevice::new(list.viewport.clone(), render_mode);
-    replay_display_list(list, &mut device);
-    device.into_buffer()
+    replay_display_list(list, &mut device)?;
+    Ok(device.into_buffer())
 }
 
 /// Capture a vector-compatible display list from decoded content operations.
@@ -1266,16 +1600,139 @@ pub fn build_display_list(
     builder.finish()
 }
 
-fn estimate_ops_bytes(ops: &[ContentOperation]) -> usize {
-    ops.iter()
-        .map(|op| {
-            op.operator.len()
-                + op.operands
-                    .iter()
-                    .map(estimate_operand_bytes)
-                    .sum::<usize>()
-                + std::mem::size_of::<ContentOperation>()
-        })
+fn estimate_named_resource_bytes(name: &str) -> usize {
+    std::mem::size_of::<String>() + name.len()
+}
+
+fn estimate_retained_text_op_bytes(text: &RetainedTextOp) -> usize {
+    let base = std::mem::size_of::<RetainedTextOp>();
+    base + match text {
+        RetainedTextOp::SetFont { name, .. } => name.len(),
+        RetainedTextOp::Show(bytes)
+        | RetainedTextOp::NextLineShow(bytes)
+        | RetainedTextOp::SpacingNextLineShow { text: bytes, .. } => bytes.len(),
+        RetainedTextOp::ShowArray(items) => items
+            .iter()
+            .map(|item| match item {
+                RetainedTextArrayItem::Bytes(bytes) => bytes.len(),
+                RetainedTextArrayItem::Adjustment(_) => std::mem::size_of::<f64>(),
+            })
+            .sum(),
+        RetainedTextOp::Unsupported { operator, reason } => operator.len() + reason.len(),
+        _ => 0,
+    }
+}
+
+fn estimate_inline_image_bytes(params: &[Operand], data: &[u8]) -> usize {
+    std::mem::size_of::<RetainedInlineImage>()
+        + params.iter().map(estimate_operand_bytes).sum::<usize>()
+        + data.len()
+}
+
+fn estimate_graphics_state_descriptor_bytes(state: &GraphicsStateDescriptor) -> usize {
+    let base = std::mem::size_of::<GraphicsStateDescriptor>();
+    use GraphicsStateDescriptor::*;
+    base + match state {
+        SetDash { array, .. } => array.len() * std::mem::size_of::<f64>(),
+        SetRenderingIntent(name)
+        | SetStrokeColorSpace { name, .. }
+        | SetFillColorSpace { name, .. }
+        | ApplyExtGState { name, .. }
+        | SetFont { name, .. }
+        | BeginMarkedContent(name)
+        | MarkedContentPoint(name) => name.len(),
+        SetStrokeColor {
+            components, name, ..
+        }
+        | SetFillColor {
+            components, name, ..
+        } => components.len() * std::mem::size_of::<f64>() + name.as_ref().map_or(0, String::len),
+        BeginMarkedContentWithProperties { tag, properties }
+        | MarkedContentPointWithProperties { tag, properties } => {
+            tag.len() + estimate_marked_content_properties_bytes(properties)
+        }
+        Unsupported { operator } => operator.len(),
+        _ => 0,
+    }
+}
+
+fn estimate_marked_content_properties_bytes(
+    properties: &crate::render::plan::MarkedContentProperties,
+) -> usize {
+    match properties {
+        crate::render::plan::MarkedContentProperties::Name { name, object } => {
+            name.len() + object.as_ref().map_or(0, estimate_pdf_object_bytes)
+        }
+        crate::render::plan::MarkedContentProperties::Inline(operands) => {
+            operands.iter().map(estimate_operand_bytes).sum()
+        }
+    }
+}
+
+fn estimate_pattern_path_bytes(pattern: &PatternPathDescriptor) -> usize {
+    std::mem::size_of::<PatternPathDescriptor>()
+        + std::mem::size_of_val(pattern.path.segments.as_slice())
+}
+
+fn pattern_phase_paints_fill(phase: &PatternPaintPhase) -> bool {
+    matches!(
+        phase,
+        PatternPaintPhase::FillNonZero
+            | PatternPaintPhase::FillEvenOdd
+            | PatternPaintPhase::FillStrokeNonZero
+            | PatternPaintPhase::FillStrokeEvenOdd
+            | PatternPaintPhase::CloseFillStrokeNonZero
+            | PatternPaintPhase::CloseFillStrokeEvenOdd
+    )
+}
+
+fn pattern_phase_paints_stroke(phase: &PatternPaintPhase) -> bool {
+    matches!(
+        phase,
+        PatternPaintPhase::Stroke
+            | PatternPaintPhase::CloseStroke
+            | PatternPaintPhase::FillStrokeNonZero
+            | PatternPaintPhase::FillStrokeEvenOdd
+            | PatternPaintPhase::CloseFillStrokeNonZero
+            | PatternPaintPhase::CloseFillStrokeEvenOdd
+    )
+}
+
+fn color_space_object_is_pattern(object: &PdfObject) -> bool {
+    match object {
+        PdfObject::Name(name) => name == "Pattern",
+        PdfObject::Array(items) => items
+            .first()
+            .and_then(PdfObject::as_name)
+            .is_some_and(|name| name == "Pattern"),
+        _ => false,
+    }
+}
+
+fn estimate_pdf_object_bytes(object: &PdfObject) -> usize {
+    match object {
+        PdfObject::Null | PdfObject::Boolean(_) | PdfObject::Integer(_) | PdfObject::Real(_) => {
+            std::mem::size_of::<PdfObject>()
+        }
+        PdfObject::String(bytes) => std::mem::size_of::<PdfObject>() + bytes.len(),
+        PdfObject::Stream { dict, raw } => {
+            std::mem::size_of::<PdfObject>() + estimate_pdf_dictionary_bytes(dict) + raw.len()
+        }
+        PdfObject::Name(name) => std::mem::size_of::<PdfObject>() + name.len(),
+        PdfObject::Array(items) => {
+            std::mem::size_of::<PdfObject>()
+                + items.iter().map(estimate_pdf_object_bytes).sum::<usize>()
+        }
+        PdfObject::Dictionary(dict) => {
+            std::mem::size_of::<PdfObject>() + estimate_pdf_dictionary_bytes(dict)
+        }
+        PdfObject::Reference { .. } => std::mem::size_of::<PdfObject>(),
+    }
+}
+
+fn estimate_pdf_dictionary_bytes(dict: &crate::object::PdfDictionary) -> usize {
+    dict.entries()
+        .map(|(key, value)| key.len() + estimate_pdf_object_bytes(value))
         .sum()
 }
 
@@ -1310,7 +1767,17 @@ fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> Disp
                 .map(String::as_str)
             {
                 Some("Image") => stats.image_xobjects += 1,
-                Some("Form") => stats.form_xobjects += 1,
+                Some("Form") => {
+                    stats.form_xobjects += 1;
+                    if op.name(0).is_some_and(|name| {
+                        resources
+                            .xobject_stream_dicts
+                            .get(name)
+                            .is_some_and(xobject_dict_is_transparency_group)
+                    }) {
+                        stats.requires_transparent_page_group = true;
+                    }
+                }
                 _ => stats.image_xobjects += 1,
             },
             "sh" => stats.shadings += 1,
@@ -1331,6 +1798,9 @@ fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> Disp
                             || dict.get("BM").is_some()
                         {
                             stats.transparency_ops += 1;
+                        }
+                        if ext_g_state_needs_transparent_page_group(dict) {
+                            stats.requires_transparent_page_group = true;
                         }
                     } else {
                         stats.transparency_ops += 1;
@@ -1353,6 +1823,51 @@ fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> Disp
         }
     }
     stats
+}
+
+fn ext_g_state_needs_transparent_page_group(dict: &PdfDictionary) -> bool {
+    if ext_g_state_is_complete_no_paint(dict) {
+        return false;
+    }
+    ["ca", "CA"].iter().any(|key| {
+        dict.get(key)
+            .and_then(PdfObject::as_number)
+            .is_some_and(|alpha| alpha < 0.999)
+    }) || match dict.get("BM") {
+        Some(PdfObject::Name(name)) => name != "Normal" && name != "Compatible",
+        Some(PdfObject::Array(items)) => items
+            .iter()
+            .filter_map(PdfObject::as_name)
+            .any(|name| name != "Normal" && name != "Compatible"),
+        _ => false,
+    } || match dict.get("SMask") {
+        Some(PdfObject::Name(name)) if name == "None" => false,
+        Some(_) => true,
+        None => false,
+    }
+}
+
+fn ext_g_state_is_complete_no_paint(dict: &PdfDictionary) -> bool {
+    match (dict.get("CA"), dict.get("ca")) {
+        (Some(stroke_alpha), Some(fill_alpha)) => {
+            ext_g_state_alpha_is_fully_transparent(stroke_alpha)
+                && ext_g_state_alpha_is_fully_transparent(fill_alpha)
+        }
+        _ => false,
+    }
+}
+
+fn ext_g_state_alpha_is_fully_transparent(value: &PdfObject) -> bool {
+    value
+        .as_number()
+        .is_some_and(|alpha| alpha.is_finite() && (0.0..=f64::EPSILON).contains(&alpha))
+}
+
+fn xobject_dict_is_transparency_group(dict: &PdfDictionary) -> bool {
+    matches!(
+        dict.get("Group"),
+        Some(PdfObject::Dictionary(group)) if group.get_name("S") == Some("Transparency")
+    )
 }
 
 fn marked_content_uses_optional_content(op: &ContentOperation, resources: &PageResources) -> bool {
@@ -1396,16 +1911,24 @@ struct DisplayListBuilder<'a> {
     resources: &'a PageResources,
     gs: GraphicsState,
     path: Path,
-    path_ops: Vec<ContentOperation>,
+    path_op_count: usize,
     pending_clip: Option<FillRule>,
     current_clip_bounds: Option<RenderBounds>,
     clip_bounds_stack: Vec<Option<RenderBounds>>,
+    color_explicit_stack: Vec<(bool, bool)>,
     soft_mask_stack: Vec<bool>,
     active_soft_mask: bool,
+    fill_color_explicit: bool,
+    stroke_color_explicit: bool,
     ops: Vec<DisplayOp>,
     unsupported: Vec<UnsupportedRenderOp>,
     stats: DisplayListStats,
-    pending_inline: Option<ContentOperation>,
+    inline_begin_pending: bool,
+    pending_inline_params: Option<Vec<Operand>>,
+    inline_data_pending_end: bool,
+    text_object_active: bool,
+    marked_content_depth: usize,
+    compatibility_section_depth: usize,
 }
 
 impl<'a> DisplayListBuilder<'a> {
@@ -1415,20 +1938,80 @@ impl<'a> DisplayListBuilder<'a> {
             resources,
             gs: GraphicsState::default(),
             path: Path::new(),
-            path_ops: Vec::new(),
+            path_op_count: 0,
             pending_clip: None,
             current_clip_bounds: None,
             clip_bounds_stack: Vec::new(),
+            color_explicit_stack: Vec::new(),
             soft_mask_stack: Vec::new(),
             active_soft_mask: false,
+            fill_color_explicit: false,
+            stroke_color_explicit: false,
             ops: Vec::new(),
             unsupported: Vec::new(),
             stats: DisplayListStats::default(),
-            pending_inline: None,
+            inline_begin_pending: false,
+            pending_inline_params: None,
+            inline_data_pending_end: false,
+            text_object_active: false,
+            marked_content_depth: 0,
+            compatibility_section_depth: 0,
         }
     }
 
     fn finish(mut self) -> DisplayList {
+        if self.marked_content_depth > 0 {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "BMC".to_string(),
+                reason: format!(
+                    "malformed marked-content sequence: {} unterminated begin operator(s)",
+                    self.marked_content_depth
+                ),
+            });
+        }
+        if self.compatibility_section_depth > 0 {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "BX".to_string(),
+                reason: format!(
+                    "malformed compatibility-section sequence: {} unterminated begin operator(s)",
+                    self.compatibility_section_depth
+                ),
+            });
+        }
+        if self.inline_begin_pending {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "BI".to_string(),
+                reason: "malformed inline image sequence: BI has no following ID".to_string(),
+            });
+        }
+        if self.pending_inline_params.is_some() {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "ID".to_string(),
+                reason: "malformed inline image sequence: ID has no following image data"
+                    .to_string(),
+            });
+        }
+        if self.inline_data_pending_end {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "inline_image_data".to_string(),
+                reason: "malformed inline image sequence: image data has no following EI"
+                    .to_string(),
+            });
+        }
+        if self.text_object_active {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "BT".to_string(),
+                reason: "malformed text-object sequence: BT has no closing ET".to_string(),
+            });
+        }
+        if self.pending_clip.take().is_some() {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "W".to_string(),
+                reason:
+                    "malformed path clipping sequence: W/W* has no following path painting operator"
+                        .to_string(),
+            });
+        }
         self.stats.operations = self.ops.len();
         self.stats.unsupported_ops = self.unsupported.len();
         let supported = self.unsupported.is_empty();
@@ -1443,25 +2026,69 @@ impl<'a> DisplayListBuilder<'a> {
 
     fn dispatch_all(&mut self, ops: &[ContentOperation]) {
         for op in ops {
+            if self.inline_data_pending_end && op.operator != "EI" {
+                self.inline_data_pending_end = false;
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: "inline_image_data".to_string(),
+                    reason: "malformed inline image sequence: image data has no following EI"
+                        .to_string(),
+                });
+            }
+            if self.pending_inline_params.is_some() && op.operator != "inline_image_data" {
+                self.pending_inline_params = None;
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: "ID".to_string(),
+                    reason: "malformed inline image sequence: ID has no following image data"
+                        .to_string(),
+                });
+            }
+            if self.inline_begin_pending && op.operator != "ID" {
+                self.inline_begin_pending = false;
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: "BI".to_string(),
+                    reason: "malformed inline image sequence: BI has no following ID".to_string(),
+                });
+            }
             self.dispatch(op);
         }
+    }
+
+    fn note_path_op(&mut self) {
+        self.path_op_count = self.path_op_count.saturating_add(1);
+    }
+
+    fn clear_path_ops(&mut self) {
+        self.path_op_count = 0;
+    }
+
+    fn has_path_ops(&self) -> bool {
+        self.path_op_count != 0
     }
 
     fn dispatch(&mut self, op: &ContentOperation) {
         match op.operator.as_str() {
             "m" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
                     self.path.move_to(x, y);
-                    self.path_ops.push(op.clone());
+                    self.note_path_op();
                 }
             }
             "l" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
                     self.path.line_to(x, y);
-                    self.path_ops.push(op.clone());
+                    self.note_path_op();
                 }
             }
             "c" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x3), Some(y3)) = (
                     op.number(0),
                     op.number(1),
@@ -1471,110 +2098,256 @@ impl<'a> DisplayListBuilder<'a> {
                     op.number(5),
                 ) {
                     self.path.curve_to(x1, y1, x2, y2, x3, y3);
-                    self.path_ops.push(op.clone());
+                    self.note_path_op();
                 }
             }
             "v" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 if let (Some(x2), Some(y2), Some(x3), Some(y3)) =
                     (op.number(0), op.number(1), op.number(2), op.number(3))
                 {
-                    let (cx, cy) = self.path.current_point.unwrap_or((0.0, 0.0));
+                    let (cx, cy) = self.path.current_point.expect("validated current point");
                     self.path.curve_to(cx, cy, x2, y2, x3, y3);
-                    self.path_ops.push(op.clone());
+                    self.note_path_op();
                 }
             }
             "y" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 if let (Some(x1), Some(y1), Some(x3), Some(y3)) =
                     (op.number(0), op.number(1), op.number(2), op.number(3))
                 {
                     self.path.curve_to(x1, y1, x3, y3, x3, y3);
-                    self.path_ops.push(op.clone());
+                    self.note_path_op();
                 }
             }
             "h" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 self.path.close();
-                self.path_ops.push(op.clone());
+                self.note_path_op();
             }
             "re" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 if let (Some(x), Some(y), Some(w), Some(h)) =
                     (op.number(0), op.number(1), op.number(2), op.number(3))
                 {
                     self.path.rect(x, y, w, h);
-                    self.path_ops.push(op.clone());
+                    self.note_path_op();
                 }
             }
-            "S" => self.stroke_and_clear(op),
+            "S" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
+                self.stroke_and_clear(op)
+            }
             "s" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 self.path.close();
-                self.path_ops.push(ContentOperation::new("h", Vec::new()));
+                self.note_path_op();
                 self.stroke_and_clear(op);
             }
-            "f" | "F" => self.fill_and_clear(op, FillRule::NonZero),
-            "f*" => self.fill_and_clear(op, FillRule::EvenOdd),
-            "B" => self.fill_stroke_and_clear(op, FillRule::NonZero),
-            "B*" => self.fill_stroke_and_clear(op, FillRule::EvenOdd),
+            "f" | "F" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
+                self.fill_and_clear(op, FillRule::NonZero)
+            }
+            "f*" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
+                self.fill_and_clear(op, FillRule::EvenOdd)
+            }
+            "B" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
+                self.fill_stroke_and_clear(op, FillRule::NonZero)
+            }
+            "B*" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
+                self.fill_stroke_and_clear(op, FillRule::EvenOdd)
+            }
             "b" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 self.path.close();
-                self.path_ops.push(ContentOperation::new("h", Vec::new()));
+                self.note_path_op();
                 self.fill_stroke_and_clear(op, FillRule::NonZero);
             }
             "b*" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 self.path.close();
-                self.path_ops.push(ContentOperation::new("h", Vec::new()));
+                self.note_path_op();
                 self.fill_stroke_and_clear(op, FillRule::EvenOdd);
             }
             "n" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
                 self.apply_pending_clip();
                 self.path.clear();
-                self.path_ops.clear();
+                self.clear_path_ops();
             }
-            "W" => self.pending_clip = Some(FillRule::NonZero),
-            "W*" => self.pending_clip = Some(FillRule::EvenOdd),
+            "W" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
+                self.set_pending_clip(op, FillRule::NonZero);
+            }
+            "W*" => {
+                if !self.validate_path_op(op) {
+                    return;
+                }
+                self.set_pending_clip(op, FillRule::EvenOdd);
+            }
             "q" => {
+                if !self.validate_graphics_state_op(op) {
+                    return;
+                }
                 self.ops.push(DisplayOp::Save);
                 self.stats.saves += 1;
                 self.clip_bounds_stack.push(self.current_clip_bounds);
+                self.color_explicit_stack
+                    .push((self.fill_color_explicit, self.stroke_color_explicit));
                 self.soft_mask_stack.push(self.active_soft_mask);
                 self.gs.process(op);
                 self.stats.max_stack_depth = self.stats.max_stack_depth.max(self.gs.stack_depth());
             }
             "Q" => {
+                if !self.validate_graphics_state_op(op) {
+                    return;
+                }
+                if self.gs.stack_depth() == 0 {
+                    self.reject_graphics_state_op(
+                        op,
+                        "malformed graphics-state operator 'Q': restore has no saved graphics state"
+                            .to_string(),
+                    );
+                    return;
+                }
+                if self.clip_bounds_stack.is_empty()
+                    || self.color_explicit_stack.is_empty()
+                    || self.soft_mask_stack.is_empty()
+                {
+                    self.reject_graphics_state_op(
+                        op,
+                        "malformed graphics-state operator 'Q': restore side-stack state is unavailable"
+                            .to_string(),
+                    );
+                    return;
+                }
                 self.gs.process(op);
-                self.current_clip_bounds = self.clip_bounds_stack.pop().unwrap_or_else(|| {
-                    log::warn!("DisplayListBuilder: restore with empty clip-bounds stack");
-                    None
-                });
-                self.active_soft_mask = self.soft_mask_stack.pop().unwrap_or_else(|| {
-                    log::warn!("DisplayListBuilder: restore with empty soft-mask stack");
-                    false
-                });
+                self.current_clip_bounds = self
+                    .clip_bounds_stack
+                    .pop()
+                    .expect("side-stack guard ensures clip bounds state");
+                let (fill, stroke) = self
+                    .color_explicit_stack
+                    .pop()
+                    .expect("side-stack guard ensures color explicit state");
+                self.fill_color_explicit = fill;
+                self.stroke_color_explicit = stroke;
+                self.active_soft_mask = self
+                    .soft_mask_stack
+                    .pop()
+                    .expect("side-stack guard ensures soft-mask state");
                 self.ops.push(DisplayOp::Restore);
                 self.stats.restores += 1;
             }
             "cm" | "w" | "J" | "j" | "M" | "d" | "ri" | "i" | "G" | "g" | "RG" | "rg" | "K"
             | "k" | "CS" | "cs" | "SC" | "SCN" | "sc" | "scn" => {
+                if !self.validate_graphics_state_op(op) {
+                    return;
+                }
                 self.gs.process(op);
+                self.note_color_explicitness(op.operator.as_str());
                 self.push_state_op(op);
             }
             "gs" => {
+                if !self.validate_graphics_state_op(op) {
+                    return;
+                }
                 self.apply_ext_g_state(op);
                 self.push_state_op(op);
             }
             "BMC" | "BDC" | "EMC" | "MP" | "DP" | "BX" | "EX" => {
+                if !self.validate_marked_content_op(op) {
+                    return;
+                }
                 self.push_state_op(op);
             }
             "BT" | "ET" | "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr"
             | "Ts" | "Tj" | "TJ" | "'" | "\"" => {
+                if !self.validate_text_op(op) {
+                    return;
+                }
+                if !self.validate_text_object_sequence(op) {
+                    return;
+                }
                 self.push_native_text(op);
                 self.gs.process(op);
             }
-            "Do" => self.push_native_xobject(op),
-            "sh" => self.push_native_shading(op),
-            "BI" | "EI" => {}
+            "d0" | "d1" => {
+                if !self.validate_type3_glyph_metric_op(op) {
+                    return;
+                }
+                self.push_state_op(op);
+            }
+            "Do" => {
+                if !self.validate_resource_invocation_op(op) {
+                    return;
+                }
+                self.push_native_xobject(op);
+            }
+            "sh" => {
+                if !self.validate_resource_invocation_op(op) {
+                    return;
+                }
+                self.push_native_shading(op);
+            }
+            "BI" => {
+                self.inline_begin_pending = true;
+            }
             "ID" => {
-                self.pending_inline = Some(op.clone());
+                if !self.inline_begin_pending {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: "ID".to_string(),
+                        reason: "malformed inline image sequence: ID has no preceding BI"
+                            .to_string(),
+                    });
+                    return;
+                }
+                self.inline_begin_pending = false;
+                self.pending_inline_params = Some(op.operands.clone());
             }
             "inline_image_data" => self.push_native_inline_image(op),
+            "EI" => {
+                if self.inline_data_pending_end {
+                    self.inline_data_pending_end = false;
+                } else {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: "EI".to_string(),
+                        reason: "malformed inline image sequence: EI has no preceding image data"
+                            .to_string(),
+                    });
+                }
+            }
             _ => {
                 self.gs.process(op);
                 // Unknown or extension operators are replayed through the same
@@ -1586,13 +2359,210 @@ impl<'a> DisplayListBuilder<'a> {
         }
     }
 
+    fn validate_graphics_state_op(&mut self, op: &ContentOperation) -> bool {
+        match graphics_state_operand_refusal(op).or_else(|| {
+            let (space, usage) = match op.operator.as_str() {
+                "SC" | "SCN" => (&self.gs.stroke_color_space, "stroking"),
+                "sc" | "scn" => (&self.gs.fill_color_space, "nonstroking"),
+                _ => return None,
+            };
+            graphics_state_color_component_arity_refusal(op, space, usage)
+        }) {
+            Some(reason) => {
+                self.reject_graphics_state_op(op, reason);
+                false
+            }
+            None => true,
+        }
+    }
+
+    fn reject_graphics_state_op(&mut self, op: &ContentOperation, reason: String) {
+        self.unsupported.push(UnsupportedRenderOp {
+            operator: op.operator.clone(),
+            reason,
+        });
+    }
+
+    fn validate_path_op(&mut self, op: &ContentOperation) -> bool {
+        match path_operand_refusal(op, self.path.current_point.is_some()) {
+            Some(reason) => {
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: op.operator.clone(),
+                    reason,
+                });
+                false
+            }
+            None => true,
+        }
+    }
+
+    fn set_pending_clip(&mut self, op: &ContentOperation, rule: FillRule) -> bool {
+        if self.pending_clip.is_some() {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: op.operator.clone(),
+                reason:
+                    "malformed path clipping sequence: W/W* was not terminated before another clipping operator"
+                        .to_string(),
+            });
+            false
+        } else {
+            self.pending_clip = Some(rule);
+            true
+        }
+    }
+
+    fn validate_text_op(&mut self, op: &ContentOperation) -> bool {
+        match text_operand_refusal(op) {
+            Some(reason) => {
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: op.operator.clone(),
+                    reason,
+                });
+                false
+            }
+            None => true,
+        }
+    }
+
+    fn validate_text_object_sequence(&mut self, op: &ContentOperation) -> bool {
+        match op.operator.as_str() {
+            "BT" => {
+                if self.text_object_active {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: op.operator.clone(),
+                        reason:
+                            "malformed text-object sequence: nested BT inside active text object"
+                                .to_string(),
+                    });
+                    return false;
+                }
+                self.text_object_active = true;
+                true
+            }
+            "ET" => {
+                if !self.text_object_active {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: op.operator.clone(),
+                        reason: "malformed text-object sequence: ET has no active text object"
+                            .to_string(),
+                    });
+                    return false;
+                }
+                self.text_object_active = false;
+                true
+            }
+            "Td" | "TD" | "Tm" | "T*" | "Tj" | "TJ" | "'" | "\"" => {
+                if !self.text_object_active {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: op.operator.clone(),
+                        reason: format!(
+                            "malformed text-object sequence: operator '{}' requires active text object",
+                            op.operator
+                        ),
+                    });
+                    return false;
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
+    fn validate_marked_content_op(&mut self, op: &ContentOperation) -> bool {
+        if let Some(reason) = marked_content_operand_refusal(op) {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: op.operator.clone(),
+                reason,
+            });
+            return false;
+        }
+
+        match op.operator.as_str() {
+            "BMC" | "BDC" => {
+                self.marked_content_depth = self.marked_content_depth.saturating_add(1);
+            }
+            "EMC" => {
+                if self.marked_content_depth == 0 {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: op.operator.clone(),
+                        reason:
+                            "malformed marked-content operator 'EMC': end has no active marked-content sequence"
+                                .to_string(),
+                    });
+                    return false;
+                }
+                self.marked_content_depth -= 1;
+            }
+            "BX" => {
+                self.compatibility_section_depth =
+                    self.compatibility_section_depth.saturating_add(1);
+            }
+            "EX" => {
+                if self.compatibility_section_depth == 0 {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: op.operator.clone(),
+                        reason:
+                            "malformed compatibility-section operator 'EX': end has no active compatibility section"
+                                .to_string(),
+                    });
+                    return false;
+                }
+                self.compatibility_section_depth -= 1;
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn validate_resource_invocation_op(&mut self, op: &ContentOperation) -> bool {
+        match resource_invocation_operand_refusal(op) {
+            Some(reason) => {
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: op.operator.clone(),
+                    reason,
+                });
+                false
+            }
+            None => true,
+        }
+    }
+
+    fn validate_type3_glyph_metric_op(&mut self, op: &ContentOperation) -> bool {
+        match type3_glyph_metric_operand_refusal(op) {
+            Some(reason) => {
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: op.operator.clone(),
+                    reason,
+                });
+                false
+            }
+            None => true,
+        }
+    }
+
     fn apply_ext_g_state(&mut self, op: &ContentOperation) {
         let Some(name) = op.name(0) else {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "gs".to_string(),
+                reason: "ExtGState operator is missing its resource name".to_string(),
+            });
             return;
         };
         let Some(dict) = self.resources.ext_g_states.get(name) else {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "gs".to_string(),
+                reason: format!("ExtGState resource /{name} is missing"),
+            });
             return;
         };
+        let label = format!("ExtGState /{name}");
+        if let Err(reason) = self.gs.try_apply_ext_g_state(dict, &label) {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "gs".to_string(),
+                reason,
+            });
+            return;
+        }
         // Soft masks are now represented by retaining the ExtGState operator
         // itself. Display-list replay goes through the same `RenderState`
         // dispatch path as immediate rendering, so `/SMask` Form groups,
@@ -1602,7 +2572,6 @@ impl<'a> DisplayListBuilder<'a> {
         if let Some(smask) = dict.get("SMask") {
             self.active_soft_mask = !matches!(smask, PdfObject::Name(name) if name == "None");
         }
-        self.gs.apply_ext_g_state(dict);
         if self.gs.blend_mode != BlendMode::Normal
             || self.gs.fill_alpha < 0.999
             || self.gs.stroke_alpha < 0.999
@@ -1610,6 +2579,16 @@ impl<'a> DisplayListBuilder<'a> {
             // These are represented and replayable through PixelBuffer blend
             // state, but the diagnostic counter still records the page as a
             // transparency-bearing display list for inspector users.
+        }
+    }
+
+    fn note_color_explicitness(&mut self, operator: &str) {
+        match operator {
+            "g" | "rg" | "k" | "sc" | "scn" => self.fill_color_explicit = true,
+            "G" | "RG" | "K" | "SC" | "SCN" => self.stroke_color_explicit = true,
+            "cs" => self.fill_color_explicit = false,
+            "CS" => self.stroke_color_explicit = false,
+            _ => {}
         }
     }
 
@@ -1651,7 +2630,7 @@ impl<'a> DisplayListBuilder<'a> {
         if self.active_soft_mask || self.uses_pattern_or_named_space() {
             self.push_stateful_path_run(paint_op);
             self.path.clear();
-            self.path_ops.clear();
+            self.clear_path_ops();
             return;
         }
         if !self.path.is_empty() {
@@ -1668,7 +2647,7 @@ impl<'a> DisplayListBuilder<'a> {
             });
         }
         self.path.clear();
-        self.path_ops.clear();
+        self.clear_path_ops();
     }
 
     fn fill_and_clear(&mut self, paint_op: &ContentOperation, rule: FillRule) {
@@ -1676,7 +2655,7 @@ impl<'a> DisplayListBuilder<'a> {
         if self.active_soft_mask || self.uses_pattern_or_named_space() {
             self.push_stateful_path_run(paint_op);
             self.path.clear();
-            self.path_ops.clear();
+            self.clear_path_ops();
             return;
         }
         if !self.path.is_empty() {
@@ -1692,7 +2671,7 @@ impl<'a> DisplayListBuilder<'a> {
             });
         }
         self.path.clear();
-        self.path_ops.clear();
+        self.clear_path_ops();
     }
 
     fn fill_stroke_and_clear(&mut self, paint_op: &ContentOperation, rule: FillRule) {
@@ -1700,7 +2679,7 @@ impl<'a> DisplayListBuilder<'a> {
         if self.active_soft_mask || self.uses_pattern_or_named_space() {
             self.push_stateful_path_run(paint_op);
             self.path.clear();
-            self.path_ops.clear();
+            self.clear_path_ops();
             return;
         }
         if !self.path.is_empty() {
@@ -1724,20 +2703,34 @@ impl<'a> DisplayListBuilder<'a> {
             });
         }
         self.path.clear();
-        self.path_ops.clear();
+        self.clear_path_ops();
     }
 
     fn push_stateful_path_run(&mut self, paint_op: &ContentOperation) {
-        if self.path.is_empty() || self.path_ops.is_empty() {
+        let Some(phase) = PatternPaintPhase::from_operator(paint_op.operator.as_str()) else {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: paint_op.operator.clone(),
+                reason:
+                    "stateful path paint operator cannot be represented as a typed pattern path"
+                        .to_string(),
+            });
+            return;
+        };
+        if !self.validate_active_pattern_resources(&phase, paint_op.operator.as_str()) {
+            return;
+        }
+        if self.path.is_empty() || !self.has_path_ops() {
+            let pattern = PatternPathDescriptor {
+                path: Path::new(),
+                phase,
+            };
             self.ops.push(DisplayOp::NativePatternPathOp {
-                ops: vec![paint_op.clone()],
-                approx_bytes: estimate_ops_bytes(std::slice::from_ref(paint_op)),
+                approx_bytes: estimate_pattern_path_bytes(&pattern),
+                pattern,
                 bounds: None,
             });
             return;
         }
-        let mut ops = self.path_ops.clone();
-        ops.push(paint_op.clone());
         self.stats.path_segments += self.path.segments.len();
         self.stats.paths += 1;
         if matches!(paint_op.operator.as_str(), "S" | "s") {
@@ -1750,11 +2743,85 @@ impl<'a> DisplayListBuilder<'a> {
         }
         self.stats.native_pattern_path_ops += 1;
         let bounds = self.pattern_path_bounds(paint_op);
+        let pattern = PatternPathDescriptor {
+            path: self.path.clone(),
+            phase,
+        };
         self.ops.push(DisplayOp::NativePatternPathOp {
-            approx_bytes: estimate_ops_bytes(&ops),
-            ops,
+            approx_bytes: estimate_pattern_path_bytes(&pattern),
+            pattern,
             bounds,
         });
+    }
+
+    fn validate_active_pattern_resources(
+        &mut self,
+        phase: &PatternPaintPhase,
+        operator: &str,
+    ) -> bool {
+        if pattern_phase_paints_fill(phase) && self.fill_pattern_paint_active() {
+            match self.gs.fill_pattern_name.as_deref() {
+                Some(name) if self.resources.patterns.contains_key(name) => {}
+                Some(name) => {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: operator.to_string(),
+                        reason: format!("pattern fill resource /{name} is missing"),
+                    });
+                    return false;
+                }
+                None => {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: operator.to_string(),
+                        reason: "pattern fill requires an active pattern name".to_string(),
+                    });
+                    return false;
+                }
+            }
+        }
+        if pattern_phase_paints_stroke(phase) && self.stroke_pattern_paint_active() {
+            match self.gs.stroke_pattern_name.as_deref() {
+                Some(name) if self.resources.patterns.contains_key(name) => {}
+                Some(name) => {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: operator.to_string(),
+                        reason: format!("pattern stroke resource /{name} is missing"),
+                    });
+                    return false;
+                }
+                None => {
+                    self.unsupported.push(UnsupportedRenderOp {
+                        operator: operator.to_string(),
+                        reason: "pattern stroke requires an active pattern name".to_string(),
+                    });
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn fill_pattern_paint_active(&self) -> bool {
+        match &self.gs.fill_color_space {
+            ColorSpace::Named(name) if name == "Pattern" => true,
+            ColorSpace::Named(name) => self
+                .resources
+                .color_spaces
+                .get(name)
+                .is_some_and(color_space_object_is_pattern),
+            _ => false,
+        }
+    }
+
+    fn stroke_pattern_paint_active(&self) -> bool {
+        match &self.gs.stroke_color_space {
+            ColorSpace::Named(name) if name == "Pattern" => true,
+            ColorSpace::Named(name) => self
+                .resources
+                .color_spaces
+                .get(name)
+                .is_some_and(color_space_object_is_pattern),
+            _ => false,
+        }
     }
 
     fn pattern_path_bounds(&self, paint_op: &ContentOperation) -> Option<RenderBounds> {
@@ -1791,6 +2858,8 @@ impl<'a> DisplayListBuilder<'a> {
             ctm: self.ctm(),
             fill_color: resolve_simple_color(&self.gs.fill_color, self.gs.fill_alpha as f32),
             stroke_color: resolve_simple_color(&self.gs.stroke_color, self.gs.stroke_alpha as f32),
+            fill_color_explicit: self.fill_color_explicit,
+            stroke_color_explicit: self.stroke_color_explicit,
             fill_cmyk: simple_cmyk_components(&self.gs.fill_color),
             stroke_cmyk: simple_cmyk_components(&self.gs.stroke_color),
             blend_mode: self.gs.blend_mode,
@@ -1798,6 +2867,9 @@ impl<'a> DisplayListBuilder<'a> {
             stroke_overprint: self.gs.stroke_overprint,
             fill_overprint: self.gs.fill_overprint,
             overprint_mode: self.gs.overprint_mode,
+            stroke_adjustment: self.gs.stroke_adjustment,
+            alpha_source: self.gs.alpha_source,
+            text_knockout: self.gs.text_knockout,
             line_width: self.gs.line_width,
             line_cap: self.gs.line_cap.clone(),
             line_join: self.gs.line_join.clone(),
@@ -1807,6 +2879,7 @@ impl<'a> DisplayListBuilder<'a> {
             } else {
                 DashState::new(self.gs.dash.pattern.clone(), self.gs.dash.phase)
             },
+            flatness: self.gs.path_flatness_tolerance(),
         }
     }
 
@@ -1820,9 +2893,11 @@ impl<'a> DisplayListBuilder<'a> {
     fn push_native_text(&mut self, op: &ContentOperation) {
         self.stats.native_text_ops += 1;
         let bounds = self.text_show_bounds(op);
+        let text = RetainedTextOp::from_content_operation(op);
+        let approx_bytes = estimate_retained_text_op_bytes(&text);
         self.ops.push(DisplayOp::NativeTextOp {
-            op: op.clone(),
-            approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+            text,
+            approx_bytes,
             bounds,
         });
     }
@@ -1860,39 +2935,62 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     fn push_state_op(&mut self, op: &ContentOperation) {
+        let state = GraphicsStateDescriptor::compile_with_resources(op, Some(self.resources));
         self.ops.push(DisplayOp::StateOp {
-            op: op.clone(),
-            approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+            approx_bytes: estimate_graphics_state_descriptor_bytes(&state),
+            state,
         });
     }
 
     fn push_native_xobject(&mut self, op: &ContentOperation) {
-        let subtype = op
-            .name(0)
-            .and_then(|name| self.resources.xobject_subtypes.get(name))
+        let Some(name) = op.name(0) else {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "Do".to_string(),
+                reason: "XObject operator is missing its resource name".to_string(),
+            });
+            return;
+        };
+        let subtype = self
+            .resources
+            .xobject_subtypes
+            .get(name)
             .map(String::as_str);
         match subtype {
             Some("Image") => {
+                let name = name.to_string();
                 self.stats.native_image_xobjects += 1;
                 self.ops.push(DisplayOp::NativeImageXObject {
-                    op: op.clone(),
-                    approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+                    approx_bytes: estimate_named_resource_bytes(&name),
+                    name,
                     bounds: self.unit_square_bounds(),
                 });
             }
             Some("Form") => {
+                let name = name.to_string();
                 self.stats.native_form_xobjects += 1;
                 self.ops.push(DisplayOp::NativeFormXObject {
-                    op: op.clone(),
-                    approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
-                    bounds: op.name(0).and_then(|name| self.form_xobject_bounds(name)),
+                    bounds: self.form_xobject_bounds(&name),
+                    approx_bytes: estimate_named_resource_bytes(&name),
+                    name,
                 });
             }
-            _ => {
-                self.ops.push(DisplayOp::NativeFormXObject {
-                    op: op.clone(),
-                    approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
-                    bounds: self.unit_square_bounds(),
+            Some(other) => {
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: "Do".to_string(),
+                    reason: format!("XObject resource /{name} has unsupported Subtype /{other}"),
+                });
+            }
+            None => {
+                let reason = if self.resources.xobjects.contains_key(name)
+                    || self.resources.xobject_stream_dicts.contains_key(name)
+                {
+                    format!("XObject resource /{name} has no /Subtype")
+                } else {
+                    format!("XObject resource /{name} is missing")
+                };
+                self.unsupported.push(UnsupportedRenderOp {
+                    operator: "Do".to_string(),
+                    reason,
                 });
             }
         }
@@ -1915,29 +3013,39 @@ impl<'a> DisplayListBuilder<'a> {
         }
         self.stats.native_shading_ops += 1;
         self.ops.push(DisplayOp::NativeShadingOp {
-            op: op.clone(),
-            approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+            approx_bytes: estimate_named_resource_bytes(name),
+            name: name.to_string(),
             bounds: self.current_clip_bounds,
         });
     }
 
     fn push_native_inline_image(&mut self, data_op: &ContentOperation) {
-        let Some(id_op) = self.pending_inline.take() else {
-            self.ops.push(DisplayOp::NativeInlineImage {
-                ops: vec![data_op.clone()],
-                approx_bytes: estimate_ops_bytes(std::slice::from_ref(data_op)),
-                bounds: self.unit_square_bounds(),
+        let Some(params) = self.pending_inline_params.take() else {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "inline_image_data".to_string(),
+                reason: "malformed inline image sequence: data has no preceding ID".to_string(),
             });
             return;
         };
-        let ops = vec![id_op, data_op.clone()];
-        let approx_bytes = estimate_ops_bytes(&ops);
+        let Some(data) = data_op.string_bytes(0) else {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "inline_image_data".to_string(),
+                reason: "malformed inline image sequence: inline image data operand is missing"
+                    .to_string(),
+            });
+            return;
+        };
+        let approx_bytes = estimate_inline_image_bytes(&params, data);
         self.stats.native_inline_images += 1;
         self.ops.push(DisplayOp::NativeInlineImage {
-            ops,
+            image: RetainedInlineImage {
+                params,
+                data: data.to_vec(),
+            },
             approx_bytes,
             bounds: self.unit_square_bounds(),
         });
+        self.inline_data_pending_end = true;
     }
 
     fn unit_square_bounds(&self) -> Option<RenderBounds> {
@@ -1962,38 +3070,23 @@ fn resolve_simple_color(color: &Color, alpha: f32) -> PixelColor {
     if matches!(color.space, ColorSpace::Named(_)) {
         return crate::render::color::RenderColor::transparent().to_pixel_color();
     }
-    ColorSpaceHandler::to_render_color(color, alpha).to_pixel_color()
+    ColorSpaceHandler::strict_to_render_color(color, alpha)
+        .unwrap_or_else(|_| crate::render::color::RenderColor::transparent())
+        .to_pixel_color()
 }
 
 fn simple_cmyk_components(color: &Color) -> Option<[f32; 4]> {
     if !matches!(color.space, ColorSpace::DeviceCMYK) {
         return None;
     }
+    if color.components.len() != 4 || !color.components.iter().all(|value| value.is_finite()) {
+        return None;
+    }
     Some([
-        color
-            .components
-            .first()
-            .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0) as f32,
-        color
-            .components
-            .get(1)
-            .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0) as f32,
-        color
-            .components
-            .get(2)
-            .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0) as f32,
-        color
-            .components
-            .get(3)
-            .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0) as f32,
+        color.components[0].clamp(0.0, 1.0) as f32,
+        color.components[1].clamp(0.0, 1.0) as f32,
+        color.components[2].clamp(0.0, 1.0) as f32,
+        color.components[3].clamp(0.0, 1.0) as f32,
     ])
 }
 
@@ -2012,6 +3105,100 @@ mod tests {
         Operand::Real(n)
     }
 
+    fn tiny_cpu_path_mask() -> std::sync::Arc<RasterizedGlyphMask> {
+        std::sync::Arc::new(
+            RasterizedGlyphMask::from_alpha(0, 0, 1, 1, vec![255])
+                .expect("test mask dimensions match alpha"),
+        )
+    }
+
+    fn fill_mask_cache_key(id: u64) -> CpuPathFillMaskCacheKey {
+        CpuPathFillMaskCacheKey {
+            path_hash: id,
+            fill_rule: 0,
+            flatness: 0,
+            a: 1000,
+            b: 0,
+            c: 0,
+            d: 1000,
+            frac_e: 0,
+            frac_f: 0,
+        }
+    }
+
+    fn stroke_mask_cache_key(id: u64) -> CpuPathStrokeMaskCacheKey {
+        CpuPathStrokeMaskCacheKey {
+            path_hash: id,
+            width: 1000,
+            flatness: 0,
+            cap: 0,
+            join: 0,
+            miter_limit: 10_000,
+            a: 1000,
+            b: 0,
+            c: 0,
+            d: 1000,
+            frac_e: 0,
+            frac_f: 0,
+        }
+    }
+
+    #[test]
+    fn cpu_path_fill_mask_cache_evicts_lru_without_clearing_hot_entries() {
+        let mut cache = CpuPathFillMaskCache::default();
+        for id in 0..CpuPathFillMaskCache::MAX_ENTRIES {
+            cache.insert(fill_mask_cache_key(id as u64), tiny_cpu_path_mask());
+        }
+
+        let hot = fill_mask_cache_key(0);
+        let cold = fill_mask_cache_key(1);
+        let fresh = fill_mask_cache_key(CpuPathFillMaskCache::MAX_ENTRIES as u64);
+        assert!(cache.get(&hot).is_some());
+        cache.insert(fresh.clone(), tiny_cpu_path_mask());
+
+        assert!(cache.entries.contains_key(&hot));
+        assert!(!cache.entries.contains_key(&cold));
+        assert!(cache.entries.contains_key(&fresh));
+        assert_eq!(cache.entries.len(), CpuPathFillMaskCache::MAX_ENTRIES);
+        assert_eq!(cache.order.len(), cache.entries.len());
+        assert_eq!(
+            cache.bytes,
+            cache
+                .entries
+                .values()
+                .map(|(_, _, bytes)| *bytes)
+                .sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn cpu_path_stroke_mask_cache_evicts_lru_without_clearing_hot_entries() {
+        let mut cache = CpuPathStrokeMaskCache::default();
+        for id in 0..CpuPathStrokeMaskCache::MAX_ENTRIES {
+            cache.insert(stroke_mask_cache_key(id as u64), tiny_cpu_path_mask());
+        }
+
+        let hot = stroke_mask_cache_key(0);
+        let cold = stroke_mask_cache_key(1);
+        let fresh = stroke_mask_cache_key(CpuPathStrokeMaskCache::MAX_ENTRIES as u64);
+        assert!(cache.get(&hot).is_some());
+        cache.insert(fresh.clone(), tiny_cpu_path_mask());
+
+        assert!(cache.entries.contains_key(&hot));
+        assert!(!cache.entries.contains_key(&cold));
+        assert!(cache.entries.contains_key(&fresh));
+        assert_eq!(cache.entries.len(), CpuPathStrokeMaskCache::MAX_ENTRIES);
+        assert_eq!(cache.order.len(), cache.entries.len());
+        assert_eq!(
+            cache.bytes,
+            cache
+                .entries
+                .values()
+                .map(|(_, _, bytes)| *bytes)
+                .sum::<usize>()
+        );
+    }
+
     #[test]
     fn captures_and_replays_simple_fill() {
         let ops = vec![
@@ -2020,11 +3207,11 @@ mod tests {
             op("f", vec![]),
         ];
         let viewport = Viewport::new([0.0, 0.0, 50.0, 50.0], 72);
-        let list = build_display_list(&ops, viewport, &PageResources::default());
+        let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
 
         assert!(list.is_fully_supported());
         assert_eq!(list.stats.fills, 1);
-        let buf = render_display_list(&list, RenderMode::Compat);
+        let buf = render_display_list(&list, RenderMode::Compat).expect("vector-only list renders");
         assert_eq!(buf.get_pixel(20, 30), RED);
     }
 
@@ -2078,30 +3265,319 @@ mod tests {
             op("Q", vec![]),
         ];
         let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
-        let list = build_display_list(&ops, viewport, &PageResources::default());
+        let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
 
         assert!(list.is_fully_supported());
         assert_eq!(list.stats.clips, 1);
         assert_eq!(list.stats.strokes, 1);
         assert_eq!(list.stats.max_stack_depth, 1);
-        let buf = render_display_list(&list, RenderMode::Compat);
+        let buf = render_display_list(&list, RenderMode::Compat).expect("vector-only list renders");
         assert_ne!(buf.get_pixel(10, 10), WHITE);
         assert_eq!(buf.get_pixel(19, 1), WHITE);
     }
 
     #[test]
-    fn text_is_replayable_as_native_operation() {
-        let ops = vec![op("Tj", vec![Operand::String(b"hello".to_vec())])];
+    fn cpu_render_device_save_restore_reuses_active_clip_dag_node() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let mut device = CpuRenderDevice::new(viewport, RenderMode::Compat);
+        let mut first = Path::new();
+        first.rect(2.0, 2.0, 12.0, 12.0);
+        let mut second = Path::new();
+        second.rect(8.0, 8.0, 8.0, 8.0);
+
+        device.clip_path(&first, &Transform2D::identity(), FillRule::NonZero);
+        assert!(matches!(
+            device.current_clip.state,
+            ClipState::Rectangle { .. }
+        ));
+        let first_node = Arc::clone(&device.current_clip);
+
+        device.save();
+        assert!(Arc::ptr_eq(
+            device.clip_stack.last().expect("saved clip node"),
+            &first_node
+        ));
+
+        device.clip_path(&second, &Transform2D::identity(), FillRule::NonZero);
+        assert!(!Arc::ptr_eq(&device.current_clip, &first_node));
+
+        device.restore();
+        assert!(Arc::ptr_eq(&device.current_clip, &first_node));
+        assert!(device.buf.clip_mask().is_some());
+    }
+
+    #[test]
+    fn malformed_graphics_state_marks_display_list_unsupported() {
+        let ops = vec![
+            op("w", vec![Operand::Name("BadWidth".to_string())]),
+            op("re", vec![num(0.0), num(0.0), num(20.0), num(20.0)]),
+            op("S", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
+
+        assert!(!list.is_fully_supported());
+        assert_eq!(list.unsupported.len(), 1);
+        assert_eq!(list.unsupported[0].operator, "w");
+        assert!(
+            list.unsupported[0]
+                .reason
+                .contains("malformed graphics-state operator 'w'"),
+            "got {}",
+            list.unsupported[0].reason
+        );
+
+        let restore_underflow =
+            build_display_list(&[op("Q", vec![])], viewport, &PageResources::default());
+        assert!(!restore_underflow.is_fully_supported());
+        assert_eq!(restore_underflow.unsupported.len(), 1);
+        assert_eq!(restore_underflow.unsupported[0].operator, "Q");
+        assert!(
+            restore_underflow.unsupported[0]
+                .reason
+                .contains("restore has no saved graphics state"),
+            "got {}",
+            restore_underflow.unsupported[0].reason
+        );
+    }
+
+    #[test]
+    fn graphics_state_restore_side_stack_desync_marks_display_list_unsupported() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let resources = PageResources::default();
+        let mut builder = DisplayListBuilder::new(viewport, &resources);
+        builder.gs.process(&op("q", vec![]));
+
+        builder.dispatch(&op("Q", vec![]));
+
+        assert!(builder.unsupported.iter().any(|item| {
+            item.operator == "Q" && item.reason.contains("side-stack state is unavailable")
+        }));
+        assert!(!builder
+            .ops
+            .iter()
+            .any(|item| matches!(item, DisplayOp::Restore)));
+    }
+
+    #[test]
+    fn malformed_device_sc_arity_marks_display_list_unsupported() {
+        let ops = vec![
+            op("cs", vec![Operand::Name("DeviceRGB".to_string())]),
+            op("sc", vec![num(1.0), num(0.0)]),
+            op("re", vec![num(0.0), num(0.0), num(20.0), num(20.0)]),
+            op("f", vec![]),
+        ];
         let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
         let list = build_display_list(&ops, viewport, &PageResources::default());
 
+        assert!(!list.is_fully_supported());
+        assert!(list.unsupported.iter().any(|item| {
+            item.operator == "sc"
+                && item
+                    .reason
+                    .contains("nonstroking DeviceRGB color expects exactly 3")
+        }));
+    }
+
+    #[test]
+    fn text_is_replayable_as_native_operation() {
+        let ops = vec![
+            op("BT", vec![]),
+            op("Tj", vec![Operand::String(b"hello".to_vec())]),
+            op("ET", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
+
         assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
         assert_eq!(list.stats.text_ops, 1);
-        assert_eq!(list.stats.native_text_ops, 1);
-        assert_eq!(list.stats.compatibility_runs, 0);
-        assert_eq!(list.stats.compatibility_ops, 0);
-        assert!(matches!(list.ops[0], DisplayOp::NativeTextOp { .. }));
+        assert_eq!(list.stats.native_text_ops, 3);
+        assert!(list.ops.iter().any(|display_op| matches!(
+            display_op,
+            DisplayOp::NativeTextOp {
+                text: RetainedTextOp::Show(bytes),
+                ..
+            } if bytes == b"hello"
+        )));
+    }
+
+    #[test]
+    fn malformed_text_marks_display_list_unsupported() {
+        let ops = vec![
+            op("BT", vec![]),
+            op("Tf", vec![Operand::Name("F1".to_string())]),
+            op("Tj", vec![Operand::String(b"hello".to_vec())]),
+            op("ET", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
+
+        assert!(!list.is_fully_supported());
+        assert_eq!(list.unsupported.len(), 1);
+        assert_eq!(list.unsupported[0].operator, "Tf");
+        assert!(
+            list.unsupported[0]
+                .reason
+                .contains("malformed text operator 'Tf'"),
+            "got {}",
+            list.unsupported[0].reason
+        );
+
+        for (ops, expected_operator, expected_reason) in [
+            (
+                vec![op("Tj", vec![Operand::String(b"hello".to_vec())])],
+                "Tj",
+                "requires active text object",
+            ),
+            (vec![op("ET", vec![])], "ET", "ET has no active text object"),
+            (
+                vec![op("BT", vec![]), op("BT", vec![]), op("ET", vec![])],
+                "BT",
+                "nested BT",
+            ),
+            (
+                vec![
+                    op("BT", vec![]),
+                    op("Tj", vec![Operand::String(b"hello".to_vec())]),
+                ],
+                "BT",
+                "BT has no closing ET",
+            ),
+        ] {
+            let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
+            assert!(!list.is_fully_supported());
+            assert_eq!(list.unsupported.len(), 1);
+            assert_eq!(list.unsupported[0].operator, expected_operator);
+            assert!(
+                list.unsupported[0].reason.contains(expected_reason),
+                "got {}",
+                list.unsupported[0].reason
+            );
+        }
+    }
+
+    #[test]
+    fn retained_text_conversion_rejects_malformed_operands_locally() {
+        let retained = RetainedTextOp::from_content_operation(&op(
+            "Tf",
+            vec![Operand::Name("F1".to_string())],
+        ));
+
+        match retained {
+            RetainedTextOp::Unsupported { operator, reason } => {
+                assert_eq!(operator, "Tf");
+                assert!(
+                    reason.contains("malformed text operator 'Tf'"),
+                    "got {reason}"
+                );
+            }
+            other => panic!("malformed retained text converted to {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_type3_glyph_metric_marks_display_list_unsupported() {
+        let ops = vec![op("d1", vec![num(500.0), num(0.0)])];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = build_display_list(&ops, viewport, &PageResources::default());
+
+        assert!(!list.is_fully_supported());
+        assert_eq!(list.unsupported.len(), 1);
+        assert_eq!(list.unsupported[0].operator, "d1");
+        assert!(
+            list.unsupported[0]
+                .reason
+                .contains("malformed Type 3 glyph metric operator 'd1'"),
+            "got {}",
+            list.unsupported[0].reason
+        );
+    }
+
+    #[test]
+    fn malformed_inline_image_sequence_marks_display_list_unsupported() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let inline_params = || {
+            vec![
+                Operand::Name("Width".to_string()),
+                num(1.0),
+                Operand::Name("Height".to_string()),
+                num(1.0),
+            ]
+        };
+
+        let begin_without_id = build_display_list(
+            &[op("BI", vec![])],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!begin_without_id.is_fully_supported());
+        assert!(begin_without_id.unsupported.iter().any(|item| {
+            item.operator == "BI" && item.reason.contains("BI has no following ID")
+        }));
+
+        let id_without_bi = build_display_list(
+            &[op("ID", inline_params())],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!id_without_bi.is_fully_supported());
+        assert!(id_without_bi.unsupported.iter().any(|item| {
+            item.operator == "ID" && item.reason.contains("ID has no preceding BI")
+        }));
+
+        let data_without_id = build_display_list(
+            &[op("inline_image_data", vec![Operand::String(vec![0x80])])],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!data_without_id.is_fully_supported());
+        assert!(data_without_id.unsupported.iter().any(|item| {
+            item.operator == "inline_image_data" && item.reason.contains("no preceding ID")
+        }));
+
+        let unterminated_id = build_display_list(
+            &[op("BI", vec![]), op("ID", inline_params())],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!unterminated_id.is_fully_supported());
+        assert!(unterminated_id.unsupported.iter().any(|item| {
+            item.operator == "ID" && item.reason.contains("no following image data")
+        }));
+
+        let missing_data_operand = build_display_list(
+            &[
+                op("BI", vec![]),
+                op("ID", inline_params()),
+                op("inline_image_data", vec![]),
+            ],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!missing_data_operand.is_fully_supported());
+        assert!(missing_data_operand.unsupported.iter().any(|item| {
+            item.operator == "inline_image_data" && item.reason.contains("operand is missing")
+        }));
+
+        let missing_ei = build_display_list(
+            &[
+                op("BI", vec![]),
+                op("ID", inline_params()),
+                op("inline_image_data", vec![Operand::String(vec![0x80])]),
+            ],
+            viewport,
+            &PageResources::default(),
+        );
+
+        assert!(!missing_ei.is_fully_supported());
+        assert!(missing_ei.unsupported.iter().any(|item| {
+            item.operator == "inline_image_data" && item.reason.contains("no following EI")
+        }));
     }
 
     #[test]
@@ -2117,10 +3593,10 @@ mod tests {
         let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
         let text_bounds = list.ops.iter().find_map(|op| match op {
             DisplayOp::NativeTextOp {
-                op,
+                text: RetainedTextOp::Show(_),
                 bounds: Some(bounds),
                 ..
-            } if op.operator == "Tj" => Some(*bounds),
+            } => Some(*bounds),
             _ => None,
         });
 
@@ -2142,10 +3618,10 @@ mod tests {
         let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
         let text_bounds = list.ops.iter().find_map(|op| match op {
             DisplayOp::NativeTextOp {
-                op,
+                text: RetainedTextOp::Show(_),
                 bounds: Some(bounds),
                 ..
-            } if op.operator == "Tj" => Some(*bounds),
+            } => Some(*bounds),
             _ => None,
         });
 
@@ -2174,14 +3650,51 @@ mod tests {
         let list = build_display_list(&ops, viewport.clone(), &resources);
 
         assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
         assert_eq!(list.stats.transparency_ops, 1);
-        assert_eq!(list.stats.compatibility_runs, 0);
+        assert!(list.stats.requires_transparent_page_group);
         assert!(matches!(list.ops[0], DisplayOp::StateOp { .. }));
         assert!(matches!(
             list.ops.iter().find(|op| matches!(op, DisplayOp::FillPath { .. })),
             Some(DisplayOp::FillPath { state, .. }) if state.fill_color[3] < 255
         ));
+    }
+
+    #[test]
+    fn complete_no_paint_alpha_extgstate_does_not_require_page_group() {
+        let ops = vec![op("gs", vec![Operand::Name("GS1".to_string())])];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let mut resources = PageResources::default();
+        let mut gs = PdfDictionary::empty();
+        gs.insert("ca", PdfObject::Real(0.0));
+        gs.insert("CA", PdfObject::Real(0.0));
+        resources.ext_g_states.insert("GS1".to_string(), gs);
+
+        let list = build_display_list(&ops, viewport, &resources);
+
+        assert_eq!(list.stats.transparency_ops, 1);
+        assert!(!list.stats.requires_transparent_page_group);
+    }
+
+    #[test]
+    fn transparent_form_xobject_sets_page_group_stat_without_raw_rescan() {
+        let ops = vec![op("Do", vec![Operand::Name("Fm1".to_string())])];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let mut resources = PageResources::default();
+        resources
+            .xobject_subtypes
+            .insert("Fm1".to_string(), "Form".to_string());
+        let mut group = PdfDictionary::empty();
+        group.insert("S", PdfObject::Name("Transparency".to_string()));
+        let mut form = PdfDictionary::empty();
+        form.insert("Group", PdfObject::Dictionary(group));
+        resources
+            .xobject_stream_dicts
+            .insert("Fm1".to_string(), form);
+
+        let list = build_display_list(&ops, viewport, &resources);
+
+        assert_eq!(list.stats.form_xobjects, 1);
+        assert!(list.stats.requires_transparent_page_group);
     }
 
     #[test]
@@ -2206,9 +3719,7 @@ mod tests {
         let list = build_display_list(&ops, viewport, &PageResources::default());
 
         assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
         assert_eq!(list.stats.optional_content_ops, 0);
-        assert_eq!(list.stats.compatibility_runs, 0);
         assert!(list
             .ops
             .iter()
@@ -2240,13 +3751,14 @@ mod tests {
         let list = build_display_list(&ops, viewport, &resources);
 
         assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
         assert_eq!(list.stats.optional_content_ops, 1);
-        assert_eq!(list.stats.compatibility_runs, 0);
-        assert!(list
-            .ops
-            .iter()
-            .any(|op| matches!(op, DisplayOp::StateOp { op, .. } if op.operator == "BDC")));
+        assert!(list.ops.iter().any(|op| matches!(
+            op,
+            DisplayOp::StateOp {
+                state: GraphicsStateDescriptor::BeginMarkedContentWithProperties { tag, .. },
+                ..
+            } if tag == "OC"
+        )));
     }
 
     #[test]
@@ -2271,9 +3783,182 @@ mod tests {
         let list = build_display_list(&ops, viewport, &PageResources::default());
 
         assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
         assert_eq!(list.stats.optional_content_ops, 1);
-        assert_eq!(list.stats.compatibility_runs, 0);
+    }
+
+    #[test]
+    fn malformed_marked_content_marks_display_list_unsupported() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let malformed_props = build_display_list(
+            &[op("BDC", vec![Operand::Name("OC".to_string())])],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!malformed_props.is_fully_supported());
+        assert!(malformed_props.unsupported.iter().any(|item| {
+            item.operator == "BDC"
+                && item
+                    .reason
+                    .contains("malformed marked-content operator 'BDC'")
+        }));
+
+        let unmatched_end =
+            build_display_list(&[op("EMC", vec![])], viewport, &PageResources::default());
+
+        assert!(!unmatched_end.is_fully_supported());
+        assert!(unmatched_end.unsupported.iter().any(|item| {
+            item.operator == "EMC" && item.reason.contains("no active marked-content sequence")
+        }));
+    }
+
+    #[test]
+    fn unterminated_marked_content_marks_display_list_unsupported() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = build_display_list(
+            &[op("BMC", vec![Operand::Name("Span".to_string())])],
+            viewport,
+            &PageResources::default(),
+        );
+
+        assert!(!list.is_fully_supported());
+        assert!(list.unsupported.iter().any(|item| {
+            item.operator == "BMC"
+                && item
+                    .reason
+                    .contains("malformed marked-content sequence: 1 unterminated")
+        }));
+    }
+
+    #[test]
+    fn unbalanced_compatibility_section_marks_display_list_unsupported() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let unmatched_end = build_display_list(
+            &[op("EX", vec![])],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!unmatched_end.is_fully_supported());
+        assert!(unmatched_end.unsupported.iter().any(|item| {
+            item.operator == "EX" && item.reason.contains("no active compatibility section")
+        }));
+
+        let unterminated_begin =
+            build_display_list(&[op("BX", vec![])], viewport, &PageResources::default());
+
+        assert!(!unterminated_begin.is_fully_supported());
+        assert!(unterminated_begin.unsupported.iter().any(|item| {
+            item.operator == "BX"
+                && item
+                    .reason
+                    .contains("malformed compatibility-section sequence: 1 unterminated")
+        }));
+    }
+
+    #[test]
+    fn malformed_path_marks_display_list_unsupported() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let missing_current_point = build_display_list(
+            &[op("l", vec![num(1.0), num(1.0)])],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!missing_current_point.is_fully_supported());
+        assert!(missing_current_point.unsupported.iter().any(|item| {
+            item.operator == "l" && item.reason.contains("requires an active current point")
+        }));
+
+        let operand_bearing_paint = build_display_list(
+            &[
+                op("m", vec![num(1.0), num(1.0)]),
+                op("l", vec![num(8.0), num(8.0)]),
+                op("S", vec![num(1.0)]),
+            ],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+
+        assert!(!operand_bearing_paint.is_fully_supported());
+        assert!(operand_bearing_paint
+            .unsupported
+            .iter()
+            .any(|item| { item.operator == "S" && item.reason.contains("expected no operands") }));
+
+        let empty_clip = build_display_list(
+            &[op("W", Vec::new()), op("n", Vec::new())],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+        assert!(empty_clip.is_fully_supported());
+        assert!(
+            empty_clip
+                .ops
+                .iter()
+                .any(|item| matches!(item, DisplayOp::Clip { path, bounds, .. } if path.is_empty() && bounds.is_none()))
+        );
+
+        let dangling_clip = build_display_list(
+            &[
+                op("re", vec![num(1.0), num(1.0), num(8.0), num(8.0)]),
+                op("W", Vec::new()),
+            ],
+            viewport.clone(),
+            &PageResources::default(),
+        );
+        assert!(!dangling_clip.is_fully_supported());
+        assert!(dangling_clip.unsupported.iter().any(|item| {
+            item.operator == "W"
+                && item
+                    .reason
+                    .contains("has no following path painting operator")
+        }));
+
+        let repeated_clip = build_display_list(
+            &[
+                op("re", vec![num(1.0), num(1.0), num(8.0), num(8.0)]),
+                op("W", Vec::new()),
+                op("W*", Vec::new()),
+                op("n", Vec::new()),
+            ],
+            viewport,
+            &PageResources::default(),
+        );
+        assert!(!repeated_clip.is_fully_supported());
+        assert!(repeated_clip.unsupported.iter().any(|item| {
+            item.operator == "W*" && item.reason.contains("not terminated before another")
+        }));
+    }
+
+    #[test]
+    fn malformed_resource_invocation_marks_display_list_unsupported() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        for malformed_op in [
+            op("Do", Vec::new()),
+            op("Do", vec![Operand::Real(1.0)]),
+            op(
+                "Do",
+                vec![Operand::Name("Im1".to_string()), Operand::Real(1.0)],
+            ),
+            op("sh", Vec::new()),
+            op("sh", vec![Operand::Real(1.0)]),
+            op(
+                "sh",
+                vec![Operand::Name("S1".to_string()), Operand::Real(1.0)],
+            ),
+        ] {
+            let list =
+                build_display_list(&[malformed_op], viewport.clone(), &PageResources::default());
+
+            assert!(!list.is_fully_supported());
+            assert!(list.unsupported.iter().any(|item| {
+                item.reason.contains(&format!(
+                    "malformed resource invocation operator '{}'",
+                    item.operator
+                ))
+            }));
+        }
     }
 
     #[test]
@@ -2299,14 +3984,78 @@ mod tests {
             .insert("Im1".to_string(), "Image".to_string());
 
         let list = build_display_list(&ops, viewport.clone(), &resources);
-        let image_bounds = list.ops.iter().find_map(|op| match op {
-            DisplayOp::NativeImageXObject { bounds, .. } => *bounds,
+        let image_entry = list.ops.iter().find_map(|op| match op {
+            DisplayOp::NativeImageXObject { name, bounds, .. } => Some((name, *bounds)),
             _ => None,
         });
 
-        let bounds = image_bounds.expect("native image op should carry bounds");
+        let (name, bounds) = image_entry.expect("native image op should carry typed name/bounds");
+        assert_eq!(name, "Im1");
+        let bounds = bounds.expect("native image op should carry bounds");
         assert!(bounds.intersects_viewport(&viewport));
         assert!(!bounds.intersects_viewport(&viewport.pixel_window(0, 0, 10, 10)));
+    }
+
+    #[test]
+    fn form_xobject_native_op_stores_typed_resource_name() {
+        let ops = vec![op("Do", vec![Operand::Name("Fm1".to_string())])];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let mut resources = PageResources::default();
+        resources
+            .xobject_subtypes
+            .insert("Fm1".to_string(), "Form".to_string());
+
+        let list = build_display_list(&ops, viewport, &resources);
+
+        assert!(matches!(
+            &list.ops[0],
+            DisplayOp::NativeFormXObject { name, .. } if name == "Fm1"
+        ));
+    }
+
+    #[test]
+    fn malformed_xobject_subtype_marks_display_list_unsupported() {
+        for (resources, expected) in [
+            (PageResources::default(), "XObject resource /Xm1 is missing"),
+            (
+                {
+                    let mut resources = PageResources::default();
+                    resources.xobjects.insert("Xm1".to_string(), (5, 0));
+                    resources
+                        .xobject_stream_dicts
+                        .insert("Xm1".to_string(), PdfDictionary::empty());
+                    resources
+                },
+                "XObject resource /Xm1 has no /Subtype",
+            ),
+            (
+                {
+                    let mut resources = PageResources::default();
+                    resources.xobjects.insert("Xm1".to_string(), (5, 0));
+                    resources
+                        .xobject_subtypes
+                        .insert("Xm1".to_string(), "PS".to_string());
+                    resources
+                },
+                "XObject resource /Xm1 has unsupported Subtype /PS",
+            ),
+        ] {
+            let ops = vec![op("Do", vec![Operand::Name("Xm1".to_string())])];
+            let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+            let list = build_display_list(&ops, viewport, &resources);
+
+            assert!(!list.is_fully_supported());
+            assert_eq!(list.unsupported.len(), 1);
+            assert_eq!(list.unsupported[0].operator, "Do");
+            assert_eq!(list.unsupported[0].reason, expected);
+            assert!(
+                !list
+                    .ops
+                    .iter()
+                    .any(|op| matches!(op, DisplayOp::NativeFormXObject { .. })),
+                "malformed XObject must not be retained as a native Form op"
+            );
+        }
     }
 
     #[test]
@@ -2322,11 +4071,12 @@ mod tests {
         let list = build_display_list(&ops, viewport.clone(), &resources);
 
         assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
         assert_eq!(list.stats.shadings, 1);
         assert_eq!(list.stats.native_shading_ops, 1);
-        assert_eq!(list.stats.compatibility_runs, 0);
-        assert!(matches!(list.ops[0], DisplayOp::NativeShadingOp { .. }));
+        assert!(matches!(
+            &list.ops[0],
+            DisplayOp::NativeShadingOp { name, .. } if name == "S1"
+        ));
     }
 
     #[test]
@@ -2367,8 +4117,6 @@ mod tests {
         let list = build_display_list(&ops, viewport.clone(), &resources);
 
         assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
-        assert_eq!(list.stats.compatibility_runs, 0);
         assert_eq!(list.stats.native_pattern_path_ops, 1);
         assert_eq!(list.stats.fills, 2);
         let pattern_bounds = list.ops.iter().find_map(|op| match op {
@@ -2385,7 +4133,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_pattern_resource_stays_native_and_replays_canonical_noop() {
+    fn missing_pattern_resource_is_explicitly_unsupported() {
         let ops = vec![
             op("q", vec![]),
             op("cs", vec![Operand::Name("Pattern".to_string())]),
@@ -2398,16 +4146,12 @@ mod tests {
 
         let list = build_display_list(&ops, viewport, &PageResources::default());
 
-        assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
-        assert_eq!(list.stats.compatibility_runs, 0);
-        assert_eq!(list.stats.native_pattern_path_ops, 1);
-        assert!(matches!(
-            list.ops
-                .iter()
-                .find(|op| matches!(op, DisplayOp::NativePatternPathOp { .. })),
-            Some(DisplayOp::NativePatternPathOp { .. })
-        ));
+        assert!(!list.is_fully_supported());
+        assert_eq!(list.stats.native_pattern_path_ops, 0);
+        assert_eq!(list.unsupported.len(), 1);
+        assert!(list.unsupported[0]
+            .reason
+            .contains("pattern fill resource /P1 is missing"));
     }
 
     #[test]
@@ -2421,9 +4165,57 @@ mod tests {
         ];
         let viewport = Viewport::new([0.0, 0.0, 30.0, 30.0], 72);
         let list = build_display_list(&ops, viewport, &PageResources::default());
-        let buf = render_display_list(&list, RenderMode::Compat);
+        let buf = render_display_list(&list, RenderMode::Compat).expect("vector-only list renders");
 
         assert_eq!(buf.get_pixel(10, 25), BLACK);
+    }
+
+    #[test]
+    fn standalone_display_list_replay_refuses_native_high_level_ops() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = DisplayList {
+            viewport,
+            ops: vec![DisplayOp::NativeImageXObject {
+                name: "Im1".to_string(),
+                approx_bytes: 3,
+                bounds: None,
+            }],
+            stats: DisplayListStats::default(),
+            supported: true,
+            unsupported: Vec::new(),
+        };
+
+        let err = render_display_list(&list, RenderMode::Compat)
+            .expect_err("standalone replay must refuse page-context native ops");
+        assert!(
+            format!("{err}").contains("cannot render native image XObject without page context"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn direct_display_list_replay_refuses_native_high_level_ops_on_default_device() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = DisplayList {
+            viewport: viewport.clone(),
+            ops: vec![DisplayOp::NativeImageXObject {
+                name: "Im1".to_string(),
+                approx_bytes: 3,
+                bounds: None,
+            }],
+            stats: DisplayListStats::default(),
+            supported: true,
+            unsupported: Vec::new(),
+        };
+        let mut device = CpuRenderDevice::new(viewport, RenderMode::Compat);
+
+        let err = replay_display_list(&list, &mut device)
+            .expect_err("default CPU replay device must refuse page-context native ops");
+        assert!(
+            format!("{err}")
+                .contains("display-list replay device cannot render native image XObject"),
+            "got {err}"
+        );
     }
 
     #[test]
@@ -2457,6 +4249,63 @@ mod tests {
         assert!(!state.fill_overprint);
         assert_eq!(state.overprint_mode, 1);
         assert_eq!(state.rendering_intent, "AbsoluteColorimetric");
+    }
+
+    #[test]
+    fn display_list_cmyk_components_require_exact_finite_state() {
+        assert_eq!(
+            simple_cmyk_components(&Color::device_cmyk(1.2, -0.5, 0.5, 0.0)),
+            Some([1.0, 0.0, 0.5, 0.0])
+        );
+        assert!(simple_cmyk_components(&Color {
+            space: ColorSpace::DeviceCMYK,
+            components: vec![1.0, 0.0, 0.0],
+        })
+        .is_none());
+        assert!(simple_cmyk_components(&Color {
+            space: ColorSpace::DeviceCMYK,
+            components: vec![1.0, 0.0, 0.0, 0.0, 0.0],
+        })
+        .is_none());
+        assert!(simple_cmyk_components(&Color {
+            space: ColorSpace::DeviceCMYK,
+            components: vec![1.0, f64::NAN, 0.0, 0.0],
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn display_list_simple_color_requires_exact_finite_device_state() {
+        assert_eq!(
+            resolve_simple_color(
+                &Color {
+                    space: ColorSpace::DeviceRGB,
+                    components: vec![1.0, 0.0, 0.0],
+                },
+                1.0,
+            ),
+            RED
+        );
+        assert_eq!(
+            resolve_simple_color(
+                &Color {
+                    space: ColorSpace::DeviceRGB,
+                    components: vec![1.0, 0.0],
+                },
+                1.0,
+            ),
+            crate::render::buffer::TRANSPARENT
+        );
+        assert_eq!(
+            resolve_simple_color(
+                &Color {
+                    space: ColorSpace::DeviceCMYK,
+                    components: vec![0.0, f64::NAN, 0.0, 0.0],
+                },
+                1.0,
+            ),
+            crate::render::buffer::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2510,6 +4359,39 @@ mod tests {
 
         assert!(cache.get(&key).is_none());
         assert_eq!(cache.metrics().skipped_oversized, 1);
+    }
+
+    #[test]
+    fn render_cache_invalidates_exact_tiles() {
+        let tile_a = RenderTile {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let tile_b = RenderTile {
+            x: 2,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let key_a = RenderCacheKey::new(1, 72, RenderMode::Compat, tile_a);
+        let key_b = RenderCacheKey::new(1, 72, RenderMode::Compat, tile_b);
+        let mut cache = RenderCache::new(64, 16);
+        cache.insert(
+            key_a.clone(),
+            PixelBuffer::new_transparent_with_mode(2, 2, RenderMode::Compat),
+        );
+        cache.insert(
+            key_b.clone(),
+            PixelBuffer::new_transparent_with_mode(2, 2, RenderMode::Compat),
+        );
+
+        assert_eq!(cache.invalidate_tiles(&[(1, tile_a)]), 1);
+
+        assert!(cache.get(&key_a).is_none());
+        assert!(cache.get(&key_b).is_some());
+        assert_eq!(cache.metrics().bytes, 16);
     }
 
     #[test]

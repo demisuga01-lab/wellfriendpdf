@@ -41,7 +41,7 @@ impl CachedGlyph {
 }
 
 /// Runtime glyph-cache counters.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct GlyphCacheStats {
     pub hits: u64,
     pub misses: u64,
@@ -191,6 +191,18 @@ impl GlyphCache {
 
     pub fn current_bytes(&self) -> usize {
         self.current_bytes
+    }
+
+    pub(crate) fn oldest_entry_bytes(&self) -> Option<usize> {
+        self.order
+            .iter()
+            .next()
+            .and_then(|(_, key)| self.entries.get(key))
+            .map(|(_, _, bytes)| *bytes)
+    }
+
+    pub(crate) fn evict_one_lru(&mut self) -> bool {
+        self.evict_one()
     }
 
     pub fn stats(&self) -> GlyphCacheStats {

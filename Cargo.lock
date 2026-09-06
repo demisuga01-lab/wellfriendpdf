@@ -3594,6 +3594,7 @@ dependencies = [
  "libc",
  "rand_core 0.6.4",
  "rsa",
+ "serde",
  "serde_json",
  "sha2",
  "spki",
@@ -3727,6 +3728,8 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.2.17",
+ "js-sys",
+ "serde",
  "serde_json",
  "wasm-bindgen",
  "wellfriendpdf-engine",

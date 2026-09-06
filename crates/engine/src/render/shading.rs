@@ -56,16 +56,24 @@ pub(crate) fn tests_minimal_pdf() -> Vec<u8> {
 /// [`crate::render::function`], which supports Function Types 0, 2, 3, and 4.
 /// Returns an empty `Vec` for unsupported types or malformed input.
 pub(crate) fn eval_function(func_obj: &PdfObject, t: f64, reader: &PdfReader) -> Vec<f64> {
-    crate::render::function::eval_function_n(func_obj, &[t], reader)
+    crate::render::function::eval_function_or_array_n(func_obj, &[t], reader)
 }
 
 /// Type 2 (exponential interpolation): `f(t) = C0 + t^N * (C1 - C0)`.
 pub(crate) fn eval_type2(dict: &PdfDictionary, t: f64) -> Vec<f64> {
-    let n = dict.get("N").and_then(PdfObject::as_number).unwrap_or(1.0);
+    let Some(n) = dict.get("N").and_then(PdfObject::as_number) else {
+        return Vec::new();
+    };
+    if !n.is_finite() || !t.is_finite() {
+        return Vec::new();
+    }
 
-    let domain = get_float_array(dict, "Domain").unwrap_or_else(|| vec![0.0, 1.0]);
-    let d0 = domain.first().copied().unwrap_or(0.0);
-    let d1 = domain.get(1).copied().unwrap_or(1.0);
+    let Some(domain) = get_strict_float_array(dict, "Domain").filter(|values| values.len() == 2)
+    else {
+        return Vec::new();
+    };
+    let d0 = domain[0];
+    let d1 = domain[1];
     let t_clamped = t.clamp(d0.min(d1), d0.max(d1));
     let t_norm = if (d1 - d0).abs() < 1e-10 {
         0.0
@@ -73,15 +81,30 @@ pub(crate) fn eval_type2(dict: &PdfDictionary, t: f64) -> Vec<f64> {
         (t_clamped - d0) / (d1 - d0)
     };
 
-    let c0 = get_float_array(dict, "C0").unwrap_or_else(|| vec![0.0]);
-    let c1 = get_float_array(dict, "C1").unwrap_or_else(|| vec![1.0]);
-    let len = c0.len().max(c1.len());
+    let c0 = match dict.contains_key("C0") {
+        true => match get_strict_float_array(dict, "C0") {
+            Some(values) if !values.is_empty() => values,
+            _ => return Vec::new(),
+        },
+        false => vec![0.0],
+    };
+    let c1 = match dict.contains_key("C1") {
+        true => match get_strict_float_array(dict, "C1") {
+            Some(values) if !values.is_empty() => values,
+            _ => return Vec::new(),
+        },
+        false => vec![1.0],
+    };
+    if c0.len() != c1.len() {
+        return Vec::new();
+    }
+    let len = c0.len();
     let factor = t_norm.powf(n);
 
     (0..len)
         .map(|i| {
-            let v0 = c0.get(i).copied().unwrap_or(0.0);
-            let v1 = c1.get(i).copied().unwrap_or(1.0);
+            let v0 = c0[i];
+            let v1 = c1[i];
             (v0 + factor * (v1 - v0)).clamp(0.0, 1.0)
         })
         .collect()
@@ -89,9 +112,13 @@ pub(crate) fn eval_type2(dict: &PdfDictionary, t: f64) -> Vec<f64> {
 
 /// Type 3 (stitching): selects a sub-function by breakpoint and re-encodes `t`.
 pub(crate) fn eval_type3(dict: &PdfDictionary, t: f64, reader: &PdfReader) -> Vec<f64> {
-    let domain = get_float_array(dict, "Domain").unwrap_or_else(|| vec![0.0, 1.0]);
-    let bounds = get_float_array(dict, "Bounds").unwrap_or_default();
-    let encode = get_float_array(dict, "Encode").unwrap_or_default();
+    if !t.is_finite() {
+        return Vec::new();
+    }
+    let Some(domain) = get_strict_float_array(dict, "Domain").filter(|values| values.len() == 2)
+    else {
+        return Vec::new();
+    };
     let funcs = match dict.get("Functions") {
         Some(PdfObject::Array(arr)) => arr.clone(),
         _ => return Vec::new(),
@@ -99,9 +126,19 @@ pub(crate) fn eval_type3(dict: &PdfDictionary, t: f64, reader: &PdfReader) -> Ve
     if funcs.is_empty() {
         return Vec::new();
     }
+    let Some(bounds) =
+        get_strict_float_array(dict, "Bounds").filter(|values| values.len() + 1 == funcs.len())
+    else {
+        return Vec::new();
+    };
+    let Some(encode) =
+        get_strict_float_array(dict, "Encode").filter(|values| values.len() == funcs.len() * 2)
+    else {
+        return Vec::new();
+    };
 
-    let d0 = domain.first().copied().unwrap_or(0.0);
-    let d1 = domain.get(1).copied().unwrap_or(1.0);
+    let d0 = domain[0];
+    let d1 = domain[1];
     let t = t.clamp(d0.min(d1), d0.max(d1));
 
     // Find the sub-function index: first bound the value falls below.
@@ -121,12 +158,16 @@ pub(crate) fn eval_type3(dict: &PdfDictionary, t: f64, reader: &PdfReader) -> Ve
         (d0, d1)
     } else {
         let s = if idx == 0 { d0 } else { bounds[idx - 1] };
-        let e = bounds.get(idx).copied().unwrap_or(d1);
+        let e = if idx + 1 == funcs.len() {
+            d1
+        } else {
+            bounds[idx]
+        };
         (s, e)
     };
 
-    let e0 = encode.get(idx * 2).copied().unwrap_or(0.0);
-    let e1 = encode.get(idx * 2 + 1).copied().unwrap_or(1.0);
+    let e0 = encode[idx * 2];
+    let e1 = encode[idx * 2 + 1];
     let t_enc = if (seg_end - seg_start).abs() < 1e-10 {
         e0
     } else {
@@ -139,10 +180,10 @@ pub(crate) fn eval_type3(dict: &PdfDictionary, t: f64, reader: &PdfReader) -> Ve
     }
 }
 
-/// Read a numeric array from `dict[key]`, returning `None` if absent or empty.
+/// Read a finite numeric array from `dict[key]`, returning `None` if absent,
+/// empty, or malformed.
 pub(crate) fn get_float_array(dict: &PdfDictionary, key: &str) -> Option<Vec<f64>> {
-    let arr = dict.get(key)?.as_array()?;
-    let vals: Vec<f64> = arr.iter().filter_map(PdfObject::as_number).collect();
+    let vals = get_strict_float_array(dict, key)?;
     if vals.is_empty() {
         None
     } else {
@@ -153,13 +194,10 @@ pub(crate) fn get_float_array(dict: &PdfDictionary, key: &str) -> Option<Vec<f64
 /// Read a 2-element boolean array (e.g. `/Extend [bool bool]`).
 pub(crate) fn get_bool_pair(dict: &PdfDictionary, key: &str) -> Option<[bool; 2]> {
     let arr = dict.get(key)?.as_array()?;
-    if arr.len() < 2 {
+    if arr.len() != 2 {
         return None;
     }
-    Some([
-        arr[0].as_bool().unwrap_or(false),
-        arr[1].as_bool().unwrap_or(false),
-    ])
+    Some([arr[0].as_bool()?, arr[1].as_bool()?])
 }
 
 /// Convert shading function output components to an opaque pixel colour.
@@ -169,6 +207,7 @@ pub(crate) fn components_to_pixel(components: &[f64], color_space: &str) -> Pixe
 }
 
 /// Convert shading function output components to a float render colour.
+#[cfg(test)]
 pub(crate) fn components_to_render_color(components: &[f64], color_space: &str) -> RenderColor {
     ColorSpaceHandler::from_components(color_space, components, 1.0)
 }
@@ -178,28 +217,33 @@ fn components_to_render_color_with_space(
     color_space: &str,
     color_space_obj: Option<&PdfObject>,
     reader: &PdfReader,
-) -> RenderColor {
+) -> Option<RenderColor> {
     if let Some(space_obj) = color_space_obj {
         match crate::render::colorspace::resolve_named_color(space_obj, components, 1.0, reader) {
-            crate::render::colorspace::NamedColor::Color(color) => return color,
-            crate::render::colorspace::NamedColor::NoPaint => return RenderColor::transparent(),
-            crate::render::colorspace::NamedColor::Unhandled => {}
+            crate::render::colorspace::NamedColor::Color(color) => return Some(color),
+            crate::render::colorspace::NamedColor::NoPaint => {
+                return Some(RenderColor::transparent());
+            }
+            crate::render::colorspace::NamedColor::Invalid(reason) => {
+                log::warn!("shading color-space rejected: {reason}");
+                return None;
+            }
+            crate::render::colorspace::NamedColor::Unhandled => {
+                log::warn!("shading color-space unsupported: {color_space}");
+                return None;
+            }
         }
     }
-    components_to_render_color(components, color_space)
+    ColorSpaceHandler::try_from_components(color_space, components, 1.0)
 }
 
 /// Read the shading's colour-space name. Handles both a bare name and an array
 /// whose first element names the family (e.g. `[/ICCBased N 0 R]`).
-fn shading_color_space_name(dict: &PdfDictionary) -> String {
-    match dict.get("ColorSpace") {
-        Some(PdfObject::Name(name)) => name.clone(),
-        Some(PdfObject::Array(arr)) => arr
-            .first()
-            .and_then(PdfObject::as_name)
-            .unwrap_or("DeviceRGB")
-            .to_string(),
-        _ => "DeviceRGB".to_string(),
+fn shading_color_space_name(dict: &PdfDictionary) -> Option<String> {
+    match dict.get("ColorSpace").or_else(|| dict.get("CS"))? {
+        PdfObject::Name(name) => Some(name.clone()),
+        PdfObject::Array(arr) => arr.first().and_then(PdfObject::as_name).map(str::to_string),
+        _ => None,
     }
 }
 
@@ -211,10 +255,35 @@ fn shading_color_space_object(dict: &PdfDictionary) -> Option<&PdfObject> {
 // Shading renderer
 // ---------------------------------------------------------------------------
 
-pub struct ShadingRenderer;
-
 const SHADING_LUT_STEPS: usize = 4096;
 const MAX_PATCH_MESH_PATCHES: usize = 4096;
+const DEFAULT_PATCH_SUBDIVISIONS: usize = 10;
+const MIN_PATCH_SUBDIVISIONS: usize = 4;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ShadingRenderOptions {
+    /// PDF graphics-state `/SM` smoothness tolerance, normalized to [0, 1].
+    /// Zero preserves the renderer's default subdivision quality.
+    smoothness_tolerance: f64,
+}
+
+impl ShadingRenderOptions {
+    pub(crate) fn new(smoothness_tolerance: f64) -> Self {
+        Self {
+            smoothness_tolerance: normalize_smoothness_tolerance(smoothness_tolerance),
+        }
+    }
+}
+
+impl Default for ShadingRenderOptions {
+    fn default() -> Self {
+        Self {
+            smoothness_tolerance: 0.0,
+        }
+    }
+}
+
+pub struct ShadingRenderer;
 
 const BAYER_8X8: [u8; 64] = [
     0, 48, 12, 60, 3, 51, 15, 63, 32, 16, 44, 28, 35, 19, 47, 31, 8, 56, 4, 52, 11, 59, 7, 55, 40,
@@ -285,6 +354,22 @@ fn quantize_shading_color(color: RenderColor, x: i32, y: i32, dither: bool) -> P
     ]
 }
 
+fn invert_transform_or_decline(transform: &Transform2D, label: &str) -> Option<Transform2D> {
+    if !transform.to_array().iter().all(|value| value.is_finite()) {
+        log::warn!("{label}: non-finite transform");
+        return None;
+    }
+    let Some(inverse) = transform.inverse() else {
+        log::warn!("{label}: singular transform");
+        return None;
+    };
+    if !inverse.to_array().iter().all(|value| value.is_finite()) {
+        log::warn!("{label}: non-finite inverse transform");
+        return None;
+    }
+    Some(inverse)
+}
+
 impl ShadingRenderer {
     fn paint_bounds(buf: &PixelBuffer) -> Option<(i32, i32, i32, i32)> {
         match buf.clip_mask().and_then(|clip| clip.visible_bounds()) {
@@ -313,13 +398,46 @@ impl ShadingRenderer {
         reader: &PdfReader,
         mesh_data: Option<&[u8]>,
     ) {
-        match shading_dict.get_integer("ShadingType").unwrap_or(0) {
-            1 => Self::paint_function_based(shading_dict, ctm, viewport, buf, reader),
-            2 => Self::paint_axial(shading_dict, ctm, viewport, buf, reader),
-            3 => Self::paint_radial(shading_dict, ctm, viewport, buf, reader),
-            4 | 5 => Self::paint_gouraud_mesh(shading_dict, ctm, viewport, buf, reader, mesh_data),
-            6 | 7 => Self::paint_patch_mesh(shading_dict, ctm, viewport, buf, reader, mesh_data),
-            other => log::debug!("ShadingRenderer: ShadingType {other} not supported"),
+        Self::paint_with_options(
+            shading_dict,
+            ctm,
+            viewport,
+            buf,
+            reader,
+            mesh_data,
+            ShadingRenderOptions::default(),
+        );
+    }
+
+    pub(crate) fn paint_with_options(
+        shading_dict: &PdfDictionary,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        buf: &mut PixelBuffer,
+        reader: &PdfReader,
+        mesh_data: Option<&[u8]>,
+        options: ShadingRenderOptions,
+    ) {
+        if let Err(reason) = crate::render::page_renderer::validate_shading_dictionary_for_paint(
+            shading_dict,
+            "direct shading",
+            reader,
+        ) {
+            log::warn!("{reason}");
+            return;
+        }
+        match shading_dict.get_integer("ShadingType") {
+            Some(1) => Self::paint_function_based(shading_dict, ctm, viewport, buf, reader),
+            Some(2) => Self::paint_axial(shading_dict, ctm, viewport, buf, reader),
+            Some(3) => Self::paint_radial(shading_dict, ctm, viewport, buf, reader),
+            Some(4 | 5) => {
+                Self::paint_gouraud_mesh(shading_dict, ctm, viewport, buf, reader, mesh_data)
+            }
+            Some(6 | 7) => {
+                Self::paint_patch_mesh(shading_dict, ctm, viewport, buf, reader, mesh_data, options)
+            }
+            Some(other) => log::debug!("ShadingRenderer: ShadingType {other} not supported"),
+            None => log::debug!("ShadingRenderer: missing ShadingType"),
         }
     }
 
@@ -341,30 +459,49 @@ impl ShadingRenderer {
                 return;
             }
         };
-        // Domain [x0 x1 y0 y1] (defaults to the unit square).
-        let domain = get_float_array(dict, "Domain").unwrap_or_else(|| vec![0.0, 1.0, 0.0, 1.0]);
-        let (dx0, dx1) = (
-            domain.first().copied().unwrap_or(0.0),
-            domain.get(1).copied().unwrap_or(1.0),
-        );
-        let (dy0, dy1) = (
-            domain.get(2).copied().unwrap_or(0.0),
-            domain.get(3).copied().unwrap_or(1.0),
-        );
-        // /Matrix maps domain space → the shading's target user space.
-        let shading_matrix = match get_float_array(dict, "Matrix") {
-            Some(m) if m.len() >= 6 => Transform2D::from([m[0], m[1], m[2], m[3], m[4], m[5]]),
-            _ => Transform2D::identity(),
+        // Domain [x0 x1 y0 y1] defaults to the unit square, but a present
+        // malformed value is a local paint refusal.
+        let domain = if dict.contains_key("Domain") {
+            match get_float_array(dict, "Domain") {
+                Some(values) if values.len() == 4 => values,
+                _ => {
+                    log::warn!("function-based shading: malformed /Domain");
+                    return;
+                }
+            }
+        } else {
+            vec![0.0, 1.0, 0.0, 1.0]
         };
-        let color_space = shading_color_space_name(dict);
+        let (dx0, dx1) = (domain[0], domain[1]);
+        let (dy0, dy1) = (domain[2], domain[3]);
+        // /Matrix maps domain space → the shading's target user space.
+        let shading_matrix = if dict.contains_key("Matrix") {
+            match get_float_array(dict, "Matrix") {
+                Some(m) if m.len() == 6 => Transform2D::from([m[0], m[1], m[2], m[3], m[4], m[5]]),
+                _ => {
+                    log::warn!("function-based shading: malformed /Matrix");
+                    return;
+                }
+            }
+        } else {
+            Transform2D::identity()
+        };
+        let Some(color_space) = shading_color_space_name(dict) else {
+            log::warn!("function-based shading: missing or malformed /ColorSpace");
+            return;
+        };
         let color_space_obj = shading_color_space_object(dict);
         let dither = buf.render_mode().is_high_quality();
 
         // device pixel → user space → domain space.
-        let pixel_to_user = Self::pixel_to_user(ctm, viewport);
-        let user_to_domain = shading_matrix
-            .inverse()
-            .unwrap_or_else(Transform2D::identity);
+        let Some(pixel_to_user) = Self::pixel_to_user(ctm, viewport) else {
+            return;
+        };
+        let Some(user_to_domain) =
+            invert_transform_or_decline(&shading_matrix, "function-based shading /Matrix")
+        else {
+            return;
+        };
 
         let Some((x_start, y_start, x_end, y_end)) = Self::paint_bounds(buf) else {
             return;
@@ -380,16 +517,19 @@ impl ShadingRenderer {
                 {
                     continue;
                 }
-                let comps = crate::render::function::eval_function_n(&func_obj, &[mx, my], reader);
+                let comps =
+                    crate::render::function::eval_function_or_array_n(&func_obj, &[mx, my], reader);
                 if comps.is_empty() {
                     continue;
                 }
-                let color = components_to_render_color_with_space(
+                let Some(color) = components_to_render_color_with_space(
                     &comps,
                     &color_space,
                     color_space_obj,
                     reader,
-                );
+                ) else {
+                    continue;
+                };
                 let pixel = quantize_shading_color(color, px, py, dither);
                 buf.blend_pixel(px, py, pixel, 1.0);
             }
@@ -400,13 +540,12 @@ impl ShadingRenderer {
     /// in). `pixel → media-box user space` is `inv_vp`; `media-box → current
     /// user space` is `inv_ctm`. Applying inv_vp first then inv_ctm gives the
     /// composite `inv_vp.concat(&inv_ctm)`.
-    fn pixel_to_user(ctm: &Transform2D, viewport: &Viewport) -> Transform2D {
-        let inv_ctm = ctm.inverse().unwrap_or_else(Transform2D::identity);
-        let inv_vp = viewport
-            .to_transform()
-            .inverse()
-            .unwrap_or_else(Transform2D::identity);
-        inv_vp.concat(&inv_ctm)
+    fn pixel_to_user(ctm: &Transform2D, viewport: &Viewport) -> Option<Transform2D> {
+        let inv_ctm = invert_transform_or_decline(ctm, "shading paint CTM")?;
+        let viewport_transform = viewport.to_transform();
+        let inv_vp =
+            invert_transform_or_decline(&viewport_transform, "shading viewport transform")?;
+        Some(inv_vp.concat(&inv_ctm))
     }
 
     fn paint_axial(
@@ -417,18 +556,38 @@ impl ShadingRenderer {
         reader: &PdfReader,
     ) {
         let coords = match get_float_array(dict, "Coords") {
-            Some(c) if c.len() >= 4 => c,
+            Some(c) if c.len() == 4 => c,
             _ => {
-                log::warn!("axial shading: missing or short /Coords");
+                log::warn!("axial shading: missing or malformed /Coords");
                 return;
             }
         };
         let (x0, y0, x1, y1) = (coords[0], coords[1], coords[2], coords[3]);
 
-        let extend = get_bool_pair(dict, "Extend").unwrap_or([false, false]);
-        let domain = get_float_array(dict, "Domain").unwrap_or_else(|| vec![0.0, 1.0]);
-        let t0 = domain.first().copied().unwrap_or(0.0);
-        let t1 = domain.get(1).copied().unwrap_or(1.0);
+        let extend = if dict.contains_key("Extend") {
+            match get_bool_pair(dict, "Extend") {
+                Some(value) => value,
+                None => {
+                    log::warn!("axial shading: malformed /Extend");
+                    return;
+                }
+            }
+        } else {
+            [false, false]
+        };
+        let domain = if dict.contains_key("Domain") {
+            match get_float_array(dict, "Domain") {
+                Some(values) if values.len() == 2 => values,
+                _ => {
+                    log::warn!("axial shading: malformed /Domain");
+                    return;
+                }
+            }
+        } else {
+            vec![0.0, 1.0]
+        };
+        let t0 = domain[0];
+        let t1 = domain[1];
 
         let func_obj = match dict.get("Function") {
             Some(f) => f.clone(),
@@ -437,7 +596,10 @@ impl ShadingRenderer {
                 return;
             }
         };
-        let color_space = shading_color_space_name(dict);
+        let Some(color_space) = shading_color_space_name(dict) else {
+            log::warn!("axial shading: missing or malformed /ColorSpace");
+            return;
+        };
         let color_space_obj = shading_color_space_object(dict);
 
         let dx = x1 - x0;
@@ -447,7 +609,9 @@ impl ShadingRenderer {
             return;
         }
 
-        let pixel_to_user = Self::pixel_to_user(ctm, viewport);
+        let Some(pixel_to_user) = Self::pixel_to_user(ctm, viewport) else {
+            return;
+        };
         let Some((x_start, y_start, x_end, y_end)) = Self::paint_bounds(buf) else {
             return;
         };
@@ -498,19 +662,39 @@ impl ShadingRenderer {
         reader: &PdfReader,
     ) {
         let coords = match get_float_array(dict, "Coords") {
-            Some(c) if c.len() >= 6 => c,
+            Some(c) if c.len() == 6 => c,
             _ => {
-                log::warn!("radial shading: missing or short /Coords");
+                log::warn!("radial shading: missing or malformed /Coords");
                 return;
             }
         };
         let (x0, y0, r0) = (coords[0], coords[1], coords[2]);
         let (x1, y1, r1) = (coords[3], coords[4], coords[5]);
 
-        let extend = get_bool_pair(dict, "Extend").unwrap_or([false, false]);
-        let domain = get_float_array(dict, "Domain").unwrap_or_else(|| vec![0.0, 1.0]);
-        let t0 = domain.first().copied().unwrap_or(0.0);
-        let t1 = domain.get(1).copied().unwrap_or(1.0);
+        let extend = if dict.contains_key("Extend") {
+            match get_bool_pair(dict, "Extend") {
+                Some(value) => value,
+                None => {
+                    log::warn!("radial shading: malformed /Extend");
+                    return;
+                }
+            }
+        } else {
+            [false, false]
+        };
+        let domain = if dict.contains_key("Domain") {
+            match get_float_array(dict, "Domain") {
+                Some(values) if values.len() == 2 => values,
+                _ => {
+                    log::warn!("radial shading: malformed /Domain");
+                    return;
+                }
+            }
+        } else {
+            vec![0.0, 1.0]
+        };
+        let t0 = domain[0];
+        let t1 = domain[1];
 
         let func_obj = match dict.get("Function") {
             Some(f) => f.clone(),
@@ -519,7 +703,10 @@ impl ShadingRenderer {
                 return;
             }
         };
-        let color_space = shading_color_space_name(dict);
+        let Some(color_space) = shading_color_space_name(dict) else {
+            log::warn!("radial shading: missing or malformed /ColorSpace");
+            return;
+        };
         let color_space_obj = shading_color_space_object(dict);
 
         let ax = x1 - x0;
@@ -527,7 +714,9 @@ impl ShadingRenderer {
         let ar = r1 - r0;
         let aa = ax * ax + ay * ay - ar * ar;
 
-        let pixel_to_user = Self::pixel_to_user(ctm, viewport);
+        let Some(pixel_to_user) = Self::pixel_to_user(ctm, viewport) else {
+            return;
+        };
         let Some((x_start, y_start, x_end, y_end)) = Self::paint_bounds(buf) else {
             return;
         };
@@ -616,7 +805,7 @@ impl ShadingRenderer {
             color_space,
             color_space_obj,
             reader,
-        );
+        )?;
         cache.set(s, color);
         Some(color)
     }
@@ -654,16 +843,30 @@ impl MeshDecode {
         color_space: &str,
         color_space_obj: Option<&PdfObject>,
     ) -> Option<Self> {
-        let bits_per_coord = dict.get_integer("BitsPerCoordinate")? as usize;
-        let bits_per_comp = dict.get_integer("BitsPerComponent")? as usize;
-        let bits_per_flag = dict.get_integer("BitsPerFlag").unwrap_or(8) as usize;
-        let decode = get_float_array(dict, "Decode")?;
+        let shading_type = dict.get_integer("ShadingType")?;
+        if !(4..=7).contains(&shading_type) {
+            return None;
+        }
+        let bits_per_coord =
+            mesh_integer_from_dict(dict, "BitsPerCoordinate", &[1, 2, 4, 8, 12, 16, 24, 32])?;
+        let bits_per_comp =
+            mesh_integer_from_dict(dict, "BitsPerComponent", &[1, 2, 4, 8, 12, 16])?;
+        let bits_per_flag = if matches!(shading_type, 4 | 6 | 7) || dict.contains_key("BitsPerFlag")
+        {
+            mesh_integer_from_dict(dict, "BitsPerFlag", &[2, 4, 8])?
+        } else {
+            8
+        };
+        let decode = get_strict_float_array(dict, "Decode")?;
         let has_function = dict.get("Function").is_some();
         let n_color = if has_function {
             1
         } else {
             color_space_component_count(color_space, color_space_obj)
         };
+        if decode.len() != 4 + 2 * n_color {
+            return None;
+        }
         Some(Self {
             bits_per_coord,
             bits_per_comp,
@@ -688,26 +891,16 @@ impl MeshDecode {
         let xr = br.read(self.bits_per_coord)? as f64;
         let yr = br.read(self.bits_per_coord)? as f64;
         let xmax_raw = crate::render::function::max_value(self.bits_per_coord);
-        let x = decode_value(
-            xr,
-            xmax_raw,
-            self.decode.first().copied().unwrap_or(0.0),
-            self.decode.get(1).copied().unwrap_or(1.0),
-        );
-        let y = decode_value(
-            yr,
-            xmax_raw,
-            self.decode.get(2).copied().unwrap_or(0.0),
-            self.decode.get(3).copied().unwrap_or(1.0),
-        );
+        let x = decode_value(xr, xmax_raw, self.decode[0], self.decode[1]);
+        let y = decode_value(yr, xmax_raw, self.decode[2], self.decode[3]);
         let (dx, dy) = to_device.transform_point(x, y);
 
         let cmax_raw = crate::render::function::max_value(self.bits_per_comp);
         let mut comps = Vec::with_capacity(self.n_color);
         for k in 0..self.n_color {
             let raw = br.read(self.bits_per_comp)? as f64;
-            let dlo = self.decode.get(4 + 2 * k).copied().unwrap_or(0.0);
-            let dhi = self.decode.get(5 + 2 * k).copied().unwrap_or(1.0);
+            let dlo = self.decode[4 + 2 * k];
+            let dhi = self.decode[5 + 2 * k];
             comps.push(decode_value(raw, cmax_raw, dlo, dhi));
         }
         let color = resolve_vertex_color(
@@ -717,9 +910,31 @@ impl MeshDecode {
             color_space,
             color_space_obj,
             reader,
-        );
+        )?;
         Some(MeshVertex { dx, dy, color })
     }
+}
+
+fn mesh_integer_from_dict(dict: &PdfDictionary, key: &str, allowed: &[i64]) -> Option<usize> {
+    let value = dict.get_integer(key)?;
+    if allowed.contains(&value) {
+        usize::try_from(value).ok()
+    } else {
+        None
+    }
+}
+
+fn get_strict_float_array(dict: &PdfDictionary, key: &str) -> Option<Vec<f64>> {
+    let arr = dict.get(key)?.as_array()?;
+    let mut vals = Vec::with_capacity(arr.len());
+    for item in arr {
+        let value = item.as_number()?;
+        if !value.is_finite() {
+            return None;
+        }
+        vals.push(value);
+    }
+    Some(vals)
 }
 
 /// Map a raw integer sample in [0, max] onto [lo, hi].
@@ -742,7 +957,7 @@ fn color_space_component_count(name: &str, color_space_obj: Option<&PdfObject>) 
         }
     }
     match name {
-        "DeviceGray" | "CalGray" | "G" | "Separation" => 1,
+        "DeviceGray" | "CalGray" | "G" | "Indexed" | "Separation" => 1,
         "DeviceCMYK" | "CMYK" => 4,
         _ => 3,
     }
@@ -757,12 +972,12 @@ fn resolve_vertex_color(
     color_space: &str,
     color_space_obj: Option<&PdfObject>,
     reader: &PdfReader,
-) -> RenderColor {
+) -> Option<RenderColor> {
     let resolved = if has_function {
         match func_obj {
             Some(f) => {
-                let t = comps.first().copied().unwrap_or(0.0);
-                crate::render::function::eval_function_n(f, &[t], reader)
+                let t = comps.first().copied()?;
+                crate::render::function::eval_function_or_array_n(f, &[t], reader)
             }
             None => comps.to_vec(),
         }
@@ -782,8 +997,21 @@ impl ShadingRenderer {
         reader: &PdfReader,
         mesh_data: Option<&[u8]>,
     ) {
-        let shading_type = dict.get_integer("ShadingType").unwrap_or(4);
-        let color_space = shading_color_space_name(dict);
+        let shading_type = match dict.get_integer("ShadingType") {
+            Some(value @ (4 | 5)) => value,
+            Some(other) => {
+                log::warn!("mesh shading: unsupported ShadingType {other}");
+                return;
+            }
+            None => {
+                log::warn!("mesh shading: missing ShadingType");
+                return;
+            }
+        };
+        let Some(color_space) = shading_color_space_name(dict) else {
+            log::warn!("mesh shading: missing or malformed /ColorSpace");
+            return;
+        };
         let color_space_obj = shading_color_space_object(dict);
         let Some(dec) = MeshDecode::from_dict(dict, &color_space, color_space_obj) else {
             log::warn!("mesh shading: missing BitsPerCoordinate/BitsPerComponent/Decode");
@@ -803,11 +1031,23 @@ impl ShadingRenderer {
         if shading_type == 5 {
             // Lattice-form: a grid of /VerticesPerRow columns; each 2x2 cell of
             // adjacent rows makes two triangles. No flags, no colors-as-flags.
-            let per_row = dict.get_integer("VerticesPerRow").unwrap_or(0).max(0) as usize;
-            if per_row < 2 {
-                log::warn!("lattice mesh: VerticesPerRow < 2");
-                return;
-            }
+            let per_row = match dict.get_integer("VerticesPerRow") {
+                Some(value) if value >= 2 => match usize::try_from(value) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        log::warn!("lattice mesh: VerticesPerRow overflows usize");
+                        return;
+                    }
+                },
+                Some(_) => {
+                    log::warn!("lattice mesh: VerticesPerRow < 2");
+                    return;
+                }
+                None => {
+                    log::warn!("lattice mesh: missing VerticesPerRow");
+                    return;
+                }
+            };
             let mut prev_row: Vec<MeshVertex> = Vec::new();
             loop {
                 // Read one row.
@@ -914,10 +1154,24 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
         mesh_data: Option<&[u8]>,
+        options: ShadingRenderOptions,
     ) {
-        let shading_type = dict.get_integer("ShadingType").unwrap_or(6);
+        let shading_type = match dict.get_integer("ShadingType") {
+            Some(value @ (6 | 7)) => value,
+            Some(other) => {
+                log::warn!("patch mesh: unsupported ShadingType {other}");
+                return;
+            }
+            None => {
+                log::warn!("patch mesh: missing ShadingType");
+                return;
+            }
+        };
         let n_points_new = if shading_type == 7 { 16 } else { 12 };
-        let color_space = shading_color_space_name(dict);
+        let Some(color_space) = shading_color_space_name(dict) else {
+            log::warn!("patch mesh: missing or malformed /ColorSpace");
+            return;
+        };
         let color_space_obj = shading_color_space_object(dict);
         let Some(dec) = MeshDecode::from_dict(dict, &color_space, color_space_obj) else {
             log::warn!("patch mesh: missing BitsPerCoordinate/BitsPerComponent/Decode");
@@ -972,18 +1226,8 @@ impl ShadingRenderer {
                     ok = false;
                     break;
                 };
-                let x = decode_value(
-                    xr as f64,
-                    coord_max,
-                    dec.decode.first().copied().unwrap_or(0.0),
-                    dec.decode.get(1).copied().unwrap_or(1.0),
-                );
-                let y = decode_value(
-                    yr as f64,
-                    coord_max,
-                    dec.decode.get(2).copied().unwrap_or(0.0),
-                    dec.decode.get(3).copied().unwrap_or(1.0),
-                );
+                let x = decode_value(xr as f64, coord_max, dec.decode[0], dec.decode[1]);
+                let y = decode_value(yr as f64, coord_max, dec.decode[2], dec.decode[3]);
                 new_pts.push((x, y));
             }
             if !ok {
@@ -998,21 +1242,25 @@ impl ShadingRenderer {
                         ok = false;
                         break;
                     };
-                    let dlo = dec.decode.get(4 + 2 * k).copied().unwrap_or(0.0);
-                    let dhi = dec.decode.get(5 + 2 * k).copied().unwrap_or(1.0);
+                    let dlo = dec.decode[4 + 2 * k];
+                    let dhi = dec.decode[5 + 2 * k];
                     comps.push(decode_value(raw as f64, comp_max, dlo, dhi));
                 }
                 if !ok {
                     break;
                 }
-                new_cols.push(resolve_vertex_color(
+                let Some(color) = resolve_vertex_color(
                     &comps,
                     dec.has_function,
                     func_obj.as_ref(),
                     &color_space,
                     color_space_obj,
                     reader,
-                ));
+                ) else {
+                    ok = false;
+                    break;
+                };
+                new_cols.push(color);
             }
             if !ok {
                 break;
@@ -1034,9 +1282,21 @@ impl ShadingRenderer {
             };
 
             if shading_type == 7 {
-                render_tensor_patch(buf, &patch_pts, &cols4, &to_device);
+                render_tensor_patch(
+                    buf,
+                    &patch_pts,
+                    &cols4,
+                    &to_device,
+                    options.smoothness_tolerance,
+                );
             } else {
-                render_coons_patch(buf, &patch_pts, &cols4, &to_device);
+                render_coons_patch(
+                    buf,
+                    &patch_pts,
+                    &cols4,
+                    &to_device,
+                    options.smoothness_tolerance,
+                );
             }
 
             prev_pts = patch_pts;
@@ -1156,18 +1416,19 @@ fn render_coons_patch(
     pts12: &[(f64, f64)],
     cols4: &[RenderColor],
     to_device: &Transform2D,
+    smoothness_tolerance: f64,
 ) {
     if pts12.len() < 12 || cols4.len() < 4 {
         return;
     }
-    const N: usize = 10;
+    let n = coons_subdivision_count(smoothness_tolerance);
     // Build the grid of device-space vertices + colors.
-    let mut grid: Vec<Vec<MeshVertex>> = Vec::with_capacity(N + 1);
-    for iu in 0..=N {
-        let u = iu as f64 / N as f64;
-        let mut row = Vec::with_capacity(N + 1);
-        for iv in 0..=N {
-            let v = iv as f64 / N as f64;
+    let mut grid: Vec<Vec<MeshVertex>> = Vec::with_capacity(n + 1);
+    for iu in 0..=n {
+        let u = iu as f64 / n as f64;
+        let mut row = Vec::with_capacity(n + 1);
+        for iv in 0..=n {
+            let v = iv as f64 / n as f64;
             let (ux, uy) = coons_point(pts12, u, v);
             let (dx, dy) = to_device.transform_point(ux, uy);
             let color = bilerp_color(cols4, u, v);
@@ -1175,8 +1436,8 @@ fn render_coons_patch(
         }
         grid.push(row);
     }
-    for iu in 0..N {
-        for iv in 0..N {
+    for iu in 0..n {
+        for iv in 0..n {
             let a = grid[iu][iv];
             let b = grid[iu + 1][iv];
             let c = grid[iu][iv + 1];
@@ -1230,11 +1491,12 @@ fn render_tensor_patch(
     pts16: &[(f64, f64)],
     cols4: &[RenderColor],
     to_device: &Transform2D,
+    smoothness_tolerance: f64,
 ) {
     if pts16.len() < 16 || cols4.len() < 4 {
         return;
     }
-    let n = tensor_subdivision_count(pts16);
+    let n = tensor_subdivision_count(pts16, smoothness_tolerance);
     let mut grid: Vec<Vec<MeshVertex>> = Vec::with_capacity(n + 1);
     for iu in 0..=n {
         let u = iu as f64 / n as f64;
@@ -1260,7 +1522,7 @@ fn render_tensor_patch(
     }
 }
 
-fn tensor_subdivision_count(p: &[(f64, f64)]) -> usize {
+fn tensor_subdivision_count(p: &[(f64, f64)], smoothness_tolerance: f64) -> usize {
     let min_x = p.iter().map(|pt| pt.0).fold(f64::INFINITY, f64::min);
     let max_x = p.iter().map(|pt| pt.0).fold(f64::NEG_INFINITY, f64::max);
     let min_y = p.iter().map(|pt| pt.1).fold(f64::INFINITY, f64::min);
@@ -1278,7 +1540,29 @@ fn tensor_subdivision_count(p: &[(f64, f64)]) -> usize {
         max_deviation = max_deviation.max(distance_point(p[idx], bilerp_point(corners, u, v)));
     }
     let curvature = (max_deviation / span).clamp(0.0, 1.0);
-    (10.0 + curvature * 18.0).ceil() as usize
+    let default_count = (DEFAULT_PATCH_SUBDIVISIONS as f64 + curvature * 18.0).ceil() as usize;
+    subdivision_count_for_smoothness(default_count, smoothness_tolerance)
+}
+
+fn coons_subdivision_count(smoothness_tolerance: f64) -> usize {
+    subdivision_count_for_smoothness(DEFAULT_PATCH_SUBDIVISIONS, smoothness_tolerance)
+}
+
+fn subdivision_count_for_smoothness(default_count: usize, smoothness_tolerance: f64) -> usize {
+    let default_count = default_count.max(MIN_PATCH_SUBDIVISIONS);
+    let smoothness = normalize_smoothness_tolerance(smoothness_tolerance);
+    if smoothness <= 0.0 {
+        return default_count;
+    }
+    let factor = (1.0 - smoothness * 0.75).clamp(0.25, 1.0);
+    ((default_count as f64 * factor).ceil() as usize).clamp(MIN_PATCH_SUBDIVISIONS, default_count)
+}
+
+fn normalize_smoothness_tolerance(smoothness_tolerance: f64) -> f64 {
+    if !smoothness_tolerance.is_finite() || smoothness_tolerance < 0.0 {
+        return 0.0;
+    }
+    smoothness_tolerance.clamp(0.0, 1.0)
 }
 
 fn tensor_point(p: &[(f64, f64)], u: f64, v: f64) -> (f64, f64) {
@@ -1455,6 +1739,46 @@ mod tests {
         ])
     }
 
+    fn mesh_decode_array(values: &[f64]) -> PdfObject {
+        PdfObject::Array(values.iter().map(|&value| PdfObject::Real(value)).collect())
+    }
+
+    fn red_rgb_function() -> PdfObject {
+        PdfObject::Dictionary(make_type2_dict(&[1.0, 0.0, 0.0], &[1.0, 0.0, 0.0], 1.0))
+    }
+
+    fn assert_shading_helper_does_not_paint(
+        paint: fn(&PdfDictionary, &Transform2D, &Viewport, &mut PixelBuffer, &PdfReader),
+        shading: PdfDictionary,
+    ) {
+        assert_shading_helper_with_ctm_does_not_paint(paint, shading, Transform2D::identity());
+    }
+
+    fn assert_shading_helper_with_ctm_does_not_paint(
+        paint: fn(&PdfDictionary, &Transform2D, &Viewport, &mut PixelBuffer, &PdfReader),
+        shading: PdfDictionary,
+        ctm: Transform2D,
+    ) {
+        let reader = crate::reader::PdfReader::from_bytes(super::tests_minimal_pdf()).unwrap();
+        let viewport = Viewport::new([0.0, 0.0, 4.0, 4.0], 72);
+        let mut buf = PixelBuffer::new_filled(4, 4, crate::render::buffer::WHITE);
+
+        paint(&shading, &ctm, &viewport, &mut buf, &reader);
+
+        assert_eq!(buf.get_pixel(2, 2), crate::render::buffer::WHITE);
+    }
+
+    fn mesh_base_dict(decode: PdfObject) -> PdfDictionary {
+        dict(&[
+            ("ShadingType", PdfObject::Integer(4)),
+            ("ColorSpace", PdfObject::Name("DeviceRGB".to_string())),
+            ("BitsPerCoordinate", PdfObject::Integer(8)),
+            ("BitsPerComponent", PdfObject::Integer(8)),
+            ("BitsPerFlag", PdfObject::Integer(2)),
+            ("Decode", decode),
+        ])
+    }
+
     #[test]
     fn type2_at_t0_returns_c0() {
         let d = make_type2_dict(&[1.0, 0.0, 0.0], &[0.0, 0.0, 1.0], 1.0);
@@ -1487,10 +1811,94 @@ mod tests {
     }
 
     #[test]
+    fn mesh_decode_rejects_non_numeric_or_short_decode_arrays() {
+        let non_numeric = mesh_base_dict(PdfObject::Array(vec![
+            PdfObject::Real(0.0),
+            PdfObject::Real(1.0),
+            PdfObject::Real(0.0),
+            PdfObject::Name("Bad".to_string()),
+            PdfObject::Real(0.0),
+            PdfObject::Real(1.0),
+            PdfObject::Real(0.0),
+            PdfObject::Real(1.0),
+            PdfObject::Real(0.0),
+            PdfObject::Real(1.0),
+        ]));
+        assert!(MeshDecode::from_dict(&non_numeric, "DeviceRGB", None).is_none());
+
+        let short = mesh_base_dict(mesh_decode_array(&[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]));
+        assert!(MeshDecode::from_dict(&short, "DeviceRGB", None).is_none());
+    }
+
+    #[test]
+    fn mesh_decode_rejects_invalid_bit_fields() {
+        let mut invalid_coord = mesh_base_dict(mesh_decode_array(&[
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+        ]));
+        invalid_coord.insert("BitsPerCoordinate", PdfObject::Integer(-1));
+        assert!(MeshDecode::from_dict(&invalid_coord, "DeviceRGB", None).is_none());
+
+        let mut missing_flag = mesh_base_dict(mesh_decode_array(&[
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+        ]));
+        missing_flag.remove("BitsPerFlag");
+        assert!(MeshDecode::from_dict(&missing_flag, "DeviceRGB", None).is_none());
+    }
+
+    #[test]
+    fn mesh_decode_rejects_missing_or_non_mesh_shading_type() {
+        let mut missing_type = mesh_base_dict(mesh_decode_array(&[
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+        ]));
+        missing_type.remove("ShadingType");
+        assert!(MeshDecode::from_dict(&missing_type, "DeviceRGB", None).is_none());
+
+        let mut non_mesh = mesh_base_dict(mesh_decode_array(&[
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+        ]));
+        non_mesh.insert("ShadingType", PdfObject::Integer(3));
+        assert!(MeshDecode::from_dict(&non_mesh, "DeviceRGB", None).is_none());
+    }
+
+    #[test]
+    fn mesh_decode_accepts_type5_without_flag_bits() {
+        let mut lattice = mesh_base_dict(mesh_decode_array(&[
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+        ]));
+        lattice.insert("ShadingType", PdfObject::Integer(5));
+        lattice.remove("BitsPerFlag");
+        lattice.insert("VerticesPerRow", PdfObject::Integer(2));
+        assert!(MeshDecode::from_dict(&lattice, "DeviceRGB", None).is_some());
+    }
+
+    #[test]
     fn type2_output_clamped_to_unit_range() {
         let d = make_type2_dict(&[0.9], &[0.1], 1.0);
         let r = eval_type2(&d, 2.0);
         assert!((0.0..=1.0).contains(&r[0]), "out of range: {}", r[0]);
+    }
+
+    #[test]
+    fn type2_evaluator_rejects_malformed_local_shape_fields() {
+        let mut missing_domain = make_type2_dict(&[0.0], &[1.0], 1.0);
+        missing_domain.remove("Domain");
+        assert!(eval_type2(&missing_domain, 0.5).is_empty());
+
+        let mut missing_exponent = make_type2_dict(&[0.0], &[1.0], 1.0);
+        missing_exponent.remove("N");
+        assert!(eval_type2(&missing_exponent, 0.5).is_empty());
+
+        let mut malformed_c0 = make_type2_dict(&[0.0], &[1.0], 1.0);
+        malformed_c0.insert(
+            "C0",
+            PdfObject::Array(vec![PdfObject::Name("Bad".to_string())]),
+        );
+        assert!(eval_type2(&malformed_c0, 0.5).is_empty());
+
+        let mut mismatched_components = make_type2_dict(&[0.0], &[0.0, 1.0], 1.0);
+        assert!(eval_type2(&mismatched_components, 0.5).is_empty());
+        mismatched_components.insert("C0", PdfObject::Array(vec![PdfObject::Real(f64::NAN)]));
+        assert!(eval_type2(&mismatched_components, 0.5).is_empty());
     }
 
     #[test]
@@ -1519,6 +1927,40 @@ mod tests {
     }
 
     #[test]
+    fn type3_evaluator_rejects_malformed_local_shape_fields() {
+        let sub = PdfObject::Dictionary(make_type2_dict(&[0.0], &[1.0], 1.0));
+        let reader = crate::reader::PdfReader::from_bytes(super::tests_minimal_pdf()).unwrap();
+        let base = dict(&[
+            ("FunctionType", PdfObject::Integer(3)),
+            (
+                "Domain",
+                PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
+            ),
+            ("Functions", PdfObject::Array(vec![sub])),
+            ("Bounds", PdfObject::Array(vec![])),
+            (
+                "Encode",
+                PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
+            ),
+        ]);
+
+        let mut missing_domain = base.clone();
+        missing_domain.remove("Domain");
+        assert!(eval_type3(&missing_domain, 0.5, &reader).is_empty());
+
+        let mut malformed_bounds = base.clone();
+        malformed_bounds.insert(
+            "Bounds",
+            PdfObject::Array(vec![PdfObject::Name("Bad".to_string())]),
+        );
+        assert!(eval_type3(&malformed_bounds, 0.5, &reader).is_empty());
+
+        let mut short_encode = base;
+        short_encode.insert("Encode", PdfObject::Array(vec![PdfObject::Real(0.0)]));
+        assert!(eval_type3(&short_encode, 0.5, &reader).is_empty());
+    }
+
+    #[test]
     fn bool_pair_reads_extend() {
         let d = dict(&[(
             "Extend",
@@ -1530,6 +1972,335 @@ mod tests {
     #[test]
     fn bool_pair_missing_is_none() {
         assert!(get_bool_pair(&PdfDictionary::empty(), "Extend").is_none());
+    }
+
+    #[test]
+    fn bool_pair_rejects_malformed_values() {
+        let non_boolean = dict(&[(
+            "Extend",
+            PdfObject::Array(vec![
+                PdfObject::Boolean(true),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        )]);
+        let too_long = dict(&[(
+            "Extend",
+            PdfObject::Array(vec![
+                PdfObject::Boolean(true),
+                PdfObject::Boolean(false),
+                PdfObject::Boolean(true),
+            ]),
+        )]);
+
+        assert!(get_bool_pair(&non_boolean, "Extend").is_none());
+        assert!(get_bool_pair(&too_long, "Extend").is_none());
+    }
+
+    #[test]
+    fn direct_shading_helpers_reject_malformed_local_shape_fields() {
+        let function_base = dict(&[
+            ("ShadingType", PdfObject::Integer(1)),
+            ("ColorSpace", PdfObject::Name("DeviceRGB".to_string())),
+            ("Domain", mesh_decode_array(&[0.0, 1.0, 0.0, 1.0])),
+            ("Function", red_rgb_function()),
+        ]);
+
+        let mut bad_function_domain = function_base.clone();
+        bad_function_domain.insert(
+            "Domain",
+            PdfObject::Array(vec![
+                PdfObject::Real(0.0),
+                PdfObject::Real(1.0),
+                PdfObject::Real(0.0),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        );
+        assert_shading_helper_does_not_paint(
+            ShadingRenderer::paint_function_based,
+            bad_function_domain,
+        );
+
+        let mut bad_function_matrix = function_base.clone();
+        bad_function_matrix.insert("Matrix", mesh_decode_array(&[1.0, 0.0]));
+        assert_shading_helper_does_not_paint(
+            ShadingRenderer::paint_function_based,
+            bad_function_matrix,
+        );
+
+        let mut singular_function_matrix = function_base;
+        singular_function_matrix
+            .insert("Matrix", mesh_decode_array(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
+        assert_shading_helper_does_not_paint(
+            ShadingRenderer::paint_function_based,
+            singular_function_matrix,
+        );
+
+        let axial_base = dict(&[
+            ("ShadingType", PdfObject::Integer(2)),
+            ("ColorSpace", PdfObject::Name("DeviceRGB".to_string())),
+            ("Coords", mesh_decode_array(&[0.0, 2.0, 4.0, 2.0])),
+            (
+                "Extend",
+                PdfObject::Array(vec![PdfObject::Boolean(true), PdfObject::Boolean(true)]),
+            ),
+            ("Domain", mesh_decode_array(&[0.0, 1.0])),
+            ("Function", red_rgb_function()),
+        ]);
+
+        let mut bad_axial_coords = axial_base.clone();
+        bad_axial_coords.insert(
+            "Coords",
+            PdfObject::Array(vec![
+                PdfObject::Real(0.0),
+                PdfObject::Real(2.0),
+                PdfObject::Real(4.0),
+                PdfObject::Real(2.0),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        );
+        assert_shading_helper_does_not_paint(ShadingRenderer::paint_axial, bad_axial_coords);
+
+        let mut bad_axial_domain = axial_base.clone();
+        bad_axial_domain.insert(
+            "Domain",
+            PdfObject::Array(vec![
+                PdfObject::Real(0.0),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        );
+        assert_shading_helper_does_not_paint(ShadingRenderer::paint_axial, bad_axial_domain);
+
+        let mut bad_axial_extend = axial_base;
+        bad_axial_extend.insert(
+            "Extend",
+            PdfObject::Array(vec![
+                PdfObject::Boolean(true),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        );
+        assert_shading_helper_does_not_paint(ShadingRenderer::paint_axial, bad_axial_extend);
+
+        let radial_base = dict(&[
+            ("ShadingType", PdfObject::Integer(3)),
+            ("ColorSpace", PdfObject::Name("DeviceRGB".to_string())),
+            ("Coords", mesh_decode_array(&[0.0, 2.0, 4.0, 4.0, 2.0, 4.0])),
+            (
+                "Extend",
+                PdfObject::Array(vec![PdfObject::Boolean(true), PdfObject::Boolean(true)]),
+            ),
+            ("Domain", mesh_decode_array(&[0.0, 1.0])),
+            ("Function", red_rgb_function()),
+        ]);
+
+        let mut bad_radial_coords = radial_base.clone();
+        bad_radial_coords.insert(
+            "Coords",
+            PdfObject::Array(vec![
+                PdfObject::Real(0.0),
+                PdfObject::Real(2.0),
+                PdfObject::Real(4.0),
+                PdfObject::Real(4.0),
+                PdfObject::Real(2.0),
+                PdfObject::Real(4.0),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        );
+        assert_shading_helper_does_not_paint(ShadingRenderer::paint_radial, bad_radial_coords);
+
+        let mut bad_radial_domain = radial_base.clone();
+        bad_radial_domain.insert(
+            "Domain",
+            PdfObject::Array(vec![
+                PdfObject::Real(0.0),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        );
+        assert_shading_helper_does_not_paint(ShadingRenderer::paint_radial, bad_radial_domain);
+
+        let mut bad_radial_extend = radial_base;
+        bad_radial_extend.insert(
+            "Extend",
+            PdfObject::Array(vec![
+                PdfObject::Boolean(true),
+                PdfObject::Name("Bad".to_string()),
+            ]),
+        );
+        assert_shading_helper_does_not_paint(ShadingRenderer::paint_radial, bad_radial_extend);
+    }
+
+    #[test]
+    fn direct_shading_helpers_reject_singular_paint_ctm() {
+        let singular_ctm = Transform2D::scale(0.0, 0.0);
+        let function_shading = dict(&[
+            ("ShadingType", PdfObject::Integer(1)),
+            ("ColorSpace", PdfObject::Name("DeviceRGB".to_string())),
+            ("Domain", mesh_decode_array(&[0.0, 1.0, 0.0, 1.0])),
+            ("Function", red_rgb_function()),
+        ]);
+        assert_shading_helper_with_ctm_does_not_paint(
+            ShadingRenderer::paint_function_based,
+            function_shading,
+            singular_ctm,
+        );
+
+        let axial_shading = dict(&[
+            ("ShadingType", PdfObject::Integer(2)),
+            ("ColorSpace", PdfObject::Name("DeviceRGB".to_string())),
+            ("Coords", mesh_decode_array(&[0.0, 2.0, 4.0, 2.0])),
+            (
+                "Extend",
+                PdfObject::Array(vec![PdfObject::Boolean(true), PdfObject::Boolean(true)]),
+            ),
+            ("Domain", mesh_decode_array(&[0.0, 1.0])),
+            ("Function", red_rgb_function()),
+        ]);
+        assert_shading_helper_with_ctm_does_not_paint(
+            ShadingRenderer::paint_axial,
+            axial_shading,
+            singular_ctm,
+        );
+
+        let radial_shading = dict(&[
+            ("ShadingType", PdfObject::Integer(3)),
+            ("ColorSpace", PdfObject::Name("DeviceRGB".to_string())),
+            ("Coords", mesh_decode_array(&[0.0, 2.0, 0.0, 4.0, 2.0, 4.0])),
+            (
+                "Extend",
+                PdfObject::Array(vec![PdfObject::Boolean(true), PdfObject::Boolean(true)]),
+            ),
+            ("Domain", mesh_decode_array(&[0.0, 1.0])),
+            ("Function", red_rgb_function()),
+        ]);
+        assert_shading_helper_with_ctm_does_not_paint(
+            ShadingRenderer::paint_radial,
+            radial_shading,
+            singular_ctm,
+        );
+    }
+
+    #[test]
+    fn direct_shading_helpers_reject_unsupported_color_space_locally() {
+        let shading = dict(&[
+            ("ShadingType", PdfObject::Integer(2)),
+            ("ColorSpace", PdfObject::Name("UnknownSpace".to_string())),
+            ("Coords", mesh_decode_array(&[0.0, 2.0, 4.0, 2.0])),
+            (
+                "Extend",
+                PdfObject::Array(vec![PdfObject::Boolean(true), PdfObject::Boolean(true)]),
+            ),
+            ("Domain", mesh_decode_array(&[0.0, 1.0])),
+            ("Function", red_rgb_function()),
+        ]);
+
+        assert_shading_helper_does_not_paint(ShadingRenderer::paint_axial, shading);
+    }
+
+    #[test]
+    fn direct_shading_paint_rejects_missing_color_space_instead_of_default_rgb() {
+        let shading = dict(&[
+            ("ShadingType", PdfObject::Integer(2)),
+            ("Coords", mesh_decode_array(&[0.0, 2.0, 4.0, 2.0])),
+            (
+                "Extend",
+                PdfObject::Array(vec![PdfObject::Boolean(true), PdfObject::Boolean(true)]),
+            ),
+            (
+                "Function",
+                PdfObject::Dictionary(make_type2_dict(&[1.0, 0.0, 0.0], &[1.0, 0.0, 0.0], 1.0)),
+            ),
+        ]);
+        let reader = crate::reader::PdfReader::from_bytes(super::tests_minimal_pdf()).unwrap();
+        let viewport = Viewport::new([0.0, 0.0, 4.0, 4.0], 72);
+        let mut buf = PixelBuffer::new_filled(4, 4, crate::render::buffer::WHITE);
+
+        ShadingRenderer::paint(
+            &shading,
+            &Transform2D::identity(),
+            &viewport,
+            &mut buf,
+            &reader,
+            None,
+        );
+
+        assert_eq!(buf.get_pixel(2, 2), crate::render::buffer::WHITE);
+    }
+
+    #[test]
+    fn direct_indexed_constant_axial_shading_paints_palette_color() {
+        let shading = dict(&[
+            ("ShadingType", PdfObject::Integer(2)),
+            ("Coords", mesh_decode_array(&[0.0, 2.0, 4.0, 2.0])),
+            (
+                "Extend",
+                PdfObject::Array(vec![PdfObject::Boolean(true), PdfObject::Boolean(true)]),
+            ),
+            (
+                "ColorSpace",
+                PdfObject::Array(vec![
+                    PdfObject::Name("Indexed".to_string()),
+                    PdfObject::Name("DeviceRGB".to_string()),
+                    PdfObject::Integer(1),
+                    PdfObject::String(vec![255, 0, 0, 0, 255, 0]),
+                ]),
+            ),
+            (
+                "Function",
+                PdfObject::Dictionary(make_type2_dict(&[1.0], &[1.0], 1.0)),
+            ),
+        ]);
+        let reader = crate::reader::PdfReader::from_bytes(super::tests_minimal_pdf()).unwrap();
+        let viewport = Viewport::new([0.0, 0.0, 4.0, 4.0], 72);
+        let mut buf = PixelBuffer::new_filled(4, 4, crate::render::buffer::WHITE);
+
+        ShadingRenderer::paint(
+            &shading,
+            &Transform2D::identity(),
+            &viewport,
+            &mut buf,
+            &reader,
+            None,
+        );
+
+        assert_eq!(buf.get_pixel(2, 2), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn direct_indexed_non_integer_shading_index_rejects_paint() {
+        let shading = dict(&[
+            ("ShadingType", PdfObject::Integer(2)),
+            ("Coords", mesh_decode_array(&[0.0, 2.0, 4.0, 2.0])),
+            (
+                "Extend",
+                PdfObject::Array(vec![PdfObject::Boolean(true), PdfObject::Boolean(true)]),
+            ),
+            (
+                "ColorSpace",
+                PdfObject::Array(vec![
+                    PdfObject::Name("Indexed".to_string()),
+                    PdfObject::Name("DeviceRGB".to_string()),
+                    PdfObject::Integer(1),
+                    PdfObject::String(vec![255, 0, 0, 0, 255, 0]),
+                ]),
+            ),
+            (
+                "Function",
+                PdfObject::Dictionary(make_type2_dict(&[0.5], &[0.5], 1.0)),
+            ),
+        ]);
+        let reader = crate::reader::PdfReader::from_bytes(super::tests_minimal_pdf()).unwrap();
+        let viewport = Viewport::new([0.0, 0.0, 4.0, 4.0], 72);
+        let mut buf = PixelBuffer::new_filled(4, 4, crate::render::buffer::WHITE);
+
+        ShadingRenderer::paint(
+            &shading,
+            &Transform2D::identity(),
+            &viewport,
+            &mut buf,
+            &reader,
+            None,
+        );
+
+        assert_eq!(buf.get_pixel(2, 2), crate::render::buffer::WHITE);
     }
 
     #[test]
@@ -1801,5 +2572,46 @@ mod tests {
             (lifted.1 - lowered.1).abs() > 0.15,
             "tensor interior controls should move the surface: lifted={lifted:?} lowered={lowered:?}"
         );
+    }
+
+    #[test]
+    fn smoothness_tolerance_controls_patch_subdivision_counts() {
+        assert_eq!(coons_subdivision_count(0.0), DEFAULT_PATCH_SUBDIVISIONS);
+        assert_eq!(
+            coons_subdivision_count(f64::NAN),
+            DEFAULT_PATCH_SUBDIVISIONS
+        );
+
+        let loose_coons = coons_subdivision_count(1.0);
+        assert!(
+            (MIN_PATCH_SUBDIVISIONS..DEFAULT_PATCH_SUBDIVISIONS).contains(&loose_coons),
+            "loose smoothness should reduce Coons subdivision within bounds, got {loose_coons}"
+        );
+
+        let pts = vec![
+            (0.0, 0.0),
+            (0.0, 0.3),
+            (0.0, 0.7),
+            (0.0, 1.0),
+            (0.3, 1.0),
+            (0.7, 1.0),
+            (1.0, 1.0),
+            (1.0, 0.7),
+            (1.0, 0.3),
+            (1.0, 0.0),
+            (0.7, 0.0),
+            (0.3, 0.0),
+            (0.25, 0.95),
+            (0.25, 0.98),
+            (0.75, 0.98),
+            (0.75, 0.95),
+        ];
+        let default_tensor = tensor_subdivision_count(&pts, 0.0);
+        let loose_tensor = tensor_subdivision_count(&pts, 1.0);
+        assert!(
+            loose_tensor < default_tensor,
+            "loose smoothness should reduce tensor subdivision: default={default_tensor}, loose={loose_tensor}"
+        );
+        assert!(loose_tensor >= MIN_PATCH_SUBDIVISIONS);
     }
 }

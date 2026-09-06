@@ -12,6 +12,7 @@ pub mod variations;
 
 pub use provider::{
     BundledFontProvider, FontMatch, FontMatchRequest, FontProvider, FontProviderSource,
+    RegisteredFontProvider,
 };
 pub use resolver::{FontDecodeSource, FontResolver, FontType};
 pub use shaper::{ShapeOptions, ShapedGlyph, ShapedRun, TextDirection, TextShaper};

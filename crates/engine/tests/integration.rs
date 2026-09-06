@@ -1155,7 +1155,7 @@ fn smask_combine_rgba_produces_correct_dimensions() {
 }
 
 #[test]
-fn smask_combine_rgba_handles_dimension_mismatch_gracefully() {
+fn smask_combine_rgba_rejects_dimension_mismatch() {
     let main = RawImage {
         width: 2,
         height: 2,
@@ -1170,8 +1170,8 @@ fn smask_combine_rgba_handles_dimension_mismatch_gracefully() {
         bits_per_sample: 8,
         pixels: vec![255u8; 9],
     };
-    let out = SmaskLoader::combine_rgba(main, mask).unwrap();
-    assert_eq!(out.channels, 3);
+    let error = SmaskLoader::combine_rgba(main, mask).expect_err("mismatched SMask dimensions");
+    assert!(format!("{error}").contains("image SMask dimensions"));
 }
 
 #[test]

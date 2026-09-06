@@ -1,179 +1,505 @@
 # Wellfriend PDF SDK
 
-Wellfriend PDF SDK is an MIT-licensed, source-linked PDF engine for parsing, rendering, extraction, true editing, reflow, redaction, forms, annotations, OCR layers, standards checks, and multi-language SDK embedding.
+Wellfriend PDF SDK is an MIT-licensed PDF engine for parsing, raster and vector
+rendering, extraction, source-linked editing, document reflow, forms,
+annotations, redaction, standards analysis, and multi-language embedding. The
+canonical implementation is Rust; the CLI, HTTP server, C ABI, Python, WASM,
+.NET, and Java packages use that same engine.
 
-Build the CLI:
+> The repository is currently source-first and pre-1.0 (`0.1.0`). Packages are
+> built from this checkout; no package publication is implied by this README.
 
-```bash
-cargo build -p wellfriendpdf-cli --release
-wellfriendpdf --mode standard capabilities
-```
+## Benchmark Results
 
-## What Wellfriend enables
+This section is reserved at the front of the README for the final post-closure
+verification and benchmark campaign. The current source-closure task does not
+run a PDF corpus, performance benchmark, or competitor comparison, so no new
+performance numbers are claimed here.
 
-- Source-level edits instead of visual cover-ups.
-- Operator-preserving edits, geometric block reflow, and semantic document reflow.
-- Transactions, provenance, undo, and reopen validation.
-- Tables, math, OCR, annotations, AcroForm, XFA preservation boundaries, accessibility, redaction, sanitization, signatures, and standards reporting.
-- One canonical Rust core exposed through Rust, CLI, Python, C ABI, WASM, .NET, Java Maven, Java Gradle, and server APIs.
-
-## Choose an execution mode
-
-| Mode | Best for | Hardware | GPU/LLM | Behavior |
+| Campaign | Dataset and host | Correctness result | Performance result | Status |
 |---|---|---|---|---|
-| Standard | Production, self-hosting, APIs, desktops, ordinary servers | 2 vCPU / 6 GB minimum; 4 vCPU / 8 GB recommended | Not required | Complete adaptive CPU engine with bounded memory, queues, caching, streaming, tiling, spill, and deterministic output meaning |
-| Research | Controlled R&D and enterprise evaluation | Standard baseline plus configured accelerators/providers | Optional | Standard plus optional GPU/model/provider/distributed/experimental infrastructure; falls back to Standard when unavailable |
+| Universal raster rendering | To be recorded | To be recorded | P50/P95/P99 to be recorded | Pending final campaign |
+| Progressive and tiled rendering | To be recorded | To be recorded | Latency/throughput to be recorded | Pending final campaign |
+| Print and color-managed rendering | To be recorded | To be recorded | To be recorded | Pending final campaign |
+| Cross-binding parity | To be recorded | To be recorded | Not applicable | Pending final campaign |
+| Competitor comparison | Same-host setup to be recorded | Pixel policy to be recorded | Same-operation results to be recorded | Pending final campaign |
 
-Public mode values are only `standard` and `research`. OCR provider selection is separate from execution mode.
+When results are added, record the exact commit, machine, tool versions,
+dataset manifest, command lines, failures, page counts, and raw evidence path.
+Do not compare rows produced by different workloads.
 
-## Why source-linked editing matters
+## Repository Status
 
-Wellfriend tracks PDF bytes, COS objects, source instructions, display items, scene nodes, semantic nodes, operation reports, and validation evidence together. A supported edit updates the actual PDF source and records the affected objects, pages, resources, tags, destinations, and undo state. Unsupported or ambiguous edits return typed refusals instead of silently clipping, rasterizing, or painting over old content.
+The renderer source includes schema-v1 render contracts, caller-owned surfaces,
+bounded document caches, packed retained plans, transaction-driven
+invalidation, persistent clip state, transparency and soft-mask execution,
+display/print/proof policies, deterministic tile scheduling, progressive image
+and page lifecycles, native CPU/WASM SIMD kernels, font-substitution reports,
+Type 3 retained programs, JPX capability reporting, SVG/PostScript regional
+output, and visual-normalization tooling.
 
-## Major capabilities
+Unsupported PDF or backend cases fail through typed errors or explicitly
+reported policies. Codec-native region, tile, component, reduction, and
+progressive capabilities are reported from the selected decoder rather than
+being simulated.
 
-| Area | Release-candidate status |
+Source-closure evidence and the exact current verdict are maintained in
+[`docs/renderer/final-local-implementation-closure.md`](docs/renderer/final-local-implementation-closure.md).
+Deferred corpus and platform verification is not presented as completed source
+work.
+
+## Requirements
+
+| Component | Requirement |
 |---|---|
-| Parsing, recovery, COS graph, page tree | Verified with documented corpus limits |
-| Rendering and SVG/PS/EPS output | Verified with compact release-candidate coverage plus a 5,044-PDF all-pages renderer campaign |
-| Text extraction and structured document model | Verified with compact release-candidate coverage plus 5,044-PDF corpus command coverage |
-| Source-linked true editing and reflow | Verified with integrated tests plus 5,044-PDF read-only planning/typed-refusal smoke |
-| Tables, math, OCR, forms, annotations | Verified with focused subsystem tests plus 5,044-PDF report/analyze surface coverage |
-| Accessibility, redaction, sanitization, standards | Verified with existing release gates and documented human-review limits |
-| Research accelerators/providers | Infrastructure validated; not benchmark-claimed without configured backends |
+| Rust workspace | Rust 1.95 or newer; Cargo |
+| Python binding | Python 3.9+ and `maturin` |
+| WASM binding | `wasm-pack` and a wasm32 Rust target |
+| .NET binding | .NET 8 SDK |
+| Java binding | JDK 25 with preview FFM enabled |
+| Native bindings | A locally built `wellfriendpdf_capi` shared library |
+| Optional OCR | Tesseract development/runtime libraries for the native OCR adapter |
+| Optional native CMM | Build with the `native-cmm-lcms2` feature |
 
-## Quick start
+Clone and build the default workspace:
 
-```bash
-wellfriendpdf --mode standard info input.pdf --json
-wellfriendpdf --mode standard render input.pdf --pages 1 --dpi 150 --format png -o pages.zip --json
-wellfriendpdf --mode standard extract-text input.pdf
-wellfriendpdf --mode standard providers list
+```powershell
+git clone https://github.com/demisuga01-lab/wellfriendpdf.git
+cd wellfriendpdf
+cargo build --workspace --jobs 2
 ```
 
-Configuration files can select Standard or Research and configure resources/OCR providers. Server administrators can force Standard and disable external providers.
+For a smaller production build, select only the component you need. The engine
+default features are `parse`, `render`, and `structural`; its `full` feature
+adds extraction, creation, editing, signing, standards, and OCR-facing APIs.
 
-## Source-level editing example
+## Component Map
 
-```bash
-wellfriendpdf --mode standard edit-text-operator input.pdf \
-  --source-text "Original" \
-  --replacement-text "Updated!" \
-  --output edited.pdf \
-  --report edit-report.json
+| Component | Package/path | Use it for |
+|---|---|---|
+| Rust engine | `crates/engine` / `wellfriendpdf-engine` | Native library integration and all core APIs |
+| CLI | `crates/cli` / `wellfriendpdf-cli` | Shell workflows and JSON reports |
+| HTTP server | `crates/server` / `wellfriendpdf-server` | Authenticated multipart HTTP API and progressive sessions |
+| SIMD kernels | `crates/render-simd` | Internal CPU and wasm32 `simd128` raster kernels |
+| C ABI | `crates/wellfriendpdf-capi` | Stable native boundary used by C, .NET, and Java |
+| Python | `crates/wellfriendpdf-py` | PyO3/maturin package named `wellfriendpdf` |
+| WASM | `crates/wellfriendpdf-wasm` | Browser, WebWorker, and Node byte-oriented APIs |
+| .NET | `bindings/dotnet/WellfriendPdf` | `net8.0` managed wrapper over the C ABI |
+| Java | `bindings/java` | JDK 25 FFM wrapper over the C ABI |
+| Native OCR | `crates/wellfriendpdf-ocr-tesseract` | Optional Tesseract-backed OCR provider |
+| Visual normalization | `tools/renderer-visual-diff` | Future same-policy image normalization and comparison |
+| PDFium harness | `tools/pdfium-harness` | Future direct comparator harness; not required by the engine |
+
+## Rust Engine
+
+`ContentEngine` is the main document entry point. Page numbers are 1-based.
+
+```rust
+use wellfriendpdf_engine::ContentEngine;
+
+fn main() -> wellfriendpdf_engine::Result<()> {
+    let engine = ContentEngine::open_path("input.pdf")?;
+    println!("pages: {}", engine.page_count()?);
+    println!("{}", engine.get_page_text(1)?);
+
+    let png = engine.render_page_png_fast(1, 150)?;
+    std::fs::write("page-1.png", png)?;
+    Ok(())
+}
 ```
 
-When the source mapping, shaping, signature policy, or layout constraints are unsafe, the command returns a typed refusal.
+Add the local crate from another workspace while packages remain unpublished:
 
-## Architecture
-
-```mermaid
-flowchart LR
-  Bytes[Bytes and revisions] --> COS[COS graph]
-  COS --> Ops[Source instructions]
-  Ops --> Display[Display list]
-  Display --> Scene[Editable scene graph]
-  Scene --> Semantic[Semantic graph]
-  Semantic --> Tx[Transactions, undo, validation]
-  Tx --> Writer[Canonical writer and reopen checks]
+```toml
+[dependencies]
+wellfriendpdf-engine = { path = "../wellfriendpdf/crates/engine" }
 ```
 
-## Release-candidate benchmark highlights
+### Render contracts and caller-owned surfaces
 
-Wellfriend now has three committed benchmark tiers:
+A `RenderContract` carries every output-affecting field into validation and
+cache identity: page/revision, DPI, box, transform, clip, surface layout,
+background, backend, compositing, optional content, smoothing, print/color
+policy, exactness, determinism, and resource budgets.
 
-- Compact release-candidate fixtures for mutation and subsystem checks.
-- A real public 5,044-PDF arXiv corpus downloaded on the validation VPS, with 17,059,245,901 bytes and 116,784 qpdf-counted pages across the 5,036 files where qpdf page counting succeeded.
-- A final all-pages renderer capability campaign over the same corpus, with Wellfriend rendering 116,975 pages from all 5,044 PDFs with zero command failures.
+```rust
+use wellfriendpdf_engine::{CancelToken, ContentEngine};
+use wellfriendpdf_engine::render::RenderMode;
 
-The large corpus was downloaded from public PDF URLs, not generated by Python. Python was used only as orchestration for downloading, sampling, and wrapper tools. Raw PDFs, per-file sample logs, and full command logs remain on the VPS; committed evidence is the compact aggregate in `benchmarks/results/real-5000/real-5000-aggregate.json`.
+fn render() -> wellfriendpdf_engine::Result<()> {
+    let engine = ContentEngine::open_path("input.pdf")?;
+    let contract = engine.default_render_contract(1, 150, RenderMode::Compat)?;
 
-Final renderer evidence is tracked in `evidence/renderer-capability/` and summarized in `docs/benchmarks/full-capability-comparison.md`. All-feature corpus evidence is tracked in `evidence/all-feature-corpus/all-feature-corpus-evidence.json` and summarized in `docs/benchmarks/all-feature-corpus.md`.
+    let png = engine.render_page_png_with_contract(
+        &contract,
+        &CancelToken::none(),
+    )?;
+    std::fs::write("contract-page.png", png)?;
 
-### 5,044-PDF feature-surface coverage
+    let mut surface = vec![0_u8; contract.stride * contract.height as usize];
+    engine.render_page_into_buffer(
+        &contract,
+        &CancelToken::none(),
+        &mut surface,
+    )?;
+    Ok(())
+}
+```
 
-This is a command/runtime coverage campaign over the real public corpus. It is separate from the all-pages visual-rendering benchmark below. The editing smoke never overwrites corpus PDFs. It uses temporary outputs for apply-capable paths, treats precise typed refusals as valid outcomes, and counts panics, timeouts, and unclassified nonzero exits as failures.
+Use `RenderDocumentCache` overloads when repeated renders belong to the same
+document/revision and contract policy. Apply the render-invalidation plan
+returned by supported editing transactions before publishing cached output.
 
-| Surface | Files | Successes | Failures | Median | P95 |
-|---|---:|---:|---:|---:|---:|
-| Info / document open | 5,044 | 5,044 | 0 | 205.769 ms | 591.462 ms |
-| Parser report | 5,044 | 5,044 | 0 | 156.225 ms | 844.899 ms |
-| Validation report | 5,044 | 5,044 | 0 | 34.639 ms | 157.136 ms |
-| Structured text extraction | 5,044 | 5,044 | 0 | 68.878 ms | 187.937 ms |
-| Table extraction | 5,044 | 5,044 | 0 | 107.421 ms | 334.100 ms |
-| Forms report | 5,044 | 5,044 | 0 | 10.777 ms | 24.188 ms |
-| Annotations report | 5,044 | 5,044 | 0 | 11.105 ms | 25.131 ms |
-| Layout analysis, page 1 | 5,044 | 5,044 | 0 | 413.538 ms | 1,053.217 ms |
-| Reading order report | 5,044 | 5,044 | 0 | 154.243 ms | 578.285 ms |
-| Flow graph report | 5,044 | 5,044 | 0 | 167.808 ms | 587.753 ms |
-| Document subsystem analysis | 5,044 | 5,044 | 0 | 284.710 ms | 947.766 ms |
-| Document security analysis | 5,044 | 5,044 | 0 | 395.073 ms | 1,228.329 ms |
-| Page-1 render-compare smoke | 5,044 | 5,044 | 0 | 69.913 ms | 200.334 ms |
-| Editing/reflow planning smoke | 5,044 | 5,044 | 0 | nested by stage | nested by stage |
-| Operator-preserving apply smoke | 5,044 | 5,044 | 0 | 308.560 ms | 687.430 ms |
+### Progressive rendering
 
-The operator-preserving apply smoke produced temporary edited PDFs for 486 files and exact typed ineligibility for the rest. The full stage list, hashes, and nested editing-smoke breakdown are in `docs/benchmarks/all-feature-corpus.md`.
+Progressive jobs render a deterministic tile queue and reject stale
+publications with revision, contract, visibility, scheduler, and tile identity.
 
-### Visual rendering comparison
+```rust
+use wellfriendpdf_engine::{CancelToken, ContentEngine};
+use wellfriendpdf_engine::render::RenderMode;
 
-| Renderer | Real-corpus operation | Successes | Pages rendered | Median | P95 | P99 | Command failures |
-|---|---|---:|---:|---:|---:|---:|---:|
-| Wellfriend Standard, document-scoped cache | all pages, raw 72-DPI render evidence | 5,044 / 5,044 | 116,975 | 572.8 ms | 3,224.5 ms | 10,503.9 ms | 0 |
-| Wellfriend display-list path | all pages, raw 72-DPI render evidence | 5,044 / 5,044 | 116,975 | 970.4 ms | 4,269.2 ms | 11,114.6 ms | 0 |
-| pypdfium2 / PDFium wrapper | all pages, 72-DPI wrapper render | 5,044 / 5,044 | 116,975 | 127.5 ms | 792.2 ms | 1,621.4 ms | 0 |
-| MuPDF `mutool` | all pages, 72-DPI render | 5,041 / 5,044 | 116,975 | 413.1 ms | 1,314.2 ms | 2,604.3 ms | 3 |
-| PyMuPDF / MuPDF binding | all pages, 72-DPI binding render | 5,044 / 5,044 | 116,975 | 1,402.6 ms | 4,265.9 ms | 6,958.2 ms | 0 |
-| Poppler `pdftoppm` | all pages, 72-DPI render | 5,044 / 5,044 | 116,975 | 2,251.6 ms | 6,172.8 ms | 10,325.6 ms | 0 |
-| Apache PDFBox | all pages, 72-DPI render | 5,044 / 5,044 | 116,975 | 4,186.3 ms | 10,581.1 ms | 16,796.8 ms | 0 |
-| PDF.js / Node canvas | all pages, 72-DPI render | 5,039 / 5,044 | 116,866 | 1,857.5 ms | 14,541.5 ms | 64,698.3 ms | 5 |
+fn progressive() -> wellfriendpdf_engine::Result<()> {
+    let engine = ContentEngine::open_path("input.pdf")?;
+    let contract = engine.default_render_contract(1, 150, RenderMode::Compat)?;
+    let mut job = engine.progressive_render_job_with_contract(contract, 256, 256)?;
 
-The document-scoped cache result is the current retained Wellfriend all-pages path. A same-binary 100-file on/off VPS probe produced identical raw render hashes and measured a 1.68x total-time speedup before the full 5,044-PDF run. The display-list path is retained for renderer architecture and replay diagnostics, but this all-pages run did not beat the immediate cached Wellfriend path and does not yet match the faster PDFium-wrapper raster speed. The older first-page table below is retained as a separate benchmark tier. Do not compare it directly with the all-pages renderer campaign above.
+    while !job.is_complete() {
+        let report = job.render_next(4, &CancelToken::none())?;
+        for publication in report.completed_tile_publications {
+            println!("publish {}", publication.publication_identity);
+        }
+    }
 
-| Renderer | Real-corpus operation | Median | P95 | Command failures |
-|---|---:|---:|---:|---:|
-| Wellfriend Standard | first-page PNG render at 72 DPI | 163.80 ms | 514.41 ms | 3 / 5,044 |
-| Poppler | first-page PNG render at 72 DPI | 113.80 ms | 164.20 ms | 0 / 5,044 |
-| MuPDF | first-page PNG render at 72 DPI | 31.46 ms | 63.59 ms | 2 / 5,044 |
-| pypdfium2 / PDFium wrapper | first-page render through bundled PDFium | 7.07 ms | 23.57 ms | 0 / 5,044 |
-| PDF.js | first-page open through Node/pdfjs-dist | 4.65 ms | 30.57 ms | 0 / 5,044 |
+    let pixels = job.finish_checked()?;
+    println!("{}x{}", pixels.width, pixels.height);
+    Ok(())
+}
+```
 
-| Task | Wellfriend median | Measured alternatives | Correctness / scope | Result |
-|---|---:|---:|---|---|
-| Text extraction | 63.57 ms | Poppler 63.87 ms; MuPDF 163.99 ms | 5,044 real PDFs, command success tracked | Wellfriend and Poppler were comparable on this corpus |
-| Parse/info | 113.71 ms | pikepdf open pages 1.75 ms; PDFBox open pages total 28.67 s | Different operation semantics | Wellfriend emits its own JSON parse report |
-| Structural validation | Not the same operation | qpdf 63.86 ms; pdfcpu 15.50 ms | qpdf/pdfcpu are structural specialists | Specialist tools are reported separately |
-| Source-linked text replacement | 13.85 ms on compact mutation fixtures | Not measured as equivalent source-linked API | output qpdf check passed | Unique verified workflow in this measured set |
+Use `revise_viewport_hint`, `revise_dirty_region`, or
+`revise_render_contract` when viewer state changes. Full contract revision
+rebuilds the output region and tile grid, invalidates prior publications, and
+returns an obsolete-publication report. Use `request_cancel`, `pause`, `resume`,
+and `close` for lifecycle control.
 
-## Broader market comparison
+### Editing and invalidation
 
-| Capability | Wellfriend | PDFium | MuPDF | Poppler | qpdf | PDFBox | Commercial SDKs |
-|---|---|---|---|---|---|---|---|
-| Rendering | Measured on 5,044 real PDFs | Measured through pypdfium2 wrapper | Measured via MuPDF and PyMuPDF | Measured command-line rendering | Not applicable | Not a renderer in this run | Documentation only |
-| Structural checking/writing | Integrated engine | Different scope | Different scope | Limited scope | Specialist measured by qpdf check | Measured open/page count | Documentation only |
-| Source-linked true editing + undo | Verified Wellfriend capability | Not measured as equivalent | Not measured as equivalent | Not measured as equivalent | Not applicable | Not measured | Documentation only |
-| Standards/signatures | Integrated reports and tests | Different scope | Different scope | Different scope | Structural oracle | Different scope | veraPDF and pyHanko specialist runs measured separately |
-| OCR layer integration | Integrated provider contracts and tests | Different scope | Different scope | Different scope | Not applicable | Different scope | OCR accuracy not measured on this born-digital arXiv corpus |
+The shared SDK facade exposes JSON transaction methods when a language binding
+needs a versioned transport:
 
-## Bindings
+```rust
+let (edited_pdf, result_json) = wellfriendpdf_engine::sdk::
+    editing_transactions_transaction_apply_with_render_invalidation_json(
+        &pdf_bytes,
+        request_json,
+        Some(render_invalidation_options_json),
+        None,
+    )?;
+# let _ = (edited_pdf, result_json);
+```
 
-Wellfriend exposes the same runtime architecture through Rust, CLI, Python, C ABI, WASM, .NET, Java Maven, Java Gradle, and server APIs. The two execution modes and OCR provider matrix are available through the canonical core rather than binding-specific engines.
+The result includes edited bytes/report data plus source IDs, affected pages,
+dirty regions/tiles, and cache-pruning instructions when exact dependency
+coverage is available. Unknown dependencies deliberately broaden invalidation.
 
-## Reproducibility
+## Command-Line Interface
 
-Tracked compact summaries live under `benchmarks/results/release-candidate/` and `benchmarks/results/real-5000/`. Raw logs, corpus PDFs, and per-file sample JSONL stay on the VPS result folder recorded in the evidence. The benchmark rows are intentionally scoped: unavailable tools are marked as unavailable or documentation-only, not as Wellfriend wins.
+Build once, then invoke `target/release/wellfriendpdf` (add `.exe` on Windows):
 
-## Current practical boundaries
+```powershell
+cargo build -p wellfriendpdf-cli --release --jobs 2
+target\release\wellfriendpdf.exe --mode standard capabilities
+```
 
-- This release candidate is ready for owner review with documented limits, not a public release tag.
-- The 5,044-PDF corpus is real and large, but domain-skewed toward arXiv academic PDFs; it does not replace a future multi-source market-comparison campaign.
-- Research mode is not a measured production-performance guarantee without configured infrastructure.
-- Dynamic XFA, low-confidence OCR/semantic inference, and human accessibility quality remain bounded by explicit policies and review requirements.
-- Commercial SDK behavior is documentation-only unless a licensed executable benchmark is run.
+Common workflows:
 
-## MIT license
+```powershell
+# Document facts and text
+target\release\wellfriendpdf.exe --mode standard info input.pdf --json
+target\release\wellfriendpdf.exe --mode standard extract-text input.pdf
 
-Wellfriend PDF SDK is MIT licensed. See `LICENSE`.
+# Raster output and a reusable schema-v1 contract
+target\release\wellfriendpdf.exe --mode standard render input.pdf --pages 1 --dpi 150 --format png --output pages.zip
+target\release\wellfriendpdf.exe --mode standard render input.pdf --pages 1 --dpi 150 --write-contract-json --output pages.zip
+target\release\wellfriendpdf.exe --mode standard render input.pdf --contract-json contract.json --format raw --output page.raw
 
-## Contributing
+# Renderer architecture/capability reports
+target\release\wellfriendpdf.exe --mode standard feature-report
+target\release\wellfriendpdf.exe --mode standard document-views-report input.pdf
+target\release\wellfriendpdf.exe --mode standard backend-plan-arena-report input.pdf --page 1 --dpi 72
+target\release\wellfriendpdf.exe --mode standard image-decode-capability-report input.pdf
 
-Use Standard mode for production bugs and Research mode for controlled accelerator/provider experiments. Keep capability claims tied to same-host evidence and add typed refusals for unsupported PDF cases.
+# Source-linked editing and a machine-readable report
+target\release\wellfriendpdf.exe --mode standard edit-text-operator input.pdf --source-text "Original" --replacement-text "Updated" --output edited.pdf --report edit-report.json
+
+# Security and standards reporting
+target\release\wellfriendpdf.exe --mode standard security-report input.pdf --json
+target\release\wellfriendpdf.exe --mode standard validate input.pdf --profile all --json
+```
+
+Run `wellfriendpdf <command> --help` before automating a command: mutation
+commands have explicit output/refusal policies and do not all share the same
+arguments.
+
+## HTTP Server
+
+The server listens on port `8080` by default. It refuses unauthenticated startup
+unless API keys are configured or local-development access is explicitly
+enabled.
+
+```powershell
+$env:WELLFRIENDPDF_ALLOW_UNAUTHENTICATED = "true"
+$env:WELLFRIENDPDF_PORT = "8080"
+cargo run -p wellfriendpdf-server --jobs 2
+```
+
+For a protected instance, unset `WELLFRIENDPDF_ALLOW_UNAUTHENTICATED`, set
+`WELLFRIENDPDF_API_KEYS` to a comma-separated key list, and send either
+`X-API-Key: <key>` or `Authorization: Bearer <key>`. Do not expose development
+mode publicly.
+
+Build and consume a render contract with PowerShell 7:
+
+```powershell
+$form = @{ file = Get-Item .\input.pdf; page = "1"; dpi = "150" }
+$built = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/v1/render-contract -Form $form
+
+$renderForm = @{
+  file = Get-Item .\input.pdf
+  contract_json = $built.contract_json
+}
+Invoke-WebRequest -Method Post -Uri http://127.0.0.1:8080/api/v1/render-contract/png -Form $renderForm -OutFile page.png
+```
+
+Primary endpoint groups:
+
+| Group | Endpoints |
+|---|---|
+| Health/runtime | `GET /health`, `/readiness`, `/api/v1/version`, `/api/v1/capabilities`, `/api/v1/runtime-config`, `/api/v1/providers` |
+| Parse/extract | `POST /api/v1/info`, `/parse`, `/extract-text`, `/extract-images`, `/extract-fields`, `/analyze` |
+| Render contract | `POST /api/v1/render-contract`, `/png`, `/raw`, report variants, `/backend-plan-arena-report` |
+| Progressive page render | `POST /api/v1/progressive/start`, `/:id/step`, `/pause`, `/resume`, `/viewport`, `/dirty-region`, `/render-context`, `/cancel`, `/finish`, `/close` |
+| Viewer scheduling | `POST /api/v1/progressive/:id/queue/execute`, `/adjacent-prefetch/execute`, `/callbacks`, `/evaluate-publication` |
+| Decode/prepress | `POST /api/v1/image-decode/capability-report`, `/progressive-image-decode/lifecycle-report`, `/prepress/plate-report` |
+| Editing/cache | `POST /api/v1/editing-transactions/apply-with-render-invalidation`, `/progressive/:id/apply-render-invalidation` |
+
+Multipart document routes accept a `file` part. Contract render routes accept a
+canonical `contract_json` part. Progressive `/render-context` accepts either a
+full `render_contract_json`/`contract_json` revision or the legacy fingerprint
+fields, but not both in one request.
+
+## C ABI
+
+Build the native library and include the checked-in header:
+
+```powershell
+cargo build -p wellfriendpdf-capi --release --jobs 2
+```
+
+Artifacts are `wellfriendpdf_capi.dll`, `libwellfriendpdf_capi.so`, or
+`libwellfriendpdf_capi.dylib`; the public header is
+[`crates/wellfriendpdf-capi/include/wellfriendpdf.h`](crates/wellfriendpdf-capi/include/wellfriendpdf.h).
+
+The normal call flow is:
+
+1. Open caller-owned bytes with `wellfriendpdf_document_open_from_bytes`.
+2. Query or transform through `wellfriendpdf_document_*` functions.
+3. Build/round-trip schema-v1 contracts with the `wellfriendpdf_render_contract_*` functions.
+4. Start progressive jobs with `wellfriendpdf_document_progressive_render_new_with_contract_json` and revise them with `wellfriendpdf_progressive_render_revise_render_contract_json`.
+5. Free returned `char *` values with `wellfriendpdf_string_free`, returned `WellfriendBuffer` values with `wellfriendpdf_buffer_free`, and every opaque handle with its matching free function.
+
+Every fallible function takes or returns an error channel. Never free Rust-owned
+memory with the C allocator.
+
+## Python
+
+Build a local ABI3 wheel with maturin:
+
+```powershell
+python -m pip install maturin
+cd crates\wellfriendpdf-py
+python -m maturin build --release
+python -m pip install target\wheels\wellfriendpdf-0.1.0-*.whl
+```
+
+```python
+import wellfriendpdf
+
+doc = wellfriendpdf.open("input.pdf")
+print(doc.page_count)
+print(doc.page(1).text)
+print(doc.security_report())
+
+png = doc.page(1).render(dpi=150)
+with open("page.png", "wb") as output:
+    output.write(png)
+
+contract_json = doc.default_render_contract_json(1, dpi=150)
+cache = doc.render_cache()
+png, cache_report = doc.render_contract_png_with_render_cache_report(
+    contract_json,
+    cache,
+)
+```
+
+The binding also exposes cancellation, caller-owned `bytearray` rendering,
+font-substitution/telemetry reports, progressive page jobs, progressive image
+decode lifecycle reports, transaction invalidation, semantic/chunk/search
+reports, sanitization, redaction, and Office export helpers. See
+[`crates/wellfriendpdf-py/README.md`](crates/wellfriendpdf-py/README.md) for the
+full binding surface.
+
+## WebAssembly
+
+```powershell
+wasm-pack build crates\wellfriendpdf-wasm --target web --out-dir pkg
+wasm-pack build crates\wellfriendpdf-wasm --target nodejs --out-dir pkg-node
+```
+
+```typescript
+import init, { WellfriendPdf } from "./pkg/wellfriendpdf_wasm.js";
+
+await init();
+const pdf = new WellfriendPdf(new Uint8Array(await file.arrayBuffer()));
+console.log(JSON.parse(pdf.securityReportJson()));
+const png = pdf.renderPagePng(1, 150);
+pdf.close();
+```
+
+WASM accepts bytes and returns bytes/JSON; it does not read host paths, fetch
+URLs, spawn OCR workers, or load native libraries. `ProgressiveRenderJob`
+supports cancellation checks, queue execution, callback reports, adjacent-page
+prefetch, and `reviseRenderContractJson`. The TypeScript declaration source is
+[`crates/wellfriendpdf-wasm/wellfriendpdf.d.ts`](crates/wellfriendpdf-wasm/wellfriendpdf.d.ts).
+
+## .NET
+
+Build the C ABI first and point the managed resolver at it:
+
+```powershell
+cargo build -p wellfriendpdf-capi --release --jobs 2
+$env:WELLFRIENDPDF_NATIVE_LIBRARY = (Resolve-Path target\release\wellfriendpdf_capi.dll)
+dotnet build bindings\dotnet\WellfriendPdf\WellfriendPdf.csproj
+```
+
+```csharp
+using WellfriendPdf;
+
+using var doc = WellfriendDocument.Open("input.pdf", password: null);
+var contract = doc.DefaultRenderContract(pageNumber: 1, dpi: 150)
+    .WithResourceBudget(maxPixels: 20_000_000);
+
+File.WriteAllBytes("page.png", doc.RenderPagePng(contract));
+var surface = new byte[checked((int)contract.SurfaceByteLength)];
+doc.RenderPageIntoBuffer(contract, surface);
+
+using var session = doc.ProgressiveRenderSession(contract, tileWidth: 256, tileHeight: 256);
+session.ReviseRenderContract(contract.WithBackground(248, 250, 252));
+```
+
+Use `using`/`Dispose()` for document, cache, cancellation, and progressive
+handles. `RenderContract` is an immutable-style managed value object. See
+[`bindings/dotnet/WellfriendPdf/README.md`](bindings/dotnet/WellfriendPdf/README.md).
+
+## Java
+
+The binding uses the JDK 25 Foreign Function and Memory API.
+
+```powershell
+cargo build -p wellfriendpdf-capi --release --jobs 2
+$env:WELLFRIENDPDF_NATIVE_LIBRARY = (Resolve-Path target\release\wellfriendpdf_capi.dll)
+cd bindings\java
+mvn test package
+```
+
+```java
+try (var doc = WellfriendPdf.Document.open(Path.of("input.pdf"), null)) {
+    var contract = doc.defaultRenderContract(1, 150)
+        .withResourceBudget(20_000_000L, null, null, null);
+    Files.write(Path.of("page.png"), doc.renderPagePng(contract));
+
+    ByteBuffer surface = ByteBuffer.allocateDirect(
+        Math.toIntExact(contract.surfaceByteLength()));
+    doc.renderPageIntoBuffer(contract, surface);
+
+    try (var session = doc.progressiveRenderSession(contract, 256, 256)) {
+        session.reviseRenderContract(contract.withBackground(248, 250, 252));
+    }
+}
+```
+
+Run Java with `--enable-preview --enable-native-access=ALL-UNNAMED`. Maven and
+Gradle project files are both checked in; see
+[`bindings/java/README.md`](bindings/java/README.md) for native loading and smoke
+commands.
+
+## OCR, SIMD, and Color Management
+
+The CLI and server do not require OCR. Enable the native adapter explicitly:
+
+```powershell
+cargo build -p wellfriendpdf-cli --features ocr --release --jobs 2
+cargo build -p wellfriendpdf-server --features ocr --release --jobs 2
+```
+
+`wellfriendpdf-render-simd` is an internal implementation crate. Call renderer
+APIs normally; runtime dispatch selects guarded scalar, portable-wide, native
+CPU, or wasm32 `simd128` rows and preserves scalar-equivalence fallbacks.
+
+Portable color management is the default. Enable native LittleCMS support only
+where that dependency is available:
+
+```powershell
+cargo build -p wellfriendpdf-cli --features native-cmm-lcms2 --release --jobs 2
+```
+
+## Verification Tools
+
+`tools/renderer-visual-diff` normalizes pixel format, alpha, background, crop,
+and dimensions before future comparisons. `tools/pdfium-harness` is a direct C
+harness reserved for a separately provisioned PDFium verification environment.
+Neither tool is required to build or use Wellfriend.
+
+Do not publish benchmark claims from these tools without the exact source
+commit, dataset manifest, comparator version, normalization manifest, command
+line, failures, and raw evidence.
+
+## Error and Safety Model
+
+- Page numbers are 1-based across public APIs.
+- Passwords are operation-scoped inputs and are not retained by managed wrappers.
+- Unsupported or malformed rendering cases return typed errors instead of silently dropping paint.
+- High-quality exact rendering refuses material-degrading compatibility substitutions.
+- Caller-owned surfaces validate dimensions, stride, pixel format, alpha mode, and byte length.
+- Progressive consumers must evaluate publication identity after viewport, revision, visibility, or contract changes.
+- Editing callers must apply returned invalidation plans before reusing renderer caches.
+- Server deployments should configure API keys, request limits, timeouts, and CORS explicitly.
+
+## Development Checks
+
+Run lightweight checks serially when resources are constrained:
+
+```powershell
+cargo fmt --all --check
+cargo check --workspace --all-targets --jobs 1
+cargo clippy --workspace --all-targets --jobs 1 -- -D warnings
+```
+
+Focused tests live beside the corresponding Rust modules and under each
+binding/server test directory. Large PDF corpora, visual adjudication,
+performance measurements, and competitor comparisons are separate validation
+campaigns rather than ordinary source checks.
+
+## Documentation
+
+- [`docs/api_overview.md`](docs/api_overview.md): Rust API orientation.
+- [`docs/stability.md`](docs/stability.md): pre-1.0 API stability policy.
+- [`docs/renderer/final-universal-renderer-implementation-report.md`](docs/renderer/final-universal-renderer-implementation-report.md): renderer architecture.
+- [`docs/renderer/complete-algorithm-and-method-inventory.md`](docs/renderer/complete-algorithm-and-method-inventory.md): algorithm and entry-point inventory.
+- [`docs/renderer/final-fallback-closure-report.md`](docs/renderer/final-fallback-closure-report.md): typed refusal and fallback policy.
+- [`docs/renderer/final-local-implementation-closure.md`](docs/renderer/final-local-implementation-closure.md): local source checks and final verdict.
+
+## License
+
+Wellfriend PDF SDK is available under the MIT License. See [`LICENSE`](LICENSE).

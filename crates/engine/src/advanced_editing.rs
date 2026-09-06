@@ -1021,6 +1021,13 @@ fn edit_advanced_text_pdf_internal(
             writer: true,
             fingerprint_before: before_fingerprint,
             fingerprint_after: after_fingerprint,
+            render_write_set_refs: Vec::new(),
+            changed_object_refs: Vec::new(),
+            created_object_refs: Vec::new(),
+            removed_object_refs: Vec::new(),
+            affected_pages: vec![page_number],
+            dirty_regions: Vec::new(),
+            structured_render_write_set: false,
         },
         line_adjustments,
         exact_limits: vec![
@@ -7305,7 +7312,23 @@ pub fn move_link_annotation_rect_pdf(
             signature_policy,
             cryptographic_validity_claimed: false,
             deterministic: true,
-            cache_invalidation: advanced_editing_cache_invalidation(input, &output, false, false, true),
+            cache_invalidation: advanced_editing_cache_invalidation_with_render_write_set(
+                input,
+                &output,
+                false,
+                false,
+                true,
+                AdvancedEditingRenderInvalidation {
+                    changed_object_refs: vec![advanced_editing_object_ref(
+                        annotation_ref.0,
+                        annotation_ref.1,
+                    )],
+                    created_object_refs: Vec::new(),
+                    removed_object_refs: Vec::new(),
+                    affected_pages: vec![page_number],
+                    dirty_regions: annotation_move_dirty_regions(page_number, before_rect, after_rect),
+                },
+            ),
             exact_limits: vec![
                 "only one caller-identified indirect /Link annotation on the edited page is moved; widgets, replies, non-Link annotations, and page changes are refused".to_string(),
                 "the source-associated expected rectangle must match exactly, the target must remain within the canonical page box, and existing /A or /Dest is preserved without interpretation".to_string(),
@@ -7526,7 +7549,27 @@ pub fn fit_annotation_ink_pdf(
             signature_policy,
             cryptographic_validity_claimed: false,
             deterministic: true,
-            cache_invalidation: advanced_editing_cache_invalidation(input, &output, false, true, true),
+            cache_invalidation: advanced_editing_cache_invalidation_with_render_write_set(
+                input,
+                &output,
+                false,
+                true,
+                true,
+                AdvancedEditingRenderInvalidation {
+                    changed_object_refs: vec![advanced_editing_object_ref(
+                        annotation_ref.0,
+                        annotation_ref.1,
+                    )],
+                    created_object_refs: vec![advanced_editing_object_ref(appearance_number, 0)],
+                    removed_object_refs: Vec::new(),
+                    affected_pages: vec![page_number],
+                    dirty_regions: vec![advanced_editing_dirty_region(
+                        page_number,
+                        [x0, y0, x0 + width, y0 + height],
+                        "annotation_ink_appearance_regenerated",
+                    )],
+                },
+            ),
             exact_limits: vec![
                 "PDF /InkList remains a point-list interchange surface; cubic control points are stored in /WellfriendFittedInk and consumed by the generated appearance".to_string(),
                 "raw points are retained in /WellfriendRawInkList except under fitted_only policy".to_string(),
@@ -8378,7 +8421,7 @@ pub(crate) fn advanced_editing_feature_report_value(envelope_version: u32) -> se
             "ink_annotation_appearance": "implemented_incremental",
             "undo_redo": "incremental_suffix_patch_session_with_checkpoint_fingerprints_and_branch_redo_clearing",
             "signature_policy": "secure_mutation_closeout_preflight_enforced",
-            "cache_invalidation": "text_glyph_render_vector_annotation_semantic_search_ocg_writer_flags_with_before_after_fingerprints"
+            "cache_invalidation": "text_glyph_render_vector_annotation_semantic_search_ocg_writer_flags_with_before_after_fingerprints_plus_structured_annotation_object_page_dirty_region_write_sets"
         },
         "bindings": {
             "rust": "implemented",
@@ -8445,6 +8488,13 @@ pub(crate) fn advanced_editing_closeout_feature_report_value(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CacheInvalidationDirtyRegion {
+    pub page: usize,
+    pub region: [f64; 4],
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheInvalidationReport {
     pub text_layout: bool,
@@ -8458,6 +8508,20 @@ pub struct CacheInvalidationReport {
     pub writer: bool,
     pub fingerprint_before: String,
     pub fingerprint_after: String,
+    #[serde(default)]
+    pub render_write_set_refs: Vec<String>,
+    #[serde(default)]
+    pub changed_object_refs: Vec<String>,
+    #[serde(default)]
+    pub created_object_refs: Vec<String>,
+    #[serde(default)]
+    pub removed_object_refs: Vec<String>,
+    #[serde(default)]
+    pub affected_pages: Vec<usize>,
+    #[serde(default)]
+    pub dirty_regions: Vec<CacheInvalidationDirtyRegion>,
+    #[serde(default)]
+    pub structured_render_write_set: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8774,7 +8838,86 @@ fn advanced_editing_cache_invalidation(
         writer: true,
         fingerprint_before: format!("{:x}", Sha256::digest(input)),
         fingerprint_after: format!("{:x}", Sha256::digest(output)),
+        render_write_set_refs: Vec::new(),
+        changed_object_refs: Vec::new(),
+        created_object_refs: Vec::new(),
+        removed_object_refs: Vec::new(),
+        affected_pages: Vec::new(),
+        dirty_regions: Vec::new(),
+        structured_render_write_set: false,
     }
+}
+
+fn advanced_editing_object_ref(number: u32, generation: u16) -> String {
+    format!("{number} {generation} R")
+}
+
+fn advanced_editing_dirty_region(
+    page: usize,
+    region: [f64; 4],
+    reason: &str,
+) -> CacheInvalidationDirtyRegion {
+    CacheInvalidationDirtyRegion {
+        page,
+        region,
+        reason: reason.to_string(),
+    }
+}
+
+fn annotation_move_dirty_regions(
+    page: usize,
+    before_rect: [f64; 4],
+    after_rect: [f64; 4],
+) -> Vec<CacheInvalidationDirtyRegion> {
+    if before_rect == after_rect {
+        return vec![advanced_editing_dirty_region(
+            page,
+            before_rect,
+            "annotation_rect_changed",
+        )];
+    }
+    vec![
+        advanced_editing_dirty_region(page, before_rect, "annotation_rect_before"),
+        advanced_editing_dirty_region(page, after_rect, "annotation_rect_after"),
+    ]
+}
+
+struct AdvancedEditingRenderInvalidation {
+    changed_object_refs: Vec<String>,
+    created_object_refs: Vec<String>,
+    removed_object_refs: Vec<String>,
+    affected_pages: Vec<usize>,
+    dirty_regions: Vec<CacheInvalidationDirtyRegion>,
+}
+
+fn advanced_editing_cache_invalidation_with_render_write_set(
+    input: &[u8],
+    output: &[u8],
+    text: bool,
+    vector: bool,
+    annotation: bool,
+    details: AdvancedEditingRenderInvalidation,
+) -> CacheInvalidationReport {
+    let mut report = advanced_editing_cache_invalidation(input, output, text, vector, annotation);
+    let mut write_set = Vec::new();
+    for object_ref in details
+        .changed_object_refs
+        .iter()
+        .chain(details.created_object_refs.iter())
+        .chain(details.removed_object_refs.iter())
+    {
+        if !write_set.contains(object_ref) {
+            write_set.push(object_ref.clone());
+        }
+    }
+    report.render_write_set_refs = write_set;
+    report.changed_object_refs = details.changed_object_refs;
+    report.created_object_refs = details.created_object_refs;
+    report.removed_object_refs = details.removed_object_refs;
+    report.affected_pages = details.affected_pages;
+    report.dirty_regions = details.dirty_regions;
+    report.structured_render_write_set = true;
+    report
 }
 
 #[cfg(test)]
@@ -10611,6 +10754,32 @@ mod tests {
         assert!(report.action_or_destination_preserved);
         assert!(report.moved_quad_points);
         assert_eq!(report.after_rect, [22.0, 135.0, 82.0, 155.0]);
+        assert!(report.cache_invalidation.structured_render_write_set);
+        assert_eq!(
+            report.cache_invalidation.changed_object_refs,
+            vec!["11 0 R"]
+        );
+        assert!(report.cache_invalidation.created_object_refs.is_empty());
+        assert_eq!(
+            report.cache_invalidation.render_write_set_refs,
+            vec!["11 0 R"]
+        );
+        assert_eq!(report.cache_invalidation.affected_pages, vec![1]);
+        assert_eq!(
+            report.cache_invalidation.dirty_regions,
+            vec![
+                CacheInvalidationDirtyRegion {
+                    page: 1,
+                    region: [10.0, 140.0, 70.0, 160.0],
+                    reason: "annotation_rect_before".to_string(),
+                },
+                CacheInvalidationDirtyRegion {
+                    page: 1,
+                    region: [22.0, 135.0, 82.0, 155.0],
+                    reason: "annotation_rect_after".to_string(),
+                }
+            ]
+        );
         let reopened = ContentEngine::open_bytes(output).expect("reopen");
         assert!(reopened.get_page_text(1).expect("text").contains("ABC"));
         let annotation = reopened
@@ -11205,6 +11374,31 @@ mod tests {
         assert!(report.raw_points_preserved);
         assert!(report.fitted_curves_stored);
         assert!(report.appearance_readback);
+        let annotation_ref = format!(
+            "{} {} R",
+            report.annotation_object, report.annotation_generation
+        );
+        let appearance_ref = format!("{} 0 R", report.appearance_object);
+        assert!(report.cache_invalidation.structured_render_write_set);
+        assert_eq!(
+            report.cache_invalidation.changed_object_refs,
+            vec![annotation_ref.clone()]
+        );
+        assert_eq!(
+            report.cache_invalidation.created_object_refs,
+            vec![appearance_ref.clone()]
+        );
+        assert_eq!(
+            report.cache_invalidation.render_write_set_refs,
+            vec![annotation_ref, appearance_ref]
+        );
+        assert_eq!(report.cache_invalidation.affected_pages, vec![1]);
+        assert_eq!(report.cache_invalidation.dirty_regions.len(), 1);
+        assert_eq!(report.cache_invalidation.dirty_regions[0].page, 1);
+        assert_eq!(
+            report.cache_invalidation.dirty_regions[0].reason,
+            "annotation_ink_appearance_regenerated"
+        );
         let inventory = list_vector_objects(&output, 1).expect("annotation appearance inventory");
         let appearance = inventory
             .objects

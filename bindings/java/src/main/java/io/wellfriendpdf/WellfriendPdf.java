@@ -9,6 +9,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.math.BigInteger;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -18,8 +19,13 @@ import java.security.KeyStore;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 public final class WellfriendPdf {
     private WellfriendPdf() {
@@ -300,9 +306,867 @@ public final class WellfriendPdf {
         }
     }
 
+    /** Cooperative cancellation source for a contract render operation. */
+    public static final class RenderCancellation implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        public RenderCancellation() {
+            this.handle = Native.newRenderCancellation();
+        }
+
+        public void cancel() {
+            Native.cancelRender(nativeHandle());
+        }
+
+        public boolean isCancelled() {
+            return Native.isRenderCancelled(nativeHandle());
+        }
+
+        private MemorySegment nativeHandle() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("RenderCancellation is closed");
+            return handle;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            Native.freeRenderCancellation(handle);
+            handle = MemorySegment.NULL;
+            closed = true;
+        }
+    }
+
+    /** Caller-owned non-progressive render cache for contract rendering. */
+    public static final class RenderCache implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        public RenderCache() {
+            this.handle = Native.newRenderCache();
+        }
+
+        public void clear() {
+            Native.clearRenderCache(nativeHandle());
+        }
+
+        public String applyRenderInvalidationPlanJson(String planJson) {
+            Objects.requireNonNull(planJson, "planJson");
+            return Native.applyRenderCacheInvalidationPlan(nativeHandle(), planJson);
+        }
+
+        private MemorySegment nativeHandle() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("RenderCache is closed");
+            return handle;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            Native.freeRenderCache(handle);
+            handle = MemorySegment.NULL;
+            closed = true;
+        }
+    }
+
     public record BinaryResult(byte[] bytes, String reportJson) {
         public void writeBytes(Path path) throws IOException {
             Files.write(path, bytes);
+        }
+    }
+
+    public static final class RenderContract {
+        private static final long SCHEMA_VERSION = 1;
+
+        private final LinkedHashMap<String, Object> values;
+
+        private RenderContract(LinkedHashMap<String, Object> values) {
+            this.values = values;
+            validate();
+        }
+
+        public static RenderContract fromJson(String json) {
+            Objects.requireNonNull(json, "json");
+            Object parsed = Json.parse(json);
+            if (!(parsed instanceof Map<?, ?> map)) {
+                throw new IllegalArgumentException("render contract JSON must be an object");
+            }
+            return new RenderContract(copyObject(map));
+        }
+
+        public String toJson() {
+            validate();
+            return Json.write(values);
+        }
+
+        public long width() {
+            return requiredLong("width");
+        }
+
+        public long height() {
+            return requiredLong("height");
+        }
+
+        public long stride() {
+            return requiredLong("stride");
+        }
+
+        public long surfaceByteLength() {
+            return Math.multiplyExact(stride(), height());
+        }
+
+        public String pixelFormat() {
+            return requiredString("pixel_format");
+        }
+
+        public RenderContract withSurface(long width, long height, PixelFormat pixelFormat) {
+            return withSurface(width, height, pixelFormat, AlphaMode.Premultiplied, -1, false, false);
+        }
+
+        public RenderContract withSurface(
+            long width,
+            long height,
+            PixelFormat pixelFormat,
+            AlphaMode alphaMode,
+            long stride,
+            boolean grayscale,
+            boolean reverseByteOrder
+        ) {
+            Objects.requireNonNull(pixelFormat, "pixelFormat");
+            Objects.requireNonNull(alphaMode, "alphaMode");
+            if (width <= 0 || height <= 0) {
+                throw new IllegalArgumentException("render contract surface dimensions must be positive");
+            }
+            long minimumStride = Math.multiplyExact(width, bytesPerPixel(pixelFormat));
+            long effectiveStride = stride < 0 ? minimumStride : stride;
+            if (effectiveStride < minimumStride) {
+                throw new IllegalArgumentException(
+                    "render contract stride " + effectiveStride + " is below the required " + minimumStride);
+            }
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("width", width);
+            next.put("height", height);
+            next.put("pixel_format", pixelFormat.name());
+            next.put("alpha_mode", alphaMode.name());
+            next.put("stride", effectiveStride);
+            next.put("grayscale", grayscale);
+            next.put("reverse_byte_order", reverseByteOrder);
+            return new RenderContract(next);
+        }
+
+        public RenderContract withClip(int x, int y, long width, long height) {
+            if (width <= 0 || height <= 0) {
+                throw new IllegalArgumentException("render contract clip must be non-empty");
+            }
+            LinkedHashMap<String, Object> clip = new LinkedHashMap<>();
+            clip.put("x", (long) x);
+            clip.put("y", (long) y);
+            clip.put("width", width);
+            clip.put("height", height);
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("clip", clip);
+            return new RenderContract(next);
+        }
+
+        public RenderContract withoutClip() {
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("clip", null);
+            return new RenderContract(next);
+        }
+
+        public RenderContract withDeviceTransform(double a, double b, double c, double d, double e, double f) {
+            LinkedHashMap<String, Object> transform = new LinkedHashMap<>();
+            transform.put("values", List.of(
+                unsignedBits(a),
+                unsignedBits(b),
+                unsignedBits(c),
+                unsignedBits(d),
+                unsignedBits(e),
+                unsignedBits(f)
+            ));
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("transform", transform);
+            return new RenderContract(next);
+        }
+
+        public RenderContract withBackground(int r, int g, int b) {
+            return withBackground(r, g, b, 255);
+        }
+
+        public RenderContract withBackground(int r, int g, int b, int a) {
+            LinkedHashMap<String, Object> background = new LinkedHashMap<>();
+            background.put("r", checkedByte(r, "r"));
+            background.put("g", checkedByte(g, "g"));
+            background.put("b", checkedByte(b, "b"));
+            background.put("a", checkedByte(a, "a"));
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("background", background);
+            return new RenderContract(next);
+        }
+
+        public RenderContract withPageBox(PageBox pageBox) {
+            return withEnum("page_box", pageBox, "pageBox");
+        }
+
+        public RenderContract withExecutionMode(ExecutionMode executionMode) {
+            return withEnum("execution_mode", executionMode, "executionMode");
+        }
+
+        public RenderContract withBackend(BackendSelection backend) {
+            return withEnum("backend", backend, "backend");
+        }
+
+        public RenderContract withCompositing(CompositingPolicy compositing) {
+            return withEnum("compositing", compositing, "compositing");
+        }
+
+        public RenderContract withAnnotations(AnnotationPolicy annotations) {
+            return withEnum("annotations", annotations, "annotations");
+        }
+
+        public RenderContract withForms(FormPolicy forms) {
+            return withEnum("forms", forms, "forms");
+        }
+
+        public RenderContract withOptionalContent(String optionalContent) {
+            Objects.requireNonNull(optionalContent, "optionalContent");
+            if (optionalContent.isBlank()) {
+                throw new IllegalArgumentException("render contract optional_content must be a non-empty string");
+            }
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("optional_content", optionalContent);
+            return new RenderContract(next);
+        }
+
+        public RenderContract withSmoothing(SmoothingPolicy smoothing) {
+            Objects.requireNonNull(smoothing, "smoothing");
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("text_smoothing", smoothing.name());
+            next.put("image_smoothing", smoothing.name());
+            next.put("path_smoothing", smoothing.name());
+            return new RenderContract(next);
+        }
+
+        public RenderContract withTextSmoothing(SmoothingPolicy textSmoothing) {
+            return withEnum("text_smoothing", textSmoothing, "textSmoothing");
+        }
+
+        public RenderContract withImageSmoothing(SmoothingPolicy imageSmoothing) {
+            return withEnum("image_smoothing", imageSmoothing, "imageSmoothing");
+        }
+
+        public RenderContract withPathSmoothing(SmoothingPolicy pathSmoothing) {
+            return withEnum("path_smoothing", pathSmoothing, "pathSmoothing");
+        }
+
+        public RenderContract withSubpixelText(SmoothingPolicy subpixelText) {
+            return withEnum("subpixel_text", subpixelText, "subpixelText");
+        }
+
+        public RenderContract withColorScheme(ColorScheme colorScheme) {
+            return withEnum("color_scheme", colorScheme, "colorScheme");
+        }
+
+        public RenderContract withPrintProfile(PrintProfile printProfile) {
+            return withEnum("print_profile", printProfile, "printProfile");
+        }
+
+        public RenderContract withHalftone(HalftonePolicy halftone) {
+            return withEnum("halftone", halftone, "halftone");
+        }
+
+        public RenderContract withOverprint(OverprintPolicy overprint) {
+            return withEnum("overprint", overprint, "overprint");
+        }
+
+        public RenderContract withRenderingIntent(RenderingIntent renderingIntent) {
+            return withEnum("rendering_intent", renderingIntent, "renderingIntent");
+        }
+
+        public RenderContract withColorManagement(ColorManagementPolicy colorManagement) {
+            return withEnum("color_management", colorManagement, "colorManagement");
+        }
+
+        public RenderContract withExactness(ExactnessPolicy exactness) {
+            return withEnum("exactness", exactness, "exactness");
+        }
+
+        public RenderContract withDeterminism(DeterminismPolicy determinism) {
+            return withEnum("determinism", determinism, "determinism");
+        }
+
+        public RenderContract withResourceBudget(
+            Long maxPixels,
+            Long maxDecodedBytes,
+            Long maxTemporaryBytes,
+            Long maxCacheBytes
+        ) {
+            LinkedHashMap<String, Object> budget = objectValue("resource_budget");
+            if (maxPixels != null) budget.put("max_pixels", requireNonNegative(maxPixels, "maxPixels"));
+            if (maxDecodedBytes != null) budget.put("max_decoded_bytes", requireNonNegative(maxDecodedBytes, "maxDecodedBytes"));
+            if (maxTemporaryBytes != null) budget.put("max_temporary_bytes", requireNonNegative(maxTemporaryBytes, "maxTemporaryBytes"));
+            if (maxCacheBytes != null) budget.put("max_cache_bytes", requireNonNegative(maxCacheBytes, "maxCacheBytes"));
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("resource_budget", budget);
+            return new RenderContract(next);
+        }
+
+        private RenderContract withEnum(String key, Enum<?> value, String name) {
+            Objects.requireNonNull(value, name);
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put(key, value.name());
+            return new RenderContract(next);
+        }
+
+        public void validate() {
+            if (requiredLong("schema_version") != SCHEMA_VERSION) {
+                throw new IllegalArgumentException("render contract schema is unsupported");
+            }
+            if (requiredLong("page_number") < 1) {
+                throw new IllegalArgumentException("render contract page_number must be 1-based");
+            }
+            long width = requiredLong("width");
+            long height = requiredLong("height");
+            if (width <= 0 || height <= 0) {
+                throw new IllegalArgumentException("render contract output width and height must be non-zero");
+            }
+            String pixelFormat = requiredString("pixel_format");
+            long minimumStride = Math.multiplyExact(width, bytesPerPixel(pixelFormat));
+            if (requiredLong("stride") < minimumStride) {
+                throw new IllegalArgumentException("render contract stride is below the required byte count");
+            }
+            validateTransform();
+            validateByteObject("background", "r", "g", "b", "a");
+            LinkedHashMap<String, Object> budget = objectValue("resource_budget");
+            long maxPixels = requiredLong(budget, "max_pixels");
+            if (Math.multiplyExact(width, height) > maxPixels) {
+                throw new IllegalArgumentException("render contract exceeds max_pixels budget");
+            }
+            Object clip = values.get("clip");
+            if (clip != null) {
+                if (!(clip instanceof Map<?, ?> clipMap)) {
+                    throw new IllegalArgumentException("render contract clip must be an object or null");
+                }
+                if (requiredLong(clipMap, "width") <= 0 || requiredLong(clipMap, "height") <= 0) {
+                    throw new IllegalArgumentException("render contract clip must have non-zero dimensions");
+                }
+            }
+            requiredEnum("alpha_mode", AlphaMode.class);
+            requiredEnum("page_box", PageBox.class);
+            requiredEnum("execution_mode", ExecutionMode.class);
+            requiredEnum("backend", BackendSelection.class);
+            requiredEnum("compositing", CompositingPolicy.class);
+            requiredEnum("annotations", AnnotationPolicy.class);
+            requiredEnum("forms", FormPolicy.class);
+            requiredString("optional_content");
+            requiredEnum("text_smoothing", SmoothingPolicy.class);
+            requiredEnum("image_smoothing", SmoothingPolicy.class);
+            requiredEnum("path_smoothing", SmoothingPolicy.class);
+            requiredEnum("subpixel_text", SmoothingPolicy.class);
+            requiredEnum("color_scheme", ColorScheme.class);
+            requiredEnum("print_profile", PrintProfile.class);
+            requiredEnum("halftone", HalftonePolicy.class);
+            requiredEnum("overprint", OverprintPolicy.class);
+            requiredEnum("rendering_intent", RenderingIntent.class);
+            requiredEnum("color_management", ColorManagementPolicy.class);
+            requiredEnum("exactness", ExactnessPolicy.class);
+            requiredEnum("determinism", DeterminismPolicy.class);
+            requiredBoolean("grayscale");
+            requiredBoolean("reverse_byte_order");
+        }
+
+        public static long bytesPerPixel(PixelFormat pixelFormat) {
+            Objects.requireNonNull(pixelFormat, "pixelFormat");
+            return bytesPerPixel(pixelFormat.name());
+        }
+
+        private static long bytesPerPixel(String pixelFormat) {
+            return switch (pixelFormat) {
+                case "Rgba8", "Bgra8" -> 4;
+                case "Rgb8", "Bgr8" -> 3;
+                case "Gray8" -> 1;
+                default -> throw new IllegalArgumentException("unsupported render contract pixel format: " + pixelFormat);
+            };
+        }
+
+        private void validateTransform() {
+            LinkedHashMap<String, Object> transform = objectValue("transform");
+            Object values = transform.get("values");
+            if (!(values instanceof List<?> matrix) || matrix.size() != 6) {
+                throw new IllegalArgumentException("render contract transform must contain six values");
+            }
+            double a = matrixDouble(matrix.get(0));
+            double b = matrixDouble(matrix.get(1));
+            double c = matrixDouble(matrix.get(2));
+            double d = matrixDouble(matrix.get(3));
+            matrixDouble(matrix.get(4));
+            matrixDouble(matrix.get(5));
+            if (Math.abs(a * d - b * c) < 1e-10) {
+                throw new IllegalArgumentException("render contract transform must be invertible");
+            }
+        }
+
+        private static double matrixDouble(Object value) {
+            if (!(value instanceof Number number)) {
+                throw new IllegalArgumentException("render contract transform values must be numbers");
+            }
+            double decoded = Double.longBitsToDouble(number.longValue());
+            if (!Double.isFinite(decoded)) {
+                throw new IllegalArgumentException("render contract transform must contain only finite values");
+            }
+            return decoded;
+        }
+
+        private void validateByteObject(String objectName, String... fields) {
+            LinkedHashMap<String, Object> object = objectValue(objectName);
+            for (String field : fields) {
+                checkedByte(requiredLong(object, field), field);
+            }
+        }
+
+        private LinkedHashMap<String, Object> objectValue(String name) {
+            Object value = values.get(name);
+            if (!(value instanceof Map<?, ?> map)) {
+                throw new IllegalArgumentException("render contract " + name + " must be an object");
+            }
+            return copyObject(map);
+        }
+
+        private long requiredLong(String name) {
+            return requiredLong(values, name);
+        }
+
+        private static long requiredLong(Map<?, ?> object, String name) {
+            Object value = object.get(name);
+            if (!(value instanceof Number number)) {
+                throw new IllegalArgumentException("render contract " + name + " must be numeric");
+            }
+            return number.longValue();
+        }
+
+        private String requiredString(String name) {
+            Object value = values.get(name);
+            if (!(value instanceof String text) || text.isBlank()) {
+                throw new IllegalArgumentException("render contract " + name + " must be a non-empty string");
+            }
+            return text;
+        }
+
+        private <E extends Enum<E>> void requiredEnum(String name, Class<E> enumType) {
+            String value = requiredString(name);
+            try {
+                Enum.valueOf(enumType, value);
+            } catch (IllegalArgumentException ex) {
+                throw new IllegalArgumentException("unsupported render contract " + name + ": " + value, ex);
+            }
+        }
+
+        private void requiredBoolean(String name) {
+            if (!(values.get(name) instanceof Boolean)) {
+                throw new IllegalArgumentException("render contract " + name + " must be boolean");
+            }
+        }
+
+        private LinkedHashMap<String, Object> copyValues() {
+            return copyObject(values);
+        }
+
+        private static LinkedHashMap<String, Object> copyObject(Map<?, ?> map) {
+            LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (!(entry.getKey() instanceof String key)) {
+                    throw new IllegalArgumentException("render contract object key must be a string");
+                }
+                copy.put(key, copyJsonValue(entry.getValue()));
+            }
+            return copy;
+        }
+
+        private static Object copyJsonValue(Object value) {
+            if (value == null || value instanceof String || value instanceof Boolean) {
+                return value;
+            }
+            if (value instanceof Number number) {
+                return number instanceof BigInteger ? number : number.longValue();
+            }
+            if (value instanceof Map<?, ?> map) {
+                return copyObject(map);
+            }
+            if (value instanceof List<?> list) {
+                List<Object> copy = new ArrayList<>(list.size());
+                for (Object item : list) {
+                    copy.add(copyJsonValue(item));
+                }
+                return List.copyOf(copy);
+            }
+            throw new IllegalArgumentException("unsupported render contract JSON value");
+        }
+
+        private static long checkedByte(long value, String name) {
+            if (value < 0 || value > 255) {
+                throw new IllegalArgumentException("render contract byte field out of range: " + name);
+            }
+            return value;
+        }
+
+        private static long requireNonNegative(long value, String name) {
+            if (value < 0) {
+                throw new IllegalArgumentException(name + " must be non-negative");
+            }
+            return value;
+        }
+
+        private static BigInteger unsignedBits(double value) {
+            return new BigInteger(Long.toUnsignedString(Double.doubleToRawLongBits(value)));
+        }
+
+        public enum PixelFormat {
+            Rgba8,
+            Bgra8,
+            Rgb8,
+            Bgr8,
+            Gray8
+        }
+
+        public enum AlphaMode {
+            Premultiplied,
+            Straight,
+            Opaque
+        }
+
+        public enum PageBox {
+            Media,
+            Crop,
+            Bleed,
+            Trim,
+            Art
+        }
+
+        public enum ExecutionMode {
+            Standard,
+            Research
+        }
+
+        public enum BackendSelection {
+            ScalarReference,
+            StandardCpu,
+            ResearchHybrid
+        }
+
+        public enum SmoothingPolicy {
+            Disabled,
+            Antialiased,
+            Subpixel
+        }
+
+        public enum AnnotationPolicy {
+            Include,
+            Exclude
+        }
+
+        public enum FormPolicy {
+            Include,
+            Exclude
+        }
+
+        public enum ColorScheme {
+            Light,
+            Dark,
+            ForcedMonochrome
+        }
+
+        public enum PrintProfile {
+            Display,
+            Print,
+            Proof
+        }
+
+        public enum HalftonePolicy {
+            Disabled,
+            Screen
+        }
+
+        public enum OverprintPolicy {
+            Disabled,
+            Preview,
+            PreserveSeparations
+        }
+
+        public enum RenderingIntent {
+            RelativeColorimetric,
+            AbsoluteColorimetric,
+            Perceptual,
+            Saturation
+        }
+
+        public enum ColorManagementPolicy {
+            PortableQcms,
+            NativeLittleCms,
+            DeterministicFallback
+        }
+
+        public enum ExactnessPolicy {
+            Compatibility,
+            HighQualityExact
+        }
+
+        public enum DeterminismPolicy {
+            Required,
+            BestEffortResearch
+        }
+
+        public enum CompositingPolicy {
+            Compatibility,
+            HighQuality
+        }
+    }
+
+    private static final class Json {
+        private Json() {
+        }
+
+        static Object parse(String input) {
+            Parser parser = new Parser(input);
+            Object value = parser.parseValue();
+            parser.skipWhitespace();
+            if (!parser.isEof()) {
+                throw new IllegalArgumentException("unexpected trailing JSON content");
+            }
+            return value;
+        }
+
+        static String write(Object value) {
+            StringBuilder output = new StringBuilder();
+            writeValue(output, value);
+            return output.toString();
+        }
+
+        private static void writeValue(StringBuilder output, Object value) {
+            if (value == null) {
+                output.append("null");
+            } else if (value instanceof String text) {
+                writeString(output, text);
+            } else if (value instanceof Boolean bool) {
+                output.append(bool);
+            } else if (value instanceof BigInteger || value instanceof Long || value instanceof Integer) {
+                output.append(value);
+            } else if (value instanceof Number number) {
+                output.append(number.longValue());
+            } else if (value instanceof Map<?, ?> map) {
+                output.append('{');
+                boolean first = true;
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (!first) output.append(',');
+                    first = false;
+                    if (!(entry.getKey() instanceof String key)) {
+                        throw new IllegalArgumentException("JSON object key must be a string");
+                    }
+                    writeString(output, key);
+                    output.append(':');
+                    writeValue(output, entry.getValue());
+                }
+                output.append('}');
+            } else if (value instanceof Iterable<?> iterable) {
+                output.append('[');
+                boolean first = true;
+                for (Object item : iterable) {
+                    if (!first) output.append(',');
+                    first = false;
+                    writeValue(output, item);
+                }
+                output.append(']');
+            } else {
+                throw new IllegalArgumentException("unsupported JSON value type");
+            }
+        }
+
+        private static void writeString(StringBuilder output, String text) {
+            output.append('"');
+            for (int index = 0; index < text.length(); index++) {
+                char ch = text.charAt(index);
+                switch (ch) {
+                    case '"' -> output.append("\\\"");
+                    case '\\' -> output.append("\\\\");
+                    case '\b' -> output.append("\\b");
+                    case '\f' -> output.append("\\f");
+                    case '\n' -> output.append("\\n");
+                    case '\r' -> output.append("\\r");
+                    case '\t' -> output.append("\\t");
+                    default -> {
+                        if (ch < 0x20) {
+                            output.append(String.format("\\u%04x", (int) ch));
+                        } else {
+                            output.append(ch);
+                        }
+                    }
+                }
+            }
+            output.append('"');
+        }
+
+        private static final class Parser {
+            private final String input;
+            private int index;
+
+            Parser(String input) {
+                this.input = Objects.requireNonNull(input, "input");
+            }
+
+            Object parseValue() {
+                skipWhitespace();
+                if (isEof()) throw new IllegalArgumentException("unexpected end of JSON");
+                char ch = input.charAt(index);
+                return switch (ch) {
+                    case '{' -> parseObject();
+                    case '[' -> parseArray();
+                    case '"' -> parseString();
+                    case 't' -> parseLiteral("true", Boolean.TRUE);
+                    case 'f' -> parseLiteral("false", Boolean.FALSE);
+                    case 'n' -> parseLiteral("null", null);
+                    default -> {
+                        if (ch == '-' || Character.isDigit(ch)) {
+                            yield parseNumber();
+                        }
+                        throw new IllegalArgumentException("unexpected JSON character at " + index);
+                    }
+                };
+            }
+
+            LinkedHashMap<String, Object> parseObject() {
+                expect('{');
+                LinkedHashMap<String, Object> object = new LinkedHashMap<>();
+                skipWhitespace();
+                if (consume('}')) return object;
+                while (true) {
+                    skipWhitespace();
+                    String key = parseString();
+                    skipWhitespace();
+                    expect(':');
+                    object.put(key, parseValue());
+                    skipWhitespace();
+                    if (consume('}')) return object;
+                    expect(',');
+                }
+            }
+
+            List<Object> parseArray() {
+                expect('[');
+                ArrayList<Object> array = new ArrayList<>();
+                skipWhitespace();
+                if (consume(']')) return List.copyOf(array);
+                while (true) {
+                    array.add(parseValue());
+                    skipWhitespace();
+                    if (consume(']')) return List.copyOf(array);
+                    expect(',');
+                }
+            }
+
+            String parseString() {
+                expect('"');
+                StringBuilder text = new StringBuilder();
+                while (!isEof()) {
+                    char ch = input.charAt(index++);
+                    if (ch == '"') {
+                        return text.toString();
+                    }
+                    if (ch == '\\') {
+                        if (isEof()) throw new IllegalArgumentException("unterminated JSON escape");
+                        char escaped = input.charAt(index++);
+                        switch (escaped) {
+                            case '"' -> text.append('"');
+                            case '\\' -> text.append('\\');
+                            case '/' -> text.append('/');
+                            case 'b' -> text.append('\b');
+                            case 'f' -> text.append('\f');
+                            case 'n' -> text.append('\n');
+                            case 'r' -> text.append('\r');
+                            case 't' -> text.append('\t');
+                            case 'u' -> text.append(parseUnicodeEscape());
+                            default -> throw new IllegalArgumentException("unsupported JSON escape");
+                        }
+                    } else {
+                        text.append(ch);
+                    }
+                }
+                throw new IllegalArgumentException("unterminated JSON string");
+            }
+
+            char parseUnicodeEscape() {
+                if (index + 4 > input.length()) {
+                    throw new IllegalArgumentException("truncated JSON unicode escape");
+                }
+                int value = Integer.parseInt(input.substring(index, index + 4), 16);
+                index += 4;
+                return (char) value;
+            }
+
+            Object parseNumber() {
+                int start = index;
+                if (consume('-')) {
+                    if (isEof()) throw new IllegalArgumentException("invalid JSON number");
+                }
+                if (consume('0')) {
+                    // Leading zero is allowed only as the entire integer part.
+                } else {
+                    while (!isEof() && Character.isDigit(input.charAt(index))) {
+                        index++;
+                    }
+                }
+                if (!isEof() && (input.charAt(index) == '.' || input.charAt(index) == 'e' || input.charAt(index) == 'E')) {
+                    throw new IllegalArgumentException("render contract JSON numbers must be integers");
+                }
+                String text = input.substring(start, index);
+                try {
+                    BigInteger integer = new BigInteger(text);
+                    if (integer.bitLength() < 63) {
+                        return integer.longValue();
+                    }
+                    if (integer.signum() >= 0 && integer.bitLength() <= 64) {
+                        return integer;
+                    }
+                    throw new IllegalArgumentException("render contract JSON integer is out of range");
+                } catch (NumberFormatException ex) {
+                    throw new IllegalArgumentException("invalid JSON number", ex);
+                }
+            }
+
+            Object parseLiteral(String literal, Object value) {
+                if (!input.startsWith(literal, index)) {
+                    throw new IllegalArgumentException("invalid JSON literal");
+                }
+                index += literal.length();
+                return value;
+            }
+
+            void skipWhitespace() {
+                while (!isEof()) {
+                    char ch = input.charAt(index);
+                    if (ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t') {
+                        index++;
+                    } else {
+                        return;
+                    }
+                }
+            }
+
+            boolean consume(char expected) {
+                if (!isEof() && input.charAt(index) == expected) {
+                    index++;
+                    return true;
+                }
+                return false;
+            }
+
+            void expect(char expected) {
+                if (!consume(expected)) {
+                    throw new IllegalArgumentException("expected JSON character '" + expected + "' at " + index);
+                }
+            }
+
+            boolean isEof() {
+                return index >= input.length();
+            }
         }
     }
 
@@ -601,6 +1465,32 @@ public final class WellfriendPdf {
             }
         }
 
+        public void registerFontBytes(String name, byte[] fontBytes) {
+            ensureOpen();
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(fontBytes, "fontBytes");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment namePtr = arena.allocateFrom(name);
+                MemorySegment data = arena.allocate(Math.max(fontBytes.length, 1));
+                if (fontBytes.length > 0) {
+                    data.copyFrom(MemorySegment.ofArray(fontBytes));
+                }
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.REGISTER_FONT_BYTES.invokeExact(
+                    handle,
+                    namePtr,
+                    data,
+                    (long) fontBytes.length,
+                    err
+                );
+                Native.throwError(status, err);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend register_font_bytes failed", ex);
+            }
+        }
+
         public Page page(int pageNumber) {
             if (pageNumber < 1 || pageNumber > pageCount()) {
                 throw new IndexOutOfBoundsException("Page numbers are 1-based");
@@ -652,6 +1542,33 @@ public final class WellfriendPdf {
             return renderPagePng(pageNumber, 72);
         }
 
+        public BinaryResult renderPagePngWithFontSubstitutionReportJson(
+            int pageNumber,
+            int dpi,
+            String mode
+        ) {
+            ensureOpen();
+            if (pageNumber < 1 || dpi < 1) throw new IllegalArgumentException("page and dpi must be positive");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment modePtr = mode == null ? MemorySegment.NULL : arena.allocateFrom(mode);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_FONT_SUBSTITUTION_REPORT.invokeExact(
+                    handle, (long) pageNumber, dpi, modePtr, buffer, jsonOut, err);
+                Native.throwError(status, err);
+                return new BinaryResult(Native.takeBuffer(buffer), Native.takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render_page_png font substitution report failed", ex);
+            }
+        }
+
+        public BinaryResult renderPagePngWithFontSubstitutionReportJson(int pageNumber, int dpi) {
+            return renderPagePngWithFontSubstitutionReportJson(pageNumber, dpi, "compat");
+        }
+
         public byte[] renderPageJpeg(int pageNumber, int dpi, byte quality) {
             ensureOpen();
             if (pageNumber < 1 || dpi < 1) throw new IllegalArgumentException("page and dpi must be positive");
@@ -690,6 +1607,80 @@ public final class WellfriendPdf {
             return defaultRenderContractJson(pageNumber, dpi, "compat");
         }
 
+        public String backendPlanArenaReportJson(int pageNumber, int dpi, String mode) {
+            ensureOpen();
+            if (pageNumber < 1 || dpi < 1) throw new IllegalArgumentException("page and dpi must be positive");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment modePtr = mode == null ? MemorySegment.NULL : arena.allocateFrom(mode);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.BACKEND_PLAN_ARENA_REPORT.invokeExact(
+                    handle, (long) pageNumber, dpi, modePtr, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend backend plan arena report failed", ex);
+            }
+        }
+
+        public String backendPlanArenaReportJson(int pageNumber, int dpi) {
+            return backendPlanArenaReportJson(pageNumber, dpi, "compat");
+        }
+
+        public String backendPlanArenaReportForContractJson(String contractJson) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.BACKEND_PLAN_ARENA_REPORT_FOR_CONTRACT.invokeExact(
+                    handle, contract, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend contract backend plan arena report failed", ex);
+            }
+        }
+
+        public String backendPlanArenaReport(RenderContract contract) {
+            Objects.requireNonNull(contract, "contract");
+            return backendPlanArenaReportForContractJson(contract.toJson());
+        }
+
+        public String prepressPlateReportJson(int pageNumber, int dpi) {
+            ensureOpen();
+            if (pageNumber < 1 || dpi < 1) throw new IllegalArgumentException("page and dpi must be positive");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PREPRESS_PLATE_REPORT.invokeExact(
+                    handle, (long) pageNumber, dpi, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend prepress plate report failed", ex);
+            }
+        }
+
+        public String prepressPlateReportJson(int pageNumber) {
+            return prepressPlateReportJson(pageNumber, 72);
+        }
+
+        public RenderContract defaultRenderContract(int pageNumber, int dpi, String mode) {
+            return RenderContract.fromJson(defaultRenderContractJson(pageNumber, dpi, mode));
+        }
+
+        public RenderContract defaultRenderContract(int pageNumber, int dpi) {
+            return defaultRenderContract(pageNumber, dpi, "compat");
+        }
+
         public byte[] renderPagePngWithContractJson(String contractJson) {
             ensureOpen();
             Objects.requireNonNull(contractJson, "contractJson");
@@ -706,6 +1697,204 @@ public final class WellfriendPdf {
             } catch (Throwable ex) {
                 throw new IllegalStateException("Wellfriend contract PNG rendering failed", ex);
             }
+        }
+
+        public byte[] renderPagePngWithContractJson(String contractJson, RenderCache cache) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(cache, "cache");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_CONTRACT_AND_RENDER_CACHE.invokeExact(
+                    handle, contract, cache.nativeHandle(), buffer, err);
+                Native.throwError(status, err);
+                return Native.takeBuffer(buffer);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cached contract PNG rendering failed", ex);
+            }
+        }
+
+        public byte[] renderPagePngWithContractJson(
+            String contractJson,
+            RenderCancellation cancellation
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(cancellation, "cancellation");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_CONTRACT_AND_CANCELLATION.invokeExact(
+                    handle, contract, cancellation.nativeHandle(), buffer, err);
+                Native.throwError(status, err);
+                return Native.takeBuffer(buffer);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cancellable contract PNG rendering failed", ex);
+            }
+        }
+
+        public byte[] renderPagePng(RenderContract contract) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPagePngWithContractJson(contract.toJson());
+        }
+
+        public byte[] renderPagePng(RenderContract contract, RenderCache cache) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPagePngWithContractJson(contract.toJson(), cache);
+        }
+
+        public byte[] renderPagePng(RenderContract contract, RenderCancellation cancellation) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPagePngWithContractJson(contract.toJson(), cancellation);
+        }
+
+        public BinaryResult renderPagePngWithContractAndFontSubstitutionReportJson(
+            String contractJson
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_CONTRACT_AND_FONT_SUBSTITUTION_REPORT.invokeExact(
+                    handle, contract, buffer, jsonOut, err);
+                Native.throwError(status, err);
+                return new BinaryResult(Native.takeBuffer(buffer), Native.takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend contract PNG font substitution report failed", ex);
+            }
+        }
+
+        public BinaryResult renderPagePngWithContractAndFontSubstitutionReportJson(
+            String contractJson,
+            RenderCancellation cancellation
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(cancellation, "cancellation");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_CONTRACT_AND_FONT_SUBSTITUTION_REPORT_AND_CANCELLATION.invokeExact(
+                    handle, contract, cancellation.nativeHandle(), buffer, jsonOut, err);
+                Native.throwError(status, err);
+                return new BinaryResult(Native.takeBuffer(buffer), Native.takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cancellable contract PNG font substitution report failed", ex);
+            }
+        }
+
+        public BinaryResult renderPagePngWithFontSubstitutionReport(RenderContract contract) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPagePngWithContractAndFontSubstitutionReportJson(contract.toJson());
+        }
+
+        public BinaryResult renderPagePngWithFontSubstitutionReport(
+            RenderContract contract,
+            RenderCancellation cancellation
+        ) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPagePngWithContractAndFontSubstitutionReportJson(contract.toJson(), cancellation);
+        }
+
+        public BinaryResult renderPagePngWithContractAndRenderReportJson(
+            String contractJson
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_CONTRACT_AND_RENDER_REPORT.invokeExact(
+                    handle, contract, buffer, jsonOut, err);
+                Native.throwError(status, err);
+                return new BinaryResult(Native.takeBuffer(buffer), Native.takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend contract PNG render report failed", ex);
+            }
+        }
+
+        public BinaryResult renderPagePngWithContractAndRenderCacheReportJson(
+            String contractJson,
+            RenderCache cache
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(cache, "cache");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_CONTRACT_AND_RENDER_CACHE_REPORT.invokeExact(
+                    handle, contract, cache.nativeHandle(), buffer, jsonOut, err);
+                Native.throwError(status, err);
+                return new BinaryResult(Native.takeBuffer(buffer), Native.takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cached contract PNG render report failed", ex);
+            }
+        }
+
+        public BinaryResult renderPagePngWithContractAndRenderReportJson(
+            String contractJson,
+            RenderCancellation cancellation
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(cancellation, "cancellation");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_CONTRACT_AND_RENDER_REPORT_AND_CANCELLATION.invokeExact(
+                    handle, contract, cancellation.nativeHandle(), buffer, jsonOut, err);
+                Native.throwError(status, err);
+                return new BinaryResult(Native.takeBuffer(buffer), Native.takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cancellable contract PNG render report failed", ex);
+            }
+        }
+
+        public BinaryResult renderPagePngWithRenderReport(RenderContract contract) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPagePngWithContractAndRenderReportJson(contract.toJson());
+        }
+
+        public BinaryResult renderPagePngWithRenderCacheReport(RenderContract contract, RenderCache cache) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPagePngWithContractAndRenderCacheReportJson(contract.toJson(), cache);
+        }
+
+        public BinaryResult renderPagePngWithRenderReport(
+            RenderContract contract,
+            RenderCancellation cancellation
+        ) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPagePngWithContractAndRenderReportJson(contract.toJson(), cancellation);
         }
 
         public void renderPageIntoBufferWithContractJson(String contractJson, ByteBuffer output) {
@@ -729,6 +1918,184 @@ public final class WellfriendPdf {
             }
         }
 
+        public void renderPageIntoBufferWithContractJson(
+            String contractJson,
+            ByteBuffer output,
+            RenderCancellation cancellation
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(output, "output");
+            Objects.requireNonNull(cancellation, "cancellation");
+            if (!output.isDirect()) {
+                throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment surface = MemorySegment.ofBuffer(output);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_CANCELLATION.invokeExact(
+                    handle, contract, cancellation.nativeHandle(), surface, surface.byteSize(), err);
+                Native.throwError(status, err);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cancellable caller-owned contract rendering failed", ex);
+            }
+        }
+
+        public void renderPageIntoBuffer(RenderContract contract, ByteBuffer output) {
+            Objects.requireNonNull(contract, "contract");
+            renderPageIntoBufferWithContractJson(contract.toJson(), output);
+        }
+
+        public void renderPageIntoBuffer(
+            RenderContract contract,
+            ByteBuffer output,
+            RenderCancellation cancellation
+        ) {
+            Objects.requireNonNull(contract, "contract");
+            renderPageIntoBufferWithContractJson(contract.toJson(), output, cancellation);
+        }
+
+        public String renderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+            String contractJson,
+            ByteBuffer output
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(output, "output");
+            if (!output.isDirect()) {
+                throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment surface = MemorySegment.ofBuffer(output);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_FONT_SUBSTITUTION_REPORT.invokeExact(
+                    handle, contract, surface, surface.byteSize(), jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend contract buffer font substitution report failed", ex);
+            }
+        }
+
+        public String renderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+            String contractJson,
+            ByteBuffer output,
+            RenderCancellation cancellation
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(output, "output");
+            Objects.requireNonNull(cancellation, "cancellation");
+            if (!output.isDirect()) {
+                throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment surface = MemorySegment.ofBuffer(output);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_FONT_SUBSTITUTION_REPORT_AND_CANCELLATION.invokeExact(
+                    handle, contract, cancellation.nativeHandle(), surface, surface.byteSize(), jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cancellable contract buffer font substitution report failed", ex);
+            }
+        }
+
+        public String renderPageIntoBufferWithFontSubstitutionReport(RenderContract contract, ByteBuffer output) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPageIntoBufferWithContractAndFontSubstitutionReportJson(contract.toJson(), output);
+        }
+
+        public String renderPageIntoBufferWithFontSubstitutionReport(
+            RenderContract contract,
+            ByteBuffer output,
+            RenderCancellation cancellation
+        ) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPageIntoBufferWithContractAndFontSubstitutionReportJson(
+                contract.toJson(), output, cancellation);
+        }
+
+        public String renderPageIntoBufferWithContractAndRenderReportJson(
+            String contractJson,
+            ByteBuffer output
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(output, "output");
+            if (!output.isDirect()) {
+                throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment surface = MemorySegment.ofBuffer(output);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_RENDER_REPORT.invokeExact(
+                    handle, contract, surface, surface.byteSize(), jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend contract buffer render report failed", ex);
+            }
+        }
+
+        public String renderPageIntoBufferWithContractAndRenderReportJson(
+            String contractJson,
+            ByteBuffer output,
+            RenderCancellation cancellation
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(output, "output");
+            Objects.requireNonNull(cancellation, "cancellation");
+            if (!output.isDirect()) {
+                throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment surface = MemorySegment.ofBuffer(output);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_RENDER_REPORT_AND_CANCELLATION.invokeExact(
+                    handle, contract, cancellation.nativeHandle(), surface, surface.byteSize(), jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cancellable contract buffer render report failed", ex);
+            }
+        }
+
+        public String renderPageIntoBufferWithRenderReport(RenderContract contract, ByteBuffer output) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPageIntoBufferWithContractAndRenderReportJson(contract.toJson(), output);
+        }
+
+        public String renderPageIntoBufferWithRenderReport(
+            RenderContract contract,
+            ByteBuffer output,
+            RenderCancellation cancellation
+        ) {
+            Objects.requireNonNull(contract, "contract");
+            return renderPageIntoBufferWithContractAndRenderReportJson(
+                contract.toJson(), output, cancellation);
+        }
+
         public ProgressiveRenderSession progressiveRenderSession(
             int pageNumber, int dpi, int tileWidth, int tileHeight, String mode
         ) {
@@ -750,6 +2117,34 @@ public final class WellfriendPdf {
             } catch (Throwable ex) {
                 throw new IllegalStateException("Wellfriend progressive session creation failed", ex);
             }
+        }
+
+        public ProgressiveRenderSession progressiveRenderSession(
+            RenderContract contract, int tileWidth, int tileHeight
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(contract, "contract");
+            if ((tileWidth == 0) != (tileHeight == 0)) {
+                throw new IllegalArgumentException("tile dimensions must both be positive or both be zero for adaptive sizing");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contractPtr = arena.allocateFrom(contract.toJson());
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment session = (MemorySegment) Native.PROGRESSIVE_NEW_WITH_CONTRACT_JSON.invokeExact(
+                    handle, contractPtr, tileWidth, tileHeight, err);
+                if (Native.isNull(session)) {
+                    Native.throwError(2, err);
+                }
+                return new ProgressiveRenderSession(session);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive contract session creation failed", ex);
+            }
+        }
+
+        public ProgressiveRenderSession progressiveRenderSession(RenderContract contract) {
+            return progressiveRenderSession(contract, 256, 256);
         }
 
         public ProgressiveRenderSession progressiveRenderSession(int pageNumber) {
@@ -780,6 +2175,28 @@ public final class WellfriendPdf {
         public String securityReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.SECURITY_REPORT, "security_report");
+        }
+
+        public String documentViewsReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.DOCUMENT_VIEWS_REPORT, "document_views_report");
+        }
+
+        public String imageDecodeCapabilityReportJson() {
+            ensureOpen();
+            return Native.documentReport(
+                handle,
+                Native.IMAGE_DECODE_CAPABILITY_REPORT,
+                "image_decode_capability_report");
+        }
+
+        public String progressiveImageDecodeLifecycleReportJson(String requestJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle,
+                Native.PROGRESSIVE_IMAGE_DECODE_LIFECYCLE_REPORT,
+                requestJson,
+                "progressive_image_decode_lifecycle_report");
         }
 
         public String parserReportJson(String mode) {
@@ -1180,6 +2597,17 @@ public final class WellfriendPdf {
         public BinaryResult editing_transactionsTransactionApply(String requestJson) {
             ensureOpen();
             return Native.editing_transactionsTransactionApply(handle, requestJson);
+        }
+
+        public BinaryResult editing_transactionsTransactionApplyWithRenderInvalidation(
+                String requestJson,
+                String renderInvalidationOptionsJson) {
+            ensureOpen();
+            return Native.editing_transactionsTransactionApplyWithRenderInvalidation(
+                handle,
+                requestJson,
+                renderInvalidationOptionsJson
+            );
         }
 
         public String editing_transactionsTextMapJson(String text, String direction) {
@@ -1663,6 +3091,11 @@ public final class WellfriendPdf {
         }
     }
 
+    public record AdjacentPagePrefetchExecution(
+        String reportJson,
+        ProgressiveRenderSession session
+    ) {}
+
     public static final class ProgressiveRenderSession implements AutoCloseable {
         private MemorySegment handle;
         private boolean closed;
@@ -1684,6 +3117,21 @@ public final class WellfriendPdf {
             } catch (Throwable ex) {
                 throw new IllegalStateException("Wellfriend progressive step failed", ex);
             }
+        }
+
+        public String stepJson(long maxTiles, BooleanSupplier cancellationRequested) {
+            ensureOpen();
+            Objects.requireNonNull(cancellationRequested, "cancellationRequested");
+            if (cancellationRequested.getAsBoolean()) {
+                requestCancel();
+                throw new CancellationException("Wellfriend progressive render step was cancelled");
+            }
+            String report = stepJson(maxTiles);
+            if (cancellationRequested.getAsBoolean()) {
+                requestCancel();
+                throw new CancellationException("Wellfriend progressive render step was cancelled");
+            }
+            return report;
         }
 
         public String pauseJson() {
@@ -1744,6 +3192,317 @@ public final class WellfriendPdf {
             }
         }
 
+        public void requestCancel() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_REQUEST_CANCEL.invokeExact(handle, err);
+                Native.throwError(status, err);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive request-cancel failed", ex);
+            }
+        }
+
+        public String reviseViewportHintJson(int x, int y, int width, int height) {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_REVISE_VIEWPORT_HINT.invokeExact(
+                    handle, 1, x, y, width, height, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive viewport revision failed", ex);
+            }
+        }
+
+        public String clearViewportHintJson() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_REVISE_VIEWPORT_HINT.invokeExact(
+                    handle, 0, 0, 0, 0, 0, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive viewport revision failed", ex);
+            }
+        }
+
+        public String reviseDirtyRegionJson(int x, int y, int width, int height) {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_REVISE_DIRTY_REGION.invokeExact(
+                    handle, 1, x, y, width, height, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive dirty-region revision failed", ex);
+            }
+        }
+
+        public String clearDirtyRegionJson() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_REVISE_DIRTY_REGION.invokeExact(
+                    handle, 0, 0, 0, 0, 0, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive dirty-region revision failed", ex);
+            }
+        }
+
+        public String reviseRenderContextJson(
+                String renderContractFingerprint,
+                String visibilityFingerprint) {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = renderContractFingerprint == null
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(renderContractFingerprint);
+                MemorySegment visibility = visibilityFingerprint == null
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(visibilityFingerprint);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_REVISE_RENDER_CONTEXT.invokeExact(
+                    handle, contract, visibility, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive render-context revision failed", ex);
+            }
+        }
+
+        public String reviseRenderContractJson(String contractJson) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_REVISE_RENDER_CONTRACT.invokeExact(
+                    handle, contract, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive render-contract revision failed", ex);
+            }
+        }
+
+        public String reviseRenderContract(RenderContract contract) {
+            Objects.requireNonNull(contract, "contract");
+            return reviseRenderContractJson(contract.toJson());
+        }
+
+        public String evaluateTilePublicationJson(String publicationJson) {
+            ensureOpen();
+            Objects.requireNonNull(publicationJson, "publicationJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment publication = arena.allocateFrom(publicationJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_EVALUATE_TILE_PUBLICATION.invokeExact(
+                    handle, publication, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive tile-publication evaluation failed", ex);
+            }
+        }
+
+        public String applyRenderInvalidationPlanJson(String planJson) {
+            ensureOpen();
+            Objects.requireNonNull(planJson, "planJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment plan = arena.allocateFrom(planJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_APPLY_RENDER_INVALIDATION_PLAN.invokeExact(
+                    handle, plan, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive render invalidation failed", ex);
+            }
+        }
+
+        public String viewerQueueJson() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_VIEWER_QUEUE.invokeExact(handle, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive viewer queue failed", ex);
+            }
+        }
+
+        public String executeViewerQueueJson() {
+            return executeViewerQueueJson(1);
+        }
+
+        public String executeViewerQueueJson(long maxItems) {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_EXECUTE_VIEWER_QUEUE.invokeExact(
+                    handle, maxItems, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive viewer queue execution failed", ex);
+            }
+        }
+
+        public String executeViewerQueueJson(RenderCancellation cancellation) {
+            return executeViewerQueueJson(1, cancellation);
+        }
+
+        public String executeViewerQueueJson(long maxItems, RenderCancellation cancellation) {
+            ensureOpen();
+            Objects.requireNonNull(cancellation, "cancellation");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_EXECUTE_VIEWER_QUEUE_AND_CANCELLATION.invokeExact(
+                    handle, maxItems, cancellation.nativeHandle(), jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cancellable progressive viewer queue execution failed", ex);
+            }
+        }
+
+        public AdjacentPagePrefetchExecution executeAdjacentPagePrefetch(String prefetchIdentity) {
+            return executeAdjacentPagePrefetch(prefetchIdentity, 1);
+        }
+
+        public AdjacentPagePrefetchExecution executeAdjacentPagePrefetch(
+                String prefetchIdentity,
+                long maxTiles) {
+            ensureOpen();
+            Objects.requireNonNull(prefetchIdentity, "prefetchIdentity");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment identity = arena.allocateFrom(prefetchIdentity);
+                MemorySegment childOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_EXECUTE_ADJACENT_PAGE_PREFETCH.invokeExact(
+                    handle, identity, maxTiles, childOut, jsonOut, err);
+                Native.throwError(status, err);
+                String report = Native.takeString(jsonOut);
+                MemorySegment child = childOut.get(ValueLayout.ADDRESS, 0);
+                ProgressiveRenderSession session = Native.isNull(child)
+                    ? null
+                    : new ProgressiveRenderSession(child);
+                return new AdjacentPagePrefetchExecution(report, session);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive adjacent-page prefetch failed", ex);
+            }
+        }
+
+        public AdjacentPagePrefetchExecution executeAdjacentPagePrefetch(
+                String prefetchIdentity,
+                RenderCancellation cancellation) {
+            return executeAdjacentPagePrefetch(prefetchIdentity, 1, cancellation);
+        }
+
+        public AdjacentPagePrefetchExecution executeAdjacentPagePrefetch(
+                String prefetchIdentity,
+                long maxTiles,
+                RenderCancellation cancellation) {
+            ensureOpen();
+            Objects.requireNonNull(prefetchIdentity, "prefetchIdentity");
+            Objects.requireNonNull(cancellation, "cancellation");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment identity = arena.allocateFrom(prefetchIdentity);
+                MemorySegment childOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_EXECUTE_ADJACENT_PAGE_PREFETCH_AND_CANCELLATION.invokeExact(
+                    handle, identity, maxTiles, cancellation.nativeHandle(), childOut, jsonOut, err);
+                Native.throwError(status, err);
+                String report = Native.takeString(jsonOut);
+                MemorySegment child = childOut.get(ValueLayout.ADDRESS, 0);
+                ProgressiveRenderSession session = Native.isNull(child)
+                    ? null
+                    : new ProgressiveRenderSession(child);
+                return new AdjacentPagePrefetchExecution(report, session);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend cancellable progressive adjacent-page prefetch failed", ex);
+            }
+        }
+
+        public String viewerCallbackDispatchJson() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_VIEWER_CALLBACK_DISPATCH.invokeExact(handle, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive viewer callback dispatch failed", ex);
+            }
+        }
+
+        public String dispatchViewerCallbacks(Consumer<String> callback) {
+            ensureOpen();
+            Objects.requireNonNull(callback, "callback");
+            String report = viewerCallbackDispatchJson();
+            Object parsed = Json.parse(report);
+            if (parsed instanceof Map<?, ?> map) {
+                Object events = map.get("events");
+                if (events instanceof List<?> list) {
+                    for (Object event : list) {
+                        callback.accept(Json.write(event));
+                    }
+                }
+            }
+            return report;
+        }
+
         public byte[] finishPng() {
             ensureOpen();
             try (Arena arena = Arena.ofConfined()) {
@@ -1757,6 +3516,21 @@ public final class WellfriendPdf {
             } catch (Throwable ex) {
                 throw new IllegalStateException("Wellfriend progressive finish failed", ex);
             }
+        }
+
+        public byte[] finishPng(BooleanSupplier cancellationRequested) {
+            ensureOpen();
+            Objects.requireNonNull(cancellationRequested, "cancellationRequested");
+            if (cancellationRequested.getAsBoolean()) {
+                requestCancel();
+                throw new CancellationException("Wellfriend progressive render finish was cancelled");
+            }
+            byte[] png = finishPng();
+            if (cancellationRequested.getAsBoolean()) {
+                requestCancel();
+                throw new CancellationException("Wellfriend progressive render finish was cancelled");
+            }
+            return png;
         }
 
         @Override
@@ -1853,6 +3627,17 @@ public final class WellfriendPdf {
             "wellfriendpdf_document_free",
             FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
         );
+        private static final MethodHandle REGISTER_FONT_BYTES = downcall(
+            "wellfriendpdf_document_register_font_bytes",
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_INT,
+                ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS
+            )
+        );
         private static final MethodHandle STRING_FREE = downcall(
             "wellfriendpdf_string_free",
             FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
@@ -1864,6 +3649,39 @@ public final class WellfriendPdf {
         private static final MethodHandle BUFFER_FREE = downcall(
             "wellfriendpdf_buffer_free",
             FunctionDescriptor.ofVoid(BUFFER_LAYOUT)
+        );
+        private static final MethodHandle RENDER_CANCELLATION_NEW = downcall(
+            "wellfriendpdf_render_cancellation_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_CANCELLATION_CANCEL = downcall(
+            "wellfriendpdf_render_cancellation_cancel",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_CANCELLATION_IS_CANCELLED = downcall(
+            "wellfriendpdf_render_cancellation_is_cancelled",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_CANCELLATION_FREE = downcall(
+            "wellfriendpdf_render_cancellation_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_CACHE_NEW = downcall(
+            "wellfriendpdf_render_cache_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_CACHE_CLEAR = downcall(
+            "wellfriendpdf_render_cache_clear",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_CACHE_APPLY_RENDER_INVALIDATION_PLAN = downcall(
+            "wellfriendpdf_render_cache_apply_render_invalidation_plan_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_CACHE_FREE = downcall(
+            "wellfriendpdf_render_cache_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
         );
         private static final MethodHandle PAGE_COUNT = downcall(
             "wellfriendpdf_document_page_count",
@@ -1878,6 +3696,12 @@ public final class WellfriendPdf {
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_FONT_SUBSTITUTION_REPORT = downcall(
+            "wellfriendpdf_document_render_page_png_with_font_substitution_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
         private static final MethodHandle RENDER_PAGE_JPEG = downcall(
             "wellfriendpdf_document_render_page_jpeg",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
@@ -1888,21 +3712,103 @@ public final class WellfriendPdf {
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle BACKEND_PLAN_ARENA_REPORT = downcall(
+            "wellfriendpdf_document_backend_plan_arena_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle BACKEND_PLAN_ARENA_REPORT_FOR_CONTRACT = downcall(
+            "wellfriendpdf_document_backend_plan_arena_report_for_contract_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PREPRESS_PLATE_REPORT = downcall(
+            "wellfriendpdf_document_prepress_plate_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT = downcall(
             "wellfriendpdf_document_render_page_png_with_contract_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT_AND_RENDER_CACHE = downcall(
+            "wellfriendpdf_document_render_page_png_with_contract_and_render_cache_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT_AND_CANCELLATION = downcall(
+            "wellfriendpdf_document_render_page_png_with_contract_json_and_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT_AND_FONT_SUBSTITUTION_REPORT = downcall(
+            "wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT_AND_FONT_SUBSTITUTION_REPORT_AND_CANCELLATION = downcall(
+            "wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json_and_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT_AND_RENDER_REPORT = downcall(
+            "wellfriendpdf_document_render_page_png_with_contract_and_render_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT_AND_RENDER_CACHE_REPORT = downcall(
+            "wellfriendpdf_document_render_page_png_with_contract_and_render_cache_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT_AND_RENDER_REPORT_AND_CANCELLATION = downcall(
+            "wellfriendpdf_document_render_page_png_with_contract_and_render_report_json_and_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT = downcall(
             "wellfriendpdf_document_render_into_buffer_with_contract_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_CANCELLATION = downcall(
+            "wellfriendpdf_document_render_into_buffer_with_contract_json_and_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_FONT_SUBSTITUTION_REPORT = downcall(
+            "wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_FONT_SUBSTITUTION_REPORT_AND_CANCELLATION = downcall(
+            "wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json_and_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_RENDER_REPORT = downcall(
+            "wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT_AND_RENDER_REPORT_AND_CANCELLATION = downcall(
+            "wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json_and_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle PROGRESSIVE_NEW = downcall(
             "wellfriendpdf_document_progressive_render_new",
             FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_NEW_WITH_CONTRACT_JSON = downcall(
+            "wellfriendpdf_document_progressive_render_new_with_contract_json",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
         );
         private static final MethodHandle PROGRESSIVE_STEP = downcall(
             "wellfriendpdf_progressive_render_step_json",
@@ -1921,6 +3827,74 @@ public final class WellfriendPdf {
         );
         private static final MethodHandle PROGRESSIVE_RESUME = downcall(
             "wellfriendpdf_progressive_render_resume_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_REQUEST_CANCEL = downcall(
+            "wellfriendpdf_progressive_render_request_cancel",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_REVISE_VIEWPORT_HINT = downcall(
+            "wellfriendpdf_progressive_render_revise_viewport_hint_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_REVISE_DIRTY_REGION = downcall(
+            "wellfriendpdf_progressive_render_revise_dirty_region_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_REVISE_RENDER_CONTEXT = downcall(
+            "wellfriendpdf_progressive_render_revise_render_context_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_REVISE_RENDER_CONTRACT = downcall(
+            "wellfriendpdf_progressive_render_revise_render_contract_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_EVALUATE_TILE_PUBLICATION = downcall(
+            "wellfriendpdf_progressive_render_evaluate_tile_publication_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_APPLY_RENDER_INVALIDATION_PLAN = downcall(
+            "wellfriendpdf_progressive_render_apply_render_invalidation_plan_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_VIEWER_QUEUE = downcall(
+            "wellfriendpdf_progressive_render_viewer_queue_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_EXECUTE_VIEWER_QUEUE = downcall(
+            "wellfriendpdf_progressive_render_execute_viewer_queue_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_EXECUTE_VIEWER_QUEUE_AND_CANCELLATION = downcall(
+            "wellfriendpdf_progressive_render_execute_viewer_queue_json_and_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_EXECUTE_ADJACENT_PAGE_PREFETCH = downcall(
+            "wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_EXECUTE_ADJACENT_PAGE_PREFETCH_AND_CANCELLATION = downcall(
+            "wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json_and_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_VIEWER_CALLBACK_DISPATCH = downcall(
+            "wellfriendpdf_progressive_render_viewer_callback_dispatch_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS)
         );
@@ -1974,6 +3948,12 @@ public final class WellfriendPdf {
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle SECURITY_REPORT = documentReport("wellfriendpdf_document_security_report_json");
+        private static final MethodHandle DOCUMENT_VIEWS_REPORT =
+            documentReport("wellfriendpdf_document_views_report_json");
+        private static final MethodHandle IMAGE_DECODE_CAPABILITY_REPORT =
+            documentReport("wellfriendpdf_document_image_decode_capability_report_json");
+        private static final MethodHandle PROGRESSIVE_IMAGE_DECODE_LIFECYCLE_REPORT =
+            documentStringReport("wellfriendpdf_document_progressive_image_decode_lifecycle_report_json");
         private static final MethodHandle PARSER_REPORT = documentStringReport("wellfriendpdf_document_parser_report_json");
         private static final MethodHandle COLOR_REPORT = documentStringReport("wellfriendpdf_document_color_report_json");
         private static final MethodHandle VALIDATE = documentStringReport("wellfriendpdf_document_validate_json");
@@ -2337,6 +4317,11 @@ public final class WellfriendPdf {
             "wellfriendpdf_document_editing_transactions_transaction_apply_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle EDITING_TRANSACTIONS_TRANSACTION_APPLY_WITH_RENDER_INVALIDATION = downcall(
+            "wellfriendpdf_document_editing_transactions_transaction_apply_with_render_invalidation_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle EDITING_TRANSACTIONS_TEXT_MAP = downcall(
             "wellfriendpdf_document_editing_transactions_text_map_json",
@@ -2886,6 +4871,110 @@ public final class WellfriendPdf {
             }
         }
 
+        private static MemorySegment newRenderCancellation() {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment cancellation = (MemorySegment) RENDER_CANCELLATION_NEW.invokeExact(error);
+                if (isNull(cancellation)) {
+                    throwError(2, error);
+                }
+                return cancellation;
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render cancellation creation failed", ex);
+            }
+        }
+
+        private static void freeRenderCancellation(MemorySegment cancellation) {
+            if (isNull(cancellation)) return;
+            try {
+                RENDER_CANCELLATION_FREE.invokeExact(cancellation);
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render cancellation release failed", ex);
+            }
+        }
+
+        private static void cancelRender(MemorySegment cancellation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) RENDER_CANCELLATION_CANCEL.invokeExact(cancellation, error);
+                throwError(status, error);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render cancellation failed", ex);
+            }
+        }
+
+        private static boolean isRenderCancelled(MemorySegment cancellation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment cancelled = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) RENDER_CANCELLATION_IS_CANCELLED.invokeExact(
+                    cancellation, cancelled, error);
+                throwError(status, error);
+                return cancelled.get(ValueLayout.JAVA_INT, 0) != 0;
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render cancellation status query failed", ex);
+            }
+        }
+
+        private static MemorySegment newRenderCache() {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment cache = (MemorySegment) RENDER_CACHE_NEW.invokeExact(error);
+                if (isNull(cache)) {
+                    throwError(2, error);
+                }
+                return cache;
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render cache creation failed", ex);
+            }
+        }
+
+        private static void freeRenderCache(MemorySegment cache) {
+            if (isNull(cache)) return;
+            try {
+                RENDER_CACHE_FREE.invokeExact(cache);
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render cache release failed", ex);
+            }
+        }
+
+        private static void clearRenderCache(MemorySegment cache) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) RENDER_CACHE_CLEAR.invokeExact(cache, error);
+                throwError(status, error);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render cache clear failed", ex);
+            }
+        }
+
+        private static String applyRenderCacheInvalidationPlan(MemorySegment cache, String planJson) {
+            Objects.requireNonNull(planJson, "planJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment plan = arena.allocateFrom(planJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) RENDER_CACHE_APPLY_RENDER_INVALIDATION_PLAN.invokeExact(
+                    cache, plan, jsonOut, error);
+                throwError(status, error);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render cache invalidation failed", ex);
+            }
+        }
+
         private static MemorySegment newSignatureComponent(MethodHandle constructor, String operation) {
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
@@ -3398,6 +5487,29 @@ public final class WellfriendPdf {
                 return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
             } catch (WellfriendPdfException ex) { throw ex;
             } catch (Throwable ex) { throw new IllegalStateException("Wellfriend editing_transactions_transaction_apply failed", ex); }
+        }
+
+        private static BinaryResult editing_transactionsTransactionApplyWithRenderInvalidation(
+                MemorySegment handle,
+                String requestJson,
+                String renderInvalidationOptionsJson) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment options = renderInvalidationOptionsJson == null
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(renderInvalidationOptionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) EDITING_TRANSACTIONS_TRANSACTION_APPLY_WITH_RENDER_INVALIDATION
+                    .invokeExact(handle, request, options, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend editing_transactions_transaction_apply_with_render_invalidation failed", ex);
+            }
         }
 
         private static BinaryResult text_reflowRequestOutput(

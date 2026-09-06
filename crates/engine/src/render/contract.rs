@@ -1,9 +1,9 @@
 //! Versioned, binding-safe render contract.
 //!
 //! This module keeps every public pixel-affecting choice in one immutable,
-//! serializable value. Callers that need an option not implemented by the
-//! selected backend receive a typed error instead of silently getting a
-//! different rendering policy.
+//! serializable value. Callers that request an option outside the selected
+//! backend policy receive a typed error instead of silently getting a different
+//! rendering policy.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -239,6 +239,11 @@ impl DeviceMatrix {
     fn is_finite(self) -> bool {
         self.to_f64().iter().all(|value| value.is_finite())
     }
+
+    fn is_invertible(self) -> bool {
+        let [a, b, c, d, _, _] = self.to_f64();
+        (a * d - b * c).abs() >= 1e-10
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -300,6 +305,308 @@ impl Default for RenderResourceBudget {
             max_cache_bytes: 256 * 1024 * 1024,
         }
     }
+}
+
+/// Source-owned parity map for every public render-contract field.
+///
+/// This registry is intentionally kept next to [`RenderContract`] and is
+/// checked against serde field names by unit tests. If a new public contract
+/// field is added, its cache/execution/binding posture must be recorded here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct RenderContractFieldEffect {
+    pub field: &'static str,
+    pub cache_identity: bool,
+    pub validation: bool,
+    pub active_execution: bool,
+    pub binding_builder: bool,
+    pub effect: &'static str,
+}
+
+pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
+    RenderContractFieldEffect {
+        field: "schema_version",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: false,
+        effect: "schema-refusal-and-transport-version",
+    },
+    RenderContractFieldEffect {
+        field: "document_revision",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: false,
+        effect: "document-revision-cache-and-mismatch-refusal",
+    },
+    RenderContractFieldEffect {
+        field: "page_identity",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: false,
+        effect: "page-object-cache-identity",
+    },
+    RenderContractFieldEffect {
+        field: "page_number",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "page-selection-and-viewport",
+    },
+    RenderContractFieldEffect {
+        field: "dpi",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "viewport-scale-and-output-dimensions",
+    },
+    RenderContractFieldEffect {
+        field: "page_box",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "box-selection-and-cache-identity",
+    },
+    RenderContractFieldEffect {
+        field: "transform",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "device-transform-render-policy",
+    },
+    RenderContractFieldEffect {
+        field: "clip",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "tile-selection-cropping-and-budgeting",
+    },
+    RenderContractFieldEffect {
+        field: "width",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "surface-dimensions-and-buffer-validation",
+    },
+    RenderContractFieldEffect {
+        field: "height",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "surface-dimensions-and-buffer-validation",
+    },
+    RenderContractFieldEffect {
+        field: "stride",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "caller-surface-row-layout",
+    },
+    RenderContractFieldEffect {
+        field: "pixel_format",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "caller-surface-channel-layout",
+    },
+    RenderContractFieldEffect {
+        field: "alpha_mode",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "caller-surface-alpha-conversion",
+    },
+    RenderContractFieldEffect {
+        field: "background",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "clear-color-and-background-flattening",
+    },
+    RenderContractFieldEffect {
+        field: "execution_mode",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "standard-or-research-policy-identity",
+    },
+    RenderContractFieldEffect {
+        field: "backend",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "scalar-standard-or-research-hybrid-dispatch",
+    },
+    RenderContractFieldEffect {
+        field: "compositing",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "compatibility-or-high-quality-render-mode",
+    },
+    RenderContractFieldEffect {
+        field: "annotations",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "annotation-appearance-inclusion",
+    },
+    RenderContractFieldEffect {
+        field: "forms",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "form-widget-appearance-inclusion",
+    },
+    RenderContractFieldEffect {
+        field: "optional_content",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "optional-content-state-resolution",
+    },
+    RenderContractFieldEffect {
+        field: "text_smoothing",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "text-rasterization-smoothing-policy",
+    },
+    RenderContractFieldEffect {
+        field: "image_smoothing",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "image-sampling-policy",
+    },
+    RenderContractFieldEffect {
+        field: "path_smoothing",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "path-scan-conversion-policy",
+    },
+    RenderContractFieldEffect {
+        field: "subpixel_text",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "subpixel-text-policy",
+    },
+    RenderContractFieldEffect {
+        field: "grayscale",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "caller-surface-grayscale-conversion",
+    },
+    RenderContractFieldEffect {
+        field: "color_scheme",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "post-render-color-scheme-transform",
+    },
+    RenderContractFieldEffect {
+        field: "reverse_byte_order",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "caller-surface-byte-order-routing",
+    },
+    RenderContractFieldEffect {
+        field: "print_profile",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "display-print-proof-profile-selection",
+    },
+    RenderContractFieldEffect {
+        field: "halftone",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "ordered-halftone-post-process",
+    },
+    RenderContractFieldEffect {
+        field: "overprint",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "overprint-preview-or-typed-separation-refusal",
+    },
+    RenderContractFieldEffect {
+        field: "rendering_intent",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "color-management-rendering-intent",
+    },
+    RenderContractFieldEffect {
+        field: "color_management",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "portable-native-or-deterministic-cmm-policy",
+    },
+    RenderContractFieldEffect {
+        field: "exactness",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "high-quality-exact-refusal-policy",
+    },
+    RenderContractFieldEffect {
+        field: "determinism",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "deterministic-output-policy",
+    },
+    RenderContractFieldEffect {
+        field: "resource_budget",
+        cache_identity: true,
+        validation: true,
+        active_execution: true,
+        binding_builder: true,
+        effect: "pixel-decode-temporary-and-cache-budgeting",
+    },
+];
+
+pub fn render_contract_field_effects() -> &'static [RenderContractFieldEffect] {
+    RENDER_CONTRACT_FIELD_EFFECTS
 }
 
 /// A complete, versioned request for raster semantics. Fields may be rejected
@@ -407,6 +714,20 @@ impl RenderContract {
         self.compositing.into()
     }
 
+    pub fn with_render_tile(&self, tile: RenderTile) -> Self {
+        let mut contract = self.clone();
+        contract.clip = Some(DeviceClip {
+            x: i32::try_from(tile.x).unwrap_or(i32::MAX),
+            y: i32::try_from(tile.y).unwrap_or(i32::MAX),
+            width: tile.width,
+            height: tile.height,
+        });
+        contract.width = tile.width;
+        contract.height = tile.height;
+        contract.stride = tile.width as usize * contract.pixel_format.bytes_per_pixel();
+        contract
+    }
+
     pub fn cache_fingerprint(&self) -> String {
         let bytes = serde_json::to_vec(self).expect("RenderContract serialization is infallible");
         let digest = Sha256::digest(bytes);
@@ -439,6 +760,11 @@ impl RenderContract {
                 "render contract transform must contain only finite values",
             ));
         }
+        if !self.transform.is_invertible() {
+            return Err(WellfriendError::invalid_input(
+                "render contract transform must be invertible",
+            ));
+        }
         let minimum_stride = self.width as usize * self.pixel_format.bytes_per_pixel();
         if self.stride < minimum_stride {
             return Err(WellfriendError::invalid_input(format!(
@@ -451,6 +777,17 @@ impl RenderContract {
             return Err(WellfriendError::ResourceLimit(format!(
                 "render contract requests {pixels} pixels, exceeding budget {}",
                 self.resource_budget.max_pixels
+            )));
+        }
+        let temporary_surface_bytes = pixels.checked_mul(4).ok_or_else(|| {
+            WellfriendError::ResourceLimit(
+                "render contract temporary surface byte length overflows".to_string(),
+            )
+        })?;
+        if temporary_surface_bytes > self.resource_budget.max_temporary_bytes {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "render contract requires {temporary_surface_bytes} temporary bytes for the canonical RGBA working surface, exceeding max_temporary_bytes {}",
+                self.resource_budget.max_temporary_bytes
             )));
         }
         if let Some(clip) = self.clip {
@@ -513,6 +850,17 @@ mod tests {
     }
 
     #[test]
+    fn contract_rejects_singular_device_transform() {
+        let mut contract = contract(1);
+        contract.transform = DeviceMatrix::from_f64([1.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+
+        let err = contract
+            .validate()
+            .expect_err("singular transform must be refused");
+        assert!(err.to_string().contains("transform must be invertible"));
+    }
+
+    #[test]
     fn defaults_are_deterministic_and_valid() {
         let contract = contract(7);
         contract.validate().expect("default contract is valid");
@@ -548,10 +896,52 @@ mod tests {
     }
 
     #[test]
-    fn preserve_separations_without_native_cmm_is_refused() {
+    fn preserve_separations_is_refused_without_separation_output_surface() {
         let mut c = contract(1);
         c.overprint = OverprintPolicy::PreserveSeparations;
         c.color_management = ColorManagementPolicy::PortableQcms;
         assert!(c.validate().is_err());
+
+        c.color_management = ColorManagementPolicy::NativeLittleCms;
+        let err = c
+            .validate()
+            .expect_err("native CMM alone must not admit PreserveSeparations");
+        assert!(err.to_string().contains("separation-preserving output"));
+    }
+
+    #[test]
+    fn native_littlecms_policy_without_backend_is_refused() {
+        let mut c = contract(1);
+        c.color_management = ColorManagementPolicy::NativeLittleCms;
+        let result = c.validate();
+        if crate::render::cmm::native_cmm_status().available {
+            assert!(result.is_ok());
+        } else {
+            let err = result.expect_err("unavailable NativeLittleCms must be refused");
+            let message = err.to_string();
+            assert!(message.contains("NativeLittleCms"));
+            assert!(message.contains("native lcms2 backend"));
+        }
+    }
+
+    #[test]
+    fn field_effect_registry_covers_every_serialized_contract_field() {
+        let contract = contract(1);
+        let serialized = serde_json::to_value(&contract).expect("serialize render contract");
+        let serialized_fields = serialized
+            .as_object()
+            .expect("render contract serializes as an object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let effect_fields = render_contract_field_effects()
+            .iter()
+            .map(|effect| effect.field.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(serialized_fields, effect_fields);
+        assert!(render_contract_field_effects()
+            .iter()
+            .all(|effect| effect.cache_identity && effect.active_execution));
     }
 }

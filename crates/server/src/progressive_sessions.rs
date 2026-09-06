@@ -15,16 +15,28 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use wellfriendpdf_engine::ProgressiveRenderJob;
+use wellfriendpdf_engine::{
+    CancelToken, ProgressiveAdjacentPagePrefetchExecutionReport,
+    ProgressiveRenderContextRevisionReport, ProgressiveRenderInvalidationReport,
+    ProgressiveRenderJob, ProgressiveRenderStepReport, ProgressiveTilePublication,
+    ProgressiveTilePublicationAcceptance, ProgressiveViewerCallbackDispatchReport,
+    ProgressiveViewerQueueExecutionReport, RenderContract, RenderTile,
+};
 
 use crate::error::ServerError;
 
 /// A single progressive render session's state.
 pub struct SessionEntry {
-    pub owner: String,
     pub job: ProgressiveRenderJob,
     pub last_access: Instant,
     pub created_at: Instant,
+}
+
+#[derive(Clone)]
+struct SessionHandle {
+    owner: String,
+    cancel_token: CancelToken,
+    entry: Arc<Mutex<SessionEntry>>,
 }
 
 /// Thread-safe progressive session store with bounded capacity and idle timeout.
@@ -33,8 +45,15 @@ pub struct ProgressiveSessionStore {
     inner: Arc<StoreInner>,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AdjacentPagePrefetchSessionReport {
+    pub source_session_id: String,
+    pub prefetch_session_id: Option<String>,
+    pub report: ProgressiveAdjacentPagePrefetchExecutionReport,
+}
+
 struct StoreInner {
-    sessions: RwLock<HashMap<String, Arc<Mutex<SessionEntry>>>>,
+    sessions: RwLock<HashMap<String, SessionHandle>>,
     max_sessions: usize,
     idle_timeout: Duration,
 }
@@ -75,13 +94,20 @@ impl ProgressiveSessionStore {
                 self.inner.max_sessions
             )));
         }
+        let cancel_token = job.cancellation_token();
         let entry = SessionEntry {
-            owner,
             job,
             last_access: Instant::now(),
             created_at: Instant::now(),
         };
-        map.insert(id.clone(), Arc::new(Mutex::new(entry)));
+        map.insert(
+            id.clone(),
+            SessionHandle {
+                owner,
+                cancel_token,
+                entry: Arc::new(Mutex::new(entry)),
+            },
+        );
         Ok(id)
     }
 
@@ -95,16 +121,16 @@ impl ProgressiveSessionStore {
             .sessions
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        let entry_arc = map.get(id).cloned().ok_or_else(|| {
+        let handle = map.get(id).cloned().ok_or_else(|| {
             ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
         })?;
-        drop(map);
-        let mut entry = entry_arc.lock().unwrap_or_else(|e| e.into_inner());
-        if entry.owner != owner {
+        if handle.owner != owner {
             return Err(ServerError::InvalidParameter(
                 "progressive session not found".to_string(),
             ));
         }
+        drop(map);
+        let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
         entry.last_access = Instant::now();
         Ok(f(&entry.job))
     }
@@ -119,18 +145,312 @@ impl ProgressiveSessionStore {
             .sessions
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        let entry_arc = map.get(id).cloned().ok_or_else(|| {
+        let handle = map.get(id).cloned().ok_or_else(|| {
             ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
         })?;
-        drop(map);
-        let mut entry = entry_arc.lock().unwrap_or_else(|e| e.into_inner());
-        if entry.owner != owner {
+        if handle.owner != owner {
             return Err(ServerError::InvalidParameter(
                 "progressive session not found".to_string(),
             ));
         }
+        drop(map);
+        let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
         entry.last_access = Instant::now();
         Ok(f(&mut entry.job))
+    }
+
+    /// Request and finalize cancellation for a session.
+    ///
+    /// The atomic token is signalled before taking the per-session mutex, so an
+    /// in-flight step can observe cancellation while this caller waits to clear
+    /// retained tile buffers and transition the job to a terminal state.
+    pub fn cancel(&self, id: &str, owner: &str) -> Result<(), ServerError> {
+        let map = self
+            .inner
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let handle = map.get(id).cloned().ok_or_else(|| {
+            ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
+        })?;
+        if handle.owner != owner {
+            return Err(ServerError::InvalidParameter(
+                "progressive session not found".to_string(),
+            ));
+        }
+        handle.cancel_token.cancel();
+        drop(map);
+
+        let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry.last_access = Instant::now();
+        entry.job.cancel();
+        Ok(())
+    }
+
+    /// Revise visible-work priority and mark prior tile publications obsolete.
+    ///
+    /// The current cancellation source is signalled before the per-session
+    /// mutex is acquired, so an in-flight step can pause instead of continuing
+    /// to publish tiles for a view the caller has already superseded.
+    pub fn revise_viewport_hint(
+        &self,
+        id: &str,
+        owner: &str,
+        viewport_hint: Option<RenderTile>,
+    ) -> Result<
+        Result<ProgressiveRenderStepReport, wellfriendpdf_engine::WellfriendError>,
+        ServerError,
+    > {
+        let map = self
+            .inner
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let handle = map.get(id).cloned().ok_or_else(|| {
+            ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
+        })?;
+        if handle.owner != owner {
+            return Err(ServerError::InvalidParameter(
+                "progressive session not found".to_string(),
+            ));
+        }
+        handle.cancel_token.cancel();
+        drop(map);
+
+        let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry.last_access = Instant::now();
+        Ok(entry.job.revise_viewport_hint(viewport_hint))
+    }
+
+    /// Revise dirty-work scheduling and mark intersecting tile publications
+    /// obsolete without discarding clean retained tiles.
+    pub fn revise_dirty_region(
+        &self,
+        id: &str,
+        owner: &str,
+        dirty_region: Option<RenderTile>,
+    ) -> Result<
+        Result<ProgressiveRenderStepReport, wellfriendpdf_engine::WellfriendError>,
+        ServerError,
+    > {
+        let map = self
+            .inner
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let handle = map.get(id).cloned().ok_or_else(|| {
+            ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
+        })?;
+        if handle.owner != owner {
+            return Err(ServerError::InvalidParameter(
+                "progressive session not found".to_string(),
+            ));
+        }
+        handle.cancel_token.cancel();
+        drop(map);
+
+        let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry.last_access = Instant::now();
+        Ok(entry.job.revise_dirty_region(dirty_region))
+    }
+
+    /// Revise caller-visible render identity and mark every prior publication
+    /// obsolete.
+    pub fn revise_render_context(
+        &self,
+        id: &str,
+        owner: &str,
+        render_contract_fingerprint: Option<String>,
+        visibility_fingerprint: Option<String>,
+    ) -> Result<
+        Result<ProgressiveRenderContextRevisionReport, wellfriendpdf_engine::WellfriendError>,
+        ServerError,
+    > {
+        let map = self
+            .inner
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let handle = map.get(id).cloned().ok_or_else(|| {
+            ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
+        })?;
+        if handle.owner != owner {
+            return Err(ServerError::InvalidParameter(
+                "progressive session not found".to_string(),
+            ));
+        }
+        handle.cancel_token.cancel();
+        drop(map);
+
+        let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry.last_access = Instant::now();
+        Ok(entry
+            .job
+            .revise_render_context(render_contract_fingerprint, visibility_fingerprint))
+    }
+
+    /// Revise the active render contract and mark every prior publication
+    /// obsolete.
+    pub fn revise_render_contract(
+        &self,
+        id: &str,
+        owner: &str,
+        contract: RenderContract,
+    ) -> Result<
+        Result<ProgressiveRenderContextRevisionReport, wellfriendpdf_engine::WellfriendError>,
+        ServerError,
+    > {
+        let map = self
+            .inner
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let handle = map.get(id).cloned().ok_or_else(|| {
+            ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
+        })?;
+        if handle.owner != owner {
+            return Err(ServerError::InvalidParameter(
+                "progressive session not found".to_string(),
+            ));
+        }
+        handle.cancel_token.cancel();
+        drop(map);
+
+        let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry.last_access = Instant::now();
+        Ok(entry.job.revise_render_contract(contract))
+    }
+
+    /// Apply a source-edit render-invalidation plan to the session-owned cache
+    /// and obsolete affected retained tile publications.
+    pub fn apply_render_invalidation_plan_json(
+        &self,
+        id: &str,
+        owner: &str,
+        plan_json: &str,
+    ) -> Result<
+        Result<ProgressiveRenderInvalidationReport, wellfriendpdf_engine::WellfriendError>,
+        ServerError,
+    > {
+        let map = self
+            .inner
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let handle = map.get(id).cloned().ok_or_else(|| {
+            ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
+        })?;
+        if handle.owner != owner {
+            return Err(ServerError::InvalidParameter(
+                "progressive session not found".to_string(),
+            ));
+        }
+        handle.cancel_token.cancel();
+        drop(map);
+
+        let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry.last_access = Instant::now();
+        Ok(entry.job.apply_render_invalidation_plan_json(plan_json))
+    }
+
+    /// Evaluate whether a step-report tile publication is still current for
+    /// this session. This is the server-side stale-publication suppression hook
+    /// for external viewers.
+    pub fn evaluate_tile_publication(
+        &self,
+        id: &str,
+        owner: &str,
+        publication: &ProgressiveTilePublication,
+    ) -> Result<ProgressiveTilePublicationAcceptance, ServerError> {
+        self.with_session(id, owner, |job| job.evaluate_tile_publication(publication))
+    }
+
+    /// Return the current deterministic viewer queue preview without rendering
+    /// another tile.
+    pub fn viewer_queue_report(
+        &self,
+        id: &str,
+        owner: &str,
+    ) -> Result<ProgressiveRenderStepReport, ServerError> {
+        self.with_session(id, owner, |job| job.viewer_queue_report())
+    }
+
+    /// Execute owned current-page work from the deterministic viewer queue and
+    /// return adjacent-page entries as explicit deferred prefetch work.
+    pub fn execute_viewer_queue(
+        &self,
+        id: &str,
+        owner: &str,
+        max_items: usize,
+    ) -> Result<
+        Result<ProgressiveViewerQueueExecutionReport, wellfriendpdf_engine::WellfriendError>,
+        ServerError,
+    > {
+        self.with_session_mut(id, owner, |job| {
+            job.execute_viewer_queue(max_items, &CancelToken::none())
+        })
+    }
+
+    /// Execute an adjacent-page prefetch and retain the page-owned child job as
+    /// a normal progressive session when the source session is live.
+    pub fn execute_adjacent_page_prefetch(
+        &self,
+        id: &str,
+        owner: &str,
+        prefetch_identity: &str,
+        max_tiles: usize,
+    ) -> Result<
+        Result<AdjacentPagePrefetchSessionReport, wellfriendpdf_engine::WellfriendError>,
+        ServerError,
+    > {
+        let map = self
+            .inner
+            .sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let handle = map.get(id).cloned().ok_or_else(|| {
+            ServerError::InvalidParameter(format!("progressive session '{}' not found", id))
+        })?;
+        if handle.owner != owner {
+            return Err(ServerError::InvalidParameter(
+                "progressive session not found".to_string(),
+            ));
+        }
+        drop(map);
+
+        let execution = {
+            let mut entry = handle.entry.lock().unwrap_or_else(|e| e.into_inner());
+            entry.last_access = Instant::now();
+            entry.job.execute_adjacent_page_prefetch(
+                prefetch_identity,
+                max_tiles,
+                &CancelToken::none(),
+            )
+        };
+        let execution = match execution {
+            Ok(execution) => execution,
+            Err(error) => return Ok(Err(error)),
+        };
+        let prefetch_session_id = match execution.job {
+            Some(job) => Some(self.insert(owner.to_string(), job)?),
+            None => None,
+        };
+
+        Ok(Ok(AdjacentPagePrefetchSessionReport {
+            source_session_id: id.to_string(),
+            prefetch_session_id,
+            report: execution.report,
+        }))
+    }
+
+    /// Return the deterministic callback dispatch plan for external viewers
+    /// without invoking language/runtime callbacks on the server thread.
+    pub fn viewer_callback_dispatch_report(
+        &self,
+        id: &str,
+        owner: &str,
+    ) -> Result<ProgressiveViewerCallbackDispatchReport, ServerError> {
+        self.with_session(id, owner, |job| job.viewer_callback_dispatch_report())
     }
 
     /// Remove a session by id.
@@ -142,13 +462,14 @@ impl ProgressiveSessionStore {
             .unwrap_or_else(|e| e.into_inner());
         let owner_matches = map
             .get(id)
-            .map(|entry| entry.lock().unwrap_or_else(|p| p.into_inner()).owner == owner)
+            .map(|handle| handle.owner == owner)
             .unwrap_or(false);
         if !owner_matches {
             return false;
         }
-        if let Some(entry) = map.remove(id) {
-            let mut e = entry.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(handle) = map.remove(id) {
+            handle.cancel_token.cancel();
+            let mut e = handle.entry.lock().unwrap_or_else(|p| p.into_inner());
             e.job.close();
             true
         } else {
@@ -187,13 +508,14 @@ impl ProgressiveSessionStore {
 
     // -- private --
 
-    fn reap_idle_locked(&self, map: &mut HashMap<String, Arc<Mutex<SessionEntry>>>) -> usize {
+    fn reap_idle_locked(&self, map: &mut HashMap<String, SessionHandle>) -> usize {
         let now = Instant::now();
         let timeout = self.inner.idle_timeout;
         let mut removed = 0;
-        map.retain(|_id, entry| {
-            let mut e = entry.lock().unwrap_or_else(|p| p.into_inner());
+        map.retain(|_id, handle| {
+            let mut e = handle.entry.lock().unwrap_or_else(|p| p.into_inner());
             if now.duration_since(e.last_access) >= timeout {
+                handle.cancel_token.cancel();
                 e.job.cancel();
                 removed += 1;
                 false

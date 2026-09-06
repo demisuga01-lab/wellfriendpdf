@@ -27,6 +27,17 @@ File.WriteAllBytes("report.docx", doc.ToDocx());
 File.WriteAllBytes("report.xlsx", doc.ToXlsx(layout: "pages"));
 File.WriteAllBytes("report.pptx", doc.ToPptx());
 File.WriteAllBytes("from-word.pdf", OfficeConverters.DocxToPdf("report.docx"));
+
+var contract = doc.DefaultRenderContract(pageNumber: 1)
+    .WithBackground(248, 250, 252)
+    .WithResourceBudget(maxPixels: 20_000_000);
+File.WriteAllBytes("page.png", doc.RenderPagePng(contract));
+var surface = new byte[checked((int)contract.SurfaceByteLength)];
+doc.RenderPageIntoBuffer(contract, surface);
+
+using var renderCancellation = new RenderCancellation();
+File.WriteAllBytes("page-cancellable.png", doc.RenderPagePng(contract, renderCancellation));
+Console.WriteLine(renderCancellation.IsCancelled);
 ```
 
 ## Native Loading
@@ -53,11 +64,50 @@ Semantic Closeout semantic bundles, advanced chunks, and provenance-aware search
 Outputs: sanitize, canonicalize, redact terms, DOCX, XLSX, PPTX, and Office to
 PDF conversion helpers.
 
+Renderer contract APIs expose the schema-v1 native contract as a managed
+`RenderContract` object. Callers can round-trip the default JSON, set surface
+layout, background, clip, transform, page box, optional-content identity,
+annotation/form policy, execution/backend/compositing policy, smoothing,
+prepress/color policy, exactness, determinism, and resource budgets, then pass
+the typed contract to PNG or caller-owned buffer render methods.
+
+Contract rendering exposes cooperative cancellation through
+`RenderCancellation`, including `IsCancelled`, and through `CancellationToken`
+overloads for PNG, caller-owned buffers, font-substitution report renders, and
+render-telemetry report renders. The cancellation source is additive; existing
+compatibility overloads remain non-cancellable.
+
+Editing transaction APIs include
+`EditingTransactionsTransactionApplyWithRenderInvalidation(requestJson,
+renderInvalidationOptionsJson)`, which returns edited PDF bytes plus the shared
+SDK JSON report containing mapped render source IDs and optional dirty render
+tiles for caller cache invalidation.
+
+Caller-owned render caches are exposed through `RenderCache`. A document can
+render contract PNGs through the cache, request cache telemetry with
+`RenderPagePngWithRenderCacheReport`, and apply the SDK/server
+`report.render_invalidation` JSON through
+`RenderCache.ApplyRenderInvalidationPlanJson`.
+
+Image decode APIs include `ImageDecodeCapabilityReportJson()` and
+`ProgressiveImageDecodeLifecycleReportJson(requestJson)`, exposing per-image
+region/reduction/progressive capability status and bounded start/continue/pause/
+resume/cancel/fail/close/document_close lifecycle reports without decoding
+pixels.
+
 Password open is available through `WellfriendDocument.Open(path, password)` and
 `WellfriendDocument.Open(bytes, password)`. Passwords are UTF-8 operation-scoped
 inputs and are not retained on the managed document object.
 
-Known limits: progress and cancellation are reported through
-`FeatureReportJson()` as unsupported for the Binding Parity binding surface; no
-no-op callbacks or ignored `CancellationToken` overloads are exposed. Mobile
-packaging is out of scope for this package.
+Progressive sessions expose `ReviseRenderContract` and
+`ReviseRenderContractJson` for full live schema-v1 contract revision, explicit
+request-cancel, viewport revision JSON, dirty-region revision JSON,
+tile-publication evaluation JSON,
+viewer queue preview JSON, `ExecuteViewerQueueJson`,
+`ExecuteAdjacentPagePrefetch`, viewer callback dispatch JSON,
+`DispatchViewerCallbacks`, terminal cancel methods, and `CancellationToken`
+overloads for step, finish, viewer-queue execution, and adjacent-page prefetch
+execution. Contract render cancellation is source-visible; external native
+binding runtime matrices, viewer runtime matrices, and broader cross-language
+queue policy validation are deferred verification work.
+Mobile packaging is out of scope for this package.

@@ -25,16 +25,35 @@ use crate::error::{Result, WellfriendError};
 /// Cloning is a pointer bump (the inner `Arc` is shared). A default token is
 /// never cancelled, so engine entry points that don't need cancellation can
 /// pass `CancelToken::none()` with zero overhead beyond an atomic load.
+#[derive(Debug)]
+struct CancelState {
+    flag: AtomicBool,
+    linked: Vec<CancelToken>,
+}
+
 #[derive(Clone, Debug)]
 pub struct CancelToken {
-    flag: Arc<AtomicBool>,
+    state: Arc<CancelState>,
 }
 
 impl CancelToken {
     /// Create a fresh, un-cancelled token.
     pub fn new() -> Self {
         Self {
-            flag: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(CancelState {
+                flag: AtomicBool::new(false),
+                linked: Vec::new(),
+            }),
+        }
+    }
+
+    /// Create a token that observes cancellation from either parent.
+    pub(crate) fn linked_pair(first: &Self, second: &Self) -> Self {
+        Self {
+            state: Arc::new(CancelState {
+                flag: AtomicBool::new(false),
+                linked: vec![first.clone(), second.clone()],
+            }),
         }
     }
 
@@ -50,13 +69,23 @@ impl CancelToken {
         // Relaxed is sufficient: we only need eventual visibility of a single
         // boolean flip, not ordering relative to other memory. The polling
         // loops re-load it regularly.
-        self.flag.store(true, Ordering::Relaxed);
+        self.state.flag.store(true, Ordering::Relaxed);
+    }
+
+    /// Clear a prior cancellation request on this token.
+    ///
+    /// Progressive sessions use this only after the render step that observed
+    /// cancellation has released its mutable job borrow. Existing clones then
+    /// remain the current session cancellation source instead of becoming stale.
+    pub(crate) fn reset(&self) {
+        self.state.flag.store(false, Ordering::Relaxed);
     }
 
     /// Whether cancellation has been requested.
     #[inline]
     pub fn is_cancelled(&self) -> bool {
-        self.flag.load(Ordering::Relaxed)
+        self.state.flag.load(Ordering::Relaxed)
+            || self.state.linked.iter().any(CancelToken::is_cancelled)
     }
 
     /// Return `Err(Cancelled)` if cancellation has been requested, else `Ok`.
@@ -105,5 +134,32 @@ mod tests {
         let b = a.clone();
         a.cancel();
         assert!(b.is_cancelled(), "clone must observe cancellation");
+    }
+
+    #[test]
+    fn linked_pair_observes_either_parent() {
+        let external = CancelToken::new();
+        let session = CancelToken::new();
+        let linked = CancelToken::linked_pair(&external, &session);
+        assert!(!linked.is_cancelled());
+
+        external.cancel();
+        assert!(linked.is_cancelled(), "external parent cancellation");
+
+        let external = CancelToken::new();
+        let session = CancelToken::new();
+        let linked = CancelToken::linked_pair(&external, &session);
+        session.cancel();
+        assert!(linked.is_cancelled(), "session parent cancellation");
+    }
+
+    #[test]
+    fn reset_refreshes_existing_clones() {
+        let token = CancelToken::new();
+        let clone = token.clone();
+        token.cancel();
+        assert!(clone.is_cancelled());
+        token.reset();
+        assert!(!clone.is_cancelled());
     }
 }

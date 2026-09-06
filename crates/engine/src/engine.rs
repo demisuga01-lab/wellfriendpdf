@@ -6,7 +6,11 @@ use std::sync::Arc;
 use crate::content::{ContentOperation, ContentParser, StreamingContentTokenizer};
 use crate::document::{PdfDocument, PdfPage};
 use crate::error::{Result, WellfriendError};
-use crate::filters::{decode_stream_lossless_reader_with_limits, DecodeLimits, StreamDecodeStatus};
+use crate::filters::{
+    decode_stream_lossless_reader_with_limits, decode_stream_lossless_with_limits, DecodeLimits,
+    StreamDecodeStatus,
+};
+use crate::fonts::RegisteredFontProvider;
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
 use crate::images::locator::{ImageLocateOptions, ImageLocator, ImageReference};
@@ -16,8 +20,10 @@ use crate::reader::PdfReader;
 use crate::render::contract::RevisionId;
 use crate::render::FontSubstitutionLog;
 use crate::render::{
-    CanonicalDocument, DisplayList, EditDocumentView, HalftonePolicy, InvalidationResult, PageBox,
-    PageRenderer, PixelBuffer, PixelColor, PixelFormat, ProgressiveRenderJob, RenderCache,
+    AlphaMode, CanonicalDocument, ClipDagStats, ColorScheme, DisplayList, DocumentViewsReport,
+    EditDocumentView, GlyphCacheStats, HalftonePolicy, ImageDecodeCapabilityReport,
+    InvalidationResult, OverprintPolicy, PageBox, PageRenderer, PixelBuffer, PixelColor,
+    PixelFormat, ProgressiveRenderJob, RenderArtifactCacheStats, RenderCache, RenderCacheMetrics,
     RenderContract, RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderTile,
     SemanticDocumentView, TransactionInvalidationResult, TransactionWriteSet,
     ValidationDocumentView, Viewport, WHITE,
@@ -33,25 +39,271 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct PageResources {
     pub fonts: HashMap<String, PdfDictionary>,
+    pub font_references: HashMap<String, (u32, u16)>,
     pub xobjects: HashMap<String, (u32, u16)>,
     pub xobject_subtypes: HashMap<String, String>,
+    pub xobject_stream_dicts: HashMap<String, PdfDictionary>,
     pub xobject_bboxes: HashMap<String, [f64; 4]>,
     pub xobject_matrices: HashMap<String, [f64; 6]>,
     pub color_spaces: HashMap<String, PdfObject>,
+    pub color_space_references: HashMap<String, (u32, u16)>,
     pub ext_g_states: HashMap<String, PdfDictionary>,
+    pub ext_g_state_references: HashMap<String, (u32, u16)>,
     pub patterns: HashMap<String, PdfObject>,
     pub shadings: HashMap<String, PdfObject>,
     pub properties: HashMap<String, PdfObject>,
+    pub properties_references: HashMap<String, (u32, u16)>,
 }
 
 fn encode_contract_row(
     source: &[u8],
     destination: &mut [u8],
     format: PixelFormat,
+    alpha_mode: AlphaMode,
     grayscale: bool,
     reverse_byte_order: bool,
 ) {
     destination.fill(0);
+    let bytes_per_pixel = format.bytes_per_pixel();
+    if format == PixelFormat::Gray8 && wellfriendpdf_render_simd::rgba_to_gray8(source, destination)
+    {
+        return;
+    }
+    if format == PixelFormat::Rgba8
+        && alpha_mode == AlphaMode::Premultiplied
+        && !grayscale
+        && !reverse_byte_order
+        && wellfriendpdf_render_simd::premultiply_rgba(source, destination)
+    {
+        return;
+    }
+    if reverse_byte_order {
+        if grayscale {
+            match format {
+                PixelFormat::Rgb8 | PixelFormat::Bgr8
+                    if wellfriendpdf_render_simd::rgba_to_gray_rgb8(source, destination) =>
+                {
+                    return;
+                }
+                _ => {}
+            }
+        } else {
+            match format {
+                PixelFormat::Rgb8
+                    if wellfriendpdf_render_simd::rgba_to_bgr8(source, destination) =>
+                {
+                    return;
+                }
+                PixelFormat::Bgr8
+                    if wellfriendpdf_render_simd::rgba_to_rgb8(source, destination) =>
+                {
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if bytes_per_pixel == 4 && destination.len() >= source.len() {
+            let row = &mut destination[..source.len()];
+            let converted = match (grayscale, format, alpha_mode) {
+                (true, PixelFormat::Rgba8, AlphaMode::Premultiplied) => {
+                    wellfriendpdf_render_simd::rgba_to_premultiplied_gray_rgba8(source, row)
+                }
+                (true, PixelFormat::Rgba8, AlphaMode::Straight) => {
+                    wellfriendpdf_render_simd::rgba_to_gray_rgba8(source, row, false)
+                }
+                (true, PixelFormat::Rgba8, AlphaMode::Opaque) => {
+                    wellfriendpdf_render_simd::rgba_to_gray_rgba8(source, row, true)
+                }
+                (true, PixelFormat::Bgra8, AlphaMode::Premultiplied) => {
+                    wellfriendpdf_render_simd::rgba_to_premultiplied_gray_bgra8(source, row)
+                }
+                (true, PixelFormat::Bgra8, AlphaMode::Straight) => {
+                    wellfriendpdf_render_simd::rgba_to_gray_bgra8(source, row, false)
+                }
+                (true, PixelFormat::Bgra8, AlphaMode::Opaque) => {
+                    wellfriendpdf_render_simd::rgba_to_gray_bgra8(source, row, true)
+                }
+                (false, PixelFormat::Rgba8, AlphaMode::Premultiplied) => {
+                    wellfriendpdf_render_simd::premultiply_rgba(source, row)
+                }
+                (false, PixelFormat::Rgba8, AlphaMode::Straight) => {
+                    wellfriendpdf_render_simd::copy_rgba(source, row)
+                }
+                (false, PixelFormat::Rgba8, AlphaMode::Opaque) => {
+                    wellfriendpdf_render_simd::rgba_to_opaque_rgba(source, row)
+                }
+                (false, PixelFormat::Bgra8, AlphaMode::Premultiplied) => {
+                    wellfriendpdf_render_simd::premultiply_bgra8(source, row)
+                }
+                (false, PixelFormat::Bgra8, AlphaMode::Straight) => {
+                    wellfriendpdf_render_simd::rgba_to_bgra8(source, row, false)
+                }
+                (false, PixelFormat::Bgra8, AlphaMode::Opaque) => {
+                    wellfriendpdf_render_simd::rgba_to_bgra8(source, row, true)
+                }
+                _ => false,
+            };
+            if converted && wellfriendpdf_render_simd::reverse_4byte_words_in_place(row) {
+                return;
+            }
+            if !converted {
+                encode_contract_row_scalar_loop(source, row, format, alpha_mode, grayscale, false);
+                if wellfriendpdf_render_simd::reverse_4byte_words_in_place(row) {
+                    return;
+                }
+            }
+        }
+    }
+    if grayscale && !reverse_byte_order {
+        match format {
+            PixelFormat::Rgb8 | PixelFormat::Bgr8
+                if wellfriendpdf_render_simd::rgba_to_gray_rgb8(source, destination) =>
+            {
+                return;
+            }
+            PixelFormat::Rgba8
+                if alpha_mode == AlphaMode::Premultiplied
+                    && wellfriendpdf_render_simd::rgba_to_premultiplied_gray_rgba8(
+                        source,
+                        destination,
+                    ) =>
+            {
+                return;
+            }
+            PixelFormat::Rgba8
+                if alpha_mode == AlphaMode::Straight
+                    && wellfriendpdf_render_simd::rgba_to_gray_rgba8(
+                        source,
+                        destination,
+                        false,
+                    ) =>
+            {
+                return;
+            }
+            PixelFormat::Rgba8
+                if alpha_mode == AlphaMode::Opaque
+                    && wellfriendpdf_render_simd::rgba_to_gray_rgba8(source, destination, true) =>
+            {
+                return;
+            }
+            PixelFormat::Bgra8
+                if alpha_mode == AlphaMode::Premultiplied
+                    && wellfriendpdf_render_simd::rgba_to_premultiplied_gray_bgra8(
+                        source,
+                        destination,
+                    ) =>
+            {
+                return;
+            }
+            PixelFormat::Bgra8
+                if alpha_mode == AlphaMode::Straight
+                    && wellfriendpdf_render_simd::rgba_to_gray_bgra8(
+                        source,
+                        destination,
+                        false,
+                    ) =>
+            {
+                return;
+            }
+            PixelFormat::Bgra8
+                if alpha_mode == AlphaMode::Opaque
+                    && wellfriendpdf_render_simd::rgba_to_gray_bgra8(source, destination, true) =>
+            {
+                return;
+            }
+            _ => {}
+        }
+    }
+    if !grayscale && !reverse_byte_order {
+        match format {
+            PixelFormat::Rgba8
+                if alpha_mode == AlphaMode::Straight
+                    && wellfriendpdf_render_simd::copy_rgba(source, destination) =>
+            {
+                return;
+            }
+            PixelFormat::Rgba8
+                if alpha_mode == AlphaMode::Opaque
+                    && wellfriendpdf_render_simd::rgba_to_opaque_rgba(source, destination) =>
+            {
+                return;
+            }
+            PixelFormat::Rgb8 if wellfriendpdf_render_simd::rgba_to_rgb8(source, destination) => {
+                return;
+            }
+            PixelFormat::Bgr8 if wellfriendpdf_render_simd::rgba_to_bgr8(source, destination) => {
+                return;
+            }
+            PixelFormat::Bgra8
+                if alpha_mode == AlphaMode::Premultiplied
+                    && wellfriendpdf_render_simd::premultiply_bgra8(source, destination) =>
+            {
+                return;
+            }
+            PixelFormat::Bgra8
+                if alpha_mode == AlphaMode::Straight
+                    && wellfriendpdf_render_simd::rgba_to_bgra8(source, destination, false) =>
+            {
+                return;
+            }
+            PixelFormat::Bgra8
+                if alpha_mode == AlphaMode::Opaque
+                    && wellfriendpdf_render_simd::rgba_to_bgra8(source, destination, true) =>
+            {
+                return;
+            }
+            _ => {}
+        }
+    }
+    encode_contract_row_scalar_loop(
+        source,
+        destination,
+        format,
+        alpha_mode,
+        grayscale,
+        reverse_byte_order,
+    );
+}
+
+fn encode_contract_row_for_backend(
+    source: &[u8],
+    destination: &mut [u8],
+    format: PixelFormat,
+    alpha_mode: AlphaMode,
+    grayscale: bool,
+    reverse_byte_order: bool,
+    backend: crate::render::BackendSelection,
+) {
+    if backend == crate::render::BackendSelection::ScalarReference {
+        destination.fill(0);
+        encode_contract_row_scalar_loop(
+            source,
+            destination,
+            format,
+            alpha_mode,
+            grayscale,
+            reverse_byte_order,
+        );
+        return;
+    }
+    encode_contract_row(
+        source,
+        destination,
+        format,
+        alpha_mode,
+        grayscale,
+        reverse_byte_order,
+    );
+}
+
+fn encode_contract_row_scalar_loop(
+    source: &[u8],
+    destination: &mut [u8],
+    format: PixelFormat,
+    alpha_mode: AlphaMode,
+    grayscale: bool,
+    reverse_byte_order: bool,
+) {
     let bytes_per_pixel = format.bytes_per_pixel();
     for (pixel_index, rgba) in source.chunks_exact(4).enumerate() {
         let offset = pixel_index * bytes_per_pixel;
@@ -59,8 +311,7 @@ fn encode_contract_row(
         let green = rgba[1];
         let blue = rgba[2];
         let alpha = rgba[3];
-        let gray = ((u16::from(red) * 77 + u16::from(green) * 150 + u16::from(blue) * 29 + 128)
-            >> 8) as u8;
+        let gray = contract_luma_u8(red, green, blue);
         let (red, green, blue) = if grayscale {
             (gray, gray, gray)
         } else {
@@ -68,9 +319,13 @@ fn encode_contract_row(
         };
         match format {
             PixelFormat::Rgba8 => {
+                let (red, green, blue, alpha) =
+                    encode_alpha_bearing_channels(red, green, blue, alpha, alpha_mode);
                 destination[offset..offset + 4].copy_from_slice(&[red, green, blue, alpha])
             }
             PixelFormat::Bgra8 => {
+                let (red, green, blue, alpha) =
+                    encode_alpha_bearing_channels(red, green, blue, alpha, alpha_mode);
                 destination[offset..offset + 4].copy_from_slice(&[blue, green, red, alpha])
             }
             PixelFormat::Rgb8 => {
@@ -87,13 +342,196 @@ fn encode_contract_row(
     }
 }
 
-fn contract_background_pixel(contract: &RenderContract) -> PixelColor {
+#[inline]
+fn encode_alpha_bearing_channels(
+    red: u8,
+    green: u8,
+    blue: u8,
+    alpha: u8,
+    alpha_mode: AlphaMode,
+) -> (u8, u8, u8, u8) {
+    match alpha_mode {
+        AlphaMode::Premultiplied => {
+            let alpha_u16 = u16::from(alpha);
+            (
+                premultiply_contract_channel(red, alpha_u16),
+                premultiply_contract_channel(green, alpha_u16),
+                premultiply_contract_channel(blue, alpha_u16),
+                alpha,
+            )
+        }
+        AlphaMode::Straight => (red, green, blue, alpha),
+        AlphaMode::Opaque => (red, green, blue, 255),
+    }
+}
+
+#[inline]
+fn premultiply_contract_channel(value: u8, alpha: u16) -> u8 {
+    div255_round_contract(u16::from(value) * alpha).min(255) as u8
+}
+
+#[inline]
+fn div255_round_contract(value: u16) -> u16 {
+    let adjusted = value.saturating_add(128);
+    (adjusted + (adjusted >> 8)) >> 8
+}
+
+#[inline]
+fn contract_luma_u8(red: u8, green: u8, blue: u8) -> u8 {
+    ((u16::from(red) * 77 + u16::from(green) * 150 + u16::from(blue) * 29 + 128) >> 8) as u8
+}
+
+pub(crate) fn contract_background_pixel(contract: &RenderContract) -> PixelColor {
     [
         contract.background.r,
         contract.background.g,
         contract.background.b,
         contract.background.a,
     ]
+}
+
+fn contract_rendering_intent_to_cmm(
+    intent: crate::render::RenderingIntent,
+) -> crate::render::cmm::ColorIntent {
+    match intent {
+        crate::render::RenderingIntent::RelativeColorimetric => {
+            crate::render::cmm::ColorIntent::RelativeColorimetric
+        }
+        crate::render::RenderingIntent::AbsoluteColorimetric => {
+            crate::render::cmm::ColorIntent::AbsoluteColorimetric
+        }
+        crate::render::RenderingIntent::Perceptual => crate::render::cmm::ColorIntent::Perceptual,
+        crate::render::RenderingIntent::Saturation => crate::render::cmm::ColorIntent::Saturation,
+    }
+}
+
+fn proof_profile_decode_limits(
+    resource_budget: crate::render::RenderResourceBudget,
+) -> DecodeLimits {
+    let mut limits = DecodeLimits::default();
+    limits.max_decoded_bytes_per_stream = limits
+        .max_decoded_bytes_per_stream
+        .min(resource_budget.max_decoded_bytes);
+    limits.max_decoded_bytes_per_document = limits
+        .max_decoded_bytes_per_document
+        .min(resource_budget.max_decoded_bytes);
+    limits
+}
+
+fn canonical_rgba_surface_bytes(width: u32, height: u32) -> Result<u64> {
+    u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit(
+                "render contract temporary surface byte length overflows".to_string(),
+            )
+        })
+}
+
+pub(crate) fn enforce_clipped_contract_temporary_budget(
+    contract: &RenderContract,
+    full_viewport: &Viewport,
+    tile: RenderTile,
+) -> Result<()> {
+    let full_tile = RenderTile::full(full_viewport.width_px, full_viewport.height_px);
+    if tile == full_tile {
+        return Ok(());
+    }
+
+    let full_surface_bytes =
+        canonical_rgba_surface_bytes(full_viewport.width_px, full_viewport.height_px)?;
+    let cropped_surface_bytes = canonical_rgba_surface_bytes(tile.width, tile.height)?;
+    let peak_temporary_bytes = full_surface_bytes
+        .checked_add(cropped_surface_bytes)
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit(
+                "render contract clipped temporary surface byte length overflows".to_string(),
+            )
+        })?;
+    if peak_temporary_bytes > contract.resource_budget.max_temporary_bytes {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "render contract clipped render requires {peak_temporary_bytes} temporary bytes for the full-page intermediate plus cropped surface, exceeding max_temporary_bytes {}",
+            contract.resource_budget.max_temporary_bytes
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_contract_color_scheme(contract: &RenderContract, buffer: &mut PixelBuffer) {
+    match contract.color_scheme {
+        ColorScheme::Light => {}
+        ColorScheme::Dark => {
+            for px in buffer.rgba_bytes_mut().chunks_exact_mut(4) {
+                px[0] = 255u8.saturating_sub(px[0]);
+                px[1] = 255u8.saturating_sub(px[1]);
+                px[2] = 255u8.saturating_sub(px[2]);
+            }
+        }
+        ColorScheme::ForcedMonochrome => {
+            for px in buffer.rgba_bytes_mut().chunks_exact_mut(4) {
+                let gray = contract_luma_u8(px[0], px[1], px[2]);
+                px[0] = gray;
+                px[1] = gray;
+                px[2] = gray;
+            }
+        }
+    }
+}
+
+pub(crate) fn unsupported_active_cpu_contract_fields(
+    requested: &RenderContract,
+    accepted: &RenderContract,
+) -> Vec<String> {
+    let mut fields = Vec::new();
+    macro_rules! push_if_changed {
+        ($field:ident) => {
+            if requested.$field != accepted.$field {
+                fields.push(format!("{}={:?}", stringify!($field), &requested.$field));
+            }
+        };
+    }
+
+    push_if_changed!(schema_version);
+    push_if_changed!(document_revision);
+    push_if_changed!(page_identity);
+    push_if_changed!(page_number);
+    push_if_changed!(dpi);
+    push_if_changed!(page_box);
+    push_if_changed!(transform);
+    push_if_changed!(clip);
+    push_if_changed!(width);
+    push_if_changed!(height);
+    push_if_changed!(stride);
+    push_if_changed!(pixel_format);
+    push_if_changed!(alpha_mode);
+    push_if_changed!(background);
+    push_if_changed!(execution_mode);
+    push_if_changed!(backend);
+    push_if_changed!(compositing);
+    push_if_changed!(annotations);
+    push_if_changed!(forms);
+    push_if_changed!(optional_content);
+    push_if_changed!(text_smoothing);
+    push_if_changed!(image_smoothing);
+    push_if_changed!(path_smoothing);
+    push_if_changed!(subpixel_text);
+    push_if_changed!(grayscale);
+    push_if_changed!(color_scheme);
+    push_if_changed!(reverse_byte_order);
+    push_if_changed!(print_profile);
+    push_if_changed!(halftone);
+    push_if_changed!(overprint);
+    push_if_changed!(rendering_intent);
+    push_if_changed!(color_management);
+    push_if_changed!(exactness);
+    push_if_changed!(determinism);
+    push_if_changed!(resource_budget);
+
+    if fields.is_empty() && requested != accepted {
+        fields.push("unknown".to_string());
+    }
+    fields
 }
 
 struct JoinedContentStreams<'a> {
@@ -112,6 +550,57 @@ impl<'a> JoinedContentStreams<'a> {
             pending_error: None,
         }
     }
+}
+
+fn map_page_content_decode_error(
+    err: WellfriendError,
+    limits: &DecodeLimits,
+    enabled: bool,
+) -> WellfriendError {
+    if !enabled {
+        return err;
+    }
+    let message = err.to_string();
+    if message.contains("exceeding scheduler budget")
+        || message.contains("output exceeds")
+        || message.contains("decompression cap")
+    {
+        return WellfriendError::ResourceLimit(format!(
+            "page content stream decode exceeded max_decoded_bytes {}: {message}",
+            limits.max_decoded_bytes_per_stream
+        ));
+    }
+    err
+}
+
+fn enforce_page_content_decoded_limits(
+    label: &str,
+    decoded_bytes: usize,
+    total_decoded_bytes: &mut u64,
+    limits: &DecodeLimits,
+) -> Result<()> {
+    let decoded_bytes = u64::try_from(decoded_bytes).unwrap_or(u64::MAX);
+    if decoded_bytes > limits.max_decoded_bytes_per_stream {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "{label} decoded {decoded_bytes} bytes, exceeding max_decoded_bytes {}",
+            limits.max_decoded_bytes_per_stream
+        )));
+    }
+    *total_decoded_bytes = total_decoded_bytes
+        .checked_add(decoded_bytes)
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit(
+                "page content decoded byte accounting overflow".to_string(),
+            )
+        })?;
+    if *total_decoded_bytes > limits.max_decoded_bytes_per_document {
+        let total = *total_decoded_bytes;
+        return Err(WellfriendError::ResourceLimit(format!(
+            "page content streams decoded {total} bytes in total, exceeding max_decoded_bytes {}",
+            limits.max_decoded_bytes_per_document
+        )));
+    }
+    Ok(())
 }
 
 impl Read for JoinedContentStreams<'_> {
@@ -245,6 +734,85 @@ impl PageRegion {
     }
 }
 
+/// Cache counters observed during a public render-contract report call.
+///
+/// The counters are a one-shot cache snapshot for the render invocation that
+/// produced the bytes. They are not a global process cache view.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RenderContractTelemetryReport {
+    pub scope: String,
+    pub cache_fingerprint: String,
+    pub field_effects: Vec<crate::render::RenderContractFieldEffect>,
+    pub resource_budget_max_cache_bytes: u64,
+    pub aggregate_resource_cache_bytes: usize,
+    pub glyph_cache: GlyphCacheStats,
+    pub glyph_mask_cache: RenderArtifactCacheStats,
+    pub glyph_atlas_cache: RenderArtifactCacheStats,
+    pub type3_mask_cache: RenderArtifactCacheStats,
+    pub type3_rendered_cache: RenderArtifactCacheStats,
+    pub type3_geometry_program_cache: RenderArtifactCacheStats,
+    pub type3_charproc_program_cache: RenderArtifactCacheStats,
+    pub path_fill_mask_cache: RenderArtifactCacheStats,
+    pub path_stroke_mask_cache: RenderArtifactCacheStats,
+    pub path_clip_node_cache: RenderArtifactCacheStats,
+    pub clip_dag: ClipDagStats,
+    pub font_bytes_cache: RenderArtifactCacheStats,
+    pub font_resolver_cache: RenderArtifactCacheStats,
+    pub display_list_cache: RenderArtifactCacheStats,
+    pub display_list_raster_cache: RenderCacheMetrics,
+    pub image_xobject_cache: RenderArtifactCacheStats,
+    pub scaled_image_cache: RenderArtifactCacheStats,
+    pub smask_group_cache: RenderArtifactCacheStats,
+    pub shading_mesh_cache: RenderArtifactCacheStats,
+    pub form_xobject_program_cache: RenderArtifactCacheStats,
+    pub tiling_pattern_program_cache: RenderArtifactCacheStats,
+    pub annotation_appearance_program_cache: RenderArtifactCacheStats,
+    pub transparent_page_group_entries: usize,
+    pub offscreen_buffer_pool_entries: usize,
+    pub offscreen_buffer_pool_bytes: usize,
+}
+
+impl RenderContractTelemetryReport {
+    fn from_contract_cache_with_scope(
+        scope: &str,
+        contract: &RenderContract,
+        cache: &RenderDocumentCache,
+    ) -> Self {
+        Self {
+            scope: scope.to_string(),
+            cache_fingerprint: contract.cache_fingerprint(),
+            field_effects: crate::render::render_contract_field_effects().to_vec(),
+            resource_budget_max_cache_bytes: contract.resource_budget.max_cache_bytes,
+            aggregate_resource_cache_bytes: cache.aggregate_resource_cache_bytes(),
+            glyph_cache: cache.glyph_cache_stats(),
+            glyph_mask_cache: cache.glyph_mask_cache_stats(),
+            glyph_atlas_cache: cache.glyph_atlas_cache_stats(),
+            type3_mask_cache: cache.type3_mask_cache_stats(),
+            type3_rendered_cache: cache.type3_rendered_cache_stats(),
+            type3_geometry_program_cache: cache.type3_geometry_program_cache_stats(),
+            type3_charproc_program_cache: cache.type3_charproc_program_cache_stats(),
+            path_fill_mask_cache: cache.path_fill_mask_cache_stats(),
+            path_stroke_mask_cache: cache.path_stroke_mask_cache_stats(),
+            path_clip_node_cache: cache.path_clip_node_cache_stats(),
+            clip_dag: cache.clip_dag_stats(),
+            font_bytes_cache: cache.font_bytes_cache_stats(),
+            font_resolver_cache: cache.font_resolver_cache_stats(),
+            display_list_cache: cache.display_list_cache_stats(),
+            display_list_raster_cache: cache.display_list_raster_cache_metrics(),
+            image_xobject_cache: cache.image_xobject_cache_stats(),
+            scaled_image_cache: cache.scaled_image_cache_stats(),
+            smask_group_cache: cache.smask_group_cache_stats(),
+            shading_mesh_cache: cache.shading_mesh_cache_stats(),
+            form_xobject_program_cache: cache.form_xobject_program_cache_stats(),
+            tiling_pattern_program_cache: cache.tiling_pattern_program_cache_stats(),
+            annotation_appearance_program_cache: cache.annotation_appearance_program_cache_stats(),
+            transparent_page_group_entries: cache.transparent_page_group_entries(),
+            offscreen_buffer_pool_entries: cache.offscreen_buffer_pool_entries(),
+            offscreen_buffer_pool_bytes: cache.offscreen_buffer_pool_bytes(),
+        }
+    }
+}
+
 /// Named extraction profiles. Profiles are convenience bundles over existing
 /// engine options; they do not introduce a separate parser path.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -360,6 +928,64 @@ impl From<&PlacedImageReference> for RegionImage {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ImageDecodeCapabilityImageReport {
+    pub page: usize,
+    pub name: String,
+    pub object_number: u32,
+    pub generation_number: u16,
+    pub width: u32,
+    pub height: u32,
+    pub bits_per_component: u8,
+    pub color_space: String,
+    pub filters: Vec<String>,
+    pub inline: bool,
+    pub mask: bool,
+    pub soft_mask: bool,
+    pub capability: ImageDecodeCapabilityReport,
+    pub requires_full_decode: bool,
+}
+
+impl From<&ImageReference> for ImageDecodeCapabilityImageReport {
+    fn from(image: &ImageReference) -> Self {
+        let capability = crate::render::image_decode_capabilities_for_image_reference(image);
+        Self {
+            page: image.page_number,
+            name: image.xobject_name.clone(),
+            object_number: image.object_number,
+            generation_number: image.generation_number,
+            width: image.width,
+            height: image.height,
+            bits_per_component: image.bits_per_component,
+            color_space: image.color_space.clone(),
+            filters: image.filter.clone(),
+            inline: image.is_inline,
+            mask: image.is_mask,
+            soft_mask: image.is_smask,
+            capability,
+            requires_full_decode: capability.is_full_decode_only(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ImageDecodeCapabilityDocumentReport {
+    pub schema_version: u32,
+    pub document_revision: u64,
+    pub image_count: usize,
+    pub full_decode_only_count: usize,
+    pub native_metadata_inspection_count: usize,
+    pub native_region_decode_count: usize,
+    pub native_reduction_decode_count: usize,
+    pub native_progressive_decode_count: usize,
+    pub native_tile_decode_count: usize,
+    pub native_component_decode_count: usize,
+    pub native_cancellation_decode_count: usize,
+    pub renderer_boundary_cancellation_count: usize,
+    pub renderer_boundary_memory_budget_count: usize,
+    pub images: Vec<ImageDecodeCapabilityImageReport>,
+}
+
 /// Fetch a resource sub-dictionary (e.g. `/Font`, `/ColorSpace`, `/Pattern`),
 /// resolving an indirect reference when the entry is one. Real-world PDFs
 /// (notably pdf.js-generated files) often store these sub-dictionaries as
@@ -380,12 +1006,38 @@ fn resolve_subdict(
     }
 }
 
+fn normalize_ext_gstate_font_resource(
+    dict: &mut PdfDictionary,
+    font_references: &HashMap<String, (u32, u16)>,
+) {
+    let Some(PdfObject::Array(items)) = dict.get_mut("Font") else {
+        return;
+    };
+    if items.len() != 2 {
+        return;
+    }
+    let Some(reference) = items[0].as_reference() else {
+        return;
+    };
+    if let Some(name) = font_references
+        .iter()
+        .find_map(|(name, font_ref)| (*font_ref == reference).then_some(name.clone()))
+    {
+        items[0] = PdfObject::Name(name);
+    }
+}
+
 impl PageResources {
     pub fn from_dict(resources: &PdfDictionary, reader: &PdfReader) -> Self {
         let mut page_resources = PageResources::default();
 
         if let Some(font_dict) = resolve_subdict(resources, "Font", reader) {
             for (name, value) in font_dict.entries() {
+                if let Some(reference) = value.as_reference() {
+                    page_resources
+                        .font_references
+                        .insert(name.clone(), reference);
+                }
                 match reader.resolve(value.clone()) {
                     Ok(PdfObject::Dictionary(dict)) => {
                         page_resources.fonts.insert(name.clone(), dict);
@@ -411,6 +1063,9 @@ impl PageResources {
                     if let Ok(PdfObject::Stream { dict, .. }) =
                         reader.get_object(reference.0, reference.1)
                     {
+                        page_resources
+                            .xobject_stream_dicts
+                            .insert(name.clone(), dict.clone());
                         if let Some(subtype) = dict.get_name("Subtype") {
                             page_resources
                                 .xobject_subtypes
@@ -436,6 +1091,11 @@ impl PageResources {
 
         if let Some(color_space_dict) = resolve_subdict(resources, "ColorSpace", reader) {
             for (name, value) in color_space_dict.entries() {
+                if let Some(reference) = value.as_reference() {
+                    page_resources
+                        .color_space_references
+                        .insert(name.clone(), reference);
+                }
                 let resolved = match reader.resolve(value.clone()) {
                     Ok(object) => object,
                     Err(err) => {
@@ -453,8 +1113,17 @@ impl PageResources {
 
         if let Some(ext_g_state_dict) = resolve_subdict(resources, "ExtGState", reader) {
             for (name, value) in ext_g_state_dict.entries() {
+                if let Some(reference) = value.as_reference() {
+                    page_resources
+                        .ext_g_state_references
+                        .insert(name.clone(), reference);
+                }
                 match reader.resolve(value.clone()) {
-                    Ok(PdfObject::Dictionary(dict)) => {
+                    Ok(PdfObject::Dictionary(mut dict)) => {
+                        normalize_ext_gstate_font_resource(
+                            &mut dict,
+                            &page_resources.font_references,
+                        );
                         page_resources.ext_g_states.insert(name.clone(), dict);
                     }
                     Ok(other) => {
@@ -485,6 +1154,11 @@ impl PageResources {
 
         if let Some(properties_dict) = resolve_subdict(resources, "Properties", reader) {
             for (name, value) in properties_dict.entries() {
+                if let Some(reference) = value.as_reference() {
+                    page_resources
+                        .properties_references
+                        .insert(name.clone(), reference);
+                }
                 page_resources
                     .properties
                     .insert(name.clone(), value.clone());
@@ -535,6 +1209,7 @@ pub(crate) fn parse_resources_from_obj(res_obj: &PdfObject, reader: &PdfReader) 
 pub struct ContentEngine {
     doc: Arc<PdfDocument>,
     canonical: CanonicalDocument,
+    registered_fonts: RegisteredFontProvider,
 }
 
 impl ContentEngine {
@@ -543,6 +1218,7 @@ impl ContentEngine {
         Self {
             doc: Arc::new(doc),
             canonical,
+            registered_fonts: RegisteredFontProvider::default(),
         }
     }
 
@@ -590,6 +1266,44 @@ impl ContentEngine {
 
     pub fn document(&self) -> &PdfDocument {
         &self.doc
+    }
+
+    /// Register caller-owned deterministic replacement font bytes for rendering.
+    ///
+    /// The name is matched against PDF `/BaseFont`/descendant names after subset
+    /// prefix removal and ASCII-alphanumeric compaction. Registered fonts are
+    /// treated as deterministic caller-provided replacements and are allowed by
+    /// high-quality/exact render policy.
+    pub fn register_font_bytes(
+        &mut self,
+        name: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<()> {
+        if self.registered_fonts.register_font_bytes(name, bytes) {
+            Ok(())
+        } else {
+            Err(WellfriendError::UnsupportedFeature(
+                "registered font name and bytes must be non-empty".to_string(),
+            ))
+        }
+    }
+
+    /// Builder-style variant of [`Self::register_font_bytes`].
+    pub fn with_registered_font_bytes(
+        mut self,
+        name: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<Self> {
+        self.register_font_bytes(name, bytes)?;
+        Ok(self)
+    }
+
+    pub(crate) fn registered_font_provider(&self) -> &RegisteredFontProvider {
+        &self.registered_fonts
+    }
+
+    pub(crate) fn font_provider_cache_fingerprint(&self) -> &str {
+        self.registered_fonts.cache_fingerprint()
     }
 
     /// Canonical immutable source identity shared by all lazy views.
@@ -642,6 +1356,29 @@ impl ContentEngine {
         write_set.invalidate(cache, self.canonical.object_identities())
     }
 
+    /// Drive transaction invalidation with caller-provided pixel-space dirty
+    /// tiles in addition to object/page write-set data.
+    ///
+    /// When exact dirty tiles are supplied, affected pages still prune
+    /// page-scoped retained artifacts, but raster tile invalidation is limited
+    /// to the explicit tile set and any source-tile dependencies.
+    pub fn invalidate_for_transaction_with_tiles(
+        &self,
+        cache: &mut RenderDocumentCache,
+        affected_objects: &[String],
+        affected_pages: &[usize],
+        affected_tiles: &[(usize, RenderTile)],
+        next_revision: RevisionId,
+    ) -> TransactionInvalidationResult {
+        let write_set = TransactionWriteSet::from_transaction_report_with_tiles(
+            affected_objects,
+            affected_pages,
+            affected_tiles,
+            next_revision,
+        );
+        write_set.invalidate(cache, self.canonical.object_identities())
+    }
+
     /// Lazily expose only render-required source state.
     pub fn render_view(&self) -> RenderDocumentView<'_> {
         RenderDocumentView::new(self)
@@ -661,6 +1398,12 @@ impl ContentEngine {
     /// Lazily expose validation work. Ordinary rendering never constructs it.
     pub fn validation_view(&self) -> ValidationDocumentView<'_> {
         ValidationDocumentView::new(self)
+    }
+
+    /// Describe the canonical document identity and the lazy render/edit/
+    /// semantic/validation view boundaries without materializing those views.
+    pub fn document_views_report(&self) -> Result<DocumentViewsReport> {
+        DocumentViewsReport::from_engine(self)
     }
 
     /// Build the canonical default render contract for a full page.
@@ -748,7 +1491,8 @@ impl ContentEngine {
             ));
         }
         let list = self.build_page_display_list(contract.page_number, contract.dpi)?;
-        RenderPlan::compile(list, contract)
+        let resources = self.get_page_resources(contract.page_number)?;
+        RenderPlan::compile_with_resources(list, contract, &resources)
     }
 
     /// Render through a fully specified contract into the engine's canonical
@@ -773,6 +1517,27 @@ impl ContentEngine {
         Ok(buffer)
     }
 
+    /// Render through a fully specified contract using a caller-owned document
+    /// render cache.
+    pub fn render_page_with_contract_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<PixelBuffer> {
+        if contract.pixel_format != PixelFormat::Rgba8
+            || contract.alpha_mode != crate::render::AlphaMode::Premultiplied
+            || contract.grayscale
+            || contract.reverse_byte_order
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "render_page_with_contract_and_cache returns canonical premultiplied RGBA; use render_page_into_buffer for the requested surface layout".to_string(),
+            ));
+        }
+        let (buffer, _) = self.render_contract_pixels_with_cache(contract, cancel, cache)?;
+        Ok(buffer)
+    }
+
     /// Render through a fully specified contract and return any bounded font
     /// substitution events collected during that render pass.
     pub fn render_page_with_contract_and_font_substitution_report(
@@ -792,6 +1557,81 @@ impl ContentEngine {
         let (buffer, _, font_substitution_log) =
             self.render_contract_pixels_with_font_substitution_report(contract, cancel)?;
         Ok((buffer, font_substitution_log))
+    }
+
+    /// Render through a contract using a caller-owned cache and return bounded
+    /// font-substitution events collected during that render pass.
+    pub fn render_page_with_contract_and_font_substitution_report_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(PixelBuffer, FontSubstitutionLog)> {
+        if contract.pixel_format != PixelFormat::Rgba8
+            || contract.alpha_mode != crate::render::AlphaMode::Premultiplied
+            || contract.grayscale
+            || contract.reverse_byte_order
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "render_page_with_contract_and_font_substitution_report_and_cache returns canonical premultiplied RGBA; use render_page_into_buffer_with_font_substitution_report for the requested surface layout".to_string(),
+            ));
+        }
+        let (buffer, _, font_substitution_log) = self
+            .render_contract_pixels_with_font_substitution_report_and_cache(
+                contract, cancel, cache,
+            )?;
+        Ok((buffer, font_substitution_log))
+    }
+
+    /// Render through a fully specified contract and return font-substitution
+    /// events plus live one-shot cache telemetry for that render pass.
+    pub fn render_page_with_contract_and_telemetry_report(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<(
+        PixelBuffer,
+        FontSubstitutionLog,
+        RenderContractTelemetryReport,
+    )> {
+        if contract.pixel_format != PixelFormat::Rgba8
+            || contract.alpha_mode != crate::render::AlphaMode::Premultiplied
+            || contract.grayscale
+            || contract.reverse_byte_order
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "render_page_with_contract_and_telemetry_report returns canonical premultiplied RGBA; use render_page_into_buffer_with_telemetry_report for the requested surface layout".to_string(),
+            ));
+        }
+        let (buffer, _, font_substitution_log, telemetry_report) =
+            self.render_contract_pixels_with_telemetry_report(contract, cancel)?;
+        Ok((buffer, font_substitution_log, telemetry_report))
+    }
+
+    /// Render through a contract using a caller-owned cache and return bounded
+    /// font-substitution events plus live cache telemetry for that cache.
+    pub fn render_page_with_contract_and_telemetry_report_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(
+        PixelBuffer,
+        FontSubstitutionLog,
+        RenderContractTelemetryReport,
+    )> {
+        if contract.pixel_format != PixelFormat::Rgba8
+            || contract.alpha_mode != crate::render::AlphaMode::Premultiplied
+            || contract.grayscale
+            || contract.reverse_byte_order
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "render_page_with_contract_and_telemetry_report_and_cache returns canonical premultiplied RGBA; use render_page_into_buffer_with_telemetry_report for the requested surface layout".to_string(),
+            ));
+        }
+        let (buffer, _, font_substitution_log, telemetry_report) =
+            self.render_contract_pixels_with_telemetry_report_and_cache(contract, cancel, cache)?;
+        Ok((buffer, font_substitution_log, telemetry_report))
     }
 
     /// Render into a caller-owned byte surface. The core validates document
@@ -816,8 +1656,21 @@ impl ContentEngine {
         cancel: &crate::cancel::CancelToken,
         output: &mut [u8],
     ) -> Result<FontSubstitutionLog> {
-        let (buffer, _, font_substitution_log) =
-            self.render_contract_pixels_with_font_substitution_report(contract, cancel)?;
+        let (font_substitution_log, _) =
+            self.render_page_into_buffer_with_telemetry_report(contract, cancel, output)?;
+        Ok(font_substitution_log)
+    }
+
+    /// Render into a caller-owned byte surface and return font-substitution
+    /// events plus live one-shot cache telemetry for that render pass.
+    pub fn render_page_into_buffer_with_telemetry_report(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        output: &mut [u8],
+    ) -> Result<(FontSubstitutionLog, RenderContractTelemetryReport)> {
+        let (buffer, _, font_substitution_log, telemetry_report) =
+            self.render_contract_pixels_with_telemetry_report(contract, cancel)?;
         let required = contract
             .stride
             .checked_mul(contract.height as usize)
@@ -835,15 +1688,17 @@ impl ContentEngine {
         for row in 0..contract.height as usize {
             let src = &source[row * source_row_bytes..(row + 1) * source_row_bytes];
             let dst = &mut output[row * contract.stride..(row + 1) * contract.stride];
-            encode_contract_row(
+            encode_contract_row_for_backend(
                 src,
                 dst,
                 contract.pixel_format,
+                contract.alpha_mode,
                 contract.grayscale,
                 contract.reverse_byte_order,
+                contract.backend,
             );
         }
-        Ok(font_substitution_log)
+        Ok((font_substitution_log, telemetry_report))
     }
 
     fn render_contract_pixels(
@@ -855,11 +1710,85 @@ impl ContentEngine {
             .map(|(buffer, tile, _)| (buffer, tile))
     }
 
+    fn render_contract_pixels_with_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(PixelBuffer, RenderTile)> {
+        self.render_contract_pixels_with_font_substitution_report_and_cache(contract, cancel, cache)
+            .map(|(buffer, tile, _)| (buffer, tile))
+    }
+
     fn render_contract_pixels_with_font_substitution_report(
         &self,
         contract: &RenderContract,
         cancel: &crate::cancel::CancelToken,
     ) -> Result<(PixelBuffer, RenderTile, FontSubstitutionLog)> {
+        self.render_contract_pixels_with_telemetry_report(contract, cancel)
+            .map(|(buffer, tile, font_substitution_log, _)| (buffer, tile, font_substitution_log))
+    }
+
+    fn render_contract_pixels_with_font_substitution_report_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(PixelBuffer, RenderTile, FontSubstitutionLog)> {
+        self.render_contract_pixels_with_telemetry_report_and_cache(contract, cancel, cache)
+            .map(|(buffer, tile, font_substitution_log, _)| (buffer, tile, font_substitution_log))
+    }
+
+    fn render_contract_pixels_with_telemetry_report(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<(
+        PixelBuffer,
+        RenderTile,
+        FontSubstitutionLog,
+        RenderContractTelemetryReport,
+    )> {
+        let mut cache = RenderDocumentCache::new();
+        self.render_contract_pixels_with_telemetry_report_inner(
+            contract,
+            cancel,
+            &mut cache,
+            "one_shot_render_contract_report",
+        )
+    }
+
+    fn render_contract_pixels_with_telemetry_report_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(
+        PixelBuffer,
+        RenderTile,
+        FontSubstitutionLog,
+        RenderContractTelemetryReport,
+    )> {
+        self.render_contract_pixels_with_telemetry_report_inner(
+            contract,
+            cancel,
+            cache,
+            "caller_owned_render_cache_report",
+        )
+    }
+
+    fn render_contract_pixels_with_telemetry_report_inner(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+        telemetry_scope: &str,
+    ) -> Result<(
+        PixelBuffer,
+        RenderTile,
+        FontSubstitutionLog,
+        RenderContractTelemetryReport,
+    )> {
         contract.validate()?;
         if contract.document_revision != self.canonical.revision() {
             return Err(WellfriendError::invalid_input(
@@ -908,61 +1837,125 @@ impl ContentEngine {
             tile,
             contract.page_box,
         )?;
+        let optional_content_context =
+            crate::optional_content::OptionalContentContext::from_document_for_state(
+                self.document(),
+                &contract.optional_content.0,
+            )
+            .map_err(|err| {
+                WellfriendError::UnsupportedFeature(format!(
+                    "render contract optional_content is unsupported: {err}"
+                ))
+            })?;
+        enforce_clipped_contract_temporary_budget(contract, &full_viewport, tile)?;
         let mut normalized = contract.clone();
         normalized.pixel_format = expected.pixel_format;
         normalized.alpha_mode = expected.alpha_mode;
         normalized.stride = expected.stride;
         normalized.grayscale = expected.grayscale;
         normalized.reverse_byte_order = expected.reverse_byte_order;
-        // Accept caller-specified policies that are actively implemented:
-        // PrintProfile, AnnotationRenderPolicy, and FormRenderPolicy now
-        // influence rendering rather than being validation-only metadata.
+        // Accept caller-specified policies that are actively implemented.
+        // These influence rendering rather than being validation-only metadata.
         let mut accepted_expected = expected.clone();
         accepted_expected.print_profile = contract.print_profile;
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
+        accepted_expected.execution_mode = contract.execution_mode;
         accepted_expected.halftone = contract.halftone;
         accepted_expected.background = contract.background;
-        accepted_expected.resource_budget.max_pixels = contract.resource_budget.max_pixels;
-        if normalized != accepted_expected {
-            return Err(WellfriendError::UnsupportedFeature(
-                "the requested render contract contains semantic policy fields not yet implemented by the active CPU renderer".to_string(),
-            ));
+        accepted_expected.transform = contract.transform;
+        accepted_expected.resource_budget = contract.resource_budget;
+        accepted_expected.exactness = contract.exactness;
+        accepted_expected.determinism = contract.determinism;
+        accepted_expected.rendering_intent = contract.rendering_intent;
+        accepted_expected.color_management = contract.color_management;
+        accepted_expected.backend = contract.backend;
+        accepted_expected.optional_content = contract.optional_content.clone();
+        accepted_expected.color_scheme = contract.color_scheme;
+        accepted_expected.text_smoothing = contract.text_smoothing;
+        accepted_expected.image_smoothing = contract.image_smoothing;
+        accepted_expected.path_smoothing = contract.path_smoothing;
+        accepted_expected.subpixel_text = contract.subpixel_text;
+        if contract.overprint != OverprintPolicy::PreserveSeparations {
+            accepted_expected.overprint = contract.overprint;
         }
-        let (mut buffer, font_substitution_log) = if tile == full_tile {
-            PageRenderer::render_page_cancellable_with_contract_policies_and_font_substitution_report(
+        if normalized != accepted_expected {
+            let fields = unsupported_active_cpu_contract_fields(&normalized, &accepted_expected);
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "render contract fields are unsupported by the active CPU renderer: {}",
+                fields.join(", ")
+            )));
+        }
+        let render_contract_fingerprint = contract.cache_fingerprint();
+        let _scalar_compositor_guard = crate::render::buffer::ScalarCompositorGuard::enter(
+            contract.backend == crate::render::BackendSelection::ScalarReference,
+        );
+        let mut buffer = if tile == full_tile {
+            PageRenderer::render_page_cancellable_with_contract_policies_and_cache(
                 self,
                 contract.page_number,
                 contract.dpi,
                 cancel,
                 contract.render_mode(),
+                contract.backend,
                 contract.print_profile,
                 contract.annotations,
                 contract.forms,
+                contract.rendering_intent,
+                contract.color_management,
+                contract.overprint,
+                contract.text_smoothing,
+                contract.subpixel_text,
+                contract.path_smoothing,
+                contract.image_smoothing,
                 contract_background_pixel(contract),
                 contract.page_box,
+                crate::render::Transform2D::from_array(contract.transform.to_f64()),
+                contract.resource_budget,
+                render_contract_fingerprint.clone(),
+                contract.exactness,
+                optional_content_context.clone(),
+                cache,
             )?
         } else {
             // For sub-page tiles, render the full page with contract policies
             // then crop to the requested tile. This preserves correct annotation
             // visibility while honoring the tile clip.
-            let (full_buf, font_substitution_log) = PageRenderer::render_page_cancellable_with_contract_policies_and_font_substitution_report(
+            let full_buf = PageRenderer::render_page_cancellable_with_contract_policies_and_cache(
                 self,
                 contract.page_number,
                 contract.dpi,
                 cancel,
                 contract.render_mode(),
+                contract.backend,
                 contract.print_profile,
                 contract.annotations,
                 contract.forms,
+                contract.rendering_intent,
+                contract.color_management,
+                contract.overprint,
+                contract.text_smoothing,
+                contract.subpixel_text,
+                contract.path_smoothing,
+                contract.image_smoothing,
                 contract_background_pixel(contract),
                 contract.page_box,
+                crate::render::Transform2D::from_array(contract.transform.to_f64()),
+                contract.resource_budget,
+                render_contract_fingerprint,
+                contract.exactness,
+                optional_content_context,
+                cache,
             )?;
-            (
-                crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?,
-                font_substitution_log,
-            )
+            crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?
         };
+        let font_substitution_log = cache.take_font_substitution_log();
+        let telemetry_report = RenderContractTelemetryReport::from_contract_cache_with_scope(
+            telemetry_scope,
+            contract,
+            cache,
+        );
+        self.apply_contract_proof_profile(contract, &mut buffer)?;
         if contract.halftone == HalftonePolicy::Screen {
             crate::render::print_profile::apply_ordered_halftone_screen(
                 &mut buffer,
@@ -970,12 +1963,111 @@ impl ContentEngine {
                 tile.y,
             );
         }
+        apply_contract_color_scheme(contract, &mut buffer);
         if buffer.width != contract.width || buffer.height != contract.height {
             return Err(WellfriendError::MalformedPdf(
                 "render contract output dimensions diverged from the active viewport".to_string(),
             ));
         }
-        Ok((buffer, tile, font_substitution_log))
+        Ok((buffer, tile, font_substitution_log, telemetry_report))
+    }
+
+    pub(crate) fn apply_contract_proof_profile(
+        &self,
+        contract: &RenderContract,
+        buffer: &mut PixelBuffer,
+    ) -> Result<()> {
+        if contract.print_profile != crate::render::PrintProfile::Proof {
+            return Ok(());
+        }
+        if contract.color_management != crate::render::ColorManagementPolicy::NativeLittleCms {
+            return Err(WellfriendError::UnsupportedFeature(
+                "PrintProfile::Proof requires ColorManagementPolicy::NativeLittleCms; \
+                 portable/deterministic CMM cannot honor output-intent proofing"
+                    .to_string(),
+            ));
+        }
+        let Some(profile_bytes) = self.first_output_intent_profile_bytes(contract)? else {
+            return Err(WellfriendError::UnsupportedFeature(
+                "PrintProfile::Proof requires a catalog OutputIntent DestOutputProfile".to_string(),
+            ));
+        };
+        let mut rgb = Vec::with_capacity((buffer.width as usize) * (buffer.height as usize) * 3);
+        for px in buffer.rgba_bytes().chunks_exact(4) {
+            rgb.extend_from_slice(&px[..3]);
+        }
+        let proofed = crate::render::cmm::proof_srgb_via_output_intent(
+            &profile_bytes,
+            &rgb,
+            crate::render::cmm::ColorTransformOptions {
+                intent: contract_rendering_intent_to_cmm(contract.rendering_intent),
+                black_point_compensation: false,
+                backend: crate::render::cmm::ColorTransformBackend::NativeLittleCms,
+                cache_scope: crate::render::cmm::color_transform_cache_scope(
+                    &contract.cache_fingerprint(),
+                ),
+            },
+        )
+        .ok_or_else(|| {
+            WellfriendError::UnsupportedFeature(
+                "PrintProfile::Proof output-intent transform is unavailable for the active profile"
+                    .to_string(),
+            )
+        })?;
+        if proofed.len() != rgb.len() {
+            return Err(WellfriendError::MalformedPdf(
+                "proof output-intent transform returned an unexpected byte length".to_string(),
+            ));
+        }
+        for (px, proof_rgb) in buffer
+            .rgba_bytes_mut()
+            .chunks_exact_mut(4)
+            .zip(proofed.chunks_exact(3))
+        {
+            px[..3].copy_from_slice(proof_rgb);
+        }
+        Ok(())
+    }
+
+    fn first_output_intent_profile_bytes(
+        &self,
+        contract: &RenderContract,
+    ) -> Result<Option<Vec<u8>>> {
+        let reader = self.doc.reader();
+        let Some((root_number, root_generation)) = reader.root_reference() else {
+            return Ok(None);
+        };
+        let root = reader.get_and_resolve(root_number, root_generation)?;
+        let Some(root_dict) = root.as_dict() else {
+            return Ok(None);
+        };
+        let Some(output_intents_obj) = root_dict.get("OutputIntents") else {
+            return Ok(None);
+        };
+        let limits = proof_profile_decode_limits(contract.resource_budget);
+        let output_intents = reader.resolve(output_intents_obj.clone())?;
+        let candidates = match output_intents {
+            PdfObject::Array(items) => items,
+            other => vec![other],
+        };
+        for candidate in candidates {
+            let intent = reader.resolve(candidate)?;
+            let Some(intent_dict) = intent.as_dict() else {
+                continue;
+            };
+            let Some(profile_obj) = intent_dict.get("DestOutputProfile") else {
+                continue;
+            };
+            let profile = reader.resolve(profile_obj.clone())?;
+            let decoded = decode_stream_lossless_with_limits(&profile, reader, &limits)?;
+            if decoded.status != StreamDecodeStatus::Complete {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "OutputIntent DestOutputProfile contains an image filter".to_string(),
+                ));
+            }
+            return Ok(Some(decoded.data));
+        }
+        Ok(None)
     }
 
     pub fn page_count(&self) -> Result<usize> {
@@ -983,11 +2075,31 @@ impl ContentEngine {
     }
 
     pub fn get_page_content(&self, page_number: usize) -> Result<Vec<ContentOperation>> {
-        self.validate_page(page_number)?;
         let limits = DecodeLimits::default();
-        let scheduler = DecodeSchedulerContext::new(&limits);
+        self.get_page_content_with_limits_inner(page_number, &limits, &CancelToken::none(), false)
+    }
+
+    pub(crate) fn get_page_content_with_decode_limits(
+        &self,
+        page_number: usize,
+        limits: &DecodeLimits,
+        cancel: &CancelToken,
+    ) -> Result<Vec<ContentOperation>> {
+        self.get_page_content_with_limits_inner(page_number, limits, cancel, true)
+    }
+
+    fn get_page_content_with_limits_inner(
+        &self,
+        page_number: usize,
+        limits: &DecodeLimits,
+        cancel: &CancelToken,
+        map_decode_budget_errors: bool,
+    ) -> Result<Vec<ContentOperation>> {
+        self.validate_page(page_number)?;
+        let scheduler = DecodeSchedulerContext::new(limits);
         if let Some(streams) = self.doc.content_stream_ranges(page_number)? {
             let mut readers = Vec::with_capacity(streams.len());
+            let mut total_decoded_bytes = 0u64;
             for (stream_index, stream) in streams.into_iter().enumerate() {
                 let estimate = stream
                     .dict
@@ -996,23 +2108,33 @@ impl ContentEngine {
                     .and_then(|value| usize::try_from(value).ok())
                     .map(estimate_raw_stream_decode_bytes)
                     .unwrap_or(1);
-                let (status, bytes) = scheduler.run(
-                    estimate,
-                    &CancelToken::none(),
-                    "text extraction content stream decode",
-                    || {
-                        let decoded = decode_stream_lossless_reader_with_limits(
-                            &stream.dict,
-                            stream.reader,
-                            Some(self.doc.reader()),
-                            &limits,
-                        )?;
-                        let mut bytes = Vec::new();
-                        let status = decoded.status;
-                        let mut reader = decoded.reader;
-                        reader.read_to_end(&mut bytes)?;
-                        Ok((status, bytes))
-                    },
+                let (status, bytes) = scheduler
+                    .run(
+                        estimate,
+                        cancel,
+                        "text extraction content stream decode",
+                        || {
+                            let decoded = decode_stream_lossless_reader_with_limits(
+                                &stream.dict,
+                                stream.reader,
+                                Some(self.doc.reader()),
+                                limits,
+                            )?;
+                            let mut bytes = Vec::new();
+                            let status = decoded.status;
+                            let mut reader = decoded.reader;
+                            reader.read_to_end(&mut bytes)?;
+                            Ok((status, bytes))
+                        },
+                    )
+                    .map_err(|err| {
+                        map_page_content_decode_error(err, limits, map_decode_budget_errors)
+                    })?;
+                enforce_page_content_decoded_limits(
+                    "page content stream",
+                    bytes.len(),
+                    &mut total_decoded_bytes,
+                    limits,
                 )?;
                 if let StreamDecodeStatus::StoppedAtImageFilter(filter) = &status {
                     log::warn!("page content stream stopped at image filter {filter}");
@@ -1027,14 +2149,23 @@ impl ContentEngine {
         }
         let page = self.doc.get_page(page_number)?;
         let estimate = estimate_raw_stream_decode_bytes(page.contents.len().saturating_mul(1024));
-        let bytes = scheduler.run(
-            estimate,
-            &CancelToken::none(),
-            "text extraction fallback content decode",
-            || {
-                self.doc
-                    .get_page_content_bytes_with_limits(page_number, &limits)
-            },
+        let bytes = scheduler
+            .run(
+                estimate,
+                cancel,
+                "text extraction fallback content decode",
+                || {
+                    self.doc
+                        .get_page_content_bytes_with_limits(page_number, limits)
+                },
+            )
+            .map_err(|err| map_page_content_decode_error(err, limits, map_decode_budget_errors))?;
+        let mut total_decoded_bytes = 0u64;
+        enforce_page_content_decoded_limits(
+            "fallback page content streams",
+            bytes.len(),
+            &mut total_decoded_bytes,
+            limits,
         )?;
         ContentParser::parse(&bytes)
     }
@@ -1665,6 +2796,108 @@ impl ContentEngine {
         ImageLocator::find_all_images(self, options)
     }
 
+    /// Report native decode capabilities for every discovered image without
+    /// decoding image pixels.
+    pub fn image_decode_capability_report(&self) -> Result<ImageDecodeCapabilityDocumentReport> {
+        let options = ImageLocateOptions {
+            include_masks: true,
+            include_soft_masks: true,
+            include_inline: true,
+            ..Default::default()
+        };
+        let images: Vec<ImageDecodeCapabilityImageReport> = self
+            .find_all_images(&options)?
+            .iter()
+            .map(ImageDecodeCapabilityImageReport::from)
+            .collect();
+        let full_decode_only_count = images
+            .iter()
+            .filter(|image| image.requires_full_decode)
+            .count();
+        let native_metadata_inspection_count = images
+            .iter()
+            .filter(|image| {
+                matches!(
+                    image.capability.metadata_inspection,
+                    crate::render::ImageDecodeCapabilityStatus::Native
+                )
+            })
+            .count();
+        let native_region_decode_count = images
+            .iter()
+            .filter(|image| {
+                matches!(
+                    image.capability.region_decode,
+                    crate::render::ImageDecodeCapabilityStatus::Native
+                )
+            })
+            .count();
+        let native_reduction_decode_count = images
+            .iter()
+            .filter(|image| {
+                matches!(
+                    image.capability.reduction_decode,
+                    crate::render::ImageDecodeCapabilityStatus::Native
+                )
+            })
+            .count();
+        let native_progressive_decode_count = images
+            .iter()
+            .filter(|image| {
+                matches!(
+                    image.capability.progressive_decode,
+                    crate::render::ImageDecodeCapabilityStatus::Native
+                )
+            })
+            .count();
+        let native_tile_decode_count = images
+            .iter()
+            .filter(|image| {
+                matches!(
+                    image.capability.tile_decode,
+                    crate::render::ImageDecodeCapabilityStatus::Native
+                )
+            })
+            .count();
+        let native_component_decode_count = images
+            .iter()
+            .filter(|image| {
+                matches!(
+                    image.capability.component_decode,
+                    crate::render::ImageDecodeCapabilityStatus::Native
+                )
+            })
+            .count();
+        let native_cancellation_decode_count = images
+            .iter()
+            .filter(|image| image.capability.cancellation.is_native_codec())
+            .count();
+        let renderer_boundary_cancellation_count = images
+            .iter()
+            .filter(|image| image.capability.cancellation.is_renderer_boundary())
+            .count();
+        let renderer_boundary_memory_budget_count = images
+            .iter()
+            .filter(|image| image.capability.memory_budget.is_renderer_boundary())
+            .count();
+        Ok(ImageDecodeCapabilityDocumentReport {
+            schema_version: 1,
+            document_revision: self.canonical_document().revision().0,
+            image_count: images.len(),
+            full_decode_only_count,
+            native_metadata_inspection_count,
+            native_region_decode_count,
+            native_reduction_decode_count,
+            native_progressive_decode_count,
+            native_tile_decode_count,
+            native_component_decode_count,
+            native_cancellation_decode_count,
+            renderer_boundary_cancellation_count,
+            renderer_boundary_memory_budget_count,
+            images,
+        })
+    }
+
     /// Decode a single image from its ImageReference.
     ///
     /// Inline images (BI/ID/EI) are decoded from the pixel bytes captured on the
@@ -1911,22 +3144,20 @@ impl ContentEngine {
     ///
     /// This is a replayable vector display list for pages whose drawing
     /// operations fit the current subset. The returned list also records
-    /// unsupported operations so callers can inspect why a page still needs the
-    /// immediate renderer.
+    /// unsupported operations so callers can inspect typed retained-replay
+    /// refusal reasons.
     pub fn build_page_display_list(&self, page_number: usize, dpi: u32) -> Result<DisplayList> {
         PageRenderer::build_display_list(self, page_number, dpi)
     }
 
-    /// Render a page through the display-list CPU device when fully supported.
-    ///
-    /// Returns `Ok(None)` for pages containing operations that are still handled
-    /// by the existing immediate renderer.
+    /// Render a page through retained display-list replay.
+    /// Unsupported retained lists return typed renderer errors.
     pub fn render_page_display_list_with_mode(
         &self,
         page_number: usize,
         dpi: u32,
         render_mode: RenderMode,
-    ) -> Result<Option<PixelBuffer>> {
+    ) -> Result<PixelBuffer> {
         PageRenderer::render_page_display_list_with_mode(self, page_number, dpi, render_mode)
     }
 
@@ -1937,22 +3168,16 @@ impl ContentEngine {
         dpi: u32,
         cancel: &crate::cancel::CancelToken,
         render_mode: RenderMode,
-    ) -> Result<Option<PixelBuffer>> {
+    ) -> Result<PixelBuffer> {
         let list = PageRenderer::build_display_list(self, page_number, dpi)?;
-        if !list.is_fully_supported() {
-            Ok(None)
-        } else {
-            Ok(Some(
-                PageRenderer::render_display_list_cancellable_with_mode(
-                    self,
-                    page_number,
-                    dpi,
-                    &list,
-                    cancel,
-                    render_mode,
-                )?,
-            ))
-        }
+        PageRenderer::render_display_list_cancellable_with_mode(
+            self,
+            page_number,
+            dpi,
+            &list,
+            cancel,
+            render_mode,
+        )
     }
 
     /// Render a display-list page with cancellation and a reusable document cache.
@@ -1963,24 +3188,18 @@ impl ContentEngine {
         cancel: &crate::cancel::CancelToken,
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
-    ) -> Result<Option<PixelBuffer>> {
+    ) -> Result<PixelBuffer> {
         let (list, _) =
             PageRenderer::get_or_build_display_list_with_cache(self, page_number, dpi, cache)?;
-        if !list.is_fully_supported() {
-            Ok(None)
-        } else {
-            Ok(Some(
-                PageRenderer::render_display_list_cancellable_with_mode_and_cache(
-                    self,
-                    page_number,
-                    dpi,
-                    list.as_ref(),
-                    cancel,
-                    render_mode,
-                    cache,
-                )?,
-            ))
-        }
+        PageRenderer::render_display_list_cancellable_with_mode_and_cache(
+            self,
+            page_number,
+            dpi,
+            list.as_ref(),
+            cancel,
+            render_mode,
+            cache,
+        )
     }
 
     /// Render one pixel-space page tile through retained display-list replay
@@ -1993,7 +3212,7 @@ impl ContentEngine {
         cancel: &crate::cancel::CancelToken,
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
-    ) -> Result<Option<PixelBuffer>> {
+    ) -> Result<PixelBuffer> {
         PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
             self,
             page_number,
@@ -2005,9 +3224,9 @@ impl ContentEngine {
         )
     }
 
-    /// Render a pixel-space page tile through the display-list path where
-    /// possible, falling back to the compatibility renderer only when the list
-    /// reports an explicit unsupported reason.
+    /// Render a pixel-space page tile through retained display-list replay.
+    /// Unsupported retained lists return a typed renderer error instead of
+    /// falling back to immediate tile rendering.
     pub fn render_page_tile_with_mode(
         &self,
         page_number: usize,
@@ -2074,6 +3293,35 @@ impl ContentEngine {
             page_number,
             dpi,
             render_mode,
+            tile_width,
+            tile_height,
+            viewport_hint,
+        )
+    }
+
+    /// Create an in-process progressive render job from a full schema-v1 render
+    /// contract. The session publishes canonical premultiplied RGBA tiles while
+    /// retaining the contract's render policies, cache identity, exactness,
+    /// resource budget, and optional-content state.
+    pub fn progressive_render_job_with_contract(
+        &self,
+        contract: RenderContract,
+        tile_width: u32,
+        tile_height: u32,
+    ) -> Result<ProgressiveRenderJob> {
+        ProgressiveRenderJob::new_with_contract(self.clone(), contract, tile_width, tile_height)
+    }
+
+    pub fn progressive_render_job_with_contract_and_viewport_hint(
+        &self,
+        contract: RenderContract,
+        tile_width: u32,
+        tile_height: u32,
+        viewport_hint: Option<RenderTile>,
+    ) -> Result<ProgressiveRenderJob> {
+        ProgressiveRenderJob::new_with_contract_and_viewport_hint(
+            self.clone(),
+            contract,
             tile_width,
             tile_height,
             viewport_hint,
@@ -2149,6 +3397,19 @@ impl ContentEngine {
         crate::render::render_page_svg(self, page_number, dpi)
     }
 
+    /// Render a page to SVG with exact vector-output policy.
+    ///
+    /// Pure vector and supported regional vector output still succeed, but
+    /// unsupported constructs return typed `UnsupportedFeature` instead of
+    /// silently embedding the whole page as one raster image.
+    pub fn render_page_svg_strict(
+        &self,
+        page_number: usize,
+        dpi: u32,
+    ) -> Result<crate::render::SvgPage> {
+        crate::render::render_page_svg_strict(self, page_number, dpi)
+    }
+
     /// Render a single page to a PostScript page body (the building block of the
     /// `render --format ps` / `pdftops` equivalent). See
     /// [`crate::render::postscript`]. Pages using only path/text/solid-fill/clip
@@ -2157,6 +3418,19 @@ impl ContentEngine {
     /// to a single embedded rasterised page image.
     pub fn render_page_ps(&self, page_number: usize, dpi: u32) -> Result<crate::render::PsPage> {
         crate::render::render_page_ps(self, page_number, dpi)
+    }
+
+    /// Render a page to PostScript with exact vector-output policy.
+    ///
+    /// Pure vector and supported regional vector output still succeed, but
+    /// unsupported constructs return typed `UnsupportedFeature` instead of
+    /// silently embedding the whole page as one raster image.
+    pub fn render_page_ps_strict(
+        &self,
+        page_number: usize,
+        dpi: u32,
+    ) -> Result<crate::render::PsPage> {
+        crate::render::render_page_ps_strict(self, page_number, dpi)
     }
 
     /// Render the given 1-based pages to a complete, DSC-conformant multi-page
@@ -2175,6 +3449,18 @@ impl ContentEngine {
         Ok((crate::render::assemble_ps_document(&ps_pages), rasterized))
     }
 
+    /// Render the given pages to PostScript with exact vector-output policy.
+    ///
+    /// The returned rasterized count is always zero on success because strict
+    /// mode refuses whole-page raster fallback.
+    pub fn render_document_ps_strict(&self, pages: &[usize], dpi: u32) -> Result<(String, usize)> {
+        let mut ps_pages = Vec::with_capacity(pages.len());
+        for &p in pages {
+            ps_pages.push(self.render_page_ps_strict(p, dpi)?);
+        }
+        Ok((crate::render::assemble_ps_document(&ps_pages), 0))
+    }
+
     /// Render a single page to a conforming EPS document (`%!PS-Adobe-3.0
     /// EPSF-3.0`) with a precise `%%BoundingBox` and no `showpage`/
     /// `setpagedevice` (the `render --format eps` / `pdftops -eps` /
@@ -2185,11 +3471,33 @@ impl ContentEngine {
         Ok((crate::render::assemble_eps_document(&page), rasterized))
     }
 
+    /// Render a single page to EPS with exact vector-output policy.
+    ///
+    /// The returned rasterized flag is always `false` on success because strict
+    /// mode refuses whole-page raster fallback.
+    pub fn render_page_eps_strict(&self, page_number: usize, dpi: u32) -> Result<(String, bool)> {
+        let page = self.render_page_ps_strict(page_number, dpi)?;
+        Ok((crate::render::assemble_eps_document(&page), false))
+    }
+
     /// Render a page and encode it as PNG using fast compression.
     pub fn render_page_png_fast(&self, page_number: usize, dpi: u32) -> Result<Vec<u8>> {
         // NOTE: line width 0 renders as 1px (PDF hairline spec). Verified in tests.
         let buf = self.render_page(page_number, dpi)?;
         ImageEncoder::encode_png_fast(&buf.to_raw_image())
+    }
+
+    /// Render a page to fast PNG bytes and return the bounded font-substitution
+    /// report collected during the same render pass.
+    pub fn render_page_png_fast_with_font_substitution_report(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+    ) -> Result<(Vec<u8>, FontSubstitutionLog)> {
+        let (buf, log) =
+            self.render_page_with_font_substitution_report(page_number, dpi, render_mode)?;
+        Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
     }
 
     /// Render a page with an explicit render mode and encode it as PNG.
@@ -2213,6 +3521,76 @@ impl ContentEngine {
     ) -> Result<Vec<u8>> {
         let buf = self.render_page_with_contract(contract, cancel)?;
         ImageEncoder::encode_png_fast(&buf.to_raw_image())
+    }
+
+    /// Render through a contract with a caller-owned cache and encode PNG bytes.
+    pub fn render_page_png_with_contract_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<Vec<u8>> {
+        let buf = self.render_page_with_contract_and_cache(contract, cancel, cache)?;
+        ImageEncoder::encode_png_fast(&buf.to_raw_image())
+    }
+
+    /// Render through a contract, encode PNG bytes, and return the bounded
+    /// font-substitution report collected during that render pass.
+    pub fn render_page_png_with_contract_and_font_substitution_report(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<(Vec<u8>, FontSubstitutionLog)> {
+        let (buf, log) =
+            self.render_page_with_contract_and_font_substitution_report(contract, cancel)?;
+        Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
+    }
+
+    /// Render through a contract with a caller-owned cache, encode PNG bytes,
+    /// and return bounded font-substitution events for that render pass.
+    pub fn render_page_png_with_contract_and_font_substitution_report_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(Vec<u8>, FontSubstitutionLog)> {
+        let (buf, log) = self.render_page_with_contract_and_font_substitution_report_and_cache(
+            contract, cancel, cache,
+        )?;
+        Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
+    }
+
+    /// Render through a contract, encode PNG bytes, and return the bounded
+    /// font-substitution report plus live one-shot cache telemetry.
+    pub fn render_page_png_with_contract_and_telemetry_report(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<(Vec<u8>, FontSubstitutionLog, RenderContractTelemetryReport)> {
+        let (buf, log, telemetry_report) =
+            self.render_page_with_contract_and_telemetry_report(contract, cancel)?;
+        Ok((
+            ImageEncoder::encode_png_fast(&buf.to_raw_image())?,
+            log,
+            telemetry_report,
+        ))
+    }
+
+    /// Render through a contract with a caller-owned cache, encode PNG bytes,
+    /// and return bounded font-substitution plus render-cache telemetry.
+    pub fn render_page_png_with_contract_and_telemetry_report_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(Vec<u8>, FontSubstitutionLog, RenderContractTelemetryReport)> {
+        let (buf, log, telemetry_report) =
+            self.render_page_with_contract_and_telemetry_report_and_cache(contract, cancel, cache)?;
+        Ok((
+            ImageEncoder::encode_png_fast(&buf.to_raw_image())?,
+            log,
+            telemetry_report,
+        ))
     }
 
     /// Build a new PDF containing exactly the given 1-based pages, in the
@@ -2468,6 +3846,32 @@ mod tests {
             contents: Vec::new(),
             user_unit: 1.0,
         }
+    }
+
+    fn minimal_pdf_from_objects(objects: &[Vec<u8>]) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            pdf.extend_from_slice(obj);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        pdf
     }
 
     #[test]
@@ -2735,6 +4139,178 @@ mod tests {
     }
 
     #[test]
+    fn contract_accepts_custom_non_pixel_resource_budgets() {
+        use crate::{AuthorPageSize, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER);
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open resource-budget fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        contract.width = 4;
+        contract.height = 4;
+        contract.stride = 4 * 4;
+        contract.resource_budget.max_decoded_bytes = 1;
+        contract.resource_budget.max_temporary_bytes = 512;
+        contract.resource_budget.max_cache_bytes = 0;
+
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect("non-pixel resource budgets are active contract policy");
+    }
+
+    #[test]
+    fn contract_max_decoded_bytes_limits_page_content_stream_decode() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "contract decoded byte budget",
+                12.0,
+                780.0,
+                &TextStyle::default(),
+            )
+            .expect("write decoded-budget fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open decoded-budget fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        contract.width = 4;
+        contract.height = 4;
+        contract.stride = 4 * 4;
+        contract.resource_budget.max_decoded_bytes = 1;
+
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        let err = engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect_err("page content stream decode must observe max_decoded_bytes");
+        let message = err.to_string();
+        assert_eq!(err.code(), "resource_limit");
+        assert!(message.contains("max_decoded_bytes"));
+        assert!(message.contains("page content stream"));
+    }
+
+    #[test]
+    fn contract_page_content_stream_decode_observes_cancel_token() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "contract cancellation budget",
+                12.0,
+                780.0,
+                &TextStyle::default(),
+            )
+            .expect("write cancellation fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open cancellation fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        contract.width = 4;
+        contract.height = 4;
+        contract.stride = 4 * 4;
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        let err = engine
+            .render_page_into_buffer(&contract, &cancel, &mut surface)
+            .expect_err("page content stream decode must observe caller cancellation");
+        let message = err.to_string();
+        assert_eq!(err.code(), "cancelled");
+        assert!(message.contains("content stream decode"));
+    }
+
+    #[test]
+    fn contract_rejects_temporary_budget_smaller_than_canonical_surface() {
+        use crate::{AuthorPageSize, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER);
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open resource-budget fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        contract.width = 4;
+        contract.height = 4;
+        contract.stride = 4 * 4;
+        contract.resource_budget.max_temporary_bytes = 63;
+
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        let err = engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect_err("canonical working surface must observe max_temporary_bytes");
+        let message = err.to_string();
+        assert!(message.contains("max_temporary_bytes"));
+        assert!(message.contains("canonical RGBA working surface"));
+    }
+
+    #[test]
+    fn clipped_contract_rejects_full_page_intermediate_over_temporary_budget() {
+        use crate::{AuthorPageSize, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER);
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open clipped-budget fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        contract.width = 4;
+        contract.height = 4;
+        contract.stride = 4 * 4;
+        contract.resource_budget.max_temporary_bytes = 1024;
+
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        let err = engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect_err("clipped contract must budget the full-page intermediate");
+        let message = err.to_string();
+        assert!(message.contains("max_temporary_bytes"));
+        assert!(message.contains("full-page intermediate"));
+    }
+
+    #[test]
     fn contract_honors_non_white_background() {
         use crate::{AuthorPageSize, PdfBuilder};
 
@@ -2774,6 +4350,473 @@ mod tests {
     }
 
     #[test]
+    fn contract_forced_monochrome_color_scheme_posts_processes_surface() {
+        use crate::{AuthorPageSize, Color, GraphicsStyle, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER).draw_rect(
+            0.0,
+            0.0,
+            612.0,
+            792.0,
+            &GraphicsStyle::fill(Color::device_rgb(1.0, 0.0, 0.0)),
+        );
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open color-scheme fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        contract.width = 4;
+        contract.height = 4;
+        contract.stride = 4 * 4;
+        contract.color_scheme = ColorScheme::ForcedMonochrome;
+
+        let buf = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("forced monochrome color scheme renders");
+        assert_eq!(buf.get_pixel(1, 1), [77, 77, 77, 255]);
+
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect("forced monochrome color scheme writes caller surface");
+        assert_eq!(&surface[..4], &[77, 77, 77, 255]);
+    }
+
+    #[test]
+    fn contract_dark_color_scheme_inverts_surface_rgb() {
+        use crate::{AuthorPageSize, Color, GraphicsStyle, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER).draw_rect(
+            0.0,
+            0.0,
+            612.0,
+            792.0,
+            &GraphicsStyle::fill(Color::device_rgb(1.0, 0.0, 0.0)),
+        );
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open dark color-scheme fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        contract.width = 4;
+        contract.height = 4;
+        contract.stride = 4 * 4;
+        contract.color_scheme = ColorScheme::Dark;
+
+        let buf = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("dark color scheme renders");
+        assert_eq!(buf.get_pixel(1, 1), [0, 255, 255, 255]);
+
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect("dark color scheme writes caller surface");
+        assert_eq!(&surface[..4], &[0, 255, 255, 255]);
+    }
+
+    #[test]
+    fn contract_image_smoothing_disabled_overrides_interpolate_true() {
+        let content = "q 100 0 0 10 0 0 cm /Im1 Do Q\n";
+        let image_bytes = [0u8, 0, 0, 255, 255, 255];
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 10] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+            [
+                format!(
+                    "<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Interpolate true /Length {} >>\nstream\n",
+                    image_bytes.len()
+                )
+                .into_bytes(),
+                image_bytes.to_vec(),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open interpolate contract fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 10,
+        });
+        contract.width = 100;
+        contract.height = 10;
+        contract.stride = 100 * 4;
+
+        let smooth = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("default image smoothing renders");
+        let smooth_sample = smooth.get_pixel(25, 5)[0];
+        assert!(
+            (32..=223).contains(&smooth_sample),
+            "default contract should honor /Interpolate true smoothing, got {smooth_sample}"
+        );
+
+        contract.image_smoothing = crate::render::SmoothingPolicy::Disabled;
+        let crisp = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("disabled image smoothing renders");
+        assert_eq!(
+            crisp.get_pixel(25, 5)[0],
+            0,
+            "disabled image smoothing should force nearest-neighbour sampling"
+        );
+        assert_eq!(
+            crisp.get_pixel(49, 5)[0],
+            0,
+            "left half should remain the first source pixel"
+        );
+        assert_eq!(
+            crisp.get_pixel(50, 5)[0],
+            255,
+            "right half should remain the second source pixel"
+        );
+    }
+
+    #[test]
+    fn contract_text_smoothing_disabled_thresholds_glyph_edges() {
+        use crate::{AuthorPageSize, PdfBuilder, StandardFont, TextStyle};
+
+        fn partial_gray_pixels(buf: &PixelBuffer) -> usize {
+            let image = buf.to_raw_image_rgba();
+            image
+                .pixels
+                .chunks_exact(4)
+                .filter(|px| {
+                    px[3] == 255 && px[0] == px[1] && px[1] == px[2] && px[0] > 0 && px[0] < 255
+                })
+                .count()
+        }
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "S",
+                72.0,
+                700.0,
+                &TextStyle::standard(StandardFont::Helvetica, 96.0),
+            )
+            .expect("write glyph smoothing fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open glyph smoothing fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+
+        let smooth = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("default text smoothing renders");
+        let smooth_partial = partial_gray_pixels(&smooth);
+        assert!(
+            smooth_partial > 0,
+            "default text smoothing should produce antialiased glyph edge pixels"
+        );
+
+        contract.text_smoothing = crate::render::SmoothingPolicy::Disabled;
+        let binary = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("disabled text smoothing renders");
+        assert_eq!(
+            partial_gray_pixels(&binary),
+            0,
+            "disabled text smoothing should force binary glyph coverage"
+        );
+    }
+
+    #[test]
+    fn contract_subpixel_text_uses_lcd_glyph_mask_policy() {
+        use crate::{AuthorPageSize, PdfBuilder, StandardFont, TextStyle};
+
+        fn lcd_edge_pixels(buf: &PixelBuffer) -> usize {
+            let image = buf.to_raw_image_rgba();
+            image
+                .pixels
+                .chunks_exact(4)
+                .filter(|px| {
+                    px[3] == 255
+                        && (px[0] != px[1] || px[1] != px[2])
+                        && (px[0] < 255 || px[1] < 255 || px[2] < 255)
+                })
+                .count()
+        }
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "S",
+                72.0,
+                700.0,
+                &TextStyle::standard(StandardFont::Helvetica, 96.0),
+            )
+            .expect("write subpixel glyph fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open subpixel glyph fixture");
+        let default_contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let default = engine
+            .render_page_with_contract(&default_contract, &CancelToken::none())
+            .expect("default text smoothing renders");
+        assert_eq!(
+            lcd_edge_pixels(&default),
+            0,
+            "default antialiasing should keep monochrome glyph edge pixels grayscale"
+        );
+
+        let mut subpixel = default_contract;
+        subpixel.text_smoothing = crate::render::SmoothingPolicy::Subpixel;
+        subpixel.subpixel_text = crate::render::SmoothingPolicy::Subpixel;
+        subpixel.path_smoothing = crate::render::SmoothingPolicy::Subpixel;
+        subpixel.image_smoothing = crate::render::SmoothingPolicy::Subpixel;
+        let rendered = engine
+            .render_page_with_contract(&subpixel, &CancelToken::none())
+            .expect("subpixel smoothing policies render");
+        assert!(
+            lcd_edge_pixels(&rendered) > 0,
+            "subpixel text should produce RGB channel-specific glyph edge coverage"
+        );
+    }
+
+    #[test]
+    fn contract_path_smoothing_disabled_thresholds_fill_edges() {
+        fn partial_red_pixels(buf: &PixelBuffer) -> usize {
+            let image = buf.to_raw_image_rgba();
+            image
+                .pixels
+                .chunks_exact(4)
+                .filter(|px| {
+                    px[3] == 255 && px[0] == 255 && px[1] == px[2] && px[1] > 0 && px[1] < 255
+                })
+                .count()
+        }
+
+        let content = "q 1 0 0 rg 10.2 10.2 m 90.7 15.3 l 42.4 80.6 l h f Q\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open path smoothing fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+
+        let smooth = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("default path smoothing renders");
+        let smooth_partial = partial_red_pixels(&smooth);
+        assert!(
+            smooth_partial > 0,
+            "default path smoothing should produce antialiased edge pixels"
+        );
+
+        contract.path_smoothing = crate::render::SmoothingPolicy::Disabled;
+        let binary = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("disabled path smoothing renders");
+        assert_eq!(
+            partial_red_pixels(&binary),
+            0,
+            "disabled path smoothing should force binary path coverage"
+        );
+    }
+
+    #[test]
+    fn contract_scalar_reference_backend_uses_scalar_compositor() {
+        let content = "q /GS1 gs 1 0 0 rg 0 0 128 128 re f Q\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 128 128] /Resources << /ExtGState << /GS1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            b"<< /Type /ExtGState /ca 0.5 /CA 0.5 /BM /Normal /SMask /None >>".to_vec(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open scalar backend fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.backend = crate::render::BackendSelection::ScalarReference;
+
+        let before = crate::render::pixel_compositor_stats();
+        let rendered = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("scalar reference backend renders");
+        let after = crate::render::pixel_compositor_stats();
+
+        let center = rendered.get_pixel(64, 64);
+        assert!(
+            center[0] > center[1] && center[1] > 0 && center[3] == 255,
+            "translucent scalar backend fill should composite over the page background, got {center:?}"
+        );
+        assert!(
+            after.scalar_solid_color_pixels > before.scalar_solid_color_pixels
+                || after.scalar_opaque_dst_pixels > before.scalar_opaque_dst_pixels
+                || after.scalar_general_pixels > before.scalar_general_pixels,
+            "ScalarReference contract should force scalar compositor counters, before={before:?} after={after:?}"
+        );
+    }
+
+    #[test]
+    fn contract_research_hybrid_backend_renders_with_distinct_identity() {
+        let content = "0 0 1 rg 16 16 96 96 re f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 128 128] /Resources << >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open research hybrid backend fixture");
+        let standard_contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let mut hybrid_contract = standard_contract.clone();
+        hybrid_contract.backend = crate::render::BackendSelection::ResearchHybrid;
+
+        assert_ne!(
+            standard_contract.cache_fingerprint(),
+            hybrid_contract.cache_fingerprint(),
+            "ResearchHybrid must keep a separate contract/cache identity"
+        );
+
+        let rendered = engine
+            .render_page_with_contract(&hybrid_contract, &CancelToken::none())
+            .expect("research hybrid backend renders through the active CPU hybrid dispatcher");
+        let center = rendered.get_pixel(64, 64);
+        assert!(
+            center[2] > center[0] && center[2] > center[1] && center[3] == 255,
+            "research hybrid backend should render the blue fixture, got {center:?}"
+        );
+    }
+
+    #[test]
+    fn contract_research_execution_mode_renders_with_distinct_identity() {
+        let content = "0 0.75 0 rg 16 16 96 96 re f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 128 128] /Resources << >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open research execution-mode fixture");
+        let standard_contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let mut research_contract = standard_contract.clone();
+        research_contract.execution_mode = crate::render::ExecutionMode::Research;
+
+        assert_ne!(
+            standard_contract.cache_fingerprint(),
+            research_contract.cache_fingerprint(),
+            "Research execution mode must keep a separate contract/cache identity"
+        );
+
+        let rendered = engine
+            .render_page_with_contract(&research_contract, &CancelToken::none())
+            .expect("research execution mode renders through the active CPU path");
+        let center = rendered.get_pixel(64, 64);
+        assert!(
+            center[1] > center[0] && center[1] > center[2] && center[3] == 255,
+            "research execution mode should render the green fixture, got {center:?}"
+        );
+    }
+
+    #[test]
+    fn contract_reports_unsupported_semantic_fields_by_name() {
+        use crate::{AuthorPageSize, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER);
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open unsupported-contract fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.page_identity = crate::render::ObjectIdentityId(contract.page_identity.0 + 1);
+
+        let error = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect_err("unsupported semantic policies must be refused before rendering");
+        let message = error.to_string();
+        assert_eq!(error.code(), "unsupported_feature");
+        assert!(message.contains("render contract fields are unsupported"));
+        assert!(message.contains("page_identity=ObjectIdentityId"));
+        assert!(!message.contains("execution_mode=Research"));
+        assert!(!message.contains("backend=ResearchHybrid"));
+        assert!(!message.contains("image_smoothing=Subpixel"));
+        assert!(!message.contains("path_smoothing=Subpixel"));
+        assert!(!message.contains("subpixel_text=Subpixel"));
+        assert!(!message.contains("not yet implemented"));
+    }
+
+    #[test]
+    fn contract_honors_device_translation_transform() {
+        use crate::{AuthorPageSize, Color, GraphicsStyle, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER).draw_rect(
+            0.0,
+            782.0,
+            10.0,
+            10.0,
+            &GraphicsStyle::fill(Color::device_rgb(1.0, 0.0, 0.0)),
+        );
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open transform fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 24,
+        });
+        contract.width = 24;
+        contract.height = 24;
+        contract.stride = 24 * 4;
+        contract.transform = crate::render::DeviceMatrix::from_f64([1.0, 0.0, 0.0, 1.0, 5.0, 7.0]);
+
+        let buf = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("render translated contract");
+        assert_eq!(buf.get_pixel(2, 2), WHITE);
+        assert_eq!(buf.get_pixel(6, 8), [255, 0, 0, 255]);
+    }
+
+    #[test]
     fn render_page_returns_font_substitution_report() {
         use crate::{AuthorPageSize, PdfBuilder, TextStyle};
 
@@ -2788,13 +4831,700 @@ mod tests {
             .render_page_with_font_substitution_report(1, 72, RenderMode::Compat)
             .expect("render with font substitution report");
         assert!(log.total_count() > 0);
-        assert!(log
+        let event = log
             .events()
             .iter()
-            .any(|event| event.page == 1 && !event.selected_fallback.is_empty()));
+            .find(|event| event.page == 1 && !event.selected_fallback.is_empty())
+            .expect("font substitution event");
+        assert!(event.glyph_coverage.observed_glyphs > 0);
+        assert_eq!(
+            event.glyph_coverage.observed_glyphs,
+            event.glyph_coverage.covered_glyphs + event.glyph_coverage.missing_glyphs
+        );
+        assert!(event
+            .risk_flags
+            .iter()
+            .any(|flag| flag.starts_with("source_")));
+        assert!(!event.requested_pdf_font.is_empty());
+        assert_eq!(event.selected_replacement, event.selected_fallback);
+        assert!(matches!(
+            event.resolution_source.as_str(),
+            "standard14_compatible" | "bundled_fallback"
+        ));
+        assert!(!event.embedded_state.is_empty());
+        assert!(!event.encoding.is_empty());
+        assert_eq!(
+            event.required_glyph_coverage.observed_glyphs,
+            event.glyph_coverage.observed_glyphs
+        );
+        assert_eq!(event.missing_glyphs, event.glyph_coverage.missing_glyphs);
+        assert!(!event.visual_risk_category.is_empty());
+        assert!(!event.extraction_impact.is_empty());
+        assert!(!event.editing_impact.is_empty());
+        assert!(event.font_policy_identity.starts_with("render_contract:"));
         let json = serde_json::to_value(&log).expect("serialize font substitution log");
         assert!(json["events"].is_array());
+        assert!(json["events"][0]["glyph_coverage"]["observed_glyphs"].is_number());
+        assert!(json["events"][0]["required_glyph_coverage"]["observed_glyphs"].is_number());
+        assert!(json["events"][0]["selected_replacement"].is_string());
+        assert!(json["events"][0]["reason"].is_string());
+        assert!(json["events"][0]["metric_posture"].is_string());
+        assert!(json["events"][0]["embedded_state"].is_string());
+        assert!(json["events"][0]["resolution_source"].is_string());
+        assert!(json["events"][0]["selection_reason"].is_string());
+        assert!(json["events"][0]["visual_risk_category"].is_string());
+        assert!(json["events"][0]["extraction_impact"].is_string());
+        assert!(json["events"][0]["editing_impact"].is_string());
+        assert!(json["events"][0]["font_policy_identity"].is_string());
+        assert!(json["events"][0]["risk_flags"].is_array());
         assert_eq!(json["overflow_count"], 0);
+    }
+
+    #[test]
+    fn render_contract_telemetry_report_exposes_cache_counters() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text("cache-telemetry", 12.0, 780.0, &TextStyle::default())
+            .expect("write telemetry fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open telemetry fixture");
+        let contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+
+        let (_buffer, log, telemetry) = engine
+            .render_page_with_contract_and_telemetry_report(&contract, &CancelToken::none())
+            .expect("render with telemetry report");
+
+        assert_eq!(telemetry.scope, "one_shot_render_contract_report");
+        assert_eq!(telemetry.cache_fingerprint, contract.cache_fingerprint());
+        assert_eq!(
+            telemetry.resource_budget_max_cache_bytes,
+            contract.resource_budget.max_cache_bytes
+        );
+        let contract_fields = serde_json::to_value(&contract)
+            .expect("serialize contract")
+            .as_object()
+            .expect("contract object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let field_effects = telemetry
+            .field_effects
+            .iter()
+            .map(|effect| effect.field.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(contract_fields, field_effects);
+        assert!(telemetry
+            .field_effects
+            .iter()
+            .all(|effect| effect.cache_identity && effect.active_execution));
+        assert!(
+            telemetry.aggregate_resource_cache_bytes
+                <= contract.resource_budget.max_cache_bytes as usize
+        );
+        assert!(telemetry.glyph_cache.misses > 0 || log.total_count() > 0);
+        let json = serde_json::to_value(&telemetry).expect("serialize telemetry");
+        assert!(json["field_effects"].is_array());
+        assert!(json["field_effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|effect| effect["field"] == "color_management"));
+        assert!(json["font_bytes_cache"]["hits"].is_number());
+        assert!(json["glyph_atlas_cache"]["bytes"].is_number());
+        assert!(json["path_clip_node_cache"]["bytes"].is_number());
+        assert!(json["clip_dag"]["interned_nodes"].is_number());
+        assert!(json["clip_dag"]["max_nodes"].is_number());
+        assert!(json["clip_dag"]["pruning_passes"].is_number());
+        assert!(json["display_list_raster_cache"]["bytes"].is_number());
+        assert!(json["aggregate_resource_cache_bytes"].is_number());
+    }
+
+    #[test]
+    fn exact_contract_refuses_generic_bundled_font_substitution() {
+        let content = "BT /F1 18 Tf 10 50 Td (A) Tj ET\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /CorporateSans >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            pdf.extend_from_slice(obj);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+
+        let engine = ContentEngine::open_bytes(pdf).expect("open non-standard font fixture");
+        let (_buffer, compat_log) = engine
+            .render_page_with_font_substitution_report(1, 72, RenderMode::Compat)
+            .expect("compat mode reports generic font fallback");
+        assert!(compat_log
+            .events()
+            .iter()
+            .any(|event| event.resolution_source == "bundled_fallback"));
+
+        let contract = engine
+            .default_render_contract(1, 72, RenderMode::HighQuality)
+            .expect("default high-quality contract");
+        assert_eq!(
+            contract.exactness,
+            crate::render::ExactnessPolicy::HighQualityExact
+        );
+        let error = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect_err("exact contract must refuse generic font fallback");
+        assert!(
+            error.to_string().contains("no valid embedded")
+                && error
+                    .to_string()
+                    .contains("configured deterministic replacement"),
+            "unexpected exact font refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn exact_contract_refuses_unsupported_display_list_fallback() {
+        let content = "/MissingShade sh\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open missing-shading fixture");
+        let contract = engine
+            .default_render_contract(1, 72, RenderMode::HighQuality)
+            .expect("default high-quality contract");
+        assert_eq!(
+            contract.exactness,
+            crate::render::ExactnessPolicy::HighQualityExact
+        );
+
+        let error = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect_err("exact contract must refuse unsupported retained fallback");
+        let message = error.to_string();
+        assert_eq!(error.code(), "unsupported_feature");
+        assert!(message.contains("HighQualityExact"));
+        assert!(message.contains("unsupported retained display-list replay"));
+        assert!(message.contains("named shading resource /MissingShade is missing"));
+    }
+
+    #[test]
+    fn exactness_policy_is_honored_independent_of_compositing_mode() {
+        let content = "/MissingShade sh\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open exactness-policy fixture");
+
+        let mut compat_exact = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default compat contract");
+        assert_eq!(
+            compat_exact.exactness,
+            crate::render::ExactnessPolicy::Compatibility
+        );
+        compat_exact.exactness = crate::render::ExactnessPolicy::HighQualityExact;
+        let exact_error = engine
+            .render_page_with_contract(&compat_exact, &CancelToken::none())
+            .expect_err("exactness policy should refuse unsupported list even in compat mode");
+        assert!(exact_error
+            .to_string()
+            .contains("unsupported retained display-list replay"));
+
+        let mut high_quality_compat = engine
+            .default_render_contract(1, 72, RenderMode::HighQuality)
+            .expect("default high-quality contract");
+        assert_eq!(
+            high_quality_compat.exactness,
+            crate::render::ExactnessPolicy::HighQualityExact
+        );
+        high_quality_compat.exactness = crate::render::ExactnessPolicy::Compatibility;
+        let compat_error = engine
+            .render_page_with_contract(&high_quality_compat, &CancelToken::none())
+            .expect_err("compatibility exactness must still refuse unsupported retained replay");
+        let message = compat_error.to_string();
+        assert!(
+            message.contains("unsupported retained display-list replay"),
+            "unexpected compatibility retained replay refusal: {message}"
+        );
+        assert!(
+            !message.contains("HighQualityExact"),
+            "compatibility exactness should not report a HighQualityExact refusal: {message}"
+        );
+    }
+
+    #[test]
+    fn best_effort_determinism_policy_accepts_deterministic_cpu_output() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text("determinism-policy", 12.0, 780.0, &TextStyle::default())
+            .expect("write determinism fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open determinism fixture");
+        let default_contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let mut best_effort = default_contract.clone();
+        best_effort.determinism = crate::render::DeterminismPolicy::BestEffortResearch;
+
+        assert_ne!(
+            default_contract.cache_fingerprint(),
+            best_effort.cache_fingerprint()
+        );
+        let buffer = engine
+            .render_page_with_contract(&best_effort, &CancelToken::none())
+            .expect("best-effort determinism is satisfied by deterministic CPU output");
+        assert_eq!(buffer.width, best_effort.width);
+        assert_eq!(buffer.height, best_effort.height);
+    }
+
+    #[test]
+    fn rendering_intent_policy_is_accepted_by_contract_renderer() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "rendering-intent-policy",
+                12.0,
+                780.0,
+                &TextStyle::default(),
+            )
+            .expect("write rendering-intent fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open rendering-intent fixture");
+        let default_contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let mut perceptual = default_contract.clone();
+        perceptual.rendering_intent = crate::render::RenderingIntent::Perceptual;
+
+        assert_ne!(
+            default_contract.cache_fingerprint(),
+            perceptual.cache_fingerprint()
+        );
+        let buffer = engine
+            .render_page_with_contract(&perceptual, &CancelToken::none())
+            .expect("perceptual rendering intent is active contract policy");
+        assert_eq!(buffer.width, perceptual.width);
+        assert_eq!(buffer.height, perceptual.height);
+    }
+
+    #[test]
+    fn color_management_policy_is_accepted_by_contract_renderer() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "color-management-policy",
+                12.0,
+                780.0,
+                &TextStyle::default(),
+            )
+            .expect("write color-management-policy fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open color-management-policy fixture");
+        let default_contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let mut deterministic = default_contract.clone();
+        deterministic.color_management =
+            crate::render::ColorManagementPolicy::DeterministicFallback;
+
+        assert_ne!(
+            default_contract.cache_fingerprint(),
+            deterministic.cache_fingerprint()
+        );
+        let buffer = engine
+            .render_page_with_contract(&deterministic, &CancelToken::none())
+            .expect("deterministic color management is active contract policy");
+        assert_eq!(buffer.width, deterministic.width);
+        assert_eq!(buffer.height, deterministic.height);
+    }
+
+    #[test]
+    fn overprint_preview_policy_is_accepted_by_contract_renderer() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "overprint-preview-policy",
+                12.0,
+                780.0,
+                &TextStyle::default(),
+            )
+            .expect("write overprint-policy fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open overprint-policy fixture");
+        let default_contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let mut preview = default_contract.clone();
+        preview.overprint = OverprintPolicy::Preview;
+
+        assert_ne!(
+            default_contract.cache_fingerprint(),
+            preview.cache_fingerprint()
+        );
+        let buffer = engine
+            .render_page_with_contract(&preview, &CancelToken::none())
+            .expect("overprint preview is active contract policy");
+        assert_eq!(buffer.width, preview.width);
+        assert_eq!(buffer.height, preview.height);
+
+        let mut preserve = default_contract;
+        preserve.overprint = OverprintPolicy::PreserveSeparations;
+        preserve.color_management = crate::render::ColorManagementPolicy::NativeLittleCms;
+        let preserve_result = engine.render_page_with_contract(&preserve, &CancelToken::none());
+        assert!(
+            preserve_result.is_err(),
+            "PreserveSeparations remains unsupported by the active CPU renderer"
+        );
+    }
+
+    #[test]
+    fn proof_output_intent_profile_scan_skips_unprofiled_entries() {
+        let profile_bytes = b"fake-output-profile";
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R /OutputIntents [3 0 R 4 0 R] >>".to_vec(),
+            b"<< /Type /Pages /Kids [6 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /OutputIntent /S /GTS_PDFX /OutputConditionIdentifier (unprofiled) >>"
+                .to_vec(),
+            b"<< /Type /OutputIntent /S /GTS_PDFX /OutputConditionIdentifier (profiled) /DestOutputProfile 5 0 R >>".to_vec(),
+            [
+                format!("<< /N 3 /Length {} >>\nstream\n", profile_bytes.len()).into_bytes(),
+                profile_bytes.to_vec(),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Resources << >> /Contents 7 0 R >>".to_vec(),
+            b"<< /Length 0 >>\nstream\n\nendstream".to_vec(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open OutputIntent scan fixture");
+        let contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+
+        let decoded = engine
+            .first_output_intent_profile_bytes(&contract)
+            .expect("decode OutputIntent profile")
+            .expect("later OutputIntent profile");
+
+        assert_eq!(decoded, profile_bytes);
+    }
+
+    #[test]
+    fn exact_contract_refuses_visible_image_requiring_unavailable_region_decode() {
+        let content = "q 200 0 0 200 0 0 cm /Im1 Do Q\n";
+        let raw_image = RawImage {
+            width: 2,
+            height: 2,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![255u8, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
+        };
+        let image_bytes =
+            ImageEncoder::encode_jpeg(&raw_image, 90).expect("encode DCT exactness fixture");
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+            [
+                format!(
+                    "<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+                    image_bytes.len()
+                )
+                .into_bytes(),
+                image_bytes,
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            pdf.extend_from_slice(obj);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+
+        let engine = ContentEngine::open_bytes(pdf).expect("open image exactness fixture");
+        let contract = engine
+            .default_render_contract(1, 72, RenderMode::HighQuality)
+            .expect("default high-quality contract");
+        assert_eq!(
+            contract.exactness,
+            crate::render::ExactnessPolicy::HighQualityExact
+        );
+        let error = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect_err("exact contract must refuse unavailable region decode");
+        let message = error.to_string();
+        assert_eq!(error.code(), "unsupported_feature");
+        assert!(message.contains("HighQualityExact"));
+        assert!(message.contains("source-region"));
+        assert!(message.contains("full-decode-only"));
+    }
+
+    #[test]
+    fn image_decode_capability_report_lists_images_without_decoding() {
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+            b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /DCTDecode /Length 4 >>\nstream\nxxxx\nendstream".to_vec(),
+            b"<< /Length 19 >>\nstream\nq 1 0 0 1 0 0 cm /Im1 Do Q\nendstream".to_vec(),
+        ];
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            pdf.extend_from_slice(obj);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+
+        let engine = ContentEngine::open_bytes(pdf.clone()).expect("open image-capability PDF");
+        let report = engine
+            .image_decode_capability_report()
+            .expect("image capability report");
+        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.image_count, 1);
+        assert_eq!(report.full_decode_only_count, 1);
+        assert_eq!(report.native_metadata_inspection_count, 1);
+        assert_eq!(report.native_region_decode_count, 0);
+        assert_eq!(report.native_reduction_decode_count, 0);
+        assert_eq!(report.native_progressive_decode_count, 0);
+        assert_eq!(report.native_tile_decode_count, 0);
+        assert_eq!(report.native_component_decode_count, 0);
+        assert_eq!(report.native_cancellation_decode_count, 0);
+        assert_eq!(report.renderer_boundary_cancellation_count, 1);
+        assert_eq!(report.renderer_boundary_memory_budget_count, 1);
+        let image = &report.images[0];
+        assert_eq!(image.page, 1);
+        assert_eq!(image.name, "Im1");
+        assert_eq!(
+            image.capability.codec,
+            crate::render::ImageDecodeCodec::Jpeg
+        );
+        assert_eq!(
+            image.capability.metadata_inspection,
+            crate::render::ImageDecodeCapabilityStatus::Native
+        );
+        assert!(image.requires_full_decode);
+        assert!(matches!(
+            image.capability.region_decode,
+            crate::render::ImageDecodeCapabilityStatus::Unavailable(
+                crate::render::ImageDecodeUnavailableReason::DecoderApiUnavailable
+            )
+        ));
+        assert!(matches!(
+            image.capability.component_decode,
+            crate::render::ImageDecodeCapabilityStatus::Unavailable(
+                crate::render::ImageDecodeUnavailableReason::ComponentSelectionUnavailable
+            )
+        ));
+        assert!(matches!(
+            image.capability.tile_decode,
+            crate::render::ImageDecodeCapabilityStatus::Unavailable(
+                crate::render::ImageDecodeUnavailableReason::CodestreamTileDecodeUnavailable
+            )
+        ));
+        assert_eq!(
+            image.capability.cancellation,
+            crate::render::ImageDecodeExecutionControlStatus::RendererBoundary
+        );
+        assert_eq!(
+            image.capability.memory_budget,
+            crate::render::ImageDecodeExecutionControlStatus::RendererBoundary
+        );
+
+        let json = crate::sdk::image_decode_capability_report_json(&pdf, None)
+            .expect("sdk image capability JSON");
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("parse image capability JSON");
+        assert_eq!(value["kind"], "image_decode_capability_report");
+        assert_eq!(value["report"]["image_count"], 1);
+        assert_eq!(value["report"]["native_metadata_inspection_count"], 1);
+        assert_eq!(value["report"]["native_tile_decode_count"], 0);
+        assert_eq!(value["report"]["native_component_decode_count"], 0);
+        assert_eq!(value["report"]["native_cancellation_decode_count"], 0);
+        assert_eq!(value["report"]["renderer_boundary_cancellation_count"], 1);
+        assert_eq!(value["report"]["renderer_boundary_memory_budget_count"], 1);
+        assert_eq!(value["report"]["images"][0]["capability"]["codec"], "Jpeg");
+        assert_eq!(
+            value["report"]["images"][0]["capability"]["metadata_inspection"],
+            "Native"
+        );
+        assert_eq!(
+            value["report"]["images"][0]["capability"]["tile_decode"]["Unavailable"],
+            "CodestreamTileDecodeUnavailable"
+        );
+        assert_eq!(
+            value["report"]["images"][0]["capability"]["component_decode"]["Unavailable"],
+            "ComponentSelectionUnavailable"
+        );
+        assert_eq!(
+            value["report"]["images"][0]["capability"]["cancellation"],
+            "renderer_boundary"
+        );
+        assert_eq!(
+            value["report"]["images"][0]["capability"]["memory_budget"],
+            "renderer_boundary"
+        );
+    }
+
+    #[test]
+    fn image_decode_capability_report_marks_raw_component_decode_native() {
+        let pixels = [0u8, 128, 255];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+            format!(
+                "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Length {} >>\nstream\n",
+                pixels.len()
+            )
+            .into_bytes(),
+            b"<< /Length 19 >>\nstream\nq 1 0 0 1 0 0 cm /Im1 Do Q\nendstream".to_vec(),
+        ];
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            pdf.extend_from_slice(obj);
+            if idx == 3 {
+                pdf.extend_from_slice(&pixels);
+                pdf.extend_from_slice(b"\nendstream");
+            }
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+
+        let engine = ContentEngine::open_bytes(pdf.clone()).expect("open raw image PDF");
+        let report = engine
+            .image_decode_capability_report()
+            .expect("raw image capability report");
+
+        assert_eq!(report.image_count, 1);
+        assert_eq!(report.full_decode_only_count, 0);
+        assert_eq!(report.native_region_decode_count, 1);
+        assert_eq!(report.native_component_decode_count, 1);
+        assert_eq!(
+            report.images[0].capability.codec,
+            crate::render::ImageDecodeCodec::Raw
+        );
+        assert_eq!(
+            report.images[0].capability.region_decode,
+            crate::render::ImageDecodeCapabilityStatus::Native
+        );
+        assert_eq!(
+            report.images[0].capability.component_decode,
+            crate::render::ImageDecodeCapabilityStatus::Native
+        );
+
+        let json = crate::sdk::image_decode_capability_report_json(&pdf, None)
+            .expect("sdk raw image capability JSON");
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("parse raw capability JSON");
+        assert_eq!(value["report"]["full_decode_only_count"], 0);
+        assert_eq!(value["report"]["native_region_decode_count"], 1);
+        assert_eq!(value["report"]["native_component_decode_count"], 1);
+        assert_eq!(
+            value["report"]["images"][0]["capability"]["region_decode"],
+            "Native"
+        );
+        assert_eq!(
+            value["report"]["images"][0]["capability"]["component_decode"],
+            "Native"
+        );
     }
 
     #[test]
@@ -2802,19 +5532,323 @@ mod tests {
         let source = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
 
         let mut rgba = [0u8; 8];
-        encode_contract_row(&source, &mut rgba, PixelFormat::Rgba8, false, true);
+        encode_contract_row(
+            &source,
+            &mut rgba,
+            PixelFormat::Rgba8,
+            AlphaMode::Straight,
+            false,
+            true,
+        );
         assert_eq!(rgba, [0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55]);
 
         let mut bgra = [0u8; 8];
-        encode_contract_row(&source, &mut bgra, PixelFormat::Bgra8, false, true);
+        encode_contract_row(
+            &source,
+            &mut bgra,
+            PixelFormat::Bgra8,
+            AlphaMode::Straight,
+            false,
+            true,
+        );
         assert_eq!(bgra, [0x44, 0x11, 0x22, 0x33, 0x88, 0x55, 0x66, 0x77]);
 
         let mut rgb = [0u8; 6];
-        encode_contract_row(&source, &mut rgb, PixelFormat::Rgb8, false, true);
+        encode_contract_row(
+            &source,
+            &mut rgb,
+            PixelFormat::Rgb8,
+            AlphaMode::Straight,
+            false,
+            true,
+        );
         assert_eq!(rgb, [0x33, 0x22, 0x11, 0x77, 0x66, 0x55]);
 
+        let mut gray_rgb = [0u8; 6];
+        encode_contract_row(
+            &source,
+            &mut gray_rgb,
+            PixelFormat::Rgb8,
+            AlphaMode::Straight,
+            true,
+            true,
+        );
+        assert_eq!(gray_rgb, [0x1f, 0x1f, 0x1f, 0x63, 0x63, 0x63]);
+
+        let mut premultiplied_rgba = [0u8; 8];
+        encode_contract_row(
+            &source,
+            &mut premultiplied_rgba,
+            PixelFormat::Rgba8,
+            AlphaMode::Premultiplied,
+            false,
+            true,
+        );
+        assert_eq!(
+            premultiplied_rgba,
+            [0x44, 0x0e, 0x09, 0x05, 0x88, 0x3f, 0x36, 0x2d]
+        );
+
+        let mut opaque_bgra = [0u8; 8];
+        encode_contract_row(
+            &source,
+            &mut opaque_bgra,
+            PixelFormat::Bgra8,
+            AlphaMode::Opaque,
+            false,
+            true,
+        );
+        assert_eq!(
+            opaque_bgra,
+            [0xff, 0x11, 0x22, 0x33, 0xff, 0x55, 0x66, 0x77]
+        );
+
         let mut gray = [0u8; 2];
-        encode_contract_row(&source, &mut gray, PixelFormat::Gray8, false, true);
+        encode_contract_row(
+            &source,
+            &mut gray,
+            PixelFormat::Gray8,
+            AlphaMode::Straight,
+            false,
+            true,
+        );
         assert_eq!(gray, [0x1f, 0x63]);
+    }
+
+    #[test]
+    fn contract_row_encoder_gray8_zero_fills_stride_padding() {
+        let source = [255, 0, 0, 255, 0, 255, 0, 255];
+        let mut gray = [0xffu8; 5];
+
+        encode_contract_row(
+            &source,
+            &mut gray,
+            PixelFormat::Gray8,
+            AlphaMode::Premultiplied,
+            false,
+            false,
+        );
+
+        assert_eq!(gray, [77, 149, 0, 0, 0]);
+    }
+
+    #[test]
+    fn scalar_reference_contract_row_encoder_uses_scalar_loop() {
+        let source = [
+            200, 100, 50, 128, 9, 19, 29, 0, 90, 80, 70, 255, 1, 254, 127, 64,
+        ];
+        let mut expected = [0xadu8; 20];
+        expected.fill(0);
+        encode_contract_row_scalar_loop(
+            &source,
+            &mut expected,
+            PixelFormat::Bgra8,
+            AlphaMode::Premultiplied,
+            false,
+            false,
+        );
+
+        let mut actual = [0xadu8; 20];
+        encode_contract_row_for_backend(
+            &source,
+            &mut actual,
+            PixelFormat::Bgra8,
+            AlphaMode::Premultiplied,
+            false,
+            false,
+            crate::render::BackendSelection::ScalarReference,
+        );
+
+        assert_eq!(actual, expected);
+        assert_eq!(&actual[16..], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn contract_row_encoder_expands_grayscale_for_color_surfaces() {
+        let source = [255, 0, 0, 7, 0, 255, 0, 9, 0, 0, 255, 11, 255, 255, 255, 13];
+
+        let mut rgb = [0u8; 12];
+        encode_contract_row(
+            &source,
+            &mut rgb,
+            PixelFormat::Rgb8,
+            AlphaMode::Straight,
+            true,
+            false,
+        );
+        assert_eq!(rgb, [77, 77, 77, 149, 149, 149, 29, 29, 29, 255, 255, 255]);
+
+        let mut rgba = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut rgba,
+            PixelFormat::Rgba8,
+            AlphaMode::Straight,
+            true,
+            false,
+        );
+        assert_eq!(
+            rgba,
+            [77, 77, 77, 7, 149, 149, 149, 9, 29, 29, 29, 11, 255, 255, 255, 13]
+        );
+
+        let mut opaque_bgra = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut opaque_bgra,
+            PixelFormat::Bgra8,
+            AlphaMode::Opaque,
+            true,
+            false,
+        );
+        assert_eq!(
+            opaque_bgra,
+            [77, 77, 77, 255, 149, 149, 149, 255, 29, 29, 29, 255, 255, 255, 255, 255]
+        );
+
+        let mut premultiplied_rgba = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut premultiplied_rgba,
+            PixelFormat::Rgba8,
+            AlphaMode::Premultiplied,
+            true,
+            false,
+        );
+        assert_eq!(
+            premultiplied_rgba,
+            [2, 2, 2, 7, 5, 5, 5, 9, 1, 1, 1, 11, 13, 13, 13, 13]
+        );
+
+        let mut premultiplied_bgra = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut premultiplied_bgra,
+            PixelFormat::Bgra8,
+            AlphaMode::Premultiplied,
+            true,
+            false,
+        );
+        assert_eq!(
+            premultiplied_bgra,
+            [2, 2, 2, 7, 5, 5, 5, 9, 1, 1, 1, 11, 13, 13, 13, 13]
+        );
+    }
+
+    #[test]
+    fn contract_row_encoder_honors_alpha_modes_for_rgba_bgra() {
+        let source = [
+            200, 100, 50, 128, 9, 19, 29, 0, 90, 80, 70, 255, 1, 254, 127, 64,
+        ];
+
+        let mut premultiplied_rgba = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut premultiplied_rgba,
+            PixelFormat::Rgba8,
+            AlphaMode::Premultiplied,
+            false,
+            false,
+        );
+        assert_eq!(
+            premultiplied_rgba,
+            [100, 50, 25, 128, 0, 0, 0, 0, 90, 80, 70, 255, 0, 64, 32, 64]
+        );
+
+        let mut straight_rgba = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut straight_rgba,
+            PixelFormat::Rgba8,
+            AlphaMode::Straight,
+            false,
+            false,
+        );
+        assert_eq!(straight_rgba, source);
+
+        let mut opaque_rgba = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut opaque_rgba,
+            PixelFormat::Rgba8,
+            AlphaMode::Opaque,
+            false,
+            false,
+        );
+        assert_eq!(
+            opaque_rgba,
+            [200, 100, 50, 255, 9, 19, 29, 255, 90, 80, 70, 255, 1, 254, 127, 255]
+        );
+
+        let mut premultiplied_bgra = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut premultiplied_bgra,
+            PixelFormat::Bgra8,
+            AlphaMode::Premultiplied,
+            false,
+            false,
+        );
+        assert_eq!(
+            premultiplied_bgra,
+            [25, 50, 100, 128, 0, 0, 0, 0, 70, 80, 90, 255, 32, 64, 0, 64]
+        );
+    }
+
+    #[test]
+    fn contract_row_encoder_uses_exact_simple_channel_orders() {
+        let source = [
+            1, 2, 3, 4, 10, 20, 30, 40, 100, 110, 120, 130, 200, 210, 220, 230,
+        ];
+
+        let mut rgb = [0u8; 12];
+        encode_contract_row(
+            &source,
+            &mut rgb,
+            PixelFormat::Rgb8,
+            AlphaMode::Straight,
+            false,
+            false,
+        );
+        assert_eq!(rgb, [1, 2, 3, 10, 20, 30, 100, 110, 120, 200, 210, 220]);
+
+        let mut bgr = [0u8; 12];
+        encode_contract_row(
+            &source,
+            &mut bgr,
+            PixelFormat::Bgr8,
+            AlphaMode::Opaque,
+            false,
+            false,
+        );
+        assert_eq!(bgr, [3, 2, 1, 30, 20, 10, 120, 110, 100, 220, 210, 200]);
+
+        let mut straight_bgra = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut straight_bgra,
+            PixelFormat::Bgra8,
+            AlphaMode::Straight,
+            false,
+            false,
+        );
+        assert_eq!(
+            straight_bgra,
+            [3, 2, 1, 4, 30, 20, 10, 40, 120, 110, 100, 130, 220, 210, 200, 230]
+        );
+
+        let mut opaque_bgra = [0u8; 16];
+        encode_contract_row(
+            &source,
+            &mut opaque_bgra,
+            PixelFormat::Bgra8,
+            AlphaMode::Opaque,
+            false,
+            false,
+        );
+        assert_eq!(
+            opaque_bgra,
+            [3, 2, 1, 255, 30, 20, 10, 255, 120, 110, 100, 255, 220, 210, 200, 255]
+        );
     }
 }

@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef _WIN32
 #  ifdef WELLFRIENDPDF_BUILDING_DLL
@@ -27,6 +28,9 @@ enum {
 
 typedef struct WellfriendDocument WellfriendDocument;
 typedef struct WellfriendProgressiveRenderJob WellfriendProgressiveRenderJob;
+typedef struct WellfriendRenderContract WellfriendRenderContract;
+typedef struct WellfriendRenderCancellation WellfriendRenderCancellation;
+typedef struct WellfriendRenderCache WellfriendRenderCache;
 typedef struct WellfriendSignatureValidationOptions WellfriendSignatureValidationOptions;
 typedef struct WellfriendSignatureTrustStore WellfriendSignatureTrustStore;
 typedef struct WellfriendSignatureIntermediateStore WellfriendSignatureIntermediateStore;
@@ -38,6 +42,10 @@ typedef struct WellfriendBuffer {
   uint8_t *data;
   size_t len;
 } WellfriendBuffer;
+
+typedef int (*WellfriendProgressiveViewerCallback)(
+    const char *event_json,
+    void *user_data);
 
 /* --- OCR backend (pluggable seam) ---------------------------------------- */
 
@@ -121,11 +129,150 @@ WELLFRIENDPDF_API WellfriendDocument *wellfriendpdf_document_open_pubsec_pfx_fro
 
 WELLFRIENDPDF_API void wellfriendpdf_document_free(WellfriendDocument *document);
 
+WELLFRIENDPDF_API int wellfriendpdf_document_register_font_bytes(
+    WellfriendDocument *document,
+    const char *name,
+    const uint8_t *font_data,
+    size_t font_len,
+    char **error_out);
+
 WELLFRIENDPDF_API void wellfriendpdf_string_free(char *value);
 
 WELLFRIENDPDF_API void wellfriendpdf_error_free(char *value);
 
 WELLFRIENDPDF_API void wellfriendpdf_buffer_free(WellfriendBuffer buffer);
+
+WELLFRIENDPDF_API WellfriendRenderContract *wellfriendpdf_render_contract_from_json(
+    const char *contract_json,
+    char **error_out);
+
+WELLFRIENDPDF_API void wellfriendpdf_render_contract_free(
+    WellfriendRenderContract *contract);
+
+WELLFRIENDPDF_API WellfriendRenderCancellation *wellfriendpdf_render_cancellation_new(
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_cancellation_cancel(
+    const WellfriendRenderCancellation *cancellation,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_cancellation_is_cancelled(
+    const WellfriendRenderCancellation *cancellation,
+    int *out_cancelled,
+    char **error_out);
+
+WELLFRIENDPDF_API void wellfriendpdf_render_cancellation_free(
+    WellfriendRenderCancellation *cancellation);
+
+WELLFRIENDPDF_API WellfriendRenderCache *wellfriendpdf_render_cache_new(
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_cache_clear(
+    WellfriendRenderCache *cache,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_cache_apply_render_invalidation_plan_json(
+    WellfriendRenderCache *cache,
+    const char *plan_json,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API void wellfriendpdf_render_cache_free(
+    WellfriendRenderCache *cache);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_to_json(
+    const WellfriendRenderContract *contract,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_surface_byte_length(
+    const WellfriendRenderContract *contract,
+    size_t *out_len,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_surface(
+    const WellfriendRenderContract *contract,
+    uint32_t width,
+    uint32_t height,
+    const char *pixel_format,
+    const char *alpha_mode,
+    size_t stride,
+    int use_custom_stride,
+    int grayscale,
+    int reverse_byte_order,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_clip(
+    const WellfriendRenderContract *contract,
+    int32_t x,
+    int32_t y,
+    uint32_t width,
+    uint32_t height,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_without_clip(
+    const WellfriendRenderContract *contract,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_device_transform(
+    const WellfriendRenderContract *contract,
+    double a,
+    double b,
+    double c,
+    double d,
+    double e,
+    double f,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_background(
+    const WellfriendRenderContract *contract,
+    uint8_t r,
+    uint8_t g,
+    uint8_t b,
+    uint8_t a,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_resource_budget(
+    const WellfriendRenderContract *contract,
+    uint64_t max_pixels,
+    int use_max_pixels,
+    uint64_t max_decoded_bytes,
+    int use_max_decoded_bytes,
+    uint64_t max_temporary_bytes,
+    int use_max_temporary_bytes,
+    uint64_t max_cache_bytes,
+    int use_max_cache_bytes,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_schema_policies(
+    const WellfriendRenderContract *contract,
+    const char *page_box,
+    const char *execution_mode,
+    const char *backend,
+    const char *compositing,
+    const char *annotations,
+    const char *forms,
+    const char *optional_content,
+    const char *text_smoothing,
+    const char *image_smoothing,
+    const char *path_smoothing,
+    const char *subpixel_text,
+    const char *color_scheme,
+    const char *print_profile,
+    const char *halftone,
+    const char *overprint,
+    const char *rendering_intent,
+    const char *color_management,
+    const char *exactness,
+    const char *determinism,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
 
 WELLFRIENDPDF_API int wellfriendpdf_document_page_count(
     const WellfriendDocument *document,
@@ -195,11 +342,41 @@ WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png(
     WellfriendBuffer *out_buffer,
     char **error_out);
 
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_font_substitution_report_json(
+    const WellfriendDocument *document,
+    size_t page,
+    uint32_t dpi,
+    const char *render_mode,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
 WELLFRIENDPDF_API int wellfriendpdf_document_default_render_contract_json(
     const WellfriendDocument *document,
     size_t page,
     uint32_t dpi,
     const char *render_mode,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_backend_plan_arena_report_json(
+    const WellfriendDocument *document,
+    size_t page,
+    uint32_t dpi,
+    const char *render_mode,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_backend_plan_arena_report_for_contract_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_prepress_plate_report_json(
+    const WellfriendDocument *document,
+    size_t page,
+    uint32_t dpi,
     char **out_json,
     char **error_out);
 
@@ -209,11 +386,225 @@ WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_json(
     WellfriendBuffer *out_buffer,
     char **error_out);
 
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_handle(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_and_render_cache_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    WellfriendRenderCache *cache,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_handle_and_render_cache(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    WellfriendRenderCache *cache,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_json_and_cancellation(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    const WellfriendRenderCancellation *cancellation,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_handle_and_cancellation(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    const WellfriendRenderCancellation *cancellation,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_handle_and_font_substitution_report_json(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_and_render_report_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_handle_and_render_report_json(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_and_render_cache_report_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    WellfriendRenderCache *cache,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_handle_and_render_cache_report_json(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    WellfriendRenderCache *cache,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_and_font_substitution_report_json_and_cancellation(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    const WellfriendRenderCancellation *cancellation,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_handle_and_font_substitution_report_json_and_cancellation(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    const WellfriendRenderCancellation *cancellation,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_and_render_report_json_and_cancellation(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    const WellfriendRenderCancellation *cancellation,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_handle_and_render_report_json_and_cancellation(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    const WellfriendRenderCancellation *cancellation,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
 WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_json(
     const WellfriendDocument *document,
     const char *contract_json,
     uint8_t *output,
     size_t output_len,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_handle(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    uint8_t *output,
+    size_t output_len,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_json_and_cancellation(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    const WellfriendRenderCancellation *cancellation,
+    uint8_t *output,
+    size_t output_len,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_handle_and_cancellation(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    const WellfriendRenderCancellation *cancellation,
+    uint8_t *output,
+    size_t output_len,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    uint8_t *output,
+    size_t output_len,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_handle_and_font_substitution_report_json(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    uint8_t *output,
+    size_t output_len,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    uint8_t *output,
+    size_t output_len,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_handle_and_render_report_json(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    uint8_t *output,
+    size_t output_len,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_and_font_substitution_report_json_and_cancellation(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    const WellfriendRenderCancellation *cancellation,
+    uint8_t *output,
+    size_t output_len,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_handle_and_font_substitution_report_json_and_cancellation(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    const WellfriendRenderCancellation *cancellation,
+    uint8_t *output,
+    size_t output_len,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_and_render_report_json_and_cancellation(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    const WellfriendRenderCancellation *cancellation,
+    uint8_t *output,
+    size_t output_len,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_handle_and_render_report_json_and_cancellation(
+    const WellfriendDocument *document,
+    const WellfriendRenderContract *contract,
+    const WellfriendRenderCancellation *cancellation,
+    uint8_t *output,
+    size_t output_len,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_image_decode_capability_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* request_json actions include start, continue, pause, resume, cancel, fail,
+ * close, and document_close. */
+WELLFRIENDPDF_API int wellfriendpdf_document_progressive_image_decode_lifecycle_report_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
     char **error_out);
 
 WELLFRIENDPDF_API WellfriendProgressiveRenderJob *wellfriendpdf_document_progressive_render_new(
@@ -225,9 +616,112 @@ WELLFRIENDPDF_API WellfriendProgressiveRenderJob *wellfriendpdf_document_progres
     const char *render_mode,
     char **error_out);
 
+WELLFRIENDPDF_API WellfriendProgressiveRenderJob *wellfriendpdf_document_progressive_render_new_with_contract_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    uint32_t tile_width,
+    uint32_t tile_height,
+    char **error_out);
+
 WELLFRIENDPDF_API int wellfriendpdf_progressive_render_step_json(
     WellfriendProgressiveRenderJob *job,
     size_t max_tiles,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_request_cancel(
+    const WellfriendProgressiveRenderJob *job,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_revise_viewport_hint_json(
+    WellfriendProgressiveRenderJob *job,
+    int viewport_hint_present,
+    uint32_t x,
+    uint32_t y,
+    uint32_t width,
+    uint32_t height,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_revise_dirty_region_json(
+    WellfriendProgressiveRenderJob *job,
+    int dirty_region_present,
+    uint32_t x,
+    uint32_t y,
+    uint32_t width,
+    uint32_t height,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_revise_render_context_json(
+    WellfriendProgressiveRenderJob *job,
+    const char *render_contract_fingerprint,
+    const char *visibility_fingerprint,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_revise_render_contract_json(
+    WellfriendProgressiveRenderJob *job,
+    const char *contract_json,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_apply_render_invalidation_plan_json(
+    WellfriendProgressiveRenderJob *job,
+    const char *plan_json,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_evaluate_tile_publication_json(
+    const WellfriendProgressiveRenderJob *job,
+    const char *publication_json,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_viewer_queue_json(
+    const WellfriendProgressiveRenderJob *job,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_execute_viewer_queue_json(
+    WellfriendProgressiveRenderJob *job,
+    size_t max_items,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_execute_viewer_queue_json_and_cancellation(
+    WellfriendProgressiveRenderJob *job,
+    size_t max_items,
+    const WellfriendRenderCancellation *cancellation,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json(
+    const WellfriendProgressiveRenderJob *job,
+    const char *prefetch_identity,
+    size_t max_tiles,
+    WellfriendProgressiveRenderJob **out_job,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_execute_adjacent_page_prefetch_json_and_cancellation(
+    const WellfriendProgressiveRenderJob *job,
+    const char *prefetch_identity,
+    size_t max_tiles,
+    const WellfriendRenderCancellation *cancellation,
+    WellfriendProgressiveRenderJob **out_job,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_viewer_callback_dispatch_json(
+    const WellfriendProgressiveRenderJob *job,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_dispatch_viewer_callbacks(
+    const WellfriendProgressiveRenderJob *job,
+    WellfriendProgressiveViewerCallback callback,
+    void *user_data,
     char **out_json,
     char **error_out);
 
@@ -605,6 +1099,12 @@ WELLFRIENDPDF_API int wellfriendpdf_document_security_report_json(
     char **out_json,
     char **error_out);
 
+/* Canonical source identity plus lazy render/edit/semantic/validation views. */
+WELLFRIENDPDF_API int wellfriendpdf_document_views_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+
 /* Parser diagnostics. `mode` is "strict"|"repair"|"audit" (NULL => "repair"). */
 WELLFRIENDPDF_API int wellfriendpdf_document_parser_report_json(
     const WellfriendDocument *document,
@@ -952,6 +1452,13 @@ WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_transaction_pl
 WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_transaction_apply_json(
     const WellfriendDocument *document,
     const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_transaction_apply_with_render_invalidation_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    const char *render_invalidation_options_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);

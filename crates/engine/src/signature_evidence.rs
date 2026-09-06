@@ -728,7 +728,7 @@ impl RetrievalSession {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            return self.fail(cache_trace, EvidenceError::UnsupportedOnWasm);
+            self.fail(cache_trace, EvidenceError::UnsupportedOnWasm)
         }
         #[cfg(not(target_arch = "wasm32"))]
         {

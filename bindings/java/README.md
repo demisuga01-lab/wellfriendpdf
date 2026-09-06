@@ -23,6 +23,18 @@ try (var doc = WellfriendPdf.Document.open(Path.of("report.pdf"), null)) {
 
     Files.write(Path.of("report.docx"), doc.toDocx(true));
     Files.write(Path.of("from-word.pdf"), WellfriendPdf.Office.docxToPdf(doc.toDocx(true)));
+
+    WellfriendPdf.RenderContract contract = doc.defaultRenderContract(1, 72)
+        .withBackground(248, 250, 252)
+        .withResourceBudget(20_000_000L, null, null, null);
+    Files.write(Path.of("page.png"), doc.renderPagePng(contract));
+    ByteBuffer surface = ByteBuffer.allocateDirect(Math.toIntExact(contract.surfaceByteLength()));
+    doc.renderPageIntoBuffer(contract, surface);
+
+    try (var renderCancellation = new WellfriendPdf.RenderCancellation()) {
+        Files.write(Path.of("page-cancellable.png"), doc.renderPagePng(contract, renderCancellation));
+        System.out.println(renderCancellation.isCancelled());
+    }
 }
 ```
 
@@ -43,6 +55,9 @@ java --enable-preview --enable-native-access=ALL-UNNAMED `
   -cp bindings/java/target/classes io.wellfriendpdf.WellfriendPdfSmokeTest
 ```
 
+For a source-only render-contract builder check that does not load the native
+library, run the smoke main with `--contract-builder-only`.
+
 ## Binding Parity Surface
 
 Reports: feature, engine/ABI version, security, parser, color, validation,
@@ -51,6 +66,46 @@ Semantic Closeout semantic bundles, advanced chunks, and provenance-aware search
 
 Outputs: sanitize, canonicalize, redact terms, DOCX, XLSX, PPTX, and Office to
 PDF conversion helpers.
+
+Renderer contract APIs expose the schema-v1 native contract as a typed
+`WellfriendPdf.RenderContract` object. Callers can round-trip default contract
+JSON, set surface layout, background, clip, transform, page box,
+optional-content identity, annotation/form policy, execution/backend/compositing
+policy, smoothing, prepress/color policy, exactness, determinism, and resource
+budgets, and then pass the typed contract to PNG or caller-owned buffer render
+methods.
+
+Contract rendering exposes cooperative cancellation through
+`WellfriendPdf.RenderCancellation`, including `isCancelled()`, for PNG,
+caller-owned direct-buffer, font-substitution report, and render-telemetry
+report methods. Existing compatibility overloads remain non-cancellable.
+
+Editing transaction APIs include
+`editing_transactionsTransactionApplyWithRenderInvalidation(requestJson,
+renderInvalidationOptionsJson)`, which returns edited PDF bytes plus the shared
+SDK JSON report containing mapped render source IDs and optional dirty render
+tiles for caller cache invalidation.
+
+Caller-owned render caches are exposed through `WellfriendPdf.RenderCache`.
+Documents can render contract PNGs through the cache, request cache telemetry
+with `renderPagePngWithRenderCacheReport`, and apply the SDK/server
+`report.render_invalidation` JSON through
+`RenderCache.applyRenderInvalidationPlanJson`.
+
+Image decode APIs include `imageDecodeCapabilityReportJson()` and
+`progressiveImageDecodeLifecycleReportJson(requestJson)`, exposing per-image
+region/reduction/progressive capability status and bounded start/continue/pause/
+resume/cancel/fail/close/document_close lifecycle reports without decoding
+pixels.
+
+Progressive sessions expose `reviseRenderContract` and
+`reviseRenderContractJson` for full live schema-v1 contract revision, explicit
+request-cancel, viewport and dirty-region revision JSON, tile-publication
+evaluation JSON, viewer queue preview JSON,
+`executeViewerQueueJson`, `executeAdjacentPagePrefetch`, viewer callback
+dispatch JSON, `dispatchViewerCallbacks`, `BooleanSupplier` cancellation
+overloads for step/finish calls, and `RenderCancellation` overloads for
+viewer-queue execution and adjacent-page prefetch execution.
 
 Password open is available through `WellfriendPdf.Document.open(path, password)` and
 `WellfriendPdf.Document.open(bytes, password)`. Passwords are UTF-8 operation-scoped
@@ -69,7 +124,8 @@ powershell -ExecutionPolicy Bypass -File scripts/java_packaging_java_package_smo
 powershell -ExecutionPolicy Bypass -File scripts/gradle_packaging_gradle_package_smoke.ps1
 ```
 
-Known limits: progress and cancellation are reported through
-`WellfriendPdf.featureReportJson()` as unsupported for the Binding Parity binding surface; no
-no-op callbacks or ignored interruption APIs are exposed. Mobile packaging is
-out of scope for this binding.
+Known limits: external native binding runtime matrices, viewer runtime matrices,
+cross-language queue policy validation, and Java interruption/future adapters
+are deferred verification or optional host-adapter work. Contract render
+cancellation and the complete progressive state machine are source-visible.
+Mobile packaging is out of scope for this binding.

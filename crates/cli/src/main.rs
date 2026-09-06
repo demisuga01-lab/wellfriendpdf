@@ -220,6 +220,7 @@ fn classify_error(err: &(dyn Error + 'static)) -> CliExitCode {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     /// Report runtime capabilities for Standard and Research modes
@@ -580,6 +581,16 @@ enum Commands {
     Info(InfoArgs),
     /// Emit shared SDK feature, codec, scheduler, corpus, and fuzz capability report
     FeatureReport(FeatureReportArgs),
+    /// Emit canonical lazy document-view boundary JSON
+    DocumentViewsReport(DocumentViewsReportArgs),
+    /// Emit the retained backend-plan arena report for one PDF page
+    BackendPlanArenaReport(BackendPlanArenaReportArgs),
+    /// Emit the sparse Prepress CMM Separation/DeviceN plate framebuffer report
+    PrepressPlateReport(PrepressPlateReportArgs),
+    /// Emit image decoder metadata/region/reduction/progressive capability JSON
+    ImageDecodeCapabilityReport(ImageDecodeCapabilityReportArgs),
+    /// Emit progressive image-decode lifecycle JSON for one discovered image
+    ProgressiveImageDecodeLifecycleReport(ProgressiveImageDecodeLifecycleReportArgs),
     /// Emit structured parser diagnostics, repair/audit status, and source metrics
     ParserReport(ParserReportArgs),
     /// Exercise codec subprocess isolation policy and emit a JSON diagnostic report
@@ -2752,6 +2763,9 @@ struct RenderArgs {
     /// Raster compositing mode: compat matches Poppler/Splash; high uses linear-light RGB compositing
     #[arg(long, default_value = "compat", value_parser = ["compat", "high", "high-quality", "hq"])]
     render_quality: String,
+    /// For svg, ps, and eps output, refuse whole-page raster fallback instead of compatibility raster embedding.
+    #[arg(long)]
+    strict_vector: bool,
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
@@ -2782,6 +2796,9 @@ struct RenderArgs {
     /// Include a page-###.font-substitution.json sidecar for each rendered page.
     #[arg(long)]
     font_substitution_report: bool,
+    /// Register caller-provided font bytes for rendering, as NAME=PATH. Repeatable.
+    #[arg(long = "register-font", value_name = "NAME=PATH")]
+    registered_fonts: Vec<String>,
     /// Contract page box: media, crop, bleed, trim, or art.
     #[arg(long, default_value = "crop", value_parser = ["media", "crop", "bleed", "trim", "art"])]
     page_box: String,
@@ -2797,6 +2814,9 @@ struct RenderArgs {
     /// Caller-owned raw surface pixel layout, used with --format raw.
     #[arg(long, default_value = "rgba8", value_parser = ["rgba8", "bgra8", "rgb8", "bgr8", "gray8"])]
     pixel_format: String,
+    /// Caller-owned raw surface alpha layout: premultiplied, straight, or opaque.
+    #[arg(long, default_value = "premultiplied", value_parser = ["premultiplied", "straight", "opaque"])]
+    alpha_mode: String,
     /// Reverse byte order within each multi-byte output pixel for --format raw.
     #[arg(long)]
     reverse_byte_order: bool,
@@ -3269,6 +3289,105 @@ struct FeatureReportArgs {
     /// Output report file; defaults to stdout
     #[arg(short, long, alias = "out")]
     output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct DocumentViewsReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Pretty-print the shared JSON envelope
+    #[arg(long)]
+    pretty: bool,
+    /// Output report file; defaults to stdout
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+    /// Password for an encrypted PDF
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct BackendPlanArenaReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// 1-based page number to compile into a retained backend plan
+    #[arg(long, default_value_t = 1)]
+    page: usize,
+    /// Output DPI used to build the render contract identity
+    #[arg(long, default_value_t = 72)]
+    dpi: u32,
+    /// Render mode: compat or high-quality
+    #[arg(long = "render-mode", default_value = "compat")]
+    render_mode: String,
+    /// Schema-v1 render contract JSON to compile instead of page/dpi/render-mode defaults
+    #[arg(long = "contract-json")]
+    contract_json: Option<PathBuf>,
+    /// Pretty-print the shared JSON envelope
+    #[arg(long)]
+    pretty: bool,
+    /// Output report file; defaults to stdout
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+    /// Password for an encrypted PDF
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct PrepressPlateReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// 1-based page number to inspect
+    #[arg(long, default_value_t = 1)]
+    page: usize,
+    /// Output DPI used to build the page viewport/tile identity
+    #[arg(long, default_value_t = 72)]
+    dpi: u32,
+    /// Pretty-print the shared JSON envelope
+    #[arg(long)]
+    pretty: bool,
+    /// Output report file; defaults to stdout
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+    /// Password for an encrypted PDF
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct ImageDecodeCapabilityReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Pretty-print the shared JSON envelope
+    #[arg(long)]
+    pretty: bool,
+    /// Output report file; defaults to stdout
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+    /// Password for an encrypted PDF
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct ProgressiveImageDecodeLifecycleReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Lifecycle request JSON. Defaults to the first discovered image and the full lifecycle.
+    #[arg(long)]
+    request_json: Option<String>,
+    /// Read lifecycle request JSON from this file
+    #[arg(long)]
+    request_file: Option<PathBuf>,
+    /// Pretty-print the shared JSON envelope
+    #[arg(long)]
+    pretty: bool,
+    /// Output report file; defaults to stdout
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+    /// Password for an encrypted PDF
+    #[arg(long)]
+    password: Option<String>,
 }
 
 #[derive(Parser)]
@@ -3918,6 +4037,13 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::ExtractPages(args) => run_extract_pages(args),
         Commands::Info(args) => run_info(args),
         Commands::FeatureReport(args) => run_feature_report(args),
+        Commands::DocumentViewsReport(args) => run_document_views_report(args),
+        Commands::BackendPlanArenaReport(args) => run_backend_plan_arena_report(args),
+        Commands::PrepressPlateReport(args) => run_prepress_plate_report(args),
+        Commands::ImageDecodeCapabilityReport(args) => run_image_decode_capability_report(args),
+        Commands::ProgressiveImageDecodeLifecycleReport(args) => {
+            run_progressive_image_decode_lifecycle_report(args)
+        }
         Commands::ParserReport(args) => run_parser_report(args),
         Commands::CodecIsolationReport(args) => run_codec_isolation_report(args),
         Commands::Fonts(args) => run_fonts(args),
@@ -7416,7 +7542,6 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
 
-    let mut totals_fallback_reasons = std::collections::BTreeMap::<String, usize>::new();
     let mut totals = serde_json::json!({
         "operations": 0usize,
         "text_ops": 0usize,
@@ -7427,8 +7552,6 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
         "native_image_xobjects": 0usize,
         "native_inline_images": 0usize,
         "native_form_xobjects": 0usize,
-        "compatibility_runs": 0usize,
-        "compatibility_ops": 0usize,
         "unsupported_ops": 0usize,
     });
     let mut page_reports = Vec::new();
@@ -7438,13 +7561,9 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
         let rendered = if args.skip_render {
             None
         } else {
-            engine.render_page_display_list_with_mode(*page, dpi, render_mode)?
+            Some(engine.render_page_display_list_with_mode(*page, dpi, render_mode)?)
         };
         let stats = &list.stats;
-        for (reason, count) in &stats.compatibility_fallback_reasons {
-            *totals_fallback_reasons.entry(reason.clone()).or_insert(0) += count;
-        }
-
         for (key, value) in [
             ("operations", stats.operations),
             ("text_ops", stats.text_ops),
@@ -7455,8 +7574,6 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
             ("native_image_xobjects", stats.native_image_xobjects),
             ("native_inline_images", stats.native_inline_images),
             ("native_form_xobjects", stats.native_form_xobjects),
-            ("compatibility_runs", stats.compatibility_runs),
-            ("compatibility_ops", stats.compatibility_ops),
             ("unsupported_ops", stats.unsupported_ops),
         ] {
             if let Some(slot) = totals.get_mut(key) {
@@ -7489,7 +7606,6 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
             "page": page,
             "display_list": {
                 "fully_supported": list.is_fully_supported(),
-                "has_compatibility_runs": list.has_compatibility_runs(),
                 "approximate_memory_bytes": list.approximate_memory_bytes(),
                 "stats": {
                     "operations": stats.operations,
@@ -7511,10 +7627,6 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
                     "native_image_xobjects": stats.native_image_xobjects,
                     "native_inline_images": stats.native_inline_images,
                     "native_form_xobjects": stats.native_form_xobjects,
-                    "compatibility_runs": stats.compatibility_runs,
-                    "compatibility_ops": stats.compatibility_ops,
-                    "compatibility_bytes": stats.compatibility_bytes,
-                    "compatibility_fallback_reasons": stats.compatibility_fallback_reasons.clone(),
                     "unsupported_ops": stats.unsupported_ops,
                     "max_stack_depth": stats.max_stack_depth,
                 },
@@ -7534,7 +7646,6 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
         "skip_render": args.skip_render,
         "pages": pages,
         "totals": totals,
-        "compatibility_fallback_reasons": totals_fallback_reasons,
         "page_reports": page_reports,
     });
     let output = if args.pretty {
@@ -7585,6 +7696,7 @@ struct CliRenderContractOptions {
     background: wellfriendpdf_engine::render::ContractColor,
     clip: Option<wellfriendpdf_engine::render::DeviceClip>,
     pixel_format: wellfriendpdf_engine::render::PixelFormat,
+    alpha_mode: wellfriendpdf_engine::render::AlphaMode,
     reverse_byte_order: bool,
     grayscale: bool,
     halftone: wellfriendpdf_engine::render::HalftonePolicy,
@@ -7619,6 +7731,7 @@ fn render_args_have_contract_options(args: &RenderArgs) -> bool {
         || !args.background.eq_ignore_ascii_case("255,255,255,255")
         || args.clip.is_some()
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
+        || !args.alpha_mode.eq_ignore_ascii_case("premultiplied")
         || args.reverse_byte_order
         || args.grayscale
         || !args.halftone.eq_ignore_ascii_case("disabled")
@@ -7644,6 +7757,7 @@ fn render_args_have_contract_builder_options(args: &RenderArgs) -> bool {
         || !args.background.eq_ignore_ascii_case("255,255,255,255")
         || args.clip.is_some()
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
+        || !args.alpha_mode.eq_ignore_ascii_case("premultiplied")
         || args.reverse_byte_order
         || args.grayscale
         || !args.halftone.eq_ignore_ascii_case("disabled")
@@ -7669,11 +7783,12 @@ fn parse_cli_render_contract_options(
     let pixel_format = parse_render_pixel_format_cli(&args.pixel_format)?;
     if !output_format.is_raw()
         && (pixel_format != wellfriendpdf_engine::render::PixelFormat::Rgba8
+            || !args.alpha_mode.eq_ignore_ascii_case("premultiplied")
             || args.reverse_byte_order
             || args.grayscale)
     {
         return Err(usage_error(
-            "--pixel-format, --reverse-byte-order, and --grayscale produce caller-owned surfaces; use --format raw",
+            "--pixel-format, --alpha-mode, --reverse-byte-order, and --grayscale produce caller-owned surfaces; use --format raw",
         ));
     }
     Ok(CliRenderContractOptions {
@@ -7691,6 +7806,7 @@ fn parse_cli_render_contract_options(
             .map(parse_device_clip_cli)
             .transpose()?,
         pixel_format,
+        alpha_mode: parse_render_alpha_mode_cli(&args.alpha_mode)?,
         reverse_byte_order: args.reverse_byte_order,
         grayscale: args.grayscale,
         halftone: parse_render_halftone_cli(&args.halftone)?,
@@ -7720,6 +7836,19 @@ fn parse_render_pixel_format_cli(
         "gray8" => Ok(wellfriendpdf_engine::render::PixelFormat::Gray8),
         other => Err(usage_error(format!(
             "unknown --pixel-format '{other}'; use rgba8, bgra8, rgb8, bgr8, or gray8"
+        ))),
+    }
+}
+
+fn parse_render_alpha_mode_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::AlphaMode, Box<dyn Error>> {
+    match name.to_ascii_lowercase().replace('_', "-").as_str() {
+        "premultiplied" => Ok(wellfriendpdf_engine::render::AlphaMode::Premultiplied),
+        "straight" => Ok(wellfriendpdf_engine::render::AlphaMode::Straight),
+        "opaque" => Ok(wellfriendpdf_engine::render::AlphaMode::Opaque),
+        other => Err(usage_error(format!(
+            "unknown --alpha-mode '{other}'; use premultiplied, straight, or opaque"
         ))),
     }
 }
@@ -7955,6 +8084,7 @@ fn build_cli_render_contract(
         contract.height = clip.height;
     }
     contract.pixel_format = options.pixel_format;
+    contract.alpha_mode = options.alpha_mode;
     contract.stride = contract.width as usize * contract.pixel_format.bytes_per_pixel();
     contract.reverse_byte_order = options.reverse_byte_order;
     contract.grayscale = options.grayscale;
@@ -8079,6 +8209,11 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         }
         _ => {}
     }
+    if args.strict_vector {
+        return Err(usage_error(
+            "--strict-vector applies only to svg, ps, or eps output",
+        ));
+    }
 
     let output_format = CliRenderRasterFormat::parse(&format_name).ok_or_else(|| {
         usage_error(format!(
@@ -8089,7 +8224,8 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     let contract_options = parse_cli_render_contract_options(&args, output_format)?;
     let use_contract = contract_requested || output_format.is_raw();
 
-    let engine = open_engine(&args.pdf, &args.password)?;
+    let mut engine = open_engine(&args.pdf, &args.password)?;
+    apply_registered_fonts(&mut engine, &args.registered_fonts)?;
     let total = engine.page_count()?;
     let input_contract = args
         .contract_json
@@ -8269,6 +8405,10 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             .as_ref()
             .map(|contract| format!("{:?}", contract.pixel_format))
             .unwrap_or_else(|| args.pixel_format.clone());
+        let summary_alpha_mode = input_contract
+            .as_ref()
+            .map(|contract| format!("{:?}", contract.alpha_mode))
+            .unwrap_or_else(|| args.alpha_mode.clone());
         let summary_print_profile = input_contract
             .as_ref()
             .map(|contract| format!("{:?}", contract.print_profile))
@@ -8291,6 +8431,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 "contract_json_sidecars": contract_sidecars,
                 "font_substitution_sidecars": font_substitution_sidecars,
                 "pixel_format": summary_pixel_format,
+                "alpha_mode": summary_alpha_mode,
                 "grayscale": summary_grayscale,
                 "print_profile": summary_print_profile,
             })
@@ -8529,6 +8670,15 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
             "wide_uniform_alpha_pixels_delta": compositor_stats_end
                 .wide_uniform_alpha_pixels
                 .saturating_sub(compositor_stats_start.wide_uniform_alpha_pixels),
+            "wide_general_pixels_delta": compositor_stats_end
+                .wide_general_pixels
+                .saturating_sub(compositor_stats_start.wide_general_pixels),
+            "lcd_row_pixels_delta": compositor_stats_end
+                .lcd_row_pixels
+                .saturating_sub(compositor_stats_start.lcd_row_pixels),
+            "knockout_row_pixels_delta": compositor_stats_end
+                .knockout_row_pixels
+                .saturating_sub(compositor_stats_start.knockout_row_pixels),
             "wide_separable_blend_pixels_delta": compositor_stats_end
                 .wide_separable_blend_pixels
                 .saturating_sub(compositor_stats_start.wide_separable_blend_pixels),
@@ -8553,6 +8703,9 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
             "wide_soft_mask_opaque_dst_pixels_delta": compositor_stats_end
                 .wide_soft_mask_opaque_dst_pixels
                 .saturating_sub(compositor_stats_start.wide_soft_mask_opaque_dst_pixels),
+            "wide_soft_mask_general_pixels_delta": compositor_stats_end
+                .wide_soft_mask_general_pixels
+                .saturating_sub(compositor_stats_start.wide_soft_mask_general_pixels),
             "scalar_soft_mask_opaque_dst_pixels_delta": compositor_stats_end
                 .scalar_soft_mask_opaque_dst_pixels
                 .saturating_sub(compositor_stats_start.scalar_soft_mask_opaque_dst_pixels),
@@ -8585,6 +8738,9 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
             "solid_run_pixels_delta": path_raster_stats_end
                 .solid_run_pixels
                 .saturating_sub(path_raster_stats_start.solid_run_pixels),
+            "convex_fast_pixels_delta": path_raster_stats_end
+                .convex_fast_pixels
+                .saturating_sub(path_raster_stats_start.convex_fast_pixels),
             "edge_bucket_builds_delta": path_raster_stats_end
                 .edge_bucket_builds
                 .saturating_sub(path_raster_stats_start.edge_bucket_builds),
@@ -8634,6 +8790,20 @@ fn render_artifact_cache_stats_json(
         "skipped_oversized": stats.skipped_oversized,
         "entries": stats.entries,
         "bytes": stats.bytes,
+    })
+}
+
+fn clip_dag_stats_json(stats: wellfriendpdf_engine::render::ClipDagStats) -> serde_json::Value {
+    serde_json::json!({
+        "interned_nodes": stats.interned_nodes,
+        "max_nodes": stats.max_nodes,
+        "intern_lookups": stats.intern_lookups,
+        "intern_hits": stats.intern_hits,
+        "nodes_created": stats.nodes_created,
+        "pruning_passes": stats.pruning_passes,
+        "pruned_nodes": stats.pruned_nodes,
+        "over_capacity_referenced": stats.over_capacity_referenced,
+        "approximate_bytes": stats.approximate_bytes,
     })
 }
 
@@ -8753,16 +8923,22 @@ fn render_corpus_file_record(
     let mut final_path_fill_mask_bytes = 0usize;
     let mut final_path_stroke_mask_entries = 0usize;
     let mut final_path_stroke_mask_bytes = 0usize;
+    let mut final_path_clip_node_entries = 0usize;
+    let mut final_path_clip_node_bytes = 0usize;
     let mut final_glyph_mask_cache_stats = serde_json::Value::Null;
+    let mut final_glyph_atlas_cache_stats = serde_json::Value::Null;
     let mut final_type3_mask_cache_stats = serde_json::Value::Null;
     let mut final_type3_rendered_cache_stats = serde_json::Value::Null;
     let mut final_path_fill_mask_cache_stats = serde_json::Value::Null;
     let mut final_path_stroke_mask_cache_stats = serde_json::Value::Null;
+    let mut final_path_clip_node_cache_stats = serde_json::Value::Null;
+    let mut final_clip_dag_stats = serde_json::Value::Null;
     let mut final_font_byte_entries = 0usize;
     let mut final_font_bytes_cache_stats = serde_json::Value::Null;
     let mut final_font_resolver_entries = 0usize;
     let mut final_font_resolver_cache_stats = serde_json::Value::Null;
     let mut final_display_list_entries = 0usize;
+    let mut final_display_list_cache_stats = serde_json::Value::Null;
     let mut final_image_xobject_entries = 0usize;
     let mut final_image_xobject_bytes = 0usize;
     let mut final_image_xobject_cache_stats = serde_json::Value::Null;
@@ -8778,6 +8954,8 @@ fn render_corpus_file_record(
     let mut final_form_xobject_program_cache_stats = serde_json::Value::Null;
     let mut final_tiling_pattern_program_entries = 0usize;
     let mut final_tiling_pattern_program_cache_stats = serde_json::Value::Null;
+    let mut final_annotation_appearance_program_entries = 0usize;
+    let mut final_annotation_appearance_program_cache_stats = serde_json::Value::Null;
     let mut final_offscreen_buffer_pool_entries = 0usize;
     let mut final_offscreen_buffer_pool_bytes = 0usize;
     let mut final_display_list_raster_bytes = 0usize;
@@ -8899,6 +9077,9 @@ fn render_corpus_file_record(
                     final_glyph_mask_cache_stats = render_artifact_cache_stats_json(
                         document_render_cache.glyph_mask_cache_stats(),
                     );
+                    final_glyph_atlas_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.glyph_atlas_cache_stats(),
+                    );
                     final_type3_mask_entries = document_render_cache.type3_mask_entries();
                     final_type3_mask_bytes = document_render_cache.type3_mask_bytes();
                     final_type3_mask_cache_stats = render_artifact_cache_stats_json(
@@ -8920,6 +9101,13 @@ fn render_corpus_file_record(
                     final_path_stroke_mask_cache_stats = render_artifact_cache_stats_json(
                         document_render_cache.path_stroke_mask_cache_stats(),
                     );
+                    final_path_clip_node_entries = document_render_cache.path_clip_node_entries();
+                    final_path_clip_node_bytes = document_render_cache.path_clip_node_bytes();
+                    final_path_clip_node_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.path_clip_node_cache_stats(),
+                    );
+                    final_clip_dag_stats =
+                        clip_dag_stats_json(document_render_cache.clip_dag_stats());
                     final_font_byte_entries = document_render_cache.font_byte_entries();
                     final_font_bytes_cache_stats = render_artifact_cache_stats_json(
                         document_render_cache.font_bytes_cache_stats(),
@@ -8929,6 +9117,9 @@ fn render_corpus_file_record(
                         document_render_cache.font_resolver_cache_stats(),
                     );
                     final_display_list_entries = document_render_cache.display_list_entries();
+                    final_display_list_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.display_list_cache_stats(),
+                    );
                     final_image_xobject_entries = document_render_cache.image_xobject_entries();
                     final_image_xobject_bytes = document_render_cache.image_xobject_bytes();
                     final_image_xobject_cache_stats = render_artifact_cache_stats_json(
@@ -8958,6 +9149,12 @@ fn render_corpus_file_record(
                     final_tiling_pattern_program_cache_stats = render_artifact_cache_stats_json(
                         document_render_cache.tiling_pattern_program_cache_stats(),
                     );
+                    final_annotation_appearance_program_entries =
+                        document_render_cache.annotation_appearance_program_entries();
+                    final_annotation_appearance_program_cache_stats =
+                        render_artifact_cache_stats_json(
+                            document_render_cache.annotation_appearance_program_cache_stats(),
+                        );
                     final_offscreen_buffer_pool_entries =
                         document_render_cache.offscreen_buffer_pool_entries();
                     final_offscreen_buffer_pool_bytes =
@@ -9016,6 +9213,7 @@ fn render_corpus_file_record(
             "glyph_mask_entries": final_glyph_mask_entries,
             "glyph_mask_bytes": final_glyph_mask_bytes,
             "glyph_mask_cache": final_glyph_mask_cache_stats,
+            "glyph_atlas_cache": final_glyph_atlas_cache_stats,
             "type3_mask_entries": final_type3_mask_entries,
             "type3_mask_bytes": final_type3_mask_bytes,
             "type3_mask_cache": final_type3_mask_cache_stats,
@@ -9028,11 +9226,16 @@ fn render_corpus_file_record(
             "path_stroke_mask_entries": final_path_stroke_mask_entries,
             "path_stroke_mask_bytes": final_path_stroke_mask_bytes,
             "path_stroke_mask_cache": final_path_stroke_mask_cache_stats,
+            "path_clip_node_entries": final_path_clip_node_entries,
+            "path_clip_node_bytes": final_path_clip_node_bytes,
+            "path_clip_node_cache": final_path_clip_node_cache_stats,
+            "clip_dag": final_clip_dag_stats,
             "font_byte_entries": final_font_byte_entries,
             "font_bytes_cache": final_font_bytes_cache_stats,
             "font_resolver_entries": final_font_resolver_entries,
             "font_resolver_cache": final_font_resolver_cache_stats,
             "display_list_entries": final_display_list_entries,
+            "display_list_cache": final_display_list_cache_stats,
             "image_xobject_entries": final_image_xobject_entries,
             "image_xobject_bytes": final_image_xobject_bytes,
             "image_xobject_cache": final_image_xobject_cache_stats,
@@ -9048,6 +9251,8 @@ fn render_corpus_file_record(
             "form_xobject_program_cache": final_form_xobject_program_cache_stats,
             "tiling_pattern_program_entries": final_tiling_pattern_program_entries,
             "tiling_pattern_program_cache": final_tiling_pattern_program_cache_stats,
+            "annotation_appearance_program_entries": final_annotation_appearance_program_entries,
+            "annotation_appearance_program_cache": final_annotation_appearance_program_cache_stats,
             "offscreen_buffer_pool_entries": final_offscreen_buffer_pool_entries,
             "offscreen_buffer_pool_bytes": final_offscreen_buffer_pool_bytes,
             "display_list_raster_bytes": final_display_list_raster_bytes,
@@ -9085,6 +9290,15 @@ fn render_corpus_file_record(
             "wide_uniform_alpha_pixels_delta": compositor_stats_end
                 .wide_uniform_alpha_pixels
                 .saturating_sub(compositor_stats_start.wide_uniform_alpha_pixels),
+            "wide_general_pixels_delta": compositor_stats_end
+                .wide_general_pixels
+                .saturating_sub(compositor_stats_start.wide_general_pixels),
+            "lcd_row_pixels_delta": compositor_stats_end
+                .lcd_row_pixels
+                .saturating_sub(compositor_stats_start.lcd_row_pixels),
+            "knockout_row_pixels_delta": compositor_stats_end
+                .knockout_row_pixels
+                .saturating_sub(compositor_stats_start.knockout_row_pixels),
             "wide_separable_blend_pixels_delta": compositor_stats_end
                 .wide_separable_blend_pixels
                 .saturating_sub(compositor_stats_start.wide_separable_blend_pixels),
@@ -9109,6 +9323,9 @@ fn render_corpus_file_record(
             "wide_soft_mask_opaque_dst_pixels_delta": compositor_stats_end
                 .wide_soft_mask_opaque_dst_pixels
                 .saturating_sub(compositor_stats_start.wide_soft_mask_opaque_dst_pixels),
+            "wide_soft_mask_general_pixels_delta": compositor_stats_end
+                .wide_soft_mask_general_pixels
+                .saturating_sub(compositor_stats_start.wide_soft_mask_general_pixels),
             "scalar_soft_mask_opaque_dst_pixels_delta": compositor_stats_end
                 .scalar_soft_mask_opaque_dst_pixels
                 .saturating_sub(compositor_stats_start.scalar_soft_mask_opaque_dst_pixels),
@@ -9141,6 +9358,9 @@ fn render_corpus_file_record(
             "solid_run_pixels_delta": path_raster_stats_end
                 .solid_run_pixels
                 .saturating_sub(path_raster_stats_start.solid_run_pixels),
+            "convex_fast_pixels_delta": path_raster_stats_end
+                .convex_fast_pixels
+                .saturating_sub(path_raster_stats_start.convex_fast_pixels),
             "edge_bucket_builds_delta": path_raster_stats_end
                 .edge_bucket_builds
                 .saturating_sub(path_raster_stats_start.edge_bucket_builds),
@@ -9266,6 +9486,20 @@ struct RenderCorpusPageMetrics {
     display_list_fallback: bool,
 }
 
+fn render_corpus_unsupported_display_list_error(
+    page: usize,
+    list: &wellfriendpdf_engine::DisplayList,
+) -> wellfriendpdf_engine::WellfriendError {
+    let reason = list
+        .unsupported
+        .first()
+        .map(|item| format!("{}: {}", item.operator, item.reason))
+        .unwrap_or_else(|| "display list is marked unsupported".to_string());
+    wellfriendpdf_engine::WellfriendError::UnsupportedFeature(format!(
+        "render-corpus display-list pipeline refuses unsupported retained replay for page {page}: {reason}; rerun with --pipeline immediate to request immediate rendering explicitly"
+    ))
+}
+
 fn render_corpus_display_list_page_with_cache(
     engine: &wellfriendpdf_engine::ContentEngine,
     page: usize,
@@ -9285,20 +9519,9 @@ fn render_corpus_display_list_page_with_cache(
         )?;
     let display_list_compile_ms = compile_started.elapsed().as_secs_f64() * 1000.0;
     if !list.is_fully_supported() {
-        let buffer = engine.render_page_cancellable_with_mode_and_cache(
+        return Err(render_corpus_unsupported_display_list_error(
             page,
-            options.dpi,
-            cancel,
-            options.render_mode,
-            document_render_cache,
-        )?;
-        return Ok((
-            buffer,
-            RenderCorpusPageMetrics {
-                display_list_compile_ms: Some(display_list_compile_ms),
-                display_list_fallback: true,
-                ..RenderCorpusPageMetrics::default()
-            },
+            list.as_ref(),
         ));
     }
 
@@ -9344,20 +9567,7 @@ fn render_corpus_display_list_page_without_cache(
     let list = engine.build_page_display_list(page, options.dpi)?;
     let display_list_compile_ms = compile_started.elapsed().as_secs_f64() * 1000.0;
     if !list.is_fully_supported() {
-        let buffer = engine.render_page_cancellable_with_mode(
-            page,
-            options.dpi,
-            cancel,
-            options.render_mode,
-        )?;
-        return Ok((
-            buffer,
-            RenderCorpusPageMetrics {
-                display_list_compile_ms: Some(display_list_compile_ms),
-                display_list_fallback: true,
-                ..RenderCorpusPageMetrics::default()
-            },
-        ));
+        return Err(render_corpus_unsupported_display_list_error(page, &list));
     }
 
     let replay_started = Instant::now();
@@ -9956,7 +10166,8 @@ fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
-    let engine = open_engine(&args.pdf, &args.password)?;
+    let mut engine = open_engine(&args.pdf, &args.password)?;
+    apply_registered_fonts(&mut engine, &args.registered_fonts)?;
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
 
@@ -9969,9 +10180,17 @@ fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     let mut rendered = 0usize;
     let mut rasterized_fallback = 0usize;
     for page_num in &page_nums {
-        let page = match engine.render_page_svg(*page_num, dpi) {
+        let page_result = if args.strict_vector {
+            engine.render_page_svg_strict(*page_num, dpi)
+        } else {
+            engine.render_page_svg(*page_num, dpi)
+        };
+        let page = match page_result {
             Ok(page) => page,
             Err(err) => {
+                if args.strict_vector {
+                    return Err(err.into());
+                }
                 eprintln!("Warning: skipped page {}: {}", page_num, err);
                 continue;
             }
@@ -9994,6 +10213,7 @@ fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
                 "output": args.output.display().to_string(),
                 "format": "svg",
                 "dpi": dpi,
+                "strict_vector": args.strict_vector,
                 "pages_requested": page_nums.len(),
                 "pages_rendered": rendered,
                 "rasterized_fallback_pages": rasterized_fallback,
@@ -10015,11 +10235,16 @@ fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
 fn run_render_ps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
 
-    let engine = open_engine(&args.pdf, &args.password)?;
+    let mut engine = open_engine(&args.pdf, &args.password)?;
+    apply_registered_fonts(&mut engine, &args.registered_fonts)?;
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
 
-    let (ps, rasterized) = engine.render_document_ps(&page_nums, dpi)?;
+    let (ps, rasterized) = if args.strict_vector {
+        engine.render_document_ps_strict(&page_nums, dpi)?
+    } else {
+        engine.render_document_ps(&page_nums, dpi)?
+    };
 
     // A single .ps document is the natural PostScript artifact (unlike the
     // per-page raster/SVG ZIP). If the output path still ends in .zip (the
@@ -10046,6 +10271,7 @@ fn run_render_ps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
                 "output": out_path.display().to_string(),
                 "format": "ps",
                 "dpi": dpi,
+                "strict_vector": args.strict_vector,
                 "pages_requested": page_nums.len(),
                 "pages_rendered": page_nums.len(),
                 "rasterized_fallback_pages": rasterized,
@@ -10069,7 +10295,8 @@ fn run_render_eps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
-    let engine = open_engine(&args.pdf, &args.password)?;
+    let mut engine = open_engine(&args.pdf, &args.password)?;
+    apply_registered_fonts(&mut engine, &args.registered_fonts)?;
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
 
@@ -10082,9 +10309,17 @@ fn run_render_eps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     let mut rendered = 0usize;
     let mut rasterized_fallback = 0usize;
     for page_num in &page_nums {
-        let (eps, rasterized) = match engine.render_page_eps(*page_num, dpi) {
+        let page_result = if args.strict_vector {
+            engine.render_page_eps_strict(*page_num, dpi)
+        } else {
+            engine.render_page_eps(*page_num, dpi)
+        };
+        let (eps, rasterized) = match page_result {
             Ok(v) => v,
             Err(err) => {
+                if args.strict_vector {
+                    return Err(err.into());
+                }
                 eprintln!("Warning: skipped page {}: {}", page_num, err);
                 continue;
             }
@@ -10107,6 +10342,7 @@ fn run_render_eps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
                 "output": args.output.display().to_string(),
                 "format": "eps",
                 "dpi": dpi,
+                "strict_vector": args.strict_vector,
                 "pages_requested": page_nums.len(),
                 "pages_rendered": rendered,
                 "rasterized_fallback_pages": rasterized_fallback,
@@ -10159,6 +10395,27 @@ fn open_engine(
         None => ContentEngine::open_path(pdf)?,
     };
     Ok(engine)
+}
+
+fn apply_registered_fonts(
+    engine: &mut wellfriendpdf_engine::ContentEngine,
+    registered_fonts: &[String],
+) -> Result<(), Box<dyn Error>> {
+    for spec in registered_fonts {
+        let (name, path) = spec.split_once('=').ok_or_else(|| {
+            usage_error(format!("--register-font expects NAME=PATH, got '{}'", spec))
+        })?;
+        let name = name.trim();
+        let path = path.trim();
+        if name.is_empty() || path.is_empty() {
+            return Err(usage_error(
+                "--register-font requires non-empty NAME and PATH",
+            ));
+        }
+        let bytes = std::fs::read(path)?;
+        engine.register_font_bytes(name.to_string(), bytes)?;
+    }
+    Ok(())
 }
 
 fn write_output_optional(output: &Option<PathBuf>, text: &str) -> Result<(), Box<dyn Error>> {
@@ -10387,6 +10644,122 @@ fn run_info(args: InfoArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_feature_report(args: FeatureReportArgs) -> Result<(), Box<dyn Error>> {
     let json = wellfriendpdf_engine::sdk::feature_report_json()?;
+    let output = if args.pretty {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        serde_json::to_string_pretty(&value)?
+    } else {
+        json
+    };
+    write_output_optional(&args.output, &output)
+}
+
+fn run_document_views_report(args: DocumentViewsReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let password = args.password.as_deref().unwrap_or("").as_bytes();
+    let json = wellfriendpdf_engine::sdk::document_views_report_json(&bytes, Some(password))?;
+    let output = if args.pretty {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        serde_json::to_string_pretty(&value)?
+    } else {
+        json
+    };
+    write_output_optional(&args.output, &output)
+}
+
+fn run_backend_plan_arena_report(args: BackendPlanArenaReportArgs) -> Result<(), Box<dyn Error>> {
+    if args.page == 0 {
+        return Err("page must be 1-based, got 0".into());
+    }
+    if args.dpi == 0 {
+        return Err("dpi must be positive, got 0".into());
+    }
+
+    let bytes = std::fs::read(&args.pdf)?;
+    let password = args.password.as_deref().unwrap_or("").as_bytes();
+    let json = if let Some(contract_json) = args.contract_json.as_ref() {
+        let contract_json = std::fs::read_to_string(contract_json)?;
+        wellfriendpdf_engine::sdk::backend_plan_arena_report_for_contract_json(
+            &bytes,
+            &contract_json,
+            Some(password),
+        )?
+    } else {
+        wellfriendpdf_engine::sdk::backend_plan_arena_report_json(
+            &bytes,
+            args.page,
+            args.dpi,
+            Some(&args.render_mode),
+            Some(password),
+        )?
+    };
+    let output = if args.pretty {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        serde_json::to_string_pretty(&value)?
+    } else {
+        json
+    };
+    write_output_optional(&args.output, &output)
+}
+
+fn run_prepress_plate_report(args: PrepressPlateReportArgs) -> Result<(), Box<dyn Error>> {
+    if args.page == 0 {
+        return Err("page must be 1-based, got 0".into());
+    }
+    if args.dpi == 0 {
+        return Err("dpi must be positive, got 0".into());
+    }
+
+    let bytes = std::fs::read(&args.pdf)?;
+    let password = args.password.as_deref().unwrap_or("").as_bytes();
+    let json = wellfriendpdf_engine::sdk::prepress_plate_report_json(
+        &bytes,
+        args.page,
+        args.dpi,
+        Some(password),
+    )?;
+    let output = if args.pretty {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        serde_json::to_string_pretty(&value)?
+    } else {
+        json
+    };
+    write_output_optional(&args.output, &output)
+}
+
+fn run_image_decode_capability_report(
+    args: ImageDecodeCapabilityReportArgs,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let password = args.password.as_deref().unwrap_or("").as_bytes();
+    let json =
+        wellfriendpdf_engine::sdk::image_decode_capability_report_json(&bytes, Some(password))?;
+    let output = if args.pretty {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        serde_json::to_string_pretty(&value)?
+    } else {
+        json
+    };
+    write_output_optional(&args.output, &output)
+}
+
+fn run_progressive_image_decode_lifecycle_report(
+    args: ProgressiveImageDecodeLifecycleReportArgs,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let request_json = match (&args.request_json, &args.request_file) {
+        (Some(_), Some(_)) => {
+            return Err("--request-json and --request-file are mutually exclusive".into());
+        }
+        (Some(json), None) => json.clone(),
+        (None, Some(path)) => std::fs::read_to_string(path)?,
+        (None, None) => "{}".to_string(),
+    };
+    let password = args.password.as_deref().unwrap_or("").as_bytes();
+    let json = wellfriendpdf_engine::sdk::progressive_image_decode_lifecycle_report_json(
+        &bytes,
+        &request_json,
+        Some(password),
+    )?;
     let output = if args.pretty {
         let value: serde_json::Value = serde_json::from_str(&json)?;
         serde_json::to_string_pretty(&value)?
@@ -12724,13 +13097,14 @@ fn parse_profile_cli(
 #[cfg(test)]
 mod tests {
     use super::{
-        certificate_input_is_pem, expand_split_pattern, parse_device_clip_cli,
+        certificate_input_is_pem, clip_dag_stats_json, expand_split_pattern, parse_device_clip_cli,
         parse_page_range_cli, parse_page_selection_ordered, parse_profile_cli, parse_region_cli,
-        parse_render_color_management_cli, parse_render_contract_color_cli,
-        parse_render_determinism_cli, parse_render_device_transform_cli,
-        parse_render_exactness_cli, parse_render_halftone_cli, parse_render_overprint_cli,
-        parse_render_page_box_cli, parse_render_pixel_format_cli, parse_render_print_profile_cli,
-        parse_rendering_intent_cli, Cli, Commands,
+        parse_render_alpha_mode_cli, parse_render_color_management_cli,
+        parse_render_contract_color_cli, parse_render_determinism_cli,
+        parse_render_device_transform_cli, parse_render_exactness_cli, parse_render_halftone_cli,
+        parse_render_overprint_cli, parse_render_page_box_cli, parse_render_pixel_format_cli,
+        parse_render_print_profile_cli, parse_rendering_intent_cli,
+        render_artifact_cache_stats_json, Cli, Commands,
     };
     use clap::Parser;
     use std::path::PathBuf;
@@ -12759,6 +13133,10 @@ mod tests {
         assert_eq!(
             parse_render_pixel_format_cli("bgra8").unwrap(),
             wellfriendpdf_engine::render::PixelFormat::Bgra8
+        );
+        assert_eq!(
+            parse_render_alpha_mode_cli("straight").unwrap(),
+            wellfriendpdf_engine::render::AlphaMode::Straight
         );
         assert_eq!(
             parse_render_halftone_cli("screen").unwrap(),
@@ -12805,6 +13183,51 @@ mod tests {
         );
         assert!(parse_render_contract_color_cli("1,2").is_err());
         assert!(parse_render_device_transform_cli("1,2,3").is_err());
+        assert!(parse_render_alpha_mode_cli("unknown").is_err());
+    }
+
+    #[test]
+    fn render_artifact_cache_stats_json_exposes_retained_byte_accounting_shape() {
+        let stats = wellfriendpdf_engine::RenderArtifactCacheStats {
+            hits: 1,
+            misses: 2,
+            evictions: 3,
+            skipped_oversized: 4,
+            entries: 5,
+            bytes: 6,
+        };
+        let json = render_artifact_cache_stats_json(stats);
+        assert_eq!(json["hits"], 1);
+        assert_eq!(json["misses"], 2);
+        assert_eq!(json["evictions"], 3);
+        assert_eq!(json["skipped_oversized"], 4);
+        assert_eq!(json["entries"], 5);
+        assert_eq!(json["bytes"], 6);
+    }
+
+    #[test]
+    fn clip_dag_stats_json_exposes_render_telemetry_shape() {
+        let stats = wellfriendpdf_engine::render::ClipDagStats {
+            interned_nodes: 1,
+            max_nodes: 2,
+            intern_lookups: 3,
+            intern_hits: 4,
+            nodes_created: 5,
+            pruning_passes: 6,
+            pruned_nodes: 7,
+            over_capacity_referenced: 8,
+            approximate_bytes: 9,
+        };
+        let json = clip_dag_stats_json(stats);
+        assert_eq!(json["interned_nodes"], 1);
+        assert_eq!(json["max_nodes"], 2);
+        assert_eq!(json["intern_lookups"], 3);
+        assert_eq!(json["intern_hits"], 4);
+        assert_eq!(json["nodes_created"], 5);
+        assert_eq!(json["pruning_passes"], 6);
+        assert_eq!(json["pruned_nodes"], 7);
+        assert_eq!(json["over_capacity_referenced"], 8);
+        assert_eq!(json["approximate_bytes"], 9);
     }
 
     #[test]

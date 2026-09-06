@@ -398,6 +398,11 @@ pub struct GraphicsState {
     pub stroke_overprint: bool,
     pub fill_overprint: bool,
     pub overprint_mode: i32,
+    pub stroke_adjustment: bool,
+    pub alpha_source: bool,
+    pub text_knockout: bool,
+    pub flatness: f64,
+    pub smoothness: f64,
     pub text: TextState,
     pub clip_dirty: bool,
     /// Name of the current fill pattern resource, set by `scn /PatternName`.
@@ -427,10 +432,422 @@ struct GraphicsStateSnapshot {
     stroke_overprint: bool,
     fill_overprint: bool,
     overprint_mode: i32,
+    stroke_adjustment: bool,
+    alpha_source: bool,
+    text_knockout: bool,
+    flatness: f64,
+    smoothness: f64,
     text: TextState,
     clip_dirty: bool,
     fill_pattern_name: Option<String>,
     stroke_pattern_name: Option<String>,
+}
+
+fn parse_ext_g_state_dash(items: &[PdfObject]) -> Option<LineDash> {
+    if items.len() != 2 {
+        return None;
+    }
+    let pattern_items = items[0].as_array()?;
+    if pattern_items.len() > 64 {
+        return None;
+    }
+    let pattern: Vec<f64> = pattern_items
+        .iter()
+        .map(PdfObject::as_number)
+        .collect::<Option<Vec<_>>>()?;
+    if pattern
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return None;
+    }
+    if !pattern.is_empty() && pattern.iter().all(|value| *value == 0.0) {
+        return None;
+    }
+    let phase = items[1].as_number()?;
+    if !phase.is_finite() || phase < 0.0 {
+        return None;
+    }
+    Some(LineDash { pattern, phase })
+}
+
+fn parse_ext_g_state_font(value: &PdfObject) -> Option<(&str, f64)> {
+    let items = value.as_array()?;
+    if items.len() != 2 {
+        return None;
+    }
+    let name = items[0].as_name()?;
+    let size = items[1].as_number()?;
+    if name.is_empty() || !size.is_finite() {
+        return None;
+    }
+    Some((name, size))
+}
+
+pub fn validate_ext_g_state_render_metadata(
+    dict: &PdfDictionary,
+    label: &str,
+) -> std::result::Result<(), String> {
+    validate_ext_g_state_type(dict, label)?;
+    validate_ext_g_state_unit_alpha(dict, "ca", label)?;
+    validate_ext_g_state_unit_alpha(dict, "CA", label)?;
+    validate_ext_g_state_nonnegative_number(dict, "LW", label)?;
+    validate_ext_g_state_integer_set(dict, "LC", label, &[0, 1, 2])?;
+    validate_ext_g_state_integer_set(dict, "LJ", label, &[0, 1, 2])?;
+    validate_ext_g_state_minimum_number(dict, "ML", label, 1.0)?;
+    validate_ext_g_state_blend_mode(dict, label)?;
+    validate_ext_g_state_name(dict, "RI", label)?;
+    validate_ext_g_state_bool(dict, "OP", label)?;
+    validate_ext_g_state_bool(dict, "op", label)?;
+    validate_ext_g_state_integer_set(dict, "OPM", label, &[0, 1])?;
+    validate_ext_g_state_bool(dict, "SA", label)?;
+    validate_ext_g_state_bool(dict, "AIS", label)?;
+    validate_ext_g_state_bool(dict, "TK", label)?;
+    validate_ext_g_state_identity_transfer(dict, "TR", label)?;
+    validate_ext_g_state_identity_transfer(dict, "TR2", label)?;
+    validate_ext_g_state_nonnegative_number(dict, "FL", label)?;
+    validate_ext_g_state_nonnegative_number(dict, "SM", label)?;
+    validate_ext_g_state_dash_object(dict, label)?;
+    validate_ext_g_state_font_object(dict, label)
+}
+
+fn validate_ext_g_state_type(dict: &PdfDictionary, label: &str) -> std::result::Result<(), String> {
+    let Some(value) = dict.get("Type") else {
+        return Ok(());
+    };
+    match value.as_name() {
+        Some("ExtGState") => Ok(()),
+        Some(name) => Err(format!("{label} /Type must be /ExtGState, got /{name}")),
+        None => Err(format!(
+            "{label} /Type resolved to {}, expected Name",
+            value.variant_name()
+        )),
+    }
+}
+
+fn validate_ext_g_state_blend_mode(
+    dict: &PdfDictionary,
+    label: &str,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get("BM") else {
+        return Ok(());
+    };
+
+    match value {
+        PdfObject::Name(name) => {
+            if BlendMode::from_supported_name(name).is_some() {
+                Ok(())
+            } else {
+                Err(format!("{label} /BM has unsupported blend mode /{name}"))
+            }
+        }
+        PdfObject::Array(items) => {
+            if items.is_empty() {
+                return Err(format!("{label} /BM array is empty"));
+            }
+
+            let mut has_supported = false;
+            for (idx, item) in items.iter().enumerate() {
+                let Some(name) = item.as_name() else {
+                    return Err(format!(
+                        "{label} /BM array entry {} resolved to {}, expected Name",
+                        idx + 1,
+                        item.variant_name()
+                    ));
+                };
+                if BlendMode::from_supported_name(name).is_some() {
+                    has_supported = true;
+                }
+            }
+
+            if has_supported {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{label} /BM array contains no supported blend mode"
+                ))
+            }
+        }
+        other => Err(format!(
+            "{label} /BM resolved to {}, expected Name or Array",
+            other.variant_name()
+        )),
+    }
+}
+
+fn validate_ext_g_state_unit_alpha(
+    dict: &PdfDictionary,
+    key: &str,
+    label: &str,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get(key) else {
+        return Ok(());
+    };
+    let Some(number) = value.as_number() else {
+        return Err(format!(
+            "{label} /{key} resolved to {}, expected Number",
+            value.variant_name()
+        ));
+    };
+    if number.is_finite() && (0.0..=1.0).contains(&number) {
+        Ok(())
+    } else {
+        Err(format!("{label} /{key} must be finite and between 0 and 1"))
+    }
+}
+
+fn validate_ext_g_state_nonnegative_number(
+    dict: &PdfDictionary,
+    key: &str,
+    label: &str,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get(key) else {
+        return Ok(());
+    };
+    let Some(number) = value.as_number() else {
+        return Err(format!(
+            "{label} /{key} resolved to {}, expected Number",
+            value.variant_name()
+        ));
+    };
+    if number.is_finite() && number >= 0.0 {
+        Ok(())
+    } else {
+        Err(format!("{label} /{key} must be finite and nonnegative"))
+    }
+}
+
+fn validate_ext_g_state_minimum_number(
+    dict: &PdfDictionary,
+    key: &str,
+    label: &str,
+    minimum: f64,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get(key) else {
+        return Ok(());
+    };
+    let Some(number) = value.as_number() else {
+        return Err(format!(
+            "{label} /{key} resolved to {}, expected Number",
+            value.variant_name()
+        ));
+    };
+    if number.is_finite() && number >= minimum {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} /{key} must be finite and at least {minimum}"
+        ))
+    }
+}
+
+fn validate_ext_g_state_integer_set(
+    dict: &PdfDictionary,
+    key: &str,
+    label: &str,
+    allowed: &[i64],
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get(key) else {
+        return Ok(());
+    };
+    let Some(number) = value.as_integer() else {
+        return Err(format!(
+            "{label} /{key} resolved to {}, expected Integer",
+            value.variant_name()
+        ));
+    };
+    if allowed.contains(&number) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} /{key} must be one of {}",
+            allowed
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+fn validate_ext_g_state_name(
+    dict: &PdfDictionary,
+    key: &str,
+    label: &str,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get(key) else {
+        return Ok(());
+    };
+    if value.as_name().is_some() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} /{key} resolved to {}, expected Name",
+            value.variant_name()
+        ))
+    }
+}
+
+fn validate_ext_g_state_bool(
+    dict: &PdfDictionary,
+    key: &str,
+    label: &str,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get(key) else {
+        return Ok(());
+    };
+    if value.as_bool().is_some() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} /{key} resolved to {}, expected Boolean",
+            value.variant_name()
+        ))
+    }
+}
+
+fn validate_ext_g_state_identity_transfer(
+    dict: &PdfDictionary,
+    key: &str,
+    label: &str,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get(key) else {
+        return Ok(());
+    };
+    if ext_g_state_transfer_value_is_identity(value) {
+        return Ok(());
+    }
+    match value {
+        PdfObject::Name(_) | PdfObject::Array(_) => Err(format!(
+            "{label} /{key} must be /Identity or four /Identity names"
+        )),
+        other => Err(format!(
+            "{label} /{key} resolved to {}, expected Name or Array",
+            other.variant_name()
+        )),
+    }
+}
+
+fn ext_g_state_transfer_value_is_identity(value: &PdfObject) -> bool {
+    match value {
+        PdfObject::Name(name) => name == "Identity",
+        PdfObject::Array(items) if items.len() == 4 => items
+            .iter()
+            .all(|item| matches!(item.as_name(), Some("Identity"))),
+        _ => false,
+    }
+}
+
+fn validate_ext_g_state_dash_object(
+    dict: &PdfDictionary,
+    label: &str,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get("D") else {
+        return Ok(());
+    };
+    let Some(items) = value.as_array() else {
+        return Err(format!(
+            "{label} /D resolved to {}, expected Array",
+            value.variant_name()
+        ));
+    };
+    if items.len() != 2 {
+        return Err(format!("{label} /D must contain dash array and phase"));
+    }
+    let Some(pattern_items) = items[0].as_array() else {
+        return Err(format!(
+            "{label} /D dash pattern resolved to {}, expected Array",
+            items[0].variant_name()
+        ));
+    };
+    if pattern_items.len() > 64 {
+        return Err(format!("{label} /D dash pattern exceeds 64 elements"));
+    }
+    let mut all_zero = !pattern_items.is_empty();
+    for (idx, item) in pattern_items.iter().enumerate() {
+        let Some(number) = item.as_number() else {
+            return Err(format!(
+                "{label} /D dash pattern entry {} resolved to {}, expected Number",
+                idx + 1,
+                item.variant_name()
+            ));
+        };
+        if !number.is_finite() || number < 0.0 {
+            return Err(format!(
+                "{label} /D dash pattern entry {} must be finite and nonnegative",
+                idx + 1
+            ));
+        }
+        all_zero &= number == 0.0;
+    }
+    if all_zero {
+        return Err(format!(
+            "{label} /D dash pattern must not be all zero values"
+        ));
+    }
+    let Some(phase) = items[1].as_number() else {
+        return Err(format!(
+            "{label} /D phase resolved to {}, expected Number",
+            items[1].variant_name()
+        ));
+    };
+    if phase.is_finite() && phase >= 0.0 {
+        Ok(())
+    } else {
+        Err(format!("{label} /D phase must be finite and nonnegative"))
+    }
+}
+
+fn validate_ext_g_state_font_object(
+    dict: &PdfDictionary,
+    label: &str,
+) -> std::result::Result<(), String> {
+    let Some(value) = dict.get("Font") else {
+        return Ok(());
+    };
+    let Some(items) = value.as_array() else {
+        return Err(format!(
+            "{label} /Font resolved to {}, expected Array",
+            value.variant_name()
+        ));
+    };
+    if items.len() != 2 {
+        return Err(format!("{label} /Font must contain name and size"));
+    }
+    let Some(name) = items[0].as_name() else {
+        return Err(format!(
+            "{label} /Font name resolved to {}, expected Name",
+            items[0].variant_name()
+        ));
+    };
+    if name.is_empty() {
+        return Err(format!("{label} /Font name must not be empty"));
+    }
+    let Some(size) = items[1].as_number() else {
+        return Err(format!(
+            "{label} /Font size resolved to {}, expected Number",
+            items[1].variant_name()
+        ));
+    };
+    if size.is_finite() && size >= 0.0 {
+        Ok(())
+    } else {
+        Err(format!("{label} /Font size must be finite and nonnegative"))
+    }
+}
+
+fn normalized_flatness_tolerance(flatness: f64) -> f64 {
+    if !flatness.is_finite() {
+        return 0.5;
+    }
+    flatness.clamp(0.01, 100.0)
+}
+
+fn normalized_smoothness_tolerance(smoothness: f64) -> f64 {
+    if !smoothness.is_finite() || smoothness < 0.0 {
+        return 0.0;
+    }
+    smoothness.clamp(0.0, 1.0)
 }
 
 impl Default for GraphicsState {
@@ -453,6 +870,11 @@ impl Default for GraphicsState {
             stroke_overprint: false,
             fill_overprint: false,
             overprint_mode: 0,
+            stroke_adjustment: false,
+            alpha_source: false,
+            text_knockout: true,
+            flatness: 0.5,
+            smoothness: 0.0,
             text: TextState::default(),
             clip_dirty: false,
             fill_pattern_name: None,
@@ -486,6 +908,11 @@ impl GraphicsState {
             stroke_overprint: self.stroke_overprint,
             fill_overprint: self.fill_overprint,
             overprint_mode: self.overprint_mode,
+            stroke_adjustment: self.stroke_adjustment,
+            alpha_source: self.alpha_source,
+            text_knockout: self.text_knockout,
+            flatness: self.flatness,
+            smoothness: self.smoothness,
             text: self.text.clone(),
             clip_dirty: self.clip_dirty,
             fill_pattern_name: self.fill_pattern_name.clone(),
@@ -513,6 +940,11 @@ impl GraphicsState {
                 self.stroke_overprint = snap.stroke_overprint;
                 self.fill_overprint = snap.fill_overprint;
                 self.overprint_mode = snap.overprint_mode;
+                self.stroke_adjustment = snap.stroke_adjustment;
+                self.alpha_source = snap.alpha_source;
+                self.text_knockout = snap.text_knockout;
+                self.flatness = snap.flatness;
+                self.smoothness = snap.smoothness;
                 self.text = snap.text;
                 self.clip_dirty = snap.clip_dirty;
                 self.fill_pattern_name = snap.fill_pattern_name;
@@ -541,7 +973,7 @@ impl GraphicsState {
                     self.rendering_intent = n.to_string();
                 }
             }
-            "i" => {}
+            "i" => self.op_i(op),
             "G" => self.op_stroke_gray(op),
             "g" => self.op_fill_gray(op),
             "RG" => self.op_stroke_rgb(op),
@@ -654,6 +1086,38 @@ impl GraphicsState {
         if let Some(mode) = dict.get_integer("OPM") {
             self.overprint_mode = if mode == 1 { 1 } else { 0 };
         }
+        if let Some(stroke_adjustment) = dict.get_bool("SA") {
+            self.stroke_adjustment = stroke_adjustment;
+        }
+        if let Some(alpha_source) = dict.get_bool("AIS") {
+            self.alpha_source = alpha_source;
+        }
+        if let Some(text_knockout) = dict.get_bool("TK") {
+            self.text_knockout = text_knockout;
+        }
+        if let Some(flatness) = dict_number(dict, "FL") {
+            self.set_flatness(flatness);
+        }
+        if let Some(smoothness) = dict_number(dict, "SM") {
+            self.set_smoothness(smoothness);
+        }
+        if let Some(dash) = dict.get_array("D").and_then(parse_ext_g_state_dash) {
+            self.dash = dash;
+        }
+        if let Some((name, size)) = dict.get("Font").and_then(parse_ext_g_state_font) {
+            self.text.font_name = name.to_string();
+            self.text.font_size = size;
+        }
+    }
+
+    pub fn try_apply_ext_g_state(
+        &mut self,
+        dict: &PdfDictionary,
+        label: &str,
+    ) -> std::result::Result<(), String> {
+        validate_ext_g_state_render_metadata(dict, label)?;
+        self.apply_ext_g_state(dict);
+        Ok(())
     }
 
     pub fn text_position(&self) -> (f64, f64) {
@@ -662,6 +1126,26 @@ impl GraphicsState {
 
     pub fn effective_font_size(&self) -> f64 {
         (self.text.tm[0].powi(2) + self.text.tm[1].powi(2)).sqrt()
+    }
+
+    pub fn path_flatness_tolerance(&self) -> f64 {
+        normalized_flatness_tolerance(self.flatness)
+    }
+
+    pub fn shading_smoothness_tolerance(&self) -> f64 {
+        normalized_smoothness_tolerance(self.smoothness)
+    }
+
+    fn set_flatness(&mut self, flatness: f64) {
+        if flatness.is_finite() && flatness >= 0.0 {
+            self.flatness = flatness;
+        }
+    }
+
+    fn set_smoothness(&mut self, smoothness: f64) {
+        if smoothness.is_finite() && smoothness >= 0.0 {
+            self.smoothness = smoothness;
+        }
     }
 
     fn op_cm(&mut self, op: &ContentOperation) {
@@ -698,6 +1182,12 @@ impl GraphicsState {
 
     fn op_miter_limit(&mut self, op: &ContentOperation) {
         self.miter_limit = op.number(0).unwrap_or(10.0).max(1.0);
+    }
+
+    fn op_i(&mut self, op: &ContentOperation) {
+        if let Some(flatness) = op.number(0) {
+            self.set_flatness(flatness);
+        }
     }
 
     fn op_d(&mut self, op: &ContentOperation) {
@@ -1017,6 +1507,311 @@ mod tests {
         assert!(!gs.fill_overprint);
         assert_eq!(gs.overprint_mode, 1);
         assert_eq!(gs.rendering_intent, "Perceptual");
+    }
+
+    #[test]
+    fn try_apply_ext_gstate_applies_valid_metadata() {
+        let mut gs = GraphicsState::new();
+        let mut ext = PdfDictionary::empty();
+        ext.insert("Type", PdfObject::Name("ExtGState".to_string()));
+        ext.insert("ca", PdfObject::Real(0.25));
+        ext.insert("CA", PdfObject::Real(0.75));
+        ext.insert("BM", PdfObject::Name("Multiply".to_string()));
+        ext.insert("SA", PdfObject::Boolean(false));
+        ext.insert("AIS", PdfObject::Boolean(false));
+        ext.insert("TK", PdfObject::Boolean(true));
+        ext.insert("TR", PdfObject::Name("Identity".to_string()));
+        ext.insert(
+            "TR2",
+            PdfObject::Array(vec![
+                PdfObject::Name("Identity".to_string()),
+                PdfObject::Name("Identity".to_string()),
+                PdfObject::Name("Identity".to_string()),
+                PdfObject::Name("Identity".to_string()),
+            ]),
+        );
+        ext.insert(
+            "Font",
+            PdfObject::Array(vec![
+                PdfObject::Name("F2".to_string()),
+                PdfObject::Real(13.0),
+            ]),
+        );
+        ext.insert(
+            "D",
+            PdfObject::Array(vec![
+                PdfObject::Array(vec![PdfObject::Real(3.0), PdfObject::Real(1.0)]),
+                PdfObject::Real(2.0),
+            ]),
+        );
+
+        gs.try_apply_ext_g_state(&ext, "ExtGState /GS1")
+            .expect("valid ExtGState metadata should apply");
+
+        assert_eq!(gs.fill_alpha, 0.25);
+        assert_eq!(gs.stroke_alpha, 0.75);
+        assert_eq!(gs.blend_mode, BlendMode::Multiply);
+        assert!(!gs.stroke_adjustment);
+        assert!(!gs.alpha_source);
+        assert!(gs.text_knockout);
+        assert_eq!(gs.text.font_name, "F2");
+        assert_eq!(gs.text.font_size, 13.0);
+        assert_eq!(gs.dash.pattern, vec![3.0, 1.0]);
+        assert_eq!(gs.dash.phase, 2.0);
+    }
+
+    #[test]
+    fn try_apply_ext_gstate_rejects_malformed_metadata_without_mutating_state() {
+        let mut gs = GraphicsState::new();
+        let mut valid = PdfDictionary::empty();
+        valid.insert("ca", PdfObject::Real(0.4));
+        valid.insert("BM", PdfObject::Name("Multiply".to_string()));
+        valid.insert(
+            "Font",
+            PdfObject::Array(vec![
+                PdfObject::Name("F2".to_string()),
+                PdfObject::Real(10.0),
+            ]),
+        );
+        gs.try_apply_ext_g_state(&valid, "ExtGState /GS1")
+            .expect("valid seed ExtGState should apply");
+
+        let before_fill_alpha = gs.fill_alpha;
+        let before_blend = gs.blend_mode;
+        let before_font = gs.text.font_name.clone();
+        let before_font_size = gs.text.font_size;
+
+        let mut malformed = PdfDictionary::empty();
+        malformed.insert("ca", PdfObject::Name("Bad".to_string()));
+        malformed.insert("BM", PdfObject::Name("Normal".to_string()));
+        malformed.insert(
+            "Font",
+            PdfObject::Array(vec![
+                PdfObject::Name("F3".to_string()),
+                PdfObject::Real(20.0),
+            ]),
+        );
+
+        let err = gs
+            .try_apply_ext_g_state(&malformed, "ExtGState /GS1")
+            .expect_err("malformed ExtGState metadata must not apply");
+
+        assert_eq!(err, "ExtGState /GS1 /ca resolved to Name, expected Number");
+        assert_eq!(gs.fill_alpha, before_fill_alpha);
+        assert_eq!(gs.blend_mode, before_blend);
+        assert_eq!(gs.text.font_name, before_font);
+        assert_eq!(gs.text.font_size, before_font_size);
+    }
+
+    #[test]
+    fn try_apply_ext_gstate_tracks_paint_dependent_semantic_flags() {
+        let mut gs = GraphicsState::new();
+        let mut ext = PdfDictionary::empty();
+        ext.insert("SA", PdfObject::Boolean(true));
+        ext.insert("AIS", PdfObject::Boolean(true));
+        ext.insert("TK", PdfObject::Boolean(false));
+
+        gs.try_apply_ext_g_state(&ext, "ExtGState /GS1")
+            .expect("paint-dependent ExtGState flags should enter graphics state");
+
+        assert!(gs.stroke_adjustment);
+        assert!(gs.alpha_source);
+        assert!(!gs.text_knockout);
+
+        gs.push();
+        let mut reset = PdfDictionary::empty();
+        reset.insert("SA", PdfObject::Boolean(false));
+        reset.insert("AIS", PdfObject::Boolean(false));
+        reset.insert("TK", PdfObject::Boolean(true));
+        gs.try_apply_ext_g_state(&reset, "ExtGState /GS2")
+            .expect("semantic flags should reset through ExtGState");
+        assert!(!gs.stroke_adjustment);
+        assert!(!gs.alpha_source);
+        assert!(gs.text_knockout);
+
+        gs.pop();
+        assert!(gs.stroke_adjustment);
+        assert!(gs.alpha_source);
+        assert!(!gs.text_knockout);
+    }
+
+    #[test]
+    fn try_apply_ext_gstate_rejects_malformed_or_unsupported_metadata_without_mutating_state() {
+        let mut gs = GraphicsState::new();
+        let mut valid = PdfDictionary::empty();
+        valid.insert("ca", PdfObject::Real(0.4));
+        valid.insert("BM", PdfObject::Name("Multiply".to_string()));
+        valid.insert(
+            "Font",
+            PdfObject::Array(vec![
+                PdfObject::Name("F2".to_string()),
+                PdfObject::Real(10.0),
+            ]),
+        );
+        gs.try_apply_ext_g_state(&valid, "ExtGState /GS1")
+            .expect("valid seed ExtGState should apply");
+
+        let before_fill_alpha = gs.fill_alpha;
+        let before_blend = gs.blend_mode;
+        let before_font = gs.text.font_name.clone();
+        let before_font_size = gs.text.font_size;
+
+        for (key, value, expected) in [
+            (
+                "SA",
+                PdfObject::Name("true".to_string()),
+                "/SA resolved to Name, expected Boolean",
+            ),
+            (
+                "AIS",
+                PdfObject::Name("true".to_string()),
+                "/AIS resolved to Name, expected Boolean",
+            ),
+            (
+                "TK",
+                PdfObject::Integer(0),
+                "/TK resolved to Integer, expected Boolean",
+            ),
+            (
+                "TR",
+                PdfObject::Name("Default".to_string()),
+                "/TR must be /Identity or four /Identity names",
+            ),
+            (
+                "TR2",
+                PdfObject::Array(vec![
+                    PdfObject::Name("Identity".to_string()),
+                    PdfObject::Name("Default".to_string()),
+                    PdfObject::Name("Identity".to_string()),
+                    PdfObject::Name("Identity".to_string()),
+                ]),
+                "/TR2 must be /Identity or four /Identity names",
+            ),
+            (
+                "Type",
+                PdfObject::Name("NotExtGState".to_string()),
+                "/Type must be /ExtGState",
+            ),
+        ] {
+            let mut attempted = PdfDictionary::empty();
+            attempted.insert("ca", PdfObject::Real(0.9));
+            attempted.insert("BM", PdfObject::Name("Normal".to_string()));
+            attempted.insert(
+                "Font",
+                PdfObject::Array(vec![
+                    PdfObject::Name("F3".to_string()),
+                    PdfObject::Real(20.0),
+                ]),
+            );
+            attempted.insert(key, value);
+
+            let err = gs
+                .try_apply_ext_g_state(&attempted, "ExtGState /GS2")
+                .expect_err("unsupported ExtGState metadata must not apply");
+
+            assert!(
+                err.contains(expected),
+                "{key} should report {expected}, got {err}"
+            );
+            assert_eq!(gs.fill_alpha, before_fill_alpha);
+            assert_eq!(gs.blend_mode, before_blend);
+            assert_eq!(gs.text.font_name, before_font);
+            assert_eq!(gs.text.font_size, before_font_size);
+        }
+    }
+
+    #[test]
+    fn ext_gstate_dash_pattern_updates_graphics_state() {
+        let mut gs = GraphicsState::new();
+        let mut ext = PdfDictionary::empty();
+        ext.insert(
+            "D",
+            PdfObject::Array(vec![
+                PdfObject::Array(vec![PdfObject::Real(6.0), PdfObject::Real(2.0)]),
+                PdfObject::Real(1.0),
+            ]),
+        );
+
+        gs.apply_ext_g_state(&ext);
+
+        assert_eq!(gs.dash.pattern, vec![6.0, 2.0]);
+        assert_eq!(gs.dash.phase, 1.0);
+    }
+
+    #[test]
+    fn ext_gstate_font_updates_text_state() {
+        let mut gs = GraphicsState::new();
+        gs.process(&op(
+            "Tf",
+            [Operand::Name("F1".to_string()), Operand::Real(10.0)],
+        ));
+
+        let mut ext = PdfDictionary::empty();
+        ext.insert(
+            "Font",
+            PdfObject::Array(vec![
+                PdfObject::Name("F2".to_string()),
+                PdfObject::Real(14.5),
+            ]),
+        );
+        gs.apply_ext_g_state(&ext);
+
+        assert_eq!(gs.text.font_name, "F2");
+        assert_eq!(gs.text.font_size, 14.5);
+
+        let mut malformed = PdfDictionary::empty();
+        malformed.insert(
+            "Font",
+            PdfObject::Array(vec![
+                PdfObject::String(b"not-a-name".to_vec()),
+                PdfObject::Real(99.0),
+            ]),
+        );
+        gs.apply_ext_g_state(&malformed);
+
+        assert_eq!(gs.text.font_name, "F2");
+        assert_eq!(gs.text.font_size, 14.5);
+    }
+
+    #[test]
+    fn flatness_operator_and_extgstate_update_graphics_state() {
+        let mut gs = GraphicsState::new();
+
+        gs.process(&op("i", [Operand::Real(2.25)]));
+        assert_eq!(gs.flatness, 2.25);
+        assert_eq!(gs.path_flatness_tolerance(), 2.25);
+
+        let mut ext = PdfDictionary::empty();
+        ext.insert("FL", PdfObject::Real(0.125));
+        ext.insert("SM", PdfObject::Real(0.75));
+        gs.apply_ext_g_state(&ext);
+
+        assert_eq!(gs.flatness, 0.125);
+        assert_eq!(gs.smoothness, 0.75);
+        assert_eq!(gs.path_flatness_tolerance(), 0.125);
+        assert_eq!(gs.shading_smoothness_tolerance(), 0.75);
+
+        gs.push();
+        gs.process(&op("i", [Operand::Real(4.0)]));
+        assert_eq!(gs.flatness, 4.0);
+        gs.pop();
+        assert_eq!(gs.flatness, 0.125);
+        assert_eq!(gs.smoothness, 0.75);
+
+        gs.process(&op("i", [Operand::Real(-1.0)]));
+        assert_eq!(gs.flatness, 0.125);
+
+        let mut malformed = PdfDictionary::empty();
+        malformed.insert("FL", PdfObject::Real(f64::NAN));
+        malformed.insert("SM", PdfObject::Real(-1.0));
+        gs.apply_ext_g_state(&malformed);
+        assert_eq!(gs.flatness, 0.125);
+        assert_eq!(gs.smoothness, 0.75);
+
+        ext.insert("SM", PdfObject::Real(2.0));
+        gs.apply_ext_g_state(&ext);
+        assert_eq!(gs.smoothness, 2.0);
+        assert_eq!(gs.shading_smoothness_tolerance(), 1.0);
     }
 
     #[test]

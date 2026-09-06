@@ -3,7 +3,7 @@ package io.wellfriendpdf.packagesmoke;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import io.wellfriendpdf.Wellfriend;
+import io.wellfriendpdf.WellfriendPdf;
 
 public final class PackageSmoke {
     private PackageSmoke() {
@@ -54,6 +54,9 @@ public final class PackageSmoke {
             if (!parser.contains("\"schema_version\"")) {
                 throw new AssertionError("parser report missing schema_version");
             }
+            if (!doc.prepressPlateReportJson(1).contains("prepress_plate_report")) {
+                throw new AssertionError("prepress plate report surface missing");
+            }
             if (!doc.advancedChunksJson().contains("advanced_rag_chunk_set")
                     || !doc.semanticBundleJson().contains("semantic_binding_report")
                     || !doc.semanticSearchJson("the").contains("semantic_search_report")) {
@@ -91,7 +94,7 @@ public final class PackageSmoke {
 
         String feature = WellfriendPdf.featureReportJson();
         if (!feature.contains("engine_tile_progressive_resume_supported")
-                || !feature.contains("engine_render_cancellation_supported_binding_tokens_later")) {
+                || !feature.contains("engine_render_cancellation_progressive_bindings_source_available")) {
             throw new AssertionError("feature report missing Annotation Ocg Rendering progress/cancellation posture");
         }
         if (!feature.contains("\"transparency_closeout_transparency_closure\"")

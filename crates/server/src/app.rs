@@ -36,6 +36,60 @@ use crate::routes;
 //   Render PDF pages to PNG or JPEG images as a ZIP archive.
 //   Fields: file, pages, dpi (24-600), format (png/jpg), quality.
 //
+// POST /api/v1/render-contract
+//   Build and validate a canonical schema-v1 render contract for one PDF page.
+//   Fields: file, page, dpi, render_mode, pixel_format, alpha_mode, width,
+//           height, stride, clip_*, transform_*, background_*, resource budget.
+//
+// POST /api/v1/render-contract/png
+// POST /api/v1/render-contract/raw
+// POST /api/v1/render-contract/png-with-font-substitution-report
+// POST /api/v1/render-contract/raw-with-font-substitution-report
+//   Render one page through a posted schema-v1 contract. Report variants return
+//   multipart/mixed with JSON metadata/report first and rendered bytes second.
+//   Fields: file, contract_json, password.
+//
+// POST /api/v1/render-contract/backend-plan-arena-report
+//   Compile one page into the retained hot/cold backend-plan arena report.
+//   Fields: file, page, dpi, render_mode, password.
+//
+// POST /api/v1/document-views/report
+//   Report canonical lazy render/edit/semantic/validation view boundaries.
+//   Fields: file, password.
+//
+// POST /api/v1/image-decode/capability-report
+//   Report per-image decoder metadata/region/reduction/progressive capability.
+//   Fields: file, password.
+//
+// POST /api/v1/prepress/plate-report
+//   Report the active render interpreter's sparse Separation/DeviceN plate
+//   framebuffer state for one page. Fields: file, page, dpi, password.
+//
+// POST /api/v1/editing-transactions/apply-with-render-invalidation
+//   Apply a source-backed text transaction and return multipart/mixed with the
+//   SDK transaction/render-invalidation JSON report and edited PDF bytes.
+//   Fields: file, request_json, render_invalidation_options_json, password.
+//
+// POST /api/v1/progressive/{id}/apply-render-invalidation
+//   Apply a source-edit render-invalidation plan to the session-owned render
+//   cache and mark affected retained tile publications obsolete.
+//
+// POST /api/v1/progressive/{id}/render-context
+//   Revise caller-visible render identity state and mark all prior retained tile
+//   publications obsolete.
+//
+// POST /api/v1/progressive-image-decode/lifecycle-report
+//   Run a bounded progressive image-decode lifecycle report for one discovered
+//   image without decoding pixels. Fields: file, request_json, password.
+//
+// POST /api/v1/progressive/{id}/queue/execute
+//   Execute owned current-page progressive viewer queue work and return
+//   adjacent-page prefetch entries as deferred queue items.
+//
+// POST /api/v1/progressive/{id}/adjacent-prefetch/execute
+//   Execute one current adjacent-page prefetch as a retained page-owned
+//   progressive child session.
+//
 // POST /api/v1/parse
 //   Parse a PDF into the canonical document model, serialized as Markdown /
 //   JSON / HTML (the same schema the CLI `parse` and the bindings emit).
@@ -153,6 +207,26 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
             post(routes::progressive::resume),
         )
         .route(
+            "/api/v1/progressive/:id/viewport",
+            post(routes::progressive::revise_viewport),
+        )
+        .route(
+            "/api/v1/progressive/:id/dirty-region",
+            post(routes::progressive::revise_dirty_region),
+        )
+        .route(
+            "/api/v1/progressive/:id/render-context",
+            post(routes::progressive::revise_render_context),
+        )
+        .route(
+            "/api/v1/progressive/:id/apply-render-invalidation",
+            post(routes::progressive::apply_render_invalidation),
+        )
+        .route(
+            "/api/v1/progressive/:id/evaluate-publication",
+            post(routes::progressive::evaluate_publication),
+        )
+        .route(
             "/api/v1/progressive/:id/cancel",
             post(routes::progressive::cancel),
         )
@@ -163,6 +237,22 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
         .route(
             "/api/v1/progressive/:id/status",
             get(routes::progressive::status),
+        )
+        .route(
+            "/api/v1/progressive/:id/queue",
+            get(routes::progressive::queue),
+        )
+        .route(
+            "/api/v1/progressive/:id/queue/execute",
+            post(routes::progressive::execute_queue),
+        )
+        .route(
+            "/api/v1/progressive/:id/adjacent-prefetch/execute",
+            post(routes::progressive::execute_adjacent_prefetch),
+        )
+        .route(
+            "/api/v1/progressive/:id/callbacks",
+            get(routes::progressive::callbacks),
         )
         .route(
             "/api/v1/progressive/:id/finish",
@@ -192,6 +282,50 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
         )
         .route("/api/v1/analyze", post(routes::analyze::handler))
         .route("/api/v1/pdf2img", post(routes::pdf2img::handler))
+        .route(
+            "/api/v1/render-contract",
+            post(routes::render_contract::handler),
+        )
+        .route(
+            "/api/v1/render-contract/png",
+            post(routes::render_contract::render_png),
+        )
+        .route(
+            "/api/v1/render-contract/raw",
+            post(routes::render_contract::render_raw),
+        )
+        .route(
+            "/api/v1/render-contract/png-with-font-substitution-report",
+            post(routes::render_contract::render_png_with_font_substitution_report),
+        )
+        .route(
+            "/api/v1/render-contract/raw-with-font-substitution-report",
+            post(routes::render_contract::render_raw_with_font_substitution_report),
+        )
+        .route(
+            "/api/v1/render-contract/backend-plan-arena-report",
+            post(routes::render_contract::backend_plan_arena_report),
+        )
+        .route(
+            "/api/v1/document-views/report",
+            post(routes::document_views::report),
+        )
+        .route(
+            "/api/v1/image-decode/capability-report",
+            post(routes::image_decode::capability_report),
+        )
+        .route(
+            "/api/v1/prepress/plate-report",
+            post(routes::prepress::plate_report),
+        )
+        .route(
+            "/api/v1/editing-transactions/apply-with-render-invalidation",
+            post(routes::editing_transactions::apply_with_render_invalidation),
+        )
+        .route(
+            "/api/v1/progressive-image-decode/lifecycle-report",
+            post(routes::image_decode::progressive_lifecycle_report),
+        )
         .route("/api/v1/parse", post(routes::parse_ops::parse))
         .route("/api/v1/chunk", post(routes::parse_ops::chunk))
         .route(

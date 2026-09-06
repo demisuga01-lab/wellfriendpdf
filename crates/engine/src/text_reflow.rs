@@ -3300,6 +3300,7 @@ fn apply_source_linked_reflow(
         font_policy: request.font_policy.clone(),
         normalization_policy: Some("preserve_exact_sequence".into()),
         direction: request.direction.clone(),
+        ..SceneTextEditRequest::default()
     };
     let dirty =
         dirty_region_report(&mutation_input, &editing_transactions_request).unwrap_or_else(|err| {

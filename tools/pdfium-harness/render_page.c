@@ -3,6 +3,8 @@
 // This program is intentionally a correctness/smoke harness, not a benchmark.
 // It emits one JSONL record per rendered page and never records timing data.
 
+#define _CRT_SECURE_NO_WARNINGS
+
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -13,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fpdf_formfill.h"
 #include "fpdfview.h"
 
 #define DEFAULT_DPI 72
@@ -146,6 +149,34 @@ static const char* pixel_format_name(PixelFormatMode mode) {
     return mode == PIXEL_FORMAT_BGRX ? "bgrx" : "bgra";
 }
 
+static const char* form_rendering_name(bool forms_requested, bool forms_rendered) {
+    if (!forms_requested) {
+        return "disabled";
+    }
+    return forms_rendered ? "pdfium_formfill" : "not_rendered";
+}
+
+static bool validate_form_rendering_options(const Options* options, const char** reason) {
+    if (!options->forms) {
+        return true;
+    }
+    // PDFium's form-fill renderer accepts a viewport rectangle, not the
+    // arbitrary FS_MATRIX/clip path used by this harness for page content.
+    if (options->has_matrix) {
+        *reason = "PDFium form-fill rendering with --matrix is not supported by this harness";
+        return false;
+    }
+    if (options->has_clip) {
+        *reason = "PDFium form-fill rendering with --clip is not supported by this harness";
+        return false;
+    }
+    if (options->page_box != PAGE_BOX_MEDIA) {
+        *reason = "PDFium form-fill rendering is limited to the media page box in this harness";
+        return false;
+    }
+    return true;
+}
+
 static uint64_t fnv1a64(const unsigned char* data, size_t len) {
     uint64_t hash = FNV_OFFSET;
     for (size_t index = 0; index < len; ++index) {
@@ -173,16 +204,57 @@ static void json_escape(FILE* output, const char* value) {
     }
 }
 
+static const char* failure_class_for_code(const char* code) {
+    if (strcmp(code, "page_range") == 0) {
+        return "invalid_request";
+    }
+    if (strcmp(code, "forms_policy") == 0) {
+        return "unsupported_option_combination";
+    }
+    if (strcmp(code, "load_document") == 0 || strcmp(code, "load_page") == 0 ||
+        strcmp(code, "formfill_init") == 0 || strcmp(code, "page_box") == 0) {
+        return "pdfium_runtime";
+    }
+    if (strcmp(code, "bitmap_create") == 0 || strcmp(code, "bitmap_buffer") == 0 ||
+        strcmp(code, "bitmap_size") == 0) {
+        return "bitmap_surface";
+    }
+    if (strcmp(code, "output_path") == 0 || strcmp(code, "write_output") == 0) {
+        return "raw_output";
+    }
+    if (strcmp(code, "manifest") == 0) {
+        return "manifest_output";
+    }
+    return "harness_error";
+}
+
 static void emit_error(FILE* jsonl, int page, const char* code, const char* detail) {
     if (jsonl == NULL) {
         return;
     }
-    fprintf(jsonl, "{\"engine\":\"pdfium-c\",\"page\":%d,\"status\":\"error\",\"code\":\"", page);
+    fprintf(jsonl, "{\"engine\":\"pdfium-c\",\"page\":%d,\"status\":\"error\",\"failure_class\":\"", page);
+    json_escape(jsonl, failure_class_for_code(code));
+    fputs("\",\"code\":\"", jsonl);
     json_escape(jsonl, code);
     fputs("\",\"detail\":\"", jsonl);
     json_escape(jsonl, detail);
     fputs("\"}\n", jsonl);
     fflush(jsonl);
+}
+
+static void write_json_matrix(FILE* output, const FS_MATRIX* matrix) {
+    fprintf(output,
+            "[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g]",
+            matrix->a,
+            matrix->b,
+            matrix->c,
+            matrix->d,
+            matrix->e,
+            matrix->f);
+}
+
+static void write_json_clip(FILE* output, const FS_RECTF* clip) {
+    fprintf(output, "[%.9g,%.9g,%.9g,%.9g]", clip->left, clip->top, clip->right, clip->bottom);
 }
 
 static void emit_success(
@@ -193,7 +265,11 @@ static void emit_success(
     int width,
     int height,
     int stride,
+    size_t raw_bytes,
     uint64_t hash,
+    const FS_MATRIX* matrix,
+    const FS_RECTF* clip,
+    bool forms_rendered,
     const char* output_path
 ) {
     if (jsonl == NULL) {
@@ -201,14 +277,20 @@ static void emit_success(
     }
     fprintf(jsonl,
             "{\"engine\":\"pdfium-c\",\"page\":%d,\"status\":\"ok\","
-            "\"width\":%d,\"height\":%d,\"stride\":%d,\"dpi\":%d,"
+            "\"width\":%d,\"height\":%d,\"output_dimensions\":[%d,%d],\"stride\":%d,"
+            "\"raw_bytes\":%zu,\"dpi\":%d,"
             "\"page_box\":\"%s\",\"page_box_rect\":[%.6g,%.6g,%.6g,%.6g],"
             "\"pixel_format\":\"%s\",\"hash_fnv1a64\":\"%016" PRIx64 "\","
-            "\"annotations\":%s,\"forms_requested\":%s,\"workers\":%d,\"output\":\"",
+            "\"annotations\":%s,\"forms_requested\":%s,\"forms_rendered\":%s,"
+            "\"form_rendering\":\"%s\",\"workers\":%d,\"worker_execution\":\"serial\","
+            "\"matrix_source\":\"%s\",\"matrix\":",
             page,
             width,
             height,
+            width,
+            height,
             stride,
+            raw_bytes,
             options->dpi,
             page_box_name(options->page_box),
             page_box.left,
@@ -219,7 +301,14 @@ static void emit_success(
             hash,
             options->annotations ? "true" : "false",
             options->forms ? "true" : "false",
-            options->workers);
+            forms_rendered ? "true" : "false",
+            form_rendering_name(options->forms, forms_rendered),
+            options->workers,
+            options->has_matrix ? "requested" : "dpi_page_box");
+    write_json_matrix(jsonl, matrix);
+    fprintf(jsonl, ",\"clip_source\":\"%s\",\"clip\":", options->has_clip ? "requested" : "full_bitmap");
+    write_json_clip(jsonl, clip);
+    fputs(",\"output_kind\":\"raw_bitmap\",\"output\":\"", jsonl);
     json_escape(jsonl, output_path == NULL ? "" : output_path);
     fputs("\"}\n", jsonl);
     fflush(jsonl);
@@ -280,9 +369,14 @@ static bool emit_manifest(const Options* options, FPDF_DOCUMENT document, int to
             "\"pixel_format\":\"%s\","
             "\"annotations\":%s,"
             "\"forms_requested\":%s,"
+            "\"form_rendering\":\"%s\","
+            "\"formfill_api\":\"%s\","
+            "\"document_actions_run\":false,"
+            "\"background_argb\":\"%08" PRIx32 "\","
             "\"workers\":%d,"
-            "\"outputs\":{\"raw_bitmap\":\"%s\",\"jsonl\":\"%s\"}"
-            "}\n",
+            "\"worker_execution\":\"serial\","
+            "\"matrix_requested\":%s,"
+            "\"matrix\":",
             total_pages,
             options->all_pages ? "all" : "single",
             options->page_number,
@@ -293,7 +387,25 @@ static bool emit_manifest(const Options* options, FPDF_DOCUMENT document, int to
             pixel_format_name(options->pixel_format),
             options->annotations ? "true" : "false",
             options->forms ? "true" : "false",
+            form_rendering_name(options->forms, options->forms),
+            options->forms ? "fpdf_formfill.h" : "none",
+            options->background_argb,
             options->workers,
+            options->has_matrix ? "true" : "false");
+    if (options->has_matrix) {
+        write_json_matrix(manifest, &options->matrix);
+    } else {
+        fputs("null", manifest);
+    }
+    fprintf(manifest, ",\"clip_requested\":%s,\"clip\":", options->has_clip ? "true" : "false");
+    if (options->has_clip) {
+        write_json_clip(manifest, &options->clip);
+    } else {
+        fputs("null", manifest);
+    }
+    fprintf(manifest,
+            ",\"outputs\":{\"raw_bitmap\":\"%s\",\"jsonl\":\"%s\"}"
+            "}\n",
             options->output_path == NULL ? "" : options->output_path,
             options->jsonl_path == NULL ? "stdout" : options->jsonl_path);
     return fclose(manifest) == 0;
@@ -321,22 +433,30 @@ static char* duplicate_string(const char* value) {
     return copy;
 }
 
-static char* page_output_path(const Options* options, int page_number) {
+static bool page_output_path(const Options* options, int page_number, char** out) {
+    *out = NULL;
     if (options->output_path == NULL) {
-        return NULL;
+        return true;
     }
     if (!options->all_pages) {
-        return duplicate_string(options->output_path);
+        *out = duplicate_string(options->output_path);
+        return *out != NULL;
     }
     size_t needed = strlen(options->output_path) + 32;
-    char* output = (char*)malloc(needed);
-    if (output != NULL) {
-        snprintf(output, needed, "%s-page-%04d.bgra", options->output_path, page_number);
+    *out = (char*)malloc(needed);
+    if (*out != NULL) {
+        snprintf(*out, needed, "%s-page-%04d.bgra", options->output_path, page_number);
     }
-    return output;
+    return *out != NULL;
 }
 
-static int render_page(FPDF_DOCUMENT document, const Options* options, int page_number, FILE* jsonl) {
+static int render_page(
+    FPDF_DOCUMENT document,
+    const Options* options,
+    int page_number,
+    FILE* jsonl,
+    FPDF_FORMHANDLE form_handle
+) {
     FPDF_PAGE page = FPDF_LoadPage(document, page_number - 1);
     if (page == NULL) {
         emit_error(jsonl, page_number, "load_page", "FPDF_LoadPage returned null");
@@ -372,6 +492,12 @@ static int render_page(FPDF_DOCUMENT document, const Options* options, int page_
         return 1;
     }
 
+    bool form_page_active = false;
+    if (form_handle != NULL) {
+        FORM_OnAfterLoadPage(page, form_handle);
+        form_page_active = true;
+    }
+
     FPDFBitmap_FillRect(bitmap, 0, 0, width, height, options->background_argb);
     int flags = options->annotations ? FPDF_ANNOT : 0;
     FS_MATRIX matrix = options->has_matrix
@@ -380,26 +506,55 @@ static int render_page(FPDF_DOCUMENT document, const Options* options, int page_
                       (float)(box.top * scale_y)};
     FS_RECTF clip = options->has_clip
         ? options->clip
-        : (FS_RECTF){0, 0, width, height};
+        : (FS_RECTF){0.0f, 0.0f, (float)width, (float)height};
     FPDF_RenderPageBitmapWithMatrix(bitmap, page, &matrix, &clip, flags);
+    if (form_handle != NULL) {
+        FPDF_FFLDraw(form_handle, bitmap, page, 0, 0, width, height, 0, flags);
+    }
 
     int stride = FPDFBitmap_GetStride(bitmap);
     unsigned char* buffer = (unsigned char*)FPDFBitmap_GetBuffer(bitmap);
-    size_t byte_len = stride > 0 && height > 0 ? (size_t)stride * (size_t)height : 0;
-    char* output_path = page_output_path(options, page_number);
+    size_t byte_len = 0;
+    char* output_path = NULL;
     int result = 0;
-    if (buffer == NULL || byte_len == 0) {
+    if (buffer == NULL || stride <= 0 || height <= 0) {
         emit_error(jsonl, page_number, "bitmap_buffer", "PDFium returned an empty bitmap buffer");
         result = 1;
-    } else if (!write_bytes(output_path, buffer, byte_len)) {
-        emit_error(jsonl, page_number, "write_output", "could not write raw BGRA output");
+    } else if ((size_t)stride > SIZE_MAX / (size_t)height) {
+        emit_error(jsonl, page_number, "bitmap_size", "PDFium bitmap stride and height overflow size_t");
         result = 1;
     } else {
-        emit_success(jsonl, options, box, page_number, width, height, stride, fnv1a64(buffer, byte_len), output_path);
+        byte_len = (size_t)stride * (size_t)height;
+    }
+    if (result == 0 && !page_output_path(options, page_number, &output_path)) {
+        emit_error(jsonl, page_number, "output_path", "could not allocate raw output path");
+        result = 1;
+    } else if (result == 0 && !write_bytes(output_path, buffer, byte_len)) {
+        emit_error(jsonl, page_number, "write_output", "could not write raw bitmap output");
+        result = 1;
+    } else if (result == 0) {
+        emit_success(
+            jsonl,
+            options,
+            box,
+            page_number,
+            width,
+            height,
+            stride,
+            byte_len,
+            fnv1a64(buffer, byte_len),
+            &matrix,
+            &clip,
+            form_handle != NULL,
+            output_path
+        );
     }
 
     free(output_path);
     FPDFBitmap_Destroy(bitmap);
+    if (form_page_active) {
+        FORM_OnBeforeClosePage(page, form_handle);
+    }
     FPDF_ClosePage(page);
     return result;
 }
@@ -514,7 +669,12 @@ int main(int argc, char** argv) {
                 usage(argv[0]);
                 return 2;
             }
-            options.clip = (FS_RECTF){values[0], values[1], values[0] + values[2], values[1] + values[3]};
+            if (values[0] > INT_MAX - values[2] || values[1] > INT_MAX - values[3]) {
+                usage(argv[0]);
+                return 2;
+            }
+            options.clip =
+                (FS_RECTF){(float)values[0], (float)values[1], (float)(values[0] + values[2]), (float)(values[1] + values[3])};
             options.has_clip = true;
         } else {
             usage(argv[0]);
@@ -541,6 +701,13 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    const char* form_policy_error = NULL;
+    if (!validate_form_rendering_options(&options, &form_policy_error)) {
+        emit_error(jsonl, options.page_number, "forms_policy", form_policy_error);
+        if (jsonl != stdout) fclose(jsonl);
+        return 1;
+    }
+
     FPDF_InitLibrary();
     FPDF_DOCUMENT document = FPDF_LoadDocument(options.input_path, NULL);
     if (document == NULL) {
@@ -552,9 +719,27 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    FPDF_FORMFILLINFO form_info;
+    memset(&form_info, 0, sizeof(form_info));
+    FPDF_FORMHANDLE form_handle = NULL;
+    if (options.forms) {
+        form_info.version = 1;
+        form_handle = FPDFDOC_InitFormFillEnvironment(document, &form_info);
+        if (form_handle == NULL) {
+            emit_error(jsonl, options.page_number, "formfill_init", "FPDFDOC_InitFormFillEnvironment returned null");
+            FPDF_CloseDocument(document);
+            FPDF_DestroyLibrary();
+            if (jsonl != stdout) fclose(jsonl);
+            return 1;
+        }
+    }
+
     int total_pages = FPDF_GetPageCount(document);
     if (!emit_manifest(&options, document, total_pages)) {
         emit_error(jsonl, options.page_number, "manifest", "could not write version manifest");
+        if (form_handle != NULL) {
+            FPDFDOC_ExitFormFillEnvironment(form_handle);
+        }
         FPDF_CloseDocument(document);
         FPDF_DestroyLibrary();
         if (jsonl != stdout) fclose(jsonl);
@@ -563,15 +748,18 @@ int main(int argc, char** argv) {
     int status = 0;
     if (options.all_pages) {
         for (int page = 1; page <= total_pages; ++page) {
-            status |= render_page(document, &options, page, jsonl);
+            status |= render_page(document, &options, page, jsonl, form_handle);
         }
     } else if (options.page_number > total_pages) {
         emit_error(jsonl, options.page_number, "page_range", "requested page is outside the document page count");
         status = 1;
     } else {
-        status = render_page(document, &options, options.page_number, jsonl);
+        status = render_page(document, &options, options.page_number, jsonl, form_handle);
     }
 
+    if (form_handle != NULL) {
+        FPDFDOC_ExitFormFillEnvironment(form_handle);
+    }
     FPDF_CloseDocument(document);
     FPDF_DestroyLibrary();
     if (jsonl != stdout) fclose(jsonl);

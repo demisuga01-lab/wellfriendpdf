@@ -975,7 +975,7 @@ fn filter_source(filter: Option<&str>) -> DecodeDiagnosticSource {
         "ASCIIHexDecode" | "AHx" => DecodeDiagnosticSource::AsciiHex,
         "ASCII85Decode" | "A85" => DecodeDiagnosticSource::Ascii85,
         "DCTDecode" | "DCT" => DecodeDiagnosticSource::Dct,
-        "JPXDecode" => DecodeDiagnosticSource::Jpx,
+        "JPXDecode" | "JPX" => DecodeDiagnosticSource::Jpx,
         "CCITTFaxDecode" | "CCF" => DecodeDiagnosticSource::Ccitt,
         "JBIG2Decode" => DecodeDiagnosticSource::Jbig2,
         _ => DecodeDiagnosticSource::FilterChain,
@@ -1095,7 +1095,8 @@ fn decode_stream_parts_with_limits(
                     ));
                 }
             }
-            "DCTDecode" | "DCT" | "JPXDecode" | "CCITTFaxDecode" | "CCF" | "JBIG2Decode" => {
+            "DCTDecode" | "DCT" | "JPXDecode" | "JPX" | "CCITTFaxDecode" | "CCF"
+            | "JBIG2Decode" => {
                 return Ok(DecodedStream {
                     data,
                     status: StreamDecodeStatus::StoppedAtImageFilter(filter.clone()),
@@ -1182,7 +1183,8 @@ fn decode_stream_reader_with_cap<'a, R: Read + 'a>(
                     ));
                 }
             }
-            "DCTDecode" | "DCT" | "JPXDecode" | "CCITTFaxDecode" | "CCF" | "JBIG2Decode" => {
+            "DCTDecode" | "DCT" | "JPXDecode" | "JPX" | "CCITTFaxDecode" | "CCF"
+            | "JBIG2Decode" => {
                 return Ok(DecodedStreamReader {
                     reader: current,
                     status: StreamDecodeStatus::StoppedAtImageFilter(filter.clone()),
@@ -2738,6 +2740,22 @@ mod tests {
         assert!(
             matches!(err, WellfriendError::MalformedPdf(ref message) if message.contains("filter chain depth")),
             "expected chain-depth diagnostic, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn jpx_abbreviation_stops_at_image_filter() {
+        let decoded = decode_stream_parts(
+            &dict(&[("Filter", PdfObject::Name("JPX".to_string()))]),
+            b"raw-jpx",
+            None,
+        )
+        .expect("JPX abbreviation should stop at image codec boundary");
+
+        assert_eq!(decoded.data, b"raw-jpx");
+        assert_eq!(
+            decoded.status,
+            StreamDecodeStatus::StoppedAtImageFilter("JPX".to_string())
         );
     }
 
