@@ -1171,18 +1171,30 @@ impl PageResources {
 
 fn numeric_array_4(dict: &PdfDictionary, key: &str) -> Option<[f64; 4]> {
     let arr = dict.get(key)?.as_array()?;
-    let values: Vec<f64> = arr.iter().filter_map(PdfObject::as_number).collect();
-    (values.len() >= 4).then(|| [values[0], values[1], values[2], values[3]])
+    if arr.len() != 4 {
+        return None;
+    }
+    Some([
+        arr[0].as_number()?,
+        arr[1].as_number()?,
+        arr[2].as_number()?,
+        arr[3].as_number()?,
+    ])
 }
 
 fn numeric_array_6(dict: &PdfDictionary, key: &str) -> Option<[f64; 6]> {
     let arr = dict.get(key)?.as_array()?;
-    let values: Vec<f64> = arr.iter().filter_map(PdfObject::as_number).collect();
-    (values.len() >= 6).then(|| {
-        [
-            values[0], values[1], values[2], values[3], values[4], values[5],
-        ]
-    })
+    if arr.len() != 6 {
+        return None;
+    }
+    Some([
+        arr[0].as_number()?,
+        arr[1].as_number()?,
+        arr[2].as_number()?,
+        arr[3].as_number()?,
+        arr[4].as_number()?,
+        arr[5].as_number()?,
+    ])
 }
 
 /// Parse a `/Resources` object (a direct dictionary or an indirect reference)
@@ -4149,6 +4161,7 @@ mod tests {
         let mut contract = engine
             .default_render_contract(1, 72, RenderMode::Compat)
             .expect("default contract");
+        let full_surface_bytes = (contract.stride as u64) * u64::from(contract.height);
         contract.clip = Some(crate::render::DeviceClip {
             x: 0,
             y: 0,
@@ -4159,7 +4172,8 @@ mod tests {
         contract.height = 4;
         contract.stride = 4 * 4;
         contract.resource_budget.max_decoded_bytes = 1;
-        contract.resource_budget.max_temporary_bytes = 512;
+        contract.resource_budget.max_temporary_bytes = full_surface_bytes
+            .saturating_add((contract.stride as u64) * u64::from(contract.height));
         contract.resource_budget.max_cache_bytes = 0;
 
         let mut surface = vec![0; contract.stride * contract.height as usize];

@@ -1470,7 +1470,7 @@ mod tests {
         );
         assert!(report
             .remaining_limitation
-            .contains("owned CPU backend packed document arenas are available"));
+            .contains("owned CPU backend packed document arenas"));
         assert!(report.views.iter().all(|view| !view.constructs_other_views));
 
         let _ = engine

@@ -32365,6 +32365,13 @@ mod tests {
             "<< /Font << /F1 {font} 0 R >> /ExtGState << /GS1 {gs1} 0 R /GS2 {gs2} 0 R >> >>",
         );
         let engine = ContentEngine::open_bytes(pdf).expect("open transparency PDF");
+        let resources = engine.get_page_resources(1).expect("page resources");
+        assert_eq!(resources.ext_g_states.len(), 2);
+        let list = PageRenderer::build_display_list(&engine, 1, 72).expect("display list");
+        assert!(
+            list.stats.requires_transparent_page_group,
+            "transparency-bearing ExtGState resources must select a transparent page backdrop"
+        );
         let buf = engine.render_page(1, 72).expect("render transparency PDF");
 
         assert_eq!(buf.get_pixel(5, 5), WHITE, "empty page area is white paper");
@@ -33405,16 +33412,21 @@ mod tests {
 
     #[test]
     fn malformed_form_xobject_matrix_returns_typed_refusal() {
-        let pdf = pdf_with_form_xobject_matrix("[1 0]");
-        let engine = ContentEngine::open_bytes(pdf).expect("open malformed Form Matrix PDF");
-        let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
-            .expect_err("malformed Form /Matrix must not default to identity");
-        assert!(
-            format!("{error}").contains("Form XObject resource /Fm1 malformed /Matrix"),
-            "got {error}"
-        );
-        assert!(format!("{error}").contains("got 2"), "got {error}");
+        for (matrix, count) in [("[1 0]", 2), ("[1 0 0 1 0 0 2]", 7)] {
+            let pdf = pdf_with_form_xobject_matrix(matrix);
+            let engine = ContentEngine::open_bytes(pdf).expect("open malformed Form Matrix PDF");
+            let error = engine
+                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .expect_err("malformed Form /Matrix must not default to identity");
+            assert!(
+                format!("{error}").contains("Form XObject resource /Fm1 malformed /Matrix"),
+                "got {error}"
+            );
+            assert!(
+                format!("{error}").contains(&format!("got {count}")),
+                "got {error}"
+            );
+        }
     }
 
     #[test]
@@ -33434,7 +33446,9 @@ mod tests {
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed Form BBox PDF");
             let error = engine
                 .render_page_with_mode(1, 72, RenderMode::Compat)
-                .expect_err("malformed Form /BBox must not render unclipped");
+                .expect_err(&format!(
+                    "malformed Form /BBox must not render unclipped: {bbox_entry:?}"
+                ));
             assert!(
                 format!("{error}").contains(expected),
                 "expected {expected:?}, got {error}"

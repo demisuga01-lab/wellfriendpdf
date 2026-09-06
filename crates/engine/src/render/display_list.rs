@@ -948,15 +948,29 @@ pub struct CpuRenderDevice {
 
 impl CpuRenderDevice {
     pub fn new(viewport: Viewport, render_mode: RenderMode) -> Self {
+        let buf = PixelBuffer::new_filled_with_mode(
+            viewport.width_px,
+            viewport.height_px,
+            WHITE,
+            render_mode,
+        );
+        Self::with_buffer(viewport, buf)
+    }
+
+    pub(crate) fn new_transparent(viewport: Viewport, render_mode: RenderMode) -> Self {
+        let buf = PixelBuffer::new_transparent_with_mode(
+            viewport.width_px,
+            viewport.height_px,
+            render_mode,
+        );
+        Self::with_buffer(viewport, buf)
+    }
+
+    fn with_buffer(viewport: Viewport, buf: PixelBuffer) -> Self {
         let clip_dag = ClipDag::new();
         let current_clip = clip_dag.full();
         Self {
-            buf: PixelBuffer::new_filled_with_mode(
-                viewport.width_px,
-                viewport.height_px,
-                WHITE,
-                render_mode,
-            ),
+            buf,
             viewport,
             clip_stack: Vec::new(),
             clip_dag,
@@ -1582,9 +1596,18 @@ pub fn render_display_list(list: &DisplayList, render_mode: RenderMode) -> Resul
             "standalone display-list CPU replay cannot render native {kind} without page context; use PageRenderer display-list replay"
         )));
     }
-    let mut device = CpuRenderDevice::new(list.viewport.clone(), render_mode);
+    let transparent_page_group = list.stats.requires_transparent_page_group;
+    let mut device = if transparent_page_group {
+        CpuRenderDevice::new_transparent(list.viewport.clone(), render_mode)
+    } else {
+        CpuRenderDevice::new(list.viewport.clone(), render_mode)
+    };
     replay_display_list(list, &mut device)?;
-    Ok(device.into_buffer())
+    let mut buf = device.into_buffer();
+    if transparent_page_group {
+        buf.flatten_onto_background(WHITE);
+    }
+    Ok(buf)
 }
 
 /// Capture a vector-compatible display list from decoded content operations.
@@ -2981,10 +3004,10 @@ impl<'a> DisplayListBuilder<'a> {
                 });
             }
             None => {
-                let reason = if self.resources.xobjects.contains_key(name)
-                    || self.resources.xobject_stream_dicts.contains_key(name)
-                {
+                let reason = if self.resources.xobject_stream_dicts.contains_key(name) {
                     format!("XObject resource /{name} has no /Subtype")
+                } else if self.resources.xobjects.contains_key(name) {
+                    format!("XObject resource /{name} did not resolve to a stream")
                 } else {
                     format!("XObject resource /{name} is missing")
                 };
@@ -4014,9 +4037,46 @@ mod tests {
     }
 
     #[test]
+    fn standalone_vector_replay_blends_on_transparent_page_then_flattens() {
+        let ops = vec![
+            op("gs", vec![Operand::Name("GS1".to_string())]),
+            op("rg", vec![num(0.0), num(0.0), num(1.0)]),
+            op("re", vec![num(0.0), num(0.0), num(20.0), num(20.0)]),
+            op("f", Vec::new()),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let mut resources = PageResources::default();
+        let mut ext_g_state = PdfDictionary::empty();
+        ext_g_state.insert("ca", PdfObject::Real(0.5));
+        ext_g_state.insert("CA", PdfObject::Real(0.5));
+        ext_g_state.insert("BM", PdfObject::Name("Screen".to_string()));
+        resources
+            .ext_g_states
+            .insert("GS1".to_string(), ext_g_state);
+
+        let list = build_display_list(&ops, viewport, &resources);
+        assert!(list.stats.requires_transparent_page_group);
+        let buf = render_display_list(&list, RenderMode::Compat).expect("render display list");
+        let pixel = buf.get_pixel(10, 10);
+        assert!(
+            pixel[2] > 250 && (pixel[0] as i32 - 127).abs() <= 2,
+            "Screen paint must blend on transparency before white flatten: {pixel:?}"
+        );
+        assert_eq!(pixel[3], 255);
+    }
+
+    #[test]
     fn malformed_xobject_subtype_marks_display_list_unsupported() {
         for (resources, expected) in [
             (PageResources::default(), "XObject resource /Xm1 is missing"),
+            (
+                {
+                    let mut resources = PageResources::default();
+                    resources.xobjects.insert("Xm1".to_string(), (5, 0));
+                    resources
+                },
+                "XObject resource /Xm1 did not resolve to a stream",
+            ),
             (
                 {
                     let mut resources = PageResources::default();

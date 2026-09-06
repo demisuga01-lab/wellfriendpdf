@@ -3568,10 +3568,19 @@ impl RenderPlan {
             .packed
             .viewport()
             .pixel_window(tile.x, tile.y, tile.width, tile.height);
-        let mut device =
-            CpuRenderDevice::new(viewport, RenderMode::from(self.contract.compositing));
+        let transparent_page_group = self.packed.requires_transparent_page_group();
+        let render_mode = RenderMode::from(self.contract.compositing);
+        let mut device = if transparent_page_group {
+            CpuRenderDevice::new_transparent(viewport, render_mode)
+        } else {
+            CpuRenderDevice::new(viewport, render_mode)
+        };
         self.packed.replay_vector(&mut device, selected)?;
-        Ok(Some(device.into_buffer()))
+        let mut buf = device.into_buffer();
+        if transparent_page_group {
+            buf.flatten_onto_background(crate::engine::contract_background_pixel(&self.contract));
+        }
+        Ok(Some(buf))
     }
 
     /// Execute the full plan through the typed descriptor dispatcher.

@@ -5582,7 +5582,7 @@ mod tests {
         assert!(v["report"]["remaining_limitation"]
             .as_str()
             .unwrap()
-            .contains("owned CPU backend packed document arenas are available"));
+            .contains("owned CPU backend packed document arenas"));
         assert_eq!(
             v["report"]["owned_backend_plan_arena_entry_point"],
             "RenderDocumentView::backend_document_plan_arena"

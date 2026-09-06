@@ -4076,7 +4076,9 @@ mod tests {
         assert!(event.standard_available);
         assert!(event.high_quality_available);
         assert!(event.call_site.contains("render_next"));
-        assert!(event.replacement.contains("native retained tile plans"));
+        assert!(event
+            .replacement
+            .contains("native retained-plan-supported content"));
         assert_eq!(
             event.final_policy,
             "typed compatibility refusal for content outside native retained-plan support"
