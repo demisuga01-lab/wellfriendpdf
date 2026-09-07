@@ -45,6 +45,11 @@ located without a self-referential hash:
 git log -1 --format=%H -- docs/renderer/independent-closure-audit-2026-09-07.md
 ```
 
+The post-publication gate verified an empty `git status --short` and equality
+between the report-containing `HEAD`, local `origin/main`, and
+`git ls-remote origin refs/heads/main`. Rerunning those commands verifies that
+the report being read is still the published state.
+
 The original requirement attachment was 2,011 lines and 41,759 characters.
 Its SHA-256 is
 `5F7703AD71211DF6E996243E3FB7D747C22FCF481DA8BE671F56F353B671CD17`.
@@ -220,8 +225,8 @@ These are focused regression measurements. They are not a corpus benchmark.
 | 1 | Starting commit | `2c893fbfe5ca3799f7ba9e437fe080f63735e0ca`. |
 | 2 | Final implementation commit | `0601400fabfbc85491a4923a2bac6406f0865892`. |
 | 3 | Branch | `main`. |
-| 4 | Local worktree | Must be clean after the report commit; verify with `git status --short`. |
-| 5 | GitHub push | Must satisfy `HEAD == origin/main` after report publication. |
+| 4 | Local worktree | Verified clean in the post-publication gate; `git status --short` returned no paths. |
+| 5 | GitHub push | Verified the report-containing `HEAD`, local `origin/main`, and remote `refs/heads/main` were equal. |
 | 6 | Packed backend plans | Supported operations use packed hot ops and pre-resolved descriptors/subplans; unsupported semantics refuse typed. |
 | 7 | Retained immediate delegation | Removed from supported retained replay; unsupported replay refuses without fallback pixels. |
 | 8 | Hot/cold display lists | Packed hot arenas are separate from diagnostic/provenance cold data. |
