@@ -1,6 +1,6 @@
 //! Type3 CID Rendering closure fixtures for Type3/CID text clipping and Type 7 posture.
 
-use wellfriendpdf_engine::{ContentEngine, PixelBuffer};
+use wellfriendpdf_engine::{ContentEngine, PixelBuffer, WellfriendError};
 
 const CID_FONT_BYTES: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
 
@@ -62,6 +62,14 @@ fn render(pdf: Vec<u8>) -> PixelBuffer {
         .expect("type3_cid_rendering PDF opens")
         .render_page(1, 72)
         .expect("type3_cid_rendering PDF renders")
+}
+
+fn render_error(pdf: Vec<u8>) -> WellfriendError {
+    let engine = ContentEngine::open_bytes(pdf).expect("type3_cid_rendering PDF opens");
+    match engine.render_page(1, 72) {
+        Ok(_) => panic!("type3_cid_rendering PDF must fail closed"),
+        Err(error) => error,
+    }
 }
 
 fn count_pixels(buf: &PixelBuffer, predicate: impl Fn([u8; 4]) -> bool) -> usize {
@@ -175,23 +183,23 @@ fn type3_image_only_charproc_fails_closed_without_bbox_clip() {
         b"700 0 d0 BI /W 1 /H 1 /CS /RGB /BPC 8 ID \xFF\x00\x00 EI\n",
         "1 0 0 rg 0 0 160 100 re f",
     );
-    let buf = render(pdf);
-    assert_eq!(
-        red_pixels(&buf),
-        0,
-        "unsupported Type3 clip should fail closed"
-    );
+    let error = render_error(pdf);
+    assert!(matches!(
+        error,
+        WellfriendError::UnsupportedFeature(message)
+            if message == "Type 3 glyph 65 in font /T3 could not be rendered through its native charproc"
+    ));
 }
 
 #[test]
 fn type3_resource_heavy_charproc_fails_closed() {
     let pdf = type3_pdf(7, "A", b"700 0 d0 /Im1 Do\n", "1 0 0 rg 0 0 160 100 re f");
-    let buf = render(pdf);
-    assert_eq!(
-        red_pixels(&buf),
-        0,
-        "resource-heavy Type3 clip should fail closed"
-    );
+    let error = render_error(pdf);
+    assert!(matches!(
+        error,
+        WellfriendError::UnsupportedFeature(message)
+            if message == "Type 3 glyph 65 in font /T3 could not be rendered through its native charproc"
+    ));
 }
 
 fn cid_gid_for_a() -> u16 {

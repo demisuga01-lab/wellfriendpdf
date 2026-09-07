@@ -189,8 +189,8 @@ fn svg_rasterizes_close_to_wellfriendpdf_raster() {
 }
 
 #[test]
-fn image_page_uses_raster_fallback() {
-    // image_only.pdf draws an image XObject -> raster-embed fallback.
+fn image_page_uses_regional_embed() {
+    // image_only.pdf draws an image XObject while retaining the page as SVG.
     let path = fixture("image_only.pdf");
     if !path.exists() {
         eprintln!("NOTE: image_only.pdf missing; skipping image fallback test");
@@ -198,9 +198,10 @@ fn image_page_uses_raster_fallback() {
     }
     let e = ContentEngine::open_bytes(std::fs::read(&path).unwrap()).unwrap();
     let page = e.render_page_svg(1, DPI).unwrap();
+    assert!(!page.is_rasterized, "the full page must remain vector SVG");
     assert!(
-        page.is_rasterized,
-        "an image page must take the rasterize-embed fallback"
+        page.has_regional_images,
+        "the image XObject must be embedded as a regional image"
     );
     assert!(page.svg.contains("data:image/png;base64,"));
 }

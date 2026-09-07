@@ -2157,7 +2157,7 @@ impl ContentEngine {
                 readers.push(Box::new(Cursor::new(bytes)) as Box<dyn Read>);
             }
             let tokens = StreamingContentTokenizer::new(JoinedContentStreams::new(readers));
-            return ContentParser::parse_tokens_propagating_io(tokens);
+            return ContentParser::parse_tokens_propagating_io_cancellable(tokens, cancel);
         }
         let page = self.doc.get_page(page_number)?;
         let estimate = estimate_raw_stream_decode_bytes(page.contents.len().saturating_mul(1024));
@@ -2179,7 +2179,7 @@ impl ContentEngine {
             &mut total_decoded_bytes,
             limits,
         )?;
-        ContentParser::parse(&bytes)
+        ContentParser::parse_cancellable(&bytes, cancel)
     }
 
     pub fn get_page_resources(&self, page_number: usize) -> Result<PageResources> {

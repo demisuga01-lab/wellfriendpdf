@@ -608,18 +608,6 @@ impl PsSink {
         self.body.contains("currentfile picstr readhexstring")
     }
 
-    /// Whether the page body emits a regional raster image (it needs the
-    /// `regionpicstr` scratch string declared in the prologue).
-    fn body_needs_regionpicstr(&self) -> bool {
-        self.body.contains("regionpicstr")
-    }
-
-    /// Whether the page body emits a regional stencil mask (it needs the
-    /// `regionmaskstr` scratch string declared in the prologue).
-    fn body_needs_regionmaskstr(&self) -> bool {
-        self.body.contains("regionmaskstr")
-    }
-
     /// Finish the page body: wrap it with `gsave`, the top-left device-space
     /// coordinate flip, any required scratch declarations, and `grestore`.
     fn finish(self) -> String {
@@ -631,17 +619,6 @@ impl PsSink {
         if self.body_needs_picstr() {
             // Scratch string holding one image row (width * 3 RGB bytes).
             out.push_str(&format!("/picstr {} string def\n", self.width as usize * 3));
-        }
-        if self.body_needs_regionpicstr() {
-            // Scratch string for regional images — size is max row width * 3.
-            // We use a generous fixed size; PostScript `readhexstring` only reads
-            // as many chars as the string length, so oversizing is safe.
-            let max_row = self.width.max(4096) as usize * 3;
-            out.push_str(&format!("/regionpicstr {} string def\n", max_row));
-        }
-        if self.body_needs_regionmaskstr() {
-            let max_row = self.width.max(4096).div_ceil(8) as usize;
-            out.push_str(&format!("/regionmaskstr {} string def\n", max_row));
         }
         out.push_str(&self.body);
         out.push_str("grestore\n");
@@ -1066,6 +1043,9 @@ impl PsRenderState<'_> {
         self.sink.push_line(&ps_concat_matrix(transform));
         self.sink
             .push_line(&format!("{iw} {ih} 8 [{iw} 0 0 {ih} 0 0]"));
+        let row_bytes = iw as usize * 3;
+        self.sink
+            .push_line(&format!("/regionpicstr {row_bytes} string def"));
         self.sink
             .push_line("{currentfile regionpicstr readhexstring pop} false 3 colorimage");
 
@@ -1089,6 +1069,7 @@ impl PsRenderState<'_> {
             ));
         }
         ensure_regional_stencil_mask(raw, "regional PS stencil mask")?;
+        let row_bytes = (iw as usize).div_ceil(8);
         let Some((color, alpha)) =
             self.current_fill_color_or_fatal("PostScript stencil-mask fill color")
         else {
@@ -1103,11 +1084,12 @@ impl PsRenderState<'_> {
         self.sink
             .push_line(&format!("{iw} {ih} true [{iw} 0 0 {ih} 0 0]"));
         self.sink
+            .push_line(&format!("/regionmaskstr {row_bytes} string def"));
+        self.sink
             .push_line("{currentfile regionmaskstr readhexstring pop} imagemask");
 
         const HEXCHARS: &[u8; 16] = b"0123456789ABCDEF";
         let channels = raw.channels as usize;
-        let row_bytes = (iw as usize).div_ceil(8);
         let mut hex = String::with_capacity(row_bytes * ih as usize * 2 + ih as usize);
         let mut col = 0usize;
         for row in 0..ih as usize {

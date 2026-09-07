@@ -1253,7 +1253,7 @@ async fn progressive_queue_execute_advances_owned_work_and_defers_adjacent_prefe
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+    let bytes = to_bytes(response.into_body(), 131_072).await.unwrap();
     let execution: Value = serde_json::from_slice(&bytes).unwrap();
 
     assert_eq!(execution["terminal_suppressed"], false);

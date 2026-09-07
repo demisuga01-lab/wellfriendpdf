@@ -1,3 +1,4 @@
+use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::tokenizer::{ContentToken, ContentTokenizer};
 use crate::error::{Result, WellfriendError};
@@ -20,31 +21,45 @@ impl ContentParser {
     /// Parse all tokens from the byte slice into operations.
     /// Token errors are logged as warnings; parsing continues.
     pub fn parse(data: &[u8]) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(ContentTokenizer::new(data), false)
+        Self::parse_tokens_inner(ContentTokenizer::new(data), false, None)
+    }
+
+    pub(crate) fn parse_cancellable(
+        data: &[u8],
+        cancel: &CancelToken,
+    ) -> Result<Vec<ContentOperation>> {
+        Self::parse_tokens_inner(ContentTokenizer::new(data), false, Some(cancel))
     }
 
     /// Same as [`ContentParser::parse`] but accepts a pre-built token iterator.
     pub fn parse_tokens(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
     ) -> Vec<ContentOperation> {
-        Self::parse_tokens_inner(tokens, false).unwrap_or_default()
+        Self::parse_tokens_inner(tokens, false, None).unwrap_or_default()
     }
 
-    pub(crate) fn parse_tokens_propagating_io(
+    pub(crate) fn parse_tokens_propagating_io_cancellable(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
+        cancel: &CancelToken,
     ) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(tokens, true)
+        Self::parse_tokens_inner(tokens, true, Some(cancel))
     }
 
     fn parse_tokens_inner(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
         propagate_io: bool,
+        cancel: Option<&CancelToken>,
     ) -> Result<Vec<ContentOperation>> {
         let mut stack = Vec::new();
         let mut array_depth = 0u32;
         let mut operations = Vec::new();
 
-        for token_result in tokens {
+        for (index, token_result) in tokens.into_iter().enumerate() {
+            if index % 64 == 0 {
+                if let Some(cancel) = cancel {
+                    cancel.check("content stream parsing")?;
+                }
+            }
             let token = match token_result {
                 Ok(token) => token,
                 Err(err) => {

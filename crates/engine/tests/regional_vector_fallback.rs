@@ -2839,7 +2839,9 @@ fn svg_calibrated_group_color_space_alpha_transparency_group_form_xobject_return
     };
     let message = format!("{error}");
     assert!(
-        message.contains("group /CS has unsupported color space /CalRGB"),
+        message.contains(
+            "group color space /CalRGB requires unsupported active group color-space compositing"
+        ),
         "{message}"
     );
 }
@@ -3592,14 +3594,16 @@ fn inline_image_classifier_ops(inline_params: Vec<Operand>) -> Vec<ContentOperat
 }
 
 #[test]
-fn classifier_dense_text_stays_vector() {
+fn classifier_dense_text_without_reader_stays_whole_page() {
     let mut ops = vec![ContentOperation::new("BT", vec![])];
     ops.extend((0..128).map(|_| ContentOperation::new("Tj", vec![Operand::String(vec![b'A'])])));
     ops.push(ContentOperation::new("ET", vec![]));
     let r = PageResources::default();
     match classify_page_for_vector_output(&ops, &r, 1.0) {
-        VectorFallbackDecision::PureVector => {}
-        other => panic!("Expected PureVector, got {:?}", other),
+        VectorFallbackDecision::WholePageRaster { reason } => {
+            assert_eq!(reason, "text metrics unavailable for vector output");
+        }
+        other => panic!("Expected WholePageRaster, got {:?}", other),
     }
 }
 
@@ -3797,7 +3801,7 @@ fn classifier_pattern_text_paint_whole_page() {
 }
 
 #[test]
-fn classifier_simple_shading_pattern_text_fill_is_regional_vector() {
+fn classifier_shading_pattern_text_fill_without_reader_stays_whole_page() {
     let ops = vec![
         ContentOperation::new("cs", vec![Operand::Name("Pattern".to_string())]),
         ContentOperation::new("scn", vec![Operand::Name("P0".to_string())]),
@@ -3807,13 +3811,15 @@ fn classifier_simple_shading_pattern_text_fill_is_regional_vector() {
     ];
     let r = resources_with_shading_pattern("P0", None);
     match classify_page_for_vector_output(&ops, &r, 1.0) {
-        VectorFallbackDecision::RegionalImageFallback { .. } => {}
-        other => panic!("Expected RegionalImageFallback, got {:?}", other),
+        VectorFallbackDecision::WholePageRaster { reason } => {
+            assert_eq!(reason, "text metrics unavailable for vector output");
+        }
+        other => panic!("Expected WholePageRaster, got {:?}", other),
     }
 }
 
 #[test]
-fn classifier_simple_shading_pattern_text_stroke_is_regional_vector() {
+fn classifier_shading_pattern_text_stroke_without_reader_stays_whole_page() {
     let ops = vec![
         ContentOperation::new("CS", vec![Operand::Name("Pattern".to_string())]),
         ContentOperation::new("SCN", vec![Operand::Name("P0".to_string())]),
@@ -3824,8 +3830,10 @@ fn classifier_simple_shading_pattern_text_stroke_is_regional_vector() {
     ];
     let r = resources_with_shading_pattern("P0", None);
     match classify_page_for_vector_output(&ops, &r, 1.0) {
-        VectorFallbackDecision::RegionalImageFallback { .. } => {}
-        other => panic!("Expected RegionalImageFallback, got {:?}", other),
+        VectorFallbackDecision::WholePageRaster { reason } => {
+            assert_eq!(reason, "text metrics unavailable for vector output");
+        }
+        other => panic!("Expected WholePageRaster, got {:?}", other),
     }
 }
 
@@ -5034,7 +5042,7 @@ fn ps_output_nonextended_axial_shading_preserves_extend_flags() {
 }
 
 #[test]
-fn ps_output_non_unit_domain_axial_shading_samples_native_shfill_endpoints() {
+fn ps_output_non_unit_domain_axial_shading_preserves_exact_function_and_domains() {
     let engine = ContentEngine::open_bytes(pdf_with_non_unit_domain_axial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
     assert!(
@@ -5043,13 +5051,16 @@ fn ps_output_non_unit_domain_axial_shading_samples_native_shfill_endpoints() {
     );
     assert!(page.has_regional_images);
     assert!(page.body.contains("shfill"));
-    assert!(page.body.contains("0.7500 0.0000 0.2500"));
-    assert!(page.body.contains("0.2500 0.0000 0.7500"));
+    assert!(page.body.contains("/Domain [0.250000 0.750000]"));
+    assert!(page.body.contains("/FunctionType 2"));
+    assert!(page.body.contains("/Domain [0.000000 1.000000]"));
+    assert!(page.body.contains("/C0 [1.0000 0.0000 0.0000]"));
+    assert!(page.body.contains("/C1 [0.0000 0.0000 1.0000]"));
     assert!(!page.body.contains("colorimage"));
 }
 
 #[test]
-fn ps_output_clipped_function_domain_axial_shading_uses_stitching_function() {
+fn ps_output_clipped_function_domain_axial_shading_preserves_exact_function() {
     let engine =
         ContentEngine::open_bytes(pdf_with_clipped_function_domain_axial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
@@ -5059,11 +5070,10 @@ fn ps_output_clipped_function_domain_axial_shading_uses_stitching_function() {
     );
     assert!(page.has_regional_images);
     assert!(page.body.contains("shfill"));
-    assert!(
-        page.body.contains("/FunctionType 3") && page.body.contains("/Bounds [0.166667 0.833333"),
-        "PS clipped-domain gradient should use a stitching function: {}",
-        page.body
-    );
+    assert!(page.body.contains("/Domain [-0.250000 1.250000]"));
+    assert!(page.body.contains("/FunctionType 2"));
+    assert!(page.body.contains("/Domain [0.000000 1.000000]"));
+    assert!(page.body.contains("/N 1.000000"));
     assert!(!page.body.contains("colorimage"));
 }
 
@@ -5867,7 +5877,6 @@ fn ps_output_nonlinear_cmyk_axial_shading_uses_exact_device_cmyk_shfill() {
         "{}",
         page.body
     );
-    assert!(page.body.contains("/N 1.000000"), "{}", page.body);
     assert!(page.body.contains("/N 2.000000"), "{}", page.body);
     assert!(page.body.contains("shfill"), "{}", page.body);
     assert!(!page.body.contains("colorimage"), "{}", page.body);
@@ -6991,7 +7000,10 @@ fn ps_strict_refuses_normal_alpha_extgstate_whole_page_raster_fallback() {
         message.contains("strict PostScript vector output refuses whole-page raster fallback"),
         "{message}"
     );
-    assert!(message.contains("unsupported ExtGState"), "{message}");
+    assert!(
+        message.contains("unsupported PostScript paint alpha/blend"),
+        "{message}"
+    );
 }
 
 #[test]

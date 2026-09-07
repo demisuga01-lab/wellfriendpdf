@@ -1,7 +1,6 @@
 target/
 .work/
 .env
-crates/engine/tests/references/*.png
 
 # Local-only Claude Code proxy launcher — routes auth through a third-party
 # server and prompts for an API key at runtime. Keep local; never commit

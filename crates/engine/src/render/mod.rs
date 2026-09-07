@@ -49,9 +49,9 @@ pub use contract::{
     RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
 };
 pub use display_list::{
-    build_display_list, render_display_list, replay_display_list, CpuRenderDevice, DisplayList,
-    DisplayListStats, DisplayOp, DrawState, RenderCache, RenderCacheKey, RenderCacheMetrics,
-    RenderDevice, RenderTile, UnsupportedRenderOp,
+    build_display_list, build_display_list_cancellable, render_display_list, replay_display_list,
+    CpuRenderDevice, DisplayList, DisplayListStats, DisplayOp, DrawState, RenderCache,
+    RenderCacheKey, RenderCacheMetrics, RenderDevice, RenderTile, UnsupportedRenderOp,
 };
 pub use document_view::{
     BackendDocumentPagePlan, BackendDocumentPlanArena, BackendDocumentPlanArenaReport,

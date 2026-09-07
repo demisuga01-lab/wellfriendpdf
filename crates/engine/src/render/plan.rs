@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{concat_matrix, ColorSpace};
 use crate::engine::PageResources;
@@ -2421,6 +2422,23 @@ impl PackedDisplayList {
     }
 
     pub fn compile_with_resources(source: DisplayList, resources: Option<&PageResources>) -> Self {
+        Self::compile_with_optional_cancellation(source, resources, None)
+            .expect("uncancellable packed-plan compilation cannot be cancelled")
+    }
+
+    pub fn compile_with_resources_cancellable(
+        source: DisplayList,
+        resources: Option<&PageResources>,
+        cancel: &CancelToken,
+    ) -> Result<Self> {
+        Self::compile_with_optional_cancellation(source, resources, Some(cancel))
+    }
+
+    fn compile_with_optional_cancellation(
+        source: DisplayList,
+        resources: Option<&PageResources>,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Self> {
         let viewport = source.viewport.clone();
         let source_approx_bytes = source.approximate_memory_bytes();
         let requires_transparent_page_group = source.stats.requires_transparent_page_group;
@@ -2498,6 +2516,11 @@ impl PackedDisplayList {
             };
 
         for (index, op) in source.ops.iter().enumerate() {
+            if index % 64 == 0 {
+                if let Some(cancel) = cancel {
+                    cancel.check("packed plan compilation")?;
+                }
+            }
             let item = DisplayItemId(u32::try_from(index + 1).unwrap_or(u32::MAX));
             let (opcode, flags, bounds_id, state_id, payload_offset, payload_len) = match op {
                 DisplayOp::Save => {
@@ -2903,7 +2926,7 @@ impl PackedDisplayList {
         }
         optimization_report.emitted_hot_operation_count = hot_ops.len();
 
-        Self {
+        Ok(Self {
             viewport,
             source_approx_bytes,
             requires_transparent_page_group,
@@ -2916,7 +2939,7 @@ impl PackedDisplayList {
             optimization_report,
             cold,
             requires_native_replay,
-        }
+        })
     }
 
     pub fn viewport(&self) -> &Viewport {
@@ -2963,12 +2986,33 @@ impl PackedDisplayList {
     }
 
     pub fn replay_vector(&self, device: &mut dyn RenderDevice, selected: &[usize]) -> Result<()> {
+        self.replay_vector_with_optional_cancellation(device, selected, None)
+    }
+
+    pub fn replay_vector_cancellable(
+        &self,
+        device: &mut dyn RenderDevice,
+        selected: &[usize],
+        cancel: &CancelToken,
+    ) -> Result<()> {
+        self.replay_vector_with_optional_cancellation(device, selected, Some(cancel))
+    }
+
+    fn replay_vector_with_optional_cancellation(
+        &self,
+        device: &mut dyn RenderDevice,
+        selected: &[usize],
+        cancel: Option<&CancelToken>,
+    ) -> Result<()> {
         if self.requires_native_replay {
             return Err(WellfriendError::UnsupportedFeature(
                 "packed vector replay requires a native compiled payload for high-level PDF operations".to_string(),
             ));
         }
         for &index in selected {
+            if let Some(cancel) = cancel {
+                cancel.check("packed vector replay")?;
+            }
             let op = self.hot_ops.get(index).ok_or_else(|| {
                 WellfriendError::MalformedPdf(
                     "packed display-list index was out of bounds".to_string(),
@@ -3020,6 +3064,9 @@ impl PackedDisplayList {
                     ))
                 }
             }
+        }
+        if let Some(cancel) = cancel {
+            cancel.check("packed vector replay")?;
         }
         Ok(())
     }
@@ -3080,8 +3127,8 @@ impl PackedDisplayList {
     /// high-level path that drives text/image/form/shading through compiled
     /// descriptors. Used by PageRenderer for all fully-supported display lists.
     pub fn execute_plan(&self, dispatcher: &mut dyn PlanDispatcher) -> Result<()> {
-        for (i, hot) in self.hot_ops.iter().enumerate() {
-            if i % 64 == 0 && dispatcher.is_cancelled() {
+        for hot in &self.hot_ops {
+            if dispatcher.is_cancelled() {
                 return Err(WellfriendError::Cancelled(
                     "plan execution cancelled".to_string(),
                 ));
@@ -3214,6 +3261,7 @@ struct SpatialBvhNode {
 
 const SPATIAL_GRID_MIN_KNOWN_OPS: usize = 32;
 const SPATIAL_GRID_MAX_AXIS: usize = 32;
+const SPATIAL_GRID_MAX_MEMBERSHIPS: usize = 1_000_000;
 const SPATIAL_BVH_MIN_KNOWN_OPS: usize = 64;
 const SPATIAL_BVH_LEAF_ENTRIES: usize = 8;
 
@@ -3229,8 +3277,16 @@ impl RenderSpatialIndex {
         }
         known.sort_by_key(|(_, bounds)| (bounds.y0, bounds.x0, bounds.y1, bounds.x1));
         let viewport = list.viewport();
-        let grid = SpatialGridIndex::compile(&known, viewport.width_px, viewport.height_px);
-        let hierarchy = SpatialBvhIndex::compile(&known);
+        let identical_bounds =
+            known.len() > 1 && known.windows(2).all(|pair| pair[0].1 == pair[1].1);
+        let (grid, hierarchy) = if identical_bounds {
+            (None, None)
+        } else {
+            (
+                SpatialGridIndex::compile(&known, viewport.width_px, viewport.height_px),
+                SpatialBvhIndex::compile(&known),
+            )
+        };
         Self {
             known,
             unknown,
@@ -3367,6 +3423,18 @@ impl SpatialGridIndex {
             rows,
             buckets: vec![Vec::new(); columns.saturating_mul(rows)],
         };
+        let mut memberships = 0usize;
+        for (_, bounds) in known {
+            let (col0, col1, row0, row1) = grid.cell_range(*bounds);
+            let cells = col1
+                .saturating_sub(col0)
+                .saturating_add(1)
+                .saturating_mul(row1.saturating_sub(row0).saturating_add(1));
+            memberships = memberships.saturating_add(cells);
+            if memberships > SPATIAL_GRID_MAX_MEMBERSHIPS {
+                return None;
+            }
+        }
         for (entry_index, (_, bounds)) in known.iter().enumerate() {
             let (col0, col1, row0, row1) = grid.cell_range(*bounds);
             for row in row0..=row1 {
@@ -3520,7 +3588,7 @@ pub struct RenderPlan {
 
 impl RenderPlan {
     pub fn compile(list: DisplayList, contract: RenderContract) -> Result<Self> {
-        Self::compile_with_optional_resources(list, contract, None)
+        Self::compile_with_optional_resources(list, contract, None, None)
     }
 
     pub fn compile_with_resources(
@@ -3528,18 +3596,42 @@ impl RenderPlan {
         contract: RenderContract,
         resources: &PageResources,
     ) -> Result<Self> {
-        Self::compile_with_optional_resources(list, contract, Some(resources))
+        Self::compile_with_optional_resources(list, contract, Some(resources), None)
+    }
+
+    pub fn compile_with_resources_cancellable(
+        list: DisplayList,
+        contract: RenderContract,
+        resources: &PageResources,
+        cancel: &CancelToken,
+    ) -> Result<Self> {
+        Self::compile_with_optional_resources(list, contract, Some(resources), Some(cancel))
     }
 
     fn compile_with_optional_resources(
         list: DisplayList,
         contract: RenderContract,
         resources: Option<&PageResources>,
+        cancel: Option<&CancelToken>,
     ) -> Result<Self> {
         contract.validate()?;
-        let packed = Arc::new(PackedDisplayList::compile_with_resources(list, resources));
+        if let Some(cancel) = cancel {
+            cancel.check("render plan compilation start")?;
+        }
+        let packed = Arc::new(match cancel {
+            Some(cancel) => {
+                PackedDisplayList::compile_with_resources_cancellable(list, resources, cancel)?
+            }
+            None => PackedDisplayList::compile_with_resources(list, resources),
+        });
+        if let Some(cancel) = cancel {
+            cancel.check("render plan packed compilation")?;
+        }
         let batches = build_render_batches(&packed.hot_ops);
         let spatial_index = RenderSpatialIndex::compile(&packed);
+        if let Some(cancel) = cancel {
+            cancel.check("render plan spatial compilation")?;
+        }
         Ok(Self {
             contract,
             packed,
@@ -3553,17 +3645,50 @@ impl RenderPlan {
         self.execute_vector_tile_with_scratch(tile, &mut selected)
     }
 
+    pub fn execute_vector_tile_cancellable(
+        &self,
+        tile: RenderTile,
+        cancel: &CancelToken,
+    ) -> Result<Option<PixelBuffer>> {
+        let mut selected = Vec::new();
+        self.execute_vector_tile_cancellable_with_scratch(tile, cancel, &mut selected)
+    }
+
     pub fn execute_vector_tile_with_scratch(
         &self,
         tile: RenderTile,
         selected: &mut Vec<usize>,
     ) -> Result<Option<PixelBuffer>> {
+        self.execute_vector_tile_with_optional_cancellation(tile, selected, None)
+    }
+
+    pub fn execute_vector_tile_cancellable_with_scratch(
+        &self,
+        tile: RenderTile,
+        cancel: &CancelToken,
+        selected: &mut Vec<usize>,
+    ) -> Result<Option<PixelBuffer>> {
+        self.execute_vector_tile_with_optional_cancellation(tile, selected, Some(cancel))
+    }
+
+    fn execute_vector_tile_with_optional_cancellation(
+        &self,
+        tile: RenderTile,
+        selected: &mut Vec<usize>,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Option<PixelBuffer>> {
         self.contract.validate()?;
+        if let Some(cancel) = cancel {
+            cancel.check("vector tile replay start")?;
+        }
         if self.packed.requires_native_replay() {
             selected.clear();
             return Ok(None);
         }
         self.spatial_index.query_into(tile, selected);
+        if let Some(cancel) = cancel {
+            cancel.check("vector tile spatial query")?;
+        }
         let viewport = self
             .packed
             .viewport()
@@ -3575,7 +3700,12 @@ impl RenderPlan {
         } else {
             CpuRenderDevice::new(viewport, render_mode)
         };
-        self.packed.replay_vector(&mut device, selected)?;
+        match cancel {
+            Some(cancel) => self
+                .packed
+                .replay_vector_cancellable(&mut device, selected, cancel)?,
+            None => self.packed.replay_vector(&mut device, selected)?,
+        }
         let mut buf = device.into_buffer();
         if transparent_page_group {
             buf.flatten_onto_background(crate::engine::contract_background_pixel(&self.contract));
@@ -4752,6 +4882,53 @@ mod tests {
     }
 
     #[test]
+    fn spatial_index_skips_useless_accelerators_for_identical_bounds() {
+        let viewport = Viewport::new([0.0, 0.0, 1_000.0, 1_000.0], 72);
+        let bounds = RenderBounds {
+            x0: 0,
+            y0: 0,
+            x1: 1_000,
+            y1: 1_000,
+        };
+        let ops = (0..SPATIAL_BVH_MIN_KNOWN_OPS)
+            .map(|_| DisplayOp::NativeImageXObject {
+                name: "Im1".to_string(),
+                approx_bytes: 0,
+                bounds: Some(bounds),
+            })
+            .collect();
+        let packed = PackedDisplayList::compile(manual_display_list(viewport, ops));
+        let index = RenderSpatialIndex::compile(&packed);
+
+        assert!(index.grid.is_none());
+        assert!(index.hierarchy.is_none());
+        assert_eq!(
+            index.query(RenderTile {
+                x: 0,
+                y: 0,
+                width: 1_000,
+                height: 1_000,
+            }),
+            (0..SPATIAL_BVH_MIN_KNOWN_OPS).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn spatial_grid_refuses_pathological_full_page_membership_growth() {
+        let full_page = RenderBounds {
+            x0: 0,
+            y0: 0,
+            x1: 1_000,
+            y1: 1_000,
+        };
+        let known = (0..2_000)
+            .map(|index| (index, full_page))
+            .collect::<Vec<_>>();
+
+        assert!(SpatialGridIndex::compile(&known, 1_000, 1_000).is_none());
+    }
+
+    #[test]
     fn spatial_index_bvh_query_matches_linear_scan_for_large_plan() {
         let mut known = Vec::new();
         for row in 0..8 {
@@ -5384,6 +5561,7 @@ mod tests {
         stroke_count: usize,
         clip_count: usize,
         stop_after_compile_refusal: bool,
+        cancel_after_first_dispatch: bool,
     }
 
     impl RecordingDispatcher {
@@ -5403,6 +5581,7 @@ mod tests {
                 stroke_count: 0,
                 clip_count: 0,
                 stop_after_compile_refusal: false,
+                cancel_after_first_dispatch: false,
             }
         }
 
@@ -5411,6 +5590,29 @@ mod tests {
                 stop_after_compile_refusal: true,
                 ..Self::new()
             }
+        }
+
+        fn cancelling_after_first_dispatch() -> Self {
+            Self {
+                cancel_after_first_dispatch: true,
+                ..Self::new()
+            }
+        }
+
+        fn dispatch_count(&self) -> usize {
+            self.text_count
+                + self.image_count
+                + self.form_count
+                + self.shading_count
+                + self.state_count
+                + self.pattern_count
+                + self.inline_image_count
+                + self.compile_refusal_count
+                + self.save_count
+                + self.restore_count
+                + self.fill_count
+                + self.stroke_count
+                + self.clip_count
         }
     }
 
@@ -5471,7 +5673,7 @@ mod tests {
             self.stroke_count += 1;
         }
         fn is_cancelled(&self) -> bool {
-            false
+            self.cancel_after_first_dispatch && self.dispatch_count() >= 1
         }
 
         fn should_stop(&self) -> bool {
@@ -5491,6 +5693,54 @@ mod tests {
             supported: true,
             unsupported: Vec::new(),
         }
+    }
+
+    #[test]
+    fn packed_plan_checks_cancellation_before_every_operation() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = manual_display_list(viewport, vec![DisplayOp::Save, DisplayOp::Restore]);
+        let packed = PackedDisplayList::compile(list);
+        let mut dispatcher = RecordingDispatcher::cancelling_after_first_dispatch();
+
+        let error = packed
+            .execute_plan(&mut dispatcher)
+            .expect_err("cancellation after the first operation must stop replay");
+
+        assert!(matches!(
+            error,
+            WellfriendError::Cancelled(message) if message == "plan execution cancelled"
+        ));
+        assert_eq!(dispatcher.save_count, 1);
+        assert_eq!(dispatcher.restore_count, 0);
+    }
+
+    #[test]
+    fn vector_tile_replay_observes_cancellation() {
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let list = manual_display_list(viewport.clone(), vec![DisplayOp::Save, DisplayOp::Restore]);
+        let contract = RenderContract::for_viewport(
+            super::super::contract::RevisionId(1),
+            super::super::contract::ObjectIdentityId(1),
+            1,
+            &viewport,
+            RenderTile::full(viewport.width_px, viewport.height_px),
+            RenderMode::Compat,
+        );
+        let plan = RenderPlan::compile(list, contract).expect("compile vector plan");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let error = plan
+            .execute_vector_tile_cancellable(
+                RenderTile::full(viewport.width_px, viewport.height_px),
+                &cancel,
+            )
+            .expect_err("cancelled vector replay must stop before rendering");
+
+        assert!(matches!(
+            error,
+            WellfriendError::Cancelled(message) if message == "vector tile replay start"
+        ));
     }
 
     fn test_type1_font_dict(base_font: &str) -> PdfDictionary {

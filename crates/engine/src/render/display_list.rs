@@ -1616,11 +1616,30 @@ pub fn build_display_list(
     viewport: Viewport,
     resources: &PageResources,
 ) -> DisplayList {
-    let stats = classify_content(ops, resources);
+    build_display_list_with_optional_cancellation(ops, viewport, resources, None)
+        .expect("uncancellable display-list construction cannot be cancelled")
+}
+
+pub fn build_display_list_cancellable(
+    ops: &[ContentOperation],
+    viewport: Viewport,
+    resources: &PageResources,
+    cancel: &CancelToken,
+) -> Result<DisplayList> {
+    build_display_list_with_optional_cancellation(ops, viewport, resources, Some(cancel))
+}
+
+fn build_display_list_with_optional_cancellation(
+    ops: &[ContentOperation],
+    viewport: Viewport,
+    resources: &PageResources,
+    cancel: Option<&CancelToken>,
+) -> Result<DisplayList> {
+    let stats = classify_content(ops, resources, cancel)?;
     let mut builder = DisplayListBuilder::new(viewport, resources);
     builder.stats = stats;
-    builder.dispatch_all(ops);
-    builder.finish()
+    builder.dispatch_all(ops, cancel)?;
+    Ok(builder.finish())
 }
 
 fn estimate_named_resource_bytes(name: &str) -> usize {
@@ -1775,11 +1794,20 @@ fn estimate_operand_bytes(operand: &crate::content::operation::Operand) -> usize
     }
 }
 
-fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> DisplayListStats {
+fn classify_content(
+    ops: &[ContentOperation],
+    resources: &PageResources,
+    cancel: Option<&CancelToken>,
+) -> Result<DisplayListStats> {
     let mut stats = DisplayListStats::default();
     let mut gs = GraphicsState::default();
     let mut pending_inline = false;
-    for op in ops {
+    for (index, op) in ops.iter().enumerate() {
+        if index % 64 == 0 {
+            if let Some(cancel) = cancel {
+                cancel.check("display-list content classification")?;
+            }
+        }
         match op.operator.as_str() {
             "Tj" | "TJ" | "'" | "\"" => stats.text_ops += 1,
             "BT" | "ET" | "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr"
@@ -1845,7 +1873,7 @@ fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> Disp
             stats.patterns += 1;
         }
     }
-    stats
+    Ok(stats)
 }
 
 fn ext_g_state_needs_transparent_page_group(dict: &PdfDictionary) -> bool {
@@ -2047,8 +2075,17 @@ impl<'a> DisplayListBuilder<'a> {
         }
     }
 
-    fn dispatch_all(&mut self, ops: &[ContentOperation]) {
-        for op in ops {
+    fn dispatch_all(
+        &mut self,
+        ops: &[ContentOperation],
+        cancel: Option<&CancelToken>,
+    ) -> Result<()> {
+        for (index, op) in ops.iter().enumerate() {
+            if index % 64 == 0 {
+                if let Some(cancel) = cancel {
+                    cancel.check("display-list construction")?;
+                }
+            }
             if self.inline_data_pending_end && op.operator != "EI" {
                 self.inline_data_pending_end = false;
                 self.unsupported.push(UnsupportedRenderOp {
@@ -2074,6 +2111,7 @@ impl<'a> DisplayListBuilder<'a> {
             }
             self.dispatch(op);
         }
+        Ok(())
     }
 
     fn note_path_op(&mut self) {

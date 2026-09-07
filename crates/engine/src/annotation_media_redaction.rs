@@ -2319,7 +2319,12 @@ fn annotation_appearance_stream(
         .take(64)
         .collect::<Vec<_>>();
     if !dash.is_empty() && dash.iter().any(|value| *value > 0.0) {
-        content.push_str(&format!("[{}] 0 d\n", format_numbers(&dash)));
+        let dash_operands = dash
+            .iter()
+            .map(|value| fmt_number(*value))
+            .collect::<Vec<_>>()
+            .join(" ");
+        content.push_str(&format!("[{dash_operands}] 0 d\n"));
     }
     let cloudy = record
         .border_effect

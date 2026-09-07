@@ -117,11 +117,11 @@ render):
 |---|---|---|
 | `multi_stream.pdf` p1 (true vector) | PS rasterised by Ghostscript vs Wellfriend raster | **35.24 dB** |
 | `multi_stream.pdf` p1 (true vector) | EPS rasterised by Ghostscript vs Wellfriend raster | **35.24 dB** |
-| `image_only.pdf` p1 (rasterize-embed) | `colorimage` PS rasterised vs Wellfriend raster | **99 dB** (exact) |
+| `image_only.pdf` p1 (regional image embed) | regional `colorimage` PS rasterised vs Wellfriend raster | **99 dB** (exact) |
 
 The 35 dB true-vector figure reflects only cross-rasteriser AA differences
-between Wellfriend's rasteriser and Ghostscript; the fallback is pixel-exact because
-it embeds the raster itself. Structural tests assert DSC/EPSF conformance
+between Wellfriend's rasteriser and Ghostscript; the one-pixel regional image
+fixture is pixel-exact. Structural tests assert DSC/EPSF conformance
 (`%!PS-Adobe-3.0`, `%%BoundingBox`, `%%Pages`, per-page `showpage`, EPSF has no
 `setpagedevice`/`showpage`). See `crates/engine/tests/ps_output.rs`.
 
@@ -129,8 +129,7 @@ it embeds the raster itself. Structural tests assert DSC/EPSF conformance
 
 - **Selectable text** via embedded/subset fonts (text is currently emitted as
   outlines — faithful, but not selectable/searchable in a PS viewer).
-- **Native `shfill`** (PostScript Level 3) for axial/radial shadings instead of
-  the whole-page rasterize-embed fallback.
-- **Per-region image placement** via the `image`/`colorimage` operator under
-  each image XObject's transform (with `DCTDecode` JPEG passthrough), so a page
-  mixing text and one image stays mostly vector.
+- **Compressed image passthrough** for eligible JPEG payloads instead of
+  decode-and-embed regional RGB samples.
+- **Broader native pattern coverage** beyond the bounded Form, image, mask,
+  axial/radial shading, and safe ExtGState cases currently supported.

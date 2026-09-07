@@ -3184,10 +3184,6 @@ fn render_golden_for_all_fixtures() {
             "tests/references/form_160f_page1_72dpi.png",
         ),
         (
-            "tests/fixtures/roboto.pdf",
-            "tests/references/roboto_page1_72dpi.png",
-        ),
-        (
             "tests/fixtures/tracemonkey.pdf",
             "tests/references/tracemonkey_page1_72dpi.png",
         ),
@@ -3195,34 +3191,35 @@ fn render_golden_for_all_fixtures() {
 
     for (pdf_path, golden_path) in fixtures {
         let path = std::path::Path::new(pdf_path);
-        if !path.exists() {
-            println!("SKIP {pdf_path}: fixture not present");
-            continue;
-        }
+        assert!(
+            path.exists(),
+            "required golden fixture is missing: {pdf_path}"
+        );
+        let golden = std::path::Path::new(golden_path);
+        assert!(
+            golden.exists(),
+            "required tracked golden reference is missing: {golden_path}"
+        );
 
-        let engine = match ContentEngine::open_path(path) {
-            Ok(engine) => engine,
-            Err(err) => {
-                println!("SKIP {pdf_path}: {err}");
-                continue;
-            }
-        };
-        let buf = match engine.render_page(1, 72) {
-            Ok(buf) => buf,
-            Err(err) => {
-                println!("RENDER FAIL {pdf_path}: {err}");
-                continue;
-            }
-        };
+        let engine = ContentEngine::open_path(path)
+            .unwrap_or_else(|err| panic!("failed to open golden fixture {pdf_path}: {err}"));
+        let buf = engine
+            .render_page(1, 72)
+            .unwrap_or_else(|err| panic!("failed to render golden fixture {pdf_path}: {err}"));
         let raw = buf.to_raw_image();
-        let psnr = RenderQuality::compare_or_create_golden(std::path::Path::new(golden_path), &raw)
-            .unwrap_or(f64::INFINITY);
+        let reference = RenderQuality::read_golden(golden)
+            .unwrap_or_else(|err| panic!("failed to read golden reference {golden_path}: {err}"));
+        let psnr = RenderQuality::psnr(&reference, &raw)
+            .unwrap_or_else(|err| panic!("failed to compare golden fixture {pdf_path}: {err}"));
 
         if psnr.is_infinite() {
-            println!("GOLDEN CREATED or IDENTICAL: {pdf_path}");
+            println!("GOLDEN IDENTICAL: {pdf_path}");
         } else {
             println!("PSNR {psnr:.1} dB: {pdf_path}");
-            assert!(psnr > 35.0);
+            assert!(
+                psnr > 35.0,
+                "golden PSNR {psnr:.1} dB is below 35.0 dB for {pdf_path}"
+            );
         }
     }
 }

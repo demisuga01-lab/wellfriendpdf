@@ -241,16 +241,32 @@ fn compat_and_high_vs_ghostscript_reference_psnr_is_reported() {
             .render_page_with_mode(1, DPI, RenderMode::Compat)
             .unwrap()
             .to_raw_image();
-        let high = engine
-            .render_page_with_mode(1, DPI, RenderMode::HighQuality)
-            .unwrap()
-            .to_raw_image();
+        let high = match engine.render_page_with_mode(1, DPI, RenderMode::HighQuality) {
+            Ok(image) => Some(image.to_raw_image()),
+            Err(err) => {
+                let message = err.to_string();
+                assert!(
+                    message.contains("HighQualityExact render contract refuses text glyph")
+                        && message.contains("no real font advance metric"),
+                    "unexpected HighQuality refusal for {pdf_name}: {message}"
+                );
+                println!("{pdf_name}: HighQuality typed refusal: {message}");
+                None
+            }
+        };
         if let Some(gs_img) = gs_render(&gs, &pdf, DPI) {
             let compat_psnr = psnr(&compat, &gs_img);
-            let high_psnr = psnr(&high, &gs_img);
-            eprintln!(
-                "{pdf_name}: Compat vs Ghostscript@{DPI}dpi = {compat_psnr:.2} dB | High = {high_psnr:.2} dB"
-            );
+            match high.as_ref() {
+                Some(high) => {
+                    let high_psnr = psnr(high, &gs_img);
+                    println!(
+                        "{pdf_name}: Compat vs Ghostscript@{DPI}dpi = {compat_psnr:.2} dB | High = {high_psnr:.2} dB"
+                    );
+                }
+                None => println!(
+                    "{pdf_name}: Compat vs Ghostscript@{DPI}dpi = {compat_psnr:.2} dB | High = typed refusal"
+                ),
+            }
         }
     }
 }

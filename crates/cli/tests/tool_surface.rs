@@ -383,7 +383,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "--halftone",
         "screen",
         "--print-profile",
-        "proof",
+        "print",
         "--overprint",
         "disabled",
         "--rendering-intent",
@@ -405,7 +405,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(json["pixel_format"], "bgra8");
     assert_eq!(json["alpha_mode"], "straight");
     assert_eq!(json["grayscale"], true);
-    assert_eq!(json["print_profile"], "proof");
+    assert_eq!(json["print_profile"], "print");
 
     let entries = zip_entries(&o);
     let raw = entries
@@ -447,7 +447,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(contract["reverse_byte_order"], true);
     assert_eq!(contract["grayscale"], true);
     assert_eq!(contract["halftone"], "Screen");
-    assert_eq!(contract["print_profile"], "Proof");
+    assert_eq!(contract["print_profile"], "Print");
     assert_eq!(contract["overprint"], "Disabled");
     assert_eq!(contract["rendering_intent"], "RelativeColorimetric");
     assert_eq!(contract["color_management"], "PortableQcms");
@@ -493,7 +493,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(replay_json["pixel_format"], "Bgra8");
     assert_eq!(replay_json["alpha_mode"], "Straight");
     assert_eq!(replay_json["grayscale"], true);
-    assert_eq!(replay_json["print_profile"], "Proof");
+    assert_eq!(replay_json["print_profile"], "Print");
     let replay_entries = zip_entries(&replay_zip);
     let replay_raw = replay_entries
         .iter()

@@ -39,8 +39,8 @@ use crate::render::contract::{
 #[cfg(test)]
 use crate::render::display_list::RetainedTextArrayItem;
 use crate::render::display_list::{
-    build_display_list, DisplayList, DisplayOp, DrawState, RenderBounds, RenderCache,
-    RenderCacheKey, RenderTile, RetainedInlineImage, RetainedTextOp,
+    build_display_list, build_display_list_cancellable, DisplayList, DisplayOp, DrawState,
+    RenderBounds, RenderCache, RenderCacheKey, RenderTile, RetainedInlineImage, RetainedTextOp,
 };
 use crate::render::document_view::ObjectIdentity;
 use crate::render::font_rasterizer::FontRasterizer;
@@ -3543,14 +3543,19 @@ impl PageRenderer {
         cancel.check("packed plan render start")?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
         let resources = engine.get_page_resources(page_number)?;
-        let plan = RenderPlan::compile_with_resources(list.clone(), contract, &resources)?;
+        let plan = RenderPlan::compile_with_resources_cancellable(
+            list.clone(),
+            contract,
+            &resources,
+            cancel,
+        )?;
         if !plan.packed.requires_native_replay() {
             // Pure vector path — no RenderState needed
             let buf = plan
-                .execute_vector_tile(RenderTile::full(
-                    list.viewport.width_px,
-                    list.viewport.height_px,
-                ))?
+                .execute_vector_tile_cancellable(
+                    RenderTile::full(list.viewport.width_px, list.viewport.height_px),
+                    cancel,
+                )?
                 .ok_or_else(|| {
                     WellfriendError::UnsupportedFeature(
                         "packed vector plan unexpectedly retained a native payload".to_string(),
@@ -3614,13 +3619,18 @@ impl PageRenderer {
         cancel.check("packed plan render start")?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
         let resources = engine.get_page_resources(page_number)?;
-        let plan = RenderPlan::compile_with_resources(list.clone(), contract, &resources)?;
+        let plan = RenderPlan::compile_with_resources_cancellable(
+            list.clone(),
+            contract,
+            &resources,
+            cancel,
+        )?;
         if !plan.packed.requires_native_replay() {
             let buf = plan
-                .execute_vector_tile(RenderTile::full(
-                    list.viewport.width_px,
-                    list.viewport.height_px,
-                ))?
+                .execute_vector_tile_cancellable(
+                    RenderTile::full(list.viewport.width_px, list.viewport.height_px),
+                    cancel,
+                )?
                 .ok_or_else(|| {
                     WellfriendError::UnsupportedFeature(
                         "packed vector plan unexpectedly retained a native payload".to_string(),
@@ -3726,6 +3736,27 @@ impl PageRenderer {
         Ok((cache.insert_display_list(key, list), false))
     }
 
+    pub fn get_or_build_display_list_cancellable_with_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        cancel: &CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(Arc<DisplayList>, bool)> {
+        cancel.check("cached display-list build start")?;
+        Self::record_page_render_dependencies(engine, page_number, cache)?;
+        let key = RenderDocumentCache::display_list_key_with_revision(
+            page_number,
+            dpi,
+            Self::revision_cache_key(engine),
+        );
+        if let Some(list) = cache.cached_display_list(&key) {
+            return Ok((list, true));
+        }
+        let list = Self::build_display_list_cancellable(engine, page_number, dpi, cancel)?;
+        Ok((cache.insert_display_list(key, list), false))
+    }
+
     /// Render a single PDF page to a PixelBuffer at the given DPI.
     pub fn render_page(
         engine: &ContentEngine,
@@ -3776,10 +3807,16 @@ impl PageRenderer {
         cancel: &CancelToken,
         render_mode: RenderMode,
     ) -> Result<PixelBuffer> {
-        let ops = engine.get_page_content(page_number)?;
+        cancel.check("page render start")?;
+        let ops = engine.get_page_content_with_decode_limits(
+            page_number,
+            &DecodeLimits::default(),
+            cancel,
+        )?;
+        cancel.check("page content parsing")?;
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
-        let list = build_display_list(&ops, viewport.clone(), &resources);
+        let list = build_display_list_cancellable(&ops, viewport.clone(), &resources, cancel)?;
         if list.is_fully_supported() {
             return Self::render_display_list_cancellable_with_mode(
                 engine,
@@ -3838,7 +3875,7 @@ impl PageRenderer {
             .page_viewport_for_box(page_number, dpi, page_box)?
             .with_device_transform(device_transform);
         let resources = engine.get_page_resources(page_number)?;
-        let list = build_display_list(&ops, viewport.clone(), &resources);
+        let list = build_display_list_cancellable(&ops, viewport.clone(), &resources, cancel)?;
         if list.is_fully_supported() {
             let mut plan_contract = engine.render_contract_for_tile_with_page_box(
                 page_number,
@@ -3870,7 +3907,12 @@ impl PageRenderer {
                 optional_content.visibility_fingerprint().to_string().into();
             let transparent_page_group =
                 display_list_ops_need_transparent_page_group(&ops, &resources, &list, engine)?;
-            let plan = RenderPlan::compile_with_resources(list, plan_contract, &resources)?;
+            let plan = RenderPlan::compile_with_resources_cancellable(
+                list,
+                plan_contract,
+                &resources,
+                cancel,
+            )?;
             let buf = Self::initial_page_buffer_with_background(
                 &viewport,
                 transparent_page_group,
@@ -3942,8 +3984,13 @@ impl PageRenderer {
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
     ) -> Result<PixelBuffer> {
-        let (list, _) =
-            Self::get_or_build_display_list_with_cache(engine, page_number, dpi, cache)?;
+        let (list, _) = Self::get_or_build_display_list_cancellable_with_cache(
+            engine,
+            page_number,
+            dpi,
+            cancel,
+            cache,
+        )?;
         if list.is_fully_supported() {
             return Self::render_display_list_cancellable_with_mode_and_cache(
                 engine,
@@ -3979,6 +4026,24 @@ impl PageRenderer {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
         Ok(build_display_list(&ops, viewport, &resources))
+    }
+
+    pub fn build_display_list_cancellable(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        cancel: &CancelToken,
+    ) -> Result<DisplayList> {
+        cancel.check("display-list page build start")?;
+        let ops = engine.get_page_content_with_decode_limits(
+            page_number,
+            &DecodeLimits::default(),
+            cancel,
+        )?;
+        cancel.check("display-list page content parsing")?;
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        build_display_list_cancellable(&ops, viewport, &resources, cancel)
     }
 
     /// Render a page through display-list replay.
@@ -4190,7 +4255,7 @@ impl PageRenderer {
         let list = match cache.cached_display_list(&key) {
             Some(list) => list,
             None => {
-                let list = Self::build_display_list(engine, page_number, dpi)?;
+                let list = Self::build_display_list_cancellable(engine, page_number, dpi, cancel)?;
                 cache.insert_display_list(key, list)
             }
         };
@@ -4322,8 +4387,12 @@ impl PageRenderer {
                 value
             }
         };
-        let plan =
-            RenderPlan::compile_with_resources(list.as_ref().clone(), plan_contract, &resources)?;
+        let plan = RenderPlan::compile_with_resources_cancellable(
+            list.as_ref().clone(),
+            plan_contract,
+            &resources,
+            cancel,
+        )?;
         Self::record_display_list_tile_resource_dependencies(
             engine,
             page_number,
@@ -4437,7 +4506,7 @@ impl PageRenderer {
         let list = match cache.cached_display_list(&key) {
             Some(list) => list,
             None => {
-                let list = Self::build_display_list(engine, page_number, dpi)?;
+                let list = Self::build_display_list_cancellable(engine, page_number, dpi, cancel)?;
                 cache.insert_display_list(key, list)
             }
         };
@@ -4649,10 +4718,11 @@ impl PageRenderer {
                 value
             }
         };
-        let plan = RenderPlan::compile_with_resources(
+        let plan = RenderPlan::compile_with_resources_cancellable(
             list.as_ref().clone(),
             plan_contract.clone(),
             &resources,
+            cancel,
         )?;
         Self::record_display_list_tile_resource_dependencies(
             engine,
@@ -11567,7 +11637,14 @@ impl<'a> RenderState<'a> {
                 ));
                 return;
             }
-            Some((resolved.name.clone(), resolved.object.clone()))
+            let family = image_color_space_family_name(
+                &resolved.object,
+                &self.resources,
+                self.engine.document().reader(),
+                0,
+            )
+            .unwrap_or_else(|| canonical_image_color_space_name(color_space));
+            Some((family, resolved.object.clone()))
         } else {
             self.resolved_inline_image_color_space_override(color_space)
         };
@@ -11988,6 +12065,23 @@ impl<'a> RenderState<'a> {
         };
         let color_space_name = if image_is_mask {
             "DeviceGray".to_string()
+        } else if let Some(color_space @ PdfObject::Reference { .. }) =
+            dict.get("ColorSpace").or_else(|| dict.get("CS"))
+        {
+            match image_color_space_family_name(
+                color_space,
+                &self.resources,
+                self.engine.document().reader(),
+                0,
+            ) {
+                Some(color_space) => color_space,
+                None => {
+                    self.record_fatal_render_error(format!(
+                        "{label} indirect /ColorSpace could not be resolved"
+                    ));
+                    return;
+                }
+            }
         } else {
             match image_xobject_color_space_name(dict, &filter, &label) {
                 Ok(color_space) => color_space,
@@ -12295,19 +12389,36 @@ impl<'a> RenderState<'a> {
         &self,
         dict: &PdfDictionary,
     ) -> Option<(String, PdfObject)> {
-        let PdfObject::Name(resource_name) = dict.get("ColorSpace").or_else(|| dict.get("CS"))?
-        else {
-            return None;
-        };
-        let resource_obj = self.resources.color_spaces.get(resource_name)?.clone();
-        let family = image_color_space_family_name(
-            &resource_obj,
-            &self.resources,
-            self.engine.document().reader(),
-            0,
-        )
-        .unwrap_or_else(|| canonical_image_color_space_name(resource_name));
-        Some((family, resource_obj))
+        let color_space = dict.get("ColorSpace").or_else(|| dict.get("CS"))?;
+        match color_space {
+            PdfObject::Name(resource_name) => {
+                let resource_obj = self.resources.color_spaces.get(resource_name)?.clone();
+                let family = image_color_space_family_name(
+                    &resource_obj,
+                    &self.resources,
+                    self.engine.document().reader(),
+                    0,
+                )
+                .unwrap_or_else(|| canonical_image_color_space_name(resource_name));
+                Some((family, resource_obj))
+            }
+            PdfObject::Reference { .. } => {
+                let resource_obj = self
+                    .engine
+                    .document()
+                    .reader()
+                    .resolve(color_space.clone())
+                    .ok()?;
+                let family = image_color_space_family_name(
+                    &resource_obj,
+                    &self.resources,
+                    self.engine.document().reader(),
+                    0,
+                )?;
+                Some((family, resource_obj))
+            }
+            _ => None,
+        }
     }
 
     fn resolved_image_color_space_override_from_payload(
@@ -23154,7 +23265,7 @@ fn select_annotation_appearance(
                 return resolve_appearance_stream(selected, reader, label, state_name).map(Some);
             }
             if explicit_state {
-                return Err(format!("{label} appearance state /{state_name} is missing"));
+                return Ok(None);
             }
             if state_name != "Off" {
                 if let Some(off) = states.get("Off") {
@@ -33530,6 +33641,25 @@ mod tests {
     }
 
     #[test]
+    fn annotation_missing_selected_appearance_state_is_unpainted() {
+        let yes = annotation_appearance_stream(
+            "1 0 0 rg 0 0 50 50 re f\n",
+            "/BBox [0 0 50 50] /Resources << >>",
+        );
+        let pdf = pdf_with_missing_annotation_appearance_state("/AS /Off", &yes);
+        let engine = ContentEngine::open_bytes(pdf).expect("open missing annotation state PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("missing selected appearance state must not abort page rendering");
+
+        assert_eq!(
+            count_red_pixels(&buf),
+            0,
+            "an unavailable selected state must not fall back to a different appearance"
+        );
+    }
+
+    #[test]
     fn annotation_malformed_flags_return_typed_refusal() {
         let appearance = annotation_appearance_stream(
             "1 0 0 rg 0 0 50 50 re f\n",
@@ -35903,6 +36033,20 @@ mod tests {
     }
 
     #[test]
+    fn indirect_image_color_space_reference_renders() {
+        let pdf = pdf_with_indirect_image_colorspace();
+        let engine = ContentEngine::open_bytes(pdf).expect("open indirect image ColorSpace PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("render indirect image ColorSpace PDF");
+
+        assert!(
+            count_red_pixels(&buf) > 500,
+            "indirect DeviceRGB image ColorSpace should render red pixels"
+        );
+    }
+
+    #[test]
     fn malformed_resource_separation_image_color_space_returns_typed_refusal() {
         let pdf = pdf_with_malformed_resource_separation_image_colorspace();
         let engine =
@@ -35948,6 +36092,45 @@ mod tests {
             format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
                 .into_bytes(),
             image_stream,
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn pdf_with_indirect_image_colorspace() -> Vec<u8> {
+        let content = "q\n80 0 0 40 10 30 cm\n/Im1 Do\nQ\n";
+        let mut image_stream = b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace 6 0 R /BitsPerComponent 8 /Length 3 >>\nstream\n".to_vec();
+        image_stream.extend_from_slice(&[255u8, 0u8, 0u8]);
+        image_stream.extend_from_slice(b"\nendstream");
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            image_stream,
+            b"/DeviceRGB".to_vec(),
         ];
         let mut out = bytearray_pdf_header();
         let mut offsets = vec![0usize];
@@ -36491,6 +36674,33 @@ mod tests {
             .into_bytes(),
             yes_appearance.as_bytes().to_vec(),
             off_appearance.as_bytes().to_vec(),
+        ];
+        build_test_pdf_from_objects(&objects)
+    }
+
+    fn pdf_with_missing_annotation_appearance_state(
+        as_entry: &str,
+        yes_appearance: &str,
+    ) -> Vec<u8> {
+        let content = "";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << >> /Contents 4 0 R /Annots [5 0 R] >>"
+                .to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            )
+            .into_bytes(),
+            format!(
+                "<< /Type /Annot /Subtype /Square /Rect [20 20 70 70] {as_entry} \
+                 /AP << /N << /Yes 6 0 R >> >> >>"
+            )
+            .into_bytes(),
+            yes_appearance.as_bytes().to_vec(),
         ];
         build_test_pdf_from_objects(&objects)
     }

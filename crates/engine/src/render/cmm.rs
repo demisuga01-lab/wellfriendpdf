@@ -2215,22 +2215,16 @@ mod tests {
     #[test]
     fn native_lcms2_malformed_and_mismatched_profiles_fail_closed() {
         let mut cache = IccTransformCache::new(4);
+        let options = ColorTransformOptions {
+            backend: ColorTransformBackend::NativeLittleCms,
+            ..ColorTransformOptions::default()
+        };
         assert!(cache
-            .transform_profile_to_srgb(
-                b"not an icc profile",
-                3,
-                &[0, 0, 0],
-                ColorTransformOptions::default(),
-            )
+            .transform_profile_to_srgb(b"not an icc profile", 3, &[0, 0, 0], options,)
             .is_none());
         let gray_profile = lcms2_gray_profile_bytes();
         assert!(cache
-            .transform_profile_to_srgb(
-                &gray_profile,
-                3,
-                &[0, 0, 0],
-                ColorTransformOptions::default(),
-            )
+            .transform_profile_to_srgb(&gray_profile, 3, &[0, 0, 0], options,)
             .is_none());
         let metrics = cache.metrics();
         assert!(metrics.invalid_profiles >= 1, "{metrics:?}");

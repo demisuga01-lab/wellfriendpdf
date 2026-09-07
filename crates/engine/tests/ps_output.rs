@@ -61,13 +61,13 @@ fn ghostscript_rasterize(
     ps_path: &Path,
     width: u32,
     height: u32,
-) -> Option<wellfriendpdf_engine::images::decoder::RawImage> {
+) -> Result<wellfriendpdf_engine::images::decoder::RawImage, String> {
     let out_png = std::env::temp_dir().join(format!(
         "wellfriendpdf_ps_gs_{}_{}.png",
         std::process::id(),
         ps_path.file_name().and_then(|n| n.to_str()).unwrap_or("x")
     ));
-    let status = Command::new(gs)
+    let output = Command::new(gs)
         .arg("-dSAFER")
         .arg("-dBATCH")
         .arg("-dNOPAUSE")
@@ -77,17 +77,22 @@ fn ghostscript_rasterize(
         .arg(format!("-o{}", out_png.display()))
         .arg(ps_path)
         .output()
-        .ok()?;
-    if !status.status.success() {
-        eprintln!(
-            "ghostscript failed: {}",
-            String::from_utf8_lossy(&status.stderr)
-        );
-        return None;
+        .map_err(|err| format!("failed to launch Ghostscript: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Ghostscript exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
-    let img = RenderQuality::read_golden(&out_png).ok();
+    let image = RenderQuality::read_golden(&out_png).map_err(|err| {
+        format!(
+            "failed to read Ghostscript output {}: {err}",
+            out_png.display()
+        )
+    });
     let _ = std::fs::remove_file(&out_png);
-    img
+    image
 }
 
 /// Write a PostScript document to a temp file and return its path.
@@ -232,10 +237,13 @@ fn ps_rasterizes_close_to_wellfriendpdf_raster() {
         let (ps_doc, _r) = e.render_document_ps(&[page], DPI).unwrap();
         let ps_path = write_temp(&format!("{name}_p{page}.ps"), &ps_doc);
 
-        let Some(gs_img) = ghostscript_rasterize(&gs, &ps_path, vp.width_px, vp.height_px) else {
-            eprintln!("NOTE: Ghostscript could not rasterise {name} p{page}; skipping");
-            let _ = std::fs::remove_file(&ps_path);
-            continue;
+        let gs_img = match ghostscript_rasterize(&gs, &ps_path, vp.width_px, vp.height_px) {
+            Ok(image) => image,
+            Err(err) => {
+                eprintln!("NOTE: Ghostscript could not rasterise {name} p{page}: {err}");
+                let _ = std::fs::remove_file(&ps_path);
+                continue;
+            }
         };
         let _ = std::fs::remove_file(&ps_path);
 
@@ -249,21 +257,21 @@ fn ps_rasterizes_close_to_wellfriendpdf_raster() {
 }
 
 #[test]
-fn ps_rasterize_embed_fallback_round_trips() {
-    // image_only.pdf uses an image XObject -> the whole page is embedded as a
-    // `colorimage` raster. Re-rasterising that PS with Ghostscript must
-    // reproduce the original raster near-exactly (it IS the raster).
+fn ps_regional_image_embed_round_trips() {
+    // image_only.pdf uses an image XObject -> the image is embedded regionally
+    // as `colorimage` while the page remains on the vector PostScript path.
     let path = fixture("image_only.pdf");
     if !path.exists() {
-        eprintln!("NOTE: image_only.pdf missing; skipping fallback round-trip");
+        eprintln!("NOTE: image_only.pdf missing; skipping regional-image round-trip");
         return;
     }
     let e = ContentEngine::open_bytes(std::fs::read(&path).unwrap()).unwrap();
     let ps_page = e.render_page_ps(1, DPI).unwrap();
     assert!(
-        ps_page.is_rasterized,
-        "an image page must take the rasterize-embed fallback"
+        !ps_page.is_rasterized,
+        "a supported image page must not take the whole-page raster fallback"
     );
+    assert!(ps_page.has_regional_images);
     assert!(ps_page.body.contains("colorimage"));
 
     let Some(gs) = find_ghostscript() else {
@@ -274,18 +282,16 @@ fn ps_rasterize_embed_fallback_round_trips() {
     let raster = e.render_page(1, DPI).unwrap().to_raw_image();
     let (ps_doc, _r) = e.render_document_ps(&[1], DPI).unwrap();
     let ps_path = write_temp("image_only_p1.ps", &ps_doc);
-    let Some(gs_img) = ghostscript_rasterize(&gs, &ps_path, vp.width_px, vp.height_px) else {
-        let _ = std::fs::remove_file(&ps_path);
-        return;
-    };
+    let gs_img =
+        ghostscript_rasterize(&gs, &ps_path, vp.width_px, vp.height_px).unwrap_or_else(|err| {
+            panic!("installed Ghostscript failed to rasterize regional-image PostScript: {err}")
+        });
     let _ = std::fs::remove_file(&ps_path);
     let psnr = psnr_rgb(&raster, &gs_img);
-    eprintln!("image_only p1: fallback PS-vs-raster PSNR {psnr:.2} dB");
-    // The embedded image is the raster itself; only 8-bit hex re-quantisation
-    // and Ghostscript's image scaling differ -> should be very high.
+    println!("image_only p1: regional PS-vs-raster PSNR {psnr:.2} dB");
     assert!(
         psnr >= 30.0,
-        "fallback PS should reproduce the raster nearly exactly: {psnr:.2} dB"
+        "regional-image PS should reproduce the raster closely: {psnr:.2} dB"
     );
 }
 
@@ -305,10 +311,13 @@ fn eps_rasterizes_close_to_wellfriendpdf_raster() {
     assert!(!rasterized, "{name} p{page} should be true-vector EPS");
     let eps_path = write_temp(&format!("{name}_p{page}.eps"), &eps);
 
-    let Some(gs_img) = ghostscript_rasterize(&gs, &eps_path, vp.width_px, vp.height_px) else {
-        eprintln!("NOTE: Ghostscript could not rasterise EPS; skipping");
-        let _ = std::fs::remove_file(&eps_path);
-        return;
+    let gs_img = match ghostscript_rasterize(&gs, &eps_path, vp.width_px, vp.height_px) {
+        Ok(image) => image,
+        Err(err) => {
+            eprintln!("NOTE: Ghostscript could not rasterise EPS: {err}");
+            let _ = std::fs::remove_file(&eps_path);
+            return;
+        }
     };
     let _ = std::fs::remove_file(&eps_path);
 
