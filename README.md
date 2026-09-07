@@ -43,10 +43,27 @@ reported policies. Codec-native region, tile, component, reduction, and
 progressive capabilities are reported from the selected decoder rather than
 being simulated.
 
-Source-closure evidence and the exact current verdict are maintained in
-[`docs/renderer/final-local-implementation-closure.md`](docs/renderer/final-local-implementation-closure.md).
+The latest independent source-closure evidence and exact current verdict are in
+[`docs/renderer/independent-closure-audit-2026-09-07.md`](docs/renderer/independent-closure-audit-2026-09-07.md).
 Deferred corpus and platform verification is not presented as completed source
 work.
+
+Verified local closure baseline (`0601400fabfbc85491a4923a2bac6406f0865892`):
+
+| Evidence | Result |
+|---|---|
+| Rust workspace, all targets and all features | 3,636 tests passed across 90 harnesses; 0 failed |
+| Formatting, compile, and Clippy | Default and all-feature gates passed with warnings denied |
+| C ABI | Library built; C example loaded the DLL and extracted `Hi` from `minimal.pdf` |
+| .NET | 15 tests passed |
+| Java | JDK 25 preview compile and contract-builder smoke passed |
+| WASM | `wasm32-unknown-unknown` feature check passed |
+| Python visual-normalization tool | 46 tests passed |
+
+These are local correctness and build results, not corpus fidelity or
+performance benchmark results. The independent audit records the commands,
+evidence hashes, defects repaired during the audit, and remaining proof
+boundary.
 
 ## Requirements
 
@@ -318,9 +335,11 @@ Build a local ABI3 wheel with maturin:
 
 ```powershell
 python -m pip install maturin
-cd crates\wellfriendpdf-py
-python -m maturin build --release
-python -m pip install target\wheels\wellfriendpdf-0.1.0-*.whl
+python -m maturin build --release --manifest-path crates\wellfriendpdf-py\Cargo.toml --out target\wheels
+$wheel = Get-ChildItem target\wheels\wellfriendpdf-0.1.0-*.whl |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+python -m pip install $wheel.FullName
 ```
 
 ```python
@@ -484,6 +503,9 @@ Run lightweight checks serially when resources are constrained:
 cargo fmt --all --check
 cargo check --workspace --all-targets --jobs 1
 cargo clippy --workspace --all-targets --jobs 1 -- -D warnings
+cargo check --workspace --all-features --all-targets --jobs 1
+cargo clippy --workspace --all-features --all-targets --jobs 1 -- -D warnings
+cargo test --workspace --all-targets --all-features --no-fail-fast --jobs 1 -- --test-threads=1
 ```
 
 Focused tests live beside the corresponding Rust modules and under each
@@ -499,6 +521,7 @@ campaigns rather than ordinary source checks.
 - [`docs/renderer/complete-algorithm-and-method-inventory.md`](docs/renderer/complete-algorithm-and-method-inventory.md): algorithm and entry-point inventory.
 - [`docs/renderer/final-fallback-closure-report.md`](docs/renderer/final-fallback-closure-report.md): typed refusal and fallback policy.
 - [`docs/renderer/final-local-implementation-closure.md`](docs/renderer/final-local-implementation-closure.md): local source checks and final verdict.
+- [`docs/renderer/independent-closure-audit-2026-09-07.md`](docs/renderer/independent-closure-audit-2026-09-07.md): independent failure discovery, remediation evidence, code-line accounting, and proof boundary.
 
 ## License
 

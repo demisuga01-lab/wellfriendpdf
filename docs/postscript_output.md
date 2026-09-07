@@ -115,8 +115,8 @@ render):
 
 | Case | Validation | Result |
 |---|---|---|
-| `multi_stream.pdf` p1 (true vector) | PS rasterised by Ghostscript vs Wellfriend raster | **35.24 dB** |
-| `multi_stream.pdf` p1 (true vector) | EPS rasterised by Ghostscript vs Wellfriend raster | **35.24 dB** |
+| `multi_stream.pdf` p1 (true vector) | PS rasterised by Ghostscript vs Wellfriend raster | **36.26 dB** |
+| `multi_stream.pdf` p1 (true vector) | EPS rasterised by Ghostscript vs Wellfriend raster | **36.26 dB** |
 | `image_only.pdf` p1 (regional image embed) | regional `colorimage` PS rasterised vs Wellfriend raster | **99 dB** (exact) |
 
 The 35 dB true-vector figure reflects only cross-rasteriser AA differences
