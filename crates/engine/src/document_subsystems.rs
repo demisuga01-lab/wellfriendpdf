@@ -10,6 +10,11 @@ use crate::annotation_media_redaction::{
     move_resize_annotation_pdf, parse_annotation_xfdf, AnnotationAppearanceOptions,
     AnnotationDeletePolicy, AnnotationXfdfImportOptions,
 };
+use crate::advanced_editing::{
+    analyze_multi_run_text_range, append_invisible_unicode_text_layer,
+    append_visible_unicode_text_layer, edit_multi_run_text_range, AdvancedTextEditOptions,
+    AdvancedTextMode, InvisibleUnicodeTextRun, MultiRunStylePolicy, MultiRunTextRangeRequest,
+};
 use crate::content::Color;
 use crate::form_exchange::{apply_form_data_pdf, FormDataFormat};
 use crate::text_reflow::{
@@ -17,6 +22,11 @@ use crate::text_reflow::{
     undo_reflow_from_replay, GeometricReflowRequest,
 };
 use crate::writer::{rewrite_document_objects, OutputObject, PdfWriter, WriterMode};
+use crate::universal_editing::{
+    apply_image_edit, decode_image_occurrence_v2, UniversalImageEditRequestV2,
+    UniversalImageEncodingV2, UniversalImageReplacementV2, UniversalMutationModeV2,
+    UniversalImageSoftMaskV2, UniversalSharedResourcePolicyV2,
+};
 use crate::xfa::{
     extract_xfa, xfa_flatten_pdf, xfa_inventory, xfa_runtime_report, XfaFlattenMode,
     XfaFlattenOptions, XfaLimits, XfaRuntimeOptions,
@@ -206,8 +216,9 @@ pub enum DocumentSubsystemsAction {
     /// Add an explicit provider-produced searchable text record to an
     /// image-only page. The original scan remains the visible page content;
     /// the canonical editor writes an invisible (`Tr 3`) text instruction.
-    /// This bounded path accepts only exact ASCII text because the standard
-    /// fallback font has no generated `/ToUnicode` CMap.
+    /// The exact caller-approved font is embedded as a Type0/CID font when
+    /// supplied; otherwise the bundled governed Unicode font is used only when
+    /// it has complete glyph coverage.
     OcrAddSearchableText {
         page: usize,
         text: String,
@@ -217,6 +228,8 @@ pub enum DocumentSubsystemsAction {
         #[serde(default)]
         provider_version: Option<String>,
         confidence: f64,
+        #[serde(default)]
+        approved_font_asset: Option<crate::editing_transactions::ApprovedFontAsset>,
     },
     /// Add reviewed invisible OCR text and a source-linked URI annotation at
     /// the exact same scan-space geometry in one canonical transaction.
@@ -230,6 +243,8 @@ pub enum DocumentSubsystemsAction {
         provider_version: Option<String>,
         confidence: f64,
         uri: String,
+        #[serde(default)]
+        approved_font_asset: Option<crate::editing_transactions::ApprovedFontAsset>,
     },
     /// Add an atomic batch of provider-recognized words to one scanned page.
     /// Each word remains individually source-mapped in the transaction report
@@ -242,6 +257,31 @@ pub enum DocumentSubsystemsAction {
         provider_version: Option<String>,
         #[serde(default)]
         language: Option<String>,
+        #[serde(default)]
+        approved_font_asset: Option<crate::editing_transactions::ApprovedFontAsset>,
+    },
+    /// Reconstruct visible words painted into a scanned image. The selected
+    /// image occurrence is decoded, each reviewed source rectangle is removed
+    /// with bounded harmonic inpainting, the occurrence is cloned/replaced,
+    /// and replacement Unicode is written as a visible embedded Type0 layer.
+    /// Empty replacement text performs a visual deletion without adding text.
+    OcrReconstructVisibleWords {
+        page: usize,
+        source_occurrence_id: String,
+        replacements: Vec<OcrVisibleReplacement>,
+        provider_id: String,
+        #[serde(default)]
+        provider_version: Option<String>,
+        #[serde(default)]
+        language: Option<String>,
+        #[serde(default = "default_ocr_inpaint_iterations")]
+        inpaint_iterations: usize,
+        /// Replacement text color. When omitted, a robust dark-pixel estimate
+        /// is taken from the reviewed source rectangles before inpainting.
+        #[serde(default)]
+        fill_rgb: Option<[f64; 3]>,
+        #[serde(default)]
+        approved_font_asset: Option<crate::editing_transactions::ApprovedFontAsset>,
     },
     /// Add a canonical supported annotation through PdfEditor, then regenerate
     /// the viewer-independent appearance state through annotation/media redaction.
@@ -586,6 +626,34 @@ pub struct OcrSearchableWord {
     pub confidence: f64,
     #[serde(default)]
     pub line_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OcrVisibleReplacement {
+    /// Provider-recognized source value, retained in the transaction report as
+    /// a digest and never trusted as the mutation identity.
+    pub source_text: String,
+    pub replacement_text: String,
+    /// Reviewed source rectangle in PDF user space.
+    pub rect: [f64; 4],
+    pub font_size: f64,
+    pub confidence: f64,
+    /// Exact page-logical scalar range of a pre-existing invisible OCR carrier
+    /// for `source_text`. Required when invisible text intersects this word
+    /// rectangle, so visible pixels and searchable text change atomically.
+    #[serde(default)]
+    pub searchable_text_logical_range: Option<[usize; 2]>,
+    /// Extra image pixels included around the OCR box before reconstruction.
+    #[serde(default = "default_ocr_inpaint_padding")]
+    pub inpaint_padding_pixels: u32,
+}
+
+fn default_ocr_inpaint_iterations() -> usize {
+    192
+}
+
+fn default_ocr_inpaint_padding() -> u32 {
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1006,7 +1074,7 @@ fn no_change_limit(subsystem: &DocumentSubsystemsSubsystem) -> Vec<String> {
         ],
         DocumentSubsystemsSubsystem::OcrSearchableLayer | DocumentSubsystemsSubsystem::OcrReconstruction => vec![
             "provider_unavailable and confidence_below_threshold preserve the scan and generated layer".into(),
-            "reconstruction_review_required prevents destructive scan replacement".into(),
+            "reconstruction_review_required prevents unapproved scan replacement; approved occurrence-addressed reconstruction is clone-on-write and retains historical incremental bytes".into(),
         ],
         DocumentSubsystemsSubsystem::AnnotationAppearance => vec![
             "unsupported_annotation_type and appearance_generation_failed retain the source annotation".into(),
@@ -1714,6 +1782,7 @@ fn supported_ocr_add_searchable_text(
     provider_id: &str,
     provider_version: Option<&str>,
     confidence: f64,
+    approved_font_asset: Option<&crate::editing_transactions::ApprovedFontAsset>,
 ) -> Result<(Vec<u8>, Value)> {
     supported_ocr_add_searchable_words(
         input,
@@ -1728,7 +1797,785 @@ fn supported_ocr_add_searchable_text(
         provider_id,
         provider_version,
         None,
+        approved_font_asset,
     )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OcrPixelBounds {
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+}
+
+fn invert_ocr_image_matrix(
+    matrix: crate::universal_editing::UniversalImageMatrixV2,
+    x: f64,
+    y: f64,
+) -> Result<(f64, f64)> {
+    let determinant = matrix.a * matrix.d - matrix.b * matrix.c;
+    if !determinant.is_finite() || determinant.abs() <= 1.0e-12 {
+        return Err(WellfriendError::UnsupportedFeature(
+            "document_subsystems scan_not_resolved: selected image occurrence has a singular transform"
+                .to_string(),
+        ));
+    }
+    let dx = x - matrix.e;
+    let dy = y - matrix.f;
+    Ok((
+        (matrix.d * dx - matrix.c * dy) / determinant,
+        (-matrix.b * dx + matrix.a * dy) / determinant,
+    ))
+}
+
+fn point_segment_distance_squared(
+    point: (f64, f64),
+    start: (f64, f64),
+    end: (f64, f64),
+) -> f64 {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= f64::EPSILON {
+        return (point.0 - start.0).powi(2) + (point.1 - start.1).powi(2);
+    }
+    let projection = (((point.0 - start.0) * dx + (point.1 - start.1) * dy)
+        / length_squared)
+        .clamp(0.0, 1.0);
+    let projected = (start.0 + projection * dx, start.1 + projection * dy);
+    (point.0 - projected.0).powi(2) + (point.1 - projected.1).powi(2)
+}
+
+fn point_in_ocr_polygon(point: (f64, f64), polygon: &[(f64, f64); 4]) -> bool {
+    let mut inside = false;
+    let mut previous = polygon.len() - 1;
+    for current in 0..polygon.len() {
+        let a = polygon[current];
+        let b = polygon[previous];
+        let vertical_delta = b.1 - a.1;
+        let crosses = (a.1 > point.1) != (b.1 > point.1)
+            && vertical_delta.abs() > 1.0e-12
+            && point.0
+                < (b.0 - a.0) * (point.1 - a.1) / vertical_delta + a.0;
+        if crosses {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn build_ocr_inpaint_mask(
+    raw: &crate::images::decoder::RawImage,
+    transform: crate::universal_editing::UniversalImageMatrixV2,
+    replacements: &[OcrVisibleReplacement],
+) -> Result<(Vec<bool>, OcrPixelBounds)> {
+    const MAX_RECONSTRUCTION_PIXELS: usize = 100_000_000;
+    let pixel_count = raw.pixel_count();
+    if pixel_count == 0 || pixel_count > MAX_RECONSTRUCTION_PIXELS {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "document_subsystems OCR reconstruction pixel count {pixel_count} exceeds limit {MAX_RECONSTRUCTION_PIXELS}"
+        )));
+    }
+    let mut mask = vec![false; pixel_count];
+    let mut bounds = OcrPixelBounds {
+        x0: raw.width as usize,
+        y0: raw.height as usize,
+        x1: 0,
+        y1: 0,
+    };
+    let mut marked = 0usize;
+    for (index, replacement) in replacements.iter().enumerate() {
+        crate::cancel::check_current_cancel("OCR reconstruction rectangle")?;
+        let rect = rect_from_pdf_bounds(replacement.rect)?;
+        if !replacement.confidence.is_finite() || !(0.0..=1.0).contains(&replacement.confidence)
+        {
+            return Err(WellfriendError::invalid_input(format!(
+                "document_subsystems OCR reconstruction replacement {index} has invalid confidence"
+            )));
+        }
+        if replacement.confidence < 0.80 {
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "document_subsystems confidence_below_threshold: visible OCR replacement {index} requires review"
+            )));
+        }
+        if !replacement.font_size.is_finite()
+            || replacement.font_size <= 0.0
+            || replacement.font_size > 288.0
+        {
+            return Err(WellfriendError::invalid_input(format!(
+                "document_subsystems visible OCR replacement {index} has invalid font size"
+            )));
+        }
+        let corners = [
+            (rect.x, rect.y),
+            (rect.x + rect.width, rect.y),
+            (rect.x + rect.width, rect.y + rect.height),
+            (rect.x, rect.y + rect.height),
+        ];
+        let mut polygon = [(0.0, 0.0); 4];
+        for (corner_index, (x, y)) in corners.into_iter().enumerate() {
+            let (u, v) = invert_ocr_image_matrix(transform, x, y)?;
+            if !u.is_finite()
+                || !v.is_finite()
+                || !(-1.0e-6..=1.0 + 1.0e-6).contains(&u)
+                || !(-1.0e-6..=1.0 + 1.0e-6).contains(&v)
+            {
+                return Err(WellfriendError::UnsupportedFeature(format!(
+                    "document_subsystems invalid_geometry: OCR replacement {index} lies outside the selected image occurrence"
+                )));
+            }
+            polygon[corner_index] = (
+                u.clamp(0.0, 1.0) * f64::from(raw.width),
+                (1.0 - v.clamp(0.0, 1.0)) * f64::from(raw.height),
+            );
+        }
+        let padding = f64::from(replacement.inpaint_padding_pixels.min(64));
+        let min_x = polygon
+            .iter()
+            .map(|point| point.0)
+            .fold(f64::INFINITY, f64::min);
+        let min_y = polygon
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = polygon
+            .iter()
+            .map(|point| point.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let max_y = polygon
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let x0 = (min_x - padding).floor().max(0.0) as usize;
+        let y0 = (min_y - padding).floor().max(0.0) as usize;
+        let x1 = (max_x + padding).ceil().min(f64::from(raw.width)) as usize;
+        let y1 = (max_y + padding).ceil().min(f64::from(raw.height)) as usize;
+        for y in y0..y1 {
+            if (y - y0) % 64 == 0 {
+                crate::cancel::check_current_cancel("OCR reconstruction mask row")?;
+            }
+            for x in x0..x1 {
+                let point = (x as f64 + 0.5, y as f64 + 0.5);
+                let edge_distance = (0..polygon.len())
+                    .map(|edge| {
+                        point_segment_distance_squared(
+                            point,
+                            polygon[edge],
+                            polygon[(edge + 1) % polygon.len()],
+                        )
+                    })
+                    .fold(f64::INFINITY, f64::min)
+                    .sqrt();
+                if point_in_ocr_polygon(point, &polygon) || edge_distance <= padding {
+                    let offset = y * raw.width as usize + x;
+                    if !mask[offset] {
+                        mask[offset] = true;
+                        marked += 1;
+                    }
+                    bounds.x0 = bounds.x0.min(x);
+                    bounds.y0 = bounds.y0.min(y);
+                    bounds.x1 = bounds.x1.max(x + 1);
+                    bounds.y1 = bounds.y1.max(y + 1);
+                }
+            }
+        }
+    }
+    if marked == 0 {
+        return Err(WellfriendError::UnsupportedFeature(
+            "document_subsystems scan_not_resolved: OCR rectangles selected no image pixels"
+                .to_string(),
+        ));
+    }
+    Ok((mask, bounds))
+}
+
+fn estimate_ocr_ink_color(
+    raw: &crate::images::decoder::RawImage,
+    mask: &[bool],
+) -> Result<[f64; 3]> {
+    let channels = raw.channels as usize;
+    let masked = mask.iter().filter(|selected| **selected).count();
+    let step = ((masked + 99_999) / 100_000).max(1);
+    let mut samples = Vec::<[u8; 3]>::new();
+    let mut seen = 0usize;
+    for (pixel, selected) in mask.iter().copied().enumerate() {
+        if pixel % 65_536 == 0 {
+            crate::cancel::check_current_cancel("OCR replacement ink estimation")?;
+        }
+        if !selected {
+            continue;
+        }
+        if seen % step != 0 {
+            seen += 1;
+            continue;
+        }
+        seen += 1;
+        let offset = pixel * channels;
+        let rgb = match raw.pixels.get(offset..offset + channels) {
+            Some(value) if channels == 1 => [value[0], value[0], value[0]],
+            Some(value) if channels == 3 => [value[0], value[1], value[2]],
+            // Four-channel RawImage values are RGBA throughout the renderer;
+            // DeviceCMYK is converted to RGB by ImageDecoder. Composite only
+            // for ink-colour estimation so transparent source pixels cannot
+            // look like dark text merely because their stored RGB is zero.
+            Some(value) if channels == 4 => {
+                let alpha = u32::from(value[3]);
+                let composite = |channel: u8| {
+                    ((u32::from(channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+                };
+                [composite(value[0]), composite(value[1]), composite(value[2])]
+            }
+            _ => continue,
+        };
+        samples.push(rgb);
+    }
+    if samples.is_empty() {
+        return Ok([0.0, 0.0, 0.0]);
+    }
+    samples.sort_by_key(|rgb| {
+        2126u32 * u32::from(rgb[0])
+            + 7152u32 * u32::from(rgb[1])
+            + 722u32 * u32::from(rgb[2])
+    });
+    let take = ((samples.len() + 3) / 4).max(1);
+    let sums = samples.iter().take(take).fold([0u64; 3], |mut sums, rgb| {
+        for channel in 0..3 {
+            sums[channel] += u64::from(rgb[channel]);
+        }
+        sums
+    });
+    Ok([
+        sums[0] as f64 / take as f64 / 255.0,
+        sums[1] as f64 / take as f64 / 255.0,
+        sums[2] as f64 / take as f64 / 255.0,
+    ])
+}
+
+/// Deterministic four-colour SOR solution of the discrete Laplace equation over
+/// the OCR mask. Boundary pixels remain fixed, so smooth paper gradients and
+/// low-frequency scan texture propagate through the removed glyph region
+/// without inserting a flat opaque rectangle.
+fn harmonic_inpaint_ocr_mask(
+    raw: &mut crate::images::decoder::RawImage,
+    mask: &[bool],
+    bounds: OcrPixelBounds,
+    iterations: usize,
+) -> Result<usize> {
+    if iterations == 0 || iterations > 4096 {
+        return Err(WellfriendError::invalid_input(
+            "document_subsystems OCR inpaint iterations must be in 1..=4096",
+        ));
+    }
+    let width = raw.width as usize;
+    let height = raw.height as usize;
+    let channels = raw.channels as usize;
+    if !matches!(channels, 1 | 3 | 4) || mask.len() != width.saturating_mul(height) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "document_subsystems OCR reconstruction requires 8-bit Gray, RGB, or RGBA samples"
+                .to_string(),
+        ));
+    }
+    let mut boundary_sum = vec![0u64; channels];
+    let mut boundary_count = 0u64;
+    for y in bounds.y0..bounds.y1 {
+        for x in bounds.x0..bounds.x1 {
+            let index = y * width + x;
+            if !mask[index] {
+                continue;
+            }
+            for (dx, dy) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
+                let nx = x as isize + dx;
+                let ny = y as isize + dy;
+                if nx < 0 || ny < 0 || nx >= width as isize || ny >= height as isize {
+                    continue;
+                }
+                let neighbor = ny as usize * width + nx as usize;
+                if mask[neighbor] {
+                    continue;
+                }
+                let offset = neighbor * channels;
+                for channel in 0..channels {
+                    boundary_sum[channel] += u64::from(raw.pixels[offset + channel]);
+                }
+                boundary_count += 1;
+            }
+        }
+    }
+    if boundary_count == 0 {
+        return Err(WellfriendError::UnsupportedFeature(
+            "document_subsystems scan_not_resolved: OCR mask has no fixed image boundary"
+                .to_string(),
+        ));
+    }
+    let boundary_mean = boundary_sum
+        .iter()
+        .map(|sum| (*sum as f64 / boundary_count as f64) as f32)
+        .collect::<Vec<_>>();
+    let roi_width = bounds.x1.saturating_sub(bounds.x0);
+    let roi_height = bounds.y1.saturating_sub(bounds.y0);
+    let workspace_samples = roi_width
+        .checked_mul(roi_height)
+        .and_then(|pixels| pixels.checked_mul(channels))
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit(
+                "document_subsystems OCR harmonic workspace size overflow".to_string(),
+            )
+        })?;
+    const MAX_HARMONIC_WORKSPACE_SAMPLES: usize = 128 * 1024 * 1024;
+    if workspace_samples > MAX_HARMONIC_WORKSPACE_SAMPLES {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "document_subsystems OCR harmonic workspace requires {workspace_samples} f32 samples; limit is {MAX_HARMONIC_WORKSPACE_SAMPLES}"
+        )));
+    }
+    let mut workspace = vec![0.0_f32; workspace_samples];
+    for y in bounds.y0..bounds.y1 {
+        for x in bounds.x0..bounds.x1 {
+            let source = (y * width + x) * channels;
+            let target = ((y - bounds.y0) * roi_width + (x - bounds.x0)) * channels;
+            let selected = mask[y * width + x];
+            for channel in 0..channels {
+                workspace[target + channel] = if selected {
+                    boundary_mean[channel]
+                } else {
+                    f32::from(raw.pixels[source + channel])
+                };
+            }
+        }
+    }
+    const NEIGHBORS: [(isize, isize, f64); 8] = [
+        (-1, 0, 1.0),
+        (1, 0, 1.0),
+        (0, -1, 1.0),
+        (0, 1, 1.0),
+        (-1, -1, std::f64::consts::FRAC_1_SQRT_2),
+        (1, -1, std::f64::consts::FRAC_1_SQRT_2),
+        (-1, 1, std::f64::consts::FRAC_1_SQRT_2),
+        (1, 1, std::f64::consts::FRAC_1_SQRT_2),
+    ];
+    let relaxation = 1.72_f64;
+    let mut completed = 0usize;
+    for iteration in 0..iterations {
+        crate::cancel::check_current_cancel("OCR harmonic inpainting iteration")?;
+        let mut maximum_delta = 0.0_f64;
+        // The eight-neighbour stencil contains diagonals, so a checkerboard
+        // two-colour split is not independent. Four colours keyed by the x/y
+        // parity pair ensure no same-colour samples are neighbours.
+        for color in 0..4usize {
+            for y in bounds.y0..bounds.y1 {
+                if (y - bounds.y0) % 64 == 0 {
+                    crate::cancel::check_current_cancel("OCR harmonic inpainting row")?;
+                }
+                for x in bounds.x0..bounds.x1 {
+                    if ((x & 1) | ((y & 1) << 1)) != color || !mask[y * width + x] {
+                        continue;
+                    }
+                    let offset =
+                        ((y - bounds.y0) * roi_width + (x - bounds.x0)) * channels;
+                    for channel in 0..channels {
+                        let mut weighted = 0.0;
+                        let mut weight_sum = 0.0;
+                        for (dx, dy, weight) in NEIGHBORS {
+                            let nx = x as isize + dx;
+                            let ny = y as isize + dy;
+                            if nx < 0
+                                || ny < 0
+                                || nx >= width as isize
+                                || ny >= height as isize
+                            {
+                                continue;
+                            }
+                            let nx = nx as usize;
+                            let ny = ny as usize;
+                            let neighbor_value = if nx >= bounds.x0
+                                && nx < bounds.x1
+                                && ny >= bounds.y0
+                                && ny < bounds.y1
+                            {
+                                let neighbor_offset = ((ny - bounds.y0) * roi_width
+                                    + (nx - bounds.x0))
+                                    * channels
+                                    + channel;
+                                f64::from(workspace[neighbor_offset])
+                            } else {
+                                f64::from(raw.pixels[(ny * width + nx) * channels + channel])
+                            };
+                            weighted += neighbor_value * weight;
+                            weight_sum += weight;
+                        }
+                        if weight_sum <= f64::EPSILON {
+                            continue;
+                        }
+                        let old = f64::from(workspace[offset + channel]);
+                        let target = weighted / weight_sum;
+                        let updated = (old + relaxation * (target - old)).clamp(0.0, 255.0);
+                        maximum_delta = maximum_delta.max((updated - old).abs());
+                        workspace[offset + channel] = updated as f32;
+                    }
+                }
+            }
+        }
+        completed = iteration + 1;
+        if maximum_delta <= 0.5 {
+            break;
+        }
+    }
+    for y in bounds.y0..bounds.y1 {
+        for x in bounds.x0..bounds.x1 {
+            if !mask[y * width + x] {
+                continue;
+            }
+            let source = ((y - bounds.y0) * roi_width + (x - bounds.x0)) * channels;
+            let target = (y * width + x) * channels;
+            for channel in 0..channels {
+                raw.pixels[target + channel] = workspace[source + channel]
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    Ok(completed)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn supported_ocr_reconstruct_visible_words(
+    input: &[u8],
+    page: usize,
+    source_occurrence_id: &str,
+    replacements: &[OcrVisibleReplacement],
+    provider_id: &str,
+    provider_version: Option<&str>,
+    language: Option<&str>,
+    inpaint_iterations: usize,
+    fill_rgb: Option<[f64; 3]>,
+    approved_font_asset: Option<&crate::editing_transactions::ApprovedFontAsset>,
+) -> Result<(Vec<u8>, Value)> {
+    crate::cancel::check_current_cancel("visible OCR reconstruction input")?;
+    if provider_id.trim().is_empty() {
+        return Err(WellfriendError::UnsupportedFeature(
+            "document_subsystems provider_unavailable: visible scan reconstruction requires an identified OCR provider"
+                .to_string(),
+        ));
+    }
+    if replacements.is_empty() || replacements.len() > 20_000 {
+        return Err(WellfriendError::invalid_input(
+            "document_subsystems visible OCR reconstruction requires 1..=20000 replacements",
+        ));
+    }
+    if language.is_some_and(|tag| tag.trim().is_empty() || tag.len() > 35) {
+        return Err(WellfriendError::invalid_input(
+            "document_subsystems OCR reconstruction language must be a bounded BCP 47 token",
+        ));
+    }
+    let source_engine = ContentEngine::open_bytes(input.to_vec())?;
+    let source_chunks = source_engine.collect_page_text_chunks(page)?;
+    crate::cancel::check_current_cancel("visible OCR searchable-layer analysis")?;
+    let mut searchable_ranges = Vec::<([usize; 2], usize)>::new();
+    for (replacement_index, replacement) in replacements.iter().enumerate() {
+        if replacement.source_text.is_empty() {
+            return Err(WellfriendError::invalid_input(format!(
+                "document_subsystems visible OCR replacement {replacement_index} requires non-empty reviewed source_text"
+            )));
+        }
+        let rect = rect_from_pdf_bounds(replacement.rect)?;
+        let intersects_invisible_text = source_chunks.iter().any(|chunk| {
+            if !chunk.is_invisible {
+                return false;
+            }
+            let chunk_x0 = chunk.x;
+            let chunk_x1 = chunk.x + chunk.width.max(0.0);
+            let chunk_y0 = chunk.y - chunk.font_size.max(0.0);
+            let chunk_y1 = chunk.y + chunk.font_size.max(0.0) * 0.35;
+            chunk_x0 < rect.x + rect.width
+                && chunk_x1 > rect.x
+                && chunk_y0 < rect.y + rect.height
+                && chunk_y1 > rect.y
+        });
+        // Some OCR producers use rotated/skewed text matrices for which the
+        // collector's axis-aligned chunk box is only an approximation. Treat a
+        // matching invisible logical carrier anywhere on the page as a
+        // potential conflict too; the caller must bind the reviewed exact
+        // logical range rather than letting geometry silently miss stale text.
+        let matching_invisible_text = source_chunks.iter().any(|chunk| {
+            chunk.is_invisible
+                && !chunk.text.is_empty()
+                && (chunk.text.contains(&replacement.source_text)
+                    || replacement.source_text.contains(&chunk.text))
+        });
+        let searchable_layer_conflict = intersects_invisible_text || matching_invisible_text;
+        if searchable_layer_conflict {
+            let range = replacement.searchable_text_logical_range.ok_or_else(|| {
+                WellfriendError::UnsupportedFeature(format!(
+                    "document_subsystems searchable_layer_conflict: replacement {replacement_index} intersects pre-existing invisible OCR text; supply its exact searchable_text_logical_range"
+                ))
+            })?;
+            searchable_ranges.push((range, replacement_index));
+        } else if replacement.searchable_text_logical_range.is_some() {
+            return Err(WellfriendError::invalid_input(format!(
+                "document_subsystems replacement {replacement_index} supplies searchable_text_logical_range but no intersecting or text-matching invisible carrier exists"
+            )));
+        }
+    }
+    if !searchable_ranges.is_empty() {
+        let model = analyze_multi_run_text_range(input, page)?;
+        searchable_ranges.sort_by_key(|(range, _)| range[0]);
+        let mut previous_end = 0usize;
+        for (position, (range, replacement_index)) in searchable_ranges.iter().enumerate() {
+            if range[0] >= range[1] || range[1] > model.logical_text.chars().count() {
+                return Err(WellfriendError::invalid_input(format!(
+                    "document_subsystems searchable OCR range {:?} is outside the page logical text",
+                    range
+                )));
+            }
+            if position > 0 && range[0] < previous_end {
+                return Err(WellfriendError::invalid_input(
+                    "document_subsystems searchable OCR ranges overlap",
+                ));
+            }
+            let selected_text = model
+                .logical_text
+                .chars()
+                .skip(range[0])
+                .take(range[1] - range[0])
+                .collect::<String>();
+            if selected_text != replacements[*replacement_index].source_text {
+                return Err(WellfriendError::invalid_input(format!(
+                    "document_subsystems searchable OCR range {:?} does not contain the reviewed source_text",
+                    range
+                )));
+            }
+            previous_end = range[1];
+        }
+    }
+    crate::cancel::check_current_cancel("visible OCR reconstruction image decode")?;
+    let (occurrence, mut raw) = decode_image_occurrence_v2(input, page, source_occurrence_id)?;
+    let (mask, pixel_bounds) = build_ocr_inpaint_mask(&raw, occurrence.transform, replacements)?;
+    let estimated_fill = estimate_ocr_ink_color(&raw, &mask)?;
+    let fill_rgb = fill_rgb.unwrap_or(estimated_fill);
+    if fill_rgb
+        .iter()
+        .any(|component| !component.is_finite() || !(0.0..=1.0).contains(component))
+    {
+        return Err(WellfriendError::invalid_input(
+            "document_subsystems OCR replacement fill color must contain finite 0..1 RGB values",
+        ));
+    }
+    let iterations_completed =
+        harmonic_inpaint_ocr_mask(&mut raw, &mask, pixel_bounds, inpaint_iterations)?;
+    let replacement_soft_mask = if raw.channels == 4 {
+        let pixel_count = raw.pixel_count();
+        let mut rgb = Vec::with_capacity(pixel_count.saturating_mul(3));
+        let mut alpha = Vec::with_capacity(pixel_count);
+        for (pixel_index, pixel) in raw.pixels.chunks_exact(4).enumerate() {
+            if pixel_index % 65_536 == 0 {
+                crate::cancel::check_current_cancel("visible OCR alpha separation")?;
+            }
+            rgb.extend_from_slice(&pixel[..3]);
+            alpha.push(pixel[3]);
+        }
+        raw.pixels = rgb;
+        raw.channels = 3;
+        Some(UniversalImageSoftMaskV2 {
+            width: raw.width,
+            height: raw.height,
+            bits_per_component: 8,
+            samples: alpha,
+        })
+    } else {
+        None
+    };
+    let color_space = match raw.channels {
+        1 => "DeviceGray",
+        3 => "DeviceRGB",
+        other => {
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "document_subsystems OCR reconstruction cannot serialize {other}-channel samples"
+            )))
+        }
+    };
+    let image_request = UniversalImageEditRequestV2 {
+        page,
+        occurrence_id: Some(source_occurrence_id.to_string()),
+        resource_name: None,
+        object_number: None,
+        generation: 0,
+        occurrence_index: 0,
+        shared_resource_policy: UniversalSharedResourcePolicyV2::CloneOne,
+        replacement: UniversalImageReplacementV2 {
+            width: raw.width,
+            height: raw.height,
+            bits_per_component: 8,
+            color_space: color_space.to_string(),
+            color_space_descriptor: None,
+            encoding: UniversalImageEncodingV2::RawSamples,
+            data: raw.pixels,
+            image_mask: false,
+            decode: None,
+            preserve_masks: replacement_soft_mask.is_none(),
+            soft_mask: replacement_soft_mask,
+        },
+    };
+    crate::cancel::check_current_cancel("visible OCR image mutation")?;
+    let (image_output, image_report, affected_pages, affected_objects, cloned_resources) =
+        apply_image_edit(input, &image_request, UniversalMutationModeV2::AuthorizedRewrite)?;
+
+    // Delete old invisible OCR carriers from highest to lowest logical offset.
+    // Descending order keeps every not-yet-applied range stable while each
+    // source mutation is independently reopened and verified.
+    let mut synchronized_output = image_output;
+    let mut searchable_layer_mutations = Vec::with_capacity(searchable_ranges.len());
+    searchable_ranges.sort_by_key(|(range, _)| std::cmp::Reverse(range[0]));
+    for (range, replacement_index) in &searchable_ranges {
+        crate::cancel::check_current_cancel("visible OCR searchable-layer mutation")?;
+        let mut options = AdvancedTextEditOptions::default();
+        options.signature_policy_override = false;
+        let request = MultiRunTextRangeRequest {
+            page,
+            logical_start: range[0],
+            logical_end: range[1],
+            replacement_text: String::new(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options,
+            final_lines: None,
+        };
+        let (next_output, report) =
+            edit_multi_run_text_range(&synchronized_output, &request, None)?;
+        if !report.reachable_source_tokens_removed {
+            return Err(WellfriendError::MalformedPdf(
+                "document_subsystems searchable OCR carrier was not removed".to_string(),
+            ));
+        }
+        synchronized_output = next_output;
+        searchable_layer_mutations.push(json!({
+            "replacement_index": replacement_index,
+            "logical_range": range,
+            "reachable_source_tokens_removed": report.reachable_source_tokens_removed,
+            "output_reopened": report.output_reopened,
+        }));
+    }
+
+    let visible = replacements
+        .iter()
+        .filter(|replacement| !replacement.replacement_text.is_empty())
+        .collect::<Vec<_>>();
+    let mut unicode_runs = Vec::with_capacity(visible.len());
+    for (replacement_index, replacement) in visible.iter().enumerate() {
+        if replacement_index % 256 == 0 {
+            crate::cancel::check_current_cancel("visible OCR text-layer construction")?;
+        }
+        let rect = rect_from_pdf_bounds(replacement.rect)?;
+        unicode_runs.push(InvisibleUnicodeTextRun {
+            text: replacement.replacement_text.clone(),
+            x: rect.x,
+            y: rect.y + rect.height.min(replacement.font_size).max(replacement.font_size * 0.75),
+            font_size: replacement.font_size,
+            target_width: rect.width,
+        });
+    }
+    let (output, font_report) = if unicode_runs.is_empty() {
+        (
+            synchronized_output,
+            json!({
+                "required": false,
+                "reason": "visual_deletion_has_no_replacement_text",
+            }),
+        )
+    } else {
+        let (font_source, font_lookup_name, font_bytes) = if let Some(asset) = approved_font_asset {
+            if asset.lookup_name.trim().is_empty()
+                || asset.bytes.is_empty()
+                || asset.bytes.len() > 128 * 1024 * 1024
+            {
+                return Err(WellfriendError::invalid_input(
+                    "document_subsystems approved reconstruction font requires a bounded lookup name and 1..=128MiB sfnt bytes",
+                ));
+            }
+            ("caller_approved", asset.lookup_name.as_str(), asset.bytes.as_slice())
+        } else {
+            (
+                "bundled_governed_fallback",
+                "WellfriendBundledUnicode",
+                crate::render::get_fallback_font("Symbol").ok_or_else(|| {
+                    WellfriendError::UnsupportedFeature(
+                        "document_subsystems reconstruction font is unavailable; supply approved_font_asset"
+                            .to_string(),
+                    )
+                })?,
+            )
+        };
+        crate::cancel::check_current_cancel("visible OCR text-layer append")?;
+        let (output, resource) = append_visible_unicode_text_layer(
+            &synchronized_output,
+            page,
+            &unicode_runs,
+            font_bytes,
+            fill_rgb,
+        )?;
+        (
+            output,
+            json!({
+                "required": true,
+                "source": font_source,
+                "lookup_name": font_lookup_name,
+                "resource": resource,
+                "sha256": digest(font_bytes),
+            }),
+        )
+    };
+    crate::cancel::check_current_cancel("visible OCR output validation")?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let extracted = reopened.get_page_text(page)?;
+    if visible
+        .iter()
+        .any(|replacement| !extracted.contains(&replacement.replacement_text))
+    {
+        return Err(WellfriendError::MalformedPdf(
+            "document_subsystems visible OCR reconstruction reopened but did not extract every replacement"
+                .to_string(),
+        ));
+    }
+    let reconstructed_pixels = mask.iter().filter(|selected| **selected).count();
+    Ok((
+        output,
+        json!({
+            "operation": "ocr_visible_scan_reconstruction",
+            "provider": {"id": provider_id, "version": provider_version},
+            "language": language,
+            "page": page,
+            "source_occurrence_id": source_occurrence_id,
+            "source_occurrence": occurrence,
+            "image_mutation": image_report,
+            "searchable_layer_mutations": searchable_layer_mutations,
+            "pre_existing_invisible_ocr_conflicts_resolved": searchable_ranges.len(),
+            "affected_pages": affected_pages,
+            "affected_objects": affected_objects,
+            "cloned_resources": cloned_resources,
+            "reconstructed_pixels": reconstructed_pixels,
+            "inpaint": {
+                "method": "four_color_successive_over_relaxation_discrete_harmonic_extension",
+                "requested_iterations": inpaint_iterations,
+                "completed_iterations": iterations_completed,
+                "relaxation": 1.72,
+                "boundary": "fixed_eight_neighbor_dirichlet",
+            },
+            "replacements": replacements.iter().enumerate().map(|(index, replacement)| json!({
+                "index": index,
+                "source_text_sha256": digest(replacement.source_text.as_bytes()),
+                "replacement_text_sha256": digest(replacement.replacement_text.as_bytes()),
+                "rect": replacement.rect,
+                "confidence": replacement.confidence,
+                "visible_type0_text": !replacement.replacement_text.is_empty(),
+            })).collect::<Vec<_>>(),
+            "fill_rgb": fill_rgb,
+            "font": font_report,
+            "current_revision_source_pixels_replaced": true,
+            "replacement_text_is_pdf_content": true,
+            "output_reopened_and_replacement_text_extracted": true,
+            "historical_incremental_bytes_sanitized": false,
+        }),
+    ))
 }
 
 fn supported_ocr_add_searchable_words(
@@ -1738,6 +2585,7 @@ fn supported_ocr_add_searchable_words(
     provider_id: &str,
     provider_version: Option<&str>,
     language: Option<&str>,
+    approved_font_asset: Option<&crate::editing_transactions::ApprovedFontAsset>,
 ) -> Result<(Vec<u8>, Value)> {
     const MAX_OCR_LAYER_WORDS: usize = 20_000;
     if provider_id.trim().is_empty() {
@@ -1779,12 +2627,12 @@ fn supported_ocr_add_searchable_words(
                 .to_string(),
         ));
     }
-    let mut editor = PdfEditor::open_bytes(input.to_vec())?;
     let mut source_words = Vec::with_capacity(words.len());
+    let mut unicode_runs = Vec::with_capacity(words.len());
     for (index, word) in words.iter().enumerate() {
-        if word.text.trim().is_empty() || !word.text.is_ascii() {
+        if word.text.trim().is_empty() {
             return Err(WellfriendError::UnsupportedFeature(format!(
-                "document_subsystems unsupported_script: OCR word {index} requires nonempty exact-ASCII text until a canonical ToUnicode-capable OCR font route is selected"
+                "document_subsystems unsupported_script: OCR word {index} requires nonempty Unicode text"
             )));
         }
         if !word.confidence.is_finite() || !(0.0..=1.0).contains(&word.confidence) {
@@ -1804,14 +2652,13 @@ fn supported_ocr_add_searchable_words(
         }
         let rect = rect_from_pdf_bounds(word.rect)?;
         let baseline = rect.y + rect.height.min(word.font_size).max(word.font_size * 0.75);
-        editor.draw_text(
-            page,
-            &word.text,
-            rect.x,
-            baseline,
-            EditTextStyle::new(word.font_size).rendering_mode(3),
-            OverlayLayer::Overlay,
-        )?;
+        unicode_runs.push(InvisibleUnicodeTextRun {
+            text: word.text.clone(),
+            x: rect.x,
+            y: baseline,
+            font_size: word.font_size,
+            target_width: rect.width,
+        });
         source_words.push(json!({
             "word_index": index,
             "text_sha256": digest(word.text.as_bytes()),
@@ -1821,7 +2668,39 @@ fn supported_ocr_add_searchable_words(
             "line_id": word.line_id,
         }));
     }
-    let output = editor.save_to_bytes(EditMode::FullRewrite)?;
+    let (font_source, font_lookup_name, font_bytes) = if let Some(asset) = approved_font_asset {
+        if asset.lookup_name.trim().is_empty() || asset.bytes.is_empty() || asset.bytes.len() > 128 * 1024 * 1024 {
+            return Err(WellfriendError::UnsupportedFeature(
+                "document_subsystems approved OCR font asset requires a bounded lookup name and 1..=128MiB sfnt bytes"
+                    .to_string(),
+            ));
+        }
+        ("caller_approved", asset.lookup_name.as_str(), asset.bytes.as_slice())
+    } else {
+        (
+            "bundled_governed_fallback",
+            "WellfriendBundledUnicode",
+            crate::render::get_fallback_font("Symbol").ok_or_else(|| {
+                WellfriendError::UnsupportedFeature(
+                    "document_subsystems canonical Unicode OCR font is unavailable; supply approved_font_asset"
+                        .to_string(),
+                )
+            })?,
+        )
+    };
+    let (output, font_resource) = append_invisible_unicode_text_layer(
+        input,
+        page,
+        &unicode_runs,
+        font_bytes,
+    )?;
+    let extracted = ContentEngine::open_bytes(output.clone())?.get_page_text(page)?;
+    if words.iter().any(|word| !extracted.contains(&word.text)) {
+        return Err(WellfriendError::MalformedPdf(
+            "document_subsystems Unicode OCR layer reopened but did not extract every approved word"
+                .to_string(),
+        ));
+    }
     Ok((
         output,
         json!({
@@ -1831,9 +2710,17 @@ fn supported_ocr_add_searchable_words(
             "word_count": words.len(),
             "words": source_words,
             "source_scan_preserved": true,
+            "output_reopened_and_every_word_extracted": true,
             "text_rendering_mode": 3,
             "source_image_identity": {"document_sha256": digest(input), "page": page},
-            "encoding_boundary": "exact_ascii_standard_encoding_only; non-ASCII requires a canonical ToUnicode-capable OCR font route",
+            "encoding_boundary": "shaped_Type0_CID_with_ToUnicode_and_per_word_ActualText; missing glyph coverage fails closed",
+            "font": {
+                "source": font_source,
+                "lookup_name": font_lookup_name,
+                "resource": font_resource,
+                "sha256": digest(font_bytes),
+                "caller_approval_required_for_uncovered_scripts": approved_font_asset.is_none(),
+            },
         }),
     ))
 }
@@ -4935,6 +5822,9 @@ fn action_subsystem(action: &DocumentSubsystemsAction) -> DocumentSubsystemsSubs
         | DocumentSubsystemsAction::OcrAddSearchableWords { .. } => {
             DocumentSubsystemsSubsystem::OcrSearchableLayer
         }
+        DocumentSubsystemsAction::OcrReconstructVisibleWords { .. } => {
+            DocumentSubsystemsSubsystem::OcrReconstruction
+        }
         DocumentSubsystemsAction::AnnotationCreate { .. }
         | DocumentSubsystemsAction::AnnotationEditContents { .. }
         | DocumentSubsystemsAction::AnnotationMoveResize { .. }
@@ -5598,6 +6488,7 @@ fn apply_explicit_action(
                 provider_id,
                 provider_version,
                 confidence,
+                approved_font_asset,
             } => {
                 if !request.approved {
                     return Err(WellfriendError::UnsupportedFeature(
@@ -5614,6 +6505,7 @@ fn apply_explicit_action(
                     provider_id,
                     provider_version.as_deref(),
                     *confidence,
+                    approved_font_asset.as_ref(),
                 )?;
                 (
                     output,
@@ -5636,6 +6528,7 @@ fn apply_explicit_action(
                 provider_version,
                 confidence,
                 uri,
+                approved_font_asset,
             } => {
                 if !request.approved {
                     return Err(WellfriendError::UnsupportedFeature(
@@ -5658,6 +6551,7 @@ fn apply_explicit_action(
                     provider_id,
                     provider_version.as_deref(),
                     *confidence,
+                    approved_font_asset.as_ref(),
                 )?;
                 let mut editor = PdfEditor::open_bytes(ocr_output)?;
                 editor.add_link_uri(*page, rect_from_pdf_bounds(*rect)?, uri)?;
@@ -5687,7 +6581,14 @@ fn apply_explicit_action(
                 provider_id,
                 provider_version,
                 language,
+                approved_font_asset,
             } => {
+                if !request.approved {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "document_subsystems reconstruction_review_required: OCR word-layer creation requires explicit approval"
+                            .to_string(),
+                    ));
+                }
                 let (output, report) = supported_ocr_add_searchable_words(
                     input,
                     *page,
@@ -5695,6 +6596,7 @@ fn apply_explicit_action(
                     provider_id,
                     provider_version.as_deref(),
                     language.as_deref(),
+                    approved_font_asset.as_ref(),
                 )?;
                 (
                     output,
@@ -5703,6 +6605,48 @@ fn apply_explicit_action(
                     json!({
                         "original_scan": "preserved",
                         "editable_reconstruction": "not_implicitly_applied",
+                    }),
+                    json!({"preserved": true}),
+                    vec![*page],
+                )
+            }
+            DocumentSubsystemsAction::OcrReconstructVisibleWords {
+                page,
+                source_occurrence_id,
+                replacements,
+                provider_id,
+                provider_version,
+                language,
+                inpaint_iterations,
+                fill_rgb,
+                approved_font_asset,
+            } => {
+                if !request.approved {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "document_subsystems reconstruction_review_required: visible scan reconstruction requires explicit approval"
+                            .to_string(),
+                    ));
+                }
+                let (output, report) = supported_ocr_reconstruct_visible_words(
+                    input,
+                    *page,
+                    source_occurrence_id,
+                    replacements,
+                    provider_id,
+                    provider_version.as_deref(),
+                    language.as_deref(),
+                    *inpaint_iterations,
+                    *fill_rgb,
+                    approved_font_asset.as_ref(),
+                )?;
+                (
+                    output,
+                    "ocr_visible_scan_reconstruction",
+                    report,
+                    json!({
+                        "original_scan_occurrence": "clone_on_write_replaced",
+                        "source_glyph_pixels": "harmonic_inpainting",
+                        "replacement_text": "visible_embedded_type0_pdf_content",
                     }),
                     json!({"preserved": true}),
                     vec![*page],
@@ -6489,7 +7433,7 @@ pub fn document_subsystems_feature_matrix() -> Value {
         "schema_version": DOCUMENT_SUBSYSTEMS_SCHEMA_VERSION,
         "tables": "source-linked text, math-cell, alignment, padding, border, fill, linked-annotation, and in-cell-widget edits plus conservative ruled row/column append in verified empty space; ambiguous structural edits fail closed",
         "math": "approved born-digital source-linked shaping edits including move/resize, resolved bracket-matrix cells and dimensions, fractions, scripts, fenced-expression inners, and radicals; unresolved formulas require review",
-        "ocr": "scan-preserving approved existing-searchable text and geometry correction plus atomic provider-recorded invisible word layers and source-linked URI annotations",
+        "ocr": "scan-preserving searchable layers plus approved occurrence-addressed visible reconstruction: decoded scan glyph pixels are removed by bounded harmonic inpainting and replacements become embedded, selectable Type0 PDF text",
         "annotations": "PdfEditor source edits, AnnotationMediaRedaction XFDF/reply/move-resize import, appearance regeneration, and explicit flattening",
         "forms": "type-checked AcroForm text/choice/check/radio edits, unsigned signature-field creation, terminal rename, calculation-order mutation, reset, JSON/FDF/XFDF data application, and flattening",
         "xfa": "inventory/extraction/runtime conversion plan, static datasets-packet import with non-datasets preservation proof, unrelated-edit packet preservation, and approved static flattening",
@@ -7552,6 +8496,7 @@ mod tests {
                 provider_id: "fixture_provider".to_string(),
                 provider_version: Some("1".to_string()),
                 confidence: 0.95,
+                approved_font_asset: None,
             }),
             reflow: None,
             approved: true,
@@ -7585,6 +8530,7 @@ mod tests {
                 provider_id: "fixture_provider".to_string(),
                 provider_version: Some("1".to_string()),
                 confidence: 0.95,
+                approved_font_asset: None,
             }),
             reflow: None,
             approved: true,
@@ -7646,6 +8592,7 @@ mod tests {
                 provider_version: Some("1".to_string()),
                 confidence: 0.96,
                 uri: "https://example.invalid/ocr".to_string(),
+                approved_font_asset: None,
             }),
             reflow: None,
             approved: true,
@@ -7704,6 +8651,7 @@ mod tests {
                 provider_id: "fixture_provider".to_string(),
                 provider_version: Some("1".to_string()),
                 language: Some("en".to_string()),
+                approved_font_asset: None,
             }),
             reflow: None,
             approved: true,

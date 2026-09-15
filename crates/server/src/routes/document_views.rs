@@ -26,12 +26,12 @@ pub async fn report(multipart: Multipart) -> ServerResult<Response> {
     let password = fields.password.unwrap_or_default();
     let config = crate::config::get_config();
 
-    let report_json = crate::processing::run_with_timeout(config, move |_cancel| {
+    let report_json = crate::processing::run_with_timeout(&config, move |_cancel| {
         sdk::document_views_report_json(&file, Some(password.as_bytes())).map_err(ServerError::from)
     })
     .await??;
 
-    crate::processing::check_output_size(config, report_json.len())?;
+    crate::processing::check_output_size(&config, report_json.len())?;
     let value: Value = serde_json::from_str(&report_json).map_err(|err| {
         ServerError::Internal(format!("document views report JSON was invalid: {}", err))
     })?;

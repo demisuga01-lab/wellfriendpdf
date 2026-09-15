@@ -409,7 +409,7 @@ fn inline_html(text: &InlineText) -> String {
         if span.bold {
             body = format!("<strong>{body}</strong>");
         }
-        if let Some(href) = &span.link {
+        if let Some(href) = span.link.as_deref().and_then(safe_html_href) {
             body = format!("<a href=\"{}\">{body}</a>", html_escape(href));
         }
         out.push_str(&body);
@@ -422,4 +422,52 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn safe_html_href(href: &str) -> Option<&str> {
+    let trimmed = href.trim();
+    let colon = trimmed.find(':')?;
+    let scheme = &trimmed[..colon];
+    if scheme.eq_ignore_ascii_case("http")
+        || scheme.eq_ignore_ascii_case("https")
+        || scheme.eq_ignore_ascii_case("mailto")
+    {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{inline_html, safe_html_href};
+    use crate::parse::{InlineSpan, InlineText};
+
+    #[test]
+    fn html_links_allow_only_explicit_safe_schemes() {
+        assert_eq!(
+            safe_html_href("https://example.com"),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            safe_html_href(" MAILTO:user@example.com "),
+            Some("MAILTO:user@example.com")
+        );
+        assert_eq!(safe_html_href("javascript:alert(1)"), None);
+        assert_eq!(safe_html_href("JaVaScRiPt:alert(1)"), None);
+        assert_eq!(safe_html_href("data:text/html,boom"), None);
+        assert_eq!(safe_html_href("//example.com"), None);
+    }
+
+    #[test]
+    fn unsafe_html_link_is_rendered_as_inert_text() {
+        let text = InlineText {
+            spans: vec![InlineSpan {
+                text: "open".to_string(),
+                link: Some("javascript:alert(1)".to_string()),
+                ..InlineSpan::default()
+            }],
+        };
+        assert_eq!(inline_html(&text), "open");
+    }
 }

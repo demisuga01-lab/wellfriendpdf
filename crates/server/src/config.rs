@@ -129,6 +129,12 @@ impl Default for ServerConfig {
     }
 }
 
+impl AsRef<ServerConfig> for ServerConfig {
+    fn as_ref(&self) -> &ServerConfig {
+        self
+    }
+}
+
 impl ServerConfig {
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
@@ -359,6 +365,20 @@ fn parse_bool_env(value: &str) -> bool {
 
 pub static CONFIG: std::sync::OnceLock<ServerConfig> = std::sync::OnceLock::new();
 
-pub fn get_config() -> &'static ServerConfig {
-    CONFIG.get_or_init(ServerConfig::default)
+tokio::task_local! {
+    static REQUEST_CONFIG: std::sync::Arc<ServerConfig>;
+}
+
+pub fn get_config() -> std::sync::Arc<ServerConfig> {
+    REQUEST_CONFIG
+        .try_with(std::sync::Arc::clone)
+        .unwrap_or_else(|_| std::sync::Arc::new(CONFIG.get_or_init(ServerConfig::default).clone()))
+}
+
+pub async fn request_config_middleware(
+    axum::extract::State(config): axum::extract::State<std::sync::Arc<ServerConfig>>,
+    request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    REQUEST_CONFIG.scope(config, next.run(request)).await
 }

@@ -62,6 +62,7 @@ fuzz_target!(|data: &[u8]| {
             _ => "vertical".into(),
         }),
         font_policy: "rebuild_subset_or_generated_type0".into(),
+        approved_font_asset: None,
         alignment: match bounded.get(4).copied().unwrap_or_default() % 4 {
             0 => "left",
             1 => "right",

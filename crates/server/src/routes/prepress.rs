@@ -46,13 +46,13 @@ pub async fn plate_report(multipart: Multipart) -> ServerResult<Response> {
         )));
     }
 
-    let report_json = crate::processing::run_with_timeout(config, move |_cancel| {
+    let report_json = crate::processing::run_with_timeout(&config, move |_cancel| {
         sdk::prepress_plate_report_json(&file, page, dpi, Some(password.as_bytes()))
             .map_err(ServerError::from)
     })
     .await??;
 
-    crate::processing::check_output_size(config, report_json.len())?;
+    crate::processing::check_output_size(&config, report_json.len())?;
     let value: Value = serde_json::from_str(&report_json).map_err(|err| {
         ServerError::Internal(format!("prepress plate report JSON was invalid: {}", err))
     })?;

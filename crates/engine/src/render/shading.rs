@@ -15,11 +15,15 @@
 //! bounds the painted region, so `sh` and shading-pattern fills only colour
 //! the intended area.
 
+use crate::cancel::CancelToken;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::render::buffer::{PixelBuffer, PixelColor};
 use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::transform::{Transform2D, Viewport};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub(crate) const MAX_SHADING_WORK_UNITS: u64 = 64 * 1024 * 1024;
 
 /// A minimal valid PDF used by render tests that need a `PdfReader` but never
 /// resolve indirect objects. Crate-visible so sibling render modules can reuse
@@ -198,6 +202,29 @@ pub(crate) fn get_bool_pair(dict: &PdfDictionary, key: &str) -> Option<[bool; 2]
         return None;
     }
     Some([arr[0].as_bool()?, arr[1].as_bool()?])
+}
+
+fn charge_shading_work(buf: &PixelBuffer, work_budget: &AtomicU64) -> Result<(), String> {
+    let Some((x_start, y_start, x_end, y_end)) = ShadingRenderer::paint_bounds(buf) else {
+        return Ok(());
+    };
+    let width =
+        u64::try_from(x_end - x_start).map_err(|_| "shading work width is invalid".to_string())?;
+    let height =
+        u64::try_from(y_end - y_start).map_err(|_| "shading work height is invalid".to_string())?;
+    let pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| "shading work area overflows the per-render work budget".to_string())?;
+    work_budget
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(pixels)
+        })
+        .map(|_| ())
+        .map_err(|remaining| {
+            format!(
+                "shading work requires {pixels} pixel units with {remaining} remaining; per-render limit is {MAX_SHADING_WORK_UNITS}"
+            )
+        })
 }
 
 /// Convert shading function output components to an opaque pixel colour.
@@ -418,18 +445,62 @@ impl ShadingRenderer {
         mesh_data: Option<&[u8]>,
         options: ShadingRenderOptions,
     ) {
+        let work_budget = AtomicU64::new(MAX_SHADING_WORK_UNITS);
+        if let Err(reason) = Self::paint_with_options_cancellable(
+            shading_dict,
+            ctm,
+            viewport,
+            buf,
+            reader,
+            mesh_data,
+            options,
+            &CancelToken::none(),
+            &work_budget,
+        ) {
+            log::warn!("{reason}");
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_options_cancellable(
+        shading_dict: &PdfDictionary,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        buf: &mut PixelBuffer,
+        reader: &PdfReader,
+        mesh_data: Option<&[u8]>,
+        options: ShadingRenderOptions,
+        cancel: &CancelToken,
+        work_budget: &AtomicU64,
+    ) -> std::result::Result<(), String> {
         if let Err(reason) = crate::render::page_renderer::validate_shading_dictionary_for_paint(
             shading_dict,
             "direct shading",
             reader,
         ) {
             log::warn!("{reason}");
-            return;
+            return Err(reason);
         }
         match shading_dict.get_integer("ShadingType") {
-            Some(1) => Self::paint_function_based(shading_dict, ctm, viewport, buf, reader),
-            Some(2) => Self::paint_axial(shading_dict, ctm, viewport, buf, reader),
-            Some(3) => Self::paint_radial(shading_dict, ctm, viewport, buf, reader),
+            Some(1) => {
+                charge_shading_work(buf, work_budget)?;
+                Self::paint_function_based_cancellable(
+                    shading_dict,
+                    ctm,
+                    viewport,
+                    buf,
+                    reader,
+                    cancel,
+                )
+            }
+            Some(2) => {
+                charge_shading_work(buf, work_budget)?;
+                Self::paint_axial_cancellable(shading_dict, ctm, viewport, buf, reader, cancel)
+            }
+            Some(3) => {
+                charge_shading_work(buf, work_budget)?;
+                Self::paint_radial_cancellable(shading_dict, ctm, viewport, buf, reader, cancel)
+            }
             Some(4 | 5) => {
                 Self::paint_gouraud_mesh(shading_dict, ctm, viewport, buf, reader, mesh_data)
             }
@@ -439,18 +510,38 @@ impl ShadingRenderer {
             Some(other) => log::debug!("ShadingRenderer: ShadingType {other} not supported"),
             None => log::debug!("ShadingRenderer: missing ShadingType"),
         }
+        Ok(())
     }
 
     /// ShadingType 1 (function-based): color at each point (x, y) within /Domain
     /// is the result of a 2-input function, optionally pre-transformed by the
     /// shading's /Matrix. We iterate device pixels, map back to domain space, and
     /// evaluate.
+    #[cfg(test)]
     fn paint_function_based(
         dict: &PdfDictionary,
         ctm: &Transform2D,
         viewport: &Viewport,
         buf: &mut PixelBuffer,
         reader: &PdfReader,
+    ) {
+        Self::paint_function_based_cancellable(
+            dict,
+            ctm,
+            viewport,
+            buf,
+            reader,
+            &CancelToken::none(),
+        );
+    }
+
+    fn paint_function_based_cancellable(
+        dict: &PdfDictionary,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        buf: &mut PixelBuffer,
+        reader: &PdfReader,
+        cancel: &CancelToken,
     ) {
         let func_obj = match dict.get("Function") {
             Some(f) => f.clone(),
@@ -507,6 +598,9 @@ impl ShadingRenderer {
             return;
         };
         for py in y_start..y_end {
+            if cancel.is_cancelled() {
+                return;
+            }
             for px in x_start..x_end {
                 if !buf.clip_allows(px, py) {
                     continue;
@@ -548,12 +642,24 @@ impl ShadingRenderer {
         Some(inv_vp.concat(&inv_ctm))
     }
 
+    #[cfg(test)]
     fn paint_axial(
         dict: &PdfDictionary,
         ctm: &Transform2D,
         viewport: &Viewport,
         buf: &mut PixelBuffer,
         reader: &PdfReader,
+    ) {
+        Self::paint_axial_cancellable(dict, ctm, viewport, buf, reader, &CancelToken::none());
+    }
+
+    fn paint_axial_cancellable(
+        dict: &PdfDictionary,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        buf: &mut PixelBuffer,
+        reader: &PdfReader,
+        cancel: &CancelToken,
     ) {
         let coords = match get_float_array(dict, "Coords") {
             Some(c) if c.len() == 4 => c,
@@ -623,6 +729,9 @@ impl ShadingRenderer {
         let dither = buf.render_mode().is_high_quality();
 
         for py in y_start..y_end {
+            if cancel.is_cancelled() {
+                return;
+            }
             for px in x_start..x_end {
                 if !buf.clip_allows(px, py) {
                     continue;
@@ -654,12 +763,24 @@ impl ShadingRenderer {
         }
     }
 
+    #[cfg(test)]
     fn paint_radial(
         dict: &PdfDictionary,
         ctm: &Transform2D,
         viewport: &Viewport,
         buf: &mut PixelBuffer,
         reader: &PdfReader,
+    ) {
+        Self::paint_radial_cancellable(dict, ctm, viewport, buf, reader, &CancelToken::none());
+    }
+
+    fn paint_radial_cancellable(
+        dict: &PdfDictionary,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        buf: &mut PixelBuffer,
+        reader: &PdfReader,
+        cancel: &CancelToken,
     ) {
         let coords = match get_float_array(dict, "Coords") {
             Some(c) if c.len() == 6 => c,
@@ -724,6 +845,9 @@ impl ShadingRenderer {
         let dither = buf.render_mode().is_high_quality();
 
         for py in y_start..y_end {
+            if cancel.is_cancelled() {
+                return;
+            }
             for px in x_start..x_end {
                 if !buf.clip_allows(px, py) {
                     continue;
@@ -1745,6 +1869,16 @@ mod tests {
 
     fn red_rgb_function() -> PdfObject {
         PdfObject::Dictionary(make_type2_dict(&[1.0, 0.0, 0.0], &[1.0, 0.0, 0.0], 1.0))
+    }
+
+    #[test]
+    fn shading_work_budget_is_cumulative_and_fail_closed() {
+        let buf = PixelBuffer::new_filled(4, 4, crate::render::buffer::WHITE);
+        let budget = AtomicU64::new(20);
+        charge_shading_work(&buf, &budget).expect("first shading fits");
+        let error = charge_shading_work(&buf, &budget)
+            .expect_err("second shading must exceed the remaining work budget");
+        assert!(error.contains("with 4 remaining"));
     }
 
     fn assert_shading_helper_does_not_paint(

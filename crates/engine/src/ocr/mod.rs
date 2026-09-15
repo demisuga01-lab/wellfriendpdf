@@ -312,6 +312,12 @@ pub trait OcrEngine: Send + Sync {
     fn max_concurrency(&self) -> usize {
         1
     }
+
+    /// Whether a timed-out recognition thread may safely outlive the caller.
+    /// FFI adapters with borrowed userdata must override this to return false.
+    fn supports_detached_timeout(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

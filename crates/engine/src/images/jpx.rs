@@ -33,6 +33,7 @@
 use hayro_jpeg2000::{ColorSpace, DecodeSettings, Image};
 
 use crate::error::{Result, WellfriendError};
+use crate::filters::DecodeLimits;
 use crate::images::decoder::{ensure_decode_budget, ColorSpaceConverter, RawImage};
 
 pub(crate) struct DecodedJpx {
@@ -73,7 +74,12 @@ pub struct JpxMetadata {
 /// CMYK is converted to RGB, and JPX-internal alpha channels are preserved as
 /// RGBA. PDF image soft masks are still handled separately by the SMask pipeline.
 pub fn decode(data: &[u8]) -> Result<RawImage> {
-    decode_with_settings(data, DecodeSettings::default())
+    decode_with_limits(data, &DecodeLimits::default())
+}
+
+pub(crate) fn decode_with_limits(data: &[u8], limits: &DecodeLimits) -> Result<RawImage> {
+    validate_jpx_limits(data, limits)?;
+    decode_with_settings(data, DecodeSettings::default(), limits)
 }
 
 /// Inspect JPX dimensions, bit depth, color family, channel count, and alpha
@@ -87,7 +93,9 @@ pub fn inspect_metadata(data: &[u8]) -> Result<JpxMetadata> {
 pub(crate) fn decode_with_target_resolution(
     data: &[u8],
     target_resolution: Option<(u32, u32)>,
+    limits: &DecodeLimits,
 ) -> Result<DecodedJpx> {
+    validate_jpx_limits(data, limits)?;
     let original = Image::new(data, &DecodeSettings::default())
         .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
     let original_width = original.width();
@@ -96,7 +104,7 @@ pub(crate) fn decode_with_target_resolution(
         target_resolution,
         ..DecodeSettings::default()
     };
-    let raw = decode_with_settings(data, settings)?;
+    let raw = decode_with_settings(data, settings, limits)?;
     Ok(DecodedJpx {
         raw,
         original_width,
@@ -104,7 +112,11 @@ pub(crate) fn decode_with_target_resolution(
     })
 }
 
-fn decode_with_settings(data: &[u8], settings: DecodeSettings) -> Result<RawImage> {
+fn decode_with_settings(
+    data: &[u8],
+    settings: DecodeSettings,
+    limits: &DecodeLimits,
+) -> Result<RawImage> {
     let image = Image::new(data, &settings)
         .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
 
@@ -115,6 +127,8 @@ fn decode_with_settings(data: &[u8], settings: DecodeSettings) -> Result<RawImag
     let color_space = image.color_space().clone();
     let color_channels = metadata.color_channels;
     let stored_channels = metadata.stored_channels;
+
+    validate_decoded_shape(&metadata, limits)?;
 
     let decoded = image
         .decode()
@@ -167,6 +181,269 @@ fn decode_with_settings(data: &[u8], settings: DecodeSettings) -> Result<RawImag
     };
 
     ensure_exact_jpx_length(raw)
+}
+
+fn validate_decoded_shape(metadata: &JpxMetadata, limits: &DecodeLimits) -> Result<()> {
+    if metadata.width > limits.max_image_width || metadata.height > limits.max_image_height {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "JPXDecode dimensions {}x{} exceed limit {}x{}",
+            metadata.width, metadata.height, limits.max_image_width, limits.max_image_height
+        )));
+    }
+    if usize::from(metadata.stored_channels) > limits.max_jpx_components {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "JPXDecode component count {} exceeds limit {}",
+            metadata.stored_channels, limits.max_jpx_components
+        )));
+    }
+    let pixels = u64::from(metadata.width)
+        .checked_mul(u64::from(metadata.height))
+        .ok_or_else(|| WellfriendError::ResourceLimit("JPXDecode pixel count overflows".into()))?;
+    if pixels > limits.max_image_pixels {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "JPXDecode pixel count {pixels} exceeds limit {}",
+            limits.max_image_pixels
+        )));
+    }
+    let decoded_bytes = pixels
+        .checked_mul(u64::from(metadata.stored_channels))
+        .ok_or_else(|| WellfriendError::ResourceLimit("JPXDecode byte count overflows".into()))?;
+    if decoded_bytes > limits.max_image_decoded_bytes {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "JPXDecode output {decoded_bytes} bytes exceeds limit {}",
+            limits.max_image_decoded_bytes
+        )));
+    }
+    Ok(())
+}
+
+fn validate_jpx_limits(data: &[u8], limits: &DecodeLimits) -> Result<()> {
+    let codestream = jpx_codestream(data).ok_or_else(|| {
+        WellfriendError::MalformedPdf("JPXDecode codestream box is missing or malformed".into())
+    })?;
+    let mut offset = 2usize;
+    let mut components = None;
+    let mut tile_part_end = None;
+    let mut unbounded_final_tile_part = false;
+    while offset + 2 <= codestream.len() {
+        if codestream[offset] != 0xff {
+            return Err(WellfriendError::MalformedPdf(
+                "JPXDecode marker prefix is missing".into(),
+            ));
+        }
+        while offset < codestream.len() && codestream[offset] == 0xff {
+            offset += 1;
+        }
+        if offset >= codestream.len() {
+            break;
+        }
+        let marker_start = offset - 1;
+        let marker = codestream[offset];
+        offset += 1;
+        if marker == 0xd9 {
+            break;
+        }
+        if marker == 0x4f {
+            continue;
+        }
+        if marker == 0x93 {
+            if unbounded_final_tile_part {
+                break;
+            }
+            let Some(end) = tile_part_end.take() else {
+                return Err(WellfriendError::MalformedPdf(
+                    "JPXDecode SOD appears without a bounded SOT".into(),
+                ));
+            };
+            if end < offset || end > codestream.len() {
+                return Err(WellfriendError::MalformedPdf(
+                    "JPXDecode tile-part length exceeds codestream".into(),
+                ));
+            }
+            offset = end;
+            continue;
+        }
+        if offset + 2 > codestream.len() {
+            return Err(WellfriendError::MalformedPdf(
+                "JPXDecode marker segment is truncated".into(),
+            ));
+        }
+        let length = usize::from(u16::from_be_bytes([
+            codestream[offset],
+            codestream[offset + 1],
+        ]));
+        if length < 2 || offset + length > codestream.len() {
+            return Err(WellfriendError::MalformedPdf(
+                "JPXDecode marker length exceeds codestream".into(),
+            ));
+        }
+        let segment = &codestream[offset..offset + length];
+        match marker {
+            0x90 if segment.len() >= 10 => {
+                let tile_length = usize::try_from(be_u32(segment, 4)?).map_err(|_| {
+                    WellfriendError::ResourceLimit(
+                        "JPXDecode tile-part length does not fit in memory".into(),
+                    )
+                })?;
+                if tile_length == 0 {
+                    tile_part_end = None;
+                    unbounded_final_tile_part = true;
+                    offset += length;
+                    continue;
+                }
+                let end = marker_start.checked_add(tile_length).ok_or_else(|| {
+                    WellfriendError::ResourceLimit("JPXDecode tile-part range overflows".into())
+                })?;
+                let minimum_end = offset.checked_add(length + 2).ok_or_else(|| {
+                    WellfriendError::ResourceLimit("JPXDecode tile-part header overflows".into())
+                })?;
+                if end < minimum_end || end > codestream.len() {
+                    return Err(WellfriendError::MalformedPdf(
+                        "JPXDecode tile-part length is invalid".into(),
+                    ));
+                }
+                tile_part_end = Some(end);
+                unbounded_final_tile_part = false;
+            }
+            0x51 if segment.len() >= 38 => {
+                let xsiz = be_u32(segment, 4)?;
+                let ysiz = be_u32(segment, 8)?;
+                let xosiz = be_u32(segment, 12)?;
+                let yosiz = be_u32(segment, 16)?;
+                let xtsiz = be_u32(segment, 20)?;
+                let ytsiz = be_u32(segment, 24)?;
+                let xtosiz = be_u32(segment, 28)?;
+                let ytosiz = be_u32(segment, 32)?;
+                if xtsiz == 0
+                    || ytsiz == 0
+                    || xsiz <= xosiz
+                    || ysiz <= yosiz
+                    || xsiz <= xtosiz
+                    || ysiz <= ytosiz
+                {
+                    return Err(WellfriendError::MalformedPdf(
+                        "JPXDecode SIZ declares invalid tile geometry".into(),
+                    ));
+                }
+                let width = xsiz - xosiz;
+                let height = ysiz - yosiz;
+                if width > limits.max_image_width || height > limits.max_image_height {
+                    return Err(WellfriendError::ResourceLimit(format!(
+                        "JPXDecode dimensions {width}x{height} exceed limit {}x{}",
+                        limits.max_image_width, limits.max_image_height
+                    )));
+                }
+                let x_tiles = u64::from(xsiz - xtosiz).div_ceil(u64::from(xtsiz));
+                let y_tiles = u64::from(ysiz - ytosiz).div_ceil(u64::from(ytsiz));
+                let tiles = x_tiles.checked_mul(y_tiles).ok_or_else(|| {
+                    WellfriendError::ResourceLimit("JPXDecode tile count overflows".into())
+                })?;
+                if tiles > limits.max_jpx_tiles as u64 {
+                    return Err(WellfriendError::ResourceLimit(format!(
+                        "JPXDecode tile count {tiles} exceeds limit {}",
+                        limits.max_jpx_tiles
+                    )));
+                }
+                let count = usize::from(u16::from_be_bytes([segment[36], segment[37]]));
+                if count == 0 || count > limits.max_jpx_components {
+                    return Err(WellfriendError::ResourceLimit(format!(
+                        "JPXDecode component count {count} exceeds limit {}",
+                        limits.max_jpx_components
+                    )));
+                }
+                let pixels = u64::from(width)
+                    .checked_mul(u64::from(height))
+                    .ok_or_else(|| {
+                        WellfriendError::ResourceLimit("JPXDecode pixel count overflows".into())
+                    })?;
+                if pixels > limits.max_image_pixels {
+                    return Err(WellfriendError::ResourceLimit(format!(
+                        "JPXDecode pixel count {pixels} exceeds limit {}",
+                        limits.max_image_pixels
+                    )));
+                }
+                let decoded_bytes = pixels.checked_mul(count as u64).ok_or_else(|| {
+                    WellfriendError::ResourceLimit("JPXDecode byte count overflows".into())
+                })?;
+                if decoded_bytes > limits.max_image_decoded_bytes {
+                    return Err(WellfriendError::ResourceLimit(format!(
+                        "JPXDecode output {decoded_bytes} bytes exceeds limit {}",
+                        limits.max_image_decoded_bytes
+                    )));
+                }
+                components = Some(count);
+            }
+            0x52 if segment.len() >= 8 => {
+                validate_resolution_levels(segment[7], limits)?;
+            }
+            0x53 => {
+                let component_bytes = if components.unwrap_or(257) > 256 {
+                    2
+                } else {
+                    1
+                };
+                let decomposition_offset = 2 + component_bytes + 1;
+                if decomposition_offset < segment.len() {
+                    validate_resolution_levels(segment[decomposition_offset], limits)?;
+                }
+            }
+            _ => {}
+        }
+        offset += length;
+    }
+    Ok(())
+}
+
+fn validate_resolution_levels(decompositions: u8, limits: &DecodeLimits) -> Result<()> {
+    let levels = usize::from(decompositions) + 1;
+    if levels > limits.max_jpx_resolution_levels {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "JPXDecode resolution levels {levels} exceed limit {}",
+            limits.max_jpx_resolution_levels
+        )));
+    }
+    Ok(())
+}
+
+fn jpx_codestream(data: &[u8]) -> Option<&[u8]> {
+    if data.starts_with(&[0xff, 0x4f]) {
+        return Some(data);
+    }
+    if !data.starts_with(&[0, 0, 0, 12, b'j', b'P', b' ', b' ']) {
+        return None;
+    }
+    let mut offset = 0usize;
+    while offset.checked_add(8)? <= data.len() {
+        let short_len = be_u32_opt(data, offset)? as usize;
+        let kind = data.get(offset + 4..offset + 8)?;
+        let (header, length) = if short_len == 1 {
+            let long_len = u64::from_be_bytes(data.get(offset + 8..offset + 16)?.try_into().ok()?);
+            (16usize, usize::try_from(long_len).ok()?)
+        } else if short_len == 0 {
+            (8usize, data.len() - offset)
+        } else {
+            (8usize, short_len)
+        };
+        if length < header || offset.checked_add(length)? > data.len() {
+            return None;
+        }
+        if kind == b"jp2c" {
+            return Some(&data[offset + header..offset + length]);
+        }
+        offset += length;
+    }
+    None
+}
+
+fn be_u32(data: &[u8], offset: usize) -> Result<u32> {
+    be_u32_opt(data, offset)
+        .ok_or_else(|| WellfriendError::MalformedPdf("JPXDecode header is truncated".into()))
+}
+
+fn be_u32_opt(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 fn metadata_from_image(image: &Image<'_>) -> Result<JpxMetadata> {
@@ -371,10 +648,85 @@ fn gray_alpha_to_rgba(width: u32, height: u32, gray: &[u8], alpha: &[u8]) -> Res
 mod tests {
     use super::*;
 
+    fn siz_codestream(width: u32, height: u32, tile_width: u32, tile_height: u32) -> Vec<u8> {
+        let mut data = vec![0xff, 0x4f, 0xff, 0x51, 0x00, 0x29, 0x00, 0x00];
+        for value in [width, height, 0, 0, tile_width, tile_height, 0, 0] {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+        data.extend_from_slice(&[0x00, 0x01, 0x07, 0x01, 0x01, 0xff, 0xd9]);
+        data
+    }
+
     #[test]
     fn malformed_codestream_returns_error() {
         let result = decode(b"not a jpeg2000 codestream");
         assert!(matches!(result, Err(WellfriendError::MalformedPdf(_))));
+    }
+
+    #[test]
+    fn codestream_tile_count_is_bounded_before_codec_decode() {
+        let data = siz_codestream(100, 100, 1, 1);
+        let limits = DecodeLimits {
+            max_jpx_tiles: 100,
+            ..DecodeLimits::default()
+        };
+        let error = validate_jpx_limits(&data, &limits)
+            .expect_err("excessive JPX tile grids must fail before codec decode");
+        assert!(matches!(error, WellfriendError::ResourceLimit(_)));
+        assert!(format!("{error}").contains("tile count 10000 exceeds limit 100"));
+    }
+
+    #[test]
+    fn codestream_dimensions_are_bounded_before_codec_decode() {
+        let data = siz_codestream(100, 100, 100, 100);
+        let limits = DecodeLimits {
+            max_image_width: 50,
+            ..DecodeLimits::default()
+        };
+        let error = validate_jpx_limits(&data, &limits)
+            .expect_err("oversized JPX dimensions must fail before codec decode");
+        assert!(matches!(error, WellfriendError::ResourceLimit(_)));
+        assert!(format!("{error}").contains("dimensions 100x100 exceed limit 50x"));
+    }
+
+    #[test]
+    fn codestream_resolution_levels_are_bounded_before_codec_decode() {
+        let mut data = siz_codestream(10, 10, 10, 10);
+        data.truncate(data.len() - 2);
+        data.extend_from_slice(&[
+            0xff, 0x52, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
+            0xff, 0xd9,
+        ]);
+        let limits = DecodeLimits {
+            max_jpx_resolution_levels: 4,
+            ..DecodeLimits::default()
+        };
+        let error = validate_jpx_limits(&data, &limits)
+            .expect_err("excessive JPX resolution levels must fail before codec decode");
+        assert!(matches!(error, WellfriendError::ResourceLimit(_)));
+        assert!(
+            format!("{error}").contains("resolution levels 9 exceed limit 4"),
+            "unexpected JPX resolution limit error: {error}"
+        );
+    }
+
+    #[test]
+    fn tile_part_resolution_override_is_bounded_before_codec_decode() {
+        let mut data = siz_codestream(10, 10, 10, 10);
+        data.truncate(data.len() - 2);
+        data.extend_from_slice(&[
+            0xff, 0x90, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x01, 0xff, 0x52,
+            0x00, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0xff, 0x93,
+            0xff, 0xd9,
+        ]);
+        let limits = DecodeLimits {
+            max_jpx_resolution_levels: 4,
+            ..DecodeLimits::default()
+        };
+        let error = validate_jpx_limits(&data, &limits)
+            .expect_err("tile-part COD overrides must not bypass the resolution limit");
+        assert!(matches!(error, WellfriendError::ResourceLimit(_)));
+        assert!(format!("{error}").contains("resolution levels 9 exceed limit 4"));
     }
 
     #[test]

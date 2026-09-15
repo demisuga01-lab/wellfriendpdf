@@ -2,6 +2,7 @@ use crate::content::tokenizer::ContentToken;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operand {
+    Null,
     Integer(i64),
     Real(f64),
     Boolean(bool),
@@ -76,6 +77,7 @@ impl Operand {
 impl From<ContentToken> for Option<Operand> {
     fn from(value: ContentToken) -> Self {
         match value {
+            ContentToken::Null => Some(Operand::Null),
             ContentToken::Integer(value) => Some(Operand::Integer(value)),
             ContentToken::Real(value) => Some(Operand::Real(value)),
             ContentToken::Boolean(value) => Some(Operand::Boolean(value)),

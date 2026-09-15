@@ -30,6 +30,10 @@ pub const WELLFRIENDPDF_STATUS_PANIC: c_int = 3;
 #[repr(C)]
 pub struct WellfriendDocument {
     engine: ContentEngine,
+    /// Retained only so byte-backed SDK operations can reopen the immutable
+    /// encrypted source. The zeroizing wrapper clears its allocation on drop
+    /// and the credential is never serialized into a report or edit plan.
+    input_password: Option<wellfriendpdf_engine::SecretBytes>,
     /// An optional OCR backend registered via `wellfriendpdf_document_set_ocr_backend`.
     /// When present, the `*_with_ocr` parse functions route scanned pages
     /// through it; the plain parse functions ignore it (digital-born only).
@@ -167,8 +171,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_open_from_bytes(
 ///
 /// `password == NULL && password_len == 0` means no password was supplied.
 /// `password != NULL && password_len == 0` means an explicit empty password was
-/// supplied. The password is used only during this open call and is not logged
-/// or retained by the C ABI wrapper.
+/// supplied. The password is retained in zeroizing memory only so operations
+/// that reparse the immutable source bytes can reopen the same encrypted
+/// document. It is never logged, serialized, or reused as an output password.
 ///
 /// # Safety
 ///
@@ -222,7 +227,11 @@ pub unsafe extern "C" fn wellfriendpdf_document_open_pubsec_from_bytes(
         let provider = wellfriendpdf_engine::PubSecKeyProvider::single(identity);
         ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)
     })) {
-        Ok(Ok(engine)) => Box::into_raw(Box::new(WellfriendDocument { engine, ocr: None })),
+        Ok(Ok(engine)) => Box::into_raw(Box::new(WellfriendDocument {
+            engine,
+            input_password: None,
+            ocr: None,
+        })),
         Ok(Err(err)) => {
             set_error(error_out, &err.to_string());
             ptr::null_mut()
@@ -273,7 +282,11 @@ pub unsafe extern "C" fn wellfriendpdf_document_open_pubsec_pfx_from_bytes(
         let provider = wellfriendpdf_engine::PubSecKeyProvider::single(identity);
         ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)
     })) {
-        Ok(Ok(engine)) => Box::into_raw(Box::new(WellfriendDocument { engine, ocr: None })),
+        Ok(Ok(engine)) => Box::into_raw(Box::new(WellfriendDocument {
+            engine,
+            input_password: None,
+            ocr: None,
+        })),
         Ok(Err(err)) => {
             set_error(error_out, &err.to_string());
             ptr::null_mut()
@@ -308,13 +321,20 @@ unsafe fn open_document_from_parts(
     match catch_unwind(AssertUnwindSafe(|| {
         let bytes = unsafe { slice::from_raw_parts(data, len) }.to_vec();
         if password.is_null() {
-            ContentEngine::open_bytes(bytes)
+            ContentEngine::open_bytes(bytes).map(|engine| (engine, None))
         } else {
-            let password = unsafe { slice::from_raw_parts(password, password_len) };
-            ContentEngine::open_bytes_with_password(bytes, password)
+            let password = wellfriendpdf_engine::SecretBytes::new(
+                unsafe { slice::from_raw_parts(password, password_len) }.to_vec(),
+            );
+            let engine = ContentEngine::open_bytes_with_password(bytes, password.as_slice())?;
+            Ok((engine, Some(password)))
         }
     })) {
-        Ok(Ok(engine)) => Box::into_raw(Box::new(WellfriendDocument { engine, ocr: None })),
+        Ok(Ok((engine, input_password))) => Box::into_raw(Box::new(WellfriendDocument {
+            engine,
+            input_password,
+            ocr: None,
+        })),
         Ok(Err(err)) => {
             set_error(error_out, &err.to_string());
             ptr::null_mut()
@@ -5153,6 +5173,55 @@ unsafe fn report_output_impl(
     })
 }
 
+/// Universal v2 reparses the immutable source so plan revision identities and
+/// apply identities are byte-for-byte identical. Reuse only the input-opening
+/// credential for that reparse; output encryption always has a separate,
+/// apply-only credential path.
+unsafe fn universal_report_json_impl(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+    f: impl FnOnce(&[u8], Option<&[u8]>) -> WellfriendResult<String>,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let password = doc.input_password.as_ref().map(|value| value.as_slice());
+        let json = wellfriendpdf(f(&doc_bytes(doc), password))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+unsafe fn universal_report_output_impl(
+    document: *const WellfriendDocument,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+    f: impl FnOnce(&[u8], Option<&[u8]>) -> WellfriendResult<(Vec<u8>, String)>,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let password = doc.input_password.as_ref().map(|value| value.as_slice());
+        let (bytes, json) = wellfriendpdf(f(&doc_bytes(doc), password))?;
+        unsafe {
+            *out_buffer = into_buffer(bytes);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
 /// Effective runtime configuration JSON. `config_json` may be NULL or a
 /// NUL-terminated JSON/TOML-like runtime configuration string. The returned
 /// string is owned by the caller and must be freed with
@@ -5197,6 +5266,61 @@ pub unsafe extern "C" fn wellfriendpdf_runtime_capabilities_json(
         }
         let config = config.map_err(|err| err.to_string())?;
         let json = wellfriendpdf(sdk::runtime_capabilities_json(config.as_deref()))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Universal editing v2 capability registry. The returned JSON is owned by
+/// the caller and must be freed with `wellfriendpdf_string_free`.
+///
+/// # Safety
+/// `out_json`/`error_out` must be writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_universal_editing_capabilities_v2_json(
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = wellfriendpdf(sdk::universal_editing_capabilities_v2_json())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Bind an explicit decision to a revision-bound universal editing v2 plan.
+/// Both inputs are NUL-terminated UTF-8 JSON. The returned JSON is owned by
+/// the caller and must be freed with `wellfriendpdf_string_free`.
+///
+/// # Safety
+/// Input strings must remain readable for the call and output pointers must be
+/// writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_universal_editing_approval_v2_json(
+    plan_json: *const c_char,
+    decision_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let plan = unsafe { required_c_string(plan_json, "plan_json") };
+    let decision = unsafe { required_c_string(decision_json, "decision_json") };
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let plan = plan.map_err(|error| error.to_string())?;
+        let decision = decision.map_err(|error| error.to_string())?;
+        let json = wellfriendpdf(sdk::universal_editing_approval_v2_json(
+            &plan,
+            &decision,
+        ))?;
         unsafe {
             *out_json = into_c_string(json);
         }
@@ -6546,6 +6670,254 @@ pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_transaction
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
                     .as_deref(),
                 None,
+            )
+        })
+    }
+}
+
+/// Analyze a bounded page window into the source-linked universal editing v2
+/// document model. `options_json` may be NULL to select v2 defaults.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_analyze_v2_json(
+    document: *const WellfriendDocument,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::universal_editing_analyze_v2_json(
+                bytes,
+                options
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                password,
+            )
+        })
+    }
+}
+
+/// Compile retained render plans, execute native pixel rendering, and compare
+/// optional RGBA reference rasters. `options_json` may be NULL for defaults.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_universal_render_qualification_v2_json(
+    document: *const WellfriendDocument,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::universal_render_qualification_v2_json(
+                bytes,
+                options
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                password,
+            )
+        })
+    }
+}
+
+/// Inspect one indirect object and return the revision-bound value/fingerprint
+/// needed by a universal object-graph transaction.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_inspect_object_v2_json(
+    document: *const WellfriendDocument,
+    object_number: u32,
+    generation: u16,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::universal_editing_inspect_object_v2_json(
+                bytes,
+                object_number,
+                generation,
+                password,
+            )
+        })
+    }
+}
+
+/// Plan a universal editing v2 transaction without modifying document bytes.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8 and output pointers are writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_plan_v2_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::universal_editing_plan_v2_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                password,
+            )
+        })
+    }
+}
+
+/// Apply a revision-bound universal editing v2 plan. `approval_json` may be
+/// NULL only when the plan state is not `approval_required`.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_apply_v2_json(
+    document: *const WellfriendDocument,
+    plan_json: *const c_char,
+    approval_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let plan = unsafe { required_c_string(plan_json, "plan_json") };
+    let approval = unsafe { optional_c_string(approval_json) };
+    unsafe {
+        universal_report_output_impl(document, out_buffer, out_json, error_out, |bytes, password| {
+            sdk::universal_editing_apply_v2_json(
+                bytes,
+                &plan
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                approval
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                password,
+            )
+        })
+    }
+}
+
+/// Apply a Standard-handler output-security plan with apply-only user/owner
+/// credentials. Passwords are not included in the plan or returned report.
+///
+/// # Safety
+/// String inputs are NUL-terminated UTF-8 and output pointers are writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_apply_v2_with_output_credentials_json(
+    document: *const WellfriendDocument,
+    plan_json: *const c_char,
+    approval_json: *const c_char,
+    output_user_password: *const c_char,
+    output_owner_password: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let plan = unsafe { required_c_string(plan_json, "plan_json") };
+    let approval = unsafe { optional_c_string(approval_json) };
+    let user = unsafe { optional_c_string(output_user_password) };
+    let owner = unsafe { optional_c_string(output_owner_password) };
+    unsafe {
+        universal_report_output_impl(document, out_buffer, out_json, error_out, |bytes, password| {
+            let user = wellfriendpdf_engine::SecretBytes::new(
+                user.clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .unwrap_or_default()
+                    .into_bytes(),
+            );
+            let owner = owner
+                .clone()
+                .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                .map(|value| wellfriendpdf_engine::SecretBytes::new(value.into_bytes()))
+                .unwrap_or_else(|| user.clone());
+            sdk::universal_editing_apply_v2_with_output_credentials_json(
+                bytes,
+                &plan
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                approval
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                password,
+                user.as_slice(),
+                owner.as_slice(),
+            )
+        })
+    }
+}
+
+/// Apply a Standard-handler output-security plan with length-delimited,
+/// apply-only user/owner credentials. Unlike the compatibility string entry
+/// point, this accepts every password byte including embedded NUL. A NULL
+/// owner pointer with zero length means "use the user password"; a non-NULL
+/// owner pointer with zero length selects an explicitly empty owner password.
+/// Password bytes are never included in the plan or returned report.
+///
+/// # Safety
+/// Each password pointer must reference its declared readable byte length.
+/// A pointer may be NULL only when its length is zero. Standard document and
+/// owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_apply_v2_with_output_credential_bytes_json(
+    document: *const WellfriendDocument,
+    plan_json: *const c_char,
+    approval_json: *const c_char,
+    output_user_password: *const u8,
+    output_user_password_len: usize,
+    output_owner_password: *const u8,
+    output_owner_password_len: usize,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let plan = unsafe { required_c_string(plan_json, "plan_json") };
+    let approval = unsafe { optional_c_string(approval_json) };
+    let user = unsafe {
+        read_input_bytes(
+            output_user_password,
+            output_user_password_len,
+            "output_user_password",
+        )
+    };
+    let owner_supplied = !output_owner_password.is_null();
+    let owner = unsafe {
+        read_input_bytes(
+            output_owner_password,
+            output_owner_password_len,
+            "output_owner_password",
+        )
+    };
+    unsafe {
+        universal_report_output_impl(document, out_buffer, out_json, error_out, |bytes, password| {
+            let plan = plan.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            let approval = approval
+                .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            let user = user.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            let owner = owner.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            let owner = if owner_supplied { owner } else { user };
+            sdk::universal_editing_apply_v2_with_output_credentials_json(
+                bytes,
+                &plan,
+                approval.as_deref(),
+                password,
+                user,
+                owner,
             )
         })
     }
@@ -8128,11 +8500,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_redact_terms_json(
     out_json: *mut *mut c_char,
     error_out: *mut *mut c_char,
 ) -> c_int {
-    let collected = unsafe { read_c_string_array(terms, terms_len) };
     unsafe {
         report_output_impl(document, out_buffer, out_json, error_out, |b| {
-            let terms = collected
-                .clone()
+            let terms = read_c_string_array(terms, terms_len)
                 .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
             sdk::redact_terms_json(b, &terms, strict != 0, None)
         })
@@ -8222,16 +8592,42 @@ unsafe fn read_c_string_array(
     ptr: *const *const c_char,
     len: usize,
 ) -> Result<Vec<String>, String> {
+    const MAX_C_STRING_ARRAY_ITEMS: usize = 4_096;
+    const MAX_C_STRING_ARRAY_BYTES: usize = 4 * 1024 * 1024;
+
     if len == 0 {
         return Ok(Vec::new());
+    }
+    if len > MAX_C_STRING_ARRAY_ITEMS {
+        return Err(format!(
+            "terms count {len} exceeds limit {MAX_C_STRING_ARRAY_ITEMS}"
+        ));
     }
     if ptr.is_null() {
         return Err("terms pointer is null".to_string());
     }
-    let mut out = Vec::with_capacity(len);
+    let mut out = Vec::new();
+    out.try_reserve(len)
+        .map_err(|_| "terms array allocation exceeds available memory".to_string())?;
+    let mut total_bytes = 0usize;
     for idx in 0..len {
         let item = unsafe { *ptr.add(idx) };
-        out.push(unsafe { required_c_string(item, "term") }?);
+        if item.is_null() {
+            return Err(format!("term {idx} pointer is null"));
+        }
+        let borrowed = unsafe { CStr::from_ptr(item) };
+        total_bytes = total_bytes
+            .checked_add(borrowed.to_bytes().len())
+            .ok_or_else(|| "terms byte count overflows".to_string())?;
+        if total_bytes > MAX_C_STRING_ARRAY_BYTES {
+            return Err(format!(
+                "terms contain {total_bytes} bytes, exceeding limit {MAX_C_STRING_ARRAY_BYTES}"
+            ));
+        }
+        let value = borrowed
+            .to_str()
+            .map_err(|_| format!("term {idx} is not valid UTF-8"))?;
+        out.push(value.to_owned());
     }
     Ok(out)
 }
@@ -8714,6 +9110,13 @@ mod tests {
     use super::*;
     use std::ffi::CStr;
     use wellfriendpdf_engine::{crypto::secret_bytes, encrypt, EncryptAlgorithm, EncryptParams};
+
+    #[test]
+    fn capi_redaction_term_count_is_rejected_before_pointer_access() {
+        let error = unsafe { read_c_string_array(std::ptr::null(), 4_097) }
+            .expect_err("oversized arrays must be rejected before dereferencing the pointer");
+        assert!(error.contains("terms count 4097 exceeds limit 4096"));
+    }
 
     struct PdfBuilder {
         objects: Vec<Vec<u8>>,

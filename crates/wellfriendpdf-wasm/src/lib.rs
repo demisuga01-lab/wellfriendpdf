@@ -19,7 +19,7 @@ mod wasm_api {
         sdk, CancelToken, ChunkOptions, ContentEngine, DocType, EvidenceBundle, ExtractOptions,
         IncrementalSigner, IncrementalSigningOptions, IntermediateStore, NetworkBudget,
         ParseOptions, PdfSigner, RenderDocumentCache, RetrievalPolicy, SignatureOptions,
-        SignatureRevocationMode, SigningIntent, TrustStore, VerifyOptions,
+        SecretBytes, SignatureRevocationMode, SigningIntent, TrustStore, VerifyOptions,
     };
 
     #[wasm_bindgen]
@@ -482,6 +482,7 @@ mod wasm_api {
     pub struct WellfriendPdf {
         engine: ContentEngine,
         bytes: Vec<u8>,
+        input_password: Option<SecretBytes>,
         closed: bool,
     }
 
@@ -916,6 +917,7 @@ mod wasm_api {
             Ok(Self {
                 engine,
                 bytes: bytes.to_vec(),
+                input_password: None,
                 closed: false,
             })
         }
@@ -928,6 +930,7 @@ mod wasm_api {
             Ok(Self {
                 engine,
                 bytes: bytes.to_vec(),
+                input_password: Some(SecretBytes::new(password.to_vec())),
                 closed: false,
             })
         }
@@ -964,6 +967,21 @@ mod wasm_api {
         pub fn runtime_capabilities_json(config_json: Option<String>) -> Result<String, JsValue> {
             install_panic_hook();
             sdk::runtime_capabilities_json(config_json.as_deref()).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = universalEditingCapabilitiesV2Json)]
+        pub fn universal_editing_capabilities_v2_json() -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::universal_editing_capabilities_v2_json().map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = universalEditingApprovalV2Json)]
+        pub fn universal_editing_approval_v2_json(
+            plan_json: String,
+            decision_json: String,
+        ) -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::universal_editing_approval_v2_json(&plan_json, &decision_json).map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = runtimeConfigJson)]
@@ -1051,6 +1069,7 @@ mod wasm_api {
 
         #[wasm_bindgen(js_name = close)]
         pub fn close(&mut self) {
+            self.input_password = None;
             self.closed = true;
         }
 
@@ -2126,6 +2145,54 @@ mod wasm_api {
             self.report(|b| sdk::source_editing_image_eligibility_json(b, page, None))
         }
 
+        #[wasm_bindgen(js_name = universalEditingAnalyzeV2Json)]
+        pub fn universal_editing_analyze_v2_json(
+            &self,
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| {
+                sdk::universal_editing_analyze_v2_json(b, options_json.as_deref(), password)
+            })
+        }
+
+        #[wasm_bindgen(js_name = universalRenderQualificationV2Json)]
+        pub fn universal_render_qualification_v2_json(
+            &self,
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| {
+                sdk::universal_render_qualification_v2_json(b, options_json.as_deref(), password)
+            })
+        }
+
+        #[wasm_bindgen(js_name = universalEditingInspectObjectV2Json)]
+        pub fn universal_editing_inspect_object_v2_json(
+            &self,
+            number: u32,
+            generation: u16,
+        ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| {
+                sdk::universal_editing_inspect_object_v2_json(
+                    b,
+                    number,
+                    generation,
+                    password,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = universalEditingPlanV2Json)]
+        pub fn universal_editing_plan_v2_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::universal_editing_plan_v2_json(b, &request_json, password))
+        }
+
         #[wasm_bindgen(js_name = editing_transactionsSceneReportJson)]
         pub fn editing_transactions_scene_report_json(
             &self,
@@ -2527,6 +2594,55 @@ mod wasm_api {
                     &request_json,
                     render_invalidation_options_json.as_deref(),
                     None,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = universalEditingApplyV2)]
+        pub fn universal_editing_apply_v2(
+            &self,
+            plan_json: String,
+            approval_json: Option<String>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| {
+                sdk::universal_editing_apply_v2_json(
+                    b,
+                    &plan_json,
+                    approval_json.as_deref(),
+                    password,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = universalEditingApplyV2WithOutputCredentials)]
+        pub fn universal_editing_apply_v2_with_output_credentials(
+            &self,
+            plan_json: String,
+            approval_json: Option<String>,
+            input_password: Option<Vec<u8>>,
+            output_user_password: Vec<u8>,
+            output_owner_password: Option<Vec<u8>>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let explicit_input_password = input_password.map(SecretBytes::new);
+            let output_user_password = SecretBytes::new(output_user_password);
+            let output_owner_password = output_owner_password.map(SecretBytes::new);
+            let retained_password = self.input_password.as_ref().map(|value| value.as_slice());
+            let input_password = explicit_input_password
+                .as_ref()
+                .map(|value| value.as_slice())
+                .or(retained_password);
+            self.output(|b| {
+                sdk::universal_editing_apply_v2_with_output_credentials_json(
+                    b,
+                    &plan_json,
+                    approval_json.as_deref(),
+                    input_password,
+                    output_user_password.as_slice(),
+                    output_owner_password
+                        .as_ref()
+                        .map(|value| value.as_slice())
+                        .unwrap_or_else(|| output_user_password.as_slice()),
                 )
             })
         }

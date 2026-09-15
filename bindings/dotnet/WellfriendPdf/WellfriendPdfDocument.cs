@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 
@@ -36,26 +37,47 @@ public sealed class WellfriendDocument : IDisposable
     public static WellfriendDocument Open(byte[] bytes, string? password = null)
     {
         ArgumentNullException.ThrowIfNull(bytes);
-        NativeMethods.DocumentHandle handle;
-        IntPtr error;
         if (password is null)
         {
-            handle = NativeMethods.wellfriendpdf_document_open_from_bytes(bytes, (UIntPtr)bytes.Length, out error);
+            var handle = NativeMethods.wellfriendpdf_document_open_from_bytes(
+                bytes, (UIntPtr)bytes.Length, out var error);
+            if (handle.IsInvalid)
+            {
+                NativeMethods.ThrowIfError(2, error);
+            }
+            return new WellfriendDocument(handle);
         }
-        else
+        var encoded = Encoding.UTF8.GetBytes(password);
+        try
         {
-            var encoded = Encoding.UTF8.GetBytes(password);
-            // Keep a non-null password pointer even when the caller supplied an
-            // explicit empty string; the native length remains the actual UTF-8
-            // byte count.
-            var nativePassword = encoded.Length == 0 ? new byte[1] : encoded;
-            handle = NativeMethods.wellfriendpdf_document_open_from_bytes_with_password(
-                bytes,
-                (UIntPtr)bytes.Length,
-                nativePassword,
-                (UIntPtr)encoded.Length,
-                out error);
+            return OpenWithPasswordBytes(bytes, encoded);
         }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(encoded);
+        }
+    }
+
+    public static WellfriendDocument OpenWithPasswordBytes(string path, byte[] password)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(password);
+        return OpenWithPasswordBytes(File.ReadAllBytes(path), password);
+    }
+
+    public static WellfriendDocument OpenWithPasswordBytes(byte[] bytes, byte[] password)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentNullException.ThrowIfNull(password);
+        // Keep a non-null password pointer even when the caller supplied an
+        // explicitly empty byte sequence.
+        var nativePassword = password.Length == 0 ? new byte[1] : password;
+        var handle = NativeMethods.wellfriendpdf_document_open_from_bytes_with_password(
+            bytes,
+            (UIntPtr)bytes.Length,
+            nativePassword,
+            (UIntPtr)password.Length,
+            out var error);
         if (handle.IsInvalid)
         {
             NativeMethods.ThrowIfError(2, error);
@@ -248,6 +270,32 @@ public sealed class WellfriendDocument : IDisposable
             _handle, (UIntPtr)pageNumber, dpi, out var buffer, out var error);
         NativeMethods.ThrowIfError(status, error);
         return NativeMethods.TakeBuffer(buffer);
+    }
+
+    public static string UniversalEditingCapabilitiesV2Json()
+    {
+        var status = NativeMethods.wellfriendpdf_universal_editing_capabilities_v2_json(
+            out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public static string UniversalEditingApprovalV2Json(string planJson, string decisionJson)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(planJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(decisionJson);
+        var planPtr = NativeMethods.StringToNativeOrNull(planJson);
+        var decisionPtr = NativeMethods.StringToNativeOrNull(decisionJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_universal_editing_approval_v2_json(
+                planPtr, decisionPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (planPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(planPtr);
+            if (decisionPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(decisionPtr);
+        }
     }
 
     public WellfriendBinaryResult RenderPagePngWithFontSubstitutionReportJson(
@@ -1321,6 +1369,149 @@ public sealed class WellfriendDocument : IDisposable
         ThrowIfDisposed();
         var status = NativeMethods.wellfriendpdf_document_source_editing_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string UniversalEditingAnalyzeV2Json(string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_universal_editing_analyze_v2_json(
+                _handle, optionsPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public string UniversalRenderQualificationV2Json(string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_universal_render_qualification_v2_json(
+                _handle, optionsPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public string UniversalEditingInspectObjectV2Json(uint objectNumber, ushort generation = 0)
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_universal_editing_inspect_object_v2_json(
+            _handle, objectNumber, generation, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string UniversalEditingPlanV2Json(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_universal_editing_plan_v2_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public WellfriendBinaryResult UniversalEditingApplyV2(
+        string planJson, string? approvalJson = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(planJson);
+        var planPtr = NativeMethods.StringToNativeOrNull(planJson);
+        var approvalPtr = NativeMethods.StringToNativeOrNull(approvalJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_universal_editing_apply_v2_json(
+                _handle, planPtr, approvalPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (planPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(planPtr);
+            if (approvalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(approvalPtr);
+        }
+    }
+
+    public WellfriendBinaryResult UniversalEditingApplyV2WithOutputCredentials(
+        string planJson,
+        string outputUserPassword,
+        string? outputOwnerPassword = null,
+        string? approvalJson = null)
+    {
+        ArgumentNullException.ThrowIfNull(outputUserPassword);
+        var userBytes = Encoding.UTF8.GetBytes(outputUserPassword);
+        var ownerBytes = outputOwnerPassword is null
+            ? null
+            : Encoding.UTF8.GetBytes(outputOwnerPassword);
+        try
+        {
+            return UniversalEditingApplyV2WithOutputCredentialBytes(
+                planJson, userBytes, ownerBytes, approvalJson);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(userBytes);
+            if (ownerBytes is not null) CryptographicOperations.ZeroMemory(ownerBytes);
+        }
+    }
+
+    public WellfriendBinaryResult UniversalEditingApplyV2WithOutputCredentialBytes(
+        string planJson,
+        byte[] outputUserPassword,
+        byte[]? outputOwnerPassword = null,
+        string? approvalJson = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(planJson);
+        ArgumentNullException.ThrowIfNull(outputUserPassword);
+        var planPtr = IntPtr.Zero;
+        var approvalPtr = IntPtr.Zero;
+        var userStorage = outputUserPassword.Length == 0 ? new byte[1] : outputUserPassword;
+        var ownerStorage = outputOwnerPassword is { Length: 0 } ? new byte[1] : outputOwnerPassword;
+        var userHandle = default(GCHandle);
+        var ownerHandle = default(GCHandle);
+        try
+        {
+            planPtr = NativeMethods.StringToNativeOrNull(planJson);
+            approvalPtr = NativeMethods.StringToNativeOrNull(approvalJson);
+            userHandle = GCHandle.Alloc(userStorage, GCHandleType.Pinned);
+            if (ownerStorage is not null)
+            {
+                ownerHandle = GCHandle.Alloc(ownerStorage, GCHandleType.Pinned);
+            }
+            var ownerPtr = ownerStorage is null
+                ? IntPtr.Zero
+                : ownerHandle.AddrOfPinnedObject();
+            var status = NativeMethods.wellfriendpdf_document_universal_editing_apply_v2_with_output_credential_bytes_json(
+                _handle, planPtr, approvalPtr,
+                userHandle.AddrOfPinnedObject(), checked((nuint)outputUserPassword.LongLength),
+                ownerPtr, checked((nuint)(outputOwnerPassword?.LongLength ?? 0)),
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (userHandle.IsAllocated) userHandle.Free();
+            if (ownerHandle.IsAllocated) ownerHandle.Free();
+            if (planPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(planPtr);
+            if (approvalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(approvalPtr);
+        }
     }
 
     public string EditingTransactionsReportJson()

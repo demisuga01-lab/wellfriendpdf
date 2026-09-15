@@ -198,4 +198,8 @@ impl OcrEngine for CAbiOcrEngine {
     fn max_concurrency(&self) -> usize {
         (self.backend.max_concurrency as usize).max(1)
     }
+
+    fn supports_detached_timeout(&self) -> bool {
+        false
+    }
 }

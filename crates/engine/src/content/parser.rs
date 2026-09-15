@@ -6,6 +6,10 @@ use crate::object::{PdfDictionary, PdfObject};
 
 pub struct ContentParser;
 
+const MAX_CONTENT_CONTAINER_DEPTH: u32 = 128;
+const MAX_CONTENT_STACK_ITEMS: usize = 1_000_000;
+const MAX_CONTENT_OPERATIONS: usize = 1_000_000;
+
 #[derive(Debug)]
 enum StackItem {
     Operand(Operand),
@@ -19,34 +23,36 @@ impl ContentParser {
     }
 
     /// Parse all tokens from the byte slice into operations.
-    /// Token errors are logged as warnings; parsing continues.
+    /// Malformed tokens fail closed so rendering and editing cannot silently
+    /// omit content from a damaged stream.
     pub fn parse(data: &[u8]) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(ContentTokenizer::new(data), false, None)
+        Self::parse_tokens_inner(ContentTokenizer::new(data), true, false, None)
     }
 
     pub(crate) fn parse_cancellable(
         data: &[u8],
         cancel: &CancelToken,
     ) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(ContentTokenizer::new(data), false, Some(cancel))
+        Self::parse_tokens_inner(ContentTokenizer::new(data), true, false, Some(cancel))
     }
 
     /// Same as [`ContentParser::parse`] but accepts a pre-built token iterator.
     pub fn parse_tokens(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
     ) -> Vec<ContentOperation> {
-        Self::parse_tokens_inner(tokens, false, None).unwrap_or_default()
+        Self::parse_tokens_inner(tokens, false, false, None).unwrap_or_default()
     }
 
     pub(crate) fn parse_tokens_propagating_io_cancellable(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
         cancel: &CancelToken,
     ) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(tokens, true, Some(cancel))
+        Self::parse_tokens_inner(tokens, false, true, Some(cancel))
     }
 
     fn parse_tokens_inner(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
+        propagate_all_errors: bool,
         propagate_io: bool,
         cancel: Option<&CancelToken>,
     ) -> Result<Vec<ContentOperation>> {
@@ -63,7 +69,9 @@ impl ContentParser {
             let token = match token_result {
                 Ok(token) => token,
                 Err(err) => {
-                    if propagate_io && matches!(err, crate::error::WellfriendError::Io(_)) {
+                    if propagate_all_errors
+                        || (propagate_io && matches!(err, crate::error::WellfriendError::Io(_)))
+                    {
                         return Err(err);
                     }
                     log::warn!("content token error: {err}");
@@ -73,16 +81,33 @@ impl ContentParser {
 
             match token {
                 ContentToken::ArrayStart => {
+                    if array_depth >= MAX_CONTENT_CONTAINER_DEPTH {
+                        return Err(WellfriendError::ResourceLimit(format!(
+                            "content container depth exceeds limit {MAX_CONTENT_CONTAINER_DEPTH}"
+                        )));
+                    }
+                    ensure_content_stack_capacity(stack.len())?;
                     stack.push(StackItem::ArrayStart);
                     array_depth = array_depth.saturating_add(1);
                 }
                 ContentToken::DictStart => {
+                    if array_depth >= MAX_CONTENT_CONTAINER_DEPTH {
+                        return Err(WellfriendError::ResourceLimit(format!(
+                            "content container depth exceeds limit {MAX_CONTENT_CONTAINER_DEPTH}"
+                        )));
+                    }
+                    ensure_content_stack_capacity(stack.len())?;
                     stack.push(StackItem::DictStart);
                     array_depth = array_depth.saturating_add(1);
                 }
                 ContentToken::ArrayEnd => {
                     match collect_array(&mut stack) {
                         Some(array) => stack.push(StackItem::Operand(Operand::Array(array))),
+                        None if propagate_all_errors => {
+                            return Err(WellfriendError::MalformedPdf(
+                                "content array ends without a matching start".to_string(),
+                            ));
+                        }
                         None => log::warn!("content parser saw array end without start"),
                     }
                     array_depth = array_depth.saturating_sub(1);
@@ -90,16 +115,27 @@ impl ContentParser {
                 ContentToken::DictEnd => {
                     match collect_dictionary(&mut stack) {
                         Some(dict) => stack.push(StackItem::Operand(Operand::Dictionary(dict))),
+                        None if propagate_all_errors => {
+                            return Err(WellfriendError::MalformedPdf(
+                                "content dictionary ends without a matching start".to_string(),
+                            ));
+                        }
                         None => log::warn!("content parser saw dict end without start"),
                     }
                     array_depth = array_depth.saturating_sub(1);
                 }
                 ContentToken::Operator(op) => {
+                    ensure_content_operation_capacity(operations.len())?;
                     let mut operands = drain_operands(&mut stack);
                     if op == "ID" {
                         operands = normalize_inline_image_operands(operands)?;
                     }
                     if array_depth > 0 {
+                        if propagate_all_errors {
+                            return Err(WellfriendError::MalformedPdf(format!(
+                                "content operator '{op}' appears before its container is closed"
+                            )));
+                        }
                         log::warn!("operator '{op}' encountered before closing array");
                         array_depth = 0;
                     }
@@ -107,22 +143,36 @@ impl ContentParser {
                 }
                 ContentToken::InlineImageData(bytes) => {
                     if !stack.is_empty() {
+                        if propagate_all_errors {
+                            return Err(WellfriendError::MalformedPdf(
+                                "inline image data appears with unconsumed operands".to_string(),
+                            ));
+                        }
                         log::warn!("flushing operands before inline image data");
                         stack.clear();
                     }
+                    ensure_content_operation_capacity(operations.len())?;
                     operations.push(ContentOperation::new(
                         "inline_image_data",
                         vec![Operand::String(bytes)],
                     ));
                 }
                 other => match Option::<Operand>::from(other) {
-                    Some(operand) => stack.push(StackItem::Operand(operand)),
+                    Some(operand) => {
+                        ensure_content_stack_capacity(stack.len())?;
+                        stack.push(StackItem::Operand(operand));
+                    }
                     None => log::warn!("content parser skipped non-operand token"),
                 },
             }
         }
 
         if !stack.is_empty() {
+            if propagate_all_errors {
+                return Err(WellfriendError::MalformedPdf(
+                    "content stream ends with unconsumed operands or open containers".to_string(),
+                ));
+            }
             log::warn!(
                 "trailing operands without operator: {:?}",
                 stack
@@ -137,6 +187,24 @@ impl ContentParser {
 
         Ok(operations)
     }
+}
+
+fn ensure_content_stack_capacity(current: usize) -> Result<()> {
+    if current >= MAX_CONTENT_STACK_ITEMS {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "content operand stack exceeds limit {MAX_CONTENT_STACK_ITEMS}"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_content_operation_capacity(current: usize) -> Result<()> {
+    if current >= MAX_CONTENT_OPERATIONS {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "content operation count exceeds limit {MAX_CONTENT_OPERATIONS}"
+        )));
+    }
+    Ok(())
 }
 
 impl Default for ContentParser {
@@ -309,6 +377,7 @@ fn inline_image_filter_name(name: &str) -> &str {
 
 pub(crate) fn operand_to_pdf_object(operand: Operand) -> Option<PdfObject> {
     match operand {
+        Operand::Null => Some(PdfObject::Null),
         Operand::Integer(value) => Some(PdfObject::Integer(value)),
         Operand::Real(value) => Some(PdfObject::Real(value)),
         Operand::Boolean(value) => Some(PdfObject::Boolean(value)),
@@ -331,6 +400,7 @@ pub(crate) fn operand_to_pdf_object(operand: Operand) -> Option<PdfObject> {
 
 fn pdf_object_to_operand(object: &PdfObject) -> Option<Operand> {
     match object {
+        PdfObject::Null => Some(Operand::Null),
         PdfObject::Integer(value) => Some(Operand::Integer(*value)),
         PdfObject::Real(value) => Some(Operand::Real(*value)),
         PdfObject::Boolean(value) => Some(Operand::Boolean(*value)),
@@ -377,6 +447,13 @@ mod tests {
         );
         assert_eq!(operations[4].operator, "ET");
         assert_eq!(operations[4].operands, vec![]);
+    }
+
+    #[test]
+    fn rejects_excessive_container_depth_before_recursive_conversion() {
+        let input = vec![b'['; MAX_CONTENT_CONTAINER_DEPTH as usize + 1];
+        let error = ContentParser::parse(&input).expect_err("deep content must be rejected");
+        assert!(matches!(error, WellfriendError::ResourceLimit(_)));
     }
 
     #[test]
@@ -559,5 +636,31 @@ mod tests {
         assert!(entries
             .iter()
             .any(|(key, value)| key == "Predictor" && value.as_integer() == Some(15)));
+    }
+
+    #[test]
+    fn preserves_null_entries_in_inline_decodeparms_arrays() {
+        let operations = ContentParser::parse(
+            b"BI /W 2 /H 1 /CS /G /BPC 8 /F [/A85 /Fl] /DP [null << /Predictor 15 /Columns 2 >>] ID x EI",
+        )
+        .unwrap();
+        let id = operations
+            .iter()
+            .find(|operation| operation.operator == "ID")
+            .unwrap();
+        let params = id
+            .operands
+            .chunks_exact(2)
+            .find(|pair| pair[0].as_name() == Some("DecodeParms"))
+            .map(|pair| &pair[1])
+            .unwrap();
+        let entries = params.as_array().expect("DecodeParms array");
+        assert!(matches!(entries.first(), Some(Operand::Null)));
+        assert!(entries
+            .get(1)
+            .and_then(Operand::as_dictionary)
+            .is_some_and(|dict| dict.iter().any(|(key, value)| {
+                key == "Predictor" && value.as_integer() == Some(15)
+            })));
     }
 }

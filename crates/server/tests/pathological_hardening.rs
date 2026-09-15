@@ -178,30 +178,32 @@ async fn giant_mediabox_ok_at_tiny_dpi() {
     assert!(bytes.starts_with(b"PK"));
 }
 
-/// Deeply nested Form XObjects past the depth-8 guard must not overflow the
-/// stack; the page should still render and return a valid ZIP.
+/// Deeply nested Form XObjects past the depth-8 guard must fail closed instead
+/// of overflowing the stack or returning a partially rendered page.
 #[tokio::test]
-async fn deeply_nested_forms_degrade_gracefully() {
+async fn deeply_nested_forms_fail_closed() {
     install_test_config();
     let pdf = pathological::deeply_nested_forms_pdf(64);
     let (status, bytes) = post_pdf2img(&pdf, &[("dpi", "72")]).await;
     assert_eq!(
         status,
-        StatusCode::OK,
-        "depth guard should hold and the page still render"
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "depth guard must reject a partial render"
     );
-    assert!(bytes.starts_with(b"PK"));
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"], "unsupported_feature");
 }
 
 /// A self-referential Form (A->A cycle) must not infinitely recurse; the page
-/// renders and returns cleanly.
+/// must fail closed rather than return a partial render.
 #[tokio::test]
-async fn self_referential_form_terminates() {
+async fn self_referential_form_fails_closed() {
     install_test_config();
     let pdf = pathological::self_referential_form_pdf();
     let (status, bytes) = post_pdf2img(&pdf, &[("dpi", "72")]).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(bytes.starts_with(b"PK"));
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"], "unsupported_feature");
 }
 
 /// A pathological tiling pattern (tiny step, huge fill) must hit the tile cap

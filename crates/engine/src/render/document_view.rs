@@ -759,6 +759,7 @@ pub struct ParsedOperandDescriptor {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ParsedOperandKind {
+    Null,
     Integer,
     Real,
     Boolean,
@@ -822,6 +823,7 @@ fn describe_operand(operand: &Operand) -> ParsedOperandDescriptor {
 
 fn operand_kind(operand: &Operand) -> ParsedOperandKind {
     match operand {
+        Operand::Null => ParsedOperandKind::Null,
         Operand::Integer(_) => ParsedOperandKind::Integer,
         Operand::Real(_) => ParsedOperandKind::Real,
         Operand::Boolean(_) => ParsedOperandKind::Boolean,
@@ -834,6 +836,7 @@ fn operand_kind(operand: &Operand) -> ParsedOperandKind {
 
 fn operand_byte_len(operand: &Operand) -> usize {
     match operand {
+        Operand::Null => 4,
         Operand::Integer(value) => value.to_string().len(),
         Operand::Real(value) => value.to_string().len(),
         Operand::Boolean(value) => {

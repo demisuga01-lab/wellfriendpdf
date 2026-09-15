@@ -48,6 +48,10 @@ The latest independent source-closure evidence and exact current verdict are in
 Deferred corpus and platform verification is not presented as completed source
 work.
 
+The additive universal editing v2 transaction and its unexecuted VPS
+qualification gate are documented in
+[`docs/universal_editing_v2_implementation_report.md`](docs/universal_editing_v2_implementation_report.md).
+
 Verified local closure baseline (`0601400fabfbc85491a4923a2bac6406f0865892`):
 
 | Evidence | Result |

@@ -26,6 +26,7 @@ fuzz_target!(|data: &[u8]| {
             0 => "ltr", 1 => "rtl", _ => "vertical",
         }.into()),
         font_policy: "rebuild_subset_or_generated_type0".into(),
+        approved_font_asset: None,
         alignment: "left".into(),
         justify_last_line: false,
         hyphenation: false,

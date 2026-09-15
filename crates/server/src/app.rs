@@ -139,7 +139,7 @@ use crate::routes;
 //   Kubernetes readiness probe.
 // ---------------------------------------------------------------------------
 pub fn create_app() -> Router {
-    create_app_with_config(get_config().clone())
+    create_app_with_config((*get_config()).clone())
 }
 
 pub fn create_app_with_config(config: ServerConfig) -> Router {
@@ -154,6 +154,7 @@ pub fn create_app_with_config(config: ServerConfig) -> Router {
 /// [`create_app_with_config`], which constructs an internal limiter.
 pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) -> Router {
     let config = Arc::new(config);
+    let request_config = Arc::clone(&config);
 
     // Start the async job subsystem (worker pool + bounded queue + retention
     // cleanup task). The background tasks must outlive this function: in
@@ -323,6 +324,34 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
             post(routes::editing_transactions::apply_with_render_invalidation),
         )
         .route(
+            "/api/v2/universal-editing/capabilities",
+            get(routes::universal_editing::capabilities),
+        )
+        .route(
+            "/api/v2/universal-editing/analyze",
+            post(routes::universal_editing::analyze),
+        )
+        .route(
+            "/api/v2/universal-editing/render-qualification",
+            post(routes::universal_editing::render_qualification),
+        )
+        .route(
+            "/api/v2/universal-editing/inspect-object",
+            post(routes::universal_editing::inspect_object),
+        )
+        .route(
+            "/api/v2/universal-editing/plan",
+            post(routes::universal_editing::plan),
+        )
+        .route(
+            "/api/v2/universal-editing/approve",
+            post(routes::universal_editing::approve),
+        )
+        .route(
+            "/api/v2/universal-editing/apply",
+            post(routes::universal_editing::apply),
+        )
+        .route(
             "/api/v1/progressive-image-decode/lifecycle-report",
             post(routes::image_decode::progressive_lifecycle_report),
         )
@@ -343,8 +372,12 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
             crate::rate_limit::rate_limit_middleware,
         ))
         .layer(middleware::from_fn_with_state(
-            config,
+            Arc::clone(&config),
             crate::auth::auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            request_config,
+            crate::config::request_config_middleware,
         ))
 }
 

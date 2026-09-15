@@ -13,7 +13,7 @@ use wellfriendpdf_engine::{
     sdk, CancelToken, ContentEngine, DocType, DocumentInfo, EvidenceBundle, ExtractOptions,
     ExtractionProfile, ImageLocateOptions, ImageOutputFormat, IntermediateStore, NetworkBudget,
     OcrPolicy, PageRegion, ParseOptions, RenderDocumentCache, RetrievalPolicy, SerializeOptions,
-    SignatureRevocationMode, TrustStore, VerifyOptions,
+    SecretBytes, SignatureRevocationMode, TrustStore, VerifyOptions,
 };
 
 mod ocr_backend;
@@ -24,6 +24,7 @@ create_exception!(wellfriendpdf, WellfriendError, PyException);
 #[pyclass(name = "Document", module = "wellfriendpdf", unsendable)]
 struct PyDocument {
     engine: Arc<ContentEngine>,
+    input_password: Option<SecretBytes>,
 }
 
 #[pyclass(name = "ProgressiveRenderJob", module = "wellfriendpdf", unsendable)]
@@ -931,6 +932,26 @@ impl PyDocument {
         };
         Ok(Self {
             engine: Arc::new(engine),
+            input_password: password
+                .map(|value| SecretBytes::new(value.as_bytes().to_vec())),
+        })
+    }
+
+    /// Open an encrypted PDF with the exact password byte sequence. This
+    /// avoids UTF-8 normalization and supports embedded NUL bytes.
+    #[classmethod]
+    fn from_path_with_password_bytes(
+        _cls: &Bound<'_, PyType>,
+        path: PathBuf,
+        password: Vec<u8>,
+    ) -> PyResult<Self> {
+        let password = SecretBytes::new(password);
+        let engine = run_wellfriendpdf(|| {
+            ContentEngine::open_path_with_password(path, password.as_slice())
+        })?;
+        Ok(Self {
+            engine: Arc::new(engine),
+            input_password: Some(password),
         })
     }
 
@@ -950,6 +971,25 @@ impl PyDocument {
         };
         Ok(Self {
             engine: Arc::new(engine),
+            input_password: password
+                .map(|value| SecretBytes::new(value.as_bytes().to_vec())),
+        })
+    }
+
+    /// Open in-memory encrypted PDF bytes with an exact binary password.
+    #[classmethod]
+    fn from_bytes_with_password_bytes(
+        _cls: &Bound<'_, PyType>,
+        data: Vec<u8>,
+        password: Vec<u8>,
+    ) -> PyResult<Self> {
+        let password = SecretBytes::new(password);
+        let engine = run_wellfriendpdf(|| {
+            ContentEngine::open_bytes_with_password(data, password.as_slice())
+        })?;
+        Ok(Self {
+            engine: Arc::new(engine),
+            input_password: Some(password),
         })
     }
 
@@ -2021,6 +2061,119 @@ impl PyDocument {
             let _ = occurrence.as_deref();
             sdk::source_editing_image_eligibility_json(bytes, page, None)
         })
+    }
+
+    /// Build the bounded, source-linked universal editing v2 document model.
+    #[pyo3(signature = (options_json=None))]
+    fn universal_editing_analyze_v2<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options_json.map(str::to_string);
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::universal_editing_analyze_v2_json(bytes, options.as_deref(), password)
+        })
+    }
+
+    /// Compile retained plans, render native pixels, and optionally compare
+    /// caller-supplied RGBA reference rasters.
+    #[pyo3(signature = (options_json=None))]
+    fn universal_render_qualification_v2<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options_json.map(str::to_string);
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::universal_render_qualification_v2_json(bytes, options.as_deref(), password)
+        })
+    }
+
+    /// Create an immutable, revision-bound universal editing v2 plan.
+    fn universal_editing_plan_v2<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let request = request_json.to_string();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::universal_editing_plan_v2_json(bytes, &request, password)
+        })
+    }
+
+    /// Inspect one indirect object and return its revision-bound mutation value
+    /// and fingerprint.
+    #[pyo3(signature = (number, generation=0))]
+    fn universal_editing_inspect_object_v2<'py>(
+        &self,
+        py: Python<'py>,
+        number: u32,
+        generation: u16,
+    ) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::universal_editing_inspect_object_v2_json(
+                bytes,
+                number,
+                generation,
+                password,
+            )
+        })
+    }
+
+    /// Apply a universal editing v2 plan. Approval JSON is required only for
+    /// plans whose state is `approval_required`.
+    #[pyo3(signature = (plan_json, approval_json=None, output=None, input_password=None, output_user_password=None, output_owner_password=None))]
+    fn universal_editing_apply_v2<'py>(
+        &self,
+        py: Python<'py>,
+        plan_json: &str,
+        approval_json: Option<&str>,
+        output: Option<PathBuf>,
+        input_password: Option<Vec<u8>>,
+        output_user_password: Option<Vec<u8>>,
+        output_owner_password: Option<Vec<u8>>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let input_password = input_password.map(SecretBytes::new);
+        let output_user_password = output_user_password.map(SecretBytes::new);
+        let output_owner_password = output_owner_password.map(SecretBytes::new);
+        let retained_password = self.input_password.as_ref().map(|value| value.as_slice());
+        let input_password = input_password
+            .as_ref()
+            .map(|value| value.as_slice())
+            .or(retained_password);
+        let (out, report) = run_wellfriendpdf(|| match output_user_password
+            .as_ref()
+            .map(|value| value.as_slice())
+        {
+            Some(user) => sdk::universal_editing_apply_v2_with_output_credentials_json(
+                &bytes,
+                plan_json,
+                approval_json,
+                input_password,
+                user,
+                output_owner_password
+                    .as_ref()
+                    .map(|value| value.as_slice())
+                    .unwrap_or(user),
+            ),
+            None => sdk::universal_editing_apply_v2_json(
+                &bytes,
+                plan_json,
+                approval_json,
+                input_password,
+            ),
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
     }
 
     fn editing_transactions_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
@@ -4028,6 +4181,27 @@ fn runtime_capabilities(py: Python<'_>, config_json: Option<&str>) -> PyResult<P
     parse_json_str(py, &json)
 }
 
+/// Canonical universal editing v2 capability registry. Status is explicit and
+/// unverified capabilities are not promoted by the binding.
+#[pyfunction]
+fn universal_editing_capabilities_v2(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let json = run_wellfriendpdf(sdk::universal_editing_capabilities_v2_json)?;
+    parse_json_str(py, &json)
+}
+
+/// Bind a caller decision to a revision-bound universal editing v2 plan.
+#[pyfunction]
+fn universal_editing_approval_v2<'py>(
+    py: Python<'py>,
+    plan_json: &str,
+    decision_json: &str,
+) -> PyResult<Py<PyAny>> {
+    let json = run_wellfriendpdf(|| {
+        sdk::universal_editing_approval_v2_json(plan_json, decision_json)
+    })?;
+    parse_json_str(py, &json)
+}
+
 /// Effective runtime configuration. Secret references are reported without
 /// secret values.
 #[pyfunction]
@@ -4485,6 +4659,8 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(verify_signatures_with_options, module)?)?;
     module.add_function(wrap_pyfunction!(feature_report, module)?)?;
     module.add_function(wrap_pyfunction!(runtime_capabilities, module)?)?;
+    module.add_function(wrap_pyfunction!(universal_editing_capabilities_v2, module)?)?;
+    module.add_function(wrap_pyfunction!(universal_editing_approval_v2, module)?)?;
     module.add_function(wrap_pyfunction!(runtime_config, module)?)?;
     module.add_function(wrap_pyfunction!(ocr_provider_matrix, module)?)?;
     module.add_function(wrap_pyfunction!(sign_pdf, module)?)?;
@@ -4512,6 +4688,8 @@ fn open_impl(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyDo
         };
         return Ok(PyDocument {
             engine: Arc::new(engine),
+            input_password: password
+                .map(|value| SecretBytes::new(value.as_bytes().to_vec())),
         });
     }
 
@@ -4528,6 +4706,7 @@ fn open_impl(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyDo
     };
     Ok(PyDocument {
         engine: Arc::new(engine),
+        input_password: password.map(|value| SecretBytes::new(value.as_bytes().to_vec())),
     })
 }
 

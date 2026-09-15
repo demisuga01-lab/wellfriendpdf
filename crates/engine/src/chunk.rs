@@ -36,6 +36,9 @@ use crate::parse::{Block, BlockKind, Document};
 mod tokens;
 pub use tokens::estimate_tokens;
 
+pub const MAX_CHUNK_TARGET_TOKENS: usize = 32_768;
+pub const MAX_CHUNK_OVERLAP_TOKENS: usize = 4_096;
+
 // ════════════════════════════════════════════════════════════════════════════
 // Options
 // ════════════════════════════════════════════════════════════════════════════
@@ -158,7 +161,14 @@ struct Piece {
 
 /// Chunk a document into RAG-ready passages.
 pub fn chunk(doc: &Document, opts: &ChunkOptions) -> ChunkSet {
-    let target = opts.target_tokens.max(1);
+    let mut bounded_opts = opts.clone();
+    bounded_opts.target_tokens = opts.target_tokens.clamp(1, MAX_CHUNK_TARGET_TOKENS);
+    bounded_opts.overlap_tokens = opts
+        .overlap_tokens
+        .min(MAX_CHUNK_OVERLAP_TOKENS)
+        .min(bounded_opts.target_tokens.saturating_sub(1));
+    let opts = &bounded_opts;
+    let target = opts.target_tokens;
     let pieces = collect_pieces(doc, opts);
 
     // Heading-context tracking: a stack of (level, text). A Title is level 0.

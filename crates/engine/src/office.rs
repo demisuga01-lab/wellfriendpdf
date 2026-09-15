@@ -290,24 +290,44 @@ pub fn inspect_office_package(
     let mut uncompressed_total = 0u64;
 
     if zip.len() > limits.max_parts {
-        findings.push(OfficeSecurityFinding {
-            part: "(package)".to_string(),
-            category: "zip_limit".to_string(),
-            reason: format!(
-                "part count {} exceeds max_parts {}",
-                zip.len(),
-                limits.max_parts
-            ),
-            severity: "block".to_string(),
-        });
+        return Ok(office_security_report(
+            format,
+            limits.clone(),
+            zip.len(),
+            bytes.len() as u64,
+            0,
+            Vec::new(),
+            vec![OfficeSecurityFinding {
+                part: "(package)".to_string(),
+                category: "zip_limit".to_string(),
+                reason: format!(
+                    "part count {} exceeds max_parts {}",
+                    zip.len(),
+                    limits.max_parts
+                ),
+                severity: "block".to_string(),
+            }],
+        ));
     }
 
     for idx in 0..zip.len() {
-        let mut entry = zip.by_index(idx).map_err(zip_err)?;
+        let entry = zip.by_index(idx).map_err(zip_err)?;
         let name = entry.name().to_string();
         let compressed = entry.compressed_size();
         let uncompressed = entry.size();
         uncompressed_total = uncompressed_total.saturating_add(uncompressed);
+        if uncompressed_total > limits.max_uncompressed_bytes {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "zip_limit".to_string(),
+                reason: format!(
+                    "total uncompressed size {uncompressed_total} exceeds max_uncompressed_bytes {}",
+                    limits.max_uncompressed_bytes
+                ),
+                severity: "block".to_string(),
+            });
+            break;
+        }
 
         if !seen.insert(name.clone()) {
             findings.push(OfficeSecurityFinding {
@@ -386,9 +406,33 @@ pub fn inspect_office_package(
             });
         }
 
-        if is_xml_part(&name) && uncompressed <= limits.max_xml_part_bytes {
+        let decompression_ratio_ok = compressed > 0
+            && uncompressed
+                <= compressed
+                    .checked_mul(limits.max_decompression_ratio)
+                    .unwrap_or(u64::MAX);
+        let safe_to_decompress = uncompressed <= limits.max_part_bytes
+            && (!is_xml_part(&name) || uncompressed <= limits.max_xml_part_bytes)
+            && (!is_media_part(&name) || uncompressed <= limits.max_media_part_bytes)
+            && (uncompressed == 0 || decompression_ratio_ok)
+            && matches!(
+                entry.compression(),
+                CompressionMethod::Stored | CompressionMethod::Deflated
+            );
+        if is_xml_part(&name) && safe_to_decompress {
             let mut data = Vec::new();
-            entry.read_to_end(&mut data)?;
+            entry
+                .take(limits.max_xml_part_bytes.saturating_add(1))
+                .read_to_end(&mut data)?;
+            if data.len() as u64 > limits.max_xml_part_bytes {
+                findings.push(OfficeSecurityFinding {
+                    part: name.clone(),
+                    category: "xml_limit".to_string(),
+                    reason: "XML part expanded beyond its declared/allowed size".to_string(),
+                    severity: "block".to_string(),
+                });
+                continue;
+            }
             let xml = String::from_utf8_lossy(&data);
             scan_office_xml_text(&name, &xml, &mut findings);
             if name.ends_with(".rels") {
@@ -3225,12 +3269,19 @@ fn min_option(a: Option<usize>, b: Option<usize>) -> Option<usize> {
 }
 
 fn column_index_from_cell_ref(reference: &str) -> Option<usize> {
+    const XLSX_MAX_COLUMNS: usize = 16_384;
+
     let mut col = 0usize;
     let mut saw_letter = false;
     for ch in reference.chars() {
         if ch.is_ascii_alphabetic() {
             saw_letter = true;
-            col = col * 26 + (ch.to_ascii_uppercase() as u8 - b'A' + 1) as usize;
+            col = col
+                .checked_mul(26)?
+                .checked_add((ch.to_ascii_uppercase() as u8 - b'A' + 1) as usize)?;
+            if col > XLSX_MAX_COLUMNS {
+                return None;
+            }
         } else {
             break;
         }
@@ -3268,6 +3319,13 @@ mod tests {
         assert_eq!(column_name(1), "A");
         assert_eq!(column_name(26), "Z");
         assert_eq!(column_name(27), "AA");
+    }
+
+    #[test]
+    fn xlsx_cell_references_are_bounded_to_excel_columns() {
+        assert_eq!(column_index_from_cell_ref("XFD1048576"), Some(16_384));
+        assert_eq!(column_index_from_cell_ref("XFE1"), None);
+        assert_eq!(column_index_from_cell_ref("ZZZZZZZZ1"), None);
     }
 
     #[test]

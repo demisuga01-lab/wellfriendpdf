@@ -527,15 +527,24 @@ impl ExpressionParser<'_, '_, '_> {
     fn parse_unary(&mut self) -> Result<Value> {
         if self.consume(&Token::Minus) {
             self.budget.charge()?;
-            return Ok(Value::Number(-self.parse_unary()?.as_number()?));
+            self.budget.enter()?;
+            let value = self.parse_unary();
+            self.budget.leave();
+            return Ok(Value::Number(-value?.as_number()?));
         }
         if self.consume(&Token::Plus) {
             self.budget.charge()?;
-            return Ok(Value::Number(self.parse_unary()?.as_number()?));
+            self.budget.enter()?;
+            let value = self.parse_unary();
+            self.budget.leave();
+            return Ok(Value::Number(value?.as_number()?));
         }
         if self.consume(&Token::Not) {
             self.budget.charge()?;
-            return Ok(Value::Bool(!self.parse_unary()?.as_bool()));
+            self.budget.enter()?;
+            let value = self.parse_unary();
+            self.budget.leave();
+            return Ok(Value::Bool(!value?.as_bool()));
         }
         self.parse_primary()
     }
@@ -557,7 +566,10 @@ impl ExpressionParser<'_, '_, '_> {
             }
             Token::Identifier(name) => Ok(resolve_field(&name, self.fields)),
             Token::LParen => {
-                let value = self.parse_or()?;
+                self.budget.enter()?;
+                let value = self.parse_or();
+                self.budget.leave();
+                let value = value?;
                 if !self.consume(&Token::RParen) {
                     return Err(WellfriendError::MalformedPdf(
                         "FormCalc expression is missing ')'".to_string(),

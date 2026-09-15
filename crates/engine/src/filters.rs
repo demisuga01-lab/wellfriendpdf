@@ -429,6 +429,26 @@ pub fn flate_encode(data: &[u8], level: u32) -> Vec<u8> {
     enc.finish().unwrap_or_default()
 }
 
+/// Cooperative counterpart used by request-scoped mutation paths. Compression
+/// is fed in bounded chunks so a timed-out blocking worker can release its
+/// semaphore permit without waiting for the whole input to be deflated.
+pub(crate) fn flate_encode_cancellable(data: &[u8], level: u32) -> Result<Vec<u8>> {
+    use std::io::Write;
+    const CHUNK_BYTES: usize = 64 * 1024;
+    let mut encoder =
+        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(level.min(9)));
+    for chunk in data.chunks(CHUNK_BYTES) {
+        crate::cancel::check_current_cancel("FlateEncode")?;
+        encoder.write_all(chunk).map_err(|error| {
+            WellfriendError::ParseError(format!("FlateEncode failed: {error}"))
+        })?;
+    }
+    crate::cancel::check_current_cancel("FlateEncode finish")?;
+    encoder.finish().map_err(|error| {
+        WellfriendError::ParseError(format!("FlateEncode finish failed: {error}"))
+    })
+}
+
 /// Decodes implemented lossless filters in order and stops before an image
 /// codec filter, returning the current bytes plus a status.
 pub fn decode_stream_lossless(stream: &PdfObject, reader: &PdfReader) -> Result<DecodedStream> {
@@ -444,9 +464,10 @@ pub fn decode_stream_lossless_with_limits(
         WellfriendError::MalformedPdf("decode_stream requires a stream object".to_string())
     })?;
     let scheduler = DecodeSchedulerContext::new(limits);
+    let cancel = crate::cancel::current_cancel_token();
     scheduler.run(
         estimate_stream_decode_bytes(stream),
-        &CancelToken::none(),
+        &cancel,
         "raw stream lossless decode",
         || decode_stream_parts_with_limits(dict, raw, Some(reader), limits),
     )
@@ -462,9 +483,10 @@ pub(crate) fn decode_stream_from_dict_with_limits(
     limits: &DecodeLimits,
 ) -> Result<Vec<u8>> {
     let scheduler = DecodeSchedulerContext::new(limits);
+    let cancel = crate::cancel::current_cancel_token();
     let decoded = scheduler.run(
         estimate_raw_stream_decode_bytes(raw.len()),
-        &CancelToken::none(),
+        &cancel,
         "filter-chain stream decode",
         || decode_stream_parts_with_limits(dict, raw, None, limits),
     )?;
@@ -2000,26 +2022,43 @@ fn flate_decode(data: &[u8]) -> Result<Vec<u8>> {
 
 /// FlateDecode with an explicit decompressed-size cap (parameterized so tests
 /// can exercise the bomb guard without allocating the full production cap).
-fn flate_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
+pub(crate) fn flate_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     // Cap reads at one byte over the limit so we can distinguish "exactly at the
     // limit" (fine) from "exceeded it" (bomb). `take` makes the decoder stop
     // reading past the cap instead of inflating unbounded into memory.
     let read_cap = cap + 1;
-    let mut out = Vec::new();
-    let mut zlib = ZlibDecoder::new(data).take(read_cap);
-    match zlib.read_to_end(&mut out) {
-        Ok(_) => check_decompressed_size(out, cap),
+    let zlib = ZlibDecoder::new(data).take(read_cap);
+    match read_filter_decoder_cancellable(zlib, "FlateDecode zlib") {
+        Ok(out) => check_decompressed_size(out, cap),
+        Err(error) if matches!(&error, WellfriendError::Cancelled(_)) => Err(error),
         Err(zlib_error) => {
-            let mut raw_out = Vec::new();
-            let mut deflate = DeflateDecoder::new(data).take(read_cap);
-            match deflate.read_to_end(&mut raw_out) {
-                Ok(_) => check_decompressed_size(raw_out, cap),
+            let deflate = DeflateDecoder::new(data).take(read_cap);
+            match read_filter_decoder_cancellable(deflate, "FlateDecode raw deflate") {
+                Ok(raw_out) => check_decompressed_size(raw_out, cap),
+                Err(error) if matches!(&error, WellfriendError::Cancelled(_)) => Err(error),
                 Err(_) => Err(WellfriendError::ParseError(format!(
                     "FlateDecode failed: {zlib_error}"
                 ))),
             }
         }
     }
+}
+
+fn read_filter_decoder_cancellable<R: Read>(mut decoder: R, context: &str) -> Result<Vec<u8>> {
+    const CHUNK_BYTES: usize = 64 * 1024;
+    let mut output = Vec::new();
+    let mut chunk = [0u8; CHUNK_BYTES];
+    loop {
+        crate::cancel::check_current_cancel(context)?;
+        let read = decoder.read(&mut chunk).map_err(|error| {
+            WellfriendError::ParseError(format!("{context} failed: {error}"))
+        })?;
+        if read == 0 {
+            break;
+        }
+        output.extend_from_slice(&chunk[..read]);
+    }
+    Ok(output)
 }
 
 /// Reject output that hit the decompression-bomb backstop.
@@ -2131,7 +2170,10 @@ fn tiff_predictor(
         ));
     }
 
-    for row in data.chunks_mut(row_len) {
+    for (row_index, row) in data.chunks_mut(row_len).enumerate() {
+        if row_index % 64 == 0 {
+            crate::cancel::check_current_cancel("TIFF predictor decode")?;
+        }
         decode_tiff_predictor_row(row, row_len, colors, bits_per_component)?;
     }
 
@@ -2195,7 +2237,10 @@ fn png_predictor(
     let mut out = Vec::with_capacity((data.len() / row_with_filter) * row_len);
     let mut prev_row = vec![0u8; row_len];
 
-    for encoded_row in data.chunks(row_with_filter) {
+    for (row_index, encoded_row) in data.chunks(row_with_filter).enumerate() {
+        if row_index % 64 == 0 {
+            crate::cancel::check_current_cancel("PNG predictor decode")?;
+        }
         let filter = encoded_row[0];
         let encoded = &encoded_row[1..];
         let mut row = encoded.to_vec();
@@ -2318,7 +2363,10 @@ fn ascii_hex_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut high: Option<u8> = None;
 
-    for &byte in data {
+    for (index, &byte) in data.iter().enumerate() {
+        if index % 65_536 == 0 {
+            crate::cancel::check_current_cancel("ASCIIHexDecode")?;
+        }
         if byte == b'>' {
             break;
         }
@@ -2354,6 +2402,9 @@ fn ascii85_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     let mut idx = 0;
 
     while idx < data.len() {
+        if idx % 65_536 == 0 {
+            crate::cancel::check_current_cancel("ASCII85Decode")?;
+        }
         let byte = data[idx];
         idx += 1;
 
@@ -2467,8 +2518,13 @@ fn run_length_decode(data: &[u8]) -> Result<Vec<u8>> {
 fn run_length_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut idx = 0;
+    let mut runs = 0usize;
 
     while idx < data.len() {
+        if runs % 4096 == 0 {
+            crate::cancel::check_current_cancel("RunLengthDecode")?;
+        }
+        runs = runs.saturating_add(1);
         // Bound the expansion: RunLength can grow ~128x, so cap the cumulative
         // output the same way Flate is capped (a multi-hundred-MB input must not
         // be allowed to expand into an OOM).
@@ -2522,8 +2578,13 @@ fn lzw_decode_capped(data: &[u8], early_change: u8, cap: u64) -> Result<Vec<u8>>
     let mut next_code = 258usize;
     let mut out = Vec::new();
     let mut previous: Option<Vec<u8>> = None;
+    let mut decoded_codes = 0usize;
 
     while let Some(code) = reader.read_bits(code_width) {
+        if decoded_codes % 4096 == 0 {
+            crate::cancel::check_current_cancel("LZWDecode")?;
+        }
+        decoded_codes = decoded_codes.saturating_add(1);
         // Cap cumulative LZW output (the dictionary is bounded to 4096 entries
         // but the output stream is not) so a crafted stream cannot OOM.
         if out.len() as u64 > cap {

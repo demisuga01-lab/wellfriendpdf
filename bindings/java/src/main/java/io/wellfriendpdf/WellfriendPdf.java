@@ -19,6 +19,7 @@ import java.security.KeyStore;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +32,12 @@ public final class WellfriendPdf {
     private WellfriendPdf() {
     }
 
+    private static void requireOwnerThread(Thread ownerThread, String type) {
+        if (Thread.currentThread() != ownerThread) {
+            throw new IllegalStateException(type + " is thread-confined; use and close it on its creating thread");
+        }
+    }
+
     public static String featureReportJson() {
         return Native.featureReportJson();
     }
@@ -41,6 +48,19 @@ public final class WellfriendPdf {
 
     public static String runtimeCapabilitiesJson() {
         return runtimeCapabilitiesJson(null);
+    }
+
+    public static String universalEditingCapabilitiesV2Json() {
+        return Native.universalEditingCapabilitiesV2Json();
+    }
+
+    public static String universalEditingApprovalV2Json(
+        String planJson,
+        String decisionJson
+    ) {
+        Objects.requireNonNull(planJson, "planJson");
+        Objects.requireNonNull(decisionJson, "decisionJson");
+        return Native.universalEditingApprovalV2Json(planJson, decisionJson);
     }
 
     public static String runtimeConfigJson(String configJson) {
@@ -114,6 +134,7 @@ public final class WellfriendPdf {
      * embedded or intermediate certificates never gain that status implicitly.
      */
     public static final class SignatureTrustStore implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -158,12 +179,14 @@ public final class WellfriendPdf {
         }
 
         private MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "SignatureTrustStore");
             if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureTrustStore is closed");
             return handle;
         }
 
         @Override
         public void close() {
+            requireOwnerThread(ownerThread, "SignatureTrustStore");
             if (closed) return;
             Native.freeSignatureComponent(handle, Native.SIGNATURE_TRUST_STORE_FREE, "trust store");
             handle = MemorySegment.NULL;
@@ -173,6 +196,7 @@ public final class WellfriendPdf {
 
     /** Owned untrusted path-building certificate store. */
     public static final class SignatureIntermediateStore implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -195,12 +219,14 @@ public final class WellfriendPdf {
         }
 
         private MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "SignatureIntermediateStore");
             if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureIntermediateStore is closed");
             return handle;
         }
 
         @Override
         public void close() {
+            requireOwnerThread(ownerThread, "SignatureIntermediateStore");
             if (closed) return;
             Native.freeSignatureComponent(handle, Native.SIGNATURE_INTERMEDIATE_STORE_FREE, "intermediate store");
             handle = MemorySegment.NULL;
@@ -214,6 +240,7 @@ public final class WellfriendPdf {
      * freshness-checks it for each validation use.
      */
     public static final class SignatureEvidenceStore implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -236,12 +263,14 @@ public final class WellfriendPdf {
         }
 
         private MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "SignatureEvidenceStore");
             if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureEvidenceStore is closed");
             return handle;
         }
 
         @Override
         public void close() {
+            requireOwnerThread(ownerThread, "SignatureEvidenceStore");
             if (closed) return;
             Native.freeSignatureComponent(handle, Native.SIGNATURE_EVIDENCE_STORE_FREE, "evidence store");
             handle = MemorySegment.NULL;
@@ -251,6 +280,7 @@ public final class WellfriendPdf {
 
     /** Owned bounded AIA/OCSP/CRL retrieval policy. It starts offline. */
     public static final class SignatureRetrievalPolicy implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -265,12 +295,14 @@ public final class WellfriendPdf {
         }
 
         private MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "SignatureRetrievalPolicy");
             if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureRetrievalPolicy is closed");
             return handle;
         }
 
         @Override
         public void close() {
+            requireOwnerThread(ownerThread, "SignatureRetrievalPolicy");
             if (closed) return;
             Native.freeSignatureComponent(handle, Native.SIGNATURE_RETRIEVAL_POLICY_FREE, "retrieval policy");
             handle = MemorySegment.NULL;
@@ -280,6 +312,7 @@ public final class WellfriendPdf {
 
     /** Cooperative cancellation source for a signature-validation operation. */
     public static final class SignatureValidationCancellation implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -288,17 +321,20 @@ public final class WellfriendPdf {
                 Native.SIGNATURE_CANCELLATION_NEW, "signature validation cancellation");
         }
 
-        public void cancel() {
-            Native.cancelSignatureValidation(nativeHandle());
+        public synchronized void cancel() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureValidationCancellation is closed");
+            Native.cancelSignatureValidation(handle);
         }
 
-        private MemorySegment nativeHandle() {
+        private synchronized MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "SignatureValidationCancellation");
             if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureValidationCancellation is closed");
             return handle;
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
+            requireOwnerThread(ownerThread, "SignatureValidationCancellation");
             if (closed) return;
             Native.freeSignatureComponent(handle, Native.SIGNATURE_CANCELLATION_FREE, "signature validation cancellation");
             handle = MemorySegment.NULL;
@@ -308,6 +344,7 @@ public final class WellfriendPdf {
 
     /** Cooperative cancellation source for a contract render operation. */
     public static final class RenderCancellation implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -315,21 +352,25 @@ public final class WellfriendPdf {
             this.handle = Native.newRenderCancellation();
         }
 
-        public void cancel() {
-            Native.cancelRender(nativeHandle());
+        public synchronized void cancel() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("RenderCancellation is closed");
+            Native.cancelRender(handle);
         }
 
-        public boolean isCancelled() {
-            return Native.isRenderCancelled(nativeHandle());
+        public synchronized boolean isCancelled() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("RenderCancellation is closed");
+            return Native.isRenderCancelled(handle);
         }
 
-        private MemorySegment nativeHandle() {
+        private synchronized MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "RenderCancellation");
             if (closed || Native.isNull(handle)) throw new IllegalStateException("RenderCancellation is closed");
             return handle;
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
+            requireOwnerThread(ownerThread, "RenderCancellation");
             if (closed) return;
             Native.freeRenderCancellation(handle);
             handle = MemorySegment.NULL;
@@ -339,6 +380,7 @@ public final class WellfriendPdf {
 
     /** Caller-owned non-progressive render cache for contract rendering. */
     public static final class RenderCache implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -356,12 +398,14 @@ public final class WellfriendPdf {
         }
 
         private MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "RenderCache");
             if (closed || Native.isNull(handle)) throw new IllegalStateException("RenderCache is closed");
             return handle;
         }
 
         @Override
         public void close() {
+            requireOwnerThread(ownerThread, "RenderCache");
             if (closed) return;
             Native.freeRenderCache(handle);
             handle = MemorySegment.NULL;
@@ -1177,6 +1221,7 @@ public final class WellfriendPdf {
      * an explicit bounded retrieval-policy JSON object with {@code enabled}.
      */
     public static final class SignatureValidationOptions implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -1304,6 +1349,7 @@ public final class WellfriendPdf {
         }
 
         private MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "SignatureValidationOptions");
             if (closed || Native.isNull(handle)) {
                 throw new IllegalStateException("SignatureValidationOptions is closed");
             }
@@ -1321,6 +1367,7 @@ public final class WellfriendPdf {
 
         @Override
         public void close() {
+            requireOwnerThread(ownerThread, "SignatureValidationOptions");
             if (closed) return;
             Native.freeSignatureValidationOptions(handle);
             handle = MemorySegment.NULL;
@@ -1329,6 +1376,7 @@ public final class WellfriendPdf {
     }
 
     public static final class Document implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -1337,7 +1385,7 @@ public final class WellfriendPdf {
         }
 
         public static Document open(Path path) throws IOException {
-            return open(path, null);
+            return open(path, (String) null);
         }
 
         public static Document open(Path path, String password) throws IOException {
@@ -1345,12 +1393,37 @@ public final class WellfriendPdf {
             return open(Files.readAllBytes(path), password);
         }
 
+        public static Document openWithPasswordBytes(Path path, byte[] password) throws IOException {
+            Objects.requireNonNull(path, "path");
+            return openWithPasswordBytes(Files.readAllBytes(path), password);
+        }
+
         public static Document open(byte[] bytes) {
-            return open(bytes, null);
+            return open(bytes, (String) null);
         }
 
         public static Document open(byte[] bytes, String password) {
+            if (password == null) return openWithoutPassword(bytes);
+            byte[] passwordBytes = password.getBytes(StandardCharsets.UTF_8);
+            try {
+                return openWithPasswordBytes(bytes, passwordBytes);
+            } finally {
+                Arrays.fill(passwordBytes, (byte) 0);
+            }
+        }
+
+        public static Document openWithPasswordBytes(byte[] bytes, byte[] password) {
             Objects.requireNonNull(bytes, "bytes");
+            Objects.requireNonNull(password, "password");
+            return openNative(bytes, password);
+        }
+
+        private static Document openWithoutPassword(byte[] bytes) {
+            Objects.requireNonNull(bytes, "bytes");
+            return openNative(bytes, null);
+        }
+
+        private static Document openNative(byte[] bytes, byte[] password) {
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment data = arena.allocate(bytes.length);
                 data.copyFrom(MemorySegment.ofArray(bytes));
@@ -1358,24 +1431,27 @@ public final class WellfriendPdf {
                 MemorySegment passwordPtr = MemorySegment.NULL;
                 long passwordLen = 0;
                 if (password != null) {
-                    byte[] passwordBytes = password.getBytes(StandardCharsets.UTF_8);
-                    passwordLen = passwordBytes.length;
-                    passwordPtr = arena.allocate(Math.max(passwordBytes.length, 1));
-                    if (passwordBytes.length > 0) {
-                        passwordPtr.copyFrom(MemorySegment.ofArray(passwordBytes));
+                    passwordLen = password.length;
+                    passwordPtr = arena.allocate(Math.max(password.length, 1));
+                    if (password.length > 0) {
+                        passwordPtr.copyFrom(MemorySegment.ofArray(password));
                     }
                 }
-                MemorySegment handle = (MemorySegment) Native.OPEN_WITH_PASSWORD.invokeExact(
-                    data,
-                    (long) bytes.length,
-                    passwordPtr,
-                    passwordLen,
-                    err
-                );
-                if (Native.isNull(handle)) {
-                    Native.throwError(2, err);
+                try {
+                    MemorySegment handle = (MemorySegment) Native.OPEN_WITH_PASSWORD.invokeExact(
+                        data,
+                        (long) bytes.length,
+                        passwordPtr,
+                        passwordLen,
+                        err
+                    );
+                    if (Native.isNull(handle)) {
+                        Native.throwError(2, err);
+                    }
+                    return new Document(handle);
+                } finally {
+                    if (password != null) passwordPtr.fill((byte) 0);
                 }
-                return new Document(handle);
             } catch (WellfriendPdfException ex) {
                 throw ex;
             } catch (Throwable ex) {
@@ -1904,6 +1980,9 @@ public final class WellfriendPdf {
             if (!output.isDirect()) {
                 throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
             }
+            if (output.isReadOnly()) {
+                throw new IllegalArgumentException("caller-owned render output must be writable");
+            }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment contract = arena.allocateFrom(contractJson);
                 MemorySegment surface = MemorySegment.ofBuffer(output);
@@ -1929,6 +2008,9 @@ public final class WellfriendPdf {
             Objects.requireNonNull(cancellation, "cancellation");
             if (!output.isDirect()) {
                 throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            if (output.isReadOnly()) {
+                throw new IllegalArgumentException("caller-owned render output must be writable");
             }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment contract = arena.allocateFrom(contractJson);
@@ -1968,6 +2050,9 @@ public final class WellfriendPdf {
             if (!output.isDirect()) {
                 throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
             }
+            if (output.isReadOnly()) {
+                throw new IllegalArgumentException("caller-owned render output must be writable");
+            }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment contract = arena.allocateFrom(contractJson);
                 MemorySegment surface = MemorySegment.ofBuffer(output);
@@ -1995,6 +2080,9 @@ public final class WellfriendPdf {
             Objects.requireNonNull(cancellation, "cancellation");
             if (!output.isDirect()) {
                 throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            if (output.isReadOnly()) {
+                throw new IllegalArgumentException("caller-owned render output must be writable");
             }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment contract = arena.allocateFrom(contractJson);
@@ -2037,6 +2125,9 @@ public final class WellfriendPdf {
             if (!output.isDirect()) {
                 throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
             }
+            if (output.isReadOnly()) {
+                throw new IllegalArgumentException("caller-owned render output must be writable");
+            }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment contract = arena.allocateFrom(contractJson);
                 MemorySegment surface = MemorySegment.ofBuffer(output);
@@ -2064,6 +2155,9 @@ public final class WellfriendPdf {
             Objects.requireNonNull(cancellation, "cancellation");
             if (!output.isDirect()) {
                 throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            if (output.isReadOnly()) {
+                throw new IllegalArgumentException("caller-owned render output must be writable");
             }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment contract = arena.allocateFrom(contractJson);
@@ -2413,6 +2507,95 @@ public final class WellfriendPdf {
         public String source_editingReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.SOURCE_EDITING_REPORT, "source_editing_report");
+        }
+
+        public String universalEditingAnalyzeV2Json(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.UNIVERSAL_EDITING_ANALYZE_V2, optionsJson,
+                "universal_editing_analyze_v2");
+        }
+
+        public String universalEditingAnalyzeV2Json() {
+            return universalEditingAnalyzeV2Json(null);
+        }
+
+        public String universalRenderQualificationV2Json(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.UNIVERSAL_RENDER_QUALIFICATION_V2, optionsJson,
+                "universal_render_qualification_v2");
+        }
+
+        public String universalRenderQualificationV2Json() {
+            return universalRenderQualificationV2Json(null);
+        }
+
+        public String universalEditingInspectObjectV2Json(long objectNumber, int generation) {
+            ensureOpen();
+            return Native.documentObjectReport(
+                handle, objectNumber, generation, "universal_editing_inspect_object_v2");
+        }
+
+        public String universalEditingInspectObjectV2Json(long objectNumber) {
+            return universalEditingInspectObjectV2Json(objectNumber, 0);
+        }
+
+        public String universalEditingPlanV2Json(String requestJson) {
+            ensureOpen();
+            Objects.requireNonNull(requestJson, "requestJson");
+            return Native.documentStringReport(
+                handle, Native.UNIVERSAL_EDITING_PLAN_V2, requestJson,
+                "universal_editing_plan_v2");
+        }
+
+        public BinaryResult universalEditingApplyV2(
+            String planJson,
+            String approvalJson
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(planJson, "planJson");
+            return Native.documentTwoStringOutput(
+                handle, Native.UNIVERSAL_EDITING_APPLY_V2, planJson,
+                approvalJson, "universal_editing_apply_v2");
+        }
+
+        public BinaryResult universalEditingApplyV2(String planJson) {
+            return universalEditingApplyV2(planJson, null);
+        }
+
+        public BinaryResult universalEditingApplyV2WithOutputCredentials(
+            String planJson,
+            String outputUserPassword,
+            String outputOwnerPassword,
+            String approvalJson
+        ) {
+            Objects.requireNonNull(outputUserPassword, "outputUserPassword");
+            byte[] userBytes = outputUserPassword.getBytes(StandardCharsets.UTF_8);
+            byte[] ownerBytes = outputOwnerPassword == null
+                ? null
+                : outputOwnerPassword.getBytes(StandardCharsets.UTF_8);
+            try {
+                return universalEditingApplyV2WithOutputCredentialBytes(
+                    planJson, userBytes, ownerBytes, approvalJson);
+            } finally {
+                Arrays.fill(userBytes, (byte) 0);
+                if (ownerBytes != null) Arrays.fill(ownerBytes, (byte) 0);
+            }
+        }
+
+        public BinaryResult universalEditingApplyV2WithOutputCredentialBytes(
+            String planJson,
+            byte[] outputUserPassword,
+            byte[] outputOwnerPassword,
+            String approvalJson
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(planJson, "planJson");
+            Objects.requireNonNull(outputUserPassword, "outputUserPassword");
+            return Native.universalEditingApplyWithOutputCredentialBytes(
+                handle, planJson, approvalJson, outputUserPassword,
+                outputOwnerPassword, "universal_editing_apply_v2_with_output_credential_bytes");
         }
 
         public String editing_transactionsReportJson() {
@@ -3072,6 +3255,7 @@ public final class WellfriendPdf {
 
         @Override
         public void close() {
+            requireOwnerThread(ownerThread, "Document");
             if (!closed) {
                 try {
                     Native.FREE_DOC.invokeExact(handle);
@@ -3085,6 +3269,7 @@ public final class WellfriendPdf {
         }
 
         private void ensureOpen() {
+            requireOwnerThread(ownerThread, "Document");
             if (closed) {
                 throw new IllegalStateException("Document is closed");
             }
@@ -3097,6 +3282,7 @@ public final class WellfriendPdf {
     ) {}
 
     public static final class ProgressiveRenderSession implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
         private MemorySegment handle;
         private boolean closed;
 
@@ -3535,6 +3721,7 @@ public final class WellfriendPdf {
 
         @Override
         public void close() {
+            requireOwnerThread(ownerThread, "ProgressiveRenderSession");
             if (closed) return;
             try {
                 Native.PROGRESSIVE_FREE.invokeExact(handle);
@@ -3547,6 +3734,7 @@ public final class WellfriendPdf {
         }
 
         private void ensureOpen() {
+            requireOwnerThread(ownerThread, "ProgressiveRenderSession");
             if (closed || Native.isNull(handle)) {
                 throw new IllegalStateException("ProgressiveRenderSession is closed");
             }
@@ -4003,6 +4191,46 @@ public final class WellfriendPdf {
         private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_REPORT = documentReport("wellfriendpdf_document_advanced_editing_closeout_report_json");
         private static final MethodHandle SOURCE_EDITING_REPORT = documentReport("wellfriendpdf_document_source_editing_report_json");
         private static final MethodHandle EDITING_TRANSACTIONS_REPORT = documentReport("wellfriendpdf_document_editing_transactions_report_json");
+        private static final MethodHandle UNIVERSAL_EDITING_CAPABILITIES_V2 = downcall(
+            "wellfriendpdf_universal_editing_capabilities_v2_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle UNIVERSAL_EDITING_APPROVAL_V2 = downcall(
+            "wellfriendpdf_universal_editing_approval_v2_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle UNIVERSAL_EDITING_ANALYZE_V2 =
+            documentStringReport("wellfriendpdf_document_universal_editing_analyze_v2_json");
+        private static final MethodHandle UNIVERSAL_RENDER_QUALIFICATION_V2 =
+            documentStringReport("wellfriendpdf_document_universal_render_qualification_v2_json");
+        private static final MethodHandle UNIVERSAL_EDITING_INSPECT_OBJECT_V2 = downcall(
+            "wellfriendpdf_document_universal_editing_inspect_object_v2_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_SHORT, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle UNIVERSAL_EDITING_PLAN_V2 =
+            documentStringReport("wellfriendpdf_document_universal_editing_plan_v2_json");
+        private static final MethodHandle UNIVERSAL_EDITING_APPLY_V2 = downcall(
+            "wellfriendpdf_document_universal_editing_apply_v2_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle UNIVERSAL_EDITING_APPLY_V2_WITH_OUTPUT_CREDENTIALS = downcall(
+            "wellfriendpdf_document_universal_editing_apply_v2_with_output_credentials_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle UNIVERSAL_EDITING_APPLY_V2_WITH_OUTPUT_CREDENTIAL_BYTES = downcall(
+            "wellfriendpdf_document_universal_editing_apply_v2_with_output_credential_bytes_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle TEXT_REFLOW_REPORT = documentReport("wellfriendpdf_document_text_reflow_report_json");
         private static final MethodHandle DOCUMENT_SUBSYSTEMS_REPORT = documentReport("wellfriendpdf_document_document_subsystems_report_json");
         private static final MethodHandle DOCUMENT_SUBSYSTEMS_ANALYZE = documentReport("wellfriendpdf_document_document_subsystems_analyze_json");
@@ -4587,7 +4815,7 @@ public final class WellfriendPdf {
             Path path = findNativeLibrary();
             if (path == null) {
                 throw new IllegalStateException(
-                    "Could not locate wellfriendpdf_capi native library. Set WELLFRIENDPDF_NATIVE_LIBRARY or place it under target/debug, target/release, or runtimes/<rid>/native.");
+                    "Could not locate wellfriendpdf_capi native library. Set WELLFRIENDPDF_NATIVE_LIBRARY or package it beside the Java artifact or under runtimes/<rid>/native.");
             }
             return SymbolLookup.libraryLookup(path, LOOKUP_ARENA);
         }
@@ -4600,11 +4828,7 @@ public final class WellfriendPdf {
 
             String mapped = mappedLibraryName();
             String rid = runtimeIdentifier();
-            Path cwd = Path.of("").toAbsolutePath();
             List<Path> roots = new ArrayList<>();
-            roots.add(cwd);
-            roots.add(cwd.resolve("target/debug"));
-            roots.add(cwd.resolve("target/release"));
             Path packageBase = packageBase();
             if (packageBase != null) {
                 roots.add(packageBase);
@@ -4869,6 +5093,23 @@ public final class WellfriendPdf {
             } catch (Throwable ex) {
                 throw new IllegalStateException("Wellfriend signature validation options release failed", ex);
             }
+        }
+
+        private static String universalEditingCapabilitiesV2Json() {
+            return globalReport(
+                UNIVERSAL_EDITING_CAPABILITIES_V2,
+                "Wellfriend universal_editing_capabilities_v2 failed");
+        }
+
+        private static String universalEditingApprovalV2Json(
+            String planJson,
+            String decisionJson
+        ) {
+            return globalTwoStringReport(
+                UNIVERSAL_EDITING_APPROVAL_V2,
+                planJson,
+                decisionJson,
+                "Wellfriend universal_editing_approval_v2 failed");
         }
 
         private static MemorySegment newRenderCancellation() {
@@ -5512,6 +5753,67 @@ public final class WellfriendPdf {
             }
         }
 
+        private static String documentObjectReport(
+            MemorySegment handle,
+            long objectNumber,
+            int generation,
+            String operation
+        ) {
+            if (objectNumber < 0 || objectNumber > 0xffff_ffffL) {
+                throw new IllegalArgumentException("objectNumber must fit an unsigned 32-bit integer");
+            }
+            if (generation < 0 || generation > 0xffff) {
+                throw new IllegalArgumentException("generation must fit an unsigned 16-bit integer");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) UNIVERSAL_EDITING_INSPECT_OBJECT_V2.invokeExact(
+                    handle, (int) objectNumber, (short) generation, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
+        }
+
+        private static String globalReport(MethodHandle method, String context) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(context, ex);
+            }
+        }
+
+        private static String globalTwoStringReport(
+            MethodHandle method,
+            String first,
+            String second,
+            String context
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment firstArg = arena.allocateFrom(first);
+                MemorySegment secondArg = arena.allocateFrom(second);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(firstArg, secondArg, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(context, ex);
+            }
+        }
+
         private static BinaryResult text_reflowRequestOutput(
             MemorySegment handle, MethodHandle method, String requestJson, String operation
         ) {
@@ -5817,6 +6119,79 @@ public final class WellfriendPdf {
                 int status = (int) method.invokeExact(handle, firstArg, secondArg, buffer, jsonOut, err);
                 throwError(status, err);
                 return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult universalEditingApplyWithOutputCredentials(
+            MemorySegment handle,
+            String plan,
+            String approval,
+            String userPassword,
+            String ownerPassword,
+            String operation
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment planArg = arena.allocateFrom(plan);
+                MemorySegment approvalArg = approval == null || approval.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(approval);
+                MemorySegment userArg = userPassword.isEmpty()
+                    ? MemorySegment.NULL : arena.allocateFrom(userPassword);
+                MemorySegment ownerArg = ownerPassword == null || ownerPassword.isEmpty()
+                    ? MemorySegment.NULL : arena.allocateFrom(ownerPassword);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) UNIVERSAL_EDITING_APPLY_V2_WITH_OUTPUT_CREDENTIALS.invokeExact(
+                    handle, planArg, approvalArg, userArg, ownerArg, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult universalEditingApplyWithOutputCredentialBytes(
+            MemorySegment handle,
+            String plan,
+            String approval,
+            byte[] userPassword,
+            byte[] ownerPassword,
+            String operation
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment planArg = arena.allocateFrom(plan);
+                MemorySegment approvalArg = approval == null || approval.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(approval);
+                MemorySegment userArg = arena.allocate(Math.max(1, userPassword.length));
+                MemorySegment ownerArg = ownerPassword == null
+                    ? MemorySegment.NULL
+                    : arena.allocate(Math.max(1, ownerPassword.length));
+                if (userPassword.length > 0) {
+                    userArg.asSlice(0, userPassword.length).copyFrom(MemorySegment.ofArray(userPassword));
+                }
+                if (ownerPassword != null && ownerPassword.length > 0) {
+                    ownerArg.asSlice(0, ownerPassword.length).copyFrom(MemorySegment.ofArray(ownerPassword));
+                }
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                try {
+                    int status = (int) UNIVERSAL_EDITING_APPLY_V2_WITH_OUTPUT_CREDENTIAL_BYTES.invokeExact(
+                        handle, planArg, approvalArg, userArg, (long) userPassword.length,
+                        ownerArg, (long) (ownerPassword == null ? 0 : ownerPassword.length),
+                        buffer, jsonOut, err);
+                    throwError(status, err);
+                    return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+                } finally {
+                    userArg.fill((byte) 0);
+                    if (ownerPassword != null) ownerArg.fill((byte) 0);
+                }
             } catch (WellfriendPdfException ex) {
                 throw ex;
             } catch (Throwable ex) {

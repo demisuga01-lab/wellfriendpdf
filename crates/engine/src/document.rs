@@ -5,6 +5,10 @@ use std::sync::OnceLock;
 use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
+
+const MAX_PAGE_TREE_DEPTH: usize = 256;
+const MAX_PAGE_TREE_NODES: usize = 200_000;
+const MAX_DOCUMENT_PAGES: usize = 200_000;
 use crate::pubsec::PubSecKeyProvider;
 use crate::reader::{ContentStreamRange, PdfReader};
 
@@ -141,7 +145,7 @@ impl PdfDocument {
         let expected_count = root_pages.get_integer("Count");
 
         let mut visited = HashSet::new();
-        visited.insert(pages_ref.0);
+        visited.insert(pages_ref);
         let mut pages = Vec::new();
         self.walk_page_tree(
             pages_ref,
@@ -149,6 +153,7 @@ impl PdfDocument {
             InheritedAttrs::default(),
             &mut visited,
             &mut pages,
+            0,
         )?;
 
         if let Some(expected_count) = expected_count {
@@ -178,57 +183,20 @@ impl PdfDocument {
 
         let mut wrote_stream = false;
         for (number, generation) in page.contents.iter().copied() {
-            let object = match self.reader.get_object(number, generation) {
-                Ok(object) => object,
-                Err(WellfriendError::MissingObject { .. }) => {
-                    log::warn!(
-                        "page {}: content stream {} {} missing, skipping",
-                        page_number,
-                        number,
-                        generation
-                    );
-                    continue;
-                }
-                Err(err) => {
-                    log::warn!(
-                        "page {}: content stream {} {} could not be read: {}",
-                        page_number,
-                        number,
-                        generation,
-                        err
-                    );
-                    continue;
-                }
-            };
+            let object = self.reader.get_object(number, generation)?;
             if object.as_stream().is_none() {
-                log::warn!(
-                    "page {}: content object {} {} is not a stream, skipping",
-                    page_number,
-                    number,
-                    generation
-                );
-                continue;
+                return Err(WellfriendError::MalformedPdf(format!(
+                    "page {page_number}: content object {number} {generation} is not a stream"
+                )));
             }
             if wrote_stream {
                 out.push(b'\n');
             }
-            let decoded = match decode_stream_lossless_with_limits(&object, &self.reader, limits) {
-                Ok(decoded) => decoded,
-                Err(err) => {
-                    log::warn!(
-                        "page {}: content stream {} {} could not be decoded: {}",
-                        page_number,
-                        number,
-                        generation,
-                        err
-                    );
-                    continue;
-                }
-            };
+            let decoded = decode_stream_lossless_with_limits(&object, &self.reader, limits)?;
             if let StreamDecodeStatus::StoppedAtImageFilter(filter) = &decoded.status {
-                log::warn!(
-                    "page content stream {number} {generation} stopped at image filter {filter}"
-                );
+                return Err(WellfriendError::MalformedPdf(format!(
+                    "page {page_number}: content stream {number} {generation} stopped at image filter {filter}"
+                )));
             }
             out.extend_from_slice(&decoded.data);
             wrote_stream = true;
@@ -257,9 +225,15 @@ impl PdfDocument {
         object_ref: (u32, u16),
         dict: &PdfDictionary,
         inherited: InheritedAttrs,
-        visited: &mut HashSet<u32>,
+        visited: &mut HashSet<(u32, u16)>,
         pages: &mut Vec<PdfPage>,
+        depth: usize,
     ) -> Result<()> {
+        if depth >= MAX_PAGE_TREE_DEPTH {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "page tree exceeds depth limit {MAX_PAGE_TREE_DEPTH}"
+            )));
+        }
         let inherited = apply_inherited_attrs(dict, inherited, Some(&self.reader))?;
         let has_kids = dict.get("Kids").is_some();
         let node_type = dict.get_name("Type");
@@ -287,13 +261,18 @@ impl PdfDocument {
                     );
                     continue;
                 };
-                if !visited.insert(kid_ref.0) {
+                if !visited.insert(kid_ref) {
                     log::warn!(
                         "skipping cyclic page-tree reference {} {}",
                         kid_ref.0,
                         kid_ref.1
                     );
                     continue;
+                }
+                if visited.len() > MAX_PAGE_TREE_NODES {
+                    return Err(WellfriendError::ResourceLimit(format!(
+                        "page tree exceeds node limit {MAX_PAGE_TREE_NODES}"
+                    )));
                 }
                 let kid_object = self.reader.get_and_resolve(kid_ref.0, kid_ref.1)?;
                 let kid_dict = kid_object.as_dict().ok_or_else(|| {
@@ -302,9 +281,21 @@ impl PdfDocument {
                         kid_ref.0, kid_ref.1
                     ))
                 })?;
-                self.walk_page_tree(kid_ref, kid_dict, inherited.clone(), visited, pages)?;
+                self.walk_page_tree(
+                    kid_ref,
+                    kid_dict,
+                    inherited.clone(),
+                    visited,
+                    pages,
+                    depth + 1,
+                )?;
             }
         } else {
+            if pages.len() >= MAX_DOCUMENT_PAGES {
+                return Err(WellfriendError::ResourceLimit(format!(
+                    "document exceeds page limit {MAX_DOCUMENT_PAGES}"
+                )));
+            }
             if let Some("Pages") = node_type {
                 log::warn!(
                     "page tree object {} {} has /Type /Pages but no /Kids; treating as leaf",

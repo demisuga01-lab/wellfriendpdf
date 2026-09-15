@@ -16,7 +16,6 @@ use crate::crypto::{
 };
 use crate::decode_scanner::{find_marker_accelerated, rfind_marker_accelerated};
 use crate::error::{Result, WellfriendError};
-use crate::filters::decode_stream_from_dict;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::parser::{ParserResolver, PdfParser};
 use crate::parser_report::{ParserCategory, ParserDiagnostic, ParserSeverity, ParserSourceMetrics};
@@ -29,6 +28,10 @@ const STREAMING_FULL_READ_FALLBACK_LIMIT: u64 = 128 * 1024 * 1024;
 const STREAMING_STREAM_HEADER_READ_LIMIT: usize = 1024 * 1024;
 const DEFAULT_OBJECT_STREAM_CACHE_LIMIT: usize = 32;
 const MAX_XREF_CHAIN_DEPTH: usize = 256;
+const MAX_XREF_ENTRIES: usize = MAX_FALLBACK_XREF_OBJECTS;
+const MAX_OBJECT_STREAM_OBJECTS: usize = 200_000;
+const MAX_OBJECT_STREAM_DECODED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CACHED_OBJECT_STREAM_OBJECTS: usize = 200_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum XrefEntry {
@@ -72,6 +75,8 @@ struct BoundedObjectStreamCache {
     streams: HashMap<u32, ParsedObjectStream>,
     order: VecDeque<u32>,
     max_streams: usize,
+    total_objects: usize,
+    max_objects: usize,
 }
 
 impl BoundedObjectStreamCache {
@@ -80,6 +85,8 @@ impl BoundedObjectStreamCache {
             streams: HashMap::new(),
             order: VecDeque::new(),
             max_streams: max_streams.max(1),
+            total_objects: 0,
+            max_objects: MAX_CACHED_OBJECT_STREAM_OBJECTS,
         }
     }
 
@@ -92,19 +99,25 @@ impl BoundedObjectStreamCache {
     }
 
     fn insert(&mut self, stream_obj: u32, objects: ParsedObjectStream) {
-        if let std::collections::hash_map::Entry::Occupied(mut entry) =
-            self.streams.entry(stream_obj)
-        {
-            entry.insert(objects);
+        if objects.len() > self.max_objects {
             return;
         }
-        while self.streams.len() >= self.max_streams {
+        if let Some(previous) = self.streams.remove(&stream_obj) {
+            self.total_objects = self.total_objects.saturating_sub(previous.len());
+            self.order.retain(|cached| *cached != stream_obj);
+        }
+        while self.streams.len() >= self.max_streams
+            || self.total_objects.saturating_add(objects.len()) > self.max_objects
+        {
             let Some(victim) = self.order.pop_front() else {
                 break;
             };
-            self.streams.remove(&victim);
+            if let Some(removed) = self.streams.remove(&victim) {
+                self.total_objects = self.total_objects.saturating_sub(removed.len());
+            }
         }
         self.order.push_back(stream_obj);
+        self.total_objects = self.total_objects.saturating_add(objects.len());
         self.streams.insert(stream_obj, objects);
     }
 }
@@ -1043,8 +1056,14 @@ impl PdfReader {
                 "object {stream_obj} 0 is not /Type /ObjStm"
             )));
         }
-        let decoded = crate::filters::decode_stream(&stream, self)?;
+        let limits = metadata_decode_limits();
+        let decoded = crate::filters::decode_stream_with_limits(&stream, self, &limits)?;
         let n = required_positive_usize(dict, "N")?;
+        if n > MAX_OBJECT_STREAM_OBJECTS {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "object stream declares {n} objects, exceeding limit {MAX_OBJECT_STREAM_OBJECTS}"
+            )));
+        }
         let first = required_nonnegative_usize(dict, "First")?;
         let _ = raw;
         parse_object_stream_data(&decoded, n, first, Some(self))
@@ -1789,8 +1808,16 @@ fn read_classic_xref(
 
         let start = read_u64_token(data, &mut pos)?;
         let count = read_u64_token(data, &mut pos)?;
+        if count > MAX_XREF_ENTRIES.saturating_sub(xref.len()) as u64 {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "xref subsection declares {count} entries beyond the remaining limit"
+            )));
+        }
         for i in 0..count {
-            let object_number = u32::try_from(start + i).map_err(|_| {
+            let source_number = start.checked_add(i).ok_or_else(|| {
+                WellfriendError::MalformedPdf("xref object number overflows".to_string())
+            })?;
+            let object_number = u32::try_from(source_number).map_err(|_| {
                 WellfriendError::MalformedPdf("xref object number does not fit in u32".to_string())
             })?;
             let byte_offset = read_u64_token(data, &mut pos)?;
@@ -1818,7 +1845,7 @@ fn read_classic_xref(
                     WellfriendError::MalformedPdf("xref generation does not fit in u16".to_string())
                 })?,
             };
-            xref.entry((object_number, generation)).or_insert(entry);
+            insert_xref_entry(xref, object_number, generation, entry)?;
         }
     }
 
@@ -1858,9 +1885,10 @@ fn read_xref_stream(
             parsed.number, parsed.generation
         )));
     }
-    let decoded = decode_stream_from_dict(&dict, &raw)?;
+    let limits = metadata_decode_limits();
+    let decoded = crate::filters::decode_stream_from_dict_with_limits(&dict, &raw, &limits)?;
     for (object_number, generation, entry) in parse_xref_stream_entries(&dict, &decoded)? {
-        xref.entry((object_number, generation)).or_insert(entry);
+        insert_xref_entry(xref, object_number, generation, entry)?;
     }
     Ok(XrefSection {
         prev: optional_offset(&dict, "Prev")?,
@@ -1899,7 +1927,26 @@ pub(crate) fn parse_xref_stream_entries(
         vec![(0u32, size)]
     };
 
-    let mut entries = Vec::new();
+    let total_entries = ranges.iter().try_fold(0usize, |total, (_, count)| {
+        total.checked_add(*count).ok_or_else(|| {
+            WellfriendError::ResourceLimit("xref stream entry count overflows".to_string())
+        })
+    })?;
+    if total_entries > MAX_XREF_ENTRIES {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "xref stream declares {total_entries} entries, exceeding limit {MAX_XREF_ENTRIES}"
+        )));
+    }
+    let required_bytes = total_entries.checked_mul(entry_len).ok_or_else(|| {
+        WellfriendError::ResourceLimit("xref stream byte count overflows".to_string())
+    })?;
+    if required_bytes > raw.len() {
+        return Err(WellfriendError::MalformedPdf(
+            "xref stream ended before all declared entries".to_string(),
+        ));
+    }
+
+    let mut entries = Vec::with_capacity(total_entries);
     let mut seen_object_numbers = HashSet::new();
     let mut cursor = 0usize;
     for (start, count) in ranges {
@@ -1992,6 +2039,17 @@ pub(crate) fn parse_object_stream_data(
     first: usize,
     resolver: Option<&dyn ParserResolver>,
 ) -> Result<HashMap<u32, (u32, PdfObject)>> {
+    if decoded.len() > MAX_OBJECT_STREAM_DECODED_BYTES {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "object stream decoded to {} bytes, exceeding limit {MAX_OBJECT_STREAM_DECODED_BYTES}",
+            decoded.len()
+        )));
+    }
+    if n > MAX_OBJECT_STREAM_OBJECTS {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "object stream declares {n} objects, exceeding limit {MAX_OBJECT_STREAM_OBJECTS}"
+        )));
+    }
     if first > decoded.len() {
         return Err(WellfriendError::MalformedPdf(
             "object stream /First exceeds decoded length".to_string(),
@@ -2053,6 +2111,29 @@ pub(crate) fn parse_object_stream_data(
         }
     }
     Ok(objects)
+}
+
+fn insert_xref_entry(
+    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    object_number: u32,
+    generation: u16,
+    entry: XrefEntry,
+) -> Result<()> {
+    if !xref.contains_key(&(object_number, generation)) && xref.len() >= MAX_XREF_ENTRIES {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "xref contains more than {MAX_XREF_ENTRIES} entries"
+        )));
+    }
+    xref.entry((object_number, generation)).or_insert(entry);
+    Ok(())
+}
+
+fn metadata_decode_limits() -> crate::filters::DecodeLimits {
+    let mut limits = crate::filters::DecodeLimits::default();
+    limits.max_decoded_bytes_per_stream = MAX_OBJECT_STREAM_DECODED_BYTES as u64;
+    limits.max_decoded_bytes_per_document = MAX_OBJECT_STREAM_DECODED_BYTES as u64;
+    limits.scheduler_memory_budget_bytes = MAX_OBJECT_STREAM_DECODED_BYTES as u64;
+    limits
 }
 
 fn required_integer_array(dict: &PdfDictionary, key: &str) -> Result<Vec<i64>> {
@@ -2519,6 +2600,25 @@ trailer
         assert!(err
             .to_string()
             .contains("object stream contains duplicate object 10"));
+    }
+
+    #[test]
+    fn object_stream_cache_replacement_still_enforces_aggregate_budget() {
+        let object_map = |start: u32, count: u32| {
+            (start..start + count)
+                .map(|number| (number, (0, PdfObject::Null)))
+                .collect::<HashMap<_, _>>()
+        };
+        let mut cache = BoundedObjectStreamCache::new(4);
+        cache.max_objects = 3;
+        cache.insert(1, object_map(10, 2));
+        cache.insert(2, object_map(20, 1));
+
+        cache.insert(2, object_map(30, 3));
+
+        assert!(!cache.contains_key(&1));
+        assert!(cache.contains_key(&2));
+        assert_eq!(cache.total_objects, 3);
     }
 
     #[test]

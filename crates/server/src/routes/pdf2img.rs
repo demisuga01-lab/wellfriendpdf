@@ -1,4 +1,5 @@
 use std::io::{Cursor, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::{
@@ -29,7 +30,7 @@ pub(crate) struct Pdf2ImgParams {
 pub async fn handler(multipart: Multipart) -> ServerResult<Response> {
     let params = extract_pdf2img_fields(multipart).await?;
     let config = crate::config::get_config();
-    let output = process_pdf2img(params, config, config.request_timeout_secs, None).await?;
+    let output = process_pdf2img(params, &config, config.request_timeout_secs, None).await?;
     Ok(output_to_response(output))
 }
 
@@ -133,39 +134,43 @@ pub(crate) async fn process_pdf2img(
     // freeing the threads (a tower timeout alone would leak the runaway work).
     let render_result: Result<Vec<(usize, Vec<u8>)>, ServerError> =
         crate::processing::run_with_deadline_secs(timeout_secs, move |cancel| {
-            let pages: Vec<(usize, Vec<u8>)> = page_nums_for_render
+            let encoded_bytes = AtomicU64::new(0);
+            let pages: Result<Vec<(usize, Vec<u8>)>, ServerError> = page_nums_for_render
                 .par_iter()
-                .filter_map(|page_num| {
-                    let buf = match render_engine.render_page_cancellable(*page_num, dpi, &cancel) {
-                        Ok(buf) => buf,
-                        Err(err) => {
-                            tracing::warn!(page = *page_num, error = %err, "pdf2img: render failed");
-                            return None;
-                        }
-                    };
+                .map(|page_num| {
+                    let buf = render_engine
+                        .render_page_cancellable(*page_num, dpi, &cancel)
+                        .map_err(ServerError::from)?;
                     let raw = buf.to_raw_image();
-                    let encoded = match format {
+                    let bytes = match format {
                         ImageOutputFormat::Jpeg => ImageEncoder::encode_jpeg(&raw, quality),
                         ImageOutputFormat::Webp => ImageEncoder::encode_webp(&raw, quality),
                         ImageOutputFormat::Png | ImageOutputFormat::Original => {
                             ImageEncoder::encode_png_fast(&raw)
                         }
-                    };
-                    match encoded {
-                        Ok(bytes) => {
-                            // Bump the per-job progress counter as each page
-                            // finishes (no-op for the sync path, which passes
-                            // None). Relaxed atomic — readers want a live-ish
-                            // count, not a synchronized one.
-                            if let Some(p) = &progress_for_render {
-                                p.inc();
-                            }
-                            Some((*page_num, bytes))
+                    }
+                    .map_err(ServerError::from)?;
+                    let page_bytes = bytes.len() as u64;
+                    encoded_bytes
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                            current
+                                .checked_add(page_bytes)
+                                .filter(|total| *total <= max_output_bytes)
+                        })
+                        .map_err(|_| {
+                            ServerError::ResourceLimit(format!(
+                                "encoded page output exceeded the limit of {max_output_bytes} bytes"
+                            ))
+                        })?;
+                    {
+                        // Bump the per-job progress counter as each page
+                        // finishes (no-op for the sync path, which passes
+                        // None). Relaxed atomic — readers want a live-ish
+                        // count, not a synchronized one.
+                        if let Some(p) = &progress_for_render {
+                            p.inc();
                         }
-                        Err(err) => {
-                            tracing::warn!(page = *page_num, error = %err, "pdf2img: encode failed");
-                            None
-                        }
+                        Ok((*page_num, bytes))
                     }
                 })
                 .collect();
@@ -174,7 +179,7 @@ pub(crate) async fn process_pdf2img(
             if cancel.is_cancelled() {
                 Err(ServerError::Timeout)
             } else {
-                Ok(pages)
+                pages
             }
         })
         .await?;

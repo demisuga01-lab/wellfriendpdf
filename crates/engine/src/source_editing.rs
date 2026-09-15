@@ -10,7 +10,8 @@ use crate::advanced_editing::{
     edit_vector_object, list_vector_objects, SameWidthPatchOptions, VectorEditOperation,
     VectorEditOptions,
 };
-use crate::{Result, WellfriendError};
+use crate::universal_editing::universal_image_occurrences_v2;
+use crate::{ContentEngine, Result, WellfriendError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -58,6 +59,8 @@ pub struct SourceInstructionIdentity {
     pub stream_identity: String,
     pub object_identity: String,
     pub revision_id: String,
+    pub stream_object: u32,
+    pub stream_generation: u16,
     pub opcode: String,
     pub decoded_byte_range: [usize; 2],
     pub raw_object_range: Option<[usize; 2]>,
@@ -87,6 +90,8 @@ pub struct OperatorTextEditRequest {
     pub page: usize,
     pub source_text: String,
     pub replacement_text: String,
+    #[serde(default)]
+    pub source_instruction_id: Option<String>,
     #[serde(default)]
     pub signature_policy_override: bool,
 }
@@ -182,6 +187,8 @@ fn identity_from_candidate(
         stream_identity: stream,
         object_identity: object,
         revision_id: revision,
+        stream_object: candidate.stream_object,
+        stream_generation: candidate.stream_generation,
         opcode: candidate.operator.clone(),
         decoded_byte_range: range,
         raw_object_range: crate::ContentEngine::open_bytes(input.to_vec())
@@ -257,26 +264,39 @@ pub fn operator_text_eligibility(
     input: &[u8],
     request: &OperatorTextEditRequest,
 ) -> Result<OperatorTextEligibilityReport> {
-    let analysis = analyze_same_width_patch(
-        input,
-        request.page,
-        &request.source_text,
-        &request.replacement_text,
-        &SameWidthPatchOptions {
-            signature_policy_override: request.signature_policy_override,
-            ..SameWidthPatchOptions::default()
-        },
-    )?;
     let provenance = operator_text_provenance(
         input,
         request.page,
         &request.source_text,
         &request.replacement_text,
     )?;
+    let selected_identity = requested_source_instruction(&provenance, request)?;
+    let patch_options = SameWidthPatchOptions {
+        signature_policy_override: request.signature_policy_override,
+        target_stream_object: selected_identity.map(|identity| identity.stream_object),
+        target_stream_generation: selected_identity.map(|identity| identity.stream_generation),
+        target_decoded_byte_range: selected_identity.map(|identity| identity.decoded_byte_range),
+        ..SameWidthPatchOptions::default()
+    };
+    let analysis = analyze_same_width_patch(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+        &patch_options,
+    )?;
     let selected = analysis
         .candidates
         .iter()
-        .find(|candidate| candidate.eligible);
+        .find(|candidate| {
+            candidate.eligible
+                && selected_identity.is_none_or(|identity| {
+                    candidate.stream_object == identity.stream_object
+                        && candidate.stream_generation == identity.stream_generation
+                        && candidate.decoded_byte_start == identity.decoded_byte_range[0]
+                        && candidate.decoded_byte_end == identity.decoded_byte_range[1]
+                })
+        });
     let refusal = selected.is_none().then(|| OperatorEditRefusal {
         code: analysis
             .candidates
@@ -346,6 +366,7 @@ pub fn edit_text_operator(
         &request.source_text,
         &request.replacement_text,
     )?;
+    let selected_identity = requested_source_instruction(&provenance, request)?;
     let (output, applied) = apply_same_width_patch(
         input,
         request.page,
@@ -353,6 +374,9 @@ pub fn edit_text_operator(
         &request.replacement_text,
         &SameWidthPatchOptions {
             signature_policy_override: request.signature_policy_override,
+            target_stream_object: selected_identity.map(|identity| identity.stream_object),
+            target_stream_generation: selected_identity.map(|identity| identity.stream_generation),
+            target_decoded_byte_range: selected_identity.map(|identity| identity.decoded_byte_range),
             ..SameWidthPatchOptions::default()
         },
     )?;
@@ -366,8 +390,13 @@ pub fn edit_text_operator(
         .source_instructions
         .iter()
         .find(|item| {
-            item.object_identity
-                .contains(&applied.selected.stream_object.to_string())
+            item.stream_object == applied.selected.stream_object
+                && item.stream_generation == applied.selected.stream_generation
+                && item.decoded_byte_range
+                    == [
+                        applied.selected.decoded_byte_start,
+                        applied.selected.decoded_byte_end,
+                    ]
         })
         .map(|item| item.instruction_id.clone())
         .into_iter()
@@ -417,6 +446,25 @@ pub fn edit_text_operator(
     ))
 }
 
+fn requested_source_instruction<'a>(
+    provenance: &'a ProvenanceSelectionReport,
+    request: &OperatorTextEditRequest,
+) -> Result<Option<&'a SourceInstructionIdentity>> {
+    let Some(instruction_id) = request.source_instruction_id.as_deref() else {
+        return Ok(None);
+    };
+    provenance
+        .source_instructions
+        .iter()
+        .find(|identity| identity.instruction_id == instruction_id)
+        .map(Some)
+        .ok_or_else(|| {
+            WellfriendError::invalid_input(
+                "source_editing selected instruction is stale or outside the current source selection",
+            )
+        })
+}
+
 /// Return the canonical vector/path inventory.  Every object reports source
 /// stream range, occurrence path, resource owner, clipping role, and safety.
 pub fn operator_path_provenance(input: &[u8], page: usize) -> Result<serde_json::Value> {
@@ -450,23 +498,63 @@ pub fn edit_path_operator(
     ))
 }
 
-/// Images have canonical bounded decode/redaction paths, but the current
-/// source model does not yet resolve a selected image occurrence to a mutable
-/// placement instruction.  Fail closed instead of adding a cover-up.
+/// Resolve image definitions that can participate in universal-v2 source
+/// transactions. Exact occurrence selection and clone-one approval are owned
+/// by EditingTransactions/UniversalEditing; this report never substitutes an
+/// overlay when source ownership is unavailable.
 pub fn operator_image_eligibility(input: &[u8], page: usize) -> serde_json::Value {
+    let candidates = universal_image_occurrences_v2(input, &[page])
+        .map(|images| {
+            images
+                .into_iter()
+                .map(|image| {
+                    serde_json::json!({
+                        "occurrence_id": image.occurrence_id,
+                        "resource_name": image.resource_name,
+                        "object_number": image.object_number,
+                        "generation": image.generation,
+                        "owner_stream_object": image.owner_stream_object,
+                        "owner_stream_generation": image.owner_stream_generation,
+                        "source_range": [image.operation_byte_start, image.operation_byte_end],
+                        "nested_occurrence_path": image.invocation_path,
+                        "bbox": image.bbox,
+                        "width": image.width,
+                        "height": image.height,
+                        "bits_per_component": image.bits_per_component,
+                        "color_space": image.color_space,
+                        "filters": image.filters,
+                        "inline": image.inline,
+                        "shared_definition_uses": image.shared_definition_uses,
+                        "source_strength": ProvenanceStrength::ParserExact,
+                        "eligible_operations": if image.inline {
+                            vec!["promote_inline_then_replace"]
+                        } else {
+                            vec!["replace_definition_edit_all", "clone_occurrence_then_replace"]
+                        },
+                        "approval_required": image.inline || image.shared_definition_uses > 1,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let refusal = candidates.is_empty().then(|| {
+        serde_json::json!({
+            "code": "source_not_resolved",
+            "message": "No image source definition was resolved on the requested page.",
+            "recommended_mode": TrueEditingMode::GeometricBlock,
+            "no_change_proof": true,
+        })
+    });
     serde_json::json!({
         "schema_version": SOURCE_EDITING_SCHEMA_VERSION,
         "document_id": document_id(input),
+        "revision_id": revision_id(input),
         "page": page,
         "requested_mode": TrueEditingMode::OperatorPreserving,
-        "eligible_mode": serde_json::Value::Null,
-        "refusal": {
-            "code": "source_not_resolved",
-            "message": "Canonical image decode/redaction is available, but occurrence-to-Do/inline-image source provenance is not yet normalized for mutation.",
-            "recommended_mode": TrueEditingMode::GeometricBlock,
-            "no_change_proof": true,
-        },
-        "editing_transactions_owner": "scene occurrence and image source-resolution closure",
+        "eligible_mode": (!candidates.is_empty()).then_some(TrueEditingMode::OperatorPreserving),
+        "candidates": candidates,
+        "refusal": refusal,
+        "editing_transactions_owner": "exact occurrence selection, shared-resource policy, and revision-bound approval",
     })
 }
 
@@ -478,13 +566,13 @@ pub fn source_editing_report() -> serde_json::Value {
             "text": "advanced_editing same-width parser-backed stream operand patch",
             "path_and_graphics": "advanced_editing vector source range mutation",
             "forms": "advanced_editing explicit shared Form/appearance clone policy",
+            "images": "universal_editing exact recursive image occurrence mutation",
             "writer": "canonical incremental writer",
             "semantic": "advanced_editing multi-run parser source spans",
         },
         "edit_modes": ["operator_preserving", "geometric_block", "semantic_document"],
         "editing_transactions_deferrals": [
             "stable display-list-to-instruction IDs",
-            "image occurrence source mutation",
             "broader font subset and shaping reconstruction",
         ],
         "text_reflow_deferrals": [
@@ -603,6 +691,7 @@ mod tests {
             page: 1,
             source_text: "ABC".into(),
             replacement_text: "DEF".into(),
+            source_instruction_id: None,
             signature_policy_override: false,
         };
         let plan = operator_text_eligibility(&input, &request).expect("plan");

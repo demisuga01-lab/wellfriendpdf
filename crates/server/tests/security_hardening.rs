@@ -195,6 +195,35 @@ async fn correct_key_via_bearer_header_is_accepted() {
 }
 
 #[tokio::test]
+async fn custom_router_config_is_authoritative_inside_handlers() {
+    let cfg = ServerConfig {
+        allow_unauthenticated: true,
+        max_dpi: 24,
+        ..ServerConfig::default()
+    };
+    let app = wellfriendpdf_server::app::create_app_with_config(cfg);
+    let pdf = fixture_pdf("flate.pdf");
+    let (ct, body) = make_multipart("test.pdf", &pdf, &[("dpi", "72")]);
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/pdf2img")
+                .header("content-type", ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "invalid_parameter");
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("between 24 and 24"));
+}
+
+#[tokio::test]
 async fn health_is_reachable_without_a_key_when_auth_enforced() {
     let app = wellfriendpdf_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
     let response = app

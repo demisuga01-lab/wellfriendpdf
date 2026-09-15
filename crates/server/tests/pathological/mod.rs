@@ -142,8 +142,8 @@ pub fn giant_mediabox_pdf() -> Vec<u8> {
 }
 
 /// Deeply nested Form XObjects: Fm0 -> Fm1 -> ... -> FmN, exceeding the
-/// engine's depth-8 recursion guard. Confirms the guard holds and the page
-/// still renders (clean degradation, not a stack overflow).
+/// engine's depth-8 recursion guard. Confirms the guard fails closed rather
+/// than returning a partial render or overflowing the stack.
 pub fn deeply_nested_forms_pdf(depth: u32) -> Vec<u8> {
     let mut extras: Vec<(u32, Vec<u8>)> = Vec::new();
 
@@ -188,7 +188,7 @@ pub fn deeply_nested_forms_pdf(depth: u32) -> Vec<u8> {
 }
 
 /// A Form XObject that references ITSELF (a direct cycle). Confirms cycle/depth
-/// handling prevents infinite recursion and the page still completes.
+/// handling prevents infinite recursion and rejects partial output.
 pub fn self_referential_form_pdf() -> Vec<u8> {
     // Object 5 is a Form whose content invokes /Fm0, and whose own Resources
     // map /Fm0 back to object 5 — an A->A cycle.

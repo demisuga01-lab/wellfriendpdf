@@ -90,11 +90,12 @@ WELLFRIENDPDF_API WellfriendDocument *wellfriendpdf_document_open_from_bytes(
     size_t len,
     char **error_out);
 
-/* Opens a document from bytes with an optional UTF-8 password.
+/* Opens a document from bytes with an optional binary password.
  * password == NULL && password_len == 0 means no password was supplied.
  * password != NULL && password_len == 0 means an explicit empty password.
- * The password buffer is read only for the duration of this call and is not
- * retained by the C ABI wrapper. */
+ * The caller's buffer is read only during this call. The document handle keeps
+ * a private zeroizing copy so byte-backed operations can reopen the immutable
+ * encrypted source; it is never serialized or reused as an output password. */
 WELLFRIENDPDF_API WellfriendDocument *wellfriendpdf_document_open_from_bytes_with_password(
     const uint8_t *data,
     size_t len,
@@ -1459,6 +1460,67 @@ WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_transaction_ap
     const WellfriendDocument *document,
     const char *request_json,
     const char *render_invalidation_options_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+/* Universal editing v2 uses revision-bound plan/approval/apply transactions.
+ * JSON strings returned through out_json and PDF bytes returned through
+ * out_buffer are caller-owned and must be released with the matching free API. */
+WELLFRIENDPDF_API int wellfriendpdf_universal_editing_capabilities_v2_json(
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_universal_editing_approval_v2_json(
+    const char *plan_json,
+    const char *decision_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_analyze_v2_json(
+    const WellfriendDocument *document,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_universal_render_qualification_v2_json(
+    const WellfriendDocument *document,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_inspect_object_v2_json(
+    const WellfriendDocument *document,
+    uint32_t object_number,
+    uint16_t generation,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_plan_v2_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_apply_v2_json(
+    const WellfriendDocument *document,
+    const char *plan_json,
+    const char *approval_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_apply_v2_with_output_credentials_json(
+    const WellfriendDocument *document,
+    const char *plan_json,
+    const char *approval_json,
+    const char *output_user_password,
+    const char *output_owner_password,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+/* Length-delimited credential form. NULL owner plus zero length reuses the
+ * user password; non-NULL owner plus zero length selects an empty password. */
+WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_apply_v2_with_output_credential_bytes_json(
+    const WellfriendDocument *document,
+    const char *plan_json,
+    const char *approval_json,
+    const uint8_t *output_user_password,
+    size_t output_user_password_len,
+    const uint8_t *output_owner_password,
+    size_t output_owner_password_len,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);

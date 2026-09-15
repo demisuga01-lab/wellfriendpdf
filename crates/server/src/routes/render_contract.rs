@@ -143,7 +143,7 @@ pub async fn handler(multipart: Multipart) -> ServerResult<Response> {
     let password = fields.password.clone().unwrap_or_default();
     let fields_for_work = fields;
 
-    let value = crate::processing::run_with_timeout(config, move |_cancel| {
+    let value = crate::processing::run_with_timeout(&config, move |_cancel| {
         let engine = ContentEngine::open_bytes_with_password(file.to_vec(), password.as_bytes())
             .map_err(ServerError::from)?;
         let page_count = engine.page_count().map_err(ServerError::from)?;
@@ -213,7 +213,7 @@ pub async fn backend_plan_arena_report(multipart: Multipart) -> ServerResult<Res
     let password = fields.password.clone().unwrap_or_default();
     let contract_json = fields.contract_json.clone();
 
-    let value = crate::processing::run_with_timeout(config, move |_cancel| {
+    let value = crate::processing::run_with_timeout(&config, move |_cancel| {
         let json = if let Some(contract_json) = contract_json.as_deref() {
             wellfriendpdf_engine::sdk::backend_plan_arena_report_for_contract_json(
                 file.as_ref(),
@@ -251,9 +251,9 @@ pub async fn render_png(multipart: Multipart) -> ServerResult<Response> {
     let registered_fonts = fields.registered_fonts.clone();
     let config = crate::config::get_config();
 
-    validate_server_contract_bounds(config, &contract)?;
+    validate_server_contract_bounds(&config, &contract)?;
 
-    let png = crate::processing::run_with_timeout(config, move |cancel| {
+    let png = crate::processing::run_with_timeout(&config, move |cancel| {
         let mut engine =
             ContentEngine::open_bytes_with_password(file.to_vec(), password.as_bytes())
                 .map_err(ServerError::from)?;
@@ -264,7 +264,7 @@ pub async fn render_png(multipart: Multipart) -> ServerResult<Response> {
     })
     .await??;
 
-    crate::processing::check_output_size(config, png.len())?;
+    crate::processing::check_output_size(&config, png.len())?;
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
     Ok((StatusCode::OK, headers, png).into_response())
@@ -280,7 +280,7 @@ pub async fn render_png_with_font_substitution_report(
     let registered_fonts = fields.registered_fonts.clone();
     let config = crate::config::get_config();
 
-    validate_server_contract_bounds(config, &contract)?;
+    validate_server_contract_bounds(&config, &contract)?;
     let cache_fingerprint = contract.cache_fingerprint();
     let contract_surface_len = surface_byte_length(&contract)?;
     let contract_schema_version = contract.schema_version;
@@ -292,7 +292,7 @@ pub async fn render_png_with_font_substitution_report(
     let alpha_mode = format!("{:?}", contract.alpha_mode);
 
     let (png, report, telemetry_report) =
-        crate::processing::run_with_timeout(config, move |cancel| {
+        crate::processing::run_with_timeout(&config, move |cancel| {
             let mut engine =
                 ContentEngine::open_bytes_with_password(file.to_vec(), password.as_bytes())
                     .map_err(ServerError::from)?;
@@ -303,7 +303,7 @@ pub async fn render_png_with_font_substitution_report(
         })
         .await??;
 
-    crate::processing::check_output_size(config, png.len())?;
+    crate::processing::check_output_size(&config, png.len())?;
     let metadata = RenderContractReportMetadata {
         contract_schema_version,
         page_number,
@@ -322,7 +322,7 @@ pub async fn render_png_with_font_substitution_report(
         render_telemetry_report: &telemetry_report,
     };
     multipart_render_report_response(
-        config,
+        &config,
         HeaderMap::new(),
         &cache_fingerprint,
         &metadata,
@@ -341,12 +341,12 @@ pub async fn render_raw(multipart: Multipart) -> ServerResult<Response> {
     let registered_fonts = fields.registered_fonts.clone();
     let config = crate::config::get_config();
 
-    validate_server_contract_bounds(config, &contract)?;
+    validate_server_contract_bounds(&config, &contract)?;
     let surface_len = surface_byte_length(&contract)?;
-    crate::processing::check_output_size(config, surface_len)?;
+    crate::processing::check_output_size(&config, surface_len)?;
     let headers = raw_surface_headers(&contract, surface_len)?;
 
-    let bytes = crate::processing::run_with_timeout(config, move |cancel| {
+    let bytes = crate::processing::run_with_timeout(&config, move |cancel| {
         let mut engine =
             ContentEngine::open_bytes_with_password(file.to_vec(), password.as_bytes())
                 .map_err(ServerError::from)?;
@@ -372,9 +372,9 @@ pub async fn render_raw_with_font_substitution_report(
     let registered_fonts = fields.registered_fonts.clone();
     let config = crate::config::get_config();
 
-    validate_server_contract_bounds(config, &contract)?;
+    validate_server_contract_bounds(&config, &contract)?;
     let surface_len = surface_byte_length(&contract)?;
-    crate::processing::check_output_size(config, surface_len)?;
+    crate::processing::check_output_size(&config, surface_len)?;
     let headers = raw_surface_headers(&contract, surface_len)?;
     let cache_fingerprint = contract.cache_fingerprint();
     let contract_schema_version = contract.schema_version;
@@ -386,7 +386,7 @@ pub async fn render_raw_with_font_substitution_report(
     let alpha_mode = format!("{:?}", contract.alpha_mode);
 
     let (bytes, report, telemetry_report) =
-        crate::processing::run_with_timeout(config, move |cancel| {
+        crate::processing::run_with_timeout(&config, move |cancel| {
             let mut engine =
                 ContentEngine::open_bytes_with_password(file.to_vec(), password.as_bytes())
                     .map_err(ServerError::from)?;
@@ -419,7 +419,7 @@ pub async fn render_raw_with_font_substitution_report(
         render_telemetry_report: &telemetry_report,
     };
     multipart_render_report_response(
-        config,
+        &config,
         headers,
         &cache_fingerprint,
         &metadata,
@@ -682,7 +682,7 @@ fn multipart_render_report_response(
     );
     payload.extend_from_slice(&body);
     payload.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
-    crate::processing::check_output_size(config, payload.len())?;
+    crate::processing::check_output_size(&config, payload.len())?;
 
     Ok((StatusCode::OK, headers, payload).into_response())
 }

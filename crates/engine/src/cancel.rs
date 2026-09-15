@@ -17,6 +17,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::cell::RefCell;
 
 use crate::error::{Result, WellfriendError};
 
@@ -34,6 +35,20 @@ struct CancelState {
 #[derive(Clone, Debug)]
 pub struct CancelToken {
     state: Arc<CancelState>,
+}
+
+thread_local! {
+    static ACTIVE_CANCEL_SCOPES: RefCell<Vec<CancelToken>> = const { RefCell::new(Vec::new()) };
+}
+
+struct CancelScopeGuard;
+
+impl Drop for CancelScopeGuard {
+    fn drop(&mut self) {
+        ACTIVE_CANCEL_SCOPES.with(|scopes| {
+            let _ = scopes.borrow_mut().pop();
+        });
+    }
 }
 
 impl CancelToken {
@@ -72,6 +87,17 @@ impl CancelToken {
         self.state.flag.store(true, Ordering::Relaxed);
     }
 
+    /// Install this token for synchronous engine APIs that cannot add a token
+    /// parameter without breaking existing binding ABIs. Nested scopes are
+    /// stack-disciplined and panic-safe. Server blocking workers use this at
+    /// their outer request boundary; hot editing loops call
+    /// [`check_current_cancel`] cooperatively.
+    pub fn scope<R>(&self, work: impl FnOnce() -> R) -> R {
+        ACTIVE_CANCEL_SCOPES.with(|scopes| scopes.borrow_mut().push(self.clone()));
+        let _guard = CancelScopeGuard;
+        work()
+    }
+
     /// Clear a prior cancellation request on this token.
     ///
     /// Progressive sessions use this only after the render step that observed
@@ -100,6 +126,26 @@ impl CancelToken {
             Ok(())
         }
     }
+}
+
+/// Clone the innermost synchronous cancellation scope, or return a never-
+/// cancelled token for ordinary CLI/library calls.
+pub(crate) fn current_cancel_token() -> CancelToken {
+    ACTIVE_CANCEL_SCOPES
+        .with(|scopes| scopes.borrow().last().cloned())
+        .unwrap_or_else(CancelToken::none)
+}
+
+/// Poll the innermost synchronous cancellation scope when one is installed.
+#[inline]
+pub(crate) fn check_current_cancel(context: &str) -> Result<()> {
+    ACTIVE_CANCEL_SCOPES.with(|scopes| {
+        if let Some(token) = scopes.borrow().last() {
+            token.check(context)
+        } else {
+            Ok(())
+        }
+    })
 }
 
 impl Default for CancelToken {

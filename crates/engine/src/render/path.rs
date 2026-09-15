@@ -5009,12 +5009,11 @@ mod tests {
         path.line_to(20.0, 80.0);
         path.close();
 
-        let before = path_raster_stats().convex_fast_pixels;
+        let flat = flatten_path(&path, &ctm, &vp, 0.2);
+        assert!(convex_flat_points(&flat).is_none());
         let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
         PathPainter::fill(&mut buf, &path, &ctm, &vp, BLUE, FillRule::NonZero);
-        let after = path_raster_stats().convex_fast_pixels;
 
-        assert_eq!(after, before);
         assert_eq!(buf.get_pixel(35, 35), BLUE);
     }
 

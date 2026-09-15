@@ -2133,7 +2133,9 @@ struct RedactionReport {
 #[derive(Clone)]
 struct RedactionState {
     ctm: Matrix,
-    stack: Vec<Matrix>,
+    stack: Vec<RedactionGraphicsState>,
+    line_width: f64,
+    miter_limit: f64,
     text_matrix: Matrix,
     text_line_matrix: Matrix,
     font_size: f64,
@@ -2150,11 +2152,20 @@ struct RedactionState {
     rise: f64,
 }
 
+#[derive(Clone, Copy)]
+struct RedactionGraphicsState {
+    ctm: Matrix,
+    line_width: f64,
+    miter_limit: f64,
+}
+
 impl Default for RedactionState {
     fn default() -> Self {
         Self {
             ctm: IDENTITY_MATRIX,
             stack: Vec::new(),
+            line_width: 1.0,
+            miter_limit: 10.0,
             text_matrix: IDENTITY_MATRIX,
             text_line_matrix: IDENTITY_MATRIX,
             font_size: 12.0,
@@ -2171,10 +2182,16 @@ impl Default for RedactionState {
 impl RedactionState {
     fn apply(&mut self, op: &ContentOperation, resolvers: &HashMap<String, FontResolver>) {
         match op.operator.as_str() {
-            "q" => self.stack.push(self.ctm),
+            "q" => self.stack.push(RedactionGraphicsState {
+                ctm: self.ctm,
+                line_width: self.line_width,
+                miter_limit: self.miter_limit,
+            }),
             "Q" => {
-                if let Some(ctm) = self.stack.pop() {
-                    self.ctm = ctm;
+                if let Some(saved) = self.stack.pop() {
+                    self.ctm = saved.ctm;
+                    self.line_width = saved.line_width;
+                    self.miter_limit = saved.miter_limit;
                 }
             }
             "cm" => {
@@ -2187,6 +2204,16 @@ impl RedactionState {
                     op.number(5).unwrap_or(0.0),
                 ];
                 self.ctm = concat_matrix(&m, &self.ctm);
+            }
+            "w" => {
+                if let Some(width) = op.number(0).filter(|width| width.is_finite()) {
+                    self.line_width = width.abs();
+                }
+            }
+            "M" => {
+                if let Some(limit) = op.number(0).filter(|limit| limit.is_finite()) {
+                    self.miter_limit = limit.abs().max(1.0);
+                }
             }
             "BT" => {
                 self.text_matrix = IDENTITY_MATRIX;
@@ -2351,6 +2378,18 @@ impl RedactionState {
         let (x4, y4) = transform_point(&self.ctm, 1.0, 1.0);
         rect_from_points(&[(x1, y1), (x2, y2), (x3, y3), (x4, y4)])
     }
+
+    fn stroke_margin(&self) -> f64 {
+        if self.line_width == 0.0 {
+            return f64::INFINITY;
+        }
+        let transform_norm = self.ctm[..4]
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        self.line_width * transform_norm * self.miter_limit / 2.0
+    }
 }
 
 #[derive(Default)]
@@ -2369,13 +2408,22 @@ impl PendingPath {
         self.operations.is_empty()
     }
 
-    fn intersects(&self, redactions: &[RedactionEdit]) -> bool {
+    fn intersects(&self, redactions: &[RedactionEdit], margin: f64) -> bool {
+        if !margin.is_finite() {
+            return !redactions.is_empty() && self.bbox.is_some();
+        }
         self.bbox
             .as_ref()
             .map(|bbox| {
+                let bbox = ImageRect::new(
+                    bbox.x - margin,
+                    bbox.y - margin,
+                    bbox.width + margin * 2.0,
+                    bbox.height + margin * 2.0,
+                );
                 redactions
                     .iter()
-                    .any(|redaction| rects_intersect(*bbox, redaction.rect))
+                    .any(|redaction| rects_intersect(bbox, redaction.rect))
             })
             .unwrap_or(false)
     }
@@ -2518,7 +2566,12 @@ fn rewrite_page_content_for_redaction(
                 continue;
             }
             if is_path_paint(&op) {
-                if pending_path.intersects(redactions) {
+                let margin = if is_stroked_path_paint(&op) {
+                    state.stroke_margin()
+                } else {
+                    0.0
+                };
+                if pending_path.intersects(redactions, margin) {
                     pending_path.clear();
                 } else {
                     pending_path.flush_to(&mut out);
@@ -2952,6 +3005,10 @@ fn is_path_paint(op: &ContentOperation) -> bool {
     )
 }
 
+fn is_stroked_path_paint(op: &ContentOperation) -> bool {
+    matches!(op.operator.as_str(), "S" | "s" | "B" | "B*" | "b" | "b*")
+}
+
 fn write_redaction_mark(out: &mut Vec<u8>, redaction: &RedactionEdit) {
     let Some(first) = redaction.polygon.first() else {
         return;
@@ -3333,6 +3390,7 @@ fn inline_decode_params(
         return Ok(vec![None; filter_count]);
     };
     match operand {
+        Operand::Null => Ok(vec![None; filter_count]),
         Operand::Dictionary(entries) => {
             let mut out = vec![None; filter_count];
             if let Some(first) = out.first_mut() {
@@ -3348,8 +3406,9 @@ fn inline_decode_params(
             .iter()
             .map(|item| match item {
                 Operand::Dictionary(entries) => Ok(Some(inline_operand_dictionary(entries)?)),
+                Operand::Null => Ok(None),
                 _ => Err(WellfriendError::MalformedPdf(
-                    "inline DecodeParms array entries must be dictionaries".to_string(),
+                    "inline DecodeParms array entries must be dictionaries or null".to_string(),
                 )),
             })
             .collect(),
@@ -3378,6 +3437,7 @@ fn inline_operand_dictionary(entries: &[(String, Operand)]) -> Result<PdfDiction
 
 fn operand_to_pdf_object_for_inline(operand: &Operand) -> Option<PdfObject> {
     match operand {
+        Operand::Null => Some(PdfObject::Null),
         Operand::Integer(value) => Some(PdfObject::Integer(*value)),
         Operand::Real(value) => Some(PdfObject::Real(*value)),
         Operand::Boolean(value) => Some(PdfObject::Boolean(*value)),
@@ -3397,6 +3457,7 @@ fn operand_to_pdf_object_for_inline(operand: &Operand) -> Option<PdfObject> {
 
 fn pdf_object_to_inline_operand(object: &PdfObject) -> Option<Operand> {
     match object {
+        PdfObject::Null => Some(Operand::Null),
         PdfObject::Integer(value) => Some(Operand::Integer(*value)),
         PdfObject::Real(value) => Some(Operand::Real(*value)),
         PdfObject::Boolean(value) => Some(Operand::Boolean(*value)),
@@ -3531,6 +3592,7 @@ fn add_promoted_inline_xobject(resources: &mut PdfDictionary, number: u32) -> St
 
 fn serialize_content_operand(operand: &Operand, out: &mut Vec<u8>) {
     match operand {
+        Operand::Null => out.extend_from_slice(b"null"),
         Operand::Integer(value) => out.extend_from_slice(value.to_string().as_bytes()),
         Operand::Real(value) => out.extend_from_slice(fmt_num(*value).as_bytes()),
         Operand::Boolean(value) => {
@@ -5923,15 +5985,13 @@ fn scrub_pdf_strings(object: &mut PdfObject, removed_text: &BTreeSet<String>) ->
     }
 }
 
-/// A stream whose raw payload (not just its dictionary) may carry a duplicate of
-/// redacted text: the XMP `/Metadata` packet and embedded-file (`/EmbeddedFile`)
-/// attachment streams.
+/// An XMP metadata stream whose raw payload may duplicate redacted text.
+/// Embedded files are user payloads and must never be rewritten as metadata.
 fn is_scrubbable_payload_stream(dict: &PdfDictionary) -> bool {
-    matches!(dict.get_name("Type"), Some(ty)
-        if ty.eq_ignore_ascii_case("Metadata") || ty.eq_ignore_ascii_case("EmbeddedFile"))
+    matches!(dict.get_name("Type"), Some(ty) if ty.eq_ignore_ascii_case("Metadata"))
 }
 
-/// Decode a textual/embedded stream, remove every occurrence of the redacted
+/// Decode a textual metadata stream, remove every occurrence of the redacted
 /// text from its bytes, and re-store it uncompressed (so the scrub is visible to
 /// any reader). Returns `None` if nothing changed.
 fn scrub_stream_payload(
@@ -6207,11 +6267,42 @@ mod h2_alt_text_tests {
 
         let mut ef = PdfDictionary::empty();
         ef.insert("Type", PdfObject::Name("EmbeddedFile".to_string()));
-        assert!(is_scrubbable_payload_stream(&ef));
+        assert!(!is_scrubbable_payload_stream(&ef));
 
         let mut page = PdfDictionary::empty();
         page.insert("Type", PdfObject::Name("Page".to_string()));
         assert!(!is_scrubbable_payload_stream(&page));
+    }
+
+    #[test]
+    fn secure_redaction_stroke_margin_covers_shear_and_hairlines() {
+        let state = RedactionState {
+            ctm: [1.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+            line_width: 2.0,
+            miter_limit: 5.0,
+            ..RedactionState::default()
+        };
+        assert!((state.stroke_margin() - 5.0 * 3.0_f64.sqrt()).abs() < 1e-9);
+
+        let hairline = RedactionState {
+            line_width: 0.0,
+            ..RedactionState::default()
+        };
+        assert!(hairline.stroke_margin().is_infinite());
+    }
+
+    #[test]
+    fn secure_redaction_removes_hairline_paths_when_any_redaction_exists() {
+        let pending = PendingPath {
+            operations: Vec::new(),
+            bbox: Some(ImageRect::new(0.0, 0.0, 1.0, 1.0)),
+        };
+        let redaction = RedactionEdit {
+            rect: ImageRect::new(100.0, 100.0, 1.0, 1.0),
+            polygon: Vec::new(),
+            options: RedactionOptions::default(),
+        };
+        assert!(pending.intersects(&[redaction], f64::INFINITY));
     }
 
     #[test]

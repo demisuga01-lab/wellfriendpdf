@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.rate_limit_per_min,
     ));
     let _cleanup = limiter.spawn_cleanup(Duration::from_secs(60));
-    let app = wellfriendpdf_server::app::create_app_with_limiter(config.clone(), limiter);
+    let app = wellfriendpdf_server::app::create_app_with_limiter((*config).clone(), limiter);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(&addr).await?;

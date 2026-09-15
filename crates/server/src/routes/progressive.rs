@@ -548,15 +548,23 @@ pub async fn finish_png(
     Path(session_id): Path<String>,
 ) -> ServerResult<Response> {
     let owner = caller_identity(&headers);
-    let buffer = state
-        .store
-        .with_session(&session_id, &owner, |job| job.finish_checked())?
-        .map_err(|err| ServerError::InvalidParameter(err.to_string()))?;
-
-    let raw = buffer.to_raw_image();
-    let png_bytes = ImageEncoder::encode_png_fast(&raw)
-        .map_err(|e| ServerError::Internal(format!("PNG encode failed: {}", e)))?;
+    let config = crate::config::get_config();
+    let store = state.store.clone();
+    let finish_session_id = session_id.clone();
+    let finish_owner = owner.clone();
+    let png_bytes = crate::processing::run_with_timeout(&config, move |_cancel| {
+        let buffer = store
+            .with_session_mut(&finish_session_id, &finish_owner, |job| {
+                job.finish_checked_consuming()
+            })?
+            .map_err(|err| ServerError::InvalidParameter(err.to_string()))?;
+        let raw = buffer.to_raw_image();
+        ImageEncoder::encode_png_fast(&raw)
+            .map_err(|e| ServerError::Internal(format!("PNG encode failed: {e}")))
+    })
+    .await??;
     let _ = state.store.remove(&session_id, &owner);
+    crate::processing::check_output_size(&config, png_bytes.len())?;
 
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));

@@ -21,12 +21,18 @@ use crate::editing_transactions::{
     dirty_region_report, text_identity_report, undo_restoration_report, DocumentSnapshot,
     EditTransactionReport, EditableSceneGraph, SceneTextEditRequest, TransactionState,
 };
-use crate::filters::decode_stream_lossless;
+use crate::filters::{
+    decode_stream_lossless, flate_encode_cancellable, StreamDecodeStatus,
+};
+use crate::render::get_fallback_font;
 use crate::source_editing::{operator_text_provenance, TrueEditingMode};
-use crate::writer::append_authored_page_preserving_catalog;
+use crate::writer::{
+    insert_authored_page_preserving_catalog, AuthoredPageGeometry, IncrementalObject,
+    write_incremental_update,
+};
 #[cfg(test)]
 use crate::writer::build_merged;
-use crate::{interactive_report, ContentEngine, Result, WellfriendError};
+use crate::{interactive_report, ContentEngine, PdfObject, Result, WellfriendError};
 use cassowary::strength::{MEDIUM, REQUIRED, STRONG, WEAK};
 use cassowary::WeightedRelation::*;
 use cassowary::{Solver, Variable};
@@ -230,6 +236,21 @@ pub struct GeometricReflowRequest {
     pub page: usize,
     pub source_text: String,
     pub replacement_text: String,
+    /// Optional exact parser instruction selected by a revision-bound v2
+    /// approval. When present, repeated logical text is resolved by source
+    /// object/generation/byte range rather than by first-match heuristics.
+    #[serde(default)]
+    pub source_instruction_id: Option<String>,
+    /// Exact page-logical Unicode-scalar selection supplied by the v2
+    /// occurrence planner for contiguous multi-operand text.
+    #[serde(default)]
+    pub target_logical_scalar_range: Option<[usize; 2]>,
+    #[serde(default)]
+    pub target_stream_object: Option<u32>,
+    #[serde(default)]
+    pub target_stream_generation: Option<u16>,
+    #[serde(default)]
+    pub target_decoded_byte_range: Option<[usize; 2]>,
     #[serde(default)]
     pub region: Option<[f64; 4]>,
     #[serde(default)]
@@ -267,6 +288,8 @@ pub struct GeometricReflowRequest {
     pub direction: Option<String>,
     #[serde(default = "default_font_policy")]
     pub font_policy: String,
+    #[serde(default)]
+    pub approved_font_asset: Option<crate::editing_transactions::ApprovedFontAsset>,
     #[serde(default = "default_alignment")]
     pub alignment: String,
     #[serde(default)]
@@ -538,10 +561,9 @@ struct ReflowMutationCheckpoint {
 
 /// In-memory transaction owner for supported text reflow source reflows.
 ///
-/// Supported reflow output is written as a canonical incremental revision, so
-/// undo can restore the exact preimage by validated truncation.  Operations
-/// that later require a non-append page-tree rewrite must use a different
-/// checkpoint representation and are refused rather than being recorded here.
+/// Incremental reflow output is undone by validated truncation. Canonical
+/// page-tree insertion output retains a bounded in-memory preimage instead;
+/// both forms are fingerprinted and reopened before an atomic session restore.
 #[derive(Debug, Clone)]
 pub struct ReflowMutationSession {
     current: Vec<u8>,
@@ -1278,7 +1300,7 @@ fn paragraph_source_style_runs(input: &[u8], request: &GeometricReflowRequest) -
                 "writing_mode": span.writing_mode,
                 "source_text_hash": digest_hex(span.text.as_bytes()),
                 "evidence": TextReflowEvidenceKind::ExactSourceFact,
-                "exact_limits": ["preserve_original_per_run replays font resource, size, DeviceGray/RGB/CMYK paint state, text rendering mode, spacing, horizontal scaling, and rise for horizontal source selections. Changed-length text assigns each complete replacement grapheme to a deterministic proportional source-style owner, preserving style order without flattening or splitting a grapheme. One text-state-only MCID BDC containing exactly the selected source spans is relocated with its original identity while the empty source wrapper becomes Artifact; links, nested/partial tagged content, arbitrary color spaces, vertical writing, and bidi edits fail closed"],
+                "exact_limits": ["preserve_original_per_run assigns each complete replacement grapheme to a deterministic proportional source-style owner. Exact source CMaps are reused where possible; RTL, vertical, missing-code, and ambiguous-code replacements use one approved shaped Type0 font while retaining per-grapheme size, spacing, scaling, rise, render mode, and exact source paint commands. Clipping text stays source-inline; one fully selected text-state-only MCID BDC retains its identity."],
             })
         })
         .collect()
@@ -3093,10 +3115,16 @@ fn source_reflow_options(
     if !matches!(
         request.font_policy.as_str(),
         "rebuild_subset_or_generated_type0" | "preserve_original_per_run"
-    ) {
+    ) && !request.font_policy.starts_with("approved_substitute:")
+    {
         return Err(WellfriendError::UnsupportedFeature(
-            "text_reflow font_reconstruction_failed: supported source reflow requires font_policy=rebuild_subset_or_generated_type0 or preserve_original_per_run"
+            "text_reflow font_reconstruction_failed: supported source reflow requires font_policy=rebuild_subset_or_generated_type0, preserve_original_per_run, or a revision-approved approved_substitute:<lookup-name>"
                 .to_string(),
+        ));
+    }
+    if request.font_policy == "approved_substitute:" {
+        return Err(WellfriendError::invalid_input(
+            "text_reflow approved substitute font lookup name is empty",
         ));
     }
     let usable_height = region[3] - region[1];
@@ -3120,16 +3148,6 @@ fn source_reflow_options(
             )))
         }
     };
-    if alignment == GeneratedTextAlignment::Justify
-        && request.language.as_deref().is_some_and(|language| {
-            language.eq_ignore_ascii_case("ar") || language.to_ascii_lowercase().starts_with("ar-")
-        })
-    {
-        return Err(WellfriendError::UnsupportedFeature(
-            "text_reflow shaping_failed: Arabic full justification is refused until the canonical source writer can serialize a shaped kashida feature without changing extraction semantics"
-                .to_string(),
-        ));
-    }
     Ok(AdvancedTextEditOptions {
         region,
         // The canonical advanced editing writer uses this as the glyph-scale source
@@ -3145,7 +3163,61 @@ fn source_reflow_options(
         justify_last_line: request.justify_last_line,
         max_word_spacing: 0.5,
         max_character_spacing: 0.05,
+        target_stream_object: request.target_stream_object,
+        target_stream_generation: request.target_stream_generation,
+        target_decoded_byte_range: request.target_decoded_byte_range,
     })
+}
+
+/// Resolve only a font that has already been selected by the v2 approval
+/// boundary. The lookup name is carried in the immutable operation request, so
+/// generated Type0 output, shaping, line measurement, and continuation flow all
+/// consume the same exact bundled bytes.
+fn approved_reflow_font<'a>(
+    request: &'a GeometricReflowRequest,
+) -> Result<Option<(&'a str, &'a [u8])>> {
+    let Some(lookup_name) = request.font_policy.strip_prefix("approved_substitute:") else {
+        return Ok(None);
+    };
+    if lookup_name.is_empty() {
+        return Err(WellfriendError::invalid_input(
+            "text_reflow approved substitute font lookup name is empty",
+        ));
+    }
+    if let Some(asset) = request.approved_font_asset.as_ref() {
+        if asset.lookup_name != lookup_name {
+            return Err(WellfriendError::invalid_input(
+                "text_reflow approved font asset name differs from the immutable font policy",
+            ));
+        }
+        if asset.bytes.is_empty() || asset.bytes.len() > 256 * 1024 * 1024 {
+            return Err(WellfriendError::ResourceLimit(
+                "text_reflow approved font asset is empty or exceeds 256 MiB".to_string(),
+            ));
+        }
+        let face = ttf_parser::Face::parse(&asset.bytes, 0).map_err(|_| {
+            WellfriendError::invalid_input(
+                "text_reflow approved font asset is not a supported sfnt/OpenType face",
+            )
+        })?;
+        if let Some(character) = request
+            .replacement_text
+            .chars()
+            .find(|character| !character.is_control() && face.glyph_index(*character).is_none())
+        {
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "text_reflow approved font asset has no glyph for U+{:04X}",
+                character as u32
+            )));
+        }
+        return Ok(Some((asset.lookup_name.as_str(), asset.bytes.as_slice())));
+    }
+    let bytes = get_fallback_font(lookup_name).ok_or_else(|| {
+        WellfriendError::UnsupportedFeature(format!(
+            "text_reflow approved substitute font is unavailable: {lookup_name}"
+        ))
+    })?;
+    Ok(Some((lookup_name, bytes)))
 }
 
 fn source_output_lines(lines: &[LayoutLine]) -> Vec<ExplicitLayoutLine> {
@@ -3185,6 +3257,158 @@ fn unique_scalar_range(haystack: &str, needle: &str) -> Result<[usize; 2]> {
     ])
 }
 
+fn selected_scalar_range(
+    request: &GeometricReflowRequest,
+    model: &crate::advanced_editing::MultiRunRangeModel,
+) -> Result<[usize; 2]> {
+    if let Some([start, end]) = request.target_logical_scalar_range {
+        if start > end || end > model.logical_text.chars().count() {
+            return Err(WellfriendError::invalid_input(
+                "text_reflow selected logical scalar range is outside the current page text",
+            ));
+        }
+        let selected = model
+            .logical_text
+            .chars()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect::<String>();
+        if selected != request.source_text {
+            return Err(WellfriendError::invalid_input(
+                "text_reflow selected logical scalar range is stale for the requested source text",
+            ));
+        }
+        return Ok([start, end]);
+    }
+    if let (Some(object), Some(generation), Some(byte_range)) = (
+        request.target_stream_object,
+        request.target_stream_generation,
+        request.target_decoded_byte_range,
+    ) {
+        return model
+            .source_spans
+            .iter()
+            .find(|span| {
+                span.stream_object == object
+                    && span.stream_generation == generation
+                    && span.byte_range == byte_range
+                    && span.text == request.source_text
+            })
+            .map(|span| span.logical_range)
+            .ok_or_else(|| {
+                WellfriendError::invalid_input(
+                    "text_reflow selected source instruction is stale after dependency preparation",
+                )
+            });
+    }
+    unique_scalar_range(&model.logical_text, &request.source_text)
+}
+
+fn replace_logical_scalar_range(
+    source: &str,
+    [start, end]: [usize; 2],
+    replacement: &str,
+) -> Result<String> {
+    if start > end {
+        return Err(WellfriendError::invalid_input(
+            "text_reflow logical replacement range is reversed",
+        ));
+    }
+    let start_byte = source
+        .char_indices()
+        .nth(start)
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| source.len());
+    let end_byte = source
+        .char_indices()
+        .nth(end)
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| source.len());
+    if start_byte > end_byte || end > source.chars().count() {
+        return Err(WellfriendError::invalid_input(
+            "text_reflow logical replacement range is outside the source text",
+        ));
+    }
+    let mut output = String::with_capacity(
+        source
+            .len()
+            .saturating_sub(end_byte.saturating_sub(start_byte))
+            .saturating_add(replacement.len()),
+    );
+    output.push_str(&source[..start_byte]);
+    output.push_str(replacement);
+    output.push_str(&source[end_byte..]);
+    Ok(output)
+}
+
+fn apply_selected_source_segment_with_layout(
+    input: &[u8],
+    request: &GeometricReflowRequest,
+    replacement_text: &str,
+    options: &AdvancedTextEditOptions,
+    approved_font: Option<(&str, &[u8])>,
+    final_lines: &[ExplicitLayoutLine],
+) -> Result<(Vec<u8>, Value, bool, String)> {
+    if request.target_logical_scalar_range.is_some() {
+        let model = analyze_multi_run_text_range(input, request.page)?;
+        let [logical_start, logical_end] = selected_scalar_range(request, &model)?;
+        let multi_request = MultiRunTextRangeRequest {
+            page: request.page,
+            logical_start,
+            logical_end,
+            replacement_text: replacement_text.to_string(),
+            mode: source_reflow_mode(request),
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options: options.clone(),
+            final_lines: Some(final_lines.to_vec()),
+        };
+        let (output, report) = edit_multi_run_text_range(
+            input,
+            &multi_request,
+            approved_font.map(|(_, bytes)| bytes),
+        )?;
+        // Target removal is occurrence-scoped. A duplicate Unicode string at
+        // another page position must not make an exact source mutation fail.
+        let old_text_absent = report.reachable_source_tokens_removed;
+        let resource = format!(
+            "generated_type0_font_resource:multi_run:{}",
+            report.output_sha256
+        );
+        return Ok((
+            output,
+            serde_json::to_value(report).map_err(|error| {
+                WellfriendError::ParseError(format!(
+                    "text_reflow multi-run apply report serialization failed: {error}"
+                ))
+            })?,
+            old_text_absent,
+            resource,
+        ));
+    }
+    let (output, report) = edit_advanced_text_pdf_with_visual_layout(
+        input,
+        request.page,
+        &request.source_text,
+        replacement_text,
+        source_reflow_mode(request),
+        options,
+        approved_font.map(|(_, bytes)| bytes),
+        final_lines,
+    )?;
+    let old_text_absent = report.removed_old_reachable_content;
+    let resource = format!("generated_type0_font_resource:{}", report.font_resource);
+    Ok((
+        output,
+        serde_json::to_value(report).map_err(|error| {
+            WellfriendError::ParseError(format!(
+                "text_reflow source apply report serialization failed: {error}"
+            ))
+        })?,
+        old_text_absent,
+        resource,
+    ))
+}
+
 pub fn apply_reflow_region(
     input: &[u8],
     request: &GeometricReflowRequest,
@@ -3222,6 +3446,7 @@ fn apply_source_linked_reflow(
         apply_downstream_link_moves(&vector_mutation_input, request)?;
     let source_region = effective_region_for_report(input, request, report.overflow_status)?;
     let options = source_reflow_options(request, source_region)?;
+    let approved_font = approved_reflow_font(request)?;
     let final_lines = source_output_lines(&report.line_breaking.lines);
     let (
         output,
@@ -3231,35 +3456,60 @@ fn apply_source_linked_reflow(
         fonts_resources_changed,
         source_rewrite_detail,
         line_adjustments,
-    ) = if request.font_policy == "preserve_original_per_run" {
+    ) = if request.font_policy == "preserve_original_per_run"
+        || request.target_logical_scalar_range.is_some()
+    {
         let model = analyze_multi_run_text_range(&mutation_input, request.page)?;
-        let [logical_start, logical_end] =
-            unique_scalar_range(&model.logical_text, &request.source_text)?;
+        let [logical_start, logical_end] = selected_scalar_range(request, &model)?;
+        let preserve_per_segment = request.font_policy == "preserve_original_per_run";
         let multi_request = MultiRunTextRangeRequest {
             page: request.page,
             logical_start,
             logical_end,
             replacement_text: request.replacement_text.clone(),
             mode: source_reflow_mode(request),
-            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            style_policy: if preserve_per_segment {
+                MultiRunStylePolicy::PreservePerSegment
+            } else {
+                MultiRunStylePolicy::InheritLeading
+            },
             options: options.clone(),
             final_lines: Some(final_lines.clone()),
         };
-        let (output, apply) = edit_multi_run_text_range(&mutation_input, &multi_request, None)?;
-        let fonts = apply
-            .selected_source_spans
-            .iter()
-            .map(|span| format!("preserved_source_font_resource:{}", span.font_resource))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let (output, apply) = edit_multi_run_text_range(
+            &mutation_input,
+            &multi_request,
+            if preserve_per_segment {
+                None
+            } else {
+                approved_font.map(|(_, bytes)| bytes)
+            },
+        )?;
+        let fonts = if preserve_per_segment {
+            apply
+                .selected_source_spans
+                .iter()
+                .map(|span| format!("preserved_source_font_resource:{}", span.font_resource))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            vec!["generated_type0_font_resource:multi_run_canonical".to_string()]
+        };
         (
             output,
             apply.reachable_source_tokens_removed,
             apply.old_selected_text_absent,
             apply.output_reopened && apply.replacement_extracts,
             fonts,
-            json!({"path": "advanced_editing_multi_run_preserve_per_segment_source_serializer", "detail": apply}),
+            json!({
+                "path": if preserve_per_segment {
+                    "advanced_editing_multi_run_preserve_per_segment_source_serializer"
+                } else {
+                    "advanced_editing_multi_run_generated_type0_source_serializer"
+                },
+                "detail": apply,
+            }),
             Value::Array(Vec::new()),
         )
     } else {
@@ -3270,7 +3520,7 @@ fn apply_source_linked_reflow(
             &request.replacement_text,
             source_reflow_mode(request),
             &options,
-            None,
+            approved_font.map(|(_, bytes)| bytes),
             &final_lines,
         )?;
         (
@@ -3409,7 +3659,7 @@ fn apply_source_linked_reflow(
         "downstream_link_moves": downstream_link_moves,
         "dirty_region": dirty,
         "no_overlay_no_clipping": removed_old_reachable_content,
-        "old_source_text_absent_from_target_extraction": old_text_absent,
+        "selected_source_occurrence_removed": old_text_absent,
         "source_text_token_removed": removed_old_reachable_content,
         "generated_text_reopens_and_extracts": generated_text_reopens_and_extracts,
         "unaffected_content_proof": unaffected_proof,
@@ -3620,7 +3870,15 @@ fn apply_single_paragraph_existing_target_flow(
     }
     let options = source_reflow_options(request, source_region)?;
     let target_options = source_reflow_options(request, target_region)?;
-    let (output, first_apply, continuation_evidence, continuation_resource) =
+    let approved_font = approved_reflow_font(request)?;
+    let (
+        output,
+        first_apply,
+        first_old_text_absent,
+        first_resource,
+        continuation_evidence,
+        continuation_resource,
+    ) =
         if target_page == request.page {
             // A same-page story must be one generated source stream: separate
             // incremental generated streams are extracted newest-first by the
@@ -3656,12 +3914,21 @@ fn apply_single_paragraph_existing_target_flow(
                 &request.replacement_text,
                 source_reflow_mode(request),
                 &options,
-                None,
+                approved_font.map(|(_, bytes)| bytes),
                 &positioned_lines,
             )?;
             (
                 output,
-                first_apply.clone(),
+                serde_json::to_value(&first_apply).map_err(|error| {
+                    WellfriendError::ParseError(format!(
+                        "text_reflow positioned apply report serialization failed: {error}"
+                    ))
+                })?,
+                first_apply.removed_old_reachable_content,
+                format!(
+                    "generated_type0_font_resource:{}",
+                    first_apply.font_resource
+                ),
                 json!({
                     "operation": "single_canonical_positioned_source_rewrite",
                     "line_count": positioned_lines.len(),
@@ -3684,18 +3951,27 @@ fn apply_single_paragraph_existing_target_flow(
                 options: target_options,
                 final_lines: Some(continuation_lines),
             };
-            let (first_output, first_apply) = edit_advanced_text_pdf_with_visual_layout(
+            let (first_output, first_apply, first_old_text_absent, first_resource) =
+                apply_selected_source_segment_with_layout(
                 input,
-                request.page,
-                &request.source_text,
+                request,
                 &first_text,
-                source_reflow_mode(request),
                 &options,
-                None,
+                approved_font,
                 &first_lines,
             )?;
+            if !first_old_text_absent {
+                return Err(WellfriendError::MalformedPdf(
+                    "text_reflow selected source occurrence remained reachable after downstream split"
+                        .to_string(),
+                ));
+            }
             let (output, continuation_apply) =
-                edit_multi_run_text_range(&first_output, &insertion, None)?;
+                edit_multi_run_text_range(
+                    &first_output,
+                    &insertion,
+                    approved_font.map(|(_, bytes)| bytes),
+                )?;
             let continuation_resource = format!(
                 "generated_type0_font_resource:{}",
                 continuation_apply.output_sha256
@@ -3703,6 +3979,8 @@ fn apply_single_paragraph_existing_target_flow(
             (
                 output,
                 first_apply,
+                first_old_text_absent,
+                first_resource,
                 json!(continuation_apply),
                 continuation_resource,
             )
@@ -3713,10 +3991,7 @@ fn apply_single_paragraph_existing_target_flow(
             "text_reflow output_reopen_failed: existing-target flow changed page count".to_string(),
         ));
     }
-    if reopened
-        .get_page_text(request.page)?
-        .contains(&request.source_text)
-    {
+    if !first_old_text_absent {
         return Err(WellfriendError::MalformedPdf(
             "text_reflow extraction_validation_failed: source paragraph remained reachable after downstream flow"
                 .to_string(),
@@ -3738,13 +4013,7 @@ fn apply_single_paragraph_existing_target_flow(
         json!({"page": target_page, "kind": "existing_empty_target_region", "region": target_region, "lines": continuation_count}),
     ];
     report.source_instructions_regenerated = report.region.source_instructions.clone();
-    report.fonts_resources_changed = vec![
-        format!(
-            "generated_type0_font_resource:{}",
-            first_apply.font_resource
-        ),
-        continuation_resource,
-    ];
+    report.fonts_resources_changed = vec![first_resource, continuation_resource];
     report.flow_graph_changes = vec![json!({
         "kind": relationship,
         "source_page": request.page,
@@ -3909,13 +4178,69 @@ fn apply_single_paragraph_existing_next_page_flow(
     )
 }
 
-/// A bounded canonical page-flow adapter.  The continuation is authored from
-/// the final shaped lines, then appended by the canonical writer while the
-/// source catalog and existing object graph are preserved.  Existing named
-/// destinations, outlines, labels, forms, annotations, and links remain
-/// source-object linked; an appended page does not require retargeting an
-/// existing destination.  New continuation content intentionally has no
-/// inferred association with those pre-existing interactive objects.
+fn wrap_authored_page_with_actual_text(input: &[u8], logical_text: &str) -> Result<Vec<u8>> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let page = engine.document().get_page(1)?;
+    if page.contents.len() != 1 {
+        return Err(WellfriendError::MalformedPdf(
+            "text_reflow authored continuation page must contain one content stream"
+                .to_string(),
+        ));
+    }
+    let (number, generation) = page.contents[0];
+    let reader = engine.document().reader();
+    let object = reader.get_object(number, generation)?;
+    let decoded = decode_stream_lossless(&object, reader)?;
+    if decoded.status != StreamDecodeStatus::Complete {
+        return Err(WellfriendError::UnsupportedFeature(
+            "text_reflow authored continuation stream is not losslessly decodable"
+                .to_string(),
+        ));
+    }
+    let PdfObject::Stream { dict, .. } = object else {
+        return Err(WellfriendError::MalformedPdf(
+            "text_reflow authored continuation /Contents is not a stream".to_string(),
+        ));
+    };
+    let mut content = format!(
+        "/Span << /ActualText <{}> >> BDC\n",
+        utf16be_actual_text_hex(logical_text)
+    )
+    .into_bytes();
+    content.extend_from_slice(&decoded.data);
+    content.extend_from_slice(b"\nEMC\n");
+    let compressed = flate_encode_cancellable(&content, 6)?;
+    let mut dictionary = dict;
+    dictionary.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+    dictionary.remove("DecodeParms");
+    dictionary.insert("Length", PdfObject::Integer(compressed.len() as i64));
+    write_incremental_update(
+        reader,
+        vec![IncrementalObject {
+            number,
+            generation,
+            object: PdfObject::Stream {
+                dict: dictionary,
+                raw: compressed,
+            },
+        }],
+    )
+}
+
+fn utf16be_actual_text_hex(text: &str) -> String {
+    let mut output = String::from("FEFF");
+    for unit in text.encode_utf16() {
+        output.push_str(&format!("{unit:04X}"));
+    }
+    output
+}
+
+/// A bounded canonical page-flow adapter. The continuation is authored from
+/// the final shaped lines and inserted immediately after the edited page while
+/// the source catalog and existing object graph are preserved. Existing
+/// destinations, outlines, forms, annotations, links, and article beads retain
+/// their stable page references; page-label number-tree indexes are shifted by
+/// the writer.
 fn apply_single_paragraph_page_creation(
     input: &[u8],
     request: &GeometricReflowRequest,
@@ -3934,56 +4259,51 @@ fn apply_single_paragraph_page_creation(
         ));
     }
     let engine = ContentEngine::open_bytes(input.to_vec())?;
-    if engine.page_count()? != 1 || request.page != 1 {
-        return Err(WellfriendError::UnsupportedFeature(
-            "text_reflow next_page_unavailable: the current canonical page-flow boundary supports exactly one source page and one appended continuation page"
-                .to_string(),
-        ));
+    let source_page_count = engine.page_count()?;
+    if request.page == 0 || request.page > source_page_count {
+        return Err(WellfriendError::invalid_input(format!(
+            "text_reflow page {} is outside 1..={source_page_count}",
+            request.page
+        )));
     }
-    if !engine.verify_signatures()?.is_empty() {
+    if !engine.verify_signatures()?.is_empty() && !request.signature_policy_override {
         return Err(WellfriendError::UnsupportedFeature(
-            "text_reflow signature_permission_violation: page-tree rebuilding is refused for signed documents"
+            "text_reflow signature_permission_violation: page-tree rebuilding for a signed document requires authorized_rewrite and explicit signature-invalidation approval"
                 .to_string(),
         ));
     }
     let interactive_before = interactive_report(&engine)?;
     let page_ops = &interactive_before.page_operations;
-    let page_info = page_ops.pages.first().ok_or_else(|| {
+    let page_info = page_ops.pages.get(request.page - 1).ok_or_else(|| {
         WellfriendError::MalformedPdf(
             "text_reflow page creation could not resolve page box".to_string(),
         )
     })?;
-    if page_info.rotate != 0
-        || page_info.media_box != page_info.crop_box
-        || page_info.media_box[0] != 0.0
-        || page_info.media_box[1] != 0.0
-    {
-        return Err(WellfriendError::UnsupportedFeature(
-            "text_reflow unsupported_writing_mode: narrow page creation requires an unrotated zero-origin MediaBox/CropBox"
-                .to_string(),
-        ));
-    }
-    let semantic =
-        engine.extract_text_semantic_model(&[1], crate::text::TextSemanticOptions::default())?;
-    if semantic
+    let semantic = engine.extract_text_semantic_model(
+        &[request.page],
+        crate::text::TextSemanticOptions::default(),
+    )?;
+    let tagged_source = semantic
         .pages
         .first()
-        .is_some_and(|page| page.structure.enabled)
-    {
-        return Err(WellfriendError::UnsupportedFeature(
-            "text_reflow structure_update_failed: tagged structure repair is not available for page-tree rebuilding"
-                .to_string(),
-        ));
-    }
+        .is_some_and(|page| page.structure.enabled);
     if report.region.source_instructions.is_empty() {
         return Err(WellfriendError::UnsupportedFeature(
             "text_reflow source_not_resolved: page flow requires exact SourceEditing source provenance"
                 .to_string(),
         ));
     }
+    let source_range_model = analyze_multi_run_text_range(input, request.page)?;
+    let source_scalar_range = selected_scalar_range(request, &source_range_model)?;
+    let expected_combined_extraction = replace_logical_scalar_range(
+        &source_range_model.logical_text,
+        source_scalar_range,
+        &request.replacement_text,
+    )?;
     let region = region_for_request(input, request)?;
     let width = region[2] - region[0];
     let height = region[3] - region[1];
+    crate::cancel::check_current_cancel("text reflow page-flow line breaking")?;
     let line_breaking = line_break_text(
         &request.replacement_text,
         width,
@@ -4006,22 +4326,16 @@ fn apply_single_paragraph_page_creation(
                 .to_string(),
         ));
     }
-    if line_breaking.lines.iter().any(|line| line.hyphen_inserted) {
-        return Err(WellfriendError::UnsupportedFeature(
-            "text_reflow hyphenation_unavailable: explicit page creation refuses dictionary-hyphenated lines until the canonical continuation-page writer can retain logical extraction"
-                .to_string(),
-        ));
-    }
     let first_lines = line_breaking.lines[..max_lines]
         .iter()
         .map(|line| line.text.clone())
         .collect::<Vec<_>>();
-    let continuation_lines = line_breaking.lines[max_lines..]
-        .iter()
-        .map(|line| line.text.clone())
-        .collect::<Vec<_>>();
+    let continuation_line_count = line_breaking.lines.len() - max_lines;
     let first_text = first_lines.concat();
-    let continuation_text = continuation_lines.concat();
+    let continuation_text = line_breaking.lines[max_lines..]
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<String>();
     if first_text.is_empty()
         || continuation_text.is_empty()
         || format!("{first_text}{continuation_text}") != request.replacement_text
@@ -4031,49 +4345,108 @@ fn apply_single_paragraph_page_creation(
         ));
     }
     let first_options = source_reflow_options(request, region)?;
+    let approved_font = approved_reflow_font(request)?;
     let first_output_lines = source_output_lines(&line_breaking.lines[..max_lines]);
-    let (first_output, first_apply) = edit_advanced_text_pdf_with_visual_layout(
+    crate::cancel::check_current_cancel("text reflow first-page source mutation")?;
+    let (first_output, first_apply, first_old_text_absent, first_font_resource) =
+        apply_selected_source_segment_with_layout(
         input,
-        1,
-        &request.source_text,
+        request,
         &first_text,
-        source_reflow_mode(request),
         &first_options,
-        None,
+        approved_font,
         &first_output_lines,
     )?;
     let page_width = page_info.media_box[2] - page_info.media_box[0];
     let page_height = page_info.media_box[3] - page_info.media_box[1];
-    let mut continuation_builder = PdfBuilder::new();
-    let continuation_page =
-        continuation_builder.add_page(AuthorPageSize::custom(page_width, page_height));
-    let style = TextStyle::unicode(first_options.font_size);
-    for (index, line) in continuation_lines.iter().enumerate() {
-        let baseline = region[3]
-            - first_options.font_size
-            - index as f64 * first_options.font_size * first_options.line_spacing;
-        continuation_page.draw_text(line, region[0], baseline, &style)?;
+    let continuation_page_count = continuation_line_count.div_ceil(max_lines);
+    let mut output = first_output;
+    let mut continuation_page_numbers = Vec::with_capacity(continuation_page_count);
+    let mut continuation_page_line_counts = Vec::with_capacity(continuation_page_count);
+    for (continuation_index, lines) in line_breaking.lines[max_lines..]
+        .chunks(max_lines)
+        .enumerate()
+    {
+        crate::cancel::check_current_cancel("text reflow continuation page")?;
+        let mut continuation_builder = PdfBuilder::new();
+        let continuation_font = if let Some((lookup_name, bytes)) = approved_font {
+            continuation_builder.register_truetype_font_bytes(lookup_name, bytes.to_vec())?
+        } else {
+            crate::authoring::FontFace::BuiltinUnicode
+        };
+        let continuation_page =
+            continuation_builder.add_page(AuthorPageSize::custom(page_width, page_height));
+        let style = TextStyle::new(continuation_font, first_options.font_size);
+        for (line_index, line) in lines.iter().enumerate() {
+            let baseline = region[3]
+                - first_options.font_size
+                - line_index as f64 * first_options.font_size * first_options.line_spacing;
+            if baseline < region[1] - 1e-9 {
+                return Err(WellfriendError::MalformedPdf(
+                    "text_reflow continuation pagination placed a baseline below its region"
+                        .to_string(),
+                ));
+            }
+            let visual = if line.hyphen_inserted {
+                format!("{}-", line.visual_text)
+            } else {
+                line.visual_text.clone()
+            };
+            continuation_page.draw_text(&visual, region[0], baseline, &style)?;
+        }
+        let chunk_text = lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<String>();
+        let mut continuation_bytes = continuation_builder.to_bytes()?;
+        if lines.iter().any(|line| line.hyphen_inserted) {
+            continuation_bytes =
+                wrap_authored_page_with_actual_text(&continuation_bytes, &chunk_text)?;
+        }
+        let current_engine = ContentEngine::open_bytes(output)?;
+        let continuation_engine = ContentEngine::open_bytes(continuation_bytes)?;
+        let continuation_page_number = request
+            .page
+            .checked_add(continuation_index + 1)
+            .ok_or_else(|| {
+                WellfriendError::ResourceLimit(
+                    "text_reflow continuation page number overflowed".to_string(),
+                )
+            })?;
+        output = insert_authored_page_preserving_catalog(
+            current_engine.document(),
+            continuation_engine.document(),
+            continuation_page_number,
+            Some(AuthoredPageGeometry {
+                media_box: page_info.media_box,
+                crop_box: page_info.crop_box,
+                bleed_box: page_info.bleed_box,
+                trim_box: page_info.trim_box,
+                art_box: page_info.art_box,
+                rotate: page_info.rotate,
+                user_unit: page_info.user_unit,
+            }),
+        )?;
+        continuation_page_numbers.push(continuation_page_number);
+        continuation_page_line_counts.push(lines.len());
     }
-    let continuation_bytes = continuation_builder.to_bytes()?;
-    let first_engine = ContentEngine::open_bytes(first_output)?;
-    let continuation_engine = ContentEngine::open_bytes(continuation_bytes)?;
-    let output = append_authored_page_preserving_catalog(
-        first_engine.document(),
-        continuation_engine.document(),
-    )?;
     let reopened = ContentEngine::open_bytes(output.clone())?;
-    if reopened.page_count()? != 2 {
+    let output_page_count = source_page_count
+        .checked_add(continuation_page_count)
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit("text_reflow output page count overflowed".to_string())
+        })?;
+    if reopened.page_count()? != output_page_count {
         return Err(WellfriendError::MalformedPdf(
-            "text_reflow output_reopen_failed: appended page count was not preserved".to_string(),
+            "text_reflow output_reopen_failed: inserted page count was not preserved".to_string(),
         ));
     }
-    let extracted = format!(
-        "{}{}",
-        reopened.get_page_text(1)?,
-        reopened.get_page_text(2)?
-    );
-    if !layout_extraction_equivalent(&extracted, &request.replacement_text)
-        || extracted.contains(&request.source_text)
+    let mut extracted = reopened.get_page_text(request.page)?;
+    for continuation_page_number in &continuation_page_numbers {
+        extracted.push_str(&reopened.get_page_text(*continuation_page_number)?);
+    }
+    if !layout_extraction_equivalent(&extracted, &expected_combined_extraction)
+        || !first_old_text_absent
     {
         return Err(WellfriendError::MalformedPdf(
             "text_reflow extraction_validation_failed after explicit page creation".to_string(),
@@ -4081,7 +4454,8 @@ fn apply_single_paragraph_page_creation(
     }
     report.applied_mode = Some(TrueEditingMode::SemanticDocument);
     report.refusal = None;
-    report.scope_of_movement = "semantic_single_paragraph_explicit_new_page_flow".to_string();
+    report.scope_of_movement =
+        "semantic_single_paragraph_explicit_multi_page_flow".to_string();
     report.line_breaking = line_breaking;
     report.overflow_status = OverflowStatus::FitAfterPageFlow;
     report.constraints.infeasible = false;
@@ -4091,7 +4465,7 @@ fn apply_single_paragraph_page_creation(
         "required": true,
         "policy": "allow_page_creation",
         "page_size": [page_width, page_height],
-        "pages_inserted": 1,
+        "pages_inserted": continuation_page_count,
     });
     report
         .constraints
@@ -4104,25 +4478,57 @@ fn apply_single_paragraph_page_creation(
     report.constraints.fixed_constraint_count =
         report.constraints.hard_constraints.len() + report.constraints.soft_constraints.len();
     report.pages_columns_affected = vec![
-        json!({"page": 1, "kind": "source_region", "lines": first_lines.len()}),
-        json!({"page": 2, "kind": "created_continuation_page", "lines": continuation_lines.len()}),
+        json!({"page": request.page, "kind": "source_region", "lines": first_lines.len()}),
     ];
+    report.pages_columns_affected.extend(
+        continuation_page_numbers
+            .iter()
+            .zip(&continuation_page_line_counts)
+            .map(|(page, line_count)| {
+                json!({"page": page, "kind": "created_continuation_page", "lines": line_count})
+            }),
+    );
     report.source_instructions_regenerated = report.region.source_instructions.clone();
     report.fonts_resources_changed = vec![
-        format!(
-            "generated_type0_font_resource:{}",
-            first_apply.font_resource
-        ),
+        first_font_resource,
         "continuation_page_authoring_unicode_font".to_string(),
     ];
-    report.flow_graph_changes = vec![json!({
-        "kind": "next_page",
-        "source_page": 1,
-        "target_page": 2,
-        "text_split": {"first_page": first_text, "second_page": continuation_text},
-        "source_linked": true,
-    })];
-    report.reading_order_changes = vec![json!({"relationship": "next_page", "confidence": 1.0})];
+    report.flow_graph_changes = continuation_page_numbers
+        .iter()
+        .enumerate()
+        .map(|(index, target_page)| {
+            let source_page = if index == 0 {
+                request.page
+            } else {
+                continuation_page_numbers[index - 1]
+            };
+            json!({
+                "kind": "next_page",
+                "source_page": source_page,
+                "target_page": target_page,
+                "source_linked": true,
+            })
+        })
+        .collect();
+    report.reading_order_changes = continuation_page_numbers
+        .iter()
+        .enumerate()
+        .map(|(index, target_page)| json!({
+            "relationship": "next_page",
+            "source_page": if index == 0 { request.page } else { continuation_page_numbers[index - 1] },
+            "target_page": target_page,
+            "confidence": 1.0,
+        }))
+        .collect();
+    if tagged_source {
+        report.structure_changes.extend(continuation_page_numbers.iter().map(|page| json!({
+            "kind": "continuation_page_structure_ownership",
+            "source_page": request.page,
+            "continuation_page": page,
+            "status": "semantic_relationship_recorded; explicit StructTree attachment available through DocumentSecurity or ObjectGraph transaction",
+            "silent_pdfua_claim": false,
+        })));
+    }
     let interactive_after = interactive_report(&reopened)?;
     let catalog_reference_preservation = json!({
         "forms_preserved": interactive_before.forms.has_acroform == interactive_after.forms.has_acroform,
@@ -4131,23 +4537,23 @@ fn apply_single_paragraph_page_creation(
         "page_labels_preserved": page_ops.page_labels_present == interactive_after.page_operations.page_labels_present,
         "named_destinations_preserved": page_ops.named_destinations_present == interactive_after.page_operations.named_destinations_present,
         "embedded_files_preserved": page_ops.embedded_files_present == interactive_after.page_operations.embedded_files_present,
-        "repair_scope": "append_only: existing page references retain their copied page identity; inserted-page renumbering and non-append destination repair remain refused",
+        "repair_scope": "ordered insertion: existing page references remain stable, page-tree ancestor Counts are incremented, and PageLabels number-tree indexes are shifted",
     });
     report.validation_evidence = json!({
         "output_reopened": true,
-        "page_count": 2,
+        "page_count": output_page_count,
         "source_rewrite": first_apply,
-        "page_tree_writer": "canonical_writer_append_authored_page_preserving_catalog",
+        "page_tree_writer": "canonical_writer_insert_authored_page_preserving_catalog",
         "extraction_exact_under_layout_whitespace_policy": true,
         "original_source_text_absent": true,
         "catalog_reference_preservation": catalog_reference_preservation,
-        "unaffected_content_proof": "all pre-existing catalog objects are copied through the canonical writer; continuation has no inferred association with source interactive objects",
+        "unaffected_content_proof": "all pre-existing catalog objects are copied through the canonical writer and retain stable page references; PageLabels indexes are shifted at the insertion boundary",
     });
     report.inverse_operation = Some(json!({
         "kind": "exact_preimage_restore",
         "scope": "ReflowMutationSession retained preimage for non-incremental canonical page-tree output",
-        "page_count_before": 1,
-        "page_count_after": 2,
+        "page_count_before": source_page_count,
+        "page_count_after": output_page_count,
     }));
     report.undo_proof = json!({
         "status": "requires_reflow_mutation_session_execution",
@@ -4193,7 +4599,13 @@ pub fn apply_reflow_document(
         }
         let engine = ContentEngine::open_bytes(input.to_vec())?;
         if request.page < engine.page_count()? {
-            return apply_single_paragraph_existing_next_page_flow(input, request, preliminary);
+            match apply_single_paragraph_existing_next_page_flow(input, request, preliminary.clone()) {
+                Ok(applied) => return Ok(applied),
+                Err(WellfriendError::UnsupportedFeature(_)) if request.allow_page_creation => {
+                    return apply_single_paragraph_page_creation(input, request, preliminary);
+                }
+                Err(error) => return Err(error),
+            }
         }
         if request.allow_page_creation {
             return apply_single_paragraph_page_creation(input, request, preliminary);
@@ -6201,7 +6613,7 @@ fn semantic_layout_from_graph(
         }),
         flow_graph: json!({
             "cross_column_flow": "one approved explicit same-page next_column boundary is source-linked and executable: LTR rightward or RTL leftward, each in the same reading band and semantically/scene-proven empty; canonical XY-cut candidates remain analysis-only",
-            "cross_page_flow": "typed next_page candidates; one approved source-linked existing-empty-next-page boundary and one catalog-preserving append-only new-page boundary are implemented",
+            "cross_page_flow": "typed next_page candidates; one approved source-linked existing-empty-next-page boundary and ordered catalog-preserving continuation-page insertion immediately after the edited page are implemented",
             "page_creation": "implemented_only_for_explicitly_approved_catalog_preserving_single_page_semantic_paragraph_overflow",
             "tables_formulas": "not_classified",
             "headers_footers": {
@@ -6281,7 +6693,7 @@ pub fn flow_graph_report(input: &[u8]) -> Result<Value> {
             "same_page_next_region": "implemented_only_for_explicit_below_source_proven_empty_target",
             "same_page_next_column": "implemented_only_for_explicit_horizontal_ltr_rightward_or_rtl_leftward_same_band_proven_empty_target",
             "existing_next_page": "implemented_only_for_identical_box_proven_empty_target",
-            "page_creation": "implemented_with_catalog_preserving_append_only_limits",
+            "page_creation": "implemented_with_catalog_preserving_ordered_insertion_after_the_edited_page",
             "same_page_dependency_movement": "implemented_only_for_up_to_eight caller-named pairwise-collision-free source-resolved vector paths through AdvancedEditing; text, image, annotation, form, ambiguous, and generic-neighbor movement refuse",
             "same_page_source_link_annotation_movement": "implemented_only_for_up_to_eight caller-named /Link annotations whose expected source rectangles overlap the selected text; /Rect and existing /QuadPoints move while each /A or /Dest stays unchanged",
         },
@@ -6289,13 +6701,104 @@ pub fn flow_graph_report(input: &[u8]) -> Result<Value> {
 }
 
 pub fn approve_structure_correction(input: &[u8], correction_json: &str) -> Result<Value> {
-    let _correction: Value = serde_json::from_str(correction_json)
+    let correction: Value = serde_json::from_str(correction_json)
         .map_err(|err| WellfriendError::invalid_input(format!("invalid correction JSON: {err}")))?;
-    let _ = input;
-    Err(WellfriendError::UnsupportedFeature(
-        "text_reflow structure_update_failed: semantic structure correction has no executable source-linked transaction yet"
-            .to_string(),
-    ))
+    let semantic_node_id = correction
+        .get("semantic_node_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            WellfriendError::invalid_input(
+                "structure correction requires semantic_node_id from the current semantic layout",
+            )
+        })?;
+    let accepted_relationships = correction
+        .get("accepted_relationships")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            WellfriendError::invalid_input(
+                "structure correction requires accepted_relationships",
+            )
+        })?
+        .iter()
+        .map(|value| {
+            value.as_str().map(str::to_string).ok_or_else(|| {
+                WellfriendError::invalid_input(
+                    "accepted_relationships entries must be strings",
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if accepted_relationships.is_empty() {
+        return Err(WellfriendError::invalid_input(
+            "structure correction must approve at least one relationship",
+        ));
+    }
+    let allowed_relationships = [
+        "paragraph_to_paragraph",
+        "column_to_column",
+        "page_body_to_next_page_body",
+        "heading_to_body",
+        "list_item_to_next_item",
+        "footnote_marker_to_body",
+        "caption_to_figure_table",
+        "paragraph_to_anchor",
+        "artifact",
+        "reading_order",
+        "tag_parent",
+    ];
+    if let Some(unknown) = accepted_relationships
+        .iter()
+        .find(|relationship| !allowed_relationships.contains(&relationship.as_str()))
+    {
+        return Err(WellfriendError::invalid_input(format!(
+            "unsupported structure relationship '{unknown}'"
+        )));
+    }
+    let semantic = analyze_semantic_layout(input, None)?;
+    let node = semantic
+        .nodes
+        .iter()
+        .find(|node| node.node_id == semantic_node_id)
+        .ok_or_else(|| {
+            WellfriendError::invalid_input(
+                "structure correction semantic_node_id is stale or absent from this revision",
+            )
+        })?;
+    let correction_bytes = serde_json::to_vec(&correction).map_err(|err| {
+        WellfriendError::invalid_input(format!("structure correction serialization failed: {err}"))
+    })?;
+    let revision = digest_hex(input);
+    let approval_token = stable_id(
+        "structure-approval-v2",
+        &[
+            revision.as_bytes(),
+            semantic_node_id.as_bytes(),
+            correction_bytes.as_slice(),
+        ],
+    );
+    Ok(json!({
+        "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
+        "status": "approval_recorded",
+        "approval_token": approval_token,
+        "revision_sha256": revision,
+        "semantic_node_id": semantic_node_id,
+        "node_page": node.page,
+        "node_type": node.node_type,
+        "source_scene_nodes": node.source_scene_nodes,
+        "source_instructions": node.source_instructions,
+        "accepted_relationships": accepted_relationships,
+        "execution_contract": {
+            "owner": "UniversalEditingV2",
+            "operation_kind": "structure_correction",
+            "required_mode": TrueEditingMode::SemanticDocument,
+            "revision_bound": true,
+            "atomic": true,
+            "source_linked": true,
+        },
+        "no_change_until_apply": true,
+    }))
 }
 
 pub fn no_overlay_no_clipping_report(
@@ -6540,7 +7043,7 @@ pub fn text_reflow_report(input: &[u8]) -> Result<Value> {
             "supported GeometricBlock apply removes one provenance-resolved source string and writes shaped Type0 text through the canonical incremental writer",
             "an explicit GeometricBlock transaction may move a bounded collision-free source-resolved same-page vector path set through AdvancedEditing when every stable identity and approved dependency edge is supplied; text/image/form movement, unknown neighbors, collisions, and reference repair remain exact refusals",
             "an explicit GeometricBlock transaction may move a bounded caller-associated same-page /Link set when every exact expected rectangle overlaps the selected source region; /Rect and existing /QuadPoints move, /A or /Dest is preserved, and stale, generic, reply, widget, form, cross-page, or collision movement refuses",
-            "SemanticDocument may rewrite one exact page-local semantic paragraph whose deterministic text identity matches SourceEditing provenance after explicit confidence approval; it may flow to one explicit, below-source same-page next_region or one explicit horizontal next_column through a positioned canonical source stream (LTR rightward or RTL leftward), to one identical-box existing next-page region, or append one continuation page through the catalog-preserving direct-root-Kids writer; duplicate/partial selections, inferred cross-column flow, non-append insertion, and catalog-reference repair remain exact refusals",
+            "SemanticDocument may rewrite one exact page-local semantic paragraph whose deterministic text identity matches SourceEditing provenance after explicit confidence approval; it may flow to one explicit, below-source same-page next_region or one explicit horizontal next_column through a positioned canonical source stream (LTR rightward or RTL leftward), to one identical-box existing next-page region, or paginate across as many bounded continuation pages as required immediately after the edited page through the catalog-preserving page-tree writer; duplicate semantic identity and inferred cross-column flow remain approval boundaries",
             "full editable tables, formulas, OCR, and final accessibility repair remain DocumentSubsystems/35"
         ],
     }))
@@ -6551,16 +7054,16 @@ pub fn text_reflow_feature_matrix() -> Value {
         "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
         "rows": [
             {"area": "geometric_text_regions", "status": TextReflowStatus::ImplementedWithLimits, "canonical_extension": "EditingTransactions scene nodes plus SourceEditing source provenance"},
-            {"area": "paragraph_style_model", "status": TextReflowStatus::ImplementedWithLimits, "source_linked": true, "executable_output_boundary": "preserve_original_per_run replays existing CMap/font size/text state/DeviceGray-RGB-CMYK paint for horizontal LTR ranges. Changed-length text assigns each complete replacement grapheme to a deterministic proportional source-style owner without flattening style order or splitting a grapheme; one fully selected text-state-only MCID BDC is relocated without duplicate MCID ownership. Links, nested/partial tags, clipping, arbitrary paint spaces, vertical writing, and bidi remain exact refusals"},
+            {"area": "paragraph_style_model", "status": TextReflowStatus::ImplementedWithLimits, "source_linked": true, "executable_output_boundary": "preserve_original_per_run reuses exact source CMaps when possible and otherwise shapes an approved embedded Type0 replacement while retaining per-grapheme font size, spacing, scaling, rise, render mode, and exact source paint commands. Horizontal, bidi, and upright zero-offset vertical clipping replacements plus partial or nested tagged replacements remain inside the original BT/ET and marked-content scopes; selected source codes are absent from the reachable revision."},
             {"area": "unicode_line_breaking", "status": TextReflowStatus::VerifiedWithLimits, "grapheme_safe": true},
             {"area": "hyphenation", "status": TextReflowStatus::ImplementedWithLimits, "provider": HYPHENATION_PROVIDER, "languages": ["en-us", "es"], "unknown_language_not_guessed": true, "inserted_hyphen_source_output": "canonical_generated_type0_visual_hyphen_with_empty_tounicode_mapping", "source_soft_hyphen": "refused"},
             {"area": "preview_layout", "status": TextReflowStatus::Implemented, "algorithm": "deterministic_greedy"},
             {"area": "final_layout", "status": TextReflowStatus::ImplementedWithLimits, "algorithm": "bounded_knuth_plass_style_dp"},
             {"area": "constraint_solver", "status": TextReflowStatus::ImplementedWithLimits, "unknown_and_locked_objects_never_move": true, "explicit_source_linked_path_movement": "bounded collision-free same-page vector path set through AdvancedEditing; all other objects refuse", "explicit_source_linked_link_annotation_movement": "bounded same-page /Link set with caller-provided source rectangles and dependency edges; action/destination stays unchanged"},
-            {"area": "overflow_policy", "status": TextReflowStatus::ImplementedWithLimits, "silent_clipping": false, "font_reduction_not_first": true, "implemented_flow_stages": ["explicit_same_page_dependency_linked_vector_path_move_set", "explicit_same_page_next_region", "explicit_same_page_ltr_or_rtl_next_column", "identical_box_existing_next_page", "catalog_preserving_explicit_page_append"], "remaining_stages": "broad_dependency_movement_and_inferred_cross_column_flow_unavailable"},
+            {"area": "overflow_policy", "status": TextReflowStatus::ImplementedWithLimits, "silent_clipping": false, "font_reduction_not_first": true, "implemented_flow_stages": ["explicit_same_page_dependency_linked_vector_path_move_set", "explicit_same_page_next_region", "explicit_same_page_ltr_or_rtl_next_column", "identical_box_existing_next_page", "catalog_preserving_ordered_continuation_page_insertion_after_edited_page"], "remaining_stages": "broad_dependency_movement_and_inferred_cross_column_flow_unavailable"},
             {"area": "semantic_reconstruction", "status": TextReflowStatus::ImplementedWithLimits, "canonical_extension": "NativeRenderer semantic text model plus EditingTransactions occurrence graph", "runtime_nodes": ["page_region", "figure", "block", "paragraph", "heading", "list", "list_item", "caption", "footnote_marker", "footnote_body", "header", "footer", "sidebar", "line", "word", "glyph"], "application_boundary": "one exact page-local semantic paragraph matched to SourceEditing provenance; duplicate/partial selections refuse and inferred semantic types require the report confidence/review policy"},
             {"area": "reading_order", "status": TextReflowStatus::ImplementedWithLimits, "cycle_resolution": "remove_lowest_confidence_then_edge_id", "accuracy_metrics": "annotated two-column/footnote cycle fixture scores exact order, Kendall-style agreement, column order, and footnote placement; corpus coverage still incomplete"},
-            {"area": "cross_column_cross_page_flow", "status": TextReflowStatus::ImplementedWithLimits, "page_creation_policy_required": true, "implemented_boundary": ["one approved SemanticDocument paragraph to one explicit below-source semantically proven-empty same-page next_region through one positioned canonical source stream", "one approved horizontal SemanticDocument paragraph to one explicit same-band semantically proven-empty next_column through one positioned canonical source stream: LTR rightward or RTL leftward", "one approved SemanticDocument paragraph to one semantically proven-empty existing next-page region", "one catalog-preserving direct-root-Kids single-page SemanticDocument paragraph to one explicit appended page", "up to eight explicit source-associated same-page /Link rectangles with unchanged actions/destinations"], "remaining": "broad dependency movement, inferred columns, insertion/retargeting repair, non-Link annotations, tags"},
+            {"area": "cross_column_cross_page_flow", "status": TextReflowStatus::ImplementedWithLimits, "page_creation_policy_required": true, "implemented_boundary": ["one approved SemanticDocument paragraph to one explicit below-source semantically proven-empty same-page next_region through one positioned canonical source stream", "one approved horizontal SemanticDocument paragraph to one explicit same-band semantically proven-empty next_column through one positioned canonical source stream: LTR rightward or RTL leftward", "one approved SemanticDocument paragraph to one semantically proven-empty existing next-page region", "one catalog-preserving SemanticDocument paragraph paginated over repeated line-capacity-bounded continuations inserted immediately after the edited page at an arbitrary ordered page-tree boundary", "up to eight explicit source-associated same-page /Link rectangles with unchanged actions/destinations"], "remaining": "broad dependency movement, inferred columns, meaning-level association repair, non-Link annotations, and custom tag ownership require governed semantic or object-graph input"},
             {"area": "table_formula_editing", "status": TextReflowStatus::DeferredDocumentSubsystems},
             {"area": "accessibility_repair", "status": TextReflowStatus::DeferredDocumentSecurity},
             {"area": "bindings", "status": TextReflowStatus::ImplementedWithLimits, "surfaces": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java"], "rust_cli_queries": ["overflow", "constraints", "confidence", "local_output_validation"], "full_runtime_parity": "still_open"},
@@ -6902,6 +7405,11 @@ mod tests {
             page: 1,
             source_text: source.into(),
             replacement_text: replacement.into(),
+            source_instruction_id: None,
+            target_logical_scalar_range: None,
+            target_stream_object: None,
+            target_stream_generation: None,
+            target_decoded_byte_range: None,
             region: Some([10.0, 10.0, 260.0, 90.0]),
             allowed_expansion_region: None,
             next_region: None,
@@ -6912,6 +7420,7 @@ mod tests {
             language: Some("en".into()),
             direction: None,
             font_policy: "rebuild_subset_or_generated_type0".into(),
+            approved_font_asset: None,
             alignment: "left".into(),
             justify_last_line: false,
             hyphenation: true,
@@ -7336,13 +7845,15 @@ mod tests {
     }
 
     #[test]
-    fn arabic_full_justification_refuses_without_a_real_kashida_serializer() {
-        let input = fixture(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n");
+    fn arabic_full_justification_uses_bounded_shaped_spacing_policy() {
         let mut request = request("HELLO", "HELLO");
         request.alignment = "justify".into();
         request.language = Some("ar".into());
-        let error = apply_reflow_region(&input, &request).expect_err("Arabic kashida boundary");
-        assert!(error.to_string().contains("shaping_failed"));
+        let options = source_reflow_options(&request, [10.0, 40.0, 190.0, 160.0])
+            .expect("Arabic justification policy");
+        assert_eq!(options.alignment, GeneratedTextAlignment::Justify);
+        assert!(options.max_word_spacing > 0.0);
+        assert!(options.max_character_spacing > 0.0);
     }
 
     #[test]
@@ -8326,7 +8837,7 @@ mod tests {
         );
         assert_eq!(
             report.validation_evidence["page_tree_writer"],
-            "canonical_writer_append_authored_page_preserving_catalog"
+            "canonical_writer_insert_authored_page_preserving_catalog"
         );
     }
 

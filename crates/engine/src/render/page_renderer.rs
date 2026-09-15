@@ -73,7 +73,7 @@ use crate::render::plan::{
     PatternPathDescriptor, PlanDispatcher, RenderPlan, ResolvedInlineImageColorSpace,
     ShadingDescriptor, TextArrayItem, TextDescriptor,
 };
-use crate::render::shading::{ShadingRenderOptions, ShadingRenderer};
+use crate::render::shading::{ShadingRenderOptions, ShadingRenderer, MAX_SHADING_WORK_UNITS};
 use crate::render::text_decode::{try_decode_text_bytes_with_resolver, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
 use crate::render::vector_fallback::{
@@ -82,6 +82,7 @@ use crate::render::vector_fallback::{
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
@@ -5227,6 +5228,8 @@ struct RenderState<'a> {
     /// the tiling-pattern tile loop so a runaway page can be stopped from
     /// outside. Child states (Form groups, soft masks) share the same token.
     cancel: CancelToken,
+    /// Aggregate pixel-work budget shared with child groups and soft masks.
+    shading_work_budget: Arc<AtomicU64>,
     /// First fatal renderer condition observed while interpreting the page.
     /// Void operator handlers record here so public page/tile APIs can return
     /// a typed error after safely unwinding their local state.
@@ -6899,6 +6902,7 @@ impl<'a> RenderState<'a> {
             inline_data_pending_end: false,
             base_ctm: Transform2D::identity(),
             cancel: CancelToken::none(),
+            shading_work_budget: Arc::new(AtomicU64::new(MAX_SHADING_WORK_UNITS)),
             fatal_render_error: None,
             decode_scheduler: RenderDecodeScheduler::new(&decode_limits),
             temporary_scheduler: RenderDecodeScheduler::new(&temporary_limits),
@@ -8065,6 +8069,7 @@ impl<'a> RenderState<'a> {
         filters: &[&str],
         decode_params: &[Option<PdfDictionary>],
         color_space_override: Option<&(String, PdfObject)>,
+        image_dictionary: &PdfDictionary,
     ) -> Result<RawImage> {
         let estimated = estimate_inline_image_decode_bytes(data.len(), width, height, bpc);
         let limits = self.decode_limits.clone();
@@ -8074,32 +8079,23 @@ impl<'a> RenderState<'a> {
             &self.cancel,
             "renderer inline image decode",
             || {
-                if let Some((resolved_name, resolved_object)) = color_space_override {
-                    ImageDecoder::decode_inline_with_resolved_color_space_and_param_array(
-                        data,
-                        width,
-                        height,
-                        bpc,
-                        resolved_name,
-                        Some(resolved_object),
-                        filters,
-                        decode_params,
-                        &limits,
-                        Some(self.engine.document().reader()),
-                        color_options,
-                    )
-                } else {
-                    ImageDecoder::decode_inline_with_param_array(
-                        data,
-                        width,
-                        height,
-                        bpc,
-                        color_space,
-                        filters,
-                        decode_params,
-                        &limits,
-                    )
-                }
+                let resolved_name = color_space_override
+                    .map(|(name, _)| name.as_str())
+                    .unwrap_or(color_space);
+                ImageDecoder::decode_inline_with_resolved_image_dictionary_and_param_array(
+                    data,
+                    width,
+                    height,
+                    bpc,
+                    resolved_name,
+                    color_space_override.map(|(_, object)| object),
+                    filters,
+                    decode_params,
+                    image_dictionary,
+                    &limits,
+                    Some(self.engine.document().reader()),
+                    color_options,
+                )
             },
         )
     }
@@ -11331,6 +11327,7 @@ impl<'a> RenderState<'a> {
             inline_data_pending_end: false,
             base_ctm: mask_base_ctm,
             cancel: self.cancel.clone(),
+            shading_work_budget: Arc::clone(&self.shading_work_budget),
             fatal_render_error: None,
             decode_scheduler: self.decode_scheduler.clone(),
             temporary_scheduler: self.temporary_scheduler.clone(),
@@ -11659,6 +11656,15 @@ impl<'a> RenderState<'a> {
                 return;
             }
         };
+        let image_dictionary = match inline_image_pdf_dictionary(&dict) {
+            Ok(dictionary) => dictionary,
+            Err(error) => {
+                self.record_fatal_render_error(format!(
+                    "inline image dictionary rejected: {error}"
+                ));
+                return;
+            }
+        };
         let interpolate = match inline_optional_bool(&dict, "Interpolate", "inline image") {
             Ok(interpolate) => interpolate,
             Err(reason) => {
@@ -11694,7 +11700,7 @@ impl<'a> RenderState<'a> {
                 filters: filters_for_plan,
                 is_mask,
                 is_inline: true,
-                requires_full_image_postprocessing: false,
+                requires_full_image_postprocessing: !is_mask && dict.contains_key("Decode"),
                 decode_fingerprint: inline_dict_entry_fingerprint(&dict, "Decode"),
                 decode_params_fingerprint: inline_dict_entry_fingerprint(&dict, "DecodeParms"),
                 image_mask_fingerprint: inline_image_mask_fingerprint(&dict, is_mask),
@@ -11799,6 +11805,7 @@ impl<'a> RenderState<'a> {
                     &filters,
                     &decode_params,
                     color_space_override.as_ref(),
+                    &image_dictionary,
                 ),
             }
         } else {
@@ -11811,6 +11818,7 @@ impl<'a> RenderState<'a> {
                 &filters,
                 &decode_params,
                 color_space_override.as_ref(),
+                &image_dictionary,
             )
         } {
             Ok(raw) => raw,
@@ -12824,6 +12832,7 @@ impl<'a> RenderState<'a> {
             inline_data_pending_end: false,
             base_ctm: group_base_ctm,
             cancel: self.cancel.clone(),
+            shading_work_budget: Arc::clone(&self.shading_work_budget),
             fatal_render_error: None,
             decode_scheduler: self.decode_scheduler.clone(),
             temporary_scheduler: self.temporary_scheduler.clone(),
@@ -13315,7 +13324,7 @@ impl<'a> RenderState<'a> {
             ));
             return;
         }
-        ShadingRenderer::paint_with_options(
+        if let Err(reason) = ShadingRenderer::paint_with_options_cancellable(
             &shading_dict,
             &ctm,
             &self.viewport,
@@ -13323,7 +13332,11 @@ impl<'a> RenderState<'a> {
             reader,
             mesh_data.as_deref().map(Vec::as_slice),
             ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance()),
-        );
+            &self.cancel,
+            &self.shading_work_budget,
+        ) {
+            self.record_fatal_render_error(reason);
+        }
     }
 
     /// Paint a pattern fill for the current path. Dispatches on /PatternType.
@@ -13825,7 +13838,7 @@ impl<'a> RenderState<'a> {
             self.install_clip_node(saved_clip);
             return;
         }
-        ShadingRenderer::paint_with_options(
+        if let Err(reason) = ShadingRenderer::paint_with_options_cancellable(
             &shading_dict,
             &ctm,
             &self.viewport,
@@ -13833,7 +13846,11 @@ impl<'a> RenderState<'a> {
             reader,
             mesh_data.as_deref().map(Vec::as_slice),
             ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance()),
-        );
+            &self.cancel,
+            &self.shading_work_budget,
+        ) {
+            self.record_fatal_render_error(reason);
+        }
 
         // Restore the exact previous clip (restore_clip sets directly).
         self.install_clip_node(saved_clip);
@@ -19952,6 +19969,7 @@ fn hash_operand(hash: &mut u64, operand: &Operand, depth: usize) {
     }
 
     match operand {
+        Operand::Null => fnv1a_update(hash, b"null"),
         Operand::Integer(value) => {
             fnv1a_update(hash, b"int");
             fnv1a_update(hash, &value.to_le_bytes());
@@ -19999,6 +20017,7 @@ fn inline_decode_params(
         return Ok(vec![None; filter_count]);
     };
     match value {
+        Operand::Null => Ok(vec![None; filter_count]),
         Operand::Dictionary(entries) => {
             if filter_count == 0 {
                 return Err(WellfriendError::MalformedPdf(
@@ -20013,8 +20032,10 @@ fn inline_decode_params(
             .iter()
             .map(|item| match item {
                 Operand::Dictionary(entries) => Ok(Some(inline_operand_dictionary(entries)?)),
+                Operand::Null => Ok(None),
                 _ => Err(WellfriendError::MalformedPdf(
-                    "inline DecodeParms array contains a non-dictionary".to_string(),
+                    "inline DecodeParms array contains an entry other than a dictionary or null"
+                        .to_string(),
                 )),
             })
             .collect(),
@@ -20041,8 +20062,24 @@ fn inline_operand_dictionary(entries: &[(String, Operand)]) -> Result<PdfDiction
     Ok(dict)
 }
 
+fn inline_image_pdf_dictionary(
+    entries: &std::collections::HashMap<String, Operand>,
+) -> Result<PdfDictionary> {
+    let mut dictionary = PdfDictionary::empty();
+    for (key, value) in entries {
+        let object = inline_operand_object(value).ok_or_else(|| {
+            WellfriendError::MalformedPdf(format!(
+                "inline image /{key} contains an unsupported object"
+            ))
+        })?;
+        dictionary.insert(key, object);
+    }
+    Ok(dictionary)
+}
+
 fn inline_operand_object(value: &Operand) -> Option<PdfObject> {
     match value {
+        Operand::Null => Some(PdfObject::Null),
         Operand::Integer(value) => Some(PdfObject::Integer(*value)),
         Operand::Real(value) => Some(PdfObject::Real(*value)),
         Operand::Boolean(value) => Some(PdfObject::Boolean(*value)),
@@ -21566,7 +21603,7 @@ fn estimate_content_operation_bytes(op: &ContentOperation) -> usize {
 fn estimate_operand_bytes(operand: &crate::content::operation::Operand) -> usize {
     use crate::content::operation::Operand;
     match operand {
-        Operand::Integer(_) | Operand::Real(_) | Operand::Boolean(_) => {
+        Operand::Null | Operand::Integer(_) | Operand::Real(_) | Operand::Boolean(_) => {
             std::mem::size_of_val(operand)
         }
         Operand::Name(name) => name.len(),

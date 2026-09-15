@@ -4180,7 +4180,7 @@ pub(crate) fn decode_inline_image_region(
     let decode_params = inline_image_decode_params(&dict).ok_or_else(|| {
         WellfriendError::UnsupportedFeature("unsupported inline DecodeParms operand".to_string())
     })?;
-    let raw = ImageDecoder::decode_inline_with_resolved_color_space_and_param_array(
+    let raw = ImageDecoder::decode_inline_with_resolved_image_dictionary_and_param_array(
         data,
         width,
         height,
@@ -4189,6 +4189,7 @@ pub(crate) fn decode_inline_image_region(
         color_space.object.as_ref(),
         &filter_refs,
         &decode_params,
+        &dict,
         &crate::filters::DecodeLimits::default(),
         reader,
         cmm::ColorTransformOptions::default(),
@@ -4713,6 +4714,7 @@ fn inline_image_short_key(key: &str) -> Option<&'static str> {
 
 fn operand_to_pdf_object(operand: &Operand) -> Option<PdfObject> {
     match operand {
+        Operand::Null => Some(PdfObject::Null),
         Operand::Integer(value) => Some(PdfObject::Integer(*value)),
         Operand::Real(value) => Some(PdfObject::Real(*value)),
         Operand::Boolean(value) => Some(PdfObject::Boolean(*value)),
@@ -4798,6 +4800,7 @@ fn inline_image_decode_params(dict: &PdfDictionary) -> Option<Vec<Option<PdfDict
         return Some(vec![None; filter_count]);
     };
     match value {
+        PdfObject::Null => Some(vec![None; filter_count]),
         PdfObject::Dictionary(params) if filter_count > 0 => {
             let mut out = vec![None; filter_count];
             out[0] = Some(params.clone());

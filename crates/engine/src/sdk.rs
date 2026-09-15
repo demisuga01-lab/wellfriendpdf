@@ -1269,8 +1269,8 @@ pub fn source_editing_path_edit_json(
     ))
 }
 
-/// Images intentionally fail closed until canonical occurrence-to-source
-/// instruction identity is available.
+/// Report source-owned image occurrences and exact edit candidates. Ambiguous
+/// selections remain non-mutating until the v2 planner binds one occurrence.
 pub fn source_editing_image_eligibility_json(
     bytes: &[u8],
     page: usize,
@@ -1281,6 +1281,215 @@ pub fn source_editing_image_eligibility_json(
         "source_editing_operator_image_eligibility",
         &crate::source_editing::operator_image_eligibility(&input, page),
     )
+}
+
+/// Universal editing v2 capability registry. This registry is the canonical
+/// source for generated product claims; unverified rows are never promoted by
+/// the binding layer.
+pub fn universal_editing_capabilities_v2_json() -> Result<String> {
+    envelope(
+        "universal_editing_capabilities_v2",
+        &crate::universal_editing::universal_capability_registry_v2(),
+    )
+}
+
+/// Build a lazy, source-linked universal editing document model for a bounded
+/// page window. Empty options select the v2 defaults.
+pub fn universal_editing_analyze_v2_json(
+    bytes: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    crate::cancel::check_current_cancel("universal editing analyze input")?;
+    let input = mutation_input(bytes, password)?;
+    crate::cancel::check_current_cancel("universal editing analyze decrypted input")?;
+    let options = options_json
+        .map(serde_json::from_str::<crate::universal_editing::UniversalAnalyzeOptionsV2>)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    envelope(
+        "universal_editing_analyze_v2",
+        &crate::universal_editing::analyze_universal_document_v2(&input, &options)?,
+    )
+}
+
+/// Compile retained render plans, execute native pixel rendering, and compare
+/// selected pages against optional caller-supplied RGBA reference rasters.
+/// Native success is kept distinct from external/corpus qualification.
+pub fn universal_render_qualification_v2_json(
+    bytes: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    crate::cancel::check_current_cancel("universal render qualification input")?;
+    let input = mutation_input(bytes, password)?;
+    crate::cancel::check_current_cancel("universal render qualification decrypted input")?;
+    let options = options_json
+        .map(serde_json::from_str::<
+            crate::universal_editing::UniversalRenderQualificationOptionsV2,
+        >)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    envelope(
+        "universal_render_qualification_v2",
+        &crate::universal_editing::qualify_universal_render_v2(&input, &options)?,
+    )
+}
+
+/// Inspect one indirect object and return the revision-bound fingerprint used
+/// by a governed `object_graph` universal edit request.
+pub fn universal_editing_inspect_object_v2_json(
+    bytes: &[u8],
+    number: u32,
+    generation: u16,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    crate::cancel::check_current_cancel("universal object inspection input")?;
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "universal_editing_inspect_object_v2",
+        &crate::universal_editing::inspect_universal_object_v2(
+            &input,
+            number,
+            generation,
+        )?,
+    )
+}
+
+/// Plan a universal v2 edit without changing document bytes.
+pub fn universal_editing_plan_v2_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    crate::cancel::check_current_cancel("universal editing plan input")?;
+    let input = mutation_input(bytes, password)?;
+    crate::cancel::check_current_cancel("universal editing plan decrypted input")?;
+    let request =
+        serde_json::from_str::<crate::universal_editing::UniversalEditRequestV2>(request_json)
+            .map_err(json_err)?;
+    envelope(
+        "universal_editing_plan_v2",
+        &crate::universal_editing::plan_universal_edit_v2(&input, &request)?,
+    )
+}
+
+/// Bind explicit candidate/font/rewrite decisions to a plan and document
+/// revision. The digest prevents accidental use against a different plan;
+/// deployments may additionally sign this token with their authorization key.
+pub fn universal_editing_approval_v2_json(
+    plan_json: &str,
+    decision_json: &str,
+) -> Result<String> {
+    let plan =
+        serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
+            .map_err(json_err)?;
+    let decision = serde_json::from_str::<
+        crate::universal_editing::UniversalApprovalDecisionV2,
+    >(decision_json)
+    .map_err(json_err)?;
+    envelope(
+        "universal_editing_approval_v2",
+        &crate::universal_editing::create_universal_approval_token_v2(&plan, decision)?,
+    )
+}
+
+/// Apply a previously planned universal v2 transaction. Approval is mandatory
+/// when the plan says `approval_required`; no-change outcomes return the input
+/// bytes with a typed report rather than throwing a generic unsupported error.
+pub fn universal_editing_apply_v2_json(
+    bytes: &[u8],
+    plan_json: &str,
+    approval_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    crate::cancel::check_current_cancel("universal editing apply input")?;
+    let input = mutation_input(bytes, password)?;
+    crate::cancel::check_current_cancel("universal editing apply decrypted input")?;
+    let plan =
+        serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
+            .map_err(json_err)?;
+    let approval = approval_json
+        .map(serde_json::from_str::<
+            crate::universal_editing::UniversalApprovalTokenV2,
+        >)
+        .transpose()
+        .map_err(json_err)?;
+    // The input credential must never silently become the output credential.
+    // Standard-handler plans require the explicit apply-only credentials API.
+    let (output, mut report) = crate::universal_editing::apply_universal_edit_v2(
+        &input,
+        &plan,
+        approval.as_ref(),
+    )?;
+    let output = crate::universal_editing::preserve_universal_no_change_transport_v2(
+        bytes,
+        &input,
+        output,
+        &mut report,
+    );
+    Ok((
+        output,
+        envelope("universal_editing_apply_v2", &report)?,
+    ))
+}
+
+/// Apply a Standard-handler output-security plan with credentials that are
+/// supplied only at apply time and are never serialized into the plan/report.
+pub fn universal_editing_apply_v2_with_output_credentials_json(
+    bytes: &[u8],
+    plan_json: &str,
+    approval_json: Option<&str>,
+    input_password: Option<&[u8]>,
+    output_user_password: &[u8],
+    output_owner_password: &[u8],
+) -> Result<(Vec<u8>, String)> {
+    crate::cancel::check_current_cancel("universal secured editing apply input")?;
+    // ISO 32000 AES-256 password processing consumes at most 127 bytes. The
+    // lower-level crypto primitive retains its general compatibility
+    // truncation behavior, but the revision-bound universal contract must not
+    // silently bind a different effective credential than the caller supplied.
+    if output_user_password.len() > 127 || output_owner_password.len() > 127 {
+        return Err(WellfriendError::invalid_input(
+            "universal output user/owner passwords must each be at most 127 bytes; silent security-handler truncation is refused",
+        ));
+    }
+    let input = mutation_input(bytes, input_password)?;
+    crate::cancel::check_current_cancel("universal secured editing apply decrypted input")?;
+    let plan =
+        serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
+            .map_err(json_err)?;
+    let approval = approval_json
+        .map(serde_json::from_str::<
+            crate::universal_editing::UniversalApprovalTokenV2,
+        >)
+        .transpose()
+        .map_err(json_err)?;
+    let (output, mut report) =
+        crate::universal_editing::apply_universal_edit_v2_with_output_security(
+            &input,
+            &plan,
+            approval.as_ref(),
+            &crate::universal_editing::UniversalOutputSecurityCredentialsV2 {
+                user_password: crate::crypto::secret_bytes(output_user_password.to_vec()),
+                owner_password: crate::crypto::secret_bytes(output_owner_password.to_vec()),
+            },
+        )?;
+    let output = crate::universal_editing::preserve_universal_no_change_transport_v2(
+        bytes,
+        &input,
+        output,
+        &mut report,
+    );
+    Ok((
+        output,
+        envelope(
+            "universal_editing_apply_v2_with_output_credentials",
+            &report,
+        )?,
+    ))
 }
 
 /// editing transactions editable scene/transaction/font architecture report.
@@ -4487,6 +4696,15 @@ pub fn feature_report_json() -> Result<String> {
         "compression_office_closeout_resource_dedup_office_benchmark_closure": crate::compression_office::compression_office_closeout_feature_report_value(REPORT_ENVELOPE_VERSION),
         "crypto_writer_deterministic_writer_pubsec_aesgcm": crate::crypto_writer::crypto_writer_feature_report_value(REPORT_ENVELOPE_VERSION),
         "signature_validation_certificate_trust_pades_ocsp_crl_validation": crate::signature::signature_validation_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "universal_editing_v2": {
+            "schema_version": crate::universal_editing::UNIVERSAL_EDITING_SCHEMA_VERSION,
+            "api_style": "revision_bound_analyze_plan_approve_apply",
+            "ambiguity_policy": "preview_and_explicit_confirmation",
+            "signature_modes": ["preserve_signatures", "authorized_rewrite"],
+            "render_qualification": "compile_retained_plan_render_native_pixels_compare_optional_rgba_oracles_then_vps_reference_corpus",
+            "capabilities": crate::universal_editing::universal_capability_registry_v2(),
+            "qualification": "source_implemented_vps_corpus_validation_pending"
+        },
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -4522,6 +4740,10 @@ pub fn feature_report_json() -> Result<String> {
             "writer_closeout_report", "pubsec_report", "aes_gcm_report",
             "pdf_mac_report", "pdf_mac_verify", "crypto_tamper_test",
             "signature_validation", "signature_validation_with_evidence",
+            "universal_editing_capabilities_v2", "universal_editing_analyze_v2",
+            "universal_editing_inspect_object_v2", "universal_editing_plan_v2", "universal_editing_approval_v2",
+            "universal_editing_apply_v2", "universal_editing_apply_v2_with_output_credentials",
+            "universal_render_qualification_v2",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",

@@ -53,7 +53,7 @@
 //! recorded via [`OcrEngine::version`] for reproducibility.
 
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -240,8 +240,6 @@ fn run_with_timeout(
     timeout: Duration,
     langs: &str,
 ) -> Result<Vec<u8>> {
-    use std::io::Read;
-
     let mut child = Command::new(binary)
         .args(args)
         .stdin(Stdio::null())
@@ -258,18 +256,18 @@ fn run_with_timeout(
     let mut out_pipe = child.stdout.take();
     let mut err_pipe = child.stderr.take();
     let out_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = out_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
+        out_pipe
+            .as_mut()
+            .map(|pipe| read_pipe_bounded(pipe, MAX_TESSERACT_STDOUT_BYTES))
+            .transpose()
+            .map(|value| value.unwrap_or_default())
     });
     let err_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = err_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
+        err_pipe
+            .as_mut()
+            .map(|pipe| read_pipe_bounded(pipe, MAX_TESSERACT_STDERR_BYTES))
+            .transpose()
+            .map(|value| value.unwrap_or_default())
     });
 
     let deadline = Instant::now() + timeout;
@@ -296,8 +294,17 @@ fn run_with_timeout(
         }
     };
 
-    let stdout = out_handle.join().unwrap_or_default();
-    let stderr = err_handle.join().unwrap_or_default();
+    let (stdout, stdout_overflow) = out_handle.join().map_err(|_| {
+        WellfriendError::ParseError("tesseract stdout reader panicked".to_string())
+    })??;
+    let (stderr, stderr_overflow) = err_handle.join().map_err(|_| {
+        WellfriendError::ParseError("tesseract stderr reader panicked".to_string())
+    })??;
+    if stdout_overflow || stderr_overflow {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "tesseract output exceeded the stdout/stderr limits of {MAX_TESSERACT_STDOUT_BYTES}/{MAX_TESSERACT_STDERR_BYTES} bytes"
+        )));
+    }
 
     if !status.success() {
         let err = String::from_utf8_lossy(&stderr);
@@ -317,6 +324,22 @@ fn run_with_timeout(
         )));
     }
     Ok(stdout)
+}
+
+const MAX_TESSERACT_STDOUT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_TESSERACT_STDERR_BYTES: usize = 1024 * 1024;
+
+fn read_pipe_bounded(
+    reader: &mut impl std::io::Read,
+    max_bytes: usize,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    reader
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    let overflow = bytes.len() > max_bytes;
+    bytes.truncate(max_bytes);
+    Ok((bytes, overflow))
 }
 
 /// Whether tesseract's stderr indicates a missing/failed-to-load language pack.
@@ -446,6 +469,17 @@ fn parse_tsv(bytes: &[u8]) -> Vec<OcrWord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_pipe_reader_stops_at_the_configured_limit() {
+        let (bytes, overflow) = read_pipe_bounded(&mut std::io::Cursor::new(b"abcdef"), 4).unwrap();
+        assert_eq!(bytes, b"abcd");
+        assert!(overflow);
+
+        let (bytes, overflow) = read_pipe_bounded(&mut std::io::Cursor::new(b"abc"), 4).unwrap();
+        assert_eq!(bytes, b"abc");
+        assert!(!overflow);
+    }
 
     /// A representative Tesseract TSV fragment (header + a couple of word rows
     /// plus the non-word level rows it interleaves). Parsing must keep only the

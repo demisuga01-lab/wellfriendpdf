@@ -6,13 +6,19 @@
 //! without creating a second parser, renderer, writer, or binding-specific edit
 //! engine.
 
-use crate::advanced_editing::{list_vector_objects, SharedFormEditPolicy};
-use crate::fonts::{ShapeOptions, TextDirection, TextShaper};
+use crate::advanced_editing::{
+    analyze_multi_run_text_range, list_vector_objects, SharedFormEditPolicy,
+};
+use crate::fonts::{
+    BundledFontProvider, FontMatchRequest, FontProvider, ShapeOptions, TextDirection,
+    TextShaper,
+};
 use crate::render::font_rasterizer::get_fallback_font;
 use crate::source_editing::{
     edit_text_operator, operator_text_eligibility, operator_text_provenance,
     OperatorEditOperationReport, OperatorTextEditRequest, TrueEditingMode,
 };
+use crate::universal_editing::universal_image_occurrences_v2;
 use crate::{ContentEngine, Result, WellfriendError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -164,16 +170,37 @@ pub enum TransactionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovedFontAsset {
+    pub lookup_name: String,
+    /// Exact sfnt/OpenType program bound into the revision-specific plan.
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneTextEditRequest {
     #[serde(default = "default_operator_preserving")]
     pub requested_mode: TrueEditingMode,
     pub page: usize,
     pub source_text: String,
     pub replacement_text: String,
+    /// Optional revision-bound parser instruction selected by the v2 approval
+    /// boundary when one PDF text-showing operand owns the logical selection.
+    #[serde(default)]
+    pub source_instruction_id: Option<String>,
+    /// Optional exact page-logical Unicode-scalar range selected by v2. This
+    /// covers contiguous text split across multiple source operands without
+    /// using geometry or a first-match search.
+    #[serde(default)]
+    pub target_logical_scalar_range: Option<[usize; 2]>,
     #[serde(default)]
     pub signature_policy_override: bool,
     #[serde(default = "default_font_policy")]
     pub font_policy: String,
+    /// Optional caller-governed font used when the source font cannot encode
+    /// the replacement.  The bytes are plan-bound and become the exact shaping,
+    /// measurement, embedding, and continuation-page font.
+    #[serde(default)]
+    pub approved_font_asset: Option<ApprovedFontAsset>,
     #[serde(default)]
     pub normalization_policy: Option<String>,
     #[serde(default)]
@@ -219,8 +246,11 @@ impl Default for SceneTextEditRequest {
             page: 1,
             source_text: String::new(),
             replacement_text: String::new(),
+            source_instruction_id: None,
+            target_logical_scalar_range: None,
             signature_policy_override: false,
             font_policy: default_font_policy(),
+            approved_font_asset: None,
             normalization_policy: None,
             direction: None,
             region: None,
@@ -371,13 +401,37 @@ fn scene_text_reflow_font_policy(policy: &str) -> String {
 }
 
 fn scene_text_reflow_request(
+    input: &[u8],
     request: &SceneTextEditRequest,
-) -> crate::text_reflow::GeometricReflowRequest {
-    crate::text_reflow::GeometricReflowRequest {
+) -> Result<crate::text_reflow::GeometricReflowRequest> {
+    let selected = if let Some(instruction_id) = request.source_instruction_id.as_deref() {
+        Some(operator_text_provenance(
+            input,
+            request.page,
+            &request.source_text,
+            &request.replacement_text,
+        )?
+        .source_instructions
+        .into_iter()
+        .find(|identity| identity.instruction_id == instruction_id)
+        .ok_or_else(|| {
+            WellfriendError::invalid_input(
+                "editing_transactions selected source instruction is stale or outside the current revision",
+            )
+        })?)
+    } else {
+        None
+    };
+    Ok(crate::text_reflow::GeometricReflowRequest {
         requested_mode: request.requested_mode,
         page: request.page,
         source_text: request.source_text.clone(),
         replacement_text: request.replacement_text.clone(),
+        source_instruction_id: request.source_instruction_id.clone(),
+        target_logical_scalar_range: request.target_logical_scalar_range,
+        target_stream_object: selected.as_ref().map(|identity| identity.stream_object),
+        target_stream_generation: selected.as_ref().map(|identity| identity.stream_generation),
+        target_decoded_byte_range: selected.as_ref().map(|identity| identity.decoded_byte_range),
         region: request.region,
         allowed_expansion_region: request.allowed_expansion_region,
         next_region: request.next_region,
@@ -388,6 +442,7 @@ fn scene_text_reflow_request(
         language: request.language.clone(),
         direction: request.direction.clone(),
         font_policy: scene_text_reflow_font_policy(&request.font_policy),
+        approved_font_asset: request.approved_font_asset.clone(),
         alignment: request.alignment.clone(),
         justify_last_line: request.justify_last_line,
         hyphenation: request.hyphenation,
@@ -397,7 +452,7 @@ fn scene_text_reflow_request(
         signature_policy_override: request.signature_policy_override,
         line_height: request.line_height,
         max_downstream_blocks: request.max_downstream_blocks,
-    }
+    })
 }
 
 fn text_source_object_refs(input: &[u8], request: &SceneTextEditRequest) -> Vec<String> {
@@ -831,7 +886,6 @@ fn build_scene_graph_with_options(
             .iter()
             .copied()
             .filter(|page| (1..=page_count).contains(page))
-            .take(64)
             .collect::<Vec<_>>()
     };
     let snapshot = snapshot_id(input);
@@ -841,7 +895,110 @@ fn build_scene_graph_with_options(
     for page in selected_pages {
         let bounds = page_bounds(&engine, page);
         let text = engine.get_page_text(page).unwrap_or_default();
-        if !text.trim().is_empty() {
+        let mut exact_text_nodes_added = false;
+        if let Ok(model) = analyze_multi_run_text_range(input, page) {
+            for span in model.source_spans {
+                exact_text_nodes_added = true;
+                let occurrence_id = stable_id(
+                    "occurrence-text-token",
+                    &[
+                        document.as_bytes(),
+                        &page.to_le_bytes(),
+                        &span.stream_object.to_le_bytes(),
+                        &span.stream_generation.to_le_bytes(),
+                        &span.byte_range[0].to_le_bytes(),
+                        &span.byte_range[1].to_le_bytes(),
+                    ],
+                );
+                let instruction_id = stable_id(
+                    "instruction-text-token",
+                    &[
+                        revision.as_bytes(),
+                        span.operator.as_bytes(),
+                        &span.byte_range[0].to_le_bytes(),
+                        &span.byte_range[1].to_le_bytes(),
+                    ],
+                );
+                nodes.push(SceneNode {
+                    schema_version: EDITING_TRANSACTIONS_SCHEMA_VERSION.to_string(),
+                    node_id: stable_id(
+                        "scene-text-token",
+                        &[snapshot.as_bytes(), occurrence_id.as_bytes()],
+                    ),
+                    node_kind: SceneNodeKind::TextObject,
+                    snapshot_id: snapshot.clone(),
+                    page,
+                    occurrence_id,
+                    definition_identity: Some(format!("font-resource-{}", span.font_resource)),
+                    source_object_revision: Some(format!(
+                        "object-{}-{}-{}",
+                        span.stream_object, span.stream_generation, revision
+                    )),
+                    source_instruction_ids: vec![instruction_id],
+                    display_item_ids: vec![stable_id(
+                        "display-text-token",
+                        &[
+                            revision.as_bytes(),
+                            &page.to_le_bytes(),
+                            &span.logical_range[0].to_le_bytes(),
+                            &span.logical_range[1].to_le_bytes(),
+                        ],
+                    )],
+                    resource_scope: "page_or_inherited_font_resource_scope".to_string(),
+                    nested_occurrence_path: Vec::new(),
+                    marked_content_ids: (span.marked_content_depth > 0)
+                        .then(|| {
+                            stable_id(
+                                "marked-content-depth",
+                                &[
+                                    &page.to_le_bytes(),
+                                    &span.marked_content_depth.to_le_bytes(),
+                                ],
+                            )
+                        })
+                        .into_iter()
+                        .collect(),
+                    structure_node_ids: Vec::new(),
+                    bounds_user_space: bounds,
+                    transform_summary: "source_exact_geometry_requires_display_list_join; page bounds are conservative".to_string(),
+                    z_order: nodes.len(),
+                    clipping: "text_render_mode_and_clip_resolved_at_transaction_plan".to_string(),
+                    visibility: "reachable_text_showing_operand".to_string(),
+                    graphics_state_summary: json!({
+                        "text": span.text,
+                        "operator": span.operator,
+                        "tj_element": span.tj_element,
+                        "byte_range": span.byte_range,
+                        "logical_range": span.logical_range,
+                        "font_resource": span.font_resource,
+                        "writing_mode": span.writing_mode,
+                        "geometry_evidence": "conservative_page_bounds",
+                    }),
+                    edit_eligibility: vec![
+                        "exact_source_token_replacement".to_string(),
+                        "page_logical_multi_run_replacement_across_content_streams"
+                            .to_string(),
+                        "partial_token_selection_when_boundaries_align_to_complete_source_cmap_codes"
+                            .to_string(),
+                        "selected_current_revision_source_codes_are_removed_with_exact_writing_axis_compensation"
+                            .to_string(),
+                    ],
+                    supported_edit_modes: vec![
+                        TrueEditingMode::OperatorPreserving,
+                        TrueEditingMode::GeometricBlock,
+                        TrueEditingMode::SemanticDocument,
+                    ],
+                    evidence_strength: EditingTransactionsEvidenceKind::ParserExact,
+                    shared_resource_status: "font_definition_may_be_shared; text_occurrence_is_source_owned"
+                        .to_string(),
+                    signature_conformance_restrictions: vec![
+                        "signature_and_profile_impacts_recomputed_by_transaction_plan"
+                            .to_string(),
+                    ],
+                });
+            }
+        }
+        if !exact_text_nodes_added && !text.trim().is_empty() {
             let provenance = if resolve_text_provenance {
                 operator_text_provenance(input, page, text.trim_end(), text.trim_end()).ok()
             } else {
@@ -905,6 +1062,118 @@ fn build_scene_graph_with_options(
                     EditingTransactionsEvidenceKind::DeterministicDerived
                 },
                 shared_resource_status: "font_resource_identity_reported_separately".to_string(),
+                signature_conformance_restrictions: vec![
+                    "signature_and_profile_impacts_recomputed_by_transaction_plan".to_string(),
+                ],
+            });
+        }
+        for occurrence in universal_image_occurrences_v2(input, &[page])? {
+            let occurrence_id = occurrence.occurrence_id.clone();
+            let definition_identity = occurrence
+                .object_number
+                .zip(occurrence.generation)
+                .map(|(number, generation)| {
+                    format!("image-{number}-{generation}-{revision}")
+                });
+            let instruction_id = stable_id(
+                "instruction-image-do",
+                &[
+                    revision.as_bytes(),
+                    &page.to_le_bytes(),
+                    &occurrence.owner_stream_object.to_le_bytes(),
+                    &occurrence.operation_byte_start.to_le_bytes(),
+                    &occurrence.operation_byte_end.to_le_bytes(),
+                ],
+            );
+            nodes.push(SceneNode {
+                schema_version: EDITING_TRANSACTIONS_SCHEMA_VERSION.to_string(),
+                node_id: stable_id(
+                    "scene-image",
+                    &[snapshot.as_bytes(), occurrence_id.as_bytes()],
+                ),
+                node_kind: SceneNodeKind::ImageObject,
+                snapshot_id: snapshot.clone(),
+                page,
+                occurrence_id,
+                definition_identity,
+                source_object_revision: Some(format!(
+                    "object-{}-{}-{}",
+                    occurrence.owner_stream_object,
+                    occurrence.owner_stream_generation,
+                    revision
+                )),
+                source_instruction_ids: vec![instruction_id],
+                display_item_ids: vec![stable_id(
+                    "display-image",
+                    &[
+                        revision.as_bytes(),
+                        &page.to_le_bytes(),
+                        occurrence.occurrence_id.as_bytes(),
+                    ],
+                )],
+                resource_scope: if occurrence.invocation_path.is_empty() {
+                    "page_resource_scope".to_string()
+                } else {
+                    format!(
+                        "form-{}-{}",
+                        occurrence.owner_stream_object,
+                        occurrence.owner_stream_generation
+                    )
+                },
+                nested_occurrence_path: occurrence
+                    .invocation_path
+                    .iter()
+                    .map(|invocation| {
+                        format!(
+                            "{}:{}-{}@{}..{}",
+                            invocation.resource_name,
+                            invocation.form_object,
+                            invocation.form_generation,
+                            invocation.owner_operation_byte_start,
+                            invocation.owner_operation_byte_end
+                        )
+                    })
+                    .collect(),
+                marked_content_ids: Vec::new(),
+                structure_node_ids: Vec::new(),
+                bounds_user_space: occurrence.bbox,
+                transform_summary: "exact_recursive_form_ctm_applied_to_image_unit_square".to_string(),
+                z_order: nodes.len(),
+                clipping: "image_clip_and_mask_dependencies_resolved_at_apply".to_string(),
+                visibility: if occurrence.inline {
+                    "inline_image_occurrence".to_string()
+                } else {
+                    "xobject_do_occurrence".to_string()
+                },
+                graphics_state_summary: json!({
+                    "resource_name": occurrence.resource_name,
+                    "object_number": occurrence.object_number,
+                    "generation": occurrence.generation,
+                    "owner_stream_object": occurrence.owner_stream_object,
+                    "owner_stream_generation": occurrence.owner_stream_generation,
+                    "source_range": [occurrence.operation_byte_start, occurrence.operation_byte_end],
+                    "transform": occurrence.transform,
+                    "width": occurrence.width,
+                    "height": occurrence.height,
+                    "bits_per_component": occurrence.bits_per_component,
+                    "color_space": occurrence.color_space,
+                    "filters": occurrence.filters,
+                }),
+                edit_eligibility: vec![
+                    "replace_definition_with_explicit_edit_all_policy".to_string(),
+                    "clone_one_uses_exact_occurrence_source_range".to_string(),
+                    "inline_image_promotes_to_occurrence_owned_xobject".to_string(),
+                ],
+                supported_edit_modes: vec![TrueEditingMode::OperatorPreserving],
+                evidence_strength: EditingTransactionsEvidenceKind::ParserExact,
+                shared_resource_status: if occurrence.shared_definition_uses > 1 {
+                    format!(
+                        "shared_definition_with_{}_analyzed_occurrences",
+                        occurrence.shared_definition_uses
+                    )
+                } else {
+                    "single_analyzed_occurrence_definition".to_string()
+                },
                 signature_conformance_restrictions: vec![
                     "signature_and_profile_impacts_recomputed_by_transaction_plan".to_string(),
                 ],
@@ -1012,6 +1281,7 @@ fn build_scene_graph_with_options(
         bounded_query_limits: json!({
             "max_pages": 64,
             "max_vector_nodes_per_page": 2048,
+            "image_occurrences": "top_level_Do_occurrences_with_definition_identity_and_geometry",
             "text_source_instruction_resolution": if resolve_text_provenance { "enabled" } else { "deferred_for_document_wide_analysis" },
             "cycle_safe": true,
             "no_network": true
@@ -1019,7 +1289,7 @@ fn build_scene_graph_with_options(
         exact_limits: vec![
             "Scene graph is a source-linked projection over source editing provenance and advanced editing vector inventory, not a parser replacement.".to_string(),
             "Text node geometry uses existing extraction/display provenance and stays conservative until text reflow reflow.".to_string(),
-            "Image/source occurrence mutation remains exact-refusal unless canonical source instruction identity is available.".to_string(),
+            "Top-level Image XObject occurrences carry definition and occurrence identity; nested Form and inline-image source ranges are added by the universal v2 recursive occurrence walker.".to_string(),
         ],
     })
 }
@@ -1177,19 +1447,20 @@ pub fn font_subset_plan(
             "glyph_ids": glyph_ids,
             "includes_notdef": true,
             "composite_dependencies": "validated_by_ttf_parser_for_supported_sfnt_glyf_fonts",
-            "cff_cff2_subroutines": "unsupported_exact_when_font_program_requires_cff_rewrite",
+            "cff1": "retained_whole_as_FontFile3_OpenType_for_generated_CIDFontType0_without_subroutine_rewrite",
+            "cff2_and_non_sfnt_programs": "unsupported_exact_when_no_portable_PDF_descendant_font_program_exists",
             "vertical_alternates": "reported_when_shaper_returns_vertical_feature_output",
         },
         "pdf_assignments": {
             "code_cid_assignment": "deterministic_collision_checked",
-            "tounicode_generation": "planned_for_simple_and_type0_supported_contexts",
+            "tounicode_generation": "implemented_for_generated_type0_contexts_and_planned_per_source_context_elsewhere",
             "widths_w_w2": "derived_from_pdf_metrics_or_shaper_advances_under_policy",
         },
-        "font_program_output": "planned; build requires source font bytes and embedding permission",
+        "font_program_output": "generated editing paths emit a GID-preserving TrueType subset or retain a standalone OpenType/CFF1 program whole; source bytes and embedding permission remain required",
         "embedding_permission": embedding_permission_report(policy.unwrap_or("preserve_original_or_refuse")),
         "exact_limits": [
             "editing transactions does not silently substitute or outline text.",
-            "CFF/CFF2/color/SVG/AAT/Graphite rebuilding remains unsupported_exact unless a retained canonical table path exists.",
+            "CFF1 is retained whole in the generated Type0 path; CFF2/color/SVG/AAT/Graphite rebuilding remains unsupported_exact unless a portable retained program path exists.",
             "Broad layout overflow escalates to text reflow."
         ]
     }))
@@ -1213,24 +1484,256 @@ pub fn embedding_permission_report(policy: &str) -> Value {
 }
 
 pub fn substitution_report(requested_family: &str, text: &str, policy: Option<&str>) -> Value {
-    let coverage = text.chars().count();
+    substitution_report_with_source_font(requested_family, text, policy, None)
+}
+
+/// Rank governed substitute faces against exact embedded source-font metrics
+/// when the source program is available. If it is not, the report explicitly
+/// labels the deterministic family-class proxy instead of presenting it as the
+/// original font's geometry.
+pub fn substitution_report_with_source_font(
+    requested_family: &str,
+    text: &str,
+    policy: Option<&str>,
+    source_font_bytes: Option<&[u8]>,
+) -> Value {
+    let provider = BundledFontProvider;
+    let requested = font_match_request(requested_family);
+    let primary = provider.match_font(&requested);
+    let parsed_source_metrics = source_font_bytes.and_then(|bytes| {
+        ttf_parser::Face::parse(bytes, 0)
+            .ok()
+            .map(|_| measured_font_metrics(bytes, text))
+    });
+    let target_metrics = parsed_source_metrics
+        .or_else(|| {
+            primary
+                .as_ref()
+                .map(|matched| measured_font_metrics(matched.bytes.as_ref(), text))
+        })
+        .unwrap_or_default();
+    let target_metric_source = if parsed_source_metrics.is_some() {
+        "embedded_source_font_program"
+    } else {
+        "deterministic_family_class_proxy_source_font_unavailable"
+    };
+    let mut ranked = Vec::<(f64, String, Value)>::new();
+    let families = [
+        requested_family,
+        "Helvetica",
+        "Times-Roman",
+        "Courier",
+        "Symbol",
+    ];
+    let mut seen = BTreeSet::new();
+    for family in families {
+        let mut candidate_request = font_match_request(family);
+        candidate_request.bold = requested.bold;
+        candidate_request.italic = requested.italic;
+        candidate_request.symbolic = requested.symbolic || family == "Symbol";
+        let Some(candidate) = provider.match_font(&candidate_request) else {
+            continue;
+        };
+        let fingerprint = digest_hex(candidate.bytes.as_ref());
+        if !seen.insert(fingerprint.clone()) {
+            continue;
+        }
+        let metrics = measured_font_metrics(candidate.bytes.as_ref(), text);
+        let width_similarity = ratio_similarity(
+            target_metrics.mean_advance_em,
+            metrics.mean_advance_em,
+        );
+        let vertical_similarity = 0.5
+            * ratio_similarity(target_metrics.ascender_em, metrics.ascender_em)
+            + 0.5 * ratio_similarity(target_metrics.x_height_em, metrics.x_height_em);
+        let family_class = font_family_class(&candidate.lookup_name);
+        let requested_class = font_family_class(requested_family);
+        let family_similarity = family_class_similarity(requested_class, family_class);
+        let style_similarity = if candidate.synthetic_bold || candidate.synthetic_italic {
+            0.65
+        } else {
+            1.0
+        };
+        let score = 0.40 * metrics.coverage_ratio
+            + 0.25 * width_similarity
+            + 0.15 * vertical_similarity
+            + 0.12 * family_similarity
+            + 0.08 * style_similarity;
+        ranked.push((
+            score,
+            candidate.lookup_name.clone(),
+            json!({
+                "family_name": candidate.family_name,
+                "lookup_name": candidate.lookup_name,
+                "source": format!("{:?}", candidate.source),
+                "font_sha256": fingerprint,
+                "match_reason": candidate.match_reason,
+                "synthetic_bold": candidate.synthetic_bold,
+                "synthetic_italic": candidate.synthetic_italic,
+                "metrics": {
+                    "coverage_ratio": metrics.coverage_ratio,
+                    "covered_scalars": metrics.covered_scalars,
+                    "required_scalars": metrics.required_scalars,
+                    "mean_advance_em": metrics.mean_advance_em,
+                    "ascender_em": metrics.ascender_em,
+                    "descender_em": metrics.descender_em,
+                    "x_height_em": metrics.x_height_em,
+                },
+                "score_components": {
+                    "coverage": metrics.coverage_ratio,
+                    "advance_width_similarity": width_similarity,
+                    "vertical_metric_similarity": vertical_similarity,
+                    "family_class_similarity": family_similarity,
+                    "style_similarity": style_similarity,
+                },
+                "weighted_score": score,
+                "eligible_for_approval": metrics.coverage_ratio == 1.0,
+                "embedding_policy": "bundled_enterprise_approved",
+            }),
+        ));
+    }
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    let candidates = ranked
+        .iter()
+        .map(|(_, _, value)| value.clone())
+        .collect::<Vec<_>>();
+    let approved_candidates = ranked
+        .iter()
+        .filter(|(_, _, value)| value["eligible_for_approval"] == Value::Bool(true))
+        .map(|(_, name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let chosen = (policy == Some("allow_substitute"))
+        .then(|| approved_candidates.first().cloned())
+        .flatten();
     json!({
         "schema_version": EDITING_TRANSACTIONS_SCHEMA_VERSION,
         "requested_family": requested_family,
         "policy": policy.unwrap_or("preserve_original_or_refuse"),
-        "status": if policy == Some("allow_substitute") { "verified_with_limits" } else { "unsupported_exact" },
-        "chosen_substitute": if policy == Some("allow_substitute") { "Wellfriend bundled DejaVu fallback" } else { "" },
-        "score_components": {
-            "family_class": 0.7,
-            "weight": 0.8,
-            "width_class": 0.8,
-            "italic_angle": 1.0,
-            "script_coverage": if coverage == 0 { 1.0 } else { 0.8 },
-            "licensing_policy": if policy == Some("allow_substitute") { 1.0 } else { 0.0 }
-        },
+        "status": if chosen.is_some() { "ranked_approved_substitute" } else { "approval_required" },
+        "chosen_substitute": chosen,
+        "ranked_candidates": candidates,
+        "approved_candidates": approved_candidates,
+        "approval_eligibility": "complete Unicode scalar coverage of the replacement text is mandatory",
+        "score_formula": "0.40*unicode_coverage + 0.25*exp(-3*abs(ln(advance_ratio))) + 0.15*vertical_metrics + 0.12*family_class + 0.08*style",
+        "metric_source": "parsed OpenType cmap/hmtx/OS2/hhea metrics from exact candidate bytes",
+        "target_metric_source": target_metric_source,
+        "target_font_sha256": source_font_bytes.map(digest_hex),
+        "tie_break": "lexicographic_lookup_name_after_total_order_score",
         "requires_user_policy": policy != Some("allow_substitute"),
         "never_claims_original_font": true,
+        "qualification": "deterministic_source_implemented; corpus_validation_pending",
     })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct MeasuredFontMetrics {
+    coverage_ratio: f64,
+    covered_scalars: usize,
+    required_scalars: usize,
+    mean_advance_em: f64,
+    ascender_em: f64,
+    descender_em: f64,
+    x_height_em: f64,
+}
+
+fn measured_font_metrics(font_bytes: &[u8], text: &str) -> MeasuredFontMetrics {
+    let Ok(face) = ttf_parser::Face::parse(font_bytes, 0) else {
+        return MeasuredFontMetrics::default();
+    };
+    let required = text
+        .chars()
+        .filter(|character| !character.is_control() && !character.is_whitespace())
+        .collect::<BTreeSet<_>>();
+    let mut covered = 0usize;
+    let mut advances = Vec::new();
+    let units = f64::from(face.units_per_em().max(1));
+    for character in &required {
+        let Some(glyph) = face.glyph_index(*character) else {
+            continue;
+        };
+        covered += 1;
+        if let Some(advance) = face.glyph_hor_advance(glyph) {
+            advances.push(f64::from(advance) / units);
+        }
+    }
+    let required_count = required.len();
+    let coverage_ratio = if required_count == 0 {
+        1.0
+    } else {
+        covered as f64 / required_count as f64
+    };
+    MeasuredFontMetrics {
+        coverage_ratio,
+        covered_scalars: covered,
+        required_scalars: required_count,
+        mean_advance_em: if advances.is_empty() {
+            0.0
+        } else {
+            advances.iter().sum::<f64>() / advances.len() as f64
+        },
+        ascender_em: f64::from(face.ascender()) / units,
+        descender_em: f64::from(face.descender()) / units,
+        x_height_em: face
+            .x_height()
+            .map(|value| f64::from(value) / units)
+            .unwrap_or(0.0),
+    }
+}
+
+fn font_match_request(name: &str) -> FontMatchRequest {
+    let normalized = name.to_ascii_lowercase();
+    let mut request = FontMatchRequest::new(name);
+    request.bold = normalized.contains("bold")
+        || normalized.contains("black")
+        || normalized.contains("heavy");
+    request.italic = normalized.contains("italic")
+        || normalized.contains("oblique")
+        || normalized.contains("slant");
+    request.symbolic = normalized.contains("symbol")
+        || normalized.contains("dingbat")
+        || normalized.contains("wingding");
+    request
+}
+
+fn ratio_similarity(target: f64, candidate: f64) -> f64 {
+    if target <= 0.0 || candidate <= 0.0 {
+        return 0.0;
+    }
+    (-3.0 * (candidate / target).ln().abs()).exp()
+}
+
+fn font_family_class(name: &str) -> &'static str {
+    let normalized = name.to_ascii_lowercase();
+    if normalized.contains("symbol") || normalized.contains("dingbat") {
+        "symbolic"
+    } else if normalized.contains("mono") || normalized.contains("courier") {
+        "monospace"
+    } else if normalized.contains("serif")
+        || normalized.contains("times")
+        || normalized.contains("garamond")
+        || normalized.contains("georgia")
+    {
+        "serif"
+    } else {
+        "sans_serif"
+    }
+}
+
+fn family_class_similarity(requested: &str, candidate: &str) -> f64 {
+    if requested == candidate {
+        1.0
+    } else if matches!((requested, candidate), ("serif", "sans_serif") | ("sans_serif", "serif")) {
+        0.55
+    } else if requested == "symbolic" || candidate == "symbolic" {
+        0.10
+    } else {
+        0.35
+    }
 }
 
 pub fn plan_scene_text_transaction(
@@ -1238,7 +1741,7 @@ pub fn plan_scene_text_transaction(
     request: &SceneTextEditRequest,
 ) -> Result<EditTransactionReport> {
     if request_uses_text_reflow(request.requested_mode) {
-        let reflow_request = scene_text_reflow_request(request);
+        let reflow_request = scene_text_reflow_request(input, request)?;
         let report = crate::text_reflow::preview_reflow(input, &reflow_request)?;
         return text_reflow_transaction_report(input, request, &report, None);
     }
@@ -1249,6 +1752,7 @@ pub fn plan_scene_text_transaction(
             page: request.page,
             source_text: request.source_text.clone(),
             replacement_text: request.replacement_text.clone(),
+            source_instruction_id: request.source_instruction_id.clone(),
             signature_policy_override: request.signature_policy_override,
         },
     )?;
@@ -1384,7 +1888,7 @@ pub fn apply_scene_text_transaction(
     request: &SceneTextEditRequest,
 ) -> Result<(Vec<u8>, EditTransactionReport)> {
     if request_uses_text_reflow(request.requested_mode) {
-        let reflow_request = scene_text_reflow_request(request);
+        let reflow_request = scene_text_reflow_request(input, request)?;
         let (output, reflow_report) = match request.requested_mode {
             TrueEditingMode::GeometricBlock => {
                 crate::text_reflow::apply_reflow_region(input, &reflow_request)?
@@ -1410,6 +1914,7 @@ pub fn apply_scene_text_transaction(
             page: request.page,
             source_text: request.source_text.clone(),
             replacement_text: request.replacement_text.clone(),
+            source_instruction_id: request.source_instruction_id.clone(),
             signature_policy_override: request.signature_policy_override,
         },
     )?;
@@ -1527,7 +2032,7 @@ pub fn editing_transactions_report(input: &[u8]) -> Result<Value> {
             "text": "uses SourceEditing source operator mutation; no overlay",
             "path": "routes to SourceEditing/AdvancedEditing vector source mutation",
             "image": "exact refusal unless source occurrence identity is available",
-            "forms": "clone-on-write planned through AdvancedEditing shared Form policy",
+            "forms": "clone-on-write implemented through AdvancedEditing recursive selected-invocation ownership",
         },
         "text_reflow_routing": {
             "geometric_block": "routes through TextReflow apply_reflow_region with EditingTransactions source refs, pages, and dirty regions",
@@ -1551,7 +2056,7 @@ pub fn editing_transactions_feature_matrix() -> Value {
             {"area": "font_identity", "status": EditingTransactionsStatus::Implemented, "canonical_extension": "separate code/CID/GID/Unicode/grapheme/shaping/glyph IDs"},
             {"area": "simple_fonts", "status": EditingTransactionsStatus::VerifiedWithLimits, "canonical_extension": "existing-font operator edit and one-byte code boundary checks"},
             {"area": "composite_fonts", "status": EditingTransactionsStatus::VerifiedWithLimits, "canonical_extension": "variable-length CMap boundary reporting and exact unsupported insertion cases"},
-            {"area": "type3_fonts", "status": EditingTransactionsStatus::UnsupportedExact, "canonical_extension": "Type3 CharProcs are content streams; arbitrary Unicode insertion is refused"},
+            {"area": "type3_fonts", "status": EditingTransactionsStatus::ImplementedWithLimits, "canonical_extension": "existing mapped Type3 codes remain source-editable; new arbitrary Unicode uses an explicitly approved embeddable Type0 substitution because Type3 CharProc authoring cannot be inferred from appearance"},
             {"area": "grapheme_bidi_shaping", "status": EditingTransactionsStatus::ImplementedWithLimits, "canonical_extension": "unicode-segmentation + unicode-bidi + rustybuzz"},
             {"area": "subset_reconstruction", "status": EditingTransactionsStatus::ImplementedWithLimits, "canonical_extension": "deterministic planning; table rebuild limits are explicit"},
             {"area": "text_reflow_reflow", "status": EditingTransactionsStatus::ImplementedWithLimits, "canonical_extension": "geometric_block and semantic_document route to TextReflow source mutations with EditingTransactions invalidation reports and compact scene requests forward explicit TextReflow region, flow, layout, and review fields"}

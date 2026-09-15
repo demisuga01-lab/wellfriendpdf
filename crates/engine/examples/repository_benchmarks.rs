@@ -83,6 +83,7 @@ fn main() -> std::result::Result<(), Box<dyn Error>> {
                     page: 1,
                     source_text: "ABC".to_string(),
                     replacement_text: "DEF".to_string(),
+                    source_instruction_id: None,
                     signature_policy_override: false,
                 },
             )?;
@@ -195,6 +196,7 @@ fn main() -> std::result::Result<(), Box<dyn Error>> {
                 provider_id: "fixture_provider".to_string(),
                 provider_version: Some("1".to_string()),
                 confidence: 0.95,
+                approved_font_asset: None,
             }),
             reflow: None,
             approved: true,

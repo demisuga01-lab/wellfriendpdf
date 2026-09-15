@@ -45,7 +45,7 @@ pub async fn handler(headers: HeaderMap, multipart: Multipart) -> ServerResult<R
     // bytes — so it stays on the synchronous path even when invoked via a job
     // submit; the heavy ZIP path is what the async model exists for.
     if params.json_mode {
-        let body = build_images_json(params, config)?;
+        let body = build_images_json(params, &config)?;
         return Ok((StatusCode::OK, Json(body)).into_response());
     }
 

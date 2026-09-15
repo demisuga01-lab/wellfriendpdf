@@ -108,8 +108,11 @@ overloads for step/finish calls, and `RenderCancellation` overloads for
 viewer-queue execution and adjacent-page prefetch execution.
 
 Password open is available through `WellfriendPdf.Document.open(path, password)` and
-`WellfriendPdf.Document.open(bytes, password)`. Passwords are UTF-8 operation-scoped
-inputs and are not retained on the Java document object.
+`WellfriendPdf.Document.open(bytes, password)`. Exact byte credentials use
+`openWithPasswordBytes`. String conveniences wipe their temporary UTF-8 arrays;
+the native document handle retains a private zeroizing credential copy only so
+revision-bound operations can reparse the immutable encrypted source. It is not
+serialized or reused as an output password.
 
 Maven and Gradle are both package flows. `scripts/java_packaging_java_package_smoke.ps1`
 runs Maven test/package, inspects `bindings/java/target/wellfriendpdf-sdk-0.1.0.jar`,

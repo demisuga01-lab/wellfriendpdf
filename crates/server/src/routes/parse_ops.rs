@@ -192,6 +192,24 @@ pub async fn chunk(multipart: Multipart) -> ServerResult<Response> {
 
     let target_tokens = parse_usize(fields.target_tokens.as_deref(), "target_tokens")?;
     let overlap = parse_usize(fields.overlap.as_deref(), "overlap")?;
+    let effective_target = target_tokens.unwrap_or(ChunkOptions::default().target_tokens);
+    let effective_overlap = overlap.unwrap_or(ChunkOptions::default().overlap_tokens);
+    if effective_target == 0
+        || effective_target > wellfriendpdf_engine::chunk::MAX_CHUNK_TARGET_TOKENS
+    {
+        return Err(ServerError::InvalidParameter(format!(
+            "target_tokens must be between 1 and {}",
+            wellfriendpdf_engine::chunk::MAX_CHUNK_TARGET_TOKENS
+        )));
+    }
+    if effective_overlap >= effective_target
+        || effective_overlap > wellfriendpdf_engine::chunk::MAX_CHUNK_OVERLAP_TOKENS
+    {
+        return Err(ServerError::InvalidParameter(format!(
+            "overlap must be less than target_tokens and no more than {}",
+            wellfriendpdf_engine::chunk::MAX_CHUNK_OVERLAP_TOKENS
+        )));
+    }
     let keep_furniture = crate::params::parse_bool_param(fields.keep_furniture.as_deref(), false)?;
 
     let (engine, pages) =

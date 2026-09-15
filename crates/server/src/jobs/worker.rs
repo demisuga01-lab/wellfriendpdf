@@ -172,8 +172,20 @@ fn resolve_result_dir(configured: Option<&str>) -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    let pid = std::process::id();
-    std::env::temp_dir().join(format!("wellfriendpdf-jobs-{}", pid))
+    match tempfile::Builder::new()
+        .prefix("wellfriendpdf-jobs-")
+        .tempdir()
+    {
+        Ok(directory) => directory.keep(),
+        Err(error) => {
+            tracing::error!(%error, "failed to create private job result directory");
+            std::env::temp_dir().join(format!(
+                "wellfriendpdf-jobs-{}-{}",
+                std::process::id(),
+                super::id::generate_job_id()
+            ))
+        }
+    }
 }
 
 /// One worker: pull jobs off the shared queue and process them. Robust to a
@@ -302,8 +314,15 @@ fn persist_result(
 ) -> Result<JobResult, ServerError> {
     let path = result_dir.join(format!("{}.bin", id));
     let size_bytes = output.bytes.len() as u64;
-    std::fs::write(&path, &output.bytes)
-        .map_err(|e| ServerError::Internal(format!("failed to write job result file: {}", e)))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| ServerError::Internal(format!("failed to create job result file: {e}")))?;
+    std::io::Write::write_all(&mut file, &output.bytes)
+        .map_err(|e| ServerError::Internal(format!("failed to write job result file: {e}")))?;
+    file.sync_all()
+        .map_err(|e| ServerError::Internal(format!("failed to sync job result file: {e}")))?;
     Ok(JobResult {
         path,
         content_type: output.content_type,

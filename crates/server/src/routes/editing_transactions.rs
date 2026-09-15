@@ -28,7 +28,7 @@ pub async fn apply_with_render_invalidation(multipart: Multipart) -> ServerResul
     let password = fields.password.clone().unwrap_or_default();
     let config = crate::config::get_config();
 
-    let (document, report_json) = crate::processing::run_with_timeout(config, move |_cancel| {
+    let (document, report_json) = crate::processing::run_with_timeout(&config, move |_cancel| {
         sdk::editing_transactions_transaction_apply_with_render_invalidation_json(
             &file,
             &request_json,
@@ -39,8 +39,8 @@ pub async fn apply_with_render_invalidation(multipart: Multipart) -> ServerResul
     })
     .await??;
 
-    crate::processing::check_output_size(config, document.len())?;
-    crate::processing::check_output_size(config, report_json.len())?;
+    crate::processing::check_output_size(&config, document.len())?;
+    crate::processing::check_output_size(&config, report_json.len())?;
     multipart_response(&report_json, document)
 }
 

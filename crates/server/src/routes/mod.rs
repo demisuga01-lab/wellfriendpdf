@@ -11,3 +11,4 @@ pub mod pdf2img;
 pub mod prepress;
 pub mod progressive;
 pub mod render_contract;
+pub mod universal_editing;

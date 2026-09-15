@@ -31,13 +31,13 @@ pub async fn capability_report(multipart: Multipart) -> ServerResult<Response> {
     let password = fields.password.unwrap_or_default();
     let config = crate::config::get_config();
 
-    let report_json = crate::processing::run_with_timeout(config, move |_cancel| {
+    let report_json = crate::processing::run_with_timeout(&config, move |_cancel| {
         sdk::image_decode_capability_report_json(&file, Some(password.as_bytes()))
             .map_err(ServerError::from)
     })
     .await??;
 
-    crate::processing::check_output_size(config, report_json.len())?;
+    crate::processing::check_output_size(&config, report_json.len())?;
     let value: Value = serde_json::from_str(&report_json).map_err(|err| {
         ServerError::Internal(format!(
             "image decode capability report JSON was invalid: {}",
@@ -54,7 +54,7 @@ pub async fn progressive_lifecycle_report(multipart: Multipart) -> ServerResult<
     let password = fields.password.unwrap_or_default();
     let config = crate::config::get_config();
 
-    let report_json = crate::processing::run_with_timeout(config, move |_cancel| {
+    let report_json = crate::processing::run_with_timeout(&config, move |_cancel| {
         sdk::progressive_image_decode_lifecycle_report_json(
             &file,
             &request_json,
@@ -64,7 +64,7 @@ pub async fn progressive_lifecycle_report(multipart: Multipart) -> ServerResult<
     })
     .await??;
 
-    crate::processing::check_output_size(config, report_json.len())?;
+    crate::processing::check_output_size(&config, report_json.len())?;
     let value: Value = serde_json::from_str(&report_json).map_err(|err| {
         ServerError::Internal(format!(
             "progressive image decode lifecycle report JSON was invalid: {}",

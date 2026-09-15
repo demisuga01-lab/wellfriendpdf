@@ -121,6 +121,13 @@ struct InlineParams {
     values: HashMap<String, Operand>,
 }
 
+pub(crate) struct InlineImageDecodeDetails {
+    pub reference: ImageReference,
+    pub decode_params: Vec<Option<PdfDictionary>>,
+    pub color_space_object: Option<PdfObject>,
+    pub image_dictionary: PdfDictionary,
+}
+
 pub struct ImageLocator;
 
 impl ImageLocator {
@@ -179,6 +186,7 @@ impl ImageLocator {
             &mut soft_mask_objects,
             options,
             &mut refs,
+            0,
         )?;
 
         if options.include_inline {
@@ -435,6 +443,128 @@ impl ImageLocator {
         Ok(inline_refs)
     }
 
+    /// Parse one exact `BI ... ID ... EI` source slice into a decodable image
+    /// reference. This is used by occurrence-addressed editing paths that have
+    /// already resolved an inline image to an owner stream and byte range; it
+    /// deliberately does not search by dimensions or visual similarity.
+    pub(crate) fn inline_decode_details_from_source(
+        page_number: usize,
+        source: &[u8],
+    ) -> Result<InlineImageDecodeDetails> {
+        let operations = crate::content::ContentParser::parse(source)?;
+        let id_index = operations
+            .iter()
+            .position(|operation| operation.operator == "ID")
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "occurrence-owned inline image source has no ID operator".to_string(),
+                )
+            })?;
+        let id = &operations[id_index];
+        let pixel_bytes = operations
+            .get(id_index + 1)
+            .filter(|operation| operation.operator == "inline_image_data")
+            .and_then(|operation| operation.string_bytes(0))
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "occurrence-owned inline image source has no pixel payload".to_string(),
+                )
+        })?;
+        let params = Self::parse_inline_image_params(&id.operands);
+        let reference = Self::inline_ref_from_params(page_number, 0, &params, Some(pixel_bytes))?;
+        let filter_count = reference.filter.len();
+        let decode_params = match Self::inline_value(&params, "DP", "DecodeParms") {
+            None | Some(Operand::Null) => vec![None; filter_count],
+            Some(Operand::Dictionary(entries)) if filter_count > 0 => {
+                let mut values = vec![None; filter_count];
+                values[0] = Some(Self::inline_operand_dictionary(entries)?);
+                values
+            }
+            Some(Operand::Array(items)) if items.len() == filter_count => items
+                .iter()
+                .map(|item| match item {
+                    Operand::Dictionary(entries) => {
+                        Ok(Some(Self::inline_operand_dictionary(entries)?))
+                    }
+                    Operand::Null => Ok(None),
+                    _ => Err(WellfriendError::MalformedPdf(
+                        "occurrence-owned inline DecodeParms array contains an entry other than a dictionary or null"
+                            .to_string(),
+                    )),
+                })
+                .collect::<Result<Vec<_>>>()?,
+            Some(Operand::Array(items)) => {
+                return Err(WellfriendError::MalformedPdf(format!(
+                    "occurrence-owned inline DecodeParms count {} does not match filter count {filter_count}",
+                    items.len()
+                )))
+            }
+            Some(_) => {
+                return Err(WellfriendError::MalformedPdf(
+                    "occurrence-owned inline DecodeParms is not a dictionary or matching array"
+                        .to_string(),
+                ))
+            }
+        };
+        let color_space_object = Self::inline_value(&params, "CS", "ColorSpace")
+            .map(Self::inline_operand_object)
+            .transpose()?;
+        let mut image_dictionary = PdfDictionary::empty();
+        for (key, value) in &params.values {
+            image_dictionary.insert(Self::inline_full_key(key), Self::inline_operand_object(value)?);
+        }
+        Ok(InlineImageDecodeDetails {
+            reference,
+            decode_params,
+            color_space_object,
+            image_dictionary,
+        })
+    }
+
+    fn inline_full_key(key: &str) -> &str {
+        match key {
+            "BPC" => "BitsPerComponent",
+            "CS" => "ColorSpace",
+            "D" => "Decode",
+            "DP" => "DecodeParms",
+            "F" => "Filter",
+            "H" => "Height",
+            "IM" => "ImageMask",
+            "I" => "Interpolate",
+            "W" => "Width",
+            other => other,
+        }
+    }
+
+    fn inline_operand_dictionary(entries: &[(String, Operand)]) -> Result<PdfDictionary> {
+        let mut dictionary = PdfDictionary::empty();
+        for (key, value) in entries {
+            dictionary.insert(key, Self::inline_operand_object(value)?);
+        }
+        Ok(dictionary)
+    }
+
+    fn inline_operand_object(value: &Operand) -> Result<PdfObject> {
+        Ok(match value {
+            Operand::Null => PdfObject::Null,
+            Operand::Integer(value) => PdfObject::Integer(*value),
+            Operand::Real(value) => PdfObject::Real(*value),
+            Operand::Boolean(value) => PdfObject::Boolean(*value),
+            Operand::Name(value) => PdfObject::Name(value.clone()),
+            Operand::String(value) => PdfObject::String(value.clone()),
+            Operand::Array(items) => PdfObject::Array(
+                items
+                    .iter()
+                    .map(Self::inline_operand_object)
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+            Operand::Dictionary(entries) => {
+                PdfObject::Dictionary(Self::inline_operand_dictionary(entries)?)
+            }
+        })
+    }
+
     fn inline_ref_from_params(
         page_number: usize,
         inline_index: usize,
@@ -650,15 +780,29 @@ impl ImageLocator {
         xobjects: &HashMap<String, (u32, u16)>,
         page_number: usize,
         reader: &PdfReader,
-        visited: &mut HashSet<u32>,
+        visited: &mut HashSet<(u32, u16)>,
         soft_mask_objects: &mut HashSet<u32>,
         options: &ImageLocateOptions,
         results: &mut Vec<ImageReference>,
+        depth: usize,
     ) -> Result<()> {
+        const MAX_XOBJECT_DEPTH: usize = 64;
+        const MAX_XOBJECT_NODES: usize = 100_000;
+
+        if depth >= MAX_XOBJECT_DEPTH {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "Form XObject nesting exceeds limit {MAX_XOBJECT_DEPTH}"
+            )));
+        }
         let _ = options;
         for (name, &(obj_num, gen_num)) in xobjects {
-            if !visited.insert(obj_num) {
+            if !visited.insert((obj_num, gen_num)) {
                 continue;
+            }
+            if visited.len() > MAX_XOBJECT_NODES {
+                return Err(WellfriendError::ResourceLimit(format!(
+                    "XObject graph exceeds node limit {MAX_XOBJECT_NODES}"
+                )));
             }
 
             let obj = match reader.get_object(obj_num, gen_num) {
@@ -715,6 +859,7 @@ impl ImageLocator {
                                 soft_mask_objects,
                                 options,
                                 results,
+                                depth + 1,
                             )?;
                         }
                     }

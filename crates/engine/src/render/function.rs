@@ -20,6 +20,7 @@ use crate::reader::PdfReader;
 use crate::render::shading::{eval_type2, eval_type3, get_float_array};
 
 pub(crate) const MAX_TYPE0_SAMPLE_VALUES: usize = 4_194_304;
+pub(crate) const MAX_TYPE0_INTERPOLATION_DIMENSIONS: usize = 8;
 pub(crate) const MAX_TYPE4_TOKENS: usize = 16_384;
 pub(crate) const MAX_TYPE4_STACK: usize = 1_024;
 const MAX_FUNCTION_ARRAY_COMPONENTS: usize = crate::render::colorspace::MAX_DEVICEN_COMPONENTS;
@@ -205,7 +206,7 @@ fn validate_type0_shape(dict: &PdfDictionary) -> Option<()> {
 
 fn strict_type0_size(dict: &PdfDictionary) -> Option<Vec<usize>> {
     let size_obj = dict.get("Size")?.as_array()?;
-    if size_obj.is_empty() {
+    if size_obj.is_empty() || size_obj.len() > MAX_TYPE0_INTERPOLATION_DIMENSIONS {
         return None;
     }
     let mut size = Vec::with_capacity(size_obj.len());
@@ -437,6 +438,12 @@ fn eval_type0(
     let m = size.len(); // number of input dimensions
     let n = range.len() / 2; // number of output components
     if m == 0 || n == 0 {
+        return Vec::new();
+    }
+    if m > MAX_TYPE0_INTERPOLATION_DIMENSIONS {
+        log::debug!(
+            "Type 0 function: {m} interpolation dimensions exceed limit {MAX_TYPE0_INTERPOLATION_DIMENSIONS}"
+        );
         return Vec::new();
     }
     let Some(inputs) = finite_inputs(inputs, m, "Type 0") else {
@@ -720,6 +727,102 @@ fn tokenize_ps(text: &str) -> Vec<PsToken> {
         }
     }
     tokens
+}
+
+/// Validate a caller-supplied PDF FunctionType 4 program before it is embedded
+/// by an editing path.  Runtime evaluation already fails closed, but mutation
+/// must not knowingly serialize an unknown operator, unbalanced procedure, or
+/// non-finite numeric token into a newly authored resource graph.
+pub(crate) fn validate_type4_program(program: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(program) else {
+        return false;
+    };
+    let tokens = tokenize_ps(text);
+    if tokens.is_empty() || tokens.len() > MAX_TYPE4_TOKENS {
+        return false;
+    }
+    let Some((body, next)) = matches!(tokens.first(), Some(PsToken::ProcStart))
+        .then(|| collect_proc(&tokens, 1))
+        .flatten()
+    else {
+        return false;
+    };
+    next == tokens.len() && validate_type4_tokens(&body, 0)
+}
+
+fn validate_type4_tokens(tokens: &[PsToken], depth: usize) -> bool {
+    if depth > PS_MAX_DEPTH {
+        return false;
+    }
+    let mut index = 0usize;
+    while index < tokens.len() {
+        match &tokens[index] {
+            PsToken::Num(value) if value.is_finite() => {}
+            PsToken::Num(_) | PsToken::ProcEnd => return false,
+            PsToken::ProcStart => {
+                let Some((body, next)) = collect_proc(tokens, index + 1) else {
+                    return false;
+                };
+                if !validate_type4_tokens(&body, depth + 1) {
+                    return false;
+                }
+                index = next;
+                continue;
+            }
+            PsToken::Op(operator) if is_type4_operator(operator) => {}
+            PsToken::Op(_) => return false,
+        }
+        index += 1;
+    }
+    true
+}
+
+fn is_type4_operator(operator: &str) -> bool {
+    matches!(
+        operator,
+        "add"
+            | "sub"
+            | "mul"
+            | "div"
+            | "idiv"
+            | "mod"
+            | "neg"
+            | "abs"
+            | "sqrt"
+            | "sin"
+            | "cos"
+            | "atan"
+            | "exp"
+            | "ln"
+            | "log"
+            | "cvi"
+            | "cvr"
+            | "truncate"
+            | "floor"
+            | "ceiling"
+            | "round"
+            | "dup"
+            | "pop"
+            | "exch"
+            | "copy"
+            | "index"
+            | "roll"
+            | "eq"
+            | "ne"
+            | "gt"
+            | "ge"
+            | "lt"
+            | "le"
+            | "and"
+            | "or"
+            | "xor"
+            | "not"
+            | "bitshift"
+            | "true"
+            | "false"
+            | "if"
+            | "ifelse"
+    )
 }
 
 /// If the token stream is a single `{ ... }` block, return its inner tokens;
@@ -1331,6 +1434,20 @@ mod tests {
         );
         let r = reader_for_tests();
         assert!(eval_function_n(&obj, &[0.5], &r).is_empty());
+    }
+
+    #[test]
+    fn type0_shape_rejects_excessive_interpolation_dimensions() {
+        let dimensions = MAX_TYPE0_INTERPOLATION_DIMENSIONS + 1;
+        let obj = type0_stream(
+            &vec![1; dimensions],
+            8,
+            &vec![0.0; dimensions * 2],
+            &[0.0, 1.0],
+            vec![0],
+        );
+        let r = reader_for_tests();
+        assert!(!validate_function_or_array_shape(&obj, dimensions, &r));
     }
 
     #[test]

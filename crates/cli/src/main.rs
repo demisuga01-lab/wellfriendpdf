@@ -414,6 +414,20 @@ enum Commands {
     EditFormOccurrence(SourceEditingPathEditArgs),
     /// Report the source editing true-editing operation schema and limits
     EditOperationReport(AnnotationMediaRedactionReportArgs),
+    /// Report the additive universal editing v2 capability and qualification registry
+    UniversalEditCapabilities(UniversalEditCapabilitiesArgs),
+    /// Build the source-linked universal document model without changing the PDF
+    UniversalEditAnalyze(UniversalEditAnalyzeArgs),
+    /// Inspect one indirect object for a revision-bound object-graph edit
+    UniversalEditInspectObject(UniversalEditInspectObjectArgs),
+    /// Compile exact render plans, render native RGBA pixels, and optionally compare references
+    UniversalRenderQualification(UniversalEditAnalyzeArgs),
+    /// Create an immutable, revision-bound universal edit plan from JSON
+    UniversalEditPlan(UniversalEditPlanArgs),
+    /// Bind candidate, font, and signature decisions to a universal edit plan
+    UniversalEditApprove(UniversalEditApproveArgs),
+    /// Apply an approved universal edit plan atomically
+    UniversalEditApply(UniversalEditApplyArgs),
     /// editing transactions editable scene/snapshot/transaction/font architecture report
     EditingTransactionsReport(AnnotationMediaRedactionReportArgs),
     /// Build a source-linked editable scene graph
@@ -1612,6 +1626,101 @@ struct SourceEditingImageArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+}
+
+#[derive(Parser)]
+struct UniversalEditCapabilitiesArgs {
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct UniversalEditAnalyzeArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Optional UniversalAnalyzeOptionsV2 JSON file
+    #[arg(long)]
+    options: Option<PathBuf>,
+    /// Output source-linked model JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct UniversalEditInspectObjectArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Indirect object number to inspect
+    #[arg(long)]
+    object_number: u32,
+    /// Indirect object generation
+    #[arg(long, default_value_t = 0)]
+    generation: u16,
+    /// Output reversible object JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct UniversalEditPlanArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// UniversalEditRequestV2 JSON file
+    #[arg(long)]
+    request: PathBuf,
+    /// Output raw UniversalEditPlanV2 JSON for approve/apply
+    #[arg(short, long, default_value = "universal-edit-plan-v2.json")]
+    output: PathBuf,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct UniversalEditApproveArgs {
+    /// Raw UniversalEditPlanV2 JSON produced by universal-edit-plan
+    #[arg(long)]
+    plan: PathBuf,
+    /// UniversalApprovalDecisionV2 JSON file
+    #[arg(long)]
+    decision: PathBuf,
+    /// Output revision-bound UniversalApprovalTokenV2 JSON
+    #[arg(short, long, default_value = "universal-edit-approval-v2.json")]
+    output: PathBuf,
+}
+
+#[derive(Parser)]
+struct UniversalEditApplyArgs {
+    /// Path to the exact PDF revision used to create the plan
+    pdf: PathBuf,
+    /// Raw UniversalEditPlanV2 JSON file
+    #[arg(long)]
+    plan: PathBuf,
+    /// Optional UniversalApprovalTokenV2 JSON; required by approval_required plans
+    #[arg(long)]
+    approval: Option<PathBuf>,
+    /// Output PDF (or byte-identical input for typed no-change outcomes)
+    #[arg(short, long, default_value = "universal-edited-v2.pdf")]
+    output: PathBuf,
+    /// Optional UniversalEditResultV2 JSON report; defaults to stdout
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// File containing the exact output user-password bytes for a Standard-handler plan
+    #[arg(long)]
+    output_user_password_file: Option<PathBuf>,
+    /// File containing the exact output owner-password bytes; defaults to the user password
+    #[arg(long, requires = "output_user_password_file")]
+    output_owner_password_file: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -3947,6 +4056,15 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
             run_source_editing_path_edit(args)
         }
         Commands::EditOperationReport(args) => run_source_editing_report(args),
+        Commands::UniversalEditCapabilities(args) => run_universal_edit_capabilities(args),
+        Commands::UniversalEditAnalyze(args) => run_universal_edit_analyze(args),
+        Commands::UniversalEditInspectObject(args) => run_universal_edit_inspect_object(args),
+        Commands::UniversalRenderQualification(args) => {
+            run_universal_render_qualification(args)
+        }
+        Commands::UniversalEditPlan(args) => run_universal_edit_plan(args),
+        Commands::UniversalEditApprove(args) => run_universal_edit_approve(args),
+        Commands::UniversalEditApply(args) => run_universal_edit_apply(args),
         Commands::EditingTransactionsReport(args) => run_editing_transactions_report(args),
         Commands::SceneReport(args) => run_editing_transactions_scene_report(args),
         Commands::SceneSelect(args) => run_editing_transactions_scene_select(args),
@@ -5954,6 +6072,148 @@ fn run_editing_transactions_report(
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_universal_edit_capabilities(
+    args: UniversalEditCapabilitiesArgs,
+) -> Result<(), Box<dyn Error>> {
+    let report = wellfriendpdf_engine::universal_capability_registry_v2();
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
+}
+
+fn run_universal_edit_analyze(
+    args: UniversalEditAnalyzeArgs,
+) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let options = args
+        .options
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .map(|json| {
+            serde_json::from_str::<wellfriendpdf_engine::UniversalAnalyzeOptionsV2>(&json)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let model = wellfriendpdf_engine::analyze_universal_document_v2(&input, &options)?;
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&model)?)
+}
+
+fn run_universal_edit_inspect_object(
+    args: UniversalEditInspectObjectArgs,
+) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let object = wellfriendpdf_engine::inspect_universal_object_v2(
+        &input,
+        args.object_number,
+        args.generation,
+    )?;
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&object)?)
+}
+
+fn run_universal_render_qualification(
+    args: UniversalEditAnalyzeArgs,
+) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let options = args
+        .options
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .map(|json| {
+            serde_json::from_str::<
+                wellfriendpdf_engine::UniversalRenderQualificationOptionsV2,
+            >(&json)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let report = wellfriendpdf_engine::qualify_universal_render_v2(&input, &options)?;
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
+}
+
+fn run_universal_edit_plan(args: UniversalEditPlanArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = serde_json::from_str::<wellfriendpdf_engine::UniversalEditRequestV2>(
+        &std::fs::read_to_string(&args.request)?,
+    )?;
+    let plan = wellfriendpdf_engine::plan_universal_edit_v2(&input, &request)?;
+    std::fs::write(&args.output, serde_json::to_string_pretty(&plan)?)?;
+    eprintln!(
+        "Universal edit plan {} ({:?}) -> {}",
+        plan.plan_id,
+        plan.state,
+        args.output.display()
+    );
+    Ok(())
+}
+
+fn run_universal_edit_approve(args: UniversalEditApproveArgs) -> Result<(), Box<dyn Error>> {
+    let plan = serde_json::from_str::<wellfriendpdf_engine::UniversalEditPlanV2>(
+        &std::fs::read_to_string(&args.plan)?,
+    )?;
+    let decision = serde_json::from_str::<wellfriendpdf_engine::UniversalApprovalDecisionV2>(
+        &std::fs::read_to_string(&args.decision)?,
+    )?;
+    let approval = wellfriendpdf_engine::create_universal_approval_token_v2(&plan, decision)?;
+    std::fs::write(&args.output, serde_json::to_string_pretty(&approval)?)?;
+    eprintln!(
+        "Revision-bound approval for plan {} -> {}",
+        plan.plan_id,
+        args.output.display()
+    );
+    Ok(())
+}
+
+fn run_universal_edit_apply(args: UniversalEditApplyArgs) -> Result<(), Box<dyn Error>> {
+    let original_input = std::fs::read(&args.pdf)?;
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let plan = serde_json::from_str::<wellfriendpdf_engine::UniversalEditPlanV2>(
+        &std::fs::read_to_string(&args.plan)?,
+    )?;
+    let approval = args
+        .approval
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .map(|json| {
+            serde_json::from_str::<wellfriendpdf_engine::UniversalApprovalTokenV2>(&json)
+        })
+        .transpose()?;
+    let (output, mut report) = if let Some(user_path) = args.output_user_password_file.as_ref() {
+        let user_password = std::fs::read(user_path)?;
+        let owner_password = args
+            .output_owner_password_file
+            .as_ref()
+            .map(std::fs::read)
+            .transpose()?
+            .unwrap_or_else(|| user_password.clone());
+        let credentials = wellfriendpdf_engine::UniversalOutputSecurityCredentialsV2 {
+            user_password: wellfriendpdf_engine::crypto::secret_bytes(user_password),
+            owner_password: wellfriendpdf_engine::crypto::secret_bytes(owner_password),
+        };
+        wellfriendpdf_engine::apply_universal_edit_v2_with_output_security(
+            &input,
+            &plan,
+            approval.as_ref(),
+            &credentials,
+        )?
+    } else {
+        wellfriendpdf_engine::apply_universal_edit_v2(&input, &plan, approval.as_ref())?
+    };
+    let output = wellfriendpdf_engine::preserve_universal_no_change_transport_v2(
+        &original_input,
+        &input,
+        output,
+        &mut report,
+    );
+    std::fs::write(&args.output, output)?;
+    let report = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, report)?;
+    } else {
+        println!("{report}");
+    }
+    Ok(())
 }
 
 fn run_editing_transactions_scene_report(
@@ -11057,10 +11317,13 @@ fn yes_no(b: bool) -> &'static str {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
+    } else if max == 0 {
+        String::new()
     } else {
-        format!("{}…", &s[..max.saturating_sub(1)])
+        let prefix: String = s.chars().take(max - 1).collect();
+        format!("{prefix}\u{2026}")
     }
 }
 
@@ -13104,7 +13367,7 @@ mod tests {
         parse_render_device_transform_cli, parse_render_exactness_cli, parse_render_halftone_cli,
         parse_render_overprint_cli, parse_render_page_box_cli, parse_render_pixel_format_cli,
         parse_render_print_profile_cli, parse_rendering_intent_cli,
-        render_artifact_cache_stats_json, Cli, Commands,
+        render_artifact_cache_stats_json, truncate, Cli, Commands,
     };
     use clap::Parser;
     use std::path::PathBuf;
@@ -13116,6 +13379,15 @@ mod tests {
         assert_eq!(parse_page_range_cli("2-4", 5).unwrap(), vec![2, 3, 4]);
         assert_eq!(parse_page_range_cli("1,3,5", 5).unwrap(), vec![1, 3, 5]);
         assert_eq!(parse_page_range_cli("3-10", 5).unwrap(), vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn display_truncation_is_utf8_boundary_safe() {
+        assert_eq!(truncate("abcdef", 4), "abc\u{2026}");
+        assert_eq!(truncate("aé日z", 3), "aé\u{2026}");
+        assert_eq!(truncate("é", 1), "é");
+        assert_eq!(truncate("éé", 1), "\u{2026}");
+        assert_eq!(truncate("anything", 0), "");
     }
 
     #[test]

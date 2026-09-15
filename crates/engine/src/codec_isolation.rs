@@ -7,7 +7,7 @@
 //! validation, and fallback decisions.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -1229,10 +1229,22 @@ fn worker_decode(
         trace_id: config.trace_id.clone(),
     };
 
-    let run_dir = std::env::temp_dir();
+    let run_dir = match tempfile::Builder::new()
+        .prefix("wellfriendpdf-codec-")
+        .tempdir()
+    {
+        Ok(directory) => directory,
+        Err(err) => {
+            report.status = "worker_unavailable".to_string();
+            report.errors.push(format!(
+                "failed to create private codec run directory: {err}"
+            ));
+            return WorkerAttempt::Failure(report);
+        }
+    };
     let stem = format!("wellfriendpdf-codec-{}", request.request_id);
-    let request_path = run_dir.join(format!("{stem}.request.json"));
-    let response_path = run_dir.join(format!("{stem}.response.json"));
+    let request_path = run_dir.path().join(format!("{stem}.request.json"));
+    let response_path = run_dir.path().join(format!("{stem}.response.json"));
     let result = run_worker_process(
         &worker_path,
         &request_path,
@@ -1329,22 +1341,23 @@ fn run_worker_process(
         }
     }
 
-    let metadata = fs::metadata(response_path)
-        .map_err(|err| format!("codec worker did not produce a response: {err}"))?;
     let max_response = config
         .limits
         .max_decoded_bytes
         .saturating_mul(8)
         .saturating_add(RESPONSE_OVERHEAD_BYTES)
         .clamp(RESPONSE_OVERHEAD_BYTES, MAX_RESPONSE_JSON_BYTES);
-    if metadata.len() > max_response {
+    let mut response = fs::File::open(response_path)
+        .map_err(|err| format!("codec worker did not produce a response: {err}"))?;
+    let mut bytes = Vec::new();
+    std::io::Read::take(&mut response, max_response.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("failed to read worker response: {err}"))?;
+    if bytes.len() as u64 > max_response {
         return Err(format!(
-            "codec worker response is {} bytes, exceeding parent cap {max_response}",
-            metadata.len()
+            "codec worker response exceeds parent cap {max_response}"
         ));
     }
-    let bytes =
-        fs::read(response_path).map_err(|err| format!("failed to read worker response: {err}"))?;
     serde_json::from_slice(&bytes).map_err(|err| format!("invalid worker response JSON: {err}"))
 }
 

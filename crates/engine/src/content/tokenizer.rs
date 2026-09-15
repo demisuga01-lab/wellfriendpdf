@@ -5,6 +5,7 @@ use crate::error::{Result, WellfriendError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContentToken {
+    Null,
     Integer(i64),
     Real(f64),
     Boolean(bool),
@@ -19,6 +20,17 @@ pub enum ContentToken {
     InlineImageData(Vec<u8>),
 }
 
+/// A decoded content token together with its exact half-open byte range in the
+/// decoded content stream. Inline-image data and its synthetic `EI` token keep
+/// independent, non-overlapping ranges so mutation code can replace one
+/// occurrence without scanning binary image bytes as PDF operators.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpannedContentToken {
+    pub start: usize,
+    pub end: usize,
+    pub token: ContentToken,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InlineImageState {
     Normal,
@@ -31,6 +43,8 @@ pub struct ContentTokenizer<'a> {
     data: &'a [u8],
     pos: usize,
     inline_image_state: InlineImageState,
+    last_span: Option<[usize; 2]>,
+    pending_inline_end_span: Option<[usize; 2]>,
 }
 
 pub struct StreamingContentTokenizer<R: Read> {
@@ -49,16 +63,37 @@ impl<'a> ContentTokenizer<'a> {
             data,
             pos: 0,
             inline_image_state: InlineImageState::Normal,
+            last_span: None,
+            pending_inline_end_span: None,
         }
+    }
+
+    /// Return the next token with its exact decoded-stream source range.
+    pub fn next_spanned(&mut self) -> Result<Option<SpannedContentToken>> {
+        let Some(token) = self.next_token()? else {
+            return Ok(None);
+        };
+        let [start, end] = self.last_span.ok_or_else(|| {
+            WellfriendError::ParseError("content tokenizer lost token provenance".to_string())
+        })?;
+        Ok(Some(SpannedContentToken { start, end, token }))
     }
 
     fn next_token(&mut self) -> Result<Option<ContentToken>> {
         if self.inline_image_state == InlineImageState::PendingEnd {
             self.inline_image_state = InlineImageState::Normal;
+            self.last_span = self.pending_inline_end_span.take();
             return Ok(Some(ContentToken::Operator("EI".to_string())));
         }
         if self.inline_image_state == InlineImageState::Data {
-            return self.read_inline_image_data().map(Some);
+            let start = self.pos;
+            let token = self.read_inline_image_data()?;
+            let end = self
+                .pending_inline_end_span
+                .map(|span| span[0])
+                .unwrap_or(self.pos);
+            self.last_span = Some([start, end]);
+            return Ok(Some(token));
         }
 
         self.skip_ws_and_comments();
@@ -66,6 +101,7 @@ impl<'a> ContentTokenizer<'a> {
             return Ok(None);
         }
 
+        let token_start = self.pos;
         let byte = self.data[self.pos];
         let token = match byte {
             b'[' => {
@@ -107,6 +143,8 @@ impl<'a> ContentTokenizer<'a> {
             }
             _ => {}
         }
+
+        self.last_span = Some([token_start, self.pos]);
 
         Ok(Some(token))
     }
@@ -270,6 +308,7 @@ impl<'a> ContentTokenizer<'a> {
         }
         let op = String::from_utf8_lossy(&self.data[start..self.pos]).into_owned();
         match op.as_str() {
+            "null" => ContentToken::Null,
             "true" => ContentToken::Boolean(true),
             "false" => ContentToken::Boolean(false),
             _ => ContentToken::Operator(op),
@@ -291,6 +330,7 @@ impl<'a> ContentTokenizer<'a> {
             {
                 let data = self.data[start..cursor].to_vec();
                 self.pos = cursor + 3;
+                self.pending_inline_end_span = Some([cursor + 1, cursor + 3]);
                 self.inline_image_state = InlineImageState::PendingEnd;
                 return Ok(ContentToken::InlineImageData(data));
             }
@@ -306,6 +346,7 @@ impl<'a> ContentTokenizer<'a> {
         let data = self.data[start..].to_vec();
         self.pos = self.data.len();
         self.inline_image_state = InlineImageState::Normal;
+        self.pending_inline_end_span = None;
         Ok(ContentToken::InlineImageData(data))
     }
 
@@ -600,6 +641,7 @@ impl<R: Read> StreamingContentTokenizer<R> {
         }
         let op = String::from_utf8_lossy(&out).into_owned();
         Ok(match op.as_str() {
+            "null" => ContentToken::Null,
             "true" => ContentToken::Boolean(true),
             "false" => ContentToken::Boolean(false),
             _ => ContentToken::Operator(op),
@@ -831,6 +873,25 @@ mod tests {
                 ContentToken::Integer(0),
             ]
         );
+    }
+
+    #[test]
+    fn tokenizes_null_in_both_slice_and_streaming_modes() {
+        let data = b"[null << /DecodeParms null >>]";
+        let expected = vec![
+            ContentToken::ArrayStart,
+            ContentToken::Null,
+            ContentToken::DictStart,
+            ContentToken::Name("DecodeParms".to_string()),
+            ContentToken::Null,
+            ContentToken::DictEnd,
+            ContentToken::ArrayEnd,
+        ];
+        assert_eq!(tokenize_all(data).unwrap(), expected);
+        let streaming = StreamingContentTokenizer::new(std::io::Cursor::new(data))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(streaming, expected);
     }
 
     #[test]

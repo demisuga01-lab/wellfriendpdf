@@ -1781,7 +1781,7 @@ fn estimate_pdf_dictionary_bytes(dict: &crate::object::PdfDictionary) -> usize {
 fn estimate_operand_bytes(operand: &crate::content::operation::Operand) -> usize {
     use crate::content::operation::Operand;
     match operand {
-        Operand::Integer(_) | Operand::Real(_) | Operand::Boolean(_) => {
+        Operand::Null | Operand::Integer(_) | Operand::Real(_) | Operand::Boolean(_) => {
             std::mem::size_of_val(operand)
         }
         Operand::Name(name) => name.len(),

@@ -9,6 +9,7 @@ fn main() -> wellfriendpdf_engine::Result<()> {
         page: 1,
         source_text: "ABC".to_string(),
         replacement_text: "DEF".to_string(),
+        source_instruction_id: None,
         signature_policy_override: false,
     };
 

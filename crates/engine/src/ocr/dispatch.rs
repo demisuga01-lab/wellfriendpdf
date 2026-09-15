@@ -51,8 +51,9 @@ use crate::ocr::{OcrEngine, OcrImage, OcrOptions, OcrPage};
 /// - `timeout == Some(d)` with `d > 0` → clone the `Arc` onto a scratch thread
 ///   and wait at most `d`; on expiry return [`WellfriendError::Cancelled`].
 ///
-/// Never panics. Never blocks longer than `timeout` (when set). The returned
-/// `Err` is the backend's own error, a timeout, or a captured panic message.
+/// Never panics. Owned backends return at `timeout`; adapters with borrowed FFI
+/// userdata wait for their callback to finish before returning a timeout so the
+/// userdata cannot be freed while still in use.
 pub fn recognize_contained(
     engine: &Arc<dyn OcrEngine>,
     image: &OcrImage,
@@ -85,9 +86,9 @@ fn recognize_catching(
     }
 }
 
-/// Run the backend on a scratch thread and bound the wait by `timeout`. On
-/// expiry the backend thread is detached (left to finish and discard its result)
-/// and a `Cancelled` error is returned so the caller degrades the page.
+/// Run the backend on a scratch thread and bound the wait by `timeout`. Owned
+/// backends may detach after expiry. Borrowed FFI adapters join before returning
+/// so caller-owned userdata cannot be released while the callback still runs.
 fn recognize_with_timeout(
     engine: &Arc<dyn OcrEngine>,
     image: &OcrImage,
@@ -126,8 +127,10 @@ fn recognize_with_timeout(
             result
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            // Detach: we cannot safely kill the thread, but it only holds its own
-            // clones and its result will be discarded. The page is failed cleanly.
+            if !engine.supports_detached_timeout() {
+                // Borrowed FFI userdata is guaranteed only through this call.
+                let _ = handle.join();
+            }
             Err(WellfriendError::Cancelled(format!(
                 "OCR backend '{name}' exceeded the {}ms per-page timeout",
                 timeout.as_millis()

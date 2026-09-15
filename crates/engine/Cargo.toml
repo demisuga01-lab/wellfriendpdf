@@ -22,6 +22,7 @@ hkdf = "0.12"
 sha2 = { version = "0.10", features = ["oid"] }
 flate2 = "1"
 getrandom = "0.2"
+tempfile = "3"
 hayro-ccitt = "0.3"
 hayro-jbig2 = { version = "0.3", default-features = false, features = ["std"] }
 hayro-jpeg2000 = { version = "0.3", default-features = false, features = ["std"] }

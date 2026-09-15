@@ -422,6 +422,8 @@ pub struct ProgressiveRenderJob {
 const ADAPTIVE_TILE_SIZES: [u32; 5] = [128, 192, 256, 384, 512];
 const MAX_OBSOLETE_PUBLICATIONS: usize = 8;
 const MAX_VIEWER_QUEUE_PREVIEW_ITEMS: usize = 16;
+const MAX_PROGRESSIVE_TILES: usize = 16_384;
+const MAX_PROGRESSIVE_STEP_TILES: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProgressiveAdjacentPageSeed {
@@ -543,6 +545,33 @@ fn prepare_progressive_render_contract(
         tile_scheduler.selected_tile_width,
         tile_scheduler.selected_tile_height,
     );
+    let tile_columns = output_region.width.div_ceil(tile_width);
+    let tile_rows = output_region.height.div_ceil(tile_height);
+    let total_tiles = u64::from(tile_columns) * u64::from(tile_rows);
+    if total_tiles > MAX_PROGRESSIVE_TILES as u64 {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "progressive render requires {total_tiles} tiles, exceeding the limit of {MAX_PROGRESSIVE_TILES}"
+        )));
+    }
+    let surface_bytes = u64::from(output_region.width)
+        .checked_mul(u64::from(output_region.height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit(
+                "progressive render surface byte count overflows".to_string(),
+            )
+        })?;
+    let assembly_peak_bytes = surface_bytes.checked_mul(2).ok_or_else(|| {
+        WellfriendError::ResourceLimit(
+            "progressive render assembly byte count overflows".to_string(),
+        )
+    })?;
+    if assembly_peak_bytes > base_contract.resource_budget.max_temporary_bytes {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "progressive render assembly requires {assembly_peak_bytes} temporary bytes, exceeding the limit of {}",
+            base_contract.resource_budget.max_temporary_bytes
+        )));
+    }
     let output_end_x = output_region
         .x
         .checked_add(output_region.width)
@@ -555,7 +584,7 @@ fn prepare_progressive_render_contract(
         .ok_or_else(|| {
             WellfriendError::invalid_input("progressive contract output y range overflows")
         })?;
-    let mut tiles = Vec::new();
+    let mut tiles = Vec::with_capacity(total_tiles as usize);
     let mut y = output_region.y;
     while y < output_end_y {
         let height = tile_height.min(output_end_y - y);
@@ -1262,6 +1291,11 @@ impl ProgressiveRenderJob {
         if self.is_complete() {
             self.state = ProgressiveRenderState::Completed;
             return Ok(self.step_report(0, false));
+        }
+        if max_tiles > MAX_PROGRESSIVE_STEP_TILES {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "progressive step requests {max_tiles} tiles, exceeding the limit of {MAX_PROGRESSIVE_STEP_TILES}"
+            )));
         }
 
         self.state = ProgressiveRenderState::Preparing;
@@ -2274,6 +2308,49 @@ impl ProgressiveRenderJob {
         Ok(out)
     }
 
+    /// Assemble the completed surface while releasing retained tile buffers as
+    /// they are copied, avoiding a second full retained-page allocation.
+    pub fn finish_checked_consuming(&mut self) -> Result<PixelBuffer> {
+        if !self.is_complete() {
+            return Err(WellfriendError::invalid_input(
+                "progressive render cannot finish before all tiles are complete",
+            ));
+        }
+        let mut out = PixelBuffer::new_filled_with_mode(
+            self.page_width,
+            self.page_height,
+            WHITE,
+            self.render_mode,
+        );
+        for (index, (tile, completed)) in
+            self.tiles.iter().zip(self.completed.iter_mut()).enumerate()
+        {
+            let buffer = completed.take().ok_or_else(|| {
+                WellfriendError::invalid_input(format!(
+                    "progressive tile assembly missing completed tile {index}"
+                ))
+            })?;
+            let dst_x = tile.x.checked_sub(self.output_origin_x).ok_or_else(|| {
+                WellfriendError::invalid_input(format!(
+                    "progressive tile assembly tile {index} begins before output origin"
+                ))
+            })?;
+            let dst_y = tile.y.checked_sub(self.output_origin_y).ok_or_else(|| {
+                WellfriendError::invalid_input(format!(
+                    "progressive tile assembly tile {index} begins before output origin"
+                ))
+            })?;
+            if !out.blit_from_buffer(&buffer, dst_x, dst_y) {
+                return Err(WellfriendError::invalid_input(format!(
+                    "progressive tile assembly failed for tile {index} at {},{} size {}x{} into page {}x{}",
+                    tile.x, tile.y, tile.width, tile.height, self.page_width, self.page_height
+                )));
+            }
+        }
+        self.state = ProgressiveRenderState::Closed;
+        Ok(out)
+    }
+
     fn completed_count(&self) -> usize {
         self.completed.iter().filter(|tile| tile.is_some()).count()
     }
@@ -3005,6 +3082,37 @@ mod tests {
             choose_adaptive_tile_size(800, 1000, tiny_budget),
             (128, 128)
         );
+    }
+
+    #[test]
+    fn progressive_session_admission_bounds_retained_and_assembly_surfaces() {
+        let engine = test_engine();
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default render contract");
+        contract.resource_budget.max_temporary_bytes = u64::from(contract.width)
+            .checked_mul(u64::from(contract.height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .expect("test surface size");
+        let error = match ProgressiveRenderJob::new_with_contract(engine, contract, 64, 64) {
+            Ok(_) => {
+                panic!("surface memory above the contract budget must be rejected at admission")
+            }
+            Err(error) => error,
+        };
+        assert!(matches!(error, WellfriendError::ResourceLimit(_)));
+        assert!(format!("{error}").contains("progressive render assembly requires"));
+    }
+
+    #[test]
+    fn progressive_step_rejects_unbounded_tile_quantum() {
+        let engine = test_engine();
+        let mut job = ProgressiveRenderJob::new(engine, 1, 72, RenderMode::Compat, 64, 64)
+            .expect("create progressive job");
+        let error = job
+            .render_next(MAX_PROGRESSIVE_STEP_TILES + 1, &CancelToken::none())
+            .expect_err("oversized progressive work quantum must fail before rendering");
+        assert!(matches!(error, WellfriendError::ResourceLimit(_)));
     }
 
     #[test]

@@ -455,9 +455,6 @@ impl EvidenceStore {
     ) -> Result<(), EvidenceError> {
         let parent = path.parent().ok_or(EvidenceError::InvalidCachePath)?;
         std::fs::create_dir_all(parent).map_err(EvidenceError::CacheIo)?;
-        if path.exists() {
-            return Err(EvidenceError::CacheAlreadyExists);
-        }
         let bundle = self.export_bundle(
             source_document_sha256,
             signature_identifier,
@@ -465,16 +462,23 @@ impl EvidenceStore {
             policy_sha256,
         );
         let encoded = serde_json::to_vec_pretty(&bundle).map_err(EvidenceError::BundleJson)?;
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(EvidenceError::InvalidCachePath)?;
-        let temporary = parent.join(format!(".{file_name}.wellfriendpdf-partial"));
-        if temporary.exists() {
-            return Err(EvidenceError::CacheAlreadyExists);
-        }
-        std::fs::write(&temporary, encoded).map_err(EvidenceError::CacheIo)?;
-        std::fs::rename(&temporary, path).map_err(EvidenceError::CacheIo)
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(parent).map_err(EvidenceError::CacheIo)?;
+        std::io::Write::write_all(&mut temporary, &encoded).map_err(EvidenceError::CacheIo)?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(EvidenceError::CacheIo)?;
+        temporary
+            .persist_noclobber(path)
+            .map(|_| ())
+            .map_err(|error| {
+                if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    EvidenceError::CacheAlreadyExists
+                } else {
+                    EvidenceError::CacheIo(error.error)
+                }
+            })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -483,10 +487,7 @@ impl EvidenceStore {
         max_entries: usize,
         max_bytes: usize,
     ) -> Result<Self, EvidenceError> {
-        let bytes = std::fs::read(path).map_err(EvidenceError::CacheIo)?;
-        if bytes.len() > max_bytes.saturating_mul(3) {
-            return Err(EvidenceError::EvidenceLimitExceeded);
-        }
+        let bytes = read_file_bounded(path, max_bytes.saturating_mul(3))?;
         let bundle: EvidenceBundle =
             serde_json::from_slice(&bytes).map_err(EvidenceError::BundleJson)?;
         Self::import_bundle(&bundle, max_entries, max_bytes)
@@ -502,14 +503,19 @@ impl EvidenceStore {
         }
         std::fs::create_dir_all(directory).map_err(EvidenceError::CacheIo)?;
         let destination = directory.join("validated-evidence-cache.json");
-        let temporary = directory.join(".validated-evidence-cache.json.wellfriendpdf-partial");
-        if temporary.exists() {
-            return Err(EvidenceError::CacheAlreadyExists);
-        }
         let bundle = self.export_bundle(None, None, None, None);
         let encoded = serde_json::to_vec_pretty(&bundle).map_err(EvidenceError::BundleJson)?;
-        std::fs::write(&temporary, encoded).map_err(EvidenceError::CacheIo)?;
-        std::fs::rename(&temporary, &destination).map_err(EvidenceError::CacheIo)
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory).map_err(EvidenceError::CacheIo)?;
+        std::io::Write::write_all(&mut temporary, &encoded).map_err(EvidenceError::CacheIo)?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(EvidenceError::CacheIo)?;
+        temporary
+            .persist(&destination)
+            .map(|_| ())
+            .map_err(|error| EvidenceError::CacheIo(error.error))
     }
 
     /// Load an explicit persistent cache. Corrupted, oversized, unvalidated,
@@ -537,6 +543,21 @@ impl EvidenceStore {
         }
         Ok(store)
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_file_bounded(path: &std::path::Path, max_bytes: usize) -> Result<Vec<u8>, EvidenceError> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).map_err(EvidenceError::CacheIo)?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(EvidenceError::CacheIo)?;
+    if bytes.len() > max_bytes {
+        return Err(EvidenceError::EvidenceLimitExceeded);
+    }
+    Ok(bytes)
 }
 
 /// Bounded, secret-safe transport provenance.

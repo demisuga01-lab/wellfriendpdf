@@ -23,6 +23,7 @@ fuzz_target!(|data: &[u8]| {
         page: 1,
         source_text: source.to_string(),
         replacement_text: replacement,
+        source_instruction_id: None,
         signature_policy_override: false,
     };
     let _ = operator_text_eligibility(data, &request);

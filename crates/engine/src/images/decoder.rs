@@ -283,6 +283,7 @@ impl ImageDecoder {
                 let jpx = jpx::decode_with_target_resolution(
                     &decoded.data,
                     Some((requested_width, requested_height)),
+                    limits,
                 )?;
                 Self::finish_reduced_jpx_decoded_image(
                     jpx.raw,
@@ -594,15 +595,31 @@ impl ImageDecoder {
                 "CCITTFaxDecode" | "CCF" => {
                     Self::ensure_monochrome_terminal_color_space(last_filter, color_space)?;
                     let params = ccitt_decode_params(decode_parms, width, height)?;
-                    return ccitt::decode(&decompressed, params);
+                    return Self::finish_monochrome_decoded_image(
+                        ccitt::decode(&decompressed, params)?,
+                        width,
+                        height,
+                        "inline image",
+                        color_space,
+                        &PdfDictionary::empty(),
+                        ImageColorContext::default(),
+                    );
                 }
                 "JBIG2Decode" => {
                     Self::ensure_monochrome_terminal_color_space(last_filter, color_space)?;
-                    return jbig2::decode(&decompressed, None);
+                    return Self::finish_monochrome_decoded_image(
+                        jbig2::decode(&decompressed, None)?,
+                        width,
+                        height,
+                        "inline image",
+                        color_space,
+                        &PdfDictionary::empty(),
+                        ImageColorContext::default(),
+                    );
                 }
                 "JPXDecode" | "JPX" => {
                     return Self::finish_jpx_decoded_image(
-                        jpx::decode(&decompressed)?,
+                        jpx::decode_with_limits(&decompressed, limits)?,
                         width,
                         height,
                         "inline image",
@@ -673,6 +690,41 @@ impl ImageDecoder {
         reader: Option<&PdfReader>,
         color_options: ColorTransformOptions,
     ) -> Result<RawImage> {
+        Self::decode_inline_with_resolved_image_dictionary_and_param_array(
+            pixel_data,
+            width,
+            height,
+            bpc,
+            color_space,
+            color_space_obj,
+            filters,
+            decode_params,
+            &PdfDictionary::empty(),
+            limits,
+            reader,
+            color_options,
+        )
+    }
+
+    /// Decode an inline image with its complete normalized BI dictionary.
+    /// `/Decode`, `/ImageMask`, calibrated/tint colour parameters, and other
+    /// sample semantics must reach the same raw-image pipeline as XObjects;
+    /// retaining only the family name would silently change pixels.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode_inline_with_resolved_image_dictionary_and_param_array(
+        pixel_data: &[u8],
+        width: u32,
+        height: u32,
+        bpc: u8,
+        color_space: &str,
+        color_space_obj: Option<&PdfObject>,
+        filters: &[&str],
+        decode_params: &[Option<PdfDictionary>],
+        image_dictionary: &PdfDictionary,
+        limits: &DecodeLimits,
+        reader: Option<&PdfReader>,
+        color_options: ColorTransformOptions,
+    ) -> Result<RawImage> {
         if decode_params.len() != filters.len() {
             return Err(WellfriendError::MalformedPdf(format!(
                 "inline DecodeParms count {} does not match filter count {}",
@@ -680,7 +732,7 @@ impl ImageDecoder {
                 filters.len()
             )));
         }
-        let mut effective_dict = PdfDictionary::empty();
+        let mut effective_dict = image_dictionary.clone();
         if let Some(space_obj) = color_space_obj {
             effective_dict.insert("ColorSpace", space_obj.clone());
         }
@@ -722,14 +774,30 @@ impl ImageDecoder {
                     }
                     "CCITTFaxDecode" | "CCF" => {
                         Self::ensure_monochrome_terminal_color_space(filter, color_space)?;
-                        ccitt::decode(&data, ccitt_decode_params(params, width, height)?)
+                        Self::finish_monochrome_decoded_image(
+                            ccitt::decode(&data, ccitt_decode_params(params, width, height)?)?,
+                            width,
+                            height,
+                            "inline image",
+                            color_space,
+                            &effective_dict,
+                            color_context,
+                        )
                     }
                     "JBIG2Decode" => {
                         Self::ensure_monochrome_terminal_color_space(filter, color_space)?;
-                        jbig2::decode(&data, None)
+                        Self::finish_monochrome_decoded_image(
+                            jbig2::decode(&data, None)?,
+                            width,
+                            height,
+                            "inline image",
+                            color_space,
+                            &effective_dict,
+                            color_context,
+                        )
                     }
                     "JPXDecode" | "JPX" => Self::finish_jpx_decoded_image(
-                        jpx::decode(&data)?,
+                        jpx::decode_with_limits(&data, limits)?,
                         width,
                         height,
                         "inline image",
@@ -983,6 +1051,7 @@ impl ImageDecoder {
                         let jpx = jpx::decode_with_target_resolution(
                             &data,
                             Some((requested_width, requested_height)),
+                            limits,
                         )?;
                         Self::finish_reduced_jpx_decoded_image(
                             jpx.raw,
@@ -1098,6 +1167,24 @@ impl ImageDecoder {
     pub fn decode_jpeg_with_info(jpeg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32, u8)> {
         let jpeg = decode_jpeg_with_requested_size(jpeg_bytes, None)?;
         Ok((jpeg.pixels, jpeg.width, jpeg.height, jpeg.channels))
+    }
+
+    /// Read JPEG dimensions/channel count without allocating the decoded pixel
+    /// surface. Mutation planners use this to prove that a replacement stream
+    /// agrees with its PDF image dictionary before commit.
+    pub fn jpeg_metadata(jpeg_bytes: &[u8]) -> Result<(u32, u32, u8)> {
+        let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(jpeg_bytes));
+        decoder.read_info().map_err(|error| {
+            WellfriendError::MalformedPdf(format!("JPEG metadata decode failed: {error}"))
+        })?;
+        let info = decoder.info().ok_or_else(|| {
+            WellfriendError::MalformedPdf("JPEG metadata is missing after read_info".to_string())
+        })?;
+        Ok((
+            u32::from(info.width),
+            u32::from(info.height),
+            jpeg_channels(info.pixel_format)?,
+        ))
     }
 
     fn decode_jpeg_scaled_with_info(
@@ -1301,7 +1388,7 @@ impl ImageDecoder {
                 )
             }
             "JPXDecode" | "JPX" => Self::finish_jpx_decoded_image(
-                jpx::decode(data)?,
+                jpx::decode_with_limits(data, limits)?,
                 image.width,
                 image.height,
                 &format!("image {}", image.xobject_name),
@@ -1312,13 +1399,29 @@ impl ImageDecoder {
                 let decode_params = image_decode_params(dict, Some(reader), filter)?;
                 let params =
                     ccitt_decode_params(decode_params.as_ref(), image.width, image.height)?;
-                ccitt::decode(data, params)
+                Self::finish_monochrome_decoded_image(
+                    ccitt::decode(data, params)?,
+                    image.width,
+                    image.height,
+                    &format!("image {}", image.xobject_name),
+                    &image.color_space,
+                    dict,
+                    ImageColorContext::with_reader(reader, color_options),
+                )
             }
             "JBIG2Decode" => {
                 Self::ensure_monochrome_terminal_color_space(filter, &image.color_space)?;
                 let decode_params = image_decode_params(dict, Some(reader), filter)?;
                 let globals = jbig2_globals(decode_params.as_ref(), reader, limits)?;
-                jbig2::decode(data, globals.as_deref())
+                Self::finish_monochrome_decoded_image(
+                    jbig2::decode(data, globals.as_deref())?,
+                    image.width,
+                    image.height,
+                    &format!("image {}", image.xobject_name),
+                    &image.color_space,
+                    dict,
+                    ImageColorContext::with_reader(reader, color_options),
+                )
             }
             other => {
                 let _ = reader;
@@ -1537,6 +1640,38 @@ impl ImageDecoder {
             bits_per_sample: 8,
             pixels,
         })
+    }
+
+    fn finish_monochrome_decoded_image(
+        raw: RawImage,
+        declared_width: u32,
+        declared_height: u32,
+        label: &str,
+        color_space: &str,
+        dict: &PdfDictionary,
+        color_context: ImageColorContext<'_>,
+    ) -> Result<RawImage> {
+        if raw.width != declared_width || raw.height != declared_height {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} monochrome codec dimensions {}x{} do not match declared {}x{}",
+                raw.width, raw.height, declared_width, declared_height
+            )));
+        }
+        if raw.channels != 1 || raw.bits_per_sample != 8 || !raw.is_valid() {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "{label} monochrome codec returned invalid {}-channel {}-bit samples",
+                raw.channels, raw.bits_per_sample
+            )));
+        }
+        Self::build_raw_image(
+            raw.pixels,
+            declared_width,
+            declared_height,
+            8,
+            color_space,
+            dict,
+            color_context,
+        )
     }
 
     fn finish_dct_decoded_image(
@@ -3682,7 +3817,7 @@ mod tests {
             "expected JPX parser failure, got {error:?}"
         );
         assert!(
-            format!("{error}").contains("JPXDecode parse failed"),
+            format!("{error}").contains("JPXDecode"),
             "unexpected JPX abbreviation error: {error}"
         );
     }

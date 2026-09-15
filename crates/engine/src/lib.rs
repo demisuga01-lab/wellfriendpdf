@@ -142,6 +142,7 @@ pub mod table_intelligence;
 pub mod text;
 pub mod text_reflow;
 pub mod utilities;
+pub mod universal_editing;
 pub mod versioning;
 pub mod writer;
 pub mod writer_history;
@@ -206,6 +207,31 @@ pub use authoring::{
     PageSize as AuthorPageSize, ParagraphStyle, PathBuilder, PdfBuilder, PdfMetadata,
     PdfPageBuilder, StandardFont, TableBuilder, TableCell, TableColumn, TableRow, TableStyle,
     TextAlign, TextStyle,
+};
+pub use universal_editing::{
+    analyze_universal_document_v2, apply_universal_edit_v2,
+    apply_universal_edit_v2_with_output_security,
+    create_universal_approval_token_v2, inspect_universal_object_v2, plan_universal_edit_v2,
+    preserve_universal_no_change_transport_v2, qualify_universal_render_v2,
+    universal_capability_registry_v2,
+    universal_image_occurrences_v2,
+    UniversalAmbiguityPolicyV2,
+    UniversalAnalyzeOptionsV2, UniversalApprovalDecisionV2, UniversalApprovalTokenV2,
+    UniversalCapabilityStatusV2, UniversalCapabilityV2, UniversalConformanceProfileV2,
+    UniversalDocumentModelV2,
+    UniversalEditOperationV2, UniversalEditOutcomeV2, UniversalEditPlanV2,
+    UniversalEditPolicyV2, UniversalEditRequestV2, UniversalEditResultV2,
+    UniversalImageColorSpaceV2, UniversalImageEditRequestV2, UniversalImageEncodingV2,
+    UniversalImageMatrixV2, UniversalImageOccurrenceV2, UniversalImageReplacementV2,
+    UniversalImageSoftMaskV2,
+    UniversalMutationModeV2, UniversalOutputSecurityCredentialsV2,
+    UniversalOutputSecurityPolicyV2, UniversalPlanStateV2,
+    UniversalRenderQualificationOptionsV2,
+    UniversalObjectGraphEditRequestV2, UniversalObjectMutationV2, UniversalObjectTargetV2,
+    UniversalPdfFunctionV2, UniversalPdfValueV2, UniversalReferenceRasterV2,
+    UniversalSharedResourcePolicyV2, UniversalStructureCorrectionRequestV2,
+    UniversalStandardEncryptionAlgorithmV2, UniversalVectorEditRequestV2,
+    UNIVERSAL_EDITING_SCHEMA_VERSION,
 };
 pub use cancel::CancelToken;
 pub use chunk::{chunk, estimate_tokens, Chunk, ChunkOptions, ChunkSet, CHUNK_SCHEMA_VERSION};
@@ -294,6 +320,7 @@ pub use document_subsystems::{
     plan_document_subsystems, undo_document_subsystems, DocumentSubsystemsAction,
     DocumentSubsystemsAnalysisReport, DocumentSubsystemsOperationReport, DocumentSubsystemsRequest,
     DocumentSubsystemsSubsystem, EditableTableGraph, OcrSearchableWord,
+    OcrVisibleReplacement,
     DOCUMENT_SUBSYSTEMS_SCHEMA_VERSION,
 };
 pub use editable::{
@@ -317,9 +344,10 @@ pub use editing_transactions::{
     build_scene_graph, clone_on_write_report, dirty_region_report,
     editing_transactions_feature_matrix, editing_transactions_report, embedding_permission_report,
     font_subset_plan, plan_scene_text_transaction, scene_select, substitution_report,
+    substitution_report_with_source_font,
     text_identity_report, undo_restoration_report, DocumentSnapshot, EditTransactionReport,
     EditableSceneGraph, EditingTransactionsEvidenceKind, EditingTransactionsStatus,
-    FontIdentityReport, GraphemeClusterRecord, SceneNode, SceneNodeKind, SceneSelectionReport,
+    ApprovedFontAsset, FontIdentityReport, GraphemeClusterRecord, SceneNode, SceneNodeKind, SceneSelectionReport,
     SceneSelectionRequest, SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
     EDITING_TRANSACTIONS_SCHEMA_VERSION,
 };

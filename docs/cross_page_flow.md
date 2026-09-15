@@ -10,13 +10,15 @@ preimage. This existing-page path is distinct from same-page `next_region`
 flow, which serializes both fragments in one positioned canonical source
 stream to preserve logical extraction order.
 
-A separately narrow path may append one continuation page through the
-canonical page-tree writer for a one-page PDF with a direct root `/Pages`
-`/Kids` array. It refuses signatures, tagged structure, non-zero/rotated page
-boxes, inferred insertion positions, and any non-append operation. The writer
-preserves the existing catalog/object graph, including forms, annotations,
-outlines, named destinations, page labels, and attachments; existing page
-references retain their copied identity. It does not infer associations from
-those objects to newly generated continuation text, and general insertion,
-retargeting, linked multi-paragraph movement, reference repair, and general
-pagination remain unavailable.
+The canonical page-tree writer can insert one or more continuation pages
+immediately after the edited page, including in the middle of the document.
+Overflow lines are chunked by the proven per-page capacity and every baseline
+is checked against the continuation region before success is reported. It rewrites the
+owning `/Pages` `/Kids` array and ancestor counts, preserves existing indirect
+page identities, and shifts number-tree page-label indexes at or after the
+insertion boundary. Signatures still follow the selected signature policy, and
+tagged structure, inferred insertion positions, associations from forms,
+annotations, outlines, named destinations, or attachments to newly generated
+text require an explicit semantic/object-graph operation rather than silent
+guessing. Linked multi-paragraph movement and automatic pagination remain
+governed reflow operations, not side effects of page insertion.
