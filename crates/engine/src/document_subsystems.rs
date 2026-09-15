@@ -2485,29 +2485,24 @@ fn supported_ocr_reconstruct_visible_words(
     let (image_output, image_report, affected_pages, affected_objects, cloned_resources) =
         apply_image_edit(input, &image_request, UniversalMutationModeV2::AuthorizedRewrite)?;
 
-    if !searchable_bindings.is_empty() {
-        let image_revision_model = analyze_multi_run_text_range(&image_output, page)?;
-        searchable_bindings = searchable_bindings
-            .iter()
-            .map(|binding| {
-                bind_invisible_ocr_range(
-                    &image_revision_model,
-                    binding.logical_range,
-                    binding.replacement_index,
-                    &replacements[binding.replacement_index].source_text,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-    }
-
     // Delete old invisible OCR carriers from highest to lowest logical offset.
-    // Descending order keeps every not-yet-applied range stable while each
-    // source mutation is independently reopened and verified.
+    // Descending order keeps every not-yet-applied logical range stable. Byte
+    // offsets are intentionally *not* reused: clearing a shared /ActualText
+    // value or rewriting a later token can change the decoded stream length
+    // before another token. Rebind each pending selection against the current
+    // incremental revision immediately before mutation.
     let mut synchronized_output = image_output;
     let mut searchable_layer_mutations = Vec::with_capacity(searchable_bindings.len());
     searchable_bindings.sort_by_key(|binding| std::cmp::Reverse(binding.logical_range[0]));
-    for binding in &searchable_bindings {
+    for pending_binding in &searchable_bindings {
         crate::cancel::check_current_cancel("visible OCR searchable-layer mutation")?;
+        let current_model = analyze_multi_run_text_range(&synchronized_output, page)?;
+        let binding = bind_invisible_ocr_range(
+            &current_model,
+            pending_binding.logical_range,
+            pending_binding.replacement_index,
+            &replacements[pending_binding.replacement_index].source_text,
+        )?;
         let mut options = AdvancedTextEditOptions::default();
         options.signature_policy_override = false;
         let request = MultiRunTextRangeRequest {
@@ -2569,6 +2564,7 @@ fn supported_ocr_reconstruct_visible_words(
             "logical_range": binding.logical_range,
             "bound_source_span_ids": bound_span_ids,
             "bound_render_mode": 3,
+            "provenance_refreshed_before_mutation": true,
             "reachable_source_tokens_removed": report.reachable_source_tokens_removed,
             "bound_source_occurrence_absent_after_mutation": true,
             "output_reopened": report.output_reopened,
@@ -7600,6 +7596,137 @@ mod tests {
         output
     }
 
+    fn image_with_shared_actual_text_ocr_pdf() -> Vec<u8> {
+        let mut catalog = crate::PdfDictionary::empty();
+        catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
+        catalog.insert(
+            "Pages",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+
+        let mut pages = crate::PdfDictionary::empty();
+        pages.insert("Type", PdfObject::Name("Pages".to_string()));
+        pages.insert("Count", PdfObject::Integer(1));
+        pages.insert(
+            "Kids",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 3,
+                generation: 0,
+            }]),
+        );
+
+        let mut fonts = crate::PdfDictionary::empty();
+        fonts.insert(
+            "F1",
+            PdfObject::Reference {
+                number: 5,
+                generation: 0,
+            },
+        );
+        let mut xobjects = crate::PdfDictionary::empty();
+        xobjects.insert(
+            "Im0",
+            PdfObject::Reference {
+                number: 6,
+                generation: 0,
+            },
+        );
+        let mut resources = crate::PdfDictionary::empty();
+        resources.insert("Font", PdfObject::Dictionary(fonts));
+        resources.insert("XObject", PdfObject::Dictionary(xobjects));
+
+        let mut page = crate::PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".to_string()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(100),
+                PdfObject::Integer(100),
+            ]),
+        );
+        page.insert("Resources", PdfObject::Dictionary(resources));
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: 4,
+                generation: 0,
+            },
+        );
+
+        let content = b"q 100 0 0 100 0 0 cm /Im0 Do Q\n/Span << /ActualText <FEFF004F004E004500540057004F> >> BDC\nBT /F1 12 Tf 3 Tr 1 0 0 1 10 20 Tm (ONE) Tj 1 0 0 1 50 60 Tm (TWO) Tj ET\nEMC\n".to_vec();
+        let mut content_dict = crate::PdfDictionary::empty();
+        content_dict.insert("Length", PdfObject::Integer(content.len() as i64));
+
+        let mut font = crate::PdfDictionary::empty();
+        font.insert("Type", PdfObject::Name("Font".to_string()));
+        font.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        font.insert("BaseFont", PdfObject::Name("Helvetica".to_string()));
+        font.insert("Encoding", PdfObject::Name("WinAnsiEncoding".to_string()));
+
+        let image_samples = vec![255u8; 100 * 100 * 3];
+        let mut image = crate::PdfDictionary::empty();
+        image.insert("Type", PdfObject::Name("XObject".to_string()));
+        image.insert("Subtype", PdfObject::Name("Image".to_string()));
+        image.insert("Width", PdfObject::Integer(100));
+        image.insert("Height", PdfObject::Integer(100));
+        image.insert("ColorSpace", PdfObject::Name("DeviceRGB".to_string()));
+        image.insert("BitsPerComponent", PdfObject::Integer(8));
+        image.insert(
+            "Length",
+            PdfObject::Integer(image_samples.len() as i64),
+        );
+
+        crate::writer::PdfWriter::new(
+            vec![
+                crate::writer::OutputObject {
+                    number: 1,
+                    object: PdfObject::Dictionary(catalog),
+                },
+                crate::writer::OutputObject {
+                    number: 2,
+                    object: PdfObject::Dictionary(pages),
+                },
+                crate::writer::OutputObject {
+                    number: 3,
+                    object: PdfObject::Dictionary(page),
+                },
+                crate::writer::OutputObject {
+                    number: 4,
+                    object: PdfObject::Stream {
+                        dict: content_dict,
+                        raw: content,
+                    },
+                },
+                crate::writer::OutputObject {
+                    number: 5,
+                    object: PdfObject::Dictionary(font),
+                },
+                crate::writer::OutputObject {
+                    number: 6,
+                    object: PdfObject::Stream {
+                        dict: image,
+                        raw: image_samples,
+                    },
+                },
+            ],
+            1,
+        )
+        .write()
+        .expect("shared ActualText OCR fixture")
+    }
+
     #[test]
     fn searchable_ocr_range_binds_only_to_invisible_source_occurrence() {
         let input = one_page_pdf(
@@ -7619,6 +7746,67 @@ mod tests {
         assert_eq!(invisible.source_spans.len(), 1);
         assert_eq!(invisible.source_spans[0].text_render_mode, 3);
         assert_eq!(invisible.source_spans[0].logical_range, [3, 6]);
+    }
+
+    #[test]
+    fn batched_ocr_rebinds_after_shared_actual_text_cleanup_changes_offsets() {
+        let input = image_with_shared_actual_text_ocr_pdf();
+        let occurrence = crate::universal_editing::universal_image_occurrences_v2(&input, &[1])
+            .expect("image occurrence inventory")
+            .into_iter()
+            .next()
+            .expect("image occurrence");
+        let replacements = vec![
+            OcrVisibleReplacement {
+                source_text: "ONE".to_string(),
+                replacement_text: String::new(),
+                rect: [8.0, 8.0, 35.0, 30.0],
+                font_size: 12.0,
+                confidence: 1.0,
+                searchable_text_logical_range: Some([0, 3]),
+                inpaint_padding_pixels: 0,
+            },
+            OcrVisibleReplacement {
+                source_text: "TWO".to_string(),
+                replacement_text: String::new(),
+                rect: [48.0, 48.0, 80.0, 70.0],
+                font_size: 12.0,
+                confidence: 1.0,
+                searchable_text_logical_range: Some([3, 6]),
+                inpaint_padding_pixels: 0,
+            },
+        ];
+        let (output, report) = supported_ocr_reconstruct_visible_words(
+            &input,
+            1,
+            &occurrence.occurrence_id,
+            &replacements,
+            "fixture-ocr",
+            Some("1"),
+            Some("en"),
+            4,
+            Some([0.0, 0.0, 0.0]),
+            None,
+        )
+        .expect("batched shared-ActualText OCR reconstruction");
+
+        assert!(output.starts_with(&input));
+        assert_eq!(
+            report["pre_existing_invisible_ocr_conflicts_resolved"],
+            json!(2)
+        );
+        let mutations = report["searchable_layer_mutations"]
+            .as_array()
+            .expect("searchable-layer mutations");
+        assert_eq!(mutations.len(), 2);
+        assert!(mutations.iter().all(|mutation| {
+            mutation["provenance_refreshed_before_mutation"] == Value::Bool(true)
+                && mutation["bound_source_occurrence_absent_after_mutation"]
+                    == Value::Bool(true)
+        }));
+        let model = analyze_multi_run_text_range(&output, 1).expect("post-batch range model");
+        assert!(model.logical_text.is_empty());
+        ContentEngine::open_bytes(output).expect("reopen batched OCR output");
     }
 
     fn static_xfa_pdf() -> Vec<u8> {

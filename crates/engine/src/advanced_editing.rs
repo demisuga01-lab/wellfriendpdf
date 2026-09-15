@@ -5735,8 +5735,22 @@ fn scan_text_string_tokens_with_state_and_owner(
                     && operands.iter().any(|operand| {
                         matches!(&operand.kind, LexicalKind::Name(name) if name == "ActualText")
                     });
+                // In a PDF dictionary, an entry whose value is the null object
+                // is semantically equivalent to an absent entry. The canonical
+                // editor deliberately rewrites stale direct /ActualText values
+                // to `null`; a later mutation in the same batch must therefore
+                // treat that value as cleared, not as an unresolved carrier.
+                let actual_text_is_explicit_null = operator == "BDC"
+                    && operands.windows(2).any(|pair| {
+                        matches!(&pair[0].kind, LexicalKind::Name(name) if name == "ActualText")
+                            && matches!(&pair[1].kind, LexicalKind::Word(value) if value == "null")
+                    });
                 actual_text_conflict_stack
-                    .push(has_actual_text_key && actual_text_source.is_none());
+                    .push(
+                        has_actual_text_key
+                            && actual_text_source.is_none()
+                            && !actual_text_is_explicit_null,
+                    );
                 actual_text_stack.push(actual_text_source);
                 let named_property = if operator == "BDC" {
                     operands.get(1).and_then(|operand| match &operand.kind {

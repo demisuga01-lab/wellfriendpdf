@@ -76,13 +76,17 @@ gaps. Their source remedies are now present, but remain unexecuted:
 7. Visible scan reconstruction detects intersecting invisible text. It requires
    the caller to bind the exact reviewed page-logical range, proves every source
    span covering that range has invisible render mode `Tr 3`, and records the
-   revision-bound span identities. It rebinds those identities after the image
-   clone/write, removes them from highest to lowest logical offset, verifies the
-   edit report targeted the same invisible spans, and confirms the original
-   span content is no longer reachable before appending visible replacement
-   text. A visible duplicate with identical Unicode cannot satisfy this proof.
-   If an intersecting searchable layer is not unambiguously identified, the
-   entire operation returns no output.
+   revision-bound span identities. After the image clone/write it removes
+   selections from highest to lowest logical offset and refreshes each pending
+   binding against the current incremental revision immediately before that
+   deletion. Stream-byte offsets may therefore move when an earlier metadata
+   value changes length. An explicit `/ActualText null` is treated as an absent
+   dictionary entry, so clearing a shared carrier does not poison the remaining
+   words as unresolved. Each edit report must target the freshly bound invisible
+   spans, and the original span content must no longer be reachable before
+   visible replacement text is appended. A visible duplicate with identical
+   Unicode cannot satisfy this proof. If an intersecting searchable layer is not
+   unambiguously identified, the entire operation returns no output.
 
 Scanned-page editing has two typed document-subsystem operations. Searchable
 OCR retains the original scan and writes invisible Type0/CID text. Visible OCR
@@ -393,7 +397,11 @@ applied justification spacing and final-width anchoring to absolute glyph
 coordinates, and synchronized visible scan changes with an exact, render-mode-
 and-source-span-bound pre-existing invisible OCR occurrence. Focused regression
 tests for atomic inline `/ActualText` cleanup, RTL final-width anchoring, and
-visible-versus-invisible duplicate OCR binding were added but not executed.
+visible-versus-invisible duplicate OCR binding were added but not executed. A
+further full-path fixture now drives a real image occurrence plus two invisible
+words sharing one `/ActualText` carrier through image mutation, per-deletion
+provenance refresh, source removal, postcondition checks, and reopen; it also
+remains unexecuted pending the VPS gate.
 
 No claim in this section establishes syntax, type, linker, runtime, PDF output,
 pixel, performance, interoperability, or corpus correctness. Those remain the
