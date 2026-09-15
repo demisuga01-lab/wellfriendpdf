@@ -316,6 +316,7 @@ pub struct MultiRunSourceSpan {
     pub logical_range: [usize; 2],
     pub font_resource: String,
     pub writing_mode: i32,
+    pub text_render_mode: i32,
     pub marked_content_depth: usize,
     pub text: String,
 }
@@ -1414,6 +1415,7 @@ pub fn analyze_multi_run_text_range(
                 logical_range: [start, logical_offset],
                 font_resource: token.font_name,
                 writing_mode: i32::from(resolver.is_vertical()),
+                text_render_mode: token.text_render_mode,
                 marked_content_depth: token.marked_depth,
                 text,
             });
@@ -1572,6 +1574,7 @@ pub fn edit_multi_run_text_range(
                 logical_range: [start, end],
                 font_resource: token.font_name.clone(),
                 writing_mode: i32::from(resolver.is_vertical()),
+                text_render_mode: token.text_render_mode,
                 marked_content_depth: token.marked_depth,
                 text: text.clone(),
             };
@@ -1701,7 +1704,7 @@ pub fn edit_multi_run_text_range(
             .iter()
             .any(|item| item.4.marked_depth > 0);
     let source_requires_inline_replacement = source_has_clipping || source_has_marked_content;
-    let mut stream_edits = DecodedStreamEdits::new();
+    let mut actual_text_cleanup_patches = Vec::<ActualTextCleanupPatch>::new();
     let mut actual_text_keys = BTreeSet::<(u32, u16, usize, usize)>::new();
     if request.logical_start < request.logical_end {
         for (key, coverage) in &actual_text_coverages {
@@ -1742,25 +1745,24 @@ pub fn edit_multi_run_text_range(
                     .to_string(),
             ));
         }
-        let source = stream_sources
-            .get(&(coverage.source.owner_object, coverage.source.owner_generation))
-            .ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "advanced_editing ActualText owner stream is unavailable".to_string(),
-                )
-            })?;
-        stream_edits
-            .entry((coverage.source.owner_object, coverage.source.owner_generation))
-            .or_insert_with(|| {
-                (source.0.as_ref().clone(), source.1.as_ref().clone(), Vec::new())
-            })
-            .2
-            .push((
-                coverage.source.value_start,
-                coverage.source.value_end,
-                b"null".to_vec(),
-            ));
+        let owner = (coverage.source.owner_object, coverage.source.owner_generation);
+        stream_sources.get(&owner).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "advanced_editing ActualText owner stream is unavailable".to_string(),
+            )
+        })?;
+        actual_text_cleanup_patches.push((
+            owner,
+            coverage.source.value_start,
+            coverage.source.value_end,
+        ));
     }
+    let mut stream_edits = DecodedStreamEdits::new();
+    add_actual_text_cleanup_edits(
+        &mut stream_edits,
+        &stream_sources,
+        &actual_text_cleanup_patches,
+    )?;
     for item in &selected {
         let font = resources.fonts.get(&item.5.font_resource).ok_or_else(|| {
             WellfriendError::MalformedPdf(format!(
@@ -2111,6 +2113,11 @@ pub fn edit_multi_run_text_range(
                     &selected,
                 )?;
                 let mut inline_edits = DecodedStreamEdits::new();
+                add_actual_text_cleanup_edits(
+                    &mut inline_edits,
+                    &stream_sources,
+                    &actual_text_cleanup_patches,
+                )?;
                 for (selected_index, item) in selected.iter().enumerate() {
                     let font_dict = resources.fonts.get(&item.5.font_resource).ok_or_else(|| {
                         WellfriendError::MalformedPdf(
@@ -2238,6 +2245,11 @@ pub fn edit_multi_run_text_range(
                 }));
             }
             let mut inline_edits = DecodedStreamEdits::new();
+            add_actual_text_cleanup_edits(
+                &mut inline_edits,
+                &stream_sources,
+                &actual_text_cleanup_patches,
+            )?;
             for (selected_index, item) in selected.iter().enumerate() {
                 let font_dict = resources.fonts.get(&item.5.font_resource).ok_or_else(|| {
                     WellfriendError::MalformedPdf(
@@ -3794,13 +3806,25 @@ fn serialize_generated_text(
                     ));
                 }
             }
+            let painted_width = line_width
+                + word_spacing
+                    * options.font_size
+                    * glyphs
+                        .iter()
+                        .filter(|glyph| glyph.visual_unicode == " ")
+                        .count() as f64
+                + character_spacing
+                    * options.font_size
+                    * glyphs.len().saturating_sub(1) as f64;
             let x = match options.alignment {
                 GeneratedTextAlignment::Left => region[0],
-                GeneratedTextAlignment::Right => region[2] - line_width,
-                GeneratedTextAlignment::Center => region[0] + (target_width - line_width) / 2.0,
+                GeneratedTextAlignment::Right => region[2] - painted_width,
+                GeneratedTextAlignment::Center => {
+                    region[0] + (target_width - painted_width) / 2.0
+                }
                 GeneratedTextAlignment::Start => {
                     if rtl {
-                        region[2] - line_width
+                        region[2] - painted_width
                     } else {
                         region[0]
                     }
@@ -3809,12 +3833,12 @@ fn serialize_generated_text(
                     if rtl {
                         region[0]
                     } else {
-                        region[2] - line_width
+                        region[2] - painted_width
                     }
                 }
                 GeneratedTextAlignment::Justify => {
                     if rtl {
-                        region[2] - line_width
+                        region[2] - painted_width
                     } else {
                         region[0]
                     }
@@ -4165,6 +4189,34 @@ type DecodedStreamEdits = BTreeMap<
     (u32, u16),
     (PdfObject, Vec<u8>, Vec<(usize, usize, Vec<u8>)>),
 >;
+
+type ActualTextCleanupPatch = ((u32, u16), usize, usize);
+
+fn add_actual_text_cleanup_edits(
+    target: &mut DecodedStreamEdits,
+    stream_sources: &BTreeMap<(u32, u16), (Arc<PdfObject>, Arc<Vec<u8>>)>,
+    patches: &[ActualTextCleanupPatch],
+) -> Result<()> {
+    for (owner, value_start, value_end) in patches {
+        let source = stream_sources.get(owner).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "advanced_editing ActualText cleanup owner stream is unavailable".to_string(),
+            )
+        })?;
+        target
+            .entry(*owner)
+            .or_insert_with(|| {
+                (
+                    source.0.as_ref().clone(),
+                    source.1.as_ref().clone(),
+                    Vec::new(),
+                )
+            })
+            .2
+            .push((*value_start, *value_end, b"null".to_vec()));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 struct ActualTextCoverage {
@@ -13189,6 +13241,48 @@ mod tests {
     }
 
     #[test]
+    fn inline_tagged_replacement_commits_actual_text_cleanup_with_glyph_edit() {
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"/Span << /ActualText <FEFF004100420043> >> BDC BT /F1 12 Tf 10 150 Td (ABC) Tj ET EMC\n",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 3,
+            replacement_text: "XYZ".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &request, None)
+            .expect("inline ActualText replacement");
+        assert!(report.replacement_extracts);
+        assert!(report.old_selected_text_absent);
+
+        let reopened = ContentEngine::open_bytes(output).expect("reopen ActualText edit");
+        let extracted = reopened.get_page_text(1).expect("extract replacement");
+        assert!(extracted.contains("XYZ"));
+        assert!(!extracted.contains("ABC"));
+        let page = reopened.document().get_page(1).expect("page");
+        let source_object = reopened
+            .document()
+            .reader()
+            .get_object(page.contents[0].0, page.contents[0].1)
+            .expect("source stream");
+        let source = decode_stream_lossless_with_limits(
+            &source_object,
+            reopened.document().reader(),
+            &DecodeLimits::default(),
+        )
+        .expect("source decode");
+        let source = String::from_utf8(source.data).expect("source UTF-8");
+        assert!(source.contains("/ActualText null"));
+        assert!(!source.contains("FEFF004100420043"));
+    }
+
+    #[test]
     fn explicit_link_annotation_rect_move_preserves_action_and_quadpoints() {
         let input = advanced_editing_link_fixture();
         let (output, report) = move_link_annotation_rect_pdf(
@@ -13966,6 +14060,47 @@ mod tests {
         assert_eq!(
             report.line_adjustments[1].word_spacing, 0.0,
             "the default policy does not justify a final line"
+        );
+    }
+
+    #[test]
+    fn rtl_justification_anchors_using_final_painted_width() {
+        let glyph = |cid, logical_byte_start, visual_unicode: &str| GeneratedGlyph {
+            cid,
+            gid: cid,
+            logical_byte_start,
+            visual_unicode: visual_unicode.to_string(),
+            to_unicode: Some(visual_unicode.to_string()),
+            advance: 2_000.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            orientation: VerticalGlyphOrientation::Upright,
+        };
+        let layout = vec![vec![
+            glyph(1, 0, "\u{05D0}"),
+            glyph(2, 2, " "),
+            glyph(3, 3, "\u{05D1}"),
+        ]];
+        let options = AdvancedTextEditOptions {
+            region: [0.0, 0.0, 100.0, 20.0],
+            font_size: 10.0,
+            alignment: GeneratedTextAlignment::Justify,
+            justify_last_line: true,
+            max_word_spacing: 4.0,
+            max_character_spacing: 0.0,
+            ..AdvancedTextEditOptions::default()
+        };
+        let (content, adjustments) =
+            serialize_generated_text(&layout, "FJ", &options, false, None, None)
+                .expect("RTL justified serialization");
+        assert!(adjustments[0].residual <= EPSILON);
+        let first_glyph = content
+            .lines()
+            .find(|line| line.contains(" Tm <"))
+            .expect("first positioned glyph");
+        assert!(
+            first_glyph.starts_with("1 0 0 1 0 10 Tm"),
+            "RTL justified line must start at the left edge after expanding to full width: {first_glyph}"
         );
     }
 

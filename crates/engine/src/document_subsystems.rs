@@ -13,7 +13,8 @@ use crate::annotation_media_redaction::{
 use crate::advanced_editing::{
     analyze_multi_run_text_range, append_invisible_unicode_text_layer,
     append_visible_unicode_text_layer, edit_multi_run_text_range, AdvancedTextEditOptions,
-    AdvancedTextMode, InvisibleUnicodeTextRun, MultiRunStylePolicy, MultiRunTextRangeRequest,
+    AdvancedTextMode, InvisibleUnicodeTextRun, MultiRunRangeModel, MultiRunSourceSpan,
+    MultiRunStylePolicy, MultiRunTextRangeRequest,
 };
 use crate::content::Color;
 use crate::form_exchange::{apply_form_data_pdf, FormDataFormat};
@@ -2238,6 +2239,81 @@ fn harmonic_inpaint_ocr_mask(
     Ok(completed)
 }
 
+#[derive(Debug, Clone)]
+struct InvisibleOcrRangeBinding {
+    logical_range: [usize; 2],
+    replacement_index: usize,
+    source_spans: Vec<MultiRunSourceSpan>,
+}
+
+fn bind_invisible_ocr_range(
+    model: &MultiRunRangeModel,
+    logical_range: [usize; 2],
+    replacement_index: usize,
+    source_text: &str,
+) -> Result<InvisibleOcrRangeBinding> {
+    if logical_range[0] >= logical_range[1]
+        || logical_range[1] > model.logical_text.chars().count()
+    {
+        return Err(WellfriendError::invalid_input(format!(
+            "document_subsystems searchable OCR range {:?} is outside the page logical text",
+            logical_range
+        )));
+    }
+    let selected_text = model
+        .logical_text
+        .chars()
+        .skip(logical_range[0])
+        .take(logical_range[1] - logical_range[0])
+        .collect::<String>();
+    if selected_text != source_text {
+        return Err(WellfriendError::invalid_input(format!(
+            "document_subsystems searchable OCR range {:?} does not contain the reviewed source_text",
+            logical_range
+        )));
+    }
+
+    let source_spans = model
+        .source_spans
+        .iter()
+        .filter(|span| {
+            span.logical_range[0] < logical_range[1]
+                && span.logical_range[1] > logical_range[0]
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut covered_until = logical_range[0];
+    for span in &source_spans {
+        let overlap_start = span.logical_range[0].max(logical_range[0]);
+        let overlap_end = span.logical_range[1].min(logical_range[1]);
+        if overlap_start > covered_until || overlap_end <= overlap_start {
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "document_subsystems searchable OCR range {:?} has a source-provenance gap",
+                logical_range
+            )));
+        }
+        if span.text_render_mode != 3 {
+            return Err(WellfriendError::invalid_input(format!(
+                "document_subsystems searchable OCR range {:?} selects visible or clipping text instead of the detected invisible OCR occurrence",
+                logical_range
+            )));
+        }
+        covered_until = covered_until.max(overlap_end);
+    }
+    if source_spans.is_empty() || covered_until != logical_range[1] {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "document_subsystems searchable OCR range {:?} is not fully owned by provenance-bearing invisible text",
+            logical_range
+        )));
+    }
+
+    Ok(InvisibleOcrRangeBinding {
+        logical_range,
+        replacement_index,
+        source_spans,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn supported_ocr_reconstruct_visible_words(
     input: &[u8],
@@ -2317,34 +2393,23 @@ fn supported_ocr_reconstruct_visible_words(
             )));
         }
     }
+    let mut searchable_bindings = Vec::<InvisibleOcrRangeBinding>::new();
     if !searchable_ranges.is_empty() {
         let model = analyze_multi_run_text_range(input, page)?;
         searchable_ranges.sort_by_key(|(range, _)| range[0]);
         let mut previous_end = 0usize;
         for (position, (range, replacement_index)) in searchable_ranges.iter().enumerate() {
-            if range[0] >= range[1] || range[1] > model.logical_text.chars().count() {
-                return Err(WellfriendError::invalid_input(format!(
-                    "document_subsystems searchable OCR range {:?} is outside the page logical text",
-                    range
-                )));
-            }
             if position > 0 && range[0] < previous_end {
                 return Err(WellfriendError::invalid_input(
                     "document_subsystems searchable OCR ranges overlap",
                 ));
             }
-            let selected_text = model
-                .logical_text
-                .chars()
-                .skip(range[0])
-                .take(range[1] - range[0])
-                .collect::<String>();
-            if selected_text != replacements[*replacement_index].source_text {
-                return Err(WellfriendError::invalid_input(format!(
-                    "document_subsystems searchable OCR range {:?} does not contain the reviewed source_text",
-                    range
-                )));
-            }
+            searchable_bindings.push(bind_invisible_ocr_range(
+                &model,
+                *range,
+                *replacement_index,
+                &replacements[*replacement_index].source_text,
+            )?);
             previous_end = range[1];
         }
     }
@@ -2420,20 +2485,35 @@ fn supported_ocr_reconstruct_visible_words(
     let (image_output, image_report, affected_pages, affected_objects, cloned_resources) =
         apply_image_edit(input, &image_request, UniversalMutationModeV2::AuthorizedRewrite)?;
 
+    if !searchable_bindings.is_empty() {
+        let image_revision_model = analyze_multi_run_text_range(&image_output, page)?;
+        searchable_bindings = searchable_bindings
+            .iter()
+            .map(|binding| {
+                bind_invisible_ocr_range(
+                    &image_revision_model,
+                    binding.logical_range,
+                    binding.replacement_index,
+                    &replacements[binding.replacement_index].source_text,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+    }
+
     // Delete old invisible OCR carriers from highest to lowest logical offset.
     // Descending order keeps every not-yet-applied range stable while each
     // source mutation is independently reopened and verified.
     let mut synchronized_output = image_output;
-    let mut searchable_layer_mutations = Vec::with_capacity(searchable_ranges.len());
-    searchable_ranges.sort_by_key(|(range, _)| std::cmp::Reverse(range[0]));
-    for (range, replacement_index) in &searchable_ranges {
+    let mut searchable_layer_mutations = Vec::with_capacity(searchable_bindings.len());
+    searchable_bindings.sort_by_key(|binding| std::cmp::Reverse(binding.logical_range[0]));
+    for binding in &searchable_bindings {
         crate::cancel::check_current_cancel("visible OCR searchable-layer mutation")?;
         let mut options = AdvancedTextEditOptions::default();
         options.signature_policy_override = false;
         let request = MultiRunTextRangeRequest {
             page,
-            logical_start: range[0],
-            logical_end: range[1],
+            logical_start: binding.logical_range[0],
+            logical_end: binding.logical_range[1],
             replacement_text: String::new(),
             mode: AdvancedTextMode::ParagraphReflowHorizontal,
             style_policy: MultiRunStylePolicy::InheritLeading,
@@ -2447,11 +2527,50 @@ fn supported_ocr_reconstruct_visible_words(
                 "document_subsystems searchable OCR carrier was not removed".to_string(),
             ));
         }
+        let reported_span_ids = report
+            .selected_source_spans
+            .iter()
+            .map(|span| span.span_id.as_str())
+            .collect::<Vec<_>>();
+        let bound_span_ids = binding
+            .source_spans
+            .iter()
+            .map(|span| span.span_id.as_str())
+            .collect::<Vec<_>>();
+        if reported_span_ids != bound_span_ids
+            || report
+                .selected_source_spans
+                .iter()
+                .any(|span| span.text_render_mode != 3)
+        {
+            return Err(WellfriendError::MalformedPdf(
+                "document_subsystems searchable OCR mutation did not target the bound invisible source occurrence"
+                    .to_string(),
+            ));
+        }
+        let post_model = analyze_multi_run_text_range(&next_output, page)?;
+        if binding.source_spans.iter().any(|bound| {
+            post_model.source_spans.iter().any(|current| {
+                current.span_id == bound.span_id
+                    && current.stream_object == bound.stream_object
+                    && current.stream_generation == bound.stream_generation
+                    && current.text_render_mode == 3
+                    && current.text == bound.text
+            })
+        }) {
+            return Err(WellfriendError::MalformedPdf(
+                "document_subsystems bound invisible OCR source occurrence remained reachable after deletion"
+                    .to_string(),
+            ));
+        }
         synchronized_output = next_output;
         searchable_layer_mutations.push(json!({
-            "replacement_index": replacement_index,
-            "logical_range": range,
+            "replacement_index": binding.replacement_index,
+            "logical_range": binding.logical_range,
+            "bound_source_span_ids": bound_span_ids,
+            "bound_render_mode": 3,
             "reachable_source_tokens_removed": report.reachable_source_tokens_removed,
+            "bound_source_occurrence_absent_after_mutation": true,
             "output_reopened": report.output_reopened,
         }));
     }
@@ -2548,7 +2667,7 @@ fn supported_ocr_reconstruct_visible_words(
             "source_occurrence": occurrence,
             "image_mutation": image_report,
             "searchable_layer_mutations": searchable_layer_mutations,
-            "pre_existing_invisible_ocr_conflicts_resolved": searchable_ranges.len(),
+            "pre_existing_invisible_ocr_conflicts_resolved": searchable_bindings.len(),
             "affected_pages": affected_pages,
             "affected_objects": affected_objects,
             "cloned_resources": cloned_resources,
@@ -7479,6 +7598,27 @@ mod tests {
             .as_bytes(),
         );
         output
+    }
+
+    #[test]
+    fn searchable_ocr_range_binds_only_to_invisible_source_occurrence() {
+        let input = one_page_pdf(
+            "BT /F1 12 Tf 0 Tr 1 0 0 1 72 720 Tm (OLD) Tj 3 Tr 1 0 0 1 72 700 Tm (OLD) Tj ET",
+        );
+        let model = analyze_multi_run_text_range(&input, 1).expect("range model");
+        assert_eq!(model.logical_text, "OLDOLD");
+        assert_eq!(model.source_spans[0].text_render_mode, 0);
+        assert_eq!(model.source_spans[1].text_render_mode, 3);
+
+        let visible_error = bind_invisible_ocr_range(&model, [0, 3], 0, "OLD")
+            .expect_err("visible duplicate must not bind as OCR");
+        assert!(visible_error.to_string().contains("selects visible"));
+
+        let invisible = bind_invisible_ocr_range(&model, [3, 6], 0, "OLD")
+            .expect("invisible OCR occurrence");
+        assert_eq!(invisible.source_spans.len(), 1);
+        assert_eq!(invisible.source_spans[0].text_render_mode, 3);
+        assert_eq!(invisible.source_spans[0].logical_range, [3, 6]);
     }
 
     fn static_xfa_pdf() -> Vec<u8> {

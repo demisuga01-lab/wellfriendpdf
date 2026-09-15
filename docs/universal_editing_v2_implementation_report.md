@@ -47,10 +47,13 @@ gaps. Their source remedies are now present, but remain unexecuted:
 2. The page-logical text scanner carries direct and named marked-content
    ownership across `/Contents` members. Direct isomorphic `/ActualText`, plus a
    non-isomorphic carrier when its complete glyph-owned source range is selected,
-   is neutralized in the same atomic stream edit before shaped replacement text
-   is written. Partial non-isomorphic or shared named-property ownership is
-   refused with a typed semantic conflict; the legacy single-token writers also
-   refuse these carriers instead of leaving stale search/copy text.
+   is retained as a provenance-bound cleanup patch and seeded into every
+   destructive, generated-font inline, and source-font inline edit map before
+   that map is materialized. The glyph replacement therefore cannot overwrite
+   or discard logical-text cleanup. Partial non-isomorphic or shared
+   named-property ownership is refused with a typed semantic conflict; the
+   legacy single-token writers also refuse these carriers instead of leaving
+   stale search/copy text.
 3. Page overflow is chunked by the proven line capacity and creates as many
    ordered continuation pages as needed. Every chunk is width-checked and every
    baseline is checked against the target region before `FitAfterPageFlow` is
@@ -67,14 +70,19 @@ gaps. Their source remedies are now present, but remain unexecuted:
    boundary rather than through unsafe thread termination.
 6. Full justification now adds the computed word and character spacing to each
    subsequent explicit glyph coordinate. Emitting `Tw`/`Tc` alone could not
-   affect a following glyph whose position was overwritten by an absolute
-   `Tm`.
+   affect a following glyph whose position was overwritten by an absolute `Tm`.
+   Alignment, including the RTL right-edge anchor, uses the final painted width
+   after those spacing contributions rather than the natural glyph width.
 7. Visible scan reconstruction detects intersecting invisible text. It requires
-   the caller to bind the exact reviewed page-logical range, validates its old
-   text, removes those source tokens from highest to lowest offset after the
-   image mutation, and only then appends visible replacement text. If an
-   intersecting searchable layer is not unambiguously identified, the entire
-   operation returns no output.
+   the caller to bind the exact reviewed page-logical range, proves every source
+   span covering that range has invisible render mode `Tr 3`, and records the
+   revision-bound span identities. It rebinds those identities after the image
+   clone/write, removes them from highest to lowest logical offset, verifies the
+   edit report targeted the same invisible spans, and confirms the original
+   span content is no longer reachable before appending visible replacement
+   text. A visible duplicate with identical Unicode cannot satisfy this proof.
+   If an intersecting searchable layer is not unambiguously identified, the
+   entire operation returns no output.
 
 Scanned-page editing has two typed document-subsystem operations. Searchable
 OCR retains the original scan and writes invisible Type0/CID text. Visible OCR
@@ -381,8 +389,11 @@ The post-audit pass then isolated all generated page content from inherited
 graphics state, synchronized or fail-closed logical `/ActualText`, paginated
 overflow across repeated continuation pages, changed selected operands to
 per-stream shared buffers, installed cooperative HTTP-to-engine cancellation,
-applied justification spacing to absolute glyph coordinates, and synchronized
-visible scan changes with any exact pre-existing invisible OCR range.
+applied justification spacing and final-width anchoring to absolute glyph
+coordinates, and synchronized visible scan changes with an exact, render-mode-
+and-source-span-bound pre-existing invisible OCR occurrence. Focused regression
+tests for atomic inline `/ActualText` cleanup, RTL final-width anchoring, and
+visible-versus-invisible duplicate OCR binding were added but not executed.
 
 No claim in this section establishes syntax, type, linker, runtime, PDF output,
 pixel, performance, interoperability, or corpus correctness. Those remain the
