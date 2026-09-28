@@ -1,14 +1,14 @@
-# WellPDF cross-renderer visual evidence - 2026-09-29 IST
+# Wellfriend PDF cross-renderer visual evidence - 2026-09-29 IST
 
 ## Blunt verdict
 
 The retained visual campaign rendered page one of 100 original PDFs and 100
-verified edited outputs with WellPDF, PDFium, MuPDF, and Poppler at 144 DPI.
+verified edited outputs with Wellfriend PDF, PDFium, MuPDF, and Poppler at 144 DPI.
 All 200 comparison pipelines completed and all 600 reference comparisons had
 matching dimensions.
 
 That is an operational result, not a 100/100 visual-fidelity result. The
-maximum-divergence document is visibly wrong in WellPDF: text is repeatedly
+maximum-divergence document is visibly wrong in Wellfriend PDF: text is repeatedly
 overprinted while PDFium, MuPDF, and Poppler produce consistent layouts.
 
 ![Worst observed original comparison](originals/pages/047-arxiv-eess-iv-2609-28194v1-5e65af65d2ee-pdf.webp)
@@ -17,6 +17,21 @@ The worst original page differs from PDFium on 32.420260% of pixels, Poppler on
 31.454685%, and MuPDF on 31.288504% under the `changed > 8` metric. The edited
 version has the same failure shape. This evidence therefore disproves any claim
 that the current renderer achieved 100/100 visual correctness.
+
+## Focused correction after this campaign
+
+The catastrophic page was subsequently traced to an ignored non-default Type 1
+`/FontMatrix` (approximately 1/2048 rather than the assumed 1/1000). After the
+source correction, the exact PDF rendered readably and its divergence fell to
+10.000130% against MuPDF, 11.236840% against Poppler, and 12.801973% against
+PDFium. The [focused correction report](fixes/type1-font-matrix/README.md)
+retains the new comparison image and raw record. The full 100-file campaign has
+not yet been rerun with the correction; the results below remain historical
+pre-fix evidence.
+
+The retained historical sheets and JSON use `wellpdf` as a legacy harness
+label. The product name is **Wellfriend PDF SDK**, the binary is
+`wellfriendpdf`, and the harness has been corrected for future runs.
 
 ## Execution identity and timestamps
 
@@ -55,18 +70,18 @@ work.
 
 | Corpus | Renderer | P50 | P90 | P95 | P99 | Maximum |
 |---|---|---:|---:|---:|---:|---:|
-| Originals | WellPDF | 495.160 ms | 773.481 ms | 997.802 ms | 1,489.815 ms | 40,854.901 ms |
+| Originals | Wellfriend PDF | 495.160 ms | 773.481 ms | 997.802 ms | 1,489.815 ms | 40,854.901 ms |
 | Originals | PDFium | 735.010 ms | 868.279 ms | 913.387 ms | 1,089.188 ms | 1,154.583 ms |
 | Originals | MuPDF | 957.148 ms | 1,133.023 ms | 1,181.795 ms | 1,287.178 ms | 1,455.695 ms |
 | Originals | Poppler | 900.829 ms | 1,146.898 ms | 1,168.173 ms | 1,393.087 ms | 1,634.043 ms |
-| Edited | WellPDF | 490.340 ms | 813.415 ms | 1,164.499 ms | 1,546.844 ms | 39,961.103 ms |
+| Edited | Wellfriend PDF | 490.340 ms | 813.415 ms | 1,164.499 ms | 1,546.844 ms | 39,961.103 ms |
 | Edited | PDFium | 730.140 ms | 850.722 ms | 918.240 ms | 1,069.498 ms | 1,139.994 ms |
 | Edited | MuPDF | 965.530 ms | 1,103.554 ms | 1,184.153 ms | 1,328.426 ms | 1,435.239 ms |
 | Edited | Poppler | 923.954 ms | 1,146.064 ms | 1,217.007 ms | 1,280.089 ms | 1,788.012 ms |
 
-The WellPDF maximum is a repeatable document-specific outlier: `i1040gi.pdf`
+The Wellfriend PDF maximum is a repeatable document-specific outlier: `i1040gi.pdf`
 took 40,854.901 ms before editing and 39,961.103 ms afterward. The next-slowest
-WellPDF observations were approximately 1.5 seconds. This outlier is visible in
+Wellfriend PDF observations were approximately 1.5 seconds. This outlier is visible in
 the retained [original](originals/pages/095-i1040gi-pdf.webp) and
 [edited](edited/pages/095-i1040gi-pdf.webp) sheets.
 
@@ -93,11 +108,11 @@ show that the pre-existing renderer output is sufficiently faithful.
 
 Each retained per-page WebP contains:
 
-1. the WellPDF raster;
+1. the Wellfriend PDF raster;
 2. the PDFium raster;
 3. the MuPDF raster;
 4. the Poppler raster; and
-5. amplified WellPDF-to-reference difference maps for all three references.
+5. amplified Wellfriend-PDF-to-reference difference maps for all three references.
 
 Original contact sheets:
 
@@ -148,8 +163,8 @@ mismatches.
 
 ## Defensible conclusion
 
-WellPDF produced comparable-dimension page-one rasters for all 200 inputs, and
+Wellfriend PDF produced comparable-dimension page-one rasters for all 200 inputs, and
 the edited outputs did not cause a broad new regression. However, the retained
-images prove that at least one sampled document has a severe WellPDF layout
+images prove that at least one sampled document has a severe Wellfriend PDF layout
 failure and that median divergence remains material. Renderer correctness work
 is still required.

@@ -9,6 +9,8 @@ const C1: u16 = 52845;
 const C2: u16 = 22719;
 const DEFAULT_LEN_IV: i32 = 4;
 const MAX_SUBR_DEPTH: usize = 16;
+const DEFAULT_FONT_MATRIX: [f64; 6] = [0.001, 0.0, 0.0, 0.001, 0.0, 0.0];
+const TYPE1_NORMALIZED_EM: f64 = 1000.0;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Type1Font {
@@ -16,10 +18,23 @@ pub(crate) struct Type1Font {
     len_iv: i32,
     subrs: HashMap<i32, Vec<u8>>,
     charstrings: HashMap<String, Vec<u8>>,
+    /// Type 1 charstrings are expressed in the font program's glyph space.
+    /// `/FontMatrix` maps that space into one-unit text space and is not
+    /// necessarily the common 0.001 scale (TeX fonts frequently use 1/2048).
+    font_matrix: [f64; 6],
 }
 
 impl Type1Font {
     pub(crate) fn parse(font_bytes: &[u8]) -> Option<Self> {
+        let normalized = normalize_pfb_segments(font_bytes).unwrap_or_else(|| font_bytes.to_vec());
+        let clear = find_token(&normalized, b"eexec")
+            .map(|position| &normalized[..position])
+            .unwrap_or(normalized.as_slice());
+        let font_matrix = if find_token(clear, b"/FontMatrix").is_some() {
+            parse_font_matrix(clear)?
+        } else {
+            DEFAULT_FONT_MATRIX
+        };
         let private = decrypt_private_program(font_bytes)?;
         let len_iv = parse_len_iv(&private).unwrap_or(DEFAULT_LEN_IV);
         let subrs = parse_subrs(&private, len_iv);
@@ -32,6 +47,7 @@ impl Type1Font {
             len_iv,
             subrs,
             charstrings,
+            font_matrix,
         })
     }
 
@@ -45,8 +61,14 @@ impl Type1Font {
         };
         let mut interpreter = Interpreter::new(self);
         match interpreter.execute(charstring, 0) {
-            Ok(()) => (non_empty_path(interpreter.path), interpreter.width),
-            Err(_) => (None, interpreter.width),
+            Ok(()) => (
+                non_empty_path(normalize_type1_path(interpreter.path, self.font_matrix)),
+                normalize_type1_advance(interpreter.width, self.font_matrix),
+            ),
+            Err(_) => (
+                None,
+                normalize_type1_advance(interpreter.width, self.font_matrix),
+            ),
         }
     }
 
@@ -691,6 +713,113 @@ fn non_empty_path(path: Path) -> Option<Path> {
     }
 }
 
+/// Parse the clear-text Type 1 `/FontMatrix`. The PostScript commonly stores
+/// literal decimals, but some generators use `numerator denominator div`, so
+/// the bounded evaluator supports that numeric operator as well. Returning
+/// `None` for a present but malformed/singular matrix makes the embedded font
+/// unusable instead of silently painting it at the wrong size.
+fn parse_font_matrix(clear_program: &[u8]) -> Option<[f64; 6]> {
+    let matrix_pos = find_token(clear_program, b"/FontMatrix")? + b"/FontMatrix".len();
+    let mut start = matrix_pos;
+    while start < clear_program.len()
+        && !matches!(clear_program[start], b'[' | b'{')
+        && start.saturating_sub(matrix_pos) < 256
+    {
+        start += 1;
+    }
+    let open = *clear_program.get(start)?;
+    let close = match open {
+        b'[' => b']',
+        b'{' => b'}',
+        _ => return None,
+    };
+    let body_start = start + 1;
+    let body_end = clear_program
+        .get(body_start..)?
+        .iter()
+        .position(|byte| *byte == close)?
+        + body_start;
+    let body = clear_program.get(body_start..body_end)?;
+    let mut stack: Vec<f64> = Vec::with_capacity(8);
+    for token in body
+        .split(|byte| is_space(*byte))
+        .filter(|token| !token.is_empty())
+    {
+        match token {
+            b"div" => {
+                let denominator = stack.pop()?;
+                let numerator = stack.pop()?;
+                if denominator == 0.0 {
+                    return None;
+                }
+                stack.push(numerator / denominator);
+            }
+            b"neg" => {
+                let value = stack.pop()?;
+                stack.push(-value);
+            }
+            _ => {
+                let token = std::str::from_utf8(token).ok()?;
+                stack.push(token.parse::<f64>().ok()?);
+            }
+        }
+        if stack.len() > 12 {
+            return None;
+        }
+    }
+    let matrix: [f64; 6] = stack.try_into().ok()?;
+    if !matrix.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+    (determinant.abs() > f64::EPSILON).then_some(matrix)
+}
+
+/// Normalize an arbitrary Type 1 font matrix to the renderer's conventional
+/// 1000-unit glyph space. Existing consumers can then continue to apply
+/// `font_size / 1000` while retaining scale, shear, rotation and translation.
+fn normalize_type1_path(path: Path, matrix: [f64; 6]) -> Path {
+    fn point(matrix: [f64; 6], x: f64, y: f64) -> (f64, f64) {
+        (
+            (matrix[0] * x + matrix[2] * y + matrix[4]) * TYPE1_NORMALIZED_EM,
+            (matrix[1] * x + matrix[3] * y + matrix[5]) * TYPE1_NORMALIZED_EM,
+        )
+    }
+
+    let mut normalized = Path::new();
+    for segment in path.segments {
+        match segment {
+            PathSegment::MoveTo(x, y) => {
+                let (x, y) = point(matrix, x, y);
+                normalized.move_to(x, y);
+            }
+            PathSegment::LineTo(x, y) => {
+                let (x, y) = point(matrix, x, y);
+                normalized.line_to(x, y);
+            }
+            PathSegment::CubicTo {
+                cp1x,
+                cp1y,
+                cp2x,
+                cp2y,
+                x,
+                y,
+            } => {
+                let (cp1x, cp1y) = point(matrix, cp1x, cp1y);
+                let (cp2x, cp2y) = point(matrix, cp2x, cp2y);
+                let (x, y) = point(matrix, x, y);
+                normalized.curve_to(cp1x, cp1y, cp2x, cp2y, x, y);
+            }
+            PathSegment::ClosePath => normalized.close(),
+        }
+    }
+    normalized
+}
+
+fn normalize_type1_advance(width: f64, matrix: [f64; 6]) -> f64 {
+    width * matrix[0] * TYPE1_NORMALIZED_EM
+}
+
 fn standard_encoding_name(code: i32) -> Option<&'static str> {
     u8::try_from(code)
         .ok()
@@ -890,12 +1019,46 @@ eexec
     }
 
     #[test]
+    fn type1_font_matrix_accepts_nonstandard_scale_and_division() {
+        let decimal = parse_font_matrix(
+            b"%!PS-AdobeFont-1.0\n/FontMatrix [0.000488281 0 0 0.000488281 0 0] readonly def\n",
+        )
+        .expect("decimal font matrix");
+        assert!((decimal[0] - 0.000488281).abs() < 1e-12);
+
+        let divided = parse_font_matrix(
+            b"%!PS-AdobeFont-1.0\n/FontMatrix [1 2048 div 0 0 1 2048 div 0 0] def\n",
+        )
+        .expect("divided font matrix");
+        assert!((divided[0] - 1.0 / 2048.0).abs() < 1e-12);
+        assert!((divided[3] - 1.0 / 2048.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn type1_font_matrix_normalizes_outline_and_advance_to_1000_em() {
+        let matrix = [1.0 / 2048.0, 0.0, 0.0, 1.0 / 2048.0, 0.0, 0.0];
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.line_to(2048.0, 1024.0);
+        let normalized = normalize_type1_path(path, matrix);
+        assert_eq!(
+            normalized.segments,
+            vec![
+                PathSegment::MoveTo(0.0, 0.0),
+                PathSegment::LineTo(1000.0, 500.0)
+            ]
+        );
+        assert_eq!(normalize_type1_advance(1024.0, matrix), 500.0);
+    }
+
+    #[test]
     fn type1_flex_records_control_moves_as_curves() {
         let font = Type1Font {
             #[cfg(test)]
             len_iv: DEFAULT_LEN_IV,
             subrs: HashMap::new(),
             charstrings: HashMap::new(),
+            font_matrix: DEFAULT_FONT_MATRIX,
         };
         let mut interpreter = Interpreter::new(&font);
         interpreter.move_to(100.0, -10.0);

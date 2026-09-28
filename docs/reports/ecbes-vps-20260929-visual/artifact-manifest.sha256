@@ -104,6 +104,9 @@ dfa3362b2f940da16f4e5a5206ac691dfa9464ea0c19d27de255458c2966a226  edited/pages/0
 f106f2f7095bcc3ecef1ff7e3953a38c7bf398983a6a6d93b40cffc77895f9ce  edited/pages/100-verapdf-corpus-pdf-ua-1-7-18-annotations-7-18-1-general-7-18-1-t02-pass-.webp
 714d65b9fb8889a7ff7f5735bb61be67493e7f02fdead9d89393b09479920d8d  edited/results.jsonl
 5379e9edf6ef56aa385ff0b25e1fa2aaaa059e53d54aa3bbbf1aba2221f45dd8  edited/summary.json
+89a78943af685dc0df396b024a8ac617bf2b8cb82fc1b74f66526ae60081ade3  fixes/type1-font-matrix/README.md
+4854a5040d669bd1cbfc5a006ba3cf106155f3c86b997261e0a1a5b3923a226f  fixes/type1-font-matrix/comparison.webp
+9fd9088ad302dd0b3fc32b364bbb296914360130a92c125e81cb93df7ac1cc36  fixes/type1-font-matrix/results.jsonl
 7add4fcfb3aef22aa1746a4d65fbc1f7283bb8f0f06005a813aa02abed426a20  originals/contacts/contact-001-025.webp
 8b0ec3a0d8a037a7475647db2101fedfdfcfa6d89df1b7584853cf46fd5e1f49  originals/contacts/contact-026-050.webp
 553f1d8bcc676ea211c6eb0f5c96e9069df3e0caf65595f3dfafda652ef5c86a  originals/contacts/contact-051-075.webp
@@ -210,4 +213,4 @@ a60ea3460a1afcfdc711e07cde069f8bde8654cc3bfaf96e89fb05d80f7821df  originals/page
 58c2e96697581a8223c08998ce8e87674ff47c616f7481a84de682eb617ff382  originals/pages/100-verapdf-corpus-pdf-ua-1-7-18-annotations-7-18-1-general-7-18-1-t02-pass-.webp
 a088beb0f4f120238141d31d99924f044eb08756af1a93631619461e288c7f1a  originals/results.jsonl
 f2c6be0322f998956b5a8fe98d569e26368976736594e770472e6bde790db243  originals/summary.json
-bffb2f5baf6f07d8be882268fe4df7aaee0c134a145d1baf06022a4f4561c29e  README.md
+aff13d930f4ab06704c309ccc7a65f36a2b35c49600199fc7bb612493121272f  README.md

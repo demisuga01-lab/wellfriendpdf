@@ -23,19 +23,19 @@ file, and one veraPDF conformance file.
 | Qualification | Originals | Edited outputs | Result |
 |---|---:|---:|---|
 | Revision-bound source edit | 100 attempted | 100 applied and independently verified | **100/100** |
-| WellPDF semantic parse | 100/100 accepted | 100/100 accepted | **100/100** |
+| Wellfriend PDF semantic parse | 100/100 accepted | 100/100 accepted | **100/100** |
 | qpdf structural check | 100/100 accepted: 97 clean, 3 warning | 100/100 accepted: 99 clean, 1 warning | **100/100 accepted** |
 | MuPDF `mutool info` | 95/100 accepted | 95/100 accepted | Same five input-metadata failures before and after |
 
 Every counted edit had to produce changed bytes, report an applied mutation,
-prove the selected source occurrence was replaced, reopen through WellPDF,
+prove the selected source occurrence was replaced, reopen through Wellfriend PDF,
 expose the replacement through independent Poppler extraction, and introduce no
 new qpdf structural diagnostic. There were no timeouts, typed refusals, or
 verification failures in this particular workflow.
 
 MuPDF rejected `f1040.pdf`, `f1040sa.pdf`, `f1040sc.pdf`, `f1040sd.pdf`, and
 `f1040se.pdf` with `syntax error after element name`. It rejected the same five
-files before and after editing; WellPDF and qpdf accepted all five.
+files before and after editing; Wellfriend PDF and qpdf accepted all five.
 
 ### Timing percentiles
 
@@ -45,8 +45,8 @@ to the visual-divergence percentiles below.
 
 | Workload | Corpus | P50 | P90 | P95 | P99 | Maximum |
 |---|---|---:|---:|---:|---:|---:|
-| WellPDF semantic parse | Originals | 1,164.201 ms | 4,550.653 ms | 6,944.989 ms | 14,024.827 ms | 16,136.160 ms |
-| WellPDF semantic parse | Edited | 1,109.898 ms | 4,727.693 ms | 6,484.281 ms | 15,025.047 ms | 15,919.602 ms |
+| Wellfriend PDF semantic parse | Originals | 1,164.201 ms | 4,550.653 ms | 6,944.989 ms | 14,024.827 ms | 16,136.160 ms |
+| Wellfriend PDF semantic parse | Edited | 1,109.898 ms | 4,727.693 ms | 6,484.281 ms | 15,025.047 ms | 15,919.602 ms |
 | qpdf structural check | Originals | 182.814 ms | 1,331.799 ms | 2,029.282 ms | 7,946.815 ms | 11,974.864 ms |
 | qpdf structural check | Edited | 191.145 ms | 1,305.994 ms | 2,138.305 ms | 8,167.515 ms | 11,679.947 ms |
 | MuPDF `mutool info` | Originals | 26.593 ms | 49.605 ms | 58.166 ms | 93.001 ms | 280.164 ms |
@@ -55,7 +55,7 @@ to the visual-divergence percentiles below.
 | Edit planning | Edited | 7,636.419 ms | 13,036.515 ms | 16,907.035 ms | 21,318.599 ms | 23,204.997 ms |
 | Edit apply | Edited | 24,370.821 ms | 39,875.242 ms | 48,818.867 ms | 67,200.242 ms | 73,955.928 ms |
 
-The parser rows are not equivalent-operation speed comparisons: WellPDF emits
+The parser rows are not equivalent-operation speed comparisons: Wellfriend PDF emits
 a semantic document model, qpdf performs structural checks, and `mutool info`
 inventories document resources. End-to-end edit time includes extraction,
 planning, approval, mutation, qpdf checks, reopen/extraction, and independent
@@ -64,21 +64,30 @@ Poppler verification.
 ### Rendering against PDFium, MuPDF, and Poppler
 
 Page one of every original and edited PDF was rendered at 144 DPI. A comparison
-was counted only when WellPDF and the reference renderer both produced an image
+was counted only when Wellfriend PDF and the reference renderer both produced an image
 with identical dimensions.
 
-| Corpus | WellPDF renders | PDFium comparable | MuPDF comparable | Poppler comparable | Failures |
+| Corpus | Wellfriend PDF renders | PDFium comparable | MuPDF comparable | Poppler comparable | Failures |
 |---|---:|---:|---:|---:|---:|
 | 100 originals | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
 | 100 edited outputs | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
 
 **These are output-production and same-dimension results, not visual-fidelity
-passes.** The retained visual rerun exposes a severe WellPDF layout failure in
+passes.** The retained visual rerun exposes a severe Wellfriend PDF layout failure in
 the maximum-divergence document. The full four-renderer sheets, heatmaps,
 timestamps, raster hashes, and timing measurements are in the
 [human-viewable visual evidence report](docs/reports/ecbes-vps-20260929-visual/README.md).
 
 ![Maximum-divergence four-renderer comparison](docs/reports/ecbes-vps-20260929-visual/originals/pages/047-arxiv-eess-iv-2609-28194v1-5e65af65d2ee-pdf.webp)
+
+The catastrophic case was traced to an ignored non-default Type 1
+`/FontMatrix`: the font used approximately 1/2048 glyph-space scaling while the
+renderer assumed 1/1000. A source correction now applies the complete embedded
+font matrix. The exact input was rerendered on the VPS and is readable; its
+`changed > 8` divergence fell from 31.29-32.42% to 10.00-12.80% across the
+three references. See the [focused before/after correction report](docs/reports/ecbes-vps-20260929-visual/fixes/type1-font-matrix/README.md).
+The full 100-file corpus has not yet been rerun with this correction, so the
+original campaign remains displayed above as historical failure evidence.
 
 `Changed > 8` is the percentage of pixels where at least one RGB channel
 differs from the reference by more than 8. Antialiasing and color-management
@@ -104,17 +113,17 @@ visual rerun retained individual engine durations and produced these percentiles
 
 | Corpus | Renderer | P50 | P90 | P95 | P99 | Maximum |
 |---|---|---:|---:|---:|---:|---:|
-| Originals | WellPDF | 495.160 ms | 773.481 ms | 997.802 ms | 1,489.815 ms | 40,854.901 ms |
+| Originals | Wellfriend PDF | 495.160 ms | 773.481 ms | 997.802 ms | 1,489.815 ms | 40,854.901 ms |
 | Originals | PDFium | 735.010 ms | 868.279 ms | 913.387 ms | 1,089.188 ms | 1,154.583 ms |
 | Originals | MuPDF | 957.148 ms | 1,133.023 ms | 1,181.795 ms | 1,287.178 ms | 1,455.695 ms |
 | Originals | Poppler | 900.829 ms | 1,146.898 ms | 1,168.173 ms | 1,393.087 ms | 1,634.043 ms |
-| Edited | WellPDF | 490.340 ms | 813.415 ms | 1,164.499 ms | 1,546.844 ms | 39,961.103 ms |
+| Edited | Wellfriend PDF | 490.340 ms | 813.415 ms | 1,164.499 ms | 1,546.844 ms | 39,961.103 ms |
 | Edited | PDFium | 730.140 ms | 850.722 ms | 918.240 ms | 1,069.498 ms | 1,139.994 ms |
 | Edited | MuPDF | 965.530 ms | 1,103.554 ms | 1,184.153 ms | 1,328.426 ms | 1,435.239 ms |
 | Edited | Poppler | 923.954 ms | 1,146.064 ms | 1,217.007 ms | 1,280.089 ms | 1,788.012 ms |
 
-The WellPDF maximum is `i1040gi.pdf`; it took about 40 seconds in both corpora,
-while the next-slowest WellPDF page was about 1.5 seconds.
+The Wellfriend PDF maximum is `i1040gi.pdf`; it took about 40 seconds in both corpora,
+while the next-slowest Wellfriend PDF page was about 1.5 seconds.
 
 ### Timestamped result history
 
@@ -143,7 +152,7 @@ so the report does not invent them from copied-file modification times.
 The complete methodology, exact tool versions, corpus manifest, per-file edit
 proofs, parser diagnostics, and page-level render measurements are published in
 the [100-PDF VPS qualification report](docs/reports/ecbes-vps-20260928/README.md).
-Human-viewable WellPDF/PDFium/MuPDF/Poppler sheets and heatmaps are in the
+Human-viewable Wellfriend PDF/PDFium/MuPDF/Poppler sheets and heatmaps are in the
 [visual evidence report](docs/reports/ecbes-vps-20260929-visual/README.md).
 Raw evidence is available in
 [`editing-results.jsonl`](docs/reports/ecbes-vps-20260928/editing-results.jsonl),

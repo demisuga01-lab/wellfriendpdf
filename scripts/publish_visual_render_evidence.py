@@ -26,8 +26,14 @@ from typing import Any
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 
-ENGINES = ("wellpdf", "pdfium", "mupdf", "poppler")
+ENGINES = ("wellfriendpdf", "pdfium", "mupdf", "poppler")
 REFERENCES = ("pdfium", "mupdf", "poppler")
+ENGINE_LABELS = {
+    "wellfriendpdf": "Wellfriend PDF",
+    "pdfium": "PDFium",
+    "mupdf": "MuPDF",
+    "poppler": "Poppler",
+}
 PANEL_WIDTH = 360
 PANEL_HEIGHT = 540
 PANEL_GAP = 12
@@ -84,8 +90,8 @@ def normalized_png(image: Image.Image, output: Path) -> dict[str, Any]:
     }
 
 
-def render_wellpdf(binary: Path, pdf: Path, dpi: int, work: Path, timeout: int) -> tuple[Image.Image, dict[str, Any]]:
-    output_zip = work / "wellpdf.zip"
+def render_wellfriendpdf(binary: Path, pdf: Path, dpi: int, work: Path, timeout: int) -> tuple[Image.Image, dict[str, Any]]:
+    output_zip = work / "wellfriendpdf.zip"
     result = run_timed(
         [
             str(binary),
@@ -105,12 +111,12 @@ def render_wellpdf(binary: Path, pdf: Path, dpi: int, work: Path, timeout: int) 
         timeout,
     )
     if result["exit"] != 0:
-        raise RuntimeError(f"WellPDF exited {result['exit']}: {result['stderr_tail']}")
+        raise RuntimeError(f"Wellfriend PDF exited {result['exit']}: {result['stderr_tail']}")
     with zipfile.ZipFile(output_zip) as archive:
         names = sorted(name for name in archive.namelist() if name.lower().endswith(".png"))
         if not names:
-            raise RuntimeError("WellPDF produced no PNG")
-        extracted = work / "wellpdf-source.png"
+            raise RuntimeError("Wellfriend PDF produced no PNG")
+        extracted = work / "wellfriendpdf-source.png"
         with archive.open(names[0]) as source, extracted.open("wb") as target:
             shutil.copyfileobj(source, target)
     return load_rgb(extracted), result
@@ -175,7 +181,7 @@ def diff_metric(base: Image.Image, reference: Image.Image) -> dict[str, Any]:
     if base.size != reference.size:
         return {
             "same_size": False,
-            "wellpdf_size": list(base.size),
+            "wellfriendpdf_size": list(base.size),
             "reference_size": list(reference.size),
         }
     with ImageChops.difference(base, reference) as difference:
@@ -226,12 +232,14 @@ def comparison_sheet(
 ) -> None:
     panels: list[Image.Image] = []
     for engine in ENGINES:
-        panels.append(fit_panel(images[engine], f"{engine} - {durations[engine]:.3f} ms"))
+        panels.append(
+            fit_panel(images[engine], f"{ENGINE_LABELS[engine]} - {durations[engine]:.3f} ms")
+        )
     for reference in REFERENCES:
-        diff = heatmap(images["wellpdf"], images[reference])
+        diff = heatmap(images["wellfriendpdf"], images[reference])
         metric = metrics[reference]
         value = metric.get("changed_pixel_threshold8_percentage", "size mismatch")
-        panels.append(fit_panel(diff, f"diff x4: WellPDF vs {reference} - changed > 8: {value}%"))
+        panels.append(fit_panel(diff, f"diff x4: Wellfriend PDF vs {reference} - changed > 8: {value}%"))
         diff.close()
     panels.append(fit_panel(Image.new("RGB", (10, 10), "white"), "Black/bright regions are amplified pixel deltas"))
     width = PANEL_WIDTH * 4 + PANEL_GAP * 5
@@ -263,13 +271,13 @@ def compare_one(task: dict[str, Any]) -> dict[str, Any]:
         "input_sha256": sha256_file(pdf),
         "started_at_utc": started_at,
     }
-    with tempfile.TemporaryDirectory(prefix="wellpdf-visual-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="wellfriendpdf-visual-") as temporary:
         work = Path(temporary)
         images: dict[str, Image.Image] = {}
         commands: dict[str, dict[str, Any]] = {}
         try:
-            images["wellpdf"], commands["wellpdf"] = render_wellpdf(
-                Path(task["wellpdf_bin"]), pdf, int(task["dpi"]), work, int(task["timeout"])
+            images["wellfriendpdf"], commands["wellfriendpdf"] = render_wellfriendpdf(
+                Path(task["wellfriend_bin"]), pdf, int(task["dpi"]), work, int(task["timeout"])
             )
             for reference in ("pdfium", "mupdf"):
                 images[reference], commands[reference] = render_helper(
@@ -282,7 +290,7 @@ def compare_one(task: dict[str, Any]) -> dict[str, Any]:
             for engine, image in images.items():
                 raster_identity[engine] = normalized_png(image, work / f"{engine}-normalized.png")
             metrics = {
-                reference: diff_metric(images["wellpdf"], images[reference])
+                reference: diff_metric(images["wellfriendpdf"], images[reference])
                 for reference in REFERENCES
             }
             durations = {engine: float(commands[engine]["duration_ms"]) for engine in ENGINES}
@@ -422,7 +430,7 @@ def main() -> int:
             "pdf": str(pdf),
             "relative_path": relative_path,
             "corpus": args.corpus_label,
-            "wellpdf_bin": str(args.wellfriend_bin),
+            "wellfriend_bin": str(args.wellfriend_bin),
             "helper": str(args.reference_helper),
             "artifact_dir": str(artifacts),
             "dpi": args.dpi,
