@@ -19,11 +19,36 @@ use crate::cancel::CancelToken;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::render::buffer::{PixelBuffer, PixelColor};
+use crate::render::cmm::ColorTransformOptions;
 use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::transform::{Transform2D, Viewport};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) const MAX_SHADING_WORK_UNITS: u64 = 64 * 1024 * 1024;
+
+#[cfg(test)]
+#[path = "shading_color_context_tests.rs"]
+mod color_context_tests;
+
+#[cfg(test)]
+#[path = "function_resource_render_tests.rs"]
+mod function_resource_tests;
+
+#[path = "shading_mesh.rs"]
+mod mesh;
+use mesh::{MeshPaint, MeshSample, MeshVertex};
+
+#[path = "shading_region.rs"]
+mod region;
+use region::{CommonEntries, PaintRegion};
+
+#[path = "shading_geometry.rs"]
+mod geometry;
+pub(crate) use geometry::domain_value as shading_domain_value;
+use geometry::{AxialGeometry, RadialGeometry};
+
+const DEFAULT_SHADING_WORKING_BYTES: usize = 64 * 1024 * 1024;
 
 /// A minimal valid PDF used by render tests that need a `PdfReader` but never
 /// resolve indirect objects. Crate-visible so sibling render modules can reuse
@@ -59,11 +84,13 @@ pub(crate) fn tests_minimal_pdf() -> Vec<u8> {
 /// output components. Delegates to the multi-input dispatcher in
 /// [`crate::render::function`], which supports Function Types 0, 2, 3, and 4.
 /// Returns an empty `Vec` for unsupported types or malformed input.
+#[cfg(test)]
 pub(crate) fn eval_function(func_obj: &PdfObject, t: f64, reader: &PdfReader) -> Vec<f64> {
     crate::render::function::eval_function_or_array_n(func_obj, &[t], reader)
 }
 
 /// Type 2 (exponential interpolation): `f(t) = C0 + t^N * (C1 - C0)`.
+#[cfg(test)]
 pub(crate) fn eval_type2(dict: &PdfDictionary, t: f64) -> Vec<f64> {
     let Some(n) = dict.get("N").and_then(PdfObject::as_number) else {
         return Vec::new();
@@ -78,12 +105,12 @@ pub(crate) fn eval_type2(dict: &PdfDictionary, t: f64) -> Vec<f64> {
     };
     let d0 = domain[0];
     let d1 = domain[1];
-    let t_clamped = t.clamp(d0.min(d1), d0.max(d1));
-    let t_norm = if (d1 - d0).abs() < 1e-10 {
-        0.0
-    } else {
-        (t_clamped - d0) / (d1 - d0)
-    };
+    if d0 > d1 || (n.fract() != 0.0 && d0 < 0.0) || (n < 0.0 && d0 <= 0.0 && d1 >= 0.0) {
+        return Vec::new();
+    }
+    // PDF Type 2 evaluates the clipped input itself, not its normalized
+    // position in Domain. C0/C1 describe x=0/x=1 even for a non-unit domain.
+    let t_clamped = t.clamp(d0, d1);
 
     let c0 = match dict.contains_key("C0") {
         true => match get_strict_float_array(dict, "C0") {
@@ -102,19 +129,43 @@ pub(crate) fn eval_type2(dict: &PdfDictionary, t: f64) -> Vec<f64> {
     if c0.len() != c1.len() {
         return Vec::new();
     }
-    let len = c0.len();
-    let factor = t_norm.powf(n);
+    let Some(output) = exponential_components(&c0, &c1, n, t_clamped) else {
+        return Vec::new();
+    };
+    crate::render::function::clip_output(dict, output).unwrap_or_default()
+}
 
-    (0..len)
+/// Shared arithmetic for direct and prepared functions. Domain/shape validation
+/// belongs to their callers; Range is applied after these source components.
+pub(super) fn exponential_components(
+    c0: &[f64],
+    c1: &[f64],
+    exponent: f64,
+    input: f64,
+) -> Option<Vec<f64>> {
+    if c0.is_empty() || c0.len() != c1.len() {
+        return None;
+    }
+    let factor = input.powf(exponent);
+    if !factor.is_finite() {
+        return None;
+    }
+    let output: Vec<f64> = (0..c0.len())
         .map(|i| {
             let v0 = c0[i];
             let v1 = c1[i];
-            (v0 + factor * (v1 - v0)).clamp(0.0, 1.0)
+            if (0.0..=1.0).contains(&factor) {
+                geometry::domain_value(v0, v1, factor)
+            } else {
+                factor.mul_add(v1 - v0, v0)
+            }
         })
-        .collect()
+        .collect();
+    output.iter().all(|v| v.is_finite()).then_some(output)
 }
 
 /// Type 3 (stitching): selects a sub-function by breakpoint and re-encodes `t`.
+#[cfg(test)]
 pub(crate) fn eval_type3(dict: &PdfDictionary, t: f64, reader: &PdfReader) -> Vec<f64> {
     if !t.is_finite() {
         return Vec::new();
@@ -124,7 +175,7 @@ pub(crate) fn eval_type3(dict: &PdfDictionary, t: f64, reader: &PdfReader) -> Ve
         return Vec::new();
     };
     let funcs = match dict.get("Functions") {
-        Some(PdfObject::Array(arr)) => arr.clone(),
+        Some(PdfObject::Array(arr)) => arr,
         _ => return Vec::new(),
     };
     if funcs.is_empty() {
@@ -143,7 +194,17 @@ pub(crate) fn eval_type3(dict: &PdfDictionary, t: f64, reader: &PdfReader) -> Ve
 
     let d0 = domain[0];
     let d1 = domain[1];
-    let t = t.clamp(d0.min(d1), d0.max(d1));
+    if d0 > d1 || (funcs.len() > 1 && d0 == d1) {
+        return Vec::new();
+    }
+    let mut previous = d0;
+    for &bound in &bounds {
+        if bound <= previous || bound > d1 {
+            return Vec::new();
+        }
+        previous = bound;
+    }
+    let t = t.clamp(d0, d1);
 
     // Find the sub-function index: first bound the value falls below.
     let idx = {
@@ -172,14 +233,14 @@ pub(crate) fn eval_type3(dict: &PdfDictionary, t: f64, reader: &PdfReader) -> Ve
 
     let e0 = encode[idx * 2];
     let e1 = encode[idx * 2 + 1];
-    let t_enc = if (seg_end - seg_start).abs() < 1e-10 {
-        e0
-    } else {
-        e0 + (t - seg_start) / (seg_end - seg_start) * (e1 - e0)
+    let Some(position) = crate::render::function::domain_position(t, seg_start, seg_end) else {
+        return Vec::new();
     };
+    let t_enc = geometry::domain_value(e0, e1, position);
 
     match funcs.get(idx) {
-        Some(sub) => eval_function(sub, t_enc, reader),
+        Some(sub) => crate::render::function::clip_output(dict, eval_function(sub, t_enc, reader))
+            .unwrap_or_default(),
         None => Vec::new(),
     }
 }
@@ -215,14 +276,18 @@ fn charge_shading_work(buf: &PixelBuffer, work_budget: &AtomicU64) -> Result<(),
     let pixels = width
         .checked_mul(height)
         .ok_or_else(|| "shading work area overflows the per-render work budget".to_string())?;
+    charge_shading_units(pixels, work_budget)
+}
+
+fn charge_shading_units(units: u64, work_budget: &AtomicU64) -> Result<(), String> {
     work_budget
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-            remaining.checked_sub(pixels)
+            remaining.checked_sub(units)
         })
         .map(|_| ())
         .map_err(|remaining| {
             format!(
-                "shading work requires {pixels} pixel units with {remaining} remaining; per-render limit is {MAX_SHADING_WORK_UNITS}"
+                "shading work requires {units} units with {remaining} remaining; per-render limit is {MAX_SHADING_WORK_UNITS}"
             )
         })
 }
@@ -244,24 +309,45 @@ fn components_to_render_color_with_space(
     color_space: &str,
     color_space_obj: Option<&PdfObject>,
     reader: &PdfReader,
+    options: ShadingRenderOptions<'_>,
 ) -> Option<RenderColor> {
+    if matches!(color_space, "Indexed" | "I")
+        && (components.len() != 1 || !components[0].is_finite() || components[0].fract() != 0.0)
+    {
+        options.fail("Indexed shading function produced a non-integer palette index");
+        return None;
+    }
     if let Some(space_obj) = color_space_obj {
-        match crate::render::colorspace::resolve_named_color(space_obj, components, 1.0, reader) {
+        match crate::render::colorspace::resolve_named_color_with_resources(
+            space_obj,
+            options.source_color_space,
+            components,
+            1.0,
+            reader,
+            options.color_transform,
+            options.function_resources(),
+        ) {
             crate::render::colorspace::NamedColor::Color(color) => return Some(color),
             crate::render::colorspace::NamedColor::NoPaint => {
                 return Some(RenderColor::transparent());
             }
             crate::render::colorspace::NamedColor::Invalid(reason) => {
+                options.fail(reason);
                 log::warn!("shading color-space rejected: {reason}");
                 return None;
             }
             crate::render::colorspace::NamedColor::Unhandled => {
+                options.fail("unsupported shading colour space");
                 log::warn!("shading color-space unsupported: {color_space}");
                 return None;
             }
         }
     }
-    ColorSpaceHandler::try_from_components(color_space, components, 1.0)
+    let color = ColorSpaceHandler::try_from_components(color_space, components, 1.0);
+    if color.is_none() {
+        options.fail("invalid shading colour components");
+    }
+    color
 }
 
 /// Read the shading's colour-space name. Handles both a bare name and an array
@@ -284,33 +370,247 @@ fn shading_color_space_object(dict: &PdfDictionary) -> Option<&PdfObject> {
 
 const SHADING_LUT_STEPS: usize = 4096;
 const MAX_PATCH_MESH_PATCHES: usize = 4096;
-const DEFAULT_PATCH_SUBDIVISIONS: usize = 10;
-const MIN_PATCH_SUBDIVISIONS: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ShadingRenderOptions {
+pub(crate) struct ShadingRenderOptions<'a> {
     /// PDF graphics-state `/SM` smoothness tolerance, normalized to [0, 1].
-    /// Zero preserves the renderer's default subdivision quality.
+    /// This colour smoothness hint is separate from patch geometry accuracy.
     smoothness_tolerance: f64,
+    pub(crate) source_color_space: Option<&'a PdfObject>,
+    pub(crate) color_transform: ColorTransformOptions,
+    failure: Option<&'a Cell<Option<&'static str>>>,
+    work_budget: Option<&'a AtomicU64>,
+    working_byte_limit: usize,
+    function_graph_byte_limit: usize,
+    function_stream_byte_limit: usize,
+    color_cache_entries: usize,
+    function_cache: Option<&'a std::sync::Mutex<crate::render::function::FunctionCache>>,
+    memory_budget: Option<&'a std::sync::Arc<crate::decode_scheduler::DecodeMemoryBudget>>,
+    opacity: f32,
+    dither_origin: (i32, i32),
+    use_background: bool,
+    region: Option<&'a PaintRegion>,
+    sample_clip: Option<&'a crate::render::buffer::ClipMask>,
+    sample_clip_origin: (i32, i32),
 }
 
-impl ShadingRenderOptions {
+impl<'a> ShadingRenderOptions<'a> {
     pub(crate) fn new(smoothness_tolerance: f64) -> Self {
         Self {
             smoothness_tolerance: normalize_smoothness_tolerance(smoothness_tolerance),
+            ..Self::default()
         }
+    }
+    pub(crate) fn with_color_context<'b>(
+        self,
+        source: Option<&'b PdfObject>,
+        transform: ColorTransformOptions,
+    ) -> ShadingRenderOptions<'b>
+    where
+        'a: 'b,
+    {
+        ShadingRenderOptions {
+            smoothness_tolerance: self.smoothness_tolerance,
+            source_color_space: source,
+            color_transform: transform,
+            failure: self.failure,
+            work_budget: self.work_budget,
+            working_byte_limit: self.working_byte_limit,
+            function_graph_byte_limit: self.function_graph_byte_limit,
+            function_stream_byte_limit: self.function_stream_byte_limit,
+            color_cache_entries: self.color_cache_entries,
+            function_cache: self.function_cache,
+            memory_budget: self.memory_budget,
+            opacity: self.opacity,
+            dither_origin: self.dither_origin,
+            use_background: self.use_background,
+            region: self.region,
+            sample_clip: self.sample_clip,
+            sample_clip_origin: self.sample_clip_origin,
+        }
+    }
+    pub(crate) fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
+    }
+    pub(crate) fn for_pattern(mut self) -> Self {
+        self.use_background = true;
+        self
+    }
+    fn sample_visible(self, x: i32, y: i32) -> bool {
+        if self.sample_clip.is_some_and(|clip| {
+            clip.opacity(x + self.sample_clip_origin.0, y + self.sample_clip_origin.1) <= 0.0
+        }) {
+            return false;
+        }
+        match self.region.map(|region| region.coverage(x, y)).transpose() {
+            Ok(value) => value.unwrap_or(1.0) > 0.0,
+            Err(reason) => {
+                self.fail(reason);
+                false
+            }
+        }
+    }
+    pub(crate) fn with_working_byte_limit(mut self, bytes: usize) -> Self {
+        self.working_byte_limit = bytes;
+        self
+    }
+    pub(crate) fn with_function_graph_byte_limit(mut self, bytes: usize) -> Self {
+        self.function_graph_byte_limit = bytes;
+        self
+    }
+    pub(crate) fn with_function_stream_byte_limit(mut self, bytes: usize) -> Self {
+        self.function_stream_byte_limit = bytes;
+        self
+    }
+    pub(crate) fn with_function_cache(
+        mut self,
+        cache: &'a std::sync::Mutex<crate::render::function::FunctionCache>,
+    ) -> Self {
+        self.function_cache = Some(cache);
+        self
+    }
+    pub(crate) fn function_resources(self) -> crate::render::function::FunctionResources<'a> {
+        crate::render::function::FunctionResources {
+            memory: self.memory_budget,
+            max_graph_bytes: self.function_graph_byte_limit,
+            max_stream_bytes: self.function_stream_byte_limit,
+            cache: self.function_cache,
+        }
+    }
+    pub(crate) fn prepare_function(
+        self,
+        object: &PdfObject,
+        inputs: usize,
+        reader: &PdfReader,
+    ) -> Option<crate::render::function::FunctionLease> {
+        crate::render::function::PreparedFunction::cached_with_resources(
+            object,
+            inputs,
+            true,
+            reader,
+            self.function_resources(),
+        )
+    }
+    pub(crate) fn with_memory_budget(
+        mut self,
+        budget: &'a std::sync::Arc<crate::decode_scheduler::DecodeMemoryBudget>,
+    ) -> Self {
+        self.memory_budget = Some(budget);
+        self
+    }
+    fn reserve_bytes(
+        self,
+        bytes: usize,
+    ) -> Result<Option<crate::decode_scheduler::DecodeMemoryToken>, String> {
+        if bytes > self.working_byte_limit {
+            return Err("shading working-memory budget exceeded".into());
+        }
+        self.memory_budget
+            .map(|budget| {
+                budget
+                    .try_acquire(bytes as u64)
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()
+    }
+    fn charge_work(self, units: u64) -> bool {
+        if let Some(budget) = self.work_budget {
+            if charge_shading_units(units, budget).is_err() {
+                self.fail("shading cumulative work budget exhausted");
+                return false;
+            }
+        }
+        true
+    }
+    fn evaluate_function(
+        self,
+        function: &crate::render::function::PreparedFunction,
+        inputs: &[f64],
+    ) -> Vec<f64> {
+        let allowance = self.work_budget.map_or(usize::MAX, |budget| {
+            usize::try_from(budget.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(usize::MAX)
+        });
+        let (values, consumed) = function.evaluate_metered(inputs, allowance);
+        if !self.charge_work(consumed as u64) {
+            return Vec::new();
+        }
+        values
+    }
+    fn reserve_mesh_storage(
+        self,
+        vertices: usize,
+    ) -> Result<Option<crate::decode_scheduler::DecodeMemoryToken>, String> {
+        let bytes = vertices
+            .checked_mul(std::mem::size_of::<MeshVertex>())
+            .ok_or("mesh storage size overflow")?;
+        self.reserve_bytes(bytes)
+    }
+    fn fail(self, reason: &'static str) {
+        if let Some(failure) = self.failure {
+            if failure.get().is_none() {
+                failure.set(Some(reason));
+            }
+        }
+    }
+    fn failed(self) -> bool {
+        self.failure.is_some_and(|failure| failure.get().is_some())
     }
 }
 
-impl Default for ShadingRenderOptions {
+impl Default for ShadingRenderOptions<'_> {
     fn default() -> Self {
         Self {
             smoothness_tolerance: 0.0,
+            source_color_space: None,
+            color_transform: ColorTransformOptions::default(),
+            failure: None,
+            work_budget: None,
+            working_byte_limit: DEFAULT_SHADING_WORKING_BYTES,
+            function_graph_byte_limit: 64 * 1024 * 1024,
+            function_stream_byte_limit: 16 * 1024 * 1024,
+            color_cache_entries: SHADING_LUT_STEPS + 1,
+            function_cache: None,
+            memory_budget: None,
+            opacity: 1.0,
+            dither_origin: (0, 0),
+            use_background: false,
+            region: None,
+            sample_clip: None,
+            sample_clip_origin: (0, 0),
         }
     }
 }
 
 pub struct ShadingRenderer;
+
+pub(crate) fn validate_common_shading_entries(
+    dict: &PdfDictionary,
+    reader: &PdfReader,
+    options: ShadingRenderOptions<'_>,
+) -> Result<(), String> {
+    let common = CommonEntries::read(dict, reader)?;
+    if let Some(background) = common.background {
+        let name =
+            shading_color_space_name(dict).ok_or("shading background has no colour space")?;
+        let space = shading_color_space_object(dict);
+        let expected = color_space_component_count(&name, space, reader)
+            .ok_or("shading background component count is unknown")?;
+        if background.len() != expected {
+            return Err(format!(
+                "shading /Background requires {expected} components, got {}",
+                background.len()
+            ));
+        }
+        if options.use_background
+            && components_to_render_color_with_space(&background, &name, space, reader, options)
+                .is_none()
+        {
+            return Err("shading background colour conversion failed".into());
+        }
+    }
+    Ok(())
+}
 
 const BAYER_8X8: [u8; 64] = [
     0, 48, 12, 60, 3, 51, 15, 63, 32, 16, 44, 28, 35, 19, 47, 31, 8, 56, 4, 52, 11, 59, 7, 55, 40,
@@ -320,13 +620,25 @@ const BAYER_8X8: [u8; 64] = [
 
 #[derive(Debug, Clone)]
 struct ShadingColorCache {
-    entries: Vec<Option<RenderColor>>,
+    entries: Vec<Option<ShadingColorCacheEntry>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ShadingColorCacheEntry {
+    bucket: usize,
+    parameter: u64,
+    color: RenderColor,
 }
 
 impl ShadingColorCache {
+    #[cfg(test)]
     fn new() -> Self {
+        Self::new_bounded(SHADING_LUT_STEPS + 1)
+    }
+
+    fn new_bounded(entries: usize) -> Self {
         Self {
-            entries: vec![None; SHADING_LUT_STEPS + 1],
+            entries: vec![None; entries.min(SHADING_LUT_STEPS + 1)],
         }
     }
 
@@ -337,13 +649,30 @@ impl ShadingColorCache {
 
     #[inline]
     fn get(&self, s: f64) -> Option<RenderColor> {
-        self.entries.get(Self::bucket(s)).and_then(|entry| *entry)
+        if self.entries.is_empty() {
+            return None;
+        }
+        let bucket = Self::bucket(s);
+        self.entries
+            .get(bucket % self.entries.len())
+            .and_then(|entry| *entry)
+            .filter(|entry| entry.bucket == bucket && entry.parameter == s.to_bits())
+            .map(|entry| entry.color)
     }
 
     #[inline]
     fn set(&mut self, s: f64, color: RenderColor) {
-        if let Some(slot) = self.entries.get_mut(Self::bucket(s)) {
-            *slot = Some(color);
+        if self.entries.is_empty() {
+            return;
+        }
+        let bucket = Self::bucket(s);
+        let slot_index = bucket % self.entries.len();
+        if let Some(slot) = self.entries.get_mut(slot_index) {
+            *slot = Some(ShadingColorCacheEntry {
+                bucket,
+                parameter: s.to_bits(),
+                color,
+            });
         }
     }
 }
@@ -386,8 +715,8 @@ fn invert_transform_or_decline(transform: &Transform2D, label: &str) -> Option<T
         log::warn!("{label}: non-finite transform");
         return None;
     }
-    let Some(inverse) = transform.inverse() else {
-        log::warn!("{label}: singular transform");
+    let Some(inverse) = geometry::inverse(transform) else {
+        log::warn!("{label}: singular or unrepresentable inverse transform");
         return None;
     };
     if !inverse.to_array().iter().all(|value| value.is_finite()) {
@@ -443,7 +772,7 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
         mesh_data: Option<&[u8]>,
-        options: ShadingRenderOptions,
+        options: ShadingRenderOptions<'_>,
     ) {
         let work_budget = AtomicU64::new(MAX_SHADING_WORK_UNITS);
         if let Err(reason) = Self::paint_with_options_cancellable(
@@ -469,48 +798,275 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
         mesh_data: Option<&[u8]>,
-        options: ShadingRenderOptions,
+        options: ShadingRenderOptions<'_>,
         cancel: &CancelToken,
         work_budget: &AtomicU64,
     ) -> std::result::Result<(), String> {
-        if let Err(reason) = crate::render::page_renderer::validate_shading_dictionary_for_paint(
-            shading_dict,
-            "direct shading",
-            reader,
-        ) {
-            log::warn!("{reason}");
-            return Err(reason);
-        }
-        match shading_dict.get_integer("ShadingType") {
-            Some(1) => {
-                charge_shading_work(buf, work_budget)?;
-                Self::paint_function_based_cancellable(
+        let linked_cancel =
+            CancelToken::linked_pair(cancel, &crate::cancel::current_cancel_token());
+        let cancel = &linked_cancel;
+        cancel.scope(|| {
+            cancel
+                .check("shading start")
+                .map_err(|error| error.to_string())?;
+            // Resolve direct caller references once. Page rendering already supplies
+            // scope-bound graphs; never remap that graph a second time here.
+            let mut resolved_dict =
+                crate::render::parameter_dictionary::shading(shading_dict, Some(reader))?
+                    .into_owned();
+            if let Some(space) = shading_color_space_object(shading_dict) {
+                let resolved = crate::render::default_colorspace::bind_source(
+                    space,
+                    &crate::engine::PageResources::default(),
+                    reader,
+                )?;
+                resolved_dict.insert("ColorSpace", resolved);
+            }
+            let shading_dict = &resolved_dict;
+            let failure = Cell::new(None);
+            let options = ShadingRenderOptions {
+                failure: Some(&failure),
+                work_budget: Some(work_budget),
+                ..options
+            };
+            if !options.opacity.is_finite() || !(0.0..=1.0).contains(&options.opacity) {
+                return Err("shading opacity must be finite and in 0..=1".into());
+            }
+            if let Err(reason) =
+                crate::render::page_renderer::validate_shading_dictionary_for_paint_with_options(
+                    shading_dict,
+                    "direct shading",
+                    reader,
+                    options,
+                )
+            {
+                log::warn!("{reason}");
+                return Err(reason);
+            }
+            if matches!(shading_dict.get_integer("ShadingType"), Some(4..=7)) && mesh_data.is_none()
+            {
+                return Err("mesh shading requires decoded stream data".into());
+            }
+            if options.opacity == 0.0 {
+                return Ok(());
+            }
+            let target = buf;
+            let Some(target_bounds) = Self::paint_bounds(target) else {
+                return Ok(());
+            };
+            let common = CommonEntries::read(shading_dict, reader)?;
+            let region = PaintRegion::new(common.bbox, ctm, viewport, target_bounds)?;
+            let Some((x0, y0, x1, y1)) = region.bounds() else {
+                return Ok(());
+            };
+            let region = region.shifted(x0, y0);
+            let background = if options.use_background {
+                common
+                    .background
+                    .as_ref()
+                    .map(|components| {
+                        let name = shading_color_space_name(shading_dict)
+                            .ok_or("shading background has no colour space")?;
+                        components_to_render_color_with_space(
+                            components,
+                            &name,
+                            shading_color_space_object(shading_dict),
+                            reader,
+                            options,
+                        )
+                        .ok_or("shading background conversion failed")
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
+            let (width, height) = ((x1 - x0) as u32, (y1 - y0) as u32);
+            let pixels = (width as usize)
+                .checked_mul(height as usize)
+                .ok_or("shading scratch area overflow")?;
+            let scratch_bytes = pixels
+                .checked_mul(4)
+                .ok_or("shading scratch byte size overflow")?;
+            // Fixed parser/vertex scratch plus the axial/radial colour table. This
+            // bounds owned shading buffers, not all CMM/function caches or process RSS.
+            let fixed_reserve = 4096usize;
+            let fixed_base_bytes = scratch_bytes
+                .checked_add(fixed_reserve)
+                .ok_or("shading working size overflow")?;
+            let available_cache_bytes = options
+                .working_byte_limit
+                .checked_sub(fixed_base_bytes)
+                .ok_or("shading scratch exceeds working-memory budget")?;
+            let cache_entry_bytes = std::mem::size_of::<Option<ShadingColorCacheEntry>>();
+            let color_cache_entries =
+                if matches!(shading_dict.get_integer("ShadingType"), Some(2 | 3)) {
+                    (available_cache_bytes / cache_entry_bytes).min(SHADING_LUT_STEPS + 1)
+                } else {
+                    0
+                };
+            let cache_bytes = color_cache_entries
+                .checked_mul(cache_entry_bytes)
+                .ok_or("shading colour-cache size overflow")?;
+            let base_bytes = fixed_base_bytes
+                .checked_add(cache_bytes)
+                .ok_or("shading working size overflow")?;
+            let remaining_bytes = options
+                .working_byte_limit
+                .checked_sub(base_bytes)
+                .ok_or("shading scratch exceeds working-memory budget")?;
+            let _memory = options.reserve_bytes(base_bytes)?;
+            // Reserve clear/composite work before touching the destination. Clip and
+            // soft-mask coverage, blend mode and opacity are applied only once there.
+            let scratch_passes = 2 + u64::from(region.has_bbox()) + u64::from(background.is_some());
+            charge_shading_units(
+                (pixels as u64)
+                    .checked_mul(scratch_passes)
+                    .ok_or("shading scratch work overflow")?,
+                work_budget,
+            )?;
+            let mut scratch = PixelBuffer::try_new_transparent_with_mode(
+                width,
+                height,
+                target.render_mode(),
+                options.working_byte_limit,
+            )?;
+            let window = Viewport {
+                width_px: width,
+                height_px: height,
+                origin_x_px: viewport
+                    .origin_x_px
+                    .checked_add(x0 as u32)
+                    .ok_or("shading window x overflow")?,
+                origin_y_px: viewport
+                    .origin_y_px
+                    .checked_add(y0 as u32)
+                    .ok_or("shading window y overflow")?,
+                ..viewport.clone()
+            };
+            let options = ShadingRenderOptions {
+                working_byte_limit: remaining_bytes,
+                color_cache_entries,
+                dither_origin: (
+                    (window.origin_x_px % 8) as i32,
+                    (window.origin_y_px % 8) as i32,
+                ),
+                region: Some(&region),
+                sample_clip: target.clip_mask(),
+                sample_clip_origin: (x0, y0),
+                ..options
+            };
+            let viewport = &window;
+            let buf = &mut scratch;
+            if let Some(color) = background {
+                for y in 0..height as i32 {
+                    cancel
+                        .check("shading pattern background")
+                        .map_err(|error| error.to_string())?;
+                    for x in 0..width as i32 {
+                        if options.sample_visible(x, y) {
+                            buf.set_pixel(
+                                x,
+                                y,
+                                quantize_shading_color(
+                                    color,
+                                    x + options.dither_origin.0,
+                                    y + options.dither_origin.1,
+                                    buf.render_mode().is_high_quality(),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            match shading_dict.get_integer("ShadingType") {
+                Some(1) => {
+                    charge_shading_work(buf, work_budget)?;
+                    Self::paint_function_based_cancellable(
+                        shading_dict,
+                        ctm,
+                        viewport,
+                        buf,
+                        reader,
+                        cancel,
+                        options,
+                    )
+                }
+                Some(2) => {
+                    charge_shading_work(buf, work_budget)?;
+                    Self::paint_axial_cancellable(
+                        shading_dict,
+                        ctm,
+                        viewport,
+                        buf,
+                        reader,
+                        cancel,
+                        options,
+                    )
+                }
+                Some(3) => {
+                    charge_shading_work(buf, work_budget)?;
+                    Self::paint_radial_cancellable(
+                        shading_dict,
+                        ctm,
+                        viewport,
+                        buf,
+                        reader,
+                        cancel,
+                        options,
+                    )
+                }
+                Some(4 | 5) => Self::paint_gouraud_mesh(
                     shading_dict,
                     ctm,
                     viewport,
                     buf,
                     reader,
-                    cancel,
-                )
+                    mesh_data,
+                    options,
+                ),
+                Some(6 | 7) => Self::paint_patch_mesh(
+                    shading_dict,
+                    ctm,
+                    viewport,
+                    buf,
+                    reader,
+                    mesh_data,
+                    options,
+                ),
+                Some(other) => log::debug!("ShadingRenderer: ShadingType {other} not supported"),
+                None => log::debug!("ShadingRenderer: missing ShadingType"),
             }
-            Some(2) => {
-                charge_shading_work(buf, work_budget)?;
-                Self::paint_axial_cancellable(shading_dict, ctm, viewport, buf, reader, cancel)
+            cancel
+                .check("shading result")
+                .map_err(|error| error.to_string())?;
+            if let Some(reason) = failure.get() {
+                return Err(format!("shading conversion failed: {reason}"));
             }
-            Some(3) => {
-                charge_shading_work(buf, work_budget)?;
-                Self::paint_radial_cancellable(shading_dict, ctm, viewport, buf, reader, cancel)
+            // End the immutable sampling borrow of target's clip before compositing.
+            let opacity = options.opacity;
+            for y in 0..height as i32 {
+                cancel
+                    .check("shading composite")
+                    .map_err(|error| error.to_string())?;
+                for x in 0..width as i32 {
+                    let pixel = buf.get_pixel(x, y);
+                    if pixel[3] != 0 {
+                        let coverage = region.coverage(x, y)?;
+                        target.blend_pixel_with_clip_limit(
+                            x + x0,
+                            y + y0,
+                            pixel,
+                            opacity,
+                            coverage,
+                        );
+                    }
+                }
             }
-            Some(4 | 5) => {
-                Self::paint_gouraud_mesh(shading_dict, ctm, viewport, buf, reader, mesh_data)
-            }
-            Some(6 | 7) => {
-                Self::paint_patch_mesh(shading_dict, ctm, viewport, buf, reader, mesh_data, options)
-            }
-            Some(other) => log::debug!("ShadingRenderer: ShadingType {other} not supported"),
-            None => log::debug!("ShadingRenderer: missing ShadingType"),
-        }
-        Ok(())
+            cancel
+                .check("shading composite result")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
     }
 
     /// ShadingType 1 (function-based): color at each point (x, y) within /Domain
@@ -532,6 +1088,7 @@ impl ShadingRenderer {
             buf,
             reader,
             &CancelToken::none(),
+            ShadingRenderOptions::default(),
         );
     }
 
@@ -542,9 +1099,10 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
         cancel: &CancelToken,
+        options: ShadingRenderOptions<'_>,
     ) {
         let func_obj = match dict.get("Function") {
-            Some(f) => f.clone(),
+            Some(f) => f,
             None => {
                 log::warn!("function-based shading: missing /Function");
                 return;
@@ -586,11 +1144,17 @@ impl ShadingRenderer {
 
         // device pixel → user space → domain space.
         let Some(pixel_to_user) = Self::pixel_to_user(ctm, viewport) else {
+            options.fail("analytic shading has singular or unrepresentable coordinate mapping");
+            return;
+        };
+        let Some(function) = options.prepare_function(func_obj, 2, reader) else {
+            options.fail("function-based shading function preparation failed or exceeded limits");
             return;
         };
         let Some(user_to_domain) =
             invert_transform_or_decline(&shading_matrix, "function-based shading /Matrix")
         else {
+            options.fail("function shading has singular or unrepresentable domain matrix");
             return;
         };
 
@@ -598,33 +1162,43 @@ impl ShadingRenderer {
             return;
         };
         for py in y_start..y_end {
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled() || options.failed() {
                 return;
             }
             for px in x_start..x_end {
-                if !buf.clip_allows(px, py) {
+                if !buf.clip_allows(px, py) || !options.sample_visible(px, py) {
                     continue;
                 }
                 let (ux, uy) = pixel_to_user.transform_point(px as f64 + 0.5, py as f64 + 0.5);
                 let (mx, my) = user_to_domain.transform_point(ux, uy);
+                if !mx.is_finite() || !my.is_finite() {
+                    options.fail("nonfinite function-shading sample position");
+                    return;
+                }
                 if mx < dx0.min(dx1) || mx > dx0.max(dx1) || my < dy0.min(dy1) || my > dy0.max(dy1)
                 {
                     continue;
                 }
-                let comps =
-                    crate::render::function::eval_function_or_array_n(&func_obj, &[mx, my], reader);
+                let comps = options.evaluate_function(&function, &[mx, my]);
                 if comps.is_empty() {
-                    continue;
+                    options.fail("shading function produced no components");
+                    return;
                 }
                 let Some(color) = components_to_render_color_with_space(
                     &comps,
                     &color_space,
                     color_space_obj,
                     reader,
+                    options,
                 ) else {
-                    continue;
+                    return;
                 };
-                let pixel = quantize_shading_color(color, px, py, dither);
+                let pixel = quantize_shading_color(
+                    color,
+                    px + options.dither_origin.0,
+                    py + options.dither_origin.1,
+                    dither,
+                );
                 buf.blend_pixel(px, py, pixel, 1.0);
             }
         }
@@ -639,7 +1213,12 @@ impl ShadingRenderer {
         let viewport_transform = viewport.to_transform();
         let inv_vp =
             invert_transform_or_decline(&viewport_transform, "shading viewport transform")?;
-        Some(inv_vp.concat(&inv_ctm))
+        let mapping = inv_vp.concat(&inv_ctm);
+        mapping
+            .to_array()
+            .iter()
+            .all(|v| v.is_finite())
+            .then_some(mapping)
     }
 
     #[cfg(test)]
@@ -650,7 +1229,15 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
     ) {
-        Self::paint_axial_cancellable(dict, ctm, viewport, buf, reader, &CancelToken::none());
+        Self::paint_axial_cancellable(
+            dict,
+            ctm,
+            viewport,
+            buf,
+            reader,
+            &CancelToken::none(),
+            ShadingRenderOptions::default(),
+        );
     }
 
     fn paint_axial_cancellable(
@@ -660,6 +1247,7 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
         cancel: &CancelToken,
+        options: ShadingRenderOptions<'_>,
     ) {
         let coords = match get_float_array(dict, "Coords") {
             Some(c) if c.len() == 4 => c,
@@ -669,6 +1257,13 @@ impl ShadingRenderer {
             }
         };
         let (x0, y0, x1, y1) = (coords[0], coords[1], coords[2], coords[3]);
+        let geometry = match AxialGeometry::new([x0, y0, x1, y1]) {
+            Ok(geometry) => geometry,
+            Err(reason) => {
+                options.fail(reason);
+                return;
+            }
+        };
 
         let extend = if dict.contains_key("Extend") {
             match get_bool_pair(dict, "Extend") {
@@ -696,7 +1291,7 @@ impl ShadingRenderer {
         let t1 = domain[1];
 
         let func_obj = match dict.get("Function") {
-            Some(f) => f.clone(),
+            Some(f) => f,
             None => {
                 log::warn!("axial shading: missing /Function");
                 return;
@@ -708,14 +1303,12 @@ impl ShadingRenderer {
         };
         let color_space_obj = shading_color_space_object(dict);
 
-        let dx = x1 - x0;
-        let dy = y1 - y0;
-        let len_sq = dx * dx + dy * dy;
-        if len_sq < 1e-10 {
-            return;
-        }
-
         let Some(pixel_to_user) = Self::pixel_to_user(ctm, viewport) else {
+            options.fail("analytic shading has singular or unrepresentable coordinate mapping");
+            return;
+        };
+        let Some(function) = options.prepare_function(func_obj, 1, reader) else {
+            options.fail("axial shading function preparation failed or exceeded limits");
             return;
         };
         let Some((x_start, y_start, x_end, y_end)) = Self::paint_bounds(buf) else {
@@ -725,38 +1318,44 @@ impl ShadingRenderer {
         // Cache high-resolution float colours to avoid re-evaluating the
         // function per pixel without prematurely stepping the gradient at 8-bit
         // output precision.
-        let mut cache = ShadingColorCache::new();
+        let mut cache = ShadingColorCache::new_bounded(options.color_cache_entries);
         let dither = buf.render_mode().is_high_quality();
 
         for py in y_start..y_end {
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled() || options.failed() {
                 return;
             }
             for px in x_start..x_end {
-                if !buf.clip_allows(px, py) {
+                if !buf.clip_allows(px, py) || !options.sample_visible(px, py) {
                     continue;
                 }
                 let (ux, uy) = pixel_to_user.transform_point(px as f64 + 0.5, py as f64 + 0.5);
-                let s = ((ux - x0) * dx + (uy - y0) * dy) / len_sq;
-
-                let in_range =
-                    (0.0..=1.0).contains(&s) || (s < 0.0 && extend[0]) || (s > 1.0 && extend[1]);
-                if !in_range {
-                    continue;
-                }
-                let s_clamped = s.clamp(0.0, 1.0);
+                let s_clamped = match geometry.parameter((ux, uy), extend) {
+                    Ok(Some(s)) => s,
+                    Ok(None) => continue,
+                    Err(reason) => {
+                        options.fail(reason);
+                        return;
+                    }
+                };
                 let color = Self::color_for(
                     s_clamped,
                     t0,
                     t1,
-                    &func_obj,
+                    &function,
                     &color_space,
                     color_space_obj,
                     reader,
                     &mut cache,
+                    options,
                 );
                 if let Some(color) = color {
-                    let pixel = quantize_shading_color(color, px, py, dither);
+                    let pixel = quantize_shading_color(
+                        color,
+                        px + options.dither_origin.0,
+                        py + options.dither_origin.1,
+                        dither,
+                    );
                     buf.blend_pixel(px, py, pixel, 1.0);
                 }
             }
@@ -771,7 +1370,15 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
     ) {
-        Self::paint_radial_cancellable(dict, ctm, viewport, buf, reader, &CancelToken::none());
+        Self::paint_radial_cancellable(
+            dict,
+            ctm,
+            viewport,
+            buf,
+            reader,
+            &CancelToken::none(),
+            ShadingRenderOptions::default(),
+        );
     }
 
     fn paint_radial_cancellable(
@@ -781,6 +1388,7 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
         cancel: &CancelToken,
+        options: ShadingRenderOptions<'_>,
     ) {
         let coords = match get_float_array(dict, "Coords") {
             Some(c) if c.len() == 6 => c,
@@ -791,6 +1399,13 @@ impl ShadingRenderer {
         };
         let (x0, y0, r0) = (coords[0], coords[1], coords[2]);
         let (x1, y1, r1) = (coords[3], coords[4], coords[5]);
+        let geometry = match RadialGeometry::new([x0, y0, r0, x1, y1, r1]) {
+            Ok(geometry) => geometry,
+            Err(reason) => {
+                options.fail(reason);
+                return;
+            }
+        };
 
         let extend = if dict.contains_key("Extend") {
             match get_bool_pair(dict, "Extend") {
@@ -818,7 +1433,7 @@ impl ShadingRenderer {
         let t1 = domain[1];
 
         let func_obj = match dict.get("Function") {
-            Some(f) => f.clone(),
+            Some(f) => f,
             None => {
                 log::warn!("radial shading: missing /Function");
                 return;
@@ -830,98 +1445,82 @@ impl ShadingRenderer {
         };
         let color_space_obj = shading_color_space_object(dict);
 
-        let ax = x1 - x0;
-        let ay = y1 - y0;
-        let ar = r1 - r0;
-        let aa = ax * ax + ay * ay - ar * ar;
-
         let Some(pixel_to_user) = Self::pixel_to_user(ctm, viewport) else {
+            options.fail("analytic shading has singular or unrepresentable coordinate mapping");
+            return;
+        };
+        let Some(function) = options.prepare_function(func_obj, 1, reader) else {
+            options.fail("radial shading function preparation failed or exceeded limits");
             return;
         };
         let Some((x_start, y_start, x_end, y_end)) = Self::paint_bounds(buf) else {
             return;
         };
-        let mut cache = ShadingColorCache::new();
+        let mut cache = ShadingColorCache::new_bounded(options.color_cache_entries);
         let dither = buf.render_mode().is_high_quality();
 
         for py in y_start..y_end {
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled() || options.failed() {
                 return;
             }
             for px in x_start..x_end {
-                if !buf.clip_allows(px, py) {
+                if !buf.clip_allows(px, py) || !options.sample_visible(px, py) {
                     continue;
                 }
                 let (ux, uy) = pixel_to_user.transform_point(px as f64 + 0.5, py as f64 + 0.5);
-                let dx = ux - x0;
-                let dy = uy - y0;
-
-                // Solve |P - C0 - s*(C1-C0)|^2 = (r0 + s*ar)^2 for the largest
-                // s with a non-negative radius and within the (extended) range.
-                let bb = 2.0 * (dx * ax + dy * ay + r0 * ar);
-                let cc = dx * dx + dy * dy - r0 * r0;
-
-                let s = if aa.abs() < 1e-10 {
-                    if bb.abs() < 1e-10 {
-                        None
-                    } else {
-                        accept_radial_s(cc / bb, ar, r0, extend)
+                let s = match geometry.parameter((ux, uy), extend) {
+                    Ok(Some(s)) => s,
+                    Ok(None) => continue,
+                    Err(reason) => {
+                        options.fail(reason);
+                        return;
                     }
-                } else {
-                    let disc = bb * bb - 4.0 * aa * cc;
-                    if disc < 0.0 {
-                        None
-                    } else {
-                        let sq = disc.sqrt();
-                        let s_pos = (bb + sq) / (2.0 * aa);
-                        let s_neg = (bb - sq) / (2.0 * aa);
-                        accept_radial_s(s_pos, ar, r0, extend)
-                            .into_iter()
-                            .chain(accept_radial_s(s_neg, ar, r0, extend))
-                            .reduce(f64::max)
-                    }
-                };
-
-                let s = match s {
-                    Some(s) => s.clamp(0.0, 1.0),
-                    None => continue,
                 };
                 let color = Self::color_for(
                     s,
                     t0,
                     t1,
-                    &func_obj,
+                    &function,
                     &color_space,
                     color_space_obj,
                     reader,
                     &mut cache,
+                    options,
                 );
                 if let Some(color) = color {
-                    let pixel = quantize_shading_color(color, px, py, dither);
+                    let pixel = quantize_shading_color(
+                        color,
+                        px + options.dither_origin.0,
+                        py + options.dither_origin.1,
+                        dither,
+                    );
                     buf.blend_pixel(px, py, pixel, 1.0);
                 }
             }
         }
     }
 
-    /// Map parametric `s ∈ [0,1]` to a pixel colour, caching by quantised `s`.
+    /// Map parametric `s ∈ [0,1]` to a pixel colour. A bucket is only an index:
+    /// reuse requires the exact parameter, including across clipping/tile order.
     #[allow(clippy::too_many_arguments)]
     fn color_for(
         s: f64,
         t0: f64,
         t1: f64,
-        func_obj: &PdfObject,
+        function: &crate::render::function::PreparedFunction,
         color_space: &str,
         color_space_obj: Option<&PdfObject>,
         reader: &PdfReader,
         cache: &mut ShadingColorCache,
+        options: ShadingRenderOptions<'_>,
     ) -> Option<RenderColor> {
         if let Some(cached) = cache.get(s) {
             return Some(cached);
         }
-        let t = t0 + s * (t1 - t0);
-        let components = eval_function(func_obj, t, reader);
+        let t = geometry::domain_value(t0, t1, s);
+        let components = options.evaluate_function(function, &[t]);
         if components.is_empty() {
+            options.fail("shading function produced no components");
             return None;
         }
         let color = components_to_render_color_with_space(
@@ -929,6 +1528,7 @@ impl ShadingRenderer {
             color_space,
             color_space_obj,
             reader,
+            options,
         )?;
         cache.set(s, color);
         Some(color)
@@ -938,15 +1538,6 @@ impl ShadingRenderer {
 // ---------------------------------------------------------------------------
 // Mesh shadings (Types 4-7): shared vertex model + Gouraud triangle rasterizer
 // ---------------------------------------------------------------------------
-
-/// A mesh vertex in device space with an associated RGBA color.
-#[derive(Debug, Clone, Copy)]
-struct MeshVertex {
-    /// Device-space x, y (already mapped through CTM + viewport).
-    dx: f64,
-    dy: f64,
-    color: RenderColor,
-}
 
 /// Decode parameters shared by the mesh vertex stream readers.
 struct MeshDecode {
@@ -958,7 +1549,6 @@ struct MeshDecode {
     /// Number of color components per vertex when colors are given directly
     /// (no /Function); 1 when a /Function maps a single parametric value.
     n_color: usize,
-    has_function: bool,
 }
 
 impl MeshDecode {
@@ -966,6 +1556,7 @@ impl MeshDecode {
         dict: &PdfDictionary,
         color_space: &str,
         color_space_obj: Option<&PdfObject>,
+        reader: &PdfReader,
     ) -> Option<Self> {
         let shading_type = dict.get_integer("ShadingType")?;
         if !(4..=7).contains(&shading_type) {
@@ -986,9 +1577,12 @@ impl MeshDecode {
         let n_color = if has_function {
             1
         } else {
-            color_space_component_count(color_space, color_space_obj)
+            color_space_component_count(color_space, color_space_obj, reader)?
         };
-        if decode.len() != 4 + 2 * n_color {
+        if n_color == 0
+            || n_color > crate::render::colorspace::MAX_DEVICEN_COMPONENTS
+            || decode.len() != 4 + 2 * n_color
+        {
             return None;
         }
         Some(Self {
@@ -997,7 +1591,6 @@ impl MeshDecode {
             bits_per_flag,
             decode,
             n_color,
-            has_function,
         })
     }
 
@@ -1007,17 +1600,26 @@ impl MeshDecode {
         &self,
         br: &mut crate::render::function::BitReader,
         to_device: &Transform2D,
-        func_obj: Option<&PdfObject>,
-        color_space: &str,
-        color_space_obj: Option<&PdfObject>,
-        reader: &PdfReader,
+        options: ShadingRenderOptions<'_>,
     ) -> Option<MeshVertex> {
+        if options.failed()
+            || crate::cancel::check_current_cancel("mesh vertex conversion").is_err()
+        {
+            return None;
+        }
+        if !options.charge_work(1) {
+            return None;
+        }
         let xr = br.read(self.bits_per_coord)? as f64;
         let yr = br.read(self.bits_per_coord)? as f64;
         let xmax_raw = crate::render::function::max_value(self.bits_per_coord);
         let x = decode_value(xr, xmax_raw, self.decode[0], self.decode[1]);
         let y = decode_value(yr, xmax_raw, self.decode[2], self.decode[3]);
         let (dx, dy) = to_device.transform_point(x, y);
+        if !dx.is_finite() || !dy.is_finite() {
+            options.fail("nonfinite mesh vertex geometry");
+            return None;
+        }
 
         let cmax_raw = crate::render::function::max_value(self.bits_per_comp);
         let mut comps = Vec::with_capacity(self.n_color);
@@ -1027,15 +1629,11 @@ impl MeshDecode {
             let dhi = self.decode[5 + 2 * k];
             comps.push(decode_value(raw, cmax_raw, dlo, dhi));
         }
-        let color = resolve_vertex_color(
-            &comps,
-            self.has_function,
-            func_obj,
-            color_space,
-            color_space_obj,
-            reader,
-        )?;
-        Some(MeshVertex { dx, dy, color })
+        let Some(sample) = MeshSample::new(&comps) else {
+            options.fail("nonfinite mesh source components");
+            return None;
+        };
+        Some(MeshVertex { dx, dy, sample })
     }
 }
 
@@ -1070,45 +1668,22 @@ fn decode_value(raw: f64, max: f64, lo: f64, hi: f64) -> f64 {
     }
 }
 
-fn color_space_component_count(name: &str, color_space_obj: Option<&PdfObject>) -> usize {
-    if name == "DeviceN" {
-        if let Some(PdfObject::Array(items)) = color_space_obj {
-            if let Some(names) = items.get(1).and_then(PdfObject::as_array) {
-                return names
-                    .len()
-                    .clamp(1, crate::render::colorspace::MAX_DEVICEN_COMPONENTS);
-            }
-        }
-    }
-    match name {
-        "DeviceGray" | "CalGray" | "G" | "Indexed" | "Separation" => 1,
-        "DeviceCMYK" | "CMYK" => 4,
-        _ => 3,
-    }
-}
-
-/// Turn a vertex's raw color components into an RGBA color. With a /Function the
-/// single parametric value is mapped through it first.
-fn resolve_vertex_color(
-    comps: &[f64],
-    has_function: bool,
-    func_obj: Option<&PdfObject>,
-    color_space: &str,
+fn color_space_component_count(
+    name: &str,
     color_space_obj: Option<&PdfObject>,
     reader: &PdfReader,
-) -> Option<RenderColor> {
-    let resolved = if has_function {
-        match func_obj {
-            Some(f) => {
-                let t = comps.first().copied()?;
-                crate::render::function::eval_function_or_array_n(f, &[t], reader)
-            }
-            None => comps.to_vec(),
-        }
-    } else {
-        comps.to_vec()
-    };
-    components_to_render_color_with_space(&resolved, color_space, color_space_obj, reader)
+) -> Option<usize> {
+    if let Some(object) = color_space_obj {
+        return crate::render::default_colorspace::component_ranges(object, reader)
+            .ok()
+            .map(|ranges| ranges.len());
+    }
+    match name {
+        "DeviceGray" | "G" => Some(1),
+        "DeviceRGB" | "RGB" | "sRGB" => Some(3),
+        "DeviceCMYK" | "CMYK" => Some(4),
+        _ => None,
+    }
 }
 
 impl ShadingRenderer {
@@ -1120,6 +1695,7 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
         mesh_data: Option<&[u8]>,
+        options: ShadingRenderOptions<'_>,
     ) {
         let shading_type = match dict.get_integer("ShadingType") {
             Some(value @ (4 | 5)) => value,
@@ -1137,20 +1713,38 @@ impl ShadingRenderer {
             return;
         };
         let color_space_obj = shading_color_space_object(dict);
-        let Some(dec) = MeshDecode::from_dict(dict, &color_space, color_space_obj) else {
+        let Some(dec) = MeshDecode::from_dict(dict, &color_space, color_space_obj, reader) else {
+            options.fail("invalid Gouraud mesh decode metadata");
             log::warn!("mesh shading: missing BitsPerCoordinate/BitsPerComponent/Decode");
             return;
         };
         let data = match mesh_data {
-            Some(d) => d.to_vec(),
+            Some(d) => d,
             None => {
                 log::warn!("mesh shading: vertex stream not available");
                 return;
             }
         };
-        let func_obj = dict.get("Function").cloned();
+        let function = match dict.get("Function") {
+            None | Some(PdfObject::Null) => None,
+            Some(object) => match options.prepare_function(object, 1, reader) {
+                Some(function) => Some(function),
+                None => {
+                    options.fail("mesh function preparation failed or exceeded limits");
+                    return;
+                }
+            },
+        };
+        let paint = MeshPaint {
+            function: function.as_deref(),
+            color_space: &color_space,
+            color_space_obj,
+            reader,
+            options,
+            patch_corners: None,
+        };
         let to_device = ctm.concat(&viewport.to_transform());
-        let mut br = crate::render::function::BitReader::new(&data);
+        let mut br = crate::render::function::BitReader::new(data);
 
         if shading_type == 5 {
             // Lattice-form: a grid of /VerticesPerRow columns; each 2x2 cell of
@@ -1159,34 +1753,72 @@ impl ShadingRenderer {
                 Some(value) if value >= 2 => match usize::try_from(value) {
                     Ok(value) => value,
                     Err(_) => {
+                        options.fail("lattice VerticesPerRow overflows platform size");
                         log::warn!("lattice mesh: VerticesPerRow overflows usize");
                         return;
                     }
                 },
                 Some(_) => {
+                    options.fail("lattice VerticesPerRow must be at least two");
                     log::warn!("lattice mesh: VerticesPerRow < 2");
                     return;
                 }
                 None => {
+                    options.fail("lattice VerticesPerRow is missing");
                     log::warn!("lattice mesh: missing VerticesPerRow");
+                    return;
+                }
+            };
+            let vertex_bits = 2 * dec.bits_per_coord + dec.n_color * dec.bits_per_comp;
+            let vertex_bytes = vertex_bits.div_ceil(8);
+            let Some(row_bytes) = vertex_bytes.checked_mul(per_row) else {
+                options.fail("lattice row size overflow");
+                return;
+            };
+            if row_bytes == 0 || data.len() % row_bytes != 0 {
+                options.fail("lattice stream does not contain complete rows");
+                return;
+            }
+            let Some(row_vertices) = per_row.checked_mul(2) else {
+                options.fail("lattice storage overflow");
+                return;
+            };
+            let _row_memory = match options.reserve_mesh_storage(row_vertices) {
+                Ok(memory) => memory,
+                Err(_) => {
+                    options.fail("lattice working-memory budget exceeded");
                     return;
                 }
             };
             let mut prev_row: Vec<MeshVertex> = Vec::new();
             loop {
+                if br.bits_remaining() == 0 {
+                    break;
+                }
+                if options.failed()
+                    || crate::cancel::check_current_cancel("lattice row conversion").is_err()
+                {
+                    return;
+                }
+                // The decoded stream must contain this row before reserving it;
+                // an untrusted VerticesPerRow must not determine allocation alone.
+                if br.bits_remaining() / 8 < row_bytes {
+                    options.fail("incomplete lattice row");
+                    return;
+                }
                 // Read one row.
-                let mut row = Vec::with_capacity(per_row);
+                let mut row = Vec::new();
+                if row.try_reserve_exact(per_row).is_err() {
+                    options.fail("lattice row allocation failed");
+                    return;
+                }
                 let mut complete = true;
                 for _ in 0..per_row {
-                    match dec.read_vertex(
-                        &mut br,
-                        &to_device,
-                        func_obj.as_ref(),
-                        &color_space,
-                        color_space_obj,
-                        reader,
-                    ) {
-                        Some(v) => row.push(v),
+                    match dec.read_vertex(&mut br, &to_device, options) {
+                        Some(v) => {
+                            row.push(v);
+                            br.align_to_byte();
+                        }
                         None => {
                             complete = false;
                             break;
@@ -1194,13 +1826,17 @@ impl ShadingRenderer {
                     }
                 }
                 if !complete || row.len() < per_row {
-                    break;
+                    options.fail("incomplete or invalid lattice vertex row");
+                    return;
                 }
                 if !prev_row.is_empty() {
                     for c in 0..per_row - 1 {
                         // Two triangles per cell.
-                        fill_gouraud_triangle(buf, prev_row[c], prev_row[c + 1], row[c]);
-                        fill_gouraud_triangle(buf, prev_row[c + 1], row[c + 1], row[c]);
+                        if options.failed() {
+                            return;
+                        }
+                        mesh::fill_triangle(buf, prev_row[c], prev_row[c + 1], row[c], &paint);
+                        mesh::fill_triangle(buf, prev_row[c + 1], row[c + 1], row[c], &paint);
                     }
                 }
                 prev_row = row;
@@ -1208,69 +1844,59 @@ impl ShadingRenderer {
             return;
         }
 
-        // Free-form (Type 4): each vertex prefixed by a flag byte.
-        // flag 0 starts a new triangle (needs 3 consecutive flag-0 vertices);
-        // flag 1 reuses (vb, vc) -> (vc, new); flag 2 reuses (va, vc) -> (vc,new).
-        let mut va: Option<MeshVertex> = None;
-        let mut vb: Option<MeshVertex> = None;
-        let mut vc: Option<MeshVertex> = None;
-        while br.bits_remaining() >= dec.bits_per_flag + 2 * dec.bits_per_coord {
-            let flag = match br.read(dec.bits_per_flag) {
-                Some(f) => f,
-                None => break,
-            };
-            let v = match dec.read_vertex(
-                &mut br,
-                &to_device,
-                func_obj.as_ref(),
-                &color_space,
-                color_space_obj,
-                reader,
-            ) {
-                Some(v) => v,
-                None => break,
-            };
+        // A flag-0 record starts an independent triangle; the following
+        // two vertex flags are consumed but ignored (ISO 32000-1 8.7.4.5.5).
+        let mut previous: Option<[MeshVertex; 3]> = None;
+        let read = |br: &mut crate::render::function::BitReader<'_>| -> Option<(u32, MeshVertex)> {
+            let flag = br.read(dec.bits_per_flag)?;
+            let vertex = dec.read_vertex(br, &to_device, options)?;
             br.align_to_byte();
-            match flag {
-                0 => {
-                    // Shift in as the next of a fresh triangle.
-                    if va.is_none() {
-                        va = Some(v);
-                    } else if vb.is_none() {
-                        vb = Some(v);
-                    } else {
-                        vc = Some(v);
-                        if let (Some(a), Some(b), Some(c)) = (va, vb, vc) {
-                            fill_gouraud_triangle(buf, a, b, c);
-                        }
-                    }
-                }
-                1 => {
-                    // (vb, vc, v): reuse the last edge (b, c).
-                    if let (Some(b), Some(c)) = (vb, vc) {
-                        va = Some(b);
-                        vb = Some(c);
-                        vc = Some(v);
-                        fill_gouraud_triangle(buf, b, c, v);
-                    }
-                }
-                2 => {
-                    // (va, vc, v): reuse edge (a, c).
-                    if let (Some(a), Some(c)) = (va, vc) {
-                        vb = Some(c);
-                        vc = Some(v);
-                        fill_gouraud_triangle(buf, a, c, v);
-                    }
-                }
-                _ => break,
+            Some((flag, vertex))
+        };
+        while br.bits_remaining() > 0 {
+            if options.failed()
+                || crate::cancel::check_current_cancel("free-form mesh conversion").is_err()
+            {
+                return;
             }
+            let Some((flag, vertex)) = read(&mut br) else {
+                options.fail("truncated free-form mesh vertex");
+                return;
+            };
+            let triangle = match flag {
+                0 => {
+                    let (Some((_, second)), Some((_, third))) = (read(&mut br), read(&mut br))
+                    else {
+                        options.fail("incomplete independent mesh triangle");
+                        return;
+                    };
+                    [vertex, second, third]
+                }
+                1 | 2 => {
+                    let Some(prior) = previous else {
+                        options.fail("mesh edge reuse has no preceding triangle");
+                        return;
+                    };
+                    if flag == 1 {
+                        [prior[1], prior[2], vertex]
+                    } else {
+                        [prior[0], prior[2], vertex]
+                    }
+                }
+                _ => {
+                    options.fail("invalid free-form mesh edge flag");
+                    return;
+                }
+            };
+            mesh::fill_triangle(buf, triangle[0], triangle[1], triangle[2], &paint);
+            previous = Some(triangle);
         }
     }
 
     /// ShadingType 6 (Coons) and 7 (tensor-product) patch meshes. Each patch is
-    /// subdivided into a bounded Gouraud grid using bilinear corner-color
-    /// interpolation and bicubic surface positions. Type 7 retains the tensor
-    /// interior controls instead of degrading to a boundary-only Coons surface.
+    /// planned into device-adaptive, shared-edge-compatible grids. Source corner
+    /// samples are evaluated bilinearly before nonlinear functions/conversion.
+    /// Both patch kinds retain their bicubic geometry and source stream order.
     fn paint_patch_mesh(
         dict: &PdfDictionary,
         ctm: &Transform2D,
@@ -1278,7 +1904,7 @@ impl ShadingRenderer {
         buf: &mut PixelBuffer,
         reader: &PdfReader,
         mesh_data: Option<&[u8]>,
-        options: ShadingRenderOptions,
+        options: ShadingRenderOptions<'_>,
     ) {
         let shading_type = match dict.get_integer("ShadingType") {
             Some(value @ (6 | 7)) => value,
@@ -1297,17 +1923,35 @@ impl ShadingRenderer {
             return;
         };
         let color_space_obj = shading_color_space_object(dict);
-        let Some(dec) = MeshDecode::from_dict(dict, &color_space, color_space_obj) else {
+        let Some(dec) = MeshDecode::from_dict(dict, &color_space, color_space_obj, reader) else {
+            options.fail("invalid patch mesh decode metadata");
             log::warn!("patch mesh: missing BitsPerCoordinate/BitsPerComponent/Decode");
             return;
         };
         let data = match mesh_data {
-            Some(d) => d.to_vec(),
+            Some(d) => d,
             None => return,
         };
-        let func_obj = dict.get("Function").cloned();
+        let function = match dict.get("Function") {
+            None | Some(PdfObject::Null) => None,
+            Some(object) => match options.prepare_function(object, 1, reader) {
+                Some(function) => Some(function),
+                None => {
+                    options.fail("patch function preparation failed or exceeded limits");
+                    return;
+                }
+            },
+        };
+        let paint = MeshPaint {
+            function: function.as_deref(),
+            color_space: &color_space,
+            color_space_obj,
+            reader,
+            options,
+            patch_corners: None,
+        };
         let to_device = ctm.concat(&viewport.to_transform());
-        let mut br = crate::render::function::BitReader::new(&data);
+        let mut br = crate::render::function::BitReader::new(data);
 
         let coord_max = crate::render::function::max_value(dec.bits_per_coord);
         let comp_max = crate::render::function::max_value(dec.bits_per_comp);
@@ -1315,11 +1959,22 @@ impl ShadingRenderer {
         // Previous patch's control points (in patch/user space, pre-device) and
         // corner colors, for edge sharing (flags 1/2/3).
         let mut prev_pts: Vec<(f64, f64)> = Vec::new();
-        let mut prev_cols: Vec<RenderColor> = Vec::new();
+        let mut prev_cols: Vec<MeshSample> = Vec::new();
         let mut patch_count = 0usize;
+        let mut patches =
+            mesh::PatchBatch::new(options).with_device_bounds(Self::paint_bounds(buf));
 
         loop {
+            if options.failed()
+                || crate::cancel::check_current_cancel("patch shading conversion").is_err()
+            {
+                return;
+            }
+            if br.bits_remaining() == 0 {
+                break;
+            }
             if patch_count >= MAX_PATCH_MESH_PATCHES {
+                options.fail("patch mesh exceeds patch-count budget");
                 log::warn!(
                     "patch mesh: patch count exceeded cap {}",
                     MAX_PATCH_MESH_PATCHES
@@ -1327,6 +1982,7 @@ impl ShadingRenderer {
                 break;
             }
             if br.bits_remaining() < dec.bits_per_flag {
+                options.fail("truncated patch mesh flag");
                 break;
             }
             let flag = match br.read(dec.bits_per_flag) {
@@ -1339,6 +1995,9 @@ impl ShadingRenderer {
                 n_points_new - 4
             };
             let new_cols_count = if flag == 0 { 4 } else { 2 };
+            if !options.charge_work((new_pts_count + new_cols_count) as u64) {
+                return;
+            }
 
             // Read new control points (user space).
             let mut new_pts = Vec::with_capacity(new_pts_count);
@@ -1355,6 +2014,7 @@ impl ShadingRenderer {
                 new_pts.push((x, y));
             }
             if !ok {
+                options.fail("truncated patch mesh control points");
                 break;
             }
             // Read new corner colors.
@@ -1373,20 +2033,14 @@ impl ShadingRenderer {
                 if !ok {
                     break;
                 }
-                let Some(color) = resolve_vertex_color(
-                    &comps,
-                    dec.has_function,
-                    func_obj.as_ref(),
-                    &color_space,
-                    color_space_obj,
-                    reader,
-                ) else {
+                let Some(sample) = MeshSample::new(&comps) else {
                     ok = false;
                     break;
                 };
-                new_cols.push(color);
+                new_cols.push(sample);
             }
             if !ok {
+                options.fail("invalid or truncated patch mesh colours");
                 break;
             }
             br.align_to_byte();
@@ -1402,30 +2056,25 @@ impl ShadingRenderer {
                 shading_type,
             ) {
                 Some(v) => v,
-                None => break,
+                None => {
+                    options.fail("invalid patch mesh edge reuse");
+                    break;
+                }
             };
 
-            if shading_type == 7 {
-                render_tensor_patch(
-                    buf,
-                    &patch_pts,
-                    &cols4,
-                    &to_device,
-                    options.smoothness_tolerance,
-                );
-            } else {
-                render_coons_patch(
-                    buf,
-                    &patch_pts,
-                    &cols4,
-                    &to_device,
-                    options.smoothness_tolerance,
-                );
+            if let Err(reason) = patches.push(&patch_pts, &cols4, shading_type, &to_device) {
+                options.fail(reason);
+                return;
             }
 
             prev_pts = patch_pts;
             prev_cols = cols4;
             patch_count += 1;
+        }
+        if !options.failed() {
+            if let Err(reason) = patches.paint(buf, &paint) {
+                options.fail(reason);
+            }
         }
     }
 }
@@ -1433,7 +2082,7 @@ impl ShadingRenderer {
 /// A point in patch/user space (pre-device).
 type PatchPoint = (f64, f64);
 /// A patch's resolved control points and 4 corner colors.
-type PatchData = (Vec<PatchPoint>, Vec<RenderColor>);
+type PatchData<T> = (Vec<PatchPoint>, Vec<T>);
 
 /// Assemble a patch's full control points and 4 corner colors, honoring
 /// edge-sharing flags 1/2/3 (the new patch shares one edge with the previous
@@ -1460,15 +2109,26 @@ type PatchData = (Vec<PatchPoint>, Vec<RenderColor>);
 /// | 1    | p4 p5 p6 p7   = [3,4,5,6]   | c2 c3 = [1,2] |
 /// | 2    | p7 p8 p9 p10  = [6,7,8,9]   | c3 c4 = [2,3] |
 /// | 3    | p10 p11 p12 p1 = [9,10,11,0] | c4 c1 = [3,0] |
-fn assemble_patch(
+fn assemble_patch<T: Copy>(
     flag: u32,
     new_pts: &[(f64, f64)],
-    new_cols: &[RenderColor],
+    new_cols: &[T],
     prev_pts: &[(f64, f64)],
-    prev_cols: &[RenderColor],
+    prev_cols: &[T],
     shading_type: i64,
-) -> Option<PatchData> {
+) -> Option<PatchData<T>> {
+    if flag > 3 || !matches!(shading_type, 6 | 7) {
+        return None;
+    }
     let required_points = if shading_type == 7 { 16 } else { 12 };
+    let expected_points = if flag == 0 {
+        required_points
+    } else {
+        required_points - 4
+    };
+    if new_pts.len() != expected_points || new_cols.len() != if flag == 0 { 4 } else { 2 } {
+        return None;
+    }
 
     if flag == 0 {
         let pts: Vec<_> = new_pts.iter().take(required_points).copied().collect();
@@ -1532,50 +2192,11 @@ fn shared_color_indices(flag: u32) -> [usize; 2] {
     }
 }
 
-/// Render a Coons patch by subdividing its boundary into an N×N grid of quads,
-/// each split into two Gouraud triangles. Positions come from the bicubic Coons
-/// surface; colors come from bilinear interpolation of the 4 corner colors.
-fn render_coons_patch(
-    buf: &mut PixelBuffer,
-    pts12: &[(f64, f64)],
-    cols4: &[RenderColor],
-    to_device: &Transform2D,
-    smoothness_tolerance: f64,
-) {
-    if pts12.len() < 12 || cols4.len() < 4 {
-        return;
-    }
-    let n = coons_subdivision_count(smoothness_tolerance);
-    // Build the grid of device-space vertices + colors.
-    let mut grid: Vec<Vec<MeshVertex>> = Vec::with_capacity(n + 1);
-    for iu in 0..=n {
-        let u = iu as f64 / n as f64;
-        let mut row = Vec::with_capacity(n + 1);
-        for iv in 0..=n {
-            let v = iv as f64 / n as f64;
-            let (ux, uy) = coons_point(pts12, u, v);
-            let (dx, dy) = to_device.transform_point(ux, uy);
-            let color = bilerp_color(cols4, u, v);
-            row.push(MeshVertex { dx, dy, color });
-        }
-        grid.push(row);
-    }
-    for iu in 0..n {
-        for iv in 0..n {
-            let a = grid[iu][iv];
-            let b = grid[iu + 1][iv];
-            let c = grid[iu][iv + 1];
-            let d = grid[iu + 1][iv + 1];
-            fill_gouraud_triangle(buf, a, b, c);
-            fill_gouraud_triangle(buf, b, d, c);
-        }
-    }
-}
-
 /// Evaluate the Coons surface position at (u, v) from the 12 boundary control
 /// points. Point order follows the PDF spec boundary: p1..p12 trace the four
 /// cubic Bezier edges; corners are p1 (u0,v0), p4 (u0,v1), p7 (u1,v1),
 /// p10 (u1,v0).
+#[cfg(test)]
 fn coons_point(p: &[(f64, f64)], u: f64, v: f64) -> (f64, f64) {
     // Boundary curves (each a cubic Bezier):
     //   C1 (v at u=0): p1 p2  p3  p4
@@ -1607,81 +2228,6 @@ fn coons_point(p: &[(f64, f64)], u: f64, v: f64) -> (f64, f64) {
     (sx, sy)
 }
 
-/// Render a Type 7 tensor-product patch. The first 12 points trace the same
-/// boundary order as a Coons patch; points 13..16 are the tensor interior
-/// controls. The 4x4 grid below follows the PDFBox/ISO boundary convention.
-fn render_tensor_patch(
-    buf: &mut PixelBuffer,
-    pts16: &[(f64, f64)],
-    cols4: &[RenderColor],
-    to_device: &Transform2D,
-    smoothness_tolerance: f64,
-) {
-    if pts16.len() < 16 || cols4.len() < 4 {
-        return;
-    }
-    let n = tensor_subdivision_count(pts16, smoothness_tolerance);
-    let mut grid: Vec<Vec<MeshVertex>> = Vec::with_capacity(n + 1);
-    for iu in 0..=n {
-        let u = iu as f64 / n as f64;
-        let mut row = Vec::with_capacity(n + 1);
-        for iv in 0..=n {
-            let v = iv as f64 / n as f64;
-            let (ux, uy) = tensor_point(pts16, u, v);
-            let (dx, dy) = to_device.transform_point(ux, uy);
-            let color = bilerp_color(cols4, u, v);
-            row.push(MeshVertex { dx, dy, color });
-        }
-        grid.push(row);
-    }
-    for iu in 0..n {
-        for iv in 0..n {
-            let a = grid[iu][iv];
-            let b = grid[iu + 1][iv];
-            let c = grid[iu][iv + 1];
-            let d = grid[iu + 1][iv + 1];
-            fill_gouraud_triangle(buf, a, b, c);
-            fill_gouraud_triangle(buf, b, d, c);
-        }
-    }
-}
-
-fn tensor_subdivision_count(p: &[(f64, f64)], smoothness_tolerance: f64) -> usize {
-    let min_x = p.iter().map(|pt| pt.0).fold(f64::INFINITY, f64::min);
-    let max_x = p.iter().map(|pt| pt.0).fold(f64::NEG_INFINITY, f64::max);
-    let min_y = p.iter().map(|pt| pt.1).fold(f64::INFINITY, f64::min);
-    let max_y = p.iter().map(|pt| pt.1).fold(f64::NEG_INFINITY, f64::max);
-    let span = (max_x - min_x).abs().hypot((max_y - min_y).abs()).max(1.0);
-    let corners = [p[0], p[3], p[6], p[9]];
-    let probes = [
-        (12, 1.0 / 3.0, 1.0 / 3.0),
-        (13, 1.0 / 3.0, 2.0 / 3.0),
-        (15, 2.0 / 3.0, 1.0 / 3.0),
-        (14, 2.0 / 3.0, 2.0 / 3.0),
-    ];
-    let mut max_deviation = 0.0_f64;
-    for &(idx, u, v) in &probes {
-        max_deviation = max_deviation.max(distance_point(p[idx], bilerp_point(corners, u, v)));
-    }
-    let curvature = (max_deviation / span).clamp(0.0, 1.0);
-    let default_count = (DEFAULT_PATCH_SUBDIVISIONS as f64 + curvature * 18.0).ceil() as usize;
-    subdivision_count_for_smoothness(default_count, smoothness_tolerance)
-}
-
-fn coons_subdivision_count(smoothness_tolerance: f64) -> usize {
-    subdivision_count_for_smoothness(DEFAULT_PATCH_SUBDIVISIONS, smoothness_tolerance)
-}
-
-fn subdivision_count_for_smoothness(default_count: usize, smoothness_tolerance: f64) -> usize {
-    let default_count = default_count.max(MIN_PATCH_SUBDIVISIONS);
-    let smoothness = normalize_smoothness_tolerance(smoothness_tolerance);
-    if smoothness <= 0.0 {
-        return default_count;
-    }
-    let factor = (1.0 - smoothness * 0.75).clamp(0.25, 1.0);
-    ((default_count as f64 * factor).ceil() as usize).clamp(MIN_PATCH_SUBDIVISIONS, default_count)
-}
-
 fn normalize_smoothness_tolerance(smoothness_tolerance: f64) -> f64 {
     if !smoothness_tolerance.is_finite() || smoothness_tolerance < 0.0 {
         return 0.0;
@@ -1689,6 +2235,7 @@ fn normalize_smoothness_tolerance(smoothness_tolerance: f64) -> f64 {
     smoothness_tolerance.clamp(0.0, 1.0)
 }
 
+#[cfg(test)]
 fn tensor_point(p: &[(f64, f64)], u: f64, v: f64) -> (f64, f64) {
     let grid = [
         [p[0], p[1], p[2], p[3]],
@@ -1710,33 +2257,14 @@ fn tensor_point(p: &[(f64, f64)], u: f64, v: f64) -> (f64, f64) {
     (x, y)
 }
 
+#[cfg(test)]
 fn cubic_bernstein(t: f64) -> [f64; 4] {
     let mt = 1.0 - t;
     [mt * mt * mt, 3.0 * mt * mt * t, 3.0 * mt * t * t, t * t * t]
 }
 
-fn bilerp_point(corners: [(f64, f64); 4], u: f64, v: f64) -> (f64, f64) {
-    let p00 = corners[0];
-    let p01 = corners[1];
-    let p11 = corners[2];
-    let p10 = corners[3];
-    (
-        (1.0 - u) * (1.0 - v) * p00.0
-            + (1.0 - u) * v * p01.0
-            + u * v * p11.0
-            + u * (1.0 - v) * p10.0,
-        (1.0 - u) * (1.0 - v) * p00.1
-            + (1.0 - u) * v * p01.1
-            + u * v * p11.1
-            + u * (1.0 - v) * p10.1,
-    )
-}
-
-fn distance_point(a: (f64, f64), b: (f64, f64)) -> f64 {
-    (a.0 - b.0).hypot(a.1 - b.1)
-}
-
 /// Cubic Bezier interpolation of four control points at parameter t.
+#[cfg(test)]
 fn bezier(p0: (f64, f64), p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), t: f64) -> (f64, f64) {
     let mt = 1.0 - t;
     let a = mt * mt * mt;
@@ -1749,85 +2277,9 @@ fn bezier(p0: (f64, f64), p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), t: f64
     )
 }
 
-/// Bilinearly interpolate the 4 patch corner colors. Corner order: c0 at
-/// (u0,v0), c1 at (u0,v1), c2 at (u1,v1), c3 at (u1,v0).
-fn bilerp_color(c: &[RenderColor], u: f64, v: f64) -> RenderColor {
-    let channel = |select: fn(RenderColor) -> f32| -> f32 {
-        let top = (1.0 - v) * select(c[0]) as f64 + v * select(c[1]) as f64;
-        let bot = (1.0 - v) * select(c[3]) as f64 + v * select(c[2]) as f64;
-        ((1.0 - u) * top + u * bot) as f32
-    };
-    RenderColor::new(
-        channel(|color| color.r),
-        channel(|color| color.g),
-        channel(|color| color.b),
-        channel(|color| color.a),
-    )
-}
-
-/// Rasterize a Gouraud-shaded triangle into `buf` with barycentric color
-/// interpolation. Honors the buffer's clip and blends with full coverage.
-fn fill_gouraud_triangle(buf: &mut PixelBuffer, v0: MeshVertex, v1: MeshVertex, v2: MeshVertex) {
-    let min_x = v0.dx.min(v1.dx).min(v2.dx).floor().max(0.0) as i32;
-    let max_x = (v0.dx.max(v1.dx).max(v2.dx).ceil() as i32).min(buf.width as i32 - 1);
-    let min_y = v0.dy.min(v1.dy).min(v2.dy).floor().max(0.0) as i32;
-    let max_y = (v0.dy.max(v1.dy).max(v2.dy).ceil() as i32).min(buf.height as i32 - 1);
-    if max_x < min_x || max_y < min_y {
-        return;
-    }
-
-    let area = edge(v0.dx, v0.dy, v1.dx, v1.dy, v2.dx, v2.dy);
-    if area.abs() < 1e-9 {
-        return; // degenerate
-    }
-    let dither = buf.render_mode().is_high_quality();
-
-    for py in min_y..=max_y {
-        for px in min_x..=max_x {
-            if !buf.clip_allows(px, py) {
-                continue;
-            }
-            let fx = px as f64 + 0.5;
-            let fy = py as f64 + 0.5;
-            let w0 = edge(v1.dx, v1.dy, v2.dx, v2.dy, fx, fy) / area;
-            let w1 = edge(v2.dx, v2.dy, v0.dx, v0.dy, fx, fy) / area;
-            let w2 = edge(v0.dx, v0.dy, v1.dx, v1.dy, fx, fy) / area;
-            // Inside test with a small epsilon to avoid seams between triangles.
-            if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 {
-                continue;
-            }
-            let r = w0 * v0.color.r as f64 + w1 * v1.color.r as f64 + w2 * v2.color.r as f64;
-            let g = w0 * v0.color.g as f64 + w1 * v1.color.g as f64 + w2 * v2.color.g as f64;
-            let b = w0 * v0.color.b as f64 + w1 * v1.color.b as f64 + w2 * v2.color.b as f64;
-            let a = w0 * v0.color.a as f64 + w1 * v1.color.a as f64 + w2 * v2.color.a as f64;
-            let color = quantize_shading_color(
-                RenderColor::new(r as f32, g as f32, b as f32, a as f32),
-                px,
-                py,
-                dither,
-            );
-            buf.blend_pixel(px, py, color, 1.0);
-        }
-    }
-}
-
 /// Signed area of the triangle (a, b, c) doubled (the edge function).
 fn edge(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> f64 {
     (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
-}
-
-/// Accept a candidate radial `s` if its circle radius is non-negative and it is
-/// within the (possibly extended) parametric range.
-fn accept_radial_s(s: f64, ar: f64, r0: f64, extend: [bool; 2]) -> Option<f64> {
-    if r0 + s * ar < 0.0 {
-        return None;
-    }
-    let in_range = (0.0..=1.0).contains(&s) || (s < 0.0 && extend[0]) || (s > 1.0 && extend[1]);
-    if in_range {
-        Some(s)
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -1958,10 +2410,22 @@ mod tests {
             PdfObject::Real(0.0),
             PdfObject::Real(1.0),
         ]));
-        assert!(MeshDecode::from_dict(&non_numeric, "DeviceRGB", None).is_none());
+        assert!(MeshDecode::from_dict(
+            &non_numeric,
+            "DeviceRGB",
+            None,
+            &PdfReader::from_bytes(tests_minimal_pdf()).unwrap()
+        )
+        .is_none());
 
         let short = mesh_base_dict(mesh_decode_array(&[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]));
-        assert!(MeshDecode::from_dict(&short, "DeviceRGB", None).is_none());
+        assert!(MeshDecode::from_dict(
+            &short,
+            "DeviceRGB",
+            None,
+            &PdfReader::from_bytes(tests_minimal_pdf()).unwrap()
+        )
+        .is_none());
     }
 
     #[test]
@@ -1970,13 +2434,25 @@ mod tests {
             0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
         ]));
         invalid_coord.insert("BitsPerCoordinate", PdfObject::Integer(-1));
-        assert!(MeshDecode::from_dict(&invalid_coord, "DeviceRGB", None).is_none());
+        assert!(MeshDecode::from_dict(
+            &invalid_coord,
+            "DeviceRGB",
+            None,
+            &PdfReader::from_bytes(tests_minimal_pdf()).unwrap()
+        )
+        .is_none());
 
         let mut missing_flag = mesh_base_dict(mesh_decode_array(&[
             0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
         ]));
         missing_flag.remove("BitsPerFlag");
-        assert!(MeshDecode::from_dict(&missing_flag, "DeviceRGB", None).is_none());
+        assert!(MeshDecode::from_dict(
+            &missing_flag,
+            "DeviceRGB",
+            None,
+            &PdfReader::from_bytes(tests_minimal_pdf()).unwrap()
+        )
+        .is_none());
     }
 
     #[test]
@@ -1985,13 +2461,25 @@ mod tests {
             0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
         ]));
         missing_type.remove("ShadingType");
-        assert!(MeshDecode::from_dict(&missing_type, "DeviceRGB", None).is_none());
+        assert!(MeshDecode::from_dict(
+            &missing_type,
+            "DeviceRGB",
+            None,
+            &PdfReader::from_bytes(tests_minimal_pdf()).unwrap()
+        )
+        .is_none());
 
         let mut non_mesh = mesh_base_dict(mesh_decode_array(&[
             0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
         ]));
         non_mesh.insert("ShadingType", PdfObject::Integer(3));
-        assert!(MeshDecode::from_dict(&non_mesh, "DeviceRGB", None).is_none());
+        assert!(MeshDecode::from_dict(
+            &non_mesh,
+            "DeviceRGB",
+            None,
+            &PdfReader::from_bytes(tests_minimal_pdf()).unwrap()
+        )
+        .is_none());
     }
 
     #[test]
@@ -2002,14 +2490,24 @@ mod tests {
         lattice.insert("ShadingType", PdfObject::Integer(5));
         lattice.remove("BitsPerFlag");
         lattice.insert("VerticesPerRow", PdfObject::Integer(2));
-        assert!(MeshDecode::from_dict(&lattice, "DeviceRGB", None).is_some());
+        assert!(MeshDecode::from_dict(
+            &lattice,
+            "DeviceRGB",
+            None,
+            &PdfReader::from_bytes(tests_minimal_pdf()).unwrap()
+        )
+        .is_some());
     }
 
     #[test]
-    fn type2_output_clamped_to_unit_range() {
+    fn type2_input_is_clipped_to_its_declared_domain() {
         let d = make_type2_dict(&[0.9], &[0.1], 1.0);
         let r = eval_type2(&d, 2.0);
-        assert!((0.0..=1.0).contains(&r[0]), "out of range: {}", r[0]);
+        assert!(
+            (r[0] - 0.1).abs() < 1e-12,
+            "input must clamp to 1, got {}",
+            r[0]
+        );
     }
 
     #[test]
@@ -2466,6 +2964,7 @@ mod tests {
     fn shading_color_cache_keeps_sub_byte_gradient_steps() {
         let func = PdfObject::Dictionary(make_type2_dict(&[0.0], &[1.0], 1.0));
         let reader = crate::reader::PdfReader::from_bytes(super::tests_minimal_pdf()).unwrap();
+        let func = crate::render::function::PreparedFunction::prepare(&func, 1, &reader).unwrap();
         let mut cache = ShadingColorCache::new();
 
         let c0 = ShadingRenderer::color_for(
@@ -2477,6 +2976,7 @@ mod tests {
             None,
             &reader,
             &mut cache,
+            ShadingRenderOptions::default(),
         )
         .expect("color at first sample");
         let c1 = ShadingRenderer::color_for(
@@ -2488,6 +2988,7 @@ mod tests {
             None,
             &reader,
             &mut cache,
+            ShadingRenderOptions::default(),
         )
         .expect("color at nearby sample");
 
@@ -2706,46 +3207,5 @@ mod tests {
             (lifted.1 - lowered.1).abs() > 0.15,
             "tensor interior controls should move the surface: lifted={lifted:?} lowered={lowered:?}"
         );
-    }
-
-    #[test]
-    fn smoothness_tolerance_controls_patch_subdivision_counts() {
-        assert_eq!(coons_subdivision_count(0.0), DEFAULT_PATCH_SUBDIVISIONS);
-        assert_eq!(
-            coons_subdivision_count(f64::NAN),
-            DEFAULT_PATCH_SUBDIVISIONS
-        );
-
-        let loose_coons = coons_subdivision_count(1.0);
-        assert!(
-            (MIN_PATCH_SUBDIVISIONS..DEFAULT_PATCH_SUBDIVISIONS).contains(&loose_coons),
-            "loose smoothness should reduce Coons subdivision within bounds, got {loose_coons}"
-        );
-
-        let pts = vec![
-            (0.0, 0.0),
-            (0.0, 0.3),
-            (0.0, 0.7),
-            (0.0, 1.0),
-            (0.3, 1.0),
-            (0.7, 1.0),
-            (1.0, 1.0),
-            (1.0, 0.7),
-            (1.0, 0.3),
-            (1.0, 0.0),
-            (0.7, 0.0),
-            (0.3, 0.0),
-            (0.25, 0.95),
-            (0.25, 0.98),
-            (0.75, 0.98),
-            (0.75, 0.95),
-        ];
-        let default_tensor = tensor_subdivision_count(&pts, 0.0);
-        let loose_tensor = tensor_subdivision_count(&pts, 1.0);
-        assert!(
-            loose_tensor < default_tensor,
-            "loose smoothness should reduce tensor subdivision: default={default_tensor}, loose={loose_tensor}"
-        );
-        assert!(loose_tensor >= MIN_PATCH_SUBDIVISIONS);
     }
 }

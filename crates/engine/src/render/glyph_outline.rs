@@ -103,7 +103,9 @@ pub fn extract_glyph_path_for_simple_var(
 
     // Apply the variable-font instance (no-op for static fonts / empty request);
     // the crate then interpolates the outline (gvar/CFF2) and the advance (HVAR).
-    variations::apply_request(&mut face, request);
+    if variations::apply_request_checked(&mut face, request).is_err() {
+        return (None, 500.0);
+    }
 
     let upem = f64::from(face.units_per_em());
     let glyph_id = glyph_index_for_simple(&face, code, ch, glyph_name)
@@ -114,7 +116,11 @@ pub fn extract_glyph_path_for_simple_var(
         .unwrap_or(500.0);
 
     let mut builder = GlyphToPath::new();
-    if face.outline_glyph(glyph_id, &mut builder).is_none() {
+    if crate::fonts::sfnt_outline::outline(&face, glyph_id, &mut builder)
+        .ok()
+        .flatten()
+        .is_none()
+    {
         return (None, advance);
     }
     (Some(builder.into_path()), advance)
@@ -175,7 +181,7 @@ pub(crate) fn extract_glyph_path_for_simple_required_advance_var(
         }
     };
 
-    variations::apply_request(&mut face, request);
+    variations::apply_request_checked(&mut face, request).ok()?;
 
     let upem = f64::from(face.units_per_em());
     if upem <= 0.0 || !upem.is_finite() {
@@ -188,8 +194,8 @@ pub(crate) fn extract_glyph_path_for_simple_required_advance_var(
         .filter(|advance| advance.is_finite())?;
 
     let mut builder = GlyphToPath::new();
-    let outline = face
-        .outline_glyph(glyph_id, &mut builder)
+    let outline = crate::fonts::sfnt_outline::outline(&face, glyph_id, &mut builder)
+        .ok()?
         .map(|_| builder.into_path());
     Some((outline, advance))
 }
@@ -249,12 +255,13 @@ pub(crate) fn extract_glyph_path_for_simple_mapped_outline_var(
         }
     };
 
-    variations::apply_request(&mut face, request);
+    variations::apply_request_checked(&mut face, request).ok()?;
 
     let glyph_id = glyph_index_for_simple(&face, code, ch, glyph_name)?;
     let mut builder = GlyphToPath::new();
     Some(
-        face.outline_glyph(glyph_id, &mut builder)
+        crate::fonts::sfnt_outline::outline(&face, glyph_id, &mut builder)
+            .ok()?
             .map(|_| builder.into_path()),
     )
 }
@@ -286,7 +293,9 @@ pub fn extract_glyph_path_by_gid_var(
         }
     };
 
-    variations::apply_request(&mut face, request);
+    if variations::apply_request_checked(&mut face, request).is_err() {
+        return (None, 500.0);
+    }
 
     let upem = f64::from(face.units_per_em());
     if upem <= 0.0 {
@@ -299,7 +308,11 @@ pub fn extract_glyph_path_by_gid_var(
         .unwrap_or(1000.0);
 
     let mut builder = GlyphToPath::new();
-    if face.outline_glyph(glyph_id, &mut builder).is_none() {
+    if crate::fonts::sfnt_outline::outline(&face, glyph_id, &mut builder)
+        .ok()
+        .flatten()
+        .is_none()
+    {
         return (None, advance);
     }
     (Some(builder.into_path()), advance)
@@ -332,7 +345,7 @@ pub(crate) fn extract_glyph_path_by_gid_required_advance_var(
         }
     };
 
-    variations::apply_request(&mut face, request);
+    variations::apply_request_checked(&mut face, request).ok()?;
 
     let upem = f64::from(face.units_per_em());
     if upem <= 0.0 || !upem.is_finite() {
@@ -345,8 +358,8 @@ pub(crate) fn extract_glyph_path_by_gid_required_advance_var(
         .filter(|advance| advance.is_finite())?;
 
     let mut builder = GlyphToPath::new();
-    let outline = face
-        .outline_glyph(glyph_id, &mut builder)
+    let outline = crate::fonts::sfnt_outline::outline(&face, glyph_id, &mut builder)
+        .ok()?
         .map(|_| builder.into_path());
     Some((outline, advance))
 }
@@ -374,7 +387,7 @@ pub(crate) fn extract_glyph_path_by_gid_mapped_outline_var(
         }
     };
 
-    variations::apply_request(&mut face, request);
+    variations::apply_request_checked(&mut face, request).ok()?;
 
     if gid >= face.number_of_glyphs() {
         return None;
@@ -382,7 +395,8 @@ pub(crate) fn extract_glyph_path_by_gid_mapped_outline_var(
     let glyph_id = ttf_parser::GlyphId(gid);
     let mut builder = GlyphToPath::new();
     Some(
-        face.outline_glyph(glyph_id, &mut builder)
+        crate::fonts::sfnt_outline::outline(&face, glyph_id, &mut builder)
+            .ok()?
             .map(|_| builder.into_path()),
     )
 }
@@ -454,6 +468,46 @@ pub(crate) fn resolve_glyph_id_for_simple(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn form_160f_embedded_arial_resolves_accented_winansi_outlines() {
+        let reader = crate::reader::PdfReader::from_bytes(
+            include_bytes!("../../tests/fixtures/form_160f.pdf").to_vec(),
+        )
+        .expect("fixture parses");
+
+        for object_number in [403, 482, 484] {
+            let font = match reader
+                .resolve(crate::object::PdfObject::Reference {
+                    number: object_number,
+                    generation: 0,
+                })
+                .expect("font reference resolves")
+            {
+                crate::object::PdfObject::Dictionary(font) => font,
+                other => panic!("object {object_number} is not a font dictionary: {other:?}"),
+            };
+            let font_bytes =
+                crate::render::font_rasterizer::FontRasterizer::extract_font_bytes(&font, &reader)
+                    .expect("fixture font is embedded");
+            let resolver = crate::fonts::resolver::FontResolver::new(&font, &reader);
+
+            for (code, expected) in [(0xE9, '\u{00E9}'), (0xF4, '\u{00F4}')]
+                .into_iter()
+                .filter(|(code, _)| resolver.glyph_width(*code) > 0.0)
+            {
+                let text = resolver.decode_char(code);
+                assert_eq!(text.chars().next(), Some(expected));
+                let glyph_name = resolver.glyph_name(code);
+                let (outline, _) =
+                    extract_glyph_path_for_simple(&font_bytes, code, expected, glyph_name);
+                assert!(
+                    outline.is_some(),
+                    "font object {object_number} did not resolve WinAnsi code {code:#04X} ({glyph_name:?})"
+                );
+            }
+        }
+    }
     use crate::engine::ContentEngine;
     use crate::fonts::resolver::FontResolver;
     use crate::render::font_rasterizer::FontRasterizer;

@@ -117,18 +117,41 @@ impl RawImageComponentSelection {
     }
 }
 
+/// Per-call colour policy, including render-owned function retention and live
+/// memory accounting. Standalone callers convert their existing CMM options.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ImageColorOptions<'a> {
+    pub options: ColorTransformOptions,
+    pub functions: crate::render::function::FunctionResources<'a>,
+}
+
+impl From<ColorTransformOptions> for ImageColorOptions<'_> {
+    fn from(options: ColorTransformOptions) -> Self {
+        Self {
+            options,
+            functions: Default::default(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct ImageColorContext<'a> {
     reader: Option<&'a PdfReader>,
-    options: ColorTransformOptions,
+    options: ImageColorOptions<'a>,
+    source_space: Option<&'a PdfObject>,
 }
 
 impl<'a> ImageColorContext<'a> {
-    fn with_reader(reader: &'a PdfReader, options: ColorTransformOptions) -> Self {
+    fn with_reader(reader: &'a PdfReader, options: ImageColorOptions<'a>) -> Self {
         Self {
             reader: Some(reader),
             options,
+            source_space: None,
         }
+    }
+    fn with_source(mut self, source: Option<&'a PdfObject>) -> Self {
+        self.source_space = source;
+        self
     }
 }
 
@@ -151,12 +174,13 @@ impl ImageDecoder {
         )
     }
 
-    pub(crate) fn decode_with_limits_and_color_transform_options(
+    pub(crate) fn decode_with_limits_and_color_transform_options<'a>(
         image: &ImageReference,
         reader: &PdfReader,
         limits: &DecodeLimits,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         Self::decode_with_limits_and_color_space_override(
             image,
             reader,
@@ -164,18 +188,21 @@ impl ImageDecoder {
             None,
             None,
             color_options,
+            None,
         )
     }
 
-    pub(crate) fn decode_jpeg_scaled_with_limits_and_color_transform_options(
+    pub(crate) fn decode_jpeg_scaled_with_limits_and_color_transform_options<'a>(
         image: &ImageReference,
         reader: &PdfReader,
         color_space_override: Option<&(String, PdfObject)>,
         requested_width: u32,
         requested_height: u32,
         limits: &DecodeLimits,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         if image.object_number == 0 {
             return Err(WellfriendError::UnsupportedFeature(
                 "inline JPEG scaled decode via image reference is not supported".to_string(),
@@ -227,7 +254,9 @@ impl ImageDecoder {
                     jpeg.channels,
                     &effective_image.color_space,
                     &effective_dict,
-                    ImageColorContext::with_reader(reader, color_options),
+                    ImageColorContext::with_reader(reader, color_options).with_source(
+                        source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
+                    ),
                 )
             }
             StreamDecodeStatus::StoppedAtImageFilter(filter) => {
@@ -312,14 +341,16 @@ impl ImageDecoder {
     /// image stream while allowing render-time resource inheritance to supply
     /// CalRGB/Lab/ICCBased/Indexed/Separation/DeviceN details that are not
     /// present in the image dictionary itself.
-    pub(crate) fn decode_with_resolved_color_space_and_limits_and_color_transform_options(
+    pub(crate) fn decode_with_resolved_color_space_and_limits_and_color_transform_options<'a>(
         image: &ImageReference,
         reader: &PdfReader,
         color_space_name: &str,
         color_space_obj: &PdfObject,
         limits: &DecodeLimits,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         Self::decode_with_limits_and_color_space_override(
             image,
             reader,
@@ -327,6 +358,7 @@ impl ImageDecoder {
             Some(color_space_name),
             Some(color_space_obj),
             color_options,
+            source_space,
         )
     }
 
@@ -382,14 +414,17 @@ impl ImageDecoder {
         }
     }
 
-    pub(crate) fn decode_raw_window_with_limits_and_color_transform_options(
+    #[cfg(test)]
+    pub(crate) fn decode_raw_window_with_limits_and_color_transform_options<'a>(
         image: &ImageReference,
         reader: &PdfReader,
         color_space_override: Option<&(String, PdfObject)>,
         window: RawImageDecodeWindow,
         limits: &DecodeLimits,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         Self::decode_raw_window_components_with_limits_and_color_transform_options(
             image,
             reader,
@@ -398,19 +433,22 @@ impl ImageDecoder {
             RawImageComponentSelection::All,
             limits,
             color_options,
+            source_space,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_raw_window_components_with_limits_and_color_transform_options(
+    pub(crate) fn decode_raw_window_components_with_limits_and_color_transform_options<'a>(
         image: &ImageReference,
         reader: &PdfReader,
         color_space_override: Option<&(String, PdfObject)>,
         window: RawImageDecodeWindow,
         component_selection: RawImageComponentSelection,
         limits: &DecodeLimits,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         if image.object_number == 0 {
             return Err(WellfriendError::UnsupportedFeature(
                 "inline raw window decoding via image reference is not supported".to_string(),
@@ -474,18 +512,22 @@ impl ImageDecoder {
             effective_image.bits_per_component,
             &effective_image.color_space,
             &effective_dict,
-            ImageColorContext::with_reader(reader, color_options),
+            ImageColorContext::with_reader(reader, color_options).with_source(
+                source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
+            ),
         )
     }
 
-    fn decode_with_limits_and_color_space_override(
+    fn decode_with_limits_and_color_space_override<'a>(
         image: &ImageReference,
         reader: &PdfReader,
         limits: &DecodeLimits,
         color_space_name: Option<&str>,
         color_space_obj: Option<&PdfObject>,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         if image.object_number == 0 {
             return Err(WellfriendError::UnsupportedFeature(
                 "inline image decoding via decode() is not supported; use decode_inline() with the raw pixel bytes"
@@ -526,7 +568,9 @@ impl ImageDecoder {
                 effective_image.bits_per_component,
                 &effective_image.color_space,
                 &effective_dict,
-                ImageColorContext::with_reader(reader, color_options),
+                ImageColorContext::with_reader(reader, color_options).with_source(
+                    source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
+                ),
             ),
             StreamDecodeStatus::StoppedAtImageFilter(filter) => {
                 Self::decode_remaining_image_filter(
@@ -537,6 +581,7 @@ impl ImageDecoder {
                     &effective_dict,
                     limits,
                     color_options,
+                    source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
                 )
             }
         }
@@ -677,7 +722,7 @@ impl ImageDecoder {
     /// Indexed, ICCBased, and tint-space conversion helpers as image XObjects
     /// without requiring inline payloads to be promoted to synthetic streams.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_inline_with_resolved_color_space_and_param_array(
+    pub(crate) fn decode_inline_with_resolved_color_space_and_param_array<'a>(
         pixel_data: &[u8],
         width: u32,
         height: u32,
@@ -688,8 +733,13 @@ impl ImageDecoder {
         decode_params: &[Option<PdfDictionary>],
         limits: &DecodeLimits,
         reader: Option<&PdfReader>,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
+        let mut source_dictionary = PdfDictionary::empty();
+        if let Some(space) = color_space_obj {
+            source_dictionary.insert("ColorSpace", space.clone());
+        }
         Self::decode_inline_with_resolved_image_dictionary_and_param_array(
             pixel_data,
             width,
@@ -699,7 +749,7 @@ impl ImageDecoder {
             color_space_obj,
             filters,
             decode_params,
-            &PdfDictionary::empty(),
+            &source_dictionary,
             limits,
             reader,
             color_options,
@@ -711,7 +761,7 @@ impl ImageDecoder {
     /// sample semantics must reach the same raw-image pipeline as XObjects;
     /// retaining only the family name would silently change pixels.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_inline_with_resolved_image_dictionary_and_param_array(
+    pub(crate) fn decode_inline_with_resolved_image_dictionary_and_param_array<'a>(
         pixel_data: &[u8],
         width: u32,
         height: u32,
@@ -723,8 +773,9 @@ impl ImageDecoder {
         image_dictionary: &PdfDictionary,
         limits: &DecodeLimits,
         reader: Option<&PdfReader>,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         if decode_params.len() != filters.len() {
             return Err(WellfriendError::MalformedPdf(format!(
                 "inline DecodeParms count {} does not match filter count {}",
@@ -736,9 +787,31 @@ impl ImageDecoder {
         if let Some(space_obj) = color_space_obj {
             effective_dict.insert("ColorSpace", space_obj.clone());
         }
+        let declared_source_space = image_dictionary
+            .get("ColorSpace")
+            .or_else(|| image_dictionary.get("CS"));
+        // A non-device name in an inline-image dictionary is a resource alias,
+        // not a colour-space family.  Once the caller has bound that alias in
+        // the owning resource scope, sample decoding must see the bound object
+        // (Indexed table, ICC profile, calibrated parameters, ...).  Keep an
+        // explicitly declared device family as the source identity so Default*
+        // substitutions remain distinguishable from the PDF's source samples.
+        let source_space = match declared_source_space {
+            Some(PdfObject::Name(name))
+                if !matches!(
+                    name.as_str(),
+                    "DeviceGray" | "G" | "DeviceRGB" | "RGB" | "DeviceCMYK" | "CMYK"
+                ) =>
+            {
+                color_space_obj.or(declared_source_space)
+            }
+            Some(_) => declared_source_space,
+            None => color_space_obj,
+        };
         let color_context = ImageColorContext {
             reader,
             options: color_options,
+            source_space,
         };
         let mut data = pixel_data.to_vec();
         for (index, &filter) in filters.iter().enumerate() {
@@ -820,7 +893,7 @@ impl ImageDecoder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_inline_raw_window_with_resolved_color_space_and_param_array(
+    pub(crate) fn decode_inline_raw_window_with_resolved_color_space_and_param_array<'a>(
         pixel_data: &[u8],
         width: u32,
         height: u32,
@@ -832,8 +905,10 @@ impl ImageDecoder {
         window: RawImageDecodeWindow,
         limits: &DecodeLimits,
         reader: Option<&PdfReader>,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         Self::decode_inline_raw_window_components_with_resolved_color_space_and_param_array(
             pixel_data,
             width,
@@ -848,11 +923,14 @@ impl ImageDecoder {
             limits,
             reader,
             color_options,
+            source_space,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_inline_raw_window_components_with_resolved_color_space_and_param_array(
+    pub(crate) fn decode_inline_raw_window_components_with_resolved_color_space_and_param_array<
+        'a,
+    >(
         pixel_data: &[u8],
         width: u32,
         height: u32,
@@ -865,8 +943,10 @@ impl ImageDecoder {
         component_selection: RawImageComponentSelection,
         limits: &DecodeLimits,
         reader: Option<&PdfReader>,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         if decode_params.len() != filters.len() {
             return Err(WellfriendError::MalformedPdf(format!(
                 "inline DecodeParms count {} does not match filter count {}",
@@ -917,12 +997,13 @@ impl ImageDecoder {
             ImageColorContext {
                 reader,
                 options: color_options,
+                source_space,
             },
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_inline_scaled_dct_with_resolved_color_space_and_param_array(
+    pub(crate) fn decode_inline_scaled_dct_with_resolved_color_space_and_param_array<'a>(
         pixel_data: &[u8],
         width: u32,
         height: u32,
@@ -934,8 +1015,10 @@ impl ImageDecoder {
         requested_height: u32,
         limits: &DecodeLimits,
         reader: Option<&PdfReader>,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         if decode_params.len() != filters.len() {
             return Err(WellfriendError::MalformedPdf(format!(
                 "inline DecodeParms count {} does not match filter count {}",
@@ -950,6 +1033,7 @@ impl ImageDecoder {
         let color_context = ImageColorContext {
             reader,
             options: color_options,
+            source_space,
         };
         let mut data = pixel_data.to_vec();
         for (index, &filter) in filters.iter().enumerate() {
@@ -1159,7 +1243,8 @@ impl ImageDecoder {
             channels,
             &image.color_space,
             &dict,
-            ImageColorContext::with_reader(reader, ColorTransformOptions::default()),
+            ImageColorContext::with_reader(reader, ColorTransformOptions::default().into())
+                .with_source(dict.get("ColorSpace").or_else(|| dict.get("CS"))),
         )
     }
 
@@ -1358,15 +1443,17 @@ impl ImageDecoder {
         })
     }
 
-    fn decode_remaining_image_filter(
+    fn decode_remaining_image_filter<'a>(
         data: &[u8],
         filter: &str,
         image: &ImageReference,
         reader: &PdfReader,
         dict: &PdfDictionary,
         limits: &DecodeLimits,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         match filter {
             "DCTDecode" | "DCT" => {
                 let (pixels, width, height, channels) = Self::decode_jpeg_with_info(data)?;
@@ -1384,7 +1471,7 @@ impl ImageDecoder {
                     channels,
                     &image.color_space,
                     dict,
-                    ImageColorContext::with_reader(reader, color_options),
+                    ImageColorContext::with_reader(reader, color_options).with_source(source_space),
                 )
             }
             "JPXDecode" | "JPX" => Self::finish_jpx_decoded_image(
@@ -1406,7 +1493,7 @@ impl ImageDecoder {
                     &format!("image {}", image.xobject_name),
                     &image.color_space,
                     dict,
-                    ImageColorContext::with_reader(reader, color_options),
+                    ImageColorContext::with_reader(reader, color_options).with_source(source_space),
                 )
             }
             "JBIG2Decode" => {
@@ -1420,7 +1507,7 @@ impl ImageDecoder {
                     &format!("image {}", image.xobject_name),
                     &image.color_space,
                     dict,
-                    ImageColorContext::with_reader(reader, color_options),
+                    ImageColorContext::with_reader(reader, color_options).with_source(source_space),
                 )
             }
             other => {
@@ -1512,6 +1599,21 @@ impl ImageDecoder {
             )));
         }
 
+        if !is_mask && matches!(color_space, "ICCBased" | "Lab" | "Indexed") {
+            return super::sample_decode::convert_component_image(
+                &decompressed,
+                width,
+                height,
+                raw_channels as usize,
+                bpc,
+                color_space,
+                dict,
+                reader,
+                color_context.options,
+                color_context.source_space,
+            );
+        }
+
         let mut normalised =
             Self::normalise_bit_depth(decompressed, width, height, raw_channels, bpc)?;
         let expected_raw_size = expected_len(width, height, raw_channels);
@@ -1551,28 +1653,6 @@ impl ImageDecoder {
                 (cmm::cal_rgb_bytes_to_rgb(&normalised, params), 3u8)
             }
             "DeviceCMYK" | "CMYK" => (ColorSpaceConverter::cmyk_to_rgb(&normalised), 3u8),
-            "Lab" => {
-                let params = cmm::try_lab_params_from_image_dict(dict, reader)
-                    .map_err(WellfriendError::MalformedPdf)?;
-                (cmm::lab_bytes_to_rgb(&normalised, params), 3u8)
-            }
-            "Indexed" => {
-                if let Some(reader) = reader {
-                    ColorSpaceConverter::decode_indexed(
-                        &normalised,
-                        bpc,
-                        dict,
-                        reader,
-                        width,
-                        height,
-                    )?
-                } else {
-                    return Err(WellfriendError::UnsupportedFeature(
-                        "Indexed image ColorSpace requires reader-backed palette resolution"
-                            .to_string(),
-                    ));
-                }
-            }
             "Separation" | "DeviceN" => {
                 if let Some(reader) = reader {
                     ColorSpaceConverter::tint_space_to_rgba(
@@ -1586,41 +1666,6 @@ impl ImageDecoder {
                     return Err(WellfriendError::UnsupportedFeature(format!(
                         "{color_space} image ColorSpace requires reader-backed tint transform"
                     )));
-                }
-            }
-            "ICCBased" => {
-                if let Some(reader) = reader {
-                    if let Some(converted) = cmm::icc_bytes_to_rgb_with_options(
-                        &normalised,
-                        dict,
-                        reader,
-                        color_context.options,
-                    ) {
-                        converted
-                    } else {
-                        let n = ColorSpaceConverter::icc_channel_count(dict, reader).ok_or_else(
-                            || {
-                                WellfriendError::UnsupportedFeature(
-                                    "ICCBased image ColorSpace is missing supported channel metadata"
-                                        .to_string(),
-                                )
-                            },
-                        )?;
-                        match n {
-                            1 => (normalised, 1u8),
-                            3 => (normalised, 3u8),
-                            4 => (ColorSpaceConverter::cmyk_to_rgb(&normalised), 3u8),
-                            _ => {
-                                return Err(WellfriendError::UnsupportedFeature(format!(
-                                    "ICCBased with {n} components not supported"
-                                )))
-                            }
-                        }
-                    }
-                } else {
-                    return Err(WellfriendError::UnsupportedFeature(
-                        "ICCBased image ColorSpace requires reader-backed ICC profile".to_string(),
-                    ));
                 }
             }
             other => {
@@ -1900,15 +1945,16 @@ impl ColorSpaceConverter {
         )
     }
 
-    pub(crate) fn convert_with_options(
+    pub(crate) fn convert_with_options<'a>(
         pixels: Vec<u8>,
         width: u32,
         height: u32,
         source_cs: &str,
         dict: &PdfDictionary,
         reader: &PdfReader,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
     ) -> Result<(Vec<u8>, u8)> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         match source_cs {
             "DeviceGray" | "G" => Ok((pixels, 1)),
             "CalGray" => {
@@ -1927,36 +1973,29 @@ impl ColorSpaceConverter {
                 Ok((Self::cmyk_to_rgb(&pixels), 3))
             }
             "ICCBased" => {
-                if let Some(converted) =
-                    cmm::icc_bytes_to_rgb_with_options(&pixels, dict, reader, color_options)
-                {
-                    Ok(converted)
-                } else {
-                    let n = Self::icc_channel_count(dict, reader).ok_or_else(|| {
-                        WellfriendError::UnsupportedFeature(
-                            "ICCBased image ColorSpace is missing supported channel metadata"
-                                .to_string(),
-                        )
+                let channels = Self::icc_channel_count(dict, reader).ok_or_else(|| {
+                    WellfriendError::MalformedPdf(
+                        "ICCBased image is missing valid channel metadata".into(),
+                    )
+                })?;
+                let expected = (width as usize)
+                    .checked_mul(height as usize)
+                    .and_then(|size| size.checked_mul(channels as usize))
+                    .ok_or_else(|| {
+                        WellfriendError::MalformedPdf("ICC image dimensions overflow".into())
                     })?;
-                    match n {
-                        1 => Ok((pixels, 1)),
-                        3 => Ok((pixels, 3)),
-                        4 => {
-                            ensure_cmyk_input_len(
-                                "ICCBased CMYK image ColorSpace",
-                                width,
-                                height,
-                                &pixels,
-                            )?;
-                            Ok((Self::cmyk_to_rgb(&pixels), 3))
-                        }
-                        _ => Err(WellfriendError::UnsupportedFeature(format!(
-                            "ICCBased with {n} components not supported"
-                        ))),
-                    }
-                }
+                ensure_decoded_len(pixels.len(), width, height, channels, expected)?;
+                crate::render::icc_conversion::convert_image(&pixels, dict, reader, color_options)
             }
-            "Indexed" => Self::decode_indexed(&pixels, 8, dict, reader, width, height),
+            "Indexed" => Self::decode_indexed_with_options(
+                &pixels,
+                8,
+                dict,
+                reader,
+                width,
+                height,
+                color_options,
+            ),
             "Separation" | "DeviceN" => Self::tint_space_to_rgba(
                 &pixels,
                 dict,
@@ -1975,13 +2014,14 @@ impl ColorSpaceConverter {
         }
     }
 
-    fn tint_space_to_rgba(
+    fn tint_space_to_rgba<'a>(
         pixels: &[u8],
         dict: &PdfDictionary,
         reader: &PdfReader,
         channels: u8,
-        color_options: ColorTransformOptions,
+        color_options: impl Into<ImageColorOptions<'a>>,
     ) -> Result<(Vec<u8>, u8)> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
         let Some(space_obj) = dict.get("ColorSpace").or_else(|| dict.get("CS")) else {
             return Err(WellfriendError::UnsupportedFeature(
                 "image tint ColorSpace requires a resolved ColorSpace array".to_string(),
@@ -1997,17 +2037,22 @@ impl ColorSpaceConverter {
         let family =
             Self::tint_space_family_name(space_obj).unwrap_or_else(|| "tint-space".to_string());
         let mut output = Vec::with_capacity((pixels.len() / channels).saturating_mul(4));
-        for chunk in pixels.chunks_exact(channels) {
+        for (index, chunk) in pixels.chunks_exact(channels).enumerate() {
+            if index % 4096 == 0 {
+                crate::cancel::check_current_cancel("image tint conversion")?;
+            }
             let mut components = Vec::with_capacity(channels);
             for sample in chunk.iter().take(channels) {
                 components.push(f64::from(*sample) / 255.0);
             }
-            match crate::render::colorspace::resolve_named_color_with_options(
+            match crate::render::colorspace::resolve_named_color_with_resources(
                 space_obj,
+                None,
                 &components,
                 1.0,
                 reader,
-                color_options,
+                color_options.options,
+                color_options.functions,
             ) {
                 crate::render::colorspace::NamedColor::Color(color) => {
                     output.extend_from_slice(&color.to_pixel_color());
@@ -2127,141 +2172,49 @@ impl ColorSpaceConverter {
         cmm::device_cmyk_bytes_to_rgb(pixels)
     }
 
+    #[cfg(test)]
     fn decode_indexed(
         pixels: &[u8],
         bits_per_component: u8,
         dict: &PdfDictionary,
         reader: &PdfReader,
-        _width: u32,
-        _height: u32,
+        width: u32,
+        height: u32,
     ) -> Result<(Vec<u8>, u8)> {
-        let cs_array = dict
-            .get("ColorSpace")
-            .and_then(PdfObject::as_array)
-            .ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "Indexed image ColorSpace is not an array".to_string(),
-                )
-            })?;
-
-        if cs_array.len() != 4 {
-            return Err(WellfriendError::MalformedPdf(format!(
-                "Indexed image ColorSpace has {} entries, expected 4",
-                cs_array.len()
-            )));
-        }
-
-        let base_space = cs_array[1].clone();
-        let base_cs = Self::color_space_family_name(&base_space, reader)?;
-        let hival = cs_array[2].as_integer().ok_or_else(|| {
-            WellfriendError::MalformedPdf(
-                "Indexed image ColorSpace hival is not an integer".to_string(),
-            )
-        })?;
-        if hival < 0 {
-            return Err(WellfriendError::MalformedPdf(
-                "Indexed image ColorSpace hival is negative".to_string(),
-            ));
-        }
-        let hival = hival as usize;
-
-        let lookup = match cs_array.get(3) {
-            Some(PdfObject::String(bytes)) => bytes.clone(),
-            Some(PdfObject::Reference { number, generation }) => {
-                match reader.get_object(*number, *generation) {
-                    Ok(PdfObject::String(bytes)) => bytes,
-                    Ok(PdfObject::Stream { raw, .. }) => raw,
-                    Ok(other) => {
-                        return Err(WellfriendError::MalformedPdf(format!(
-                            "Indexed image ColorSpace lookup resolved to {}, expected String or Stream",
-                            other.variant_name()
-                        )));
-                    }
-                    Err(err) => {
-                        return Err(WellfriendError::MalformedPdf(format!(
-                            "Indexed image ColorSpace lookup reference failed: {err}"
-                        )));
-                    }
-                }
-            }
-            Some(other) => {
-                return Err(WellfriendError::MalformedPdf(format!(
-                    "Indexed image ColorSpace lookup is {}, expected String, Stream, or Reference",
-                    other.variant_name()
-                )));
-            }
-            None => {
-                return Err(WellfriendError::MalformedPdf(
-                    "Indexed image ColorSpace is missing lookup data".to_string(),
-                ));
-            }
-        };
-
-        let base_channels = Self::indexed_base_channel_count(&base_cs, &base_space, reader)?;
-        let expected_lookup_len = (hival + 1) * base_channels;
-        if lookup.len() != expected_lookup_len {
-            return Err(WellfriendError::MalformedPdf(format!(
-                "Indexed image ColorSpace lookup table has {} bytes, expected {}",
-                lookup.len(),
-                expected_lookup_len
-            )));
-        }
-
-        let raw_palette = lookup[..expected_lookup_len].to_vec();
-
-        let mut base_dict = PdfDictionary::empty();
-        base_dict.insert("ColorSpace", base_space);
-        let (palette, palette_channels) = match base_cs.as_str() {
-            "Indexed" => (raw_palette, base_channels as u8),
-            _ => Self::convert(
-                raw_palette,
-                (hival + 1).min(u32::MAX as usize) as u32,
-                1,
-                &base_cs,
-                &base_dict,
-                reader,
-            )?,
-        };
-        let palette_channels = palette_channels.max(1) as usize;
-        ensure_indexed_palette_len(palette.len(), hival + 1, palette_channels)?;
-        let mut output = Vec::with_capacity(pixels.len() * palette_channels);
-        for &sample in pixels {
-            let idx = indexed_palette_index(sample, bits_per_component, hival);
-            let start = idx * palette_channels;
-            let end = start + palette_channels;
-            output.extend_from_slice(&palette[start..end]);
-        }
-        Ok((output, palette_channels as u8))
+        Self::decode_indexed_with_options(
+            pixels,
+            bits_per_component,
+            dict,
+            reader,
+            width,
+            height,
+            ColorTransformOptions::default(),
+        )
     }
 
-    fn color_space_family_name(space: &PdfObject, reader: &PdfReader) -> Result<String> {
-        let resolved = match space {
-            PdfObject::Reference { .. } => reader.resolve(space.clone()).map_err(|err| {
-                WellfriendError::MalformedPdf(format!(
-                    "Indexed image base ColorSpace reference failed: {err}"
-                ))
-            })?,
-            other => other.clone(),
-        };
-        match resolved {
-            PdfObject::Name(name) => Ok(name),
-            PdfObject::Array(items) => items
-                .first()
-                .and_then(PdfObject::as_name)
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    WellfriendError::MalformedPdf(
-                        "Indexed image base ColorSpace array has no family name".to_string(),
-                    )
-                }),
-            other => Err(WellfriendError::MalformedPdf(format!(
-                "Indexed image base ColorSpace resolved to {}, expected Name or Array",
-                other.variant_name()
-            ))),
-        }
+    #[allow(clippy::too_many_arguments)]
+    fn decode_indexed_with_options<'a>(
+        pixels: &[u8],
+        bits_per_component: u8,
+        dict: &PdfDictionary,
+        reader: &PdfReader,
+        width: u32,
+        height: u32,
+        color_options: impl Into<ImageColorOptions<'a>>,
+    ) -> Result<(Vec<u8>, u8)> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
+        super::indexed_samples::convert_normalized(
+            pixels,
+            bits_per_component,
+            dict,
+            reader,
+            width,
+            height,
+            color_options,
+        )
     }
 
-    fn indexed_base_channel_count(
+    pub(super) fn indexed_base_channel_count(
         base_cs: &str,
         base_space: &PdfObject,
         reader: &PdfReader,
@@ -2307,18 +2260,7 @@ impl ColorSpaceConverter {
     }
 }
 
-fn indexed_palette_index(sample: u8, bits_per_component: u8, hival: usize) -> usize {
-    if bits_per_component < 8 {
-        let max_sample = ((1usize << bits_per_component.min(7)) - 1).max(1);
-        ((usize::from(sample) * max_sample + 127) / 255)
-            .min(max_sample)
-            .min(hival)
-    } else {
-        usize::from(sample).min(hival)
-    }
-}
-
-fn ensure_indexed_palette_len(
+pub(super) fn ensure_indexed_palette_len(
     actual_len: usize,
     entries: usize,
     palette_channels: usize,
@@ -3410,6 +3352,10 @@ fn bool_param(params: Option<&PdfDictionary>, key: &str, default: bool) -> Resul
 }
 
 #[cfg(test)]
+#[path = "image_function_resources_tests.rs"]
+mod function_resource_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::images::encoder::ImageEncoder;
@@ -3600,12 +3546,33 @@ mod tests {
     }
 
     #[test]
-    fn indexed_palette_index_maps_normalised_low_bit_samples() {
-        assert_eq!(indexed_palette_index(0, 1, 1), 0);
-        assert_eq!(indexed_palette_index(255, 1, 1), 1);
-        assert_eq!(indexed_palette_index(85, 2, 3), 1);
-        assert_eq!(indexed_palette_index(170, 2, 3), 2);
-        assert_eq!(indexed_palette_index(255, 2, 3), 3);
+    fn indexed_decoder_maps_normalised_low_bit_samples() {
+        let reader = PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf()).unwrap();
+        for (bits, palette, samples) in [
+            (1, vec![0, 255], vec![0, 255]),
+            (2, vec![0, 85, 170, 255], vec![0, 85, 170, 255]),
+        ] {
+            let mut dict = PdfDictionary::empty();
+            dict.insert(
+                "ColorSpace",
+                PdfObject::Array(vec![
+                    PdfObject::Name("Indexed".into()),
+                    PdfObject::Name("DeviceGray".into()),
+                    PdfObject::Integer(palette.len() as i64 - 1),
+                    PdfObject::String(palette.clone()),
+                ]),
+            );
+            let (pixels, channels) = ColorSpaceConverter::decode_indexed(
+                &samples,
+                bits,
+                &dict,
+                &reader,
+                samples.len() as u32,
+                1,
+            )
+            .unwrap();
+            assert_eq!((pixels, channels), (palette, 1));
+        }
     }
 
     #[test]
@@ -4521,7 +4488,7 @@ mod tests {
             8,
             "ICCBased",
             &dict,
-            ImageColorContext::with_reader(&reader, ColorTransformOptions::default()),
+            ImageColorContext::with_reader(&reader, ColorTransformOptions::default().into()),
         )
         .expect_err("ICCBased image must not default missing /N to RGB");
 
@@ -4722,6 +4689,7 @@ mod tests {
             },
             &DecodeLimits::default(),
             ColorTransformOptions::default(),
+            None,
         )
         .unwrap();
 
@@ -4797,6 +4765,7 @@ mod tests {
                 RawImageComponentSelection::Components(vec![0, 2]),
                 &DecodeLimits::default(),
                 ColorTransformOptions::default(),
+                None,
             )
             .unwrap();
 
@@ -4838,6 +4807,7 @@ mod tests {
             },
             &DecodeLimits::default(),
             ColorTransformOptions::default(),
+            None,
         )
         .unwrap();
 
@@ -4874,6 +4844,7 @@ mod tests {
                 &DecodeLimits::default(),
                 None,
                 ColorTransformOptions::default(),
+                None,
             )
             .unwrap();
 
@@ -4914,6 +4885,7 @@ mod tests {
                 &DecodeLimits::default(),
                 None,
                 ColorTransformOptions::default(),
+                None,
             )
             .unwrap();
 
@@ -4947,6 +4919,7 @@ mod tests {
                 &DecodeLimits::default(),
                 None,
                 ColorTransformOptions::default(),
+                None,
             )
             .unwrap();
 
@@ -4980,6 +4953,7 @@ mod tests {
                 &DecodeLimits::default(),
                 None,
                 ColorTransformOptions::default(),
+                None,
             )
             .unwrap();
 
@@ -5014,6 +4988,7 @@ mod tests {
                 &DecodeLimits::default(),
                 None,
                 ColorTransformOptions::default(),
+                None,
             )
             .unwrap();
 
@@ -5047,6 +5022,7 @@ mod tests {
                 &DecodeLimits::default(),
                 None,
                 ColorTransformOptions::default(),
+                None,
             )
             .unwrap();
 
@@ -5098,6 +5074,7 @@ mod tests {
                 &DecodeLimits::default(),
                 None,
                 ColorTransformOptions::default(),
+                None,
             )
             .expect_err("inline raw source-window decode must require exact source length");
         assert!(matches!(error, WellfriendError::MalformedPdf(_)));
@@ -5182,6 +5159,7 @@ mod tests {
                 &DecodeLimits::default(),
                 None,
                 ColorTransformOptions::default(),
+                None,
             )
             .expect_err("scaled DCT path must compare PDF dimensions with original JPEG header");
 

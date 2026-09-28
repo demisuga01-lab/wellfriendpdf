@@ -439,14 +439,14 @@ pub(crate) fn flate_encode_cancellable(data: &[u8], level: u32) -> Result<Vec<u8
         flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(level.min(9)));
     for chunk in data.chunks(CHUNK_BYTES) {
         crate::cancel::check_current_cancel("FlateEncode")?;
-        encoder.write_all(chunk).map_err(|error| {
-            WellfriendError::ParseError(format!("FlateEncode failed: {error}"))
-        })?;
+        encoder
+            .write_all(chunk)
+            .map_err(|error| WellfriendError::ParseError(format!("FlateEncode failed: {error}")))?;
     }
     crate::cancel::check_current_cancel("FlateEncode finish")?;
-    encoder.finish().map_err(|error| {
-        WellfriendError::ParseError(format!("FlateEncode finish failed: {error}"))
-    })
+    encoder
+        .finish()
+        .map_err(|error| WellfriendError::ParseError(format!("FlateEncode finish failed: {error}")))
 }
 
 /// Decodes implemented lossless filters in order and stops before an image
@@ -2050,9 +2050,9 @@ fn read_filter_decoder_cancellable<R: Read>(mut decoder: R, context: &str) -> Re
     let mut chunk = [0u8; CHUNK_BYTES];
     loop {
         crate::cancel::check_current_cancel(context)?;
-        let read = decoder.read(&mut chunk).map_err(|error| {
-            WellfriendError::ParseError(format!("{context} failed: {error}"))
-        })?;
+        let read = decoder
+            .read(&mut chunk)
+            .map_err(|error| WellfriendError::ParseError(format!("{context} failed: {error}")))?;
         if read == 0 {
             break;
         }
@@ -2521,7 +2521,7 @@ fn run_length_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     let mut runs = 0usize;
 
     while idx < data.len() {
-        if runs % 4096 == 0 {
+        if runs.is_multiple_of(4096) {
             crate::cancel::check_current_cancel("RunLengthDecode")?;
         }
         runs = runs.saturating_add(1);
@@ -2581,7 +2581,7 @@ fn lzw_decode_capped(data: &[u8], early_change: u8, cap: u64) -> Result<Vec<u8>>
     let mut decoded_codes = 0usize;
 
     while let Some(code) = reader.read_bits(code_width) {
-        if decoded_codes % 4096 == 0 {
+        if decoded_codes.is_multiple_of(4096) {
             crate::cancel::check_current_cancel("LZWDecode")?;
         }
         decoded_codes = decoded_codes.saturating_add(1);

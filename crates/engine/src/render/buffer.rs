@@ -1975,6 +1975,37 @@ impl PixelBuffer {
         }
     }
 
+    /// Fallible, byte-bounded scratch allocation for native rendering operations.
+    pub(crate) fn try_new_transparent_with_mode(
+        width: u32,
+        height: u32,
+        render_mode: RenderMode,
+        byte_limit: usize,
+    ) -> Result<Self, String> {
+        let length = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or("pixel scratch dimensions overflow")?;
+        if length > byte_limit {
+            return Err("pixel scratch exceeds working-memory budget".into());
+        }
+        let mut data = Vec::new();
+        data.try_reserve_exact(length)
+            .map_err(|_| "pixel scratch allocation failed")?;
+        data.resize(length, 0);
+        record_pixel_buffer_alloc(length);
+        Ok(Self {
+            width,
+            height,
+            blend_mode: BlendMode::Normal,
+            render_mode,
+            data,
+            clip: None,
+            smask: None,
+            knockout_backdrop: None,
+        })
+    }
+
     /// Allocate a fully transparent buffer. Used for off-screen transparency groups.
     pub fn new_transparent(width: u32, height: u32) -> Self {
         Self::new(width, height)
@@ -2335,17 +2366,34 @@ impl PixelBuffer {
 
     /// Alpha-composite a color with coverage [0.0, 1.0] over the existing pixel.
     pub fn blend_pixel(&mut self, x: i32, y: i32, color: PixelColor, coverage: f32) {
+        self.blend_pixel_with_clip_limit(x, y, color, coverage, 1.0);
+    }
+
+    /// Intersect temporary geometric coverage with the installed clip using the
+    /// same minimum rule as ClipMask::intersect, without replacing either mask.
+    /// Alpha/soft-mask/knockout/blend state is still applied by one compositor.
+    pub(crate) fn blend_pixel_with_clip_limit(
+        &mut self,
+        x: i32,
+        y: i32,
+        color: PixelColor,
+        coverage: f32,
+        clip_limit: f32,
+    ) {
+        if !clip_limit.is_finite() || clip_limit <= 0.0 {
+            return;
+        }
         if coverage <= 0.0 {
             return;
         }
         let clip_alpha = if let Some(clip) = &self.clip {
-            let clip_alpha = clip.opacity(x, y);
+            let clip_alpha = clip.opacity(x, y).min(clip_limit.clamp(0.0, 1.0));
             if clip_alpha <= 0.0 {
                 return;
             }
             clip_alpha
         } else {
-            1.0
+            clip_limit.clamp(0.0, 1.0)
         };
         let idx = match self.pixel_index(x, y) {
             Some(idx) => idx,

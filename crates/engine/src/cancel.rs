@@ -15,9 +15,9 @@
 //! across rayon workers they all observe the same cancellation and stop
 //! together.
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::cell::RefCell;
 
 use crate::error::{Result, WellfriendError};
 

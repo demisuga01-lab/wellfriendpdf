@@ -64,6 +64,7 @@ bindings/**/obj/
 bindings/java/.gradle/
 bindings/java/build/
 bindings/java/target/
+crates/wellfriendpdf-wasm/node_modules/
 
 # wasm-bindgen / wasm-pack generated package for the browser demo. This is a
 # BUILD ARTIFACT (the compiled .wasm + JS glue + .d.ts), regenerated from

@@ -5,16 +5,16 @@
 //! appearances compile through annotation/media redaction; form values compile through the
 //! canonical form exchange/editor path; XFA inventory remains byte-preserving.
 
+use crate::advanced_editing::{
+    analyze_multi_run_text_range, append_invisible_unicode_text_layer,
+    append_visible_unicode_text_layer, edit_multi_run_text_range, relocate_invisible_actual_text,
+    AdvancedTextEditOptions, AdvancedTextMode, InvisibleUnicodeTextRun, MultiRunRangeModel,
+    MultiRunSourceSpan, MultiRunStylePolicy, MultiRunTextRangeRequest,
+};
 use crate::annotation_media_redaction::{
     export_annotation_xfdf, generate_annotation_appearances_pdf, import_annotation_xfdf_pdf,
     move_resize_annotation_pdf, parse_annotation_xfdf, AnnotationAppearanceOptions,
     AnnotationDeletePolicy, AnnotationXfdfImportOptions,
-};
-use crate::advanced_editing::{
-    analyze_multi_run_text_range, append_invisible_unicode_text_layer,
-    append_visible_unicode_text_layer, edit_multi_run_text_range, AdvancedTextEditOptions,
-    AdvancedTextMode, InvisibleUnicodeTextRun, MultiRunRangeModel, MultiRunSourceSpan,
-    MultiRunStylePolicy, MultiRunTextRangeRequest,
 };
 use crate::content::Color;
 use crate::form_exchange::{apply_form_data_pdf, FormDataFormat};
@@ -22,12 +22,12 @@ use crate::text_reflow::{
     analyze_geometric_region, analyze_semantic_layout, apply_reflow_document, apply_reflow_region,
     undo_reflow_from_replay, GeometricReflowRequest,
 };
-use crate::writer::{rewrite_document_objects, OutputObject, PdfWriter, WriterMode};
 use crate::universal_editing::{
     apply_image_edit, decode_image_occurrence_v2, UniversalImageEditRequestV2,
-    UniversalImageEncodingV2, UniversalImageReplacementV2, UniversalMutationModeV2,
-    UniversalImageSoftMaskV2, UniversalSharedResourcePolicyV2,
+    UniversalImageEncodingV2, UniversalImageReplacementV2, UniversalImageSoftMaskV2,
+    UniversalMutationModeV2, UniversalSharedResourcePolicyV2,
 };
+use crate::writer::{rewrite_document_objects, OutputObject, PdfWriter, WriterMode};
 use crate::xfa::{
     extract_xfa, xfa_flatten_pdf, xfa_inventory, xfa_runtime_report, XfaFlattenMode,
     XfaFlattenOptions, XfaLimits, XfaRuntimeOptions,
@@ -66,6 +66,14 @@ pub enum DocumentSubsystemsSubsystem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DocumentSubsystemsAction {
+    /// Explicit numeric/formula values on caller-approved fixed-grid cells.
+    TableApplyTypedValues {
+        table: crate::typed_tables::TypedEditableTable,
+    },
+    /// Approved topology, typed values, source-grid decisions and row pagination.
+    TableApplyFlowingStory {
+        story: crate::linked_stories::LinkedStoryRequest,
+    },
     /// Replace the text in one detected source-linked table cell.  The table
     /// geometry is resolved again from the current snapshot before text reflow
     /// performs the actual source rewrite.
@@ -270,6 +278,8 @@ pub enum DocumentSubsystemsAction {
         page: usize,
         source_occurrence_id: String,
         replacements: Vec<OcrVisibleReplacement>,
+        #[serde(default)]
+        review: Option<crate::scan_review::OcrReconstructionReview>,
         provider_id: String,
         #[serde(default)]
         provider_version: Option<String>,
@@ -302,13 +312,24 @@ pub enum DocumentSubsystemsAction {
         annotation_index: usize,
         contents: String,
     },
-    /// Move or resize an existing stable XFDF annotation.  Canonical annotation/media redaction
-    /// transforms its rectangle-linked geometry and regenerates the supported
-    /// appearance without changing unrelated annotations.
+    /// Move or resize one source annotation natively, preserving appearance
+    /// programs and existing action/field dictionaries. Related groups require
+    /// the explicit batch operation.
     AnnotationMoveResize {
         annotation_id: String,
         page: usize,
         rect: [f64; 4],
+    },
+    /// Revision-bound atomic selection; include every related popup/reply member.
+    AnnotationGeometryBatch {
+        source_sha256: String,
+        changes: Vec<crate::annotation_media_redaction::AnnotationGeometryChange>,
+    },
+    /// Normalize exact direct source occurrences, preserving native dictionaries
+    /// and the complete selected popup/reply components without changing Rect.
+    AnnotationPromoteSources {
+        source_sha256: String,
+        annotation_ids: Vec<String>,
     },
     /// Create a source-linked text reply to an existing stable annotation ID.
     /// Parent existence is checked against the current snapshot before the
@@ -1830,20 +1851,15 @@ fn invert_ocr_image_matrix(
     ))
 }
 
-fn point_segment_distance_squared(
-    point: (f64, f64),
-    start: (f64, f64),
-    end: (f64, f64),
-) -> f64 {
+fn point_segment_distance_squared(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> f64 {
     let dx = end.0 - start.0;
     let dy = end.1 - start.1;
     let length_squared = dx * dx + dy * dy;
     if length_squared <= f64::EPSILON {
         return (point.0 - start.0).powi(2) + (point.1 - start.1).powi(2);
     }
-    let projection = (((point.0 - start.0) * dx + (point.1 - start.1) * dy)
-        / length_squared)
-        .clamp(0.0, 1.0);
+    let projection =
+        (((point.0 - start.0) * dx + (point.1 - start.1) * dy) / length_squared).clamp(0.0, 1.0);
     let projected = (start.0 + projection * dx, start.1 + projection * dy);
     (point.0 - projected.0).powi(2) + (point.1 - projected.1).powi(2)
 }
@@ -1857,8 +1873,7 @@ fn point_in_ocr_polygon(point: (f64, f64), polygon: &[(f64, f64); 4]) -> bool {
         let vertical_delta = b.1 - a.1;
         let crosses = (a.1 > point.1) != (b.1 > point.1)
             && vertical_delta.abs() > 1.0e-12
-            && point.0
-                < (b.0 - a.0) * (point.1 - a.1) / vertical_delta + a.0;
+            && point.0 < (b.0 - a.0) * (point.1 - a.1) / vertical_delta + a.0;
         if crosses {
             inside = !inside;
         }
@@ -1890,8 +1905,7 @@ fn build_ocr_inpaint_mask(
     for (index, replacement) in replacements.iter().enumerate() {
         crate::cancel::check_current_cancel("OCR reconstruction rectangle")?;
         let rect = rect_from_pdf_bounds(replacement.rect)?;
-        if !replacement.confidence.is_finite() || !(0.0..=1.0).contains(&replacement.confidence)
-        {
+        if !replacement.confidence.is_finite() || !(0.0..=1.0).contains(&replacement.confidence) {
             return Err(WellfriendError::invalid_input(format!(
                 "document_subsystems OCR reconstruction replacement {index} has invalid confidence"
             )));
@@ -1954,7 +1968,7 @@ fn build_ocr_inpaint_mask(
         let x1 = (max_x + padding).ceil().min(f64::from(raw.width)) as usize;
         let y1 = (max_y + padding).ceil().min(f64::from(raw.height)) as usize;
         for y in y0..y1 {
-            if (y - y0) % 64 == 0 {
+            if (y - y0).is_multiple_of(64) {
                 crate::cancel::check_current_cancel("OCR reconstruction mask row")?;
             }
             for x in x0..x1 {
@@ -1998,7 +2012,7 @@ fn estimate_ocr_ink_color(
 ) -> Result<[f64; 3]> {
     let channels = raw.channels as usize;
     let masked = mask.iter().filter(|selected| **selected).count();
-    let step = ((masked + 99_999) / 100_000).max(1);
+    let step = masked.div_ceil(100_000).max(1);
     let mut samples = Vec::<[u8; 3]>::new();
     let mut seen = 0usize;
     for (pixel, selected) in mask.iter().copied().enumerate() {
@@ -2008,7 +2022,7 @@ fn estimate_ocr_ink_color(
         if !selected {
             continue;
         }
-        if seen % step != 0 {
+        if !seen.is_multiple_of(step) {
             seen += 1;
             continue;
         }
@@ -2026,7 +2040,11 @@ fn estimate_ocr_ink_color(
                 let composite = |channel: u8| {
                     ((u32::from(channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
                 };
-                [composite(value[0]), composite(value[1]), composite(value[2])]
+                [
+                    composite(value[0]),
+                    composite(value[1]),
+                    composite(value[2]),
+                ]
             }
             _ => continue,
         };
@@ -2036,11 +2054,9 @@ fn estimate_ocr_ink_color(
         return Ok([0.0, 0.0, 0.0]);
     }
     samples.sort_by_key(|rgb| {
-        2126u32 * u32::from(rgb[0])
-            + 7152u32 * u32::from(rgb[1])
-            + 722u32 * u32::from(rgb[2])
+        2126u32 * u32::from(rgb[0]) + 7152u32 * u32::from(rgb[1]) + 722u32 * u32::from(rgb[2])
     });
-    let take = ((samples.len() + 3) / 4).max(1);
+    let take = samples.len().div_ceil(4).max(1);
     let sums = samples.iter().take(take).fold([0u64; 3], |mut sums, rgb| {
         for channel in 0..3 {
             sums[channel] += u64::from(rgb[channel]);
@@ -2165,26 +2181,21 @@ fn harmonic_inpaint_ocr_mask(
         // parity pair ensure no same-colour samples are neighbours.
         for color in 0..4usize {
             for y in bounds.y0..bounds.y1 {
-                if (y - bounds.y0) % 64 == 0 {
+                if (y - bounds.y0).is_multiple_of(64) {
                     crate::cancel::check_current_cancel("OCR harmonic inpainting row")?;
                 }
                 for x in bounds.x0..bounds.x1 {
                     if ((x & 1) | ((y & 1) << 1)) != color || !mask[y * width + x] {
                         continue;
                     }
-                    let offset =
-                        ((y - bounds.y0) * roi_width + (x - bounds.x0)) * channels;
+                    let offset = ((y - bounds.y0) * roi_width + (x - bounds.x0)) * channels;
                     for channel in 0..channels {
                         let mut weighted = 0.0;
                         let mut weight_sum = 0.0;
                         for (dx, dy, weight) in NEIGHBORS {
                             let nx = x as isize + dx;
                             let ny = y as isize + dy;
-                            if nx < 0
-                                || ny < 0
-                                || nx >= width as isize
-                                || ny >= height as isize
-                            {
+                            if nx < 0 || ny < 0 || nx >= width as isize || ny >= height as isize {
                                 continue;
                             }
                             let nx = nx as usize;
@@ -2194,10 +2205,9 @@ fn harmonic_inpaint_ocr_mask(
                                 && ny >= bounds.y0
                                 && ny < bounds.y1
                             {
-                                let neighbor_offset = ((ny - bounds.y0) * roi_width
-                                    + (nx - bounds.x0))
-                                    * channels
-                                    + channel;
+                                let neighbor_offset =
+                                    ((ny - bounds.y0) * roi_width + (nx - bounds.x0)) * channels
+                                        + channel;
                                 f64::from(workspace[neighbor_offset])
                             } else {
                                 f64::from(raw.pixels[(ny * width + nx) * channels + channel])
@@ -2230,9 +2240,8 @@ fn harmonic_inpaint_ocr_mask(
             let source = ((y - bounds.y0) * roi_width + (x - bounds.x0)) * channels;
             let target = (y * width + x) * channels;
             for channel in 0..channels {
-                raw.pixels[target + channel] = workspace[source + channel]
-                    .round()
-                    .clamp(0.0, 255.0) as u8;
+                raw.pixels[target + channel] =
+                    workspace[source + channel].round().clamp(0.0, 255.0) as u8;
             }
         }
     }
@@ -2252,8 +2261,7 @@ fn bind_invisible_ocr_range(
     replacement_index: usize,
     source_text: &str,
 ) -> Result<InvisibleOcrRangeBinding> {
-    if logical_range[0] >= logical_range[1]
-        || logical_range[1] > model.logical_text.chars().count()
+    if logical_range[0] >= logical_range[1] || logical_range[1] > model.logical_text.chars().count()
     {
         return Err(WellfriendError::invalid_input(format!(
             "document_subsystems searchable OCR range {:?} is outside the page logical text",
@@ -2277,8 +2285,7 @@ fn bind_invisible_ocr_range(
         .source_spans
         .iter()
         .filter(|span| {
-            span.logical_range[0] < logical_range[1]
-                && span.logical_range[1] > logical_range[0]
+            span.logical_range[0] < logical_range[1] && span.logical_range[1] > logical_range[0]
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -2483,7 +2490,11 @@ fn supported_ocr_reconstruct_visible_words(
     };
     crate::cancel::check_current_cancel("visible OCR image mutation")?;
     let (image_output, image_report, affected_pages, affected_objects, cloned_resources) =
-        apply_image_edit(input, &image_request, UniversalMutationModeV2::AuthorizedRewrite)?;
+        apply_image_edit(
+            input,
+            &image_request,
+            UniversalMutationModeV2::AuthorizedRewrite,
+        )?;
 
     // Delete old invisible OCR carriers from highest to lowest logical offset.
     // Descending order keeps every not-yet-applied logical range stable. Byte
@@ -2584,7 +2595,11 @@ fn supported_ocr_reconstruct_visible_words(
         unicode_runs.push(InvisibleUnicodeTextRun {
             text: replacement.replacement_text.clone(),
             x: rect.x,
-            y: rect.y + rect.height.min(replacement.font_size).max(replacement.font_size * 0.75),
+            y: rect.y
+                + rect
+                    .height
+                    .min(replacement.font_size)
+                    .max(replacement.font_size * 0.75),
             font_size: replacement.font_size,
             target_width: rect.width,
         });
@@ -2607,7 +2622,11 @@ fn supported_ocr_reconstruct_visible_words(
                     "document_subsystems approved reconstruction font requires a bounded lookup name and 1..=128MiB sfnt bytes",
                 ));
             }
-            ("caller_approved", asset.lookup_name.as_str(), asset.bytes.as_slice())
+            (
+                "caller_approved",
+                asset.lookup_name.as_str(),
+                asset.bytes.as_slice(),
+            )
         } else {
             (
                 "bundled_governed_fallback",
@@ -2784,13 +2803,20 @@ fn supported_ocr_add_searchable_words(
         }));
     }
     let (font_source, font_lookup_name, font_bytes) = if let Some(asset) = approved_font_asset {
-        if asset.lookup_name.trim().is_empty() || asset.bytes.is_empty() || asset.bytes.len() > 128 * 1024 * 1024 {
+        if asset.lookup_name.trim().is_empty()
+            || asset.bytes.is_empty()
+            || asset.bytes.len() > 128 * 1024 * 1024
+        {
             return Err(WellfriendError::UnsupportedFeature(
                 "document_subsystems approved OCR font asset requires a bounded lookup name and 1..=128MiB sfnt bytes"
                     .to_string(),
             ));
         }
-        ("caller_approved", asset.lookup_name.as_str(), asset.bytes.as_slice())
+        (
+            "caller_approved",
+            asset.lookup_name.as_str(),
+            asset.bytes.as_slice(),
+        )
     } else {
         (
             "bundled_governed_fallback",
@@ -2803,12 +2829,8 @@ fn supported_ocr_add_searchable_words(
             })?,
         )
     };
-    let (output, font_resource) = append_invisible_unicode_text_layer(
-        input,
-        page,
-        &unicode_runs,
-        font_bytes,
-    )?;
+    let (output, font_resource) =
+        append_invisible_unicode_text_layer(input, page, &unicode_runs, font_bytes)?;
     let extracted = ContentEngine::open_bytes(output.clone())?.get_page_text(page)?;
     if words.iter().any(|word| !extracted.contains(&word.text)) {
         return Err(WellfriendError::MalformedPdf(
@@ -5470,7 +5492,7 @@ fn move_resize_form_widget_pdf(
             "field_name": field_name,
             "widget_annotation_id": widget.id,
             "canonical_annotation_geometry": report,
-            "valid_existing_appearance": "preserved_or_regenerated_under_annotation_media_redaction_policy",
+            "valid_existing_appearance": "source_appearance_preserved_without_regeneration",
         }),
     ))
 }
@@ -5914,6 +5936,8 @@ fn supported_form_edit(
 fn action_subsystem(action: &DocumentSubsystemsAction) -> DocumentSubsystemsSubsystem {
     match action {
         DocumentSubsystemsAction::TableEditCell { .. }
+        | DocumentSubsystemsAction::TableApplyTypedValues { .. }
+        | DocumentSubsystemsAction::TableApplyFlowingStory { .. }
         | DocumentSubsystemsAction::TableEditMathCell { .. }
         | DocumentSubsystemsAction::TableMoveLinkedAnnotation { .. }
         | DocumentSubsystemsAction::TableSetCellAlignment { .. }
@@ -5943,6 +5967,8 @@ fn action_subsystem(action: &DocumentSubsystemsAction) -> DocumentSubsystemsSubs
         DocumentSubsystemsAction::AnnotationCreate { .. }
         | DocumentSubsystemsAction::AnnotationEditContents { .. }
         | DocumentSubsystemsAction::AnnotationMoveResize { .. }
+        | DocumentSubsystemsAction::AnnotationGeometryBatch { .. }
+        | DocumentSubsystemsAction::AnnotationPromoteSources { .. }
         | DocumentSubsystemsAction::AnnotationCreateReply { .. }
         | DocumentSubsystemsAction::AnnotationDeleteInRect { .. }
         | DocumentSubsystemsAction::AnnotationXfdf { .. }
@@ -5993,6 +6019,20 @@ fn apply_explicit_action(
     let source_sha256 = digest(input);
     let (output, operation, transaction, appearance_effect, xfa_effect, changed_pages) =
         match action {
+            DocumentSubsystemsAction::TableApplyTypedValues { table } => {
+                if !request.approved { return Err(WellfriendError::invalid_input("typed table source bindings and formulas require approval")); }
+                let (output, report) = crate::typed_tables::apply_typed_table(input, table)?;
+                let pages = report.changed_pages.clone();
+                (output, "typed_table_atomic_cell_values", value(&report)?, json!({"fixed_grid": true}), json!({"preserved": true}), pages)
+            }
+            DocumentSubsystemsAction::TableApplyFlowingStory { story } => {
+                if !request.approved || story.table_layout.is_none() { return Err(WellfriendError::invalid_input("flowing table topology and source ownership require approval")); }
+                let mut story = story.clone();
+                crate::linked_stories::tables::synchronize_values(&mut story)?;
+                let (output, report) = crate::linked_stories::apply_linked_story(input, &story)?;
+                let pages = report.changed_pages.clone();
+                (output, "table_native_row_pagination", value(&report)?, json!({"owned_grid_and_cell_text":true,"generated_pages":report.generated_pages}), json!({"preserved":true}), pages)
+            }
             DocumentSubsystemsAction::TableMoveLinkedAnnotation {
                 table_id,
                 row,
@@ -6578,14 +6618,17 @@ fn apply_explicit_action(
                     ));
                 }
                 rect_from_pdf_bounds(*bounds)?;
-                let mut reflow = reflow_required(request, "scan_not_resolved")?.clone();
-                reflow.region = Some(*bounds);
-                reflow.replacement_text = reflow.source_text.clone();
-                let (output, report) = apply_reflow_region(input, &reflow)?;
+                let reflow = reflow_required(request, "scan_not_resolved")?;
+                let (output, report) = relocate_invisible_actual_text(
+                    input,
+                    reflow.page,
+                    &reflow.source_text,
+                    *bounds,
+                )?;
                 (
                     output,
                     "ocr_searchable_layer_source_geometry_correction",
-                    value(&report)?,
+                    report,
                     json!({
                         "source_scan_preserved": true,
                         "text_rendering": "source-linked_existing_searchable_layer",
@@ -6729,6 +6772,7 @@ fn apply_explicit_action(
                 page,
                 source_occurrence_id,
                 replacements,
+                review,
                 provider_id,
                 provider_version,
                 language,
@@ -6742,7 +6786,9 @@ fn apply_explicit_action(
                             .to_string(),
                     ));
                 }
-                let (output, report) = supported_ocr_reconstruct_visible_words(
+                let review_report = review.as_ref().map(|review| crate::scan_review::evaluate_scan_review(
+                    input, provider_id, provider_version.as_deref(), replacements, review)).transpose()?;
+                let (output, mut report) = supported_ocr_reconstruct_visible_words(
                     input,
                     *page,
                     source_occurrence_id,
@@ -6754,6 +6800,7 @@ fn apply_explicit_action(
                     *fill_rgb,
                     approved_font_asset.as_ref(),
                 )?;
+                report["uncertainty_review"] = serde_json::to_value(review_report).map_err(|e| WellfriendError::invalid_input(e.to_string()))?;
                 (
                     output,
                     "ocr_visible_scan_reconstruction",
@@ -6821,14 +6868,32 @@ fn apply_explicit_action(
                     move_resize_annotation_pdf(input, annotation_id, *page, *rect)?;
                 (
                     output,
-                    "annotation_move_resize_source_update_and_appearance_regeneration",
+                    "annotation_move_resize_native_source_update",
                     value(&report)?,
                     json!({
-                        "normal_rollover_down": "canonical_annotation_media_redaction_generation",
+                        "normal_rollover_down": "source_appearance_preserved_without_regeneration",
                         "geometry": "rect_linked_quads_vertices_lines_callouts_ink",
                     }),
                     json!({"preserved": true}),
-                    vec![*page],
+                    report.affected_pages.clone(),
+                )
+            }
+            DocumentSubsystemsAction::AnnotationGeometryBatch { source_sha256, changes } => {
+                let (output, report) = crate::annotation_media_redaction::edit_annotation_geometries_pdf(input, Some(source_sha256), changes)?;
+                let changed_pages = report.changed_pages.clone();
+                (
+                    output, "annotation_geometry_native_batch", value(&report)?,
+                    json!({"normal_rollover_down":"source_appearance_preserved_without_regeneration"}),
+                    json!({"preserved":true}), changed_pages,
+                )
+            }
+            DocumentSubsystemsAction::AnnotationPromoteSources { source_sha256, annotation_ids } => {
+                let (output, report) = crate::annotation_media_redaction::promote_annotation_sources_pdf(input, source_sha256, annotation_ids)?;
+                let changed_pages = report.changed_pages.clone();
+                (
+                    output, "annotation_exact_source_materialization", value(&report)?,
+                    json!({"appearances":"preserved_without_regeneration"}),
+                    json!({"preserved":true}), changed_pages,
                 )
             }
             DocumentSubsystemsAction::AnnotationCreateReply {
@@ -7115,6 +7180,25 @@ pub fn plan_document_subsystems(
     input: &[u8],
     request: &DocumentSubsystemsRequest,
 ) -> Result<Value> {
+    let flowing_table = match request.action.as_ref() {
+        Some(DocumentSubsystemsAction::TableApplyFlowingStory { story }) => {
+            let mut story = story.clone();
+            crate::linked_stories::tables::synchronize_values(&mut story)?;
+            Some(crate::linked_stories::preview_linked_story(input, &story)?)
+        }
+        _ => None,
+    };
+    let typed_values = match request.action.as_ref() {
+        Some(DocumentSubsystemsAction::TableApplyTypedValues { table }) => {
+            if digest(input) != table.input_sha256 {
+                return Err(WellfriendError::invalid_input(
+                    "typed table belongs to another revision",
+                ));
+            }
+            Some(crate::typed_tables::evaluate_table(table)?)
+        }
+        _ => None,
+    };
     let analysis = analyze_document_subsystems(input)?;
     let reflow = request
         .reflow
@@ -7129,6 +7213,8 @@ pub fn plan_document_subsystems(
         "approved": request.approved,
         "analysis": analysis,
         "reflow_plan": reflow,
+        "typed_table_values": typed_values,
+        "flowing_table_preview": flowing_table,
         "typed_limits": no_change_limit(&request.subsystem)
     }))
 }
@@ -7407,18 +7493,26 @@ pub fn undo_document_subsystems(
             json!({"inverse": "text_reflow_reflow_replay", "undo": undo})
         }
         Some(DocumentSubsystemsAction::OcrCorrectGeometry { bounds }) => {
-            let mut reflow = reflow_required(request, "scan_not_resolved")?.clone();
+            let reflow = reflow_required(request, "scan_not_resolved")?;
             rect_from_pdf_bounds(*bounds)?;
-            reflow.region = Some(*bounds);
-            reflow.replacement_text = reflow.source_text.clone();
-            let (restored, undo) = undo_reflow_from_replay(original, output, &reflow)?;
-            if restored != original {
+            let (replayed, receipt) = relocate_invisible_actual_text(
+                original,
+                reflow.page,
+                &reflow.source_text,
+                *bounds,
+            )?;
+            if replayed != output {
                 return Err(WellfriendError::MalformedPdf(
-                    "document_subsystems undo_failed: OCR geometry source reflow inverse did not restore the input snapshot"
+                    "document_subsystems undo_failed: OCR geometry transaction does not match deterministic provenance replay"
                         .to_string(),
                 ));
             }
-            json!({"inverse": "text_reflow_reflow_replay", "undo": undo})
+            json!({
+                "inverse": "restore_exact_pre_transaction_snapshot",
+                "forward_replay_verified": true,
+                "forward_receipt": receipt,
+                "restored_sha256": digest(original),
+            })
         }
         Some(DocumentSubsystemsAction::MathEditMatrixCell {
             row,
@@ -7683,10 +7777,7 @@ mod tests {
         image.insert("Height", PdfObject::Integer(100));
         image.insert("ColorSpace", PdfObject::Name("DeviceRGB".to_string()));
         image.insert("BitsPerComponent", PdfObject::Integer(8));
-        image.insert(
-            "Length",
-            PdfObject::Integer(image_samples.len() as i64),
-        );
+        image.insert("Length", PdfObject::Integer(image_samples.len() as i64));
 
         crate::writer::PdfWriter::new(
             vec![
@@ -7741,8 +7832,8 @@ mod tests {
             .expect_err("visible duplicate must not bind as OCR");
         assert!(visible_error.to_string().contains("selects visible"));
 
-        let invisible = bind_invisible_ocr_range(&model, [3, 6], 0, "OLD")
-            .expect("invisible OCR occurrence");
+        let invisible =
+            bind_invisible_ocr_range(&model, [3, 6], 0, "OLD").expect("invisible OCR occurrence");
         assert_eq!(invisible.source_spans.len(), 1);
         assert_eq!(invisible.source_spans[0].text_render_mode, 3);
         assert_eq!(invisible.source_spans[0].logical_range, [3, 6]);
@@ -7801,8 +7892,7 @@ mod tests {
         assert_eq!(mutations.len(), 2);
         assert!(mutations.iter().all(|mutation| {
             mutation["provenance_refreshed_before_mutation"] == Value::Bool(true)
-                && mutation["bound_source_occurrence_absent_after_mutation"]
-                    == Value::Bool(true)
+                && mutation["bound_source_occurrence_absent_after_mutation"] == Value::Bool(true)
         }));
         let model = analyze_multi_run_text_range(&output, 1).expect("post-batch range model");
         assert!(model.logical_text.is_empty());
@@ -8728,7 +8818,7 @@ mod tests {
             apply_document_subsystems(&created, &request).expect("move source annotation");
         assert_eq!(
             report.operation,
-            "annotation_move_resize_source_update_and_appearance_regeneration"
+            "annotation_move_resize_native_source_update"
         );
         let (xfdf, _) = crate::annotation_media_redaction::export_annotation_xfdf(
             &ContentEngine::open_bytes(output.clone()).expect("reopen moved annotation"),
@@ -8895,6 +8985,12 @@ mod tests {
             report.operation,
             "ocr_searchable_layer_source_geometry_correction"
         );
+        assert_eq!(report.transaction["text_rendering_mode"], 3);
+        assert_eq!(report.transaction["actual_text_carrier_bound"], true);
+        assert_eq!(report.transaction["target_origin"], json!([180.0, 132.0]));
+        assert!(report.transaction["source_showing_operators_repositioned"]
+            .as_u64()
+            .is_some_and(|count| count > 0));
         assert!(ContentEngine::open_bytes(output.clone())
             .expect("reopen OCR geometry output")
             .get_page_text(1)

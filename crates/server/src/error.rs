@@ -13,6 +13,10 @@ pub enum ServerError {
     InvalidParameter(String),
     EncryptedDocument,
     EncryptedPdf(String),
+    /// A host-issued edit-review authorization receipt was missing, expired,
+    /// retired or invalid. Keep the client response intentionally uniform so
+    /// key identifiers and HMAC validity cannot be enumerated through errors.
+    ReceiptAuthentication,
     NoTextLayer,
     MalformedPdf(String),
     /// A document feature the engine does not yet support. The specific feature
@@ -133,6 +137,11 @@ impl ServerError {
                     msg
                 },
             ),
+            ServerError::ReceiptAuthentication => (
+                StatusCode::FORBIDDEN,
+                "invalid_edit_receipt",
+                "The edit review receipt is invalid, expired, or no longer accepted.".to_string(),
+            ),
             ServerError::NoTextLayer => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "no_text_layer",
@@ -206,6 +215,15 @@ mod tests {
             wellfriendpdf_engine::WellfriendError::UnsupportedFeature("JBIG2".to_string()).into();
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn edit_receipt_failure_maps_to_uniform_403() {
+        let classified = ServerError::ReceiptAuthentication.classify();
+        assert_eq!(classified.status, StatusCode::FORBIDDEN);
+        assert_eq!(classified.error_code, "invalid_edit_receipt");
+        assert!(!classified.message.contains("key"));
+        assert!(!classified.message.contains("HMAC"));
     }
 
     #[test]

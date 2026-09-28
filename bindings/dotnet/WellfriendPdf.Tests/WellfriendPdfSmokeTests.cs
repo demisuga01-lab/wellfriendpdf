@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Security.Cryptography;
 using System.Threading;
 using WellfriendPdf;
@@ -208,6 +209,62 @@ public sealed class WellfriendPdfSmokeTests
               }
             }
             """;
+            var proposalJson = advanced_editing_closeoutDoc.ProposeTextRangePaintPartitions(requestJson);
+            using var proposalDoc = JsonDocument.Parse(proposalJson);
+            Assert.Equal(
+                "advanced_editing_closeout_paint_partition_proposal",
+                proposalDoc.RootElement.GetProperty("kind").GetString());
+            var proposalReport = proposalDoc.RootElement.GetProperty("report");
+            var proposalId = proposalReport.GetProperty("proposal_id").GetString()!;
+            var sourceTextObject = proposalReport.GetProperty("candidates")[0]
+                .GetProperty("source_text_object").GetUInt64();
+            var approvalJson = JsonSerializer.Serialize(new
+            {
+                proposal_id = proposalId,
+                partitions = new[]
+                {
+                    new
+                    {
+                        source_text_object = sourceTextObject,
+                        region = new[] { 20.0, 80.0, 180.0, 140.0 },
+                        final_lines = (string[]?)null,
+                    },
+                },
+            });
+            var partitionPreviewJson = advanced_editing_closeoutDoc.PreviewTextRangePaintPartitions(
+                requestJson, proposalJson, approvalJson,
+                optionsJson: "{\"pages\":[1],\"dpi\":72}");
+            using var partitionPreviewDoc = JsonDocument.Parse(partitionPreviewJson);
+            var partitionPreview = partitionPreviewDoc.RootElement.GetProperty("report");
+            Assert.NotEmpty(partitionPreview.GetProperty("pages")[0]
+                .GetProperty("candidate").GetProperty("png").EnumerateArray());
+            var publicationReceiptJson = partitionPreview
+                .GetProperty("publication_receipt").GetRawText();
+            var receiptKey = Enumerable.Repeat((byte)0x5a, 32).ToArray();
+            var authenticatedReceiptEnvelope = WellfriendDocument
+                .AuthenticateTextRangePaintPartitionReceipt(
+                    publicationReceiptJson, "test-key", "dotnet-smoke", 1_000, 1_900,
+                    receiptKey);
+            using var authenticatedReceiptDoc = JsonDocument.Parse(authenticatedReceiptEnvelope);
+            var authenticatedReceiptJson = authenticatedReceiptDoc.RootElement
+                .GetProperty("report").GetRawText();
+            var verifiedReceiptEnvelope = WellfriendDocument
+                .VerifyAuthenticatedTextRangePaintPartitionReceipt(
+                    authenticatedReceiptJson, "test-key", "dotnet-smoke", 1_500, 0,
+                    receiptKey);
+            using var verifiedReceiptDoc = JsonDocument.Parse(verifiedReceiptEnvelope);
+            Assert.True(JsonNode.DeepEquals(
+                JsonNode.Parse(publicationReceiptJson),
+                JsonNode.Parse(verifiedReceiptDoc.RootElement.GetProperty("report").GetRawText())));
+            var reviewedEdit = advanced_editing_closeoutDoc.ApplyReviewedTextRangePaintPartitions(
+                requestJson, proposalJson, approvalJson, publicationReceiptJson);
+            Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(reviewedEdit.Bytes, 0, 5));
+            Assert.Contains("reviewed_multi_run_text_edit_report", reviewedEdit.ReportJson);
+            var proposedEdit = advanced_editing_closeoutDoc.ApplyTextRangePaintPartitions(
+                requestJson, proposalJson, approvalJson);
+            Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(proposedEdit.Bytes, 0, 5));
+            Assert.Contains("generated_paint_partitions", proposedEdit.ReportJson);
+
             var rangeEdited = advanced_editing_closeoutDoc.EditTextRange(requestJson);
             Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(rangeEdited.Bytes, 0, 5));
             Assert.Contains("advanced_editing_closeout_multi_run_text_edit_report", rangeEdited.ReportJson);
@@ -683,7 +740,7 @@ public sealed class WellfriendPdfSmokeTests
         Assert.Equal(File.ReadAllBytes(FixturePath("multi_stream.pdf")), undo.Bytes);
         var correctionError = Assert.Throws<WellfriendPdfException>(() =>
             doc.TextReflowReflowApproveStructureJson("{\"node\":\"reviewed\"}"));
-        Assert.Contains("structure_update_failed", correctionError.Message);
+        Assert.Contains("structure correction requires", correctionError.Message);
     }
 
     [Fact]
@@ -701,6 +758,49 @@ public sealed class WellfriendPdfSmokeTests
         doc.Dispose();
         doc.Dispose();
         Assert.Throws<ObjectDisposedException>(() => doc.PageCount);
+    }
+
+    // Added as source only; this binding regression has not been executed.
+    [Fact]
+    public void StorySessionOwnsBytesAndRejectsCancelledOrUnapprovedOperations()
+    {
+        var bytes = File.ReadAllBytes(FixturePath("basicapi.pdf"));
+        var original = bytes.ToArray();
+        using var session = StoryEditSession.Open(bytes);
+        Array.Clear(bytes);
+        Assert.Equal(original, session.Bytes());
+        using var status = JsonDocument.Parse(session.StatusJson());
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(original)).ToLowerInvariant(),
+            status.RootElement.GetProperty("revision_sha256").GetString());
+        Assert.Equal(0, status.RootElement.GetProperty("history").GetProperty("undo_steps").GetInt32());
+        Assert.False(session.Undo());
+        Assert.False(session.Redo());
+        Assert.Throws<WellfriendPdfException>(() => session.CommandJson("{\"op\":\"checkpoint\"}"));
+        Assert.Throws<WellfriendPdfException>(() => session.CommandJson("{\"op\":\"page_geometry\",\"page\":1,\"dpi\":0}"));
+        using var cancel = new CancellationTokenSource();
+        cancel.Cancel();
+        Assert.Throws<OperationCanceledException>(() => session.CommandJson("{\"op\":\"undo\"}", cancel.Token));
+        Assert.Equal(original, session.Bytes());
+        session.Dispose();
+        session.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => session.StatusJson());
+    }
+
+    [Fact]
+    public void StorySessionPasswordEntrypointsDoNotRetainCredentialsForPlainInput()
+    {
+        var bytes = File.ReadAllBytes(FixturePath("basicapi.pdf"));
+        using var textPassword = StoryEditSession.Open(bytes, "ignored-for-unencrypted");
+        using var exactPassword = StoryEditSession.OpenWithPasswordBytes(bytes, [0xff, 0x00, 0x61]);
+        using var textStatus = JsonDocument.Parse(textPassword.StatusJson());
+        using var exactStatus = JsonDocument.Parse(exactPassword.StatusJson());
+        foreach (var status in new[] { textStatus.RootElement, exactStatus.RootElement })
+        {
+            var security = status.GetProperty("source_security");
+            Assert.False(security.GetProperty("source_was_encrypted").GetBoolean());
+            Assert.False(security.GetProperty("working_copy_decrypted").GetBoolean());
+            Assert.False(security.GetProperty("password_retained").GetBoolean());
+        }
     }
 
     private static string FixturePath(string name = "tracemonkey.pdf")

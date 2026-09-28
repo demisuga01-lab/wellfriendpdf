@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::analysis::layout::{analyze_page, BBox, LayoutConfig, PageLayout};
 use crate::error::{Result, WellfriendError};
 use crate::fonts::FontDecodeSource;
-use crate::text::{MarkedTextChunk, ReadingOrderReconstructor, TextChunk};
+use crate::text::{MarkedContentId, MarkedTextChunk, ReadingOrderReconstructor, TextChunk};
 
 const CJK_DICTIONARY_LAYOUT_CJK_PROVIDER_SCHEMA_VERSION: &str =
     "cjk_dictionary_layout.cjk_dictionary_provider.v1";
@@ -856,6 +856,10 @@ pub struct TextProvenanceSummary {
 pub struct TextStructureEntry {
     pub page: usize,
     pub mcid: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<(u32, u16)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_owner: Option<(u32, u16)>,
     pub role: TextRole,
     pub normalized_role: String,
     pub original_role: String,
@@ -884,11 +888,24 @@ impl TextStructureContext {
         Self::default()
     }
 
-    fn by_mcid(&self) -> HashMap<(usize, i64), TextStructureEntry> {
+    fn by_mcid(&self) -> HashMap<(usize, MarkedContentId), TextStructureEntry> {
         let mut map = HashMap::with_capacity(self.entries.len());
+        let mut ambiguous = HashSet::new();
         for entry in &self.entries {
-            map.entry((entry.page, entry.mcid))
-                .or_insert_with(|| entry.clone());
+            let key = (
+                entry.page,
+                MarkedContentId {
+                    mcid: entry.mcid,
+                    stream: entry.stream,
+                    stream_owner: entry.stream_owner,
+                },
+            );
+            if map.insert(key, entry.clone()).is_some() {
+                ambiguous.insert(key);
+            }
+        }
+        for key in ambiguous {
+            map.remove(&key);
         }
         map
     }
@@ -985,6 +1002,8 @@ pub struct TextSemanticChar {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcid: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub marked_content: Option<MarkedContentId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub struct_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original_role: Option<String>,
@@ -1004,6 +1023,8 @@ pub struct TextSemanticWord {
     pub provenance_summary: TextProvenanceSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content: Vec<MarkedContentId>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1020,6 +1041,8 @@ pub struct TextSemanticSpan {
     pub provenance_summary: TextProvenanceSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content: Vec<MarkedContentId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub struct_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1043,6 +1066,8 @@ pub struct TextSemanticLine {
     pub provenance_summary: TextProvenanceSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content: Vec<MarkedContentId>,
     pub role_source: TextRoleSource,
     pub role_confidence: f32,
 }
@@ -1072,6 +1097,8 @@ pub struct TextSemanticBlock {
     pub provenance_summary: TextProvenanceSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content: Vec<MarkedContentId>,
     pub role_source: TextRoleSource,
     pub role_confidence: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1195,6 +1222,8 @@ pub struct TextSearchMatch {
     pub provenance_summary: TextProvenanceSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content: Vec<MarkedContentId>,
     pub role: TextRole,
     pub role_source: TextRoleSource,
     pub includes_hidden: bool,
@@ -1206,6 +1235,7 @@ struct ChunkRef {
     original_index: usize,
     bbox: TextQuad,
     mcid: Option<i64>,
+    marked_content: Option<MarkedContentId>,
     structure: Option<TextStructureEntry>,
 }
 
@@ -1228,7 +1258,12 @@ pub fn build_text_semantic_page(
 ) -> TextSemanticPage {
     let marked = chunks
         .into_iter()
-        .map(|chunk| MarkedTextChunk { chunk, mcid: None })
+        .map(|chunk| MarkedTextChunk {
+            chunk,
+            mcid: None,
+            mcid_owner: None,
+            mcid_stream_owner: None,
+        })
         .collect();
     build_text_semantic_page_from_marked_chunks(page, page_box, marked, None, options)
 }
@@ -1363,6 +1398,12 @@ pub fn build_text_semantic_page_from_marked_chunks(
                 .unwrap_or((heuristic_role, TextRoleSource::Heuristic, 0.64));
             let line_summary = provenance_summary_for_spans(&built.spans);
             let line_mcids = mcids_for_spans(&built.spans);
+            let line_marked = marked_content_union(
+                built
+                    .spans
+                    .iter()
+                    .flat_map(|span| span.marked_content.iter().copied()),
+            );
             counters.mapped_via_tounicode += line_summary.tounicode;
             counters.mapped_via_cmap += line_summary.embedded_cmap
                 + line_summary.predefined_cmap
@@ -1391,6 +1432,7 @@ pub fn build_text_semantic_page_from_marked_chunks(
                 provenance: built.provenance,
                 provenance_summary: line_summary,
                 mcids: line_mcids,
+                marked_content: line_marked,
                 role_source,
                 role_confidence,
             });
@@ -1420,6 +1462,11 @@ pub fn build_text_semantic_page_from_marked_chunks(
         counters.blocks += 1;
         let block_summary = provenance_summary_for_lines(&lines);
         let block_mcids = mcids_for_lines(&lines);
+        let block_marked = marked_content_union(
+            lines
+                .iter()
+                .flat_map(|line| line.marked_content.iter().copied()),
+        );
         let (struct_role, original_role) = block_structure_roles(&lines);
         blocks.push(TextSemanticBlock {
             text,
@@ -1436,6 +1483,7 @@ pub fn build_text_semantic_page_from_marked_chunks(
             provenance: vec![TextProvenanceFlag::SyntheticLayout],
             provenance_summary: block_summary,
             mcids: block_mcids,
+            marked_content: block_marked,
             role_source: block_role_source,
             role_confidence: block_role_confidence,
             struct_role,
@@ -1521,7 +1569,7 @@ pub fn build_text_semantic_document(
 fn filter_chunks(
     page: usize,
     chunks: Vec<MarkedTextChunk>,
-    structure_map: &HashMap<(usize, i64), TextStructureEntry>,
+    structure_map: &HashMap<(usize, MarkedContentId), TextStructureEntry>,
     options: &TextSemanticOptions,
     counters: &mut TextExtractionCounters,
     diagnostics: &mut Vec<TextDiagnostic>,
@@ -1530,6 +1578,7 @@ fn filter_chunks(
     let mut mapped_mcids = HashSet::new();
     let mut unmapped_mcids = HashSet::new();
     for (idx, marked) in chunks.into_iter().enumerate() {
+        let marked_content = marked.marked_content_id();
         let chunk = marked.chunk;
         if chunk.text.is_empty() {
             continue;
@@ -1549,10 +1598,8 @@ fn filter_chunks(
         if chunk.is_invisible && !options.include_hidden {
             continue;
         }
-        let structure = marked
-            .mcid
-            .and_then(|mcid| structure_map.get(&(page, mcid)).cloned());
-        if let Some(mcid) = marked.mcid {
+        let structure = marked_content.and_then(|id| structure_map.get(&(page, id)).cloned());
+        if let Some(mcid) = marked_content {
             if structure.is_some() {
                 mapped_mcids.insert(mcid);
             } else {
@@ -1564,6 +1611,7 @@ fn filter_chunks(
             chunk,
             original_index: idx,
             mcid: marked.mcid,
+            marked_content,
             structure,
         });
     }
@@ -1596,6 +1644,7 @@ fn deduplicate_chunks(chunks: Vec<ChunkRef>) -> Vec<ChunkRef> {
     'outer: for candidate in chunks {
         for existing in &kept {
             if candidate.chunk.text == existing.chunk.text
+                && candidate.marked_content == existing.marked_content
                 && (candidate.chunk.x - existing.chunk.x).abs() <= DEDUPE_X_TOLERANCE
                 && (candidate.chunk.y - existing.chunk.y).abs() <= DEDUPE_Y_TOLERANCE
                 && (candidate.chunk.font_size - existing.chunk.font_size).abs()
@@ -1811,6 +1860,7 @@ fn build_line_from_text(
             original_index: line_index,
             bbox: TextQuad::from_bbox([bbox.x0, bbox.y0, bbox.x1, bbox.y1]),
             mcid: None,
+            marked_content: None,
             structure: None,
         }],
         bbox,
@@ -1867,6 +1917,7 @@ fn build_line_from_chunks(
                 mapping_source: TextMappingSource::NativePdfText,
                 provenance: vec![TextProvenanceFlag::SyntheticLayout],
                 mcid: None,
+                marked_content: None,
                 struct_role: None,
                 original_role: None,
                 role_source: TextRoleSource::Synthetic,
@@ -1904,6 +1955,7 @@ fn build_line_from_chunks(
                 mapping_source,
                 provenance,
                 mcid: chunk_ref.mcid,
+                marked_content: chunk_ref.marked_content,
                 struct_role,
                 original_role,
                 role_source,
@@ -1931,6 +1983,7 @@ fn build_line_from_chunks(
             ),
             provenance_summary: provenance_summary_for_chars(&span_chars),
             mcids: mcids_for_chars(&span_chars),
+            marked_content: marked_content_for_chars(&span_chars),
             struct_role: chunk_ref
                 .structure
                 .as_ref()
@@ -1989,6 +2042,11 @@ fn build_line_from_chunks(
             provenance,
             provenance_summary: provenance_summary_for_char_refs(&word_semantic_chars),
             mcids: mcids_for_char_refs(&word_semantic_chars),
+            marked_content: marked_content_union(
+                word_semantic_chars
+                    .iter()
+                    .filter_map(|ch| ch.marked_content),
+            ),
         });
         *global_word_index += 1;
     }
@@ -2744,6 +2802,15 @@ fn mcids_for_chars(chars: &[TextSemanticChar]) -> Vec<i64> {
     mcids_for_char_refs(&refs)
 }
 
+fn marked_content_union(ids: impl IntoIterator<Item = MarkedContentId>) -> Vec<MarkedContentId> {
+    let mut seen = HashSet::new();
+    ids.into_iter().filter(|id| seen.insert(*id)).collect()
+}
+
+fn marked_content_for_chars(chars: &[TextSemanticChar]) -> Vec<MarkedContentId> {
+    marked_content_union(chars.iter().filter_map(|ch| ch.marked_content))
+}
+
 fn mcids_for_char_refs(chars: &[&TextSemanticChar]) -> Vec<i64> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -3006,6 +3073,9 @@ fn search_semantic_document(
                     provenance,
                     provenance_summary: provenance_summary_for_char_refs(&unique_refs),
                     mcids: mcids_for_char_refs(&unique_refs),
+                    marked_content: marked_content_union(
+                        unique_refs.iter().filter_map(|ch| ch.marked_content),
+                    ),
                     role: unique_refs
                         .iter()
                         .find_map(|ch| {

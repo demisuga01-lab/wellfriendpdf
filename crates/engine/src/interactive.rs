@@ -184,7 +184,11 @@ pub struct PageBoxReport {
     pub object: String,
     pub media_box: [f64; 4],
     pub crop_box: [f64; 4],
+    pub bleed_box: [f64; 4],
+    pub trim_box: [f64; 4],
+    pub art_box: [f64; 4],
     pub rotate: i32,
+    pub user_unit: f64,
     pub annotations: usize,
 }
 
@@ -903,7 +907,11 @@ fn page_box_report(reader: &PdfReader, page: &PdfPage) -> Result<PageBoxReport> 
         object: object_ref_string((page.object_number, page.generation_number)),
         media_box: page.media_box,
         crop_box: page.crop_box,
+        bleed_box: page.bleed_box,
+        trim_box: page.trim_box,
+        art_box: page.art_box,
         rotate: page.rotate,
+        user_unit: page.user_unit,
         annotations,
     })
 }

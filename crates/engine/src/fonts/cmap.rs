@@ -1,495 +1,221 @@
-use std::collections::HashMap;
-
-use crate::filters::decode_stream_lossless;
+use super::character_code::{CharacterCode, CodeSpace};
+use super::cmap_program::{Kind, Program};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
-
+use std::collections::{BTreeMap, HashMap};
 const MAX_CMAP_MAPPINGS: usize = 65_536;
 
+/// Length-aware ToUnicode mappings. The compatibility parser exposes no partial
+/// map after malformed input; destructive consumers can inspect validate().
+#[derive(Clone)]
 pub struct ToUnicodeCMap {
-    map: HashMap<u16, String>,
-    code_size: u8,
+    program: Option<std::sync::Arc<Program>>,
+    error: Option<String>,
+    reverse: std::sync::Arc<BTreeMap<String, Vec<CharacterCode>>>,
 }
-
 impl ToUnicodeCMap {
-    pub fn parse(cmap_bytes: &[u8]) -> Self {
-        let mut parser = CMapParser {
-            bytes: cmap_bytes,
-            pos: 0,
-            map: HashMap::new(),
-            saw_two_byte_source: false,
-        };
-        parser.parse_all();
-        let code_size = if parser.saw_two_byte_source || parser.map.keys().any(|code| *code > 0xFF)
+    pub fn parse(bytes: &[u8]) -> Self {
+        match Self::try_parse(bytes) {
+            Ok(map) => map,
+            Err(error) => Self {
+                program: None,
+                error: Some(error),
+                reverse: std::sync::Arc::new(BTreeMap::new()),
+            },
+        }
+    }
+    pub fn try_parse(bytes: &[u8]) -> std::result::Result<Self, String> {
+        Program::parse(bytes, Kind::Unicode, None, true).and_then(Self::from_program)
+    }
+    pub(crate) fn load(object: &PdfObject, reader: Option<&PdfReader>) -> Self {
+        match super::cmap_stream::read(object, reader, Kind::Unicode, 0)
+            .and_then(Self::from_program)
         {
-            2
-        } else {
-            1
-        };
+            Ok(map) => map,
+            Err(error) => Self {
+                program: None,
+                error: Some(error),
+                reverse: std::sync::Arc::new(BTreeMap::new()),
+            },
+        }
+    }
+    pub(crate) fn from_program(program: Program) -> std::result::Result<Self, String> {
+        let mut reverse: BTreeMap<String, Vec<CharacterCode>> = BTreeMap::new();
+        for (index, (code, text)) in program.unicode.iter().enumerate() {
+            if index % 1024 == 0 {
+                crate::cancel::check_current_cancel("ToUnicode reverse indexing")
+                    .map_err(|e| e.to_string())?;
+            }
+            reverse.entry(text.clone()).or_default().push(*code);
+        }
+        Ok(Self {
+            program: Some(std::sync::Arc::new(program)),
+            error: None,
+            reverse: std::sync::Arc::new(reverse),
+        })
+    }
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        self.error
+            .as_ref()
+            .map_or(Ok(()), |error| Err(error.clone()))
+    }
+    pub(crate) fn failed(error: String) -> Self {
         Self {
-            map: parser.map,
-            code_size,
+            program: None,
+            error: Some(error),
+            reverse: std::sync::Arc::new(BTreeMap::new()),
         }
     }
-
+    pub(crate) fn validate_codes(&self, space: &CodeSpace) -> std::result::Result<(), String> {
+        self.validate()?;
+        if let Some(program) = &self.program {
+            if std::ptr::eq(program.space.as_ref(), space) {
+                return Ok(());
+            }
+            for (index, code) in program.unicode.keys().enumerate() {
+                if index % 1024 == 0 {
+                    crate::cancel::check_current_cancel("ToUnicode/Encoding consistency")
+                        .map_err(|e| e.to_string())?;
+                }
+                if !space.contains(*code) {
+                    return Err("ToUnicode source code contradicts font Encoding code space".into());
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn lookup_code(&self, code: CharacterCode) -> Option<&str> {
+        self.program
+            .as_ref()?
+            .unicode
+            .get(&code)
+            .map(String::as_str)
+    }
     pub fn lookup(&self, code: u16) -> Option<&str> {
-        self.map.get(&code).map(String::as_str)
+        self.lookup_code(CharacterCode::new(u32::from(code), self.code_size()).ok()?)
     }
-
+    /// Zero denotes mixed code lengths. Use space()/the resolver byte decoder.
     pub fn code_size(&self) -> u8 {
-        self.code_size
+        self.program
+            .as_ref()
+            .map_or(1, |program| program.space.fixed_length().unwrap_or(0))
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+    pub fn space(&self) -> Option<&CodeSpace> {
+        self.program.as_ref().map(|program| program.space.as_ref())
     }
-}
-
-struct CMapParser<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-    map: HashMap<u16, String>,
-    saw_two_byte_source: bool,
-}
-
-impl CMapParser<'_> {
-    fn parse_all(&mut self) {
-        while self.pos < self.bytes.len() {
-            if self.map.len() >= MAX_CMAP_MAPPINGS {
-                return;
-            }
-            self.skip_ws_and_comments();
-            if self.starts_with(b"beginbfchar") {
-                self.pos += b"beginbfchar".len();
-                self.parse_bfchar_block();
-            } else if self.starts_with(b"beginbfrange") {
-                self.pos += b"beginbfrange".len();
-                self.parse_bfrange_block();
-            } else {
-                self.pos += 1;
-            }
-        }
+    pub(crate) fn shared_space(&self) -> Option<std::sync::Arc<CodeSpace>> {
+        self.program
+            .as_ref()
+            .map(|program| std::sync::Arc::clone(&program.space))
     }
-
-    fn parse_bfchar_block(&mut self) {
-        while self.pos < self.bytes.len() {
-            if self.map.len() >= MAX_CMAP_MAPPINGS {
-                return;
-            }
-            self.skip_ws_and_comments();
-            if self.starts_with(b"endbfchar") {
-                self.pos += b"endbfchar".len();
-                return;
-            }
-            let Some(src) = parse_hex_string(self.bytes, &mut self.pos) else {
-                self.pos += 1;
-                continue;
-            };
-            let Some(dst) = parse_hex_string(self.bytes, &mut self.pos) else {
-                continue;
-            };
-            self.insert_mapping(&src, &dst);
-        }
+    pub fn codes_for_text(&self, text: &str) -> &[CharacterCode] {
+        self.reverse.get(text).map(Vec::as_slice).unwrap_or(&[])
     }
-
-    fn parse_bfrange_block(&mut self) {
-        while self.pos < self.bytes.len() {
-            if self.map.len() >= MAX_CMAP_MAPPINGS {
-                return;
+    pub(crate) fn matching_prefixes(
+        &self,
+        text: &str,
+        work: &mut usize,
+    ) -> std::result::Result<Vec<(usize, CharacterCode)>, String> {
+        let Some(first) = text.chars().next() else {
+            return Ok(Vec::new());
+        };
+        let prefix = first.to_string();
+        let mut out = Vec::new();
+        for (index, (logical, codes)) in self.reverse.range(prefix.clone()..).enumerate() {
+            if index % 1024 == 0 {
+                crate::cancel::check_current_cancel("ToUnicode reverse matching")
+                    .map_err(|e| e.to_string())?;
             }
-            self.skip_ws_and_comments();
-            if self.starts_with(b"endbfrange") {
-                self.pos += b"endbfrange".len();
-                return;
-            }
-            let Some(start_bytes) = parse_hex_string(self.bytes, &mut self.pos) else {
-                self.pos += 1;
-                continue;
-            };
-            let Some(end_bytes) = parse_hex_string(self.bytes, &mut self.pos) else {
-                continue;
-            };
-            let start_code = source_code(&start_bytes);
-            let end_code = source_code(&end_bytes);
-            self.record_source_len(&start_bytes);
-            self.record_source_len(&end_bytes);
-            if end_code < start_code {
-                continue;
-            }
-
-            self.skip_ws_and_comments();
-            if self.peek() == Some(b'[') {
-                let destinations = parse_bfrange_array(self.bytes, &mut self.pos);
-                for (offset, dst) in destinations.into_iter().enumerate() {
-                    if self.map.len() >= MAX_CMAP_MAPPINGS {
-                        break;
-                    }
-                    let code = start_code.saturating_add(offset as u16);
-                    if code > end_code {
-                        break;
-                    }
-                    self.map.insert(code, utf16be_to_string(&dst));
-                }
-            } else if let Some(dst) = parse_hex_string(self.bytes, &mut self.pos) {
-                for code in start_code..=end_code {
-                    if self.map.len() >= MAX_CMAP_MAPPINGS {
-                        break;
-                    }
-                    let offset = code.saturating_sub(start_code);
-                    let mapped = increment_utf16be(&dst, offset);
-                    self.map.insert(code, utf16be_to_string(&mapped));
-                }
-            }
-        }
-    }
-
-    fn insert_mapping(&mut self, src: &[u8], dst: &[u8]) {
-        if self.map.len() >= MAX_CMAP_MAPPINGS {
-            return;
-        }
-        self.record_source_len(src);
-        self.map.insert(source_code(src), utf16be_to_string(dst));
-    }
-
-    fn record_source_len(&mut self, src: &[u8]) {
-        if src.len() > 1 {
-            self.saw_two_byte_source = true;
-        }
-    }
-
-    fn skip_ws_and_comments(&mut self) {
-        loop {
-            while self.peek().is_some_and(is_ps_whitespace) {
-                self.pos += 1;
-            }
-            if self.peek() == Some(b'%') {
-                while let Some(byte) = self.peek() {
-                    self.pos += 1;
-                    if byte == b'\r' || byte == b'\n' {
-                        break;
-                    }
-                }
-            } else {
+            if !logical.starts_with(&prefix) {
                 break;
             }
-        }
-    }
-
-    fn starts_with(&self, needle: &[u8]) -> bool {
-        self.bytes
-            .get(self.pos..self.pos + needle.len())
-            .is_some_and(|slice| slice.eq_ignore_ascii_case(needle))
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.pos).copied()
-    }
-}
-
-fn parse_hex_string(bytes: &[u8], pos: &mut usize) -> Option<Vec<u8>> {
-    skip_ws_and_comments(bytes, pos);
-    if bytes.get(*pos).copied() != Some(b'<') || bytes.get(*pos + 1).copied() == Some(b'<') {
-        return None;
-    }
-    *pos += 1;
-    let mut out = Vec::new();
-    let mut high = None;
-    while let Some(byte) = bytes.get(*pos).copied() {
-        *pos += 1;
-        if byte == b'>' {
-            if let Some(high_nibble) = high {
-                out.push(high_nibble << 4);
+            *work = work
+                .saturating_add(logical.len())
+                .saturating_add(codes.len());
+            if *work > 16_000_000 {
+                return Err("source CMap reverse matching budget".into());
             }
-            return Some(out);
+            if text.starts_with(logical) {
+                out.extend(codes.iter().map(|code| (logical.len(), *code)));
+            }
         }
-        if is_ps_whitespace(byte) {
-            continue;
-        }
-        let Some(value) = hex_value(byte) else {
-            continue;
-        };
-        match high.take() {
-            Some(high_nibble) => out.push((high_nibble << 4) | value),
-            None => high = Some(value),
-        }
+        Ok(out)
     }
-    None
+    pub fn is_empty(&self) -> bool {
+        self.program
+            .as_ref()
+            .is_none_or(|program| program.unicode.is_empty())
+    }
 }
 
-fn parse_bfrange_array(bytes: &[u8], pos: &mut usize) -> Vec<Vec<u8>> {
-    skip_ws_and_comments(bytes, pos);
-    if bytes.get(*pos).copied() != Some(b'[') {
-        return Vec::new();
-    }
-    *pos += 1;
-    let mut values = Vec::new();
-    while *pos < bytes.len() {
-        skip_ws_and_comments(bytes, pos);
-        if bytes.get(*pos).copied() == Some(b']') {
-            *pos += 1;
-            break;
-        }
-        if let Some(hex) = parse_hex_string(bytes, pos) {
-            values.push(hex);
-        } else {
-            *pos += 1;
-        }
-    }
-    values
+/// Compatibility projection for clients needing one scalar per numeric code.
+/// Multi-scalar mappings and numeric values with conflicting encoded lengths
+/// are omitted; the length-aware ToUnicodeCMap is the authoritative interface.
+pub fn parse_to_unicode_cmap(bytes: &[u8]) -> HashMap<u32, char> {
+    scalar_projection(&ToUnicodeCMap::parse(bytes))
 }
-
-fn skip_ws_and_comments(bytes: &[u8], pos: &mut usize) {
-    loop {
-        while bytes.get(*pos).copied().is_some_and(is_ps_whitespace) {
-            *pos += 1;
+fn scalar_projection(map: &ToUnicodeCMap) -> HashMap<u32, char> {
+    let Some(program) = &map.program else {
+        return HashMap::new();
+    };
+    let mut scalars: BTreeMap<u32, Option<char>> = BTreeMap::new();
+    for (index, (code, text)) in program.unicode.iter().enumerate() {
+        if index % 1024 == 0
+            && crate::cancel::check_current_cancel("ToUnicode scalar projection").is_err()
+        {
+            return HashMap::new();
         }
-        if bytes.get(*pos).copied() == Some(b'%') {
-            while let Some(byte) = bytes.get(*pos).copied() {
-                *pos += 1;
-                if byte == b'\r' || byte == b'\n' {
-                    break;
+        let mut chars = text.chars();
+        let first = chars.next();
+        let scalar = if chars.next().is_none() { first } else { None };
+        scalars
+            .entry(code.value())
+            .and_modify(|old| {
+                if *old != scalar {
+                    *old = None
                 }
-            }
-        } else {
-            break;
-        }
+            })
+            .or_insert(scalar);
     }
-}
-
-fn source_code(bytes: &[u8]) -> u16 {
-    match bytes {
-        [] => 0,
-        [one] => u16::from(*one),
-        [high, low, ..] => (u16::from(*high) << 8) | u16::from(*low),
-    }
-}
-
-fn increment_utf16be(bytes: &[u8], offset: u16) -> Vec<u8> {
-    if bytes.len() < 2 {
-        return bytes.to_vec();
-    }
-    let mut out = bytes.to_vec();
-    let last = out.len() - 2;
-    let value = u16::from_be_bytes([out[last], out[last + 1]]).wrapping_add(offset);
-    let encoded = value.to_be_bytes();
-    out[last] = encoded[0];
-    out[last + 1] = encoded[1];
-    out
-}
-
-fn utf16be_to_string(bytes: &[u8]) -> String {
-    if bytes.len() == 1 {
-        return char::from_u32(u32::from(bytes[0]))
-            .unwrap_or('\u{FFFD}')
-            .to_string();
-    }
-    let mut units = Vec::new();
-    let mut idx = 0;
-    while idx < bytes.len() {
-        let high = bytes[idx];
-        let low = bytes.get(idx + 1).copied().unwrap_or(0);
-        units.push(u16::from_be_bytes([high, low]));
-        idx += 2;
-    }
-    char::decode_utf16(units)
-        .map(|item| item.unwrap_or('\u{FFFD}'))
+    scalars
+        .into_iter()
+        .filter_map(|(code, ch)| ch.map(|ch| (code, ch)))
+        .take(MAX_CMAP_MAPPINGS)
         .collect()
 }
-
-fn is_ps_whitespace(byte: u8) -> bool {
-    matches!(byte, 0x00 | b'\t' | b'\n' | 0x0C | b'\r' | b' ')
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// Parse a ToUnicode CMap stream into a CID-to-Unicode map.
-pub fn parse_to_unicode_cmap(cmap_bytes: &[u8]) -> HashMap<u32, char> {
-    let mut map = HashMap::new();
-    let text = std::str::from_utf8(cmap_bytes).unwrap_or("");
-
-    for block in cmap_blocks(text, "beginbfchar", "endbfchar") {
-        for line in block.lines() {
-            parse_bf_char_line(line.trim(), &mut map);
-        }
-    }
-
-    for block in cmap_blocks(text, "beginbfrange", "endbfrange") {
-        for line in block.lines() {
-            parse_bf_range_line(line.trim(), &mut map);
-        }
-    }
-
-    map
-}
-
 pub fn extract_to_unicode_map(
-    font_dict: &PdfDictionary,
+    font: &PdfDictionary,
     reader: &PdfReader,
 ) -> Option<HashMap<u32, char>> {
-    let object = font_dict.get("ToUnicode")?;
-    let resolved = reader.resolve(object.clone()).ok()?;
-    let PdfObject::Stream { dict, raw } = resolved else {
-        return None;
-    };
-    let raw_fallback = raw.clone();
-    let stream = PdfObject::Stream { dict, raw };
-    let decoded = decode_stream_lossless(&stream, reader)
-        .map(|decoded| decoded.data)
-        .unwrap_or(raw_fallback);
-    Some(parse_to_unicode_cmap(&decoded))
+    let map = ToUnicodeCMap::load(font.get("ToUnicode")?, Some(reader));
+    map.validate().ok()?;
+    Some(scalar_projection(&map))
 }
-
-fn cmap_blocks<'a>(text: &'a str, begin: &str, end: &str) -> Vec<&'a str> {
-    let mut blocks = Vec::new();
-    let mut pos = 0usize;
-    while pos < text.len() {
-        let Some(start_rel) = find_ascii_case_insensitive(&text[pos..], begin) else {
-            break;
-        };
-        let block_start = pos + start_rel + begin.len();
-        let end_rel = find_ascii_case_insensitive(&text[block_start..], end)
-            .unwrap_or(text.len() - block_start);
-        let block_end = block_start + end_rel;
-        blocks.push(&text[block_start..block_end]);
-        pos = block_end.saturating_add(end.len());
-    }
-    blocks
-}
-
-fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
-    let haystack = haystack.as_bytes();
-    let needle = needle.as_bytes();
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window.eq_ignore_ascii_case(needle))
-}
-
+#[cfg(test)]
 fn parse_bf_char_line(line: &str, map: &mut HashMap<u32, char>) {
     if map.len() >= MAX_CMAP_MAPPINGS {
         return;
     }
-    let hexes = extract_hex_values(line);
-    if hexes.len() < 2 {
-        return;
-    }
-    let Some(cid) = parse_hex(hexes[0]) else {
-        return;
-    };
-    if let Some(unicode) = parse_unicode_hex(hexes[1]) {
-        map.insert(cid, unicode);
-    }
-}
-
-fn parse_bf_range_line(line: &str, map: &mut HashMap<u32, char>) {
-    let parts = extract_hex_values(line);
-    if parts.len() < 3 {
-        return;
-    }
-    let (Some(cid_start), Some(cid_end)) = (parse_hex(parts[0]), parse_hex(parts[1])) else {
-        return;
-    };
-    if cid_end < cid_start || cid_end.saturating_sub(cid_start) > 65_535 {
-        return;
-    }
-
-    if line.contains('[') {
-        let arr_start = line.find('[').unwrap_or(line.len());
-        let arr_end = line[arr_start..]
-            .find(']')
-            .map(|offset| arr_start + offset)
-            .unwrap_or(line.len());
-        if arr_start >= arr_end {
-            return;
-        }
-        let arr_str = &line[arr_start + 1..arr_end];
-        for (offset, unicode_hex) in extract_hex_values(arr_str).iter().enumerate() {
-            if map.len() >= MAX_CMAP_MAPPINGS {
-                break;
-            }
-            let cid = cid_start.saturating_add(offset as u32);
-            if cid > cid_end {
-                break;
-            }
-            if let Some(ch) = parse_unicode_hex(unicode_hex) {
-                map.insert(cid, ch);
-            }
-        }
-    } else {
-        let Some(unicode_start) = parse_hex(parts[2]) else {
-            return;
-        };
-        for cid in cid_start..=cid_end {
-            if map.len() >= MAX_CMAP_MAPPINGS {
-                break;
-            }
-            let unicode_val = unicode_start.saturating_add(cid - cid_start);
-            if let Some(ch) = char::from_u32(unicode_val) {
-                map.insert(cid, ch);
-            }
-        }
-    }
-}
-
-fn extract_hex_values(s: &str) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut rest = s;
-    while let Some(start) = rest.find('<') {
-        rest = &rest[start + 1..];
-        if rest.starts_with('<') {
-            rest = &rest[1..];
-            continue;
-        }
-        let Some(end) = rest.find('>') else {
+    let parsed = parse_to_unicode_cmap(format!("1 beginbfchar {line} endbfchar").as_bytes());
+    for (code, ch) in parsed {
+        if map.len() >= MAX_CMAP_MAPPINGS {
             break;
-        };
-        result.push(&rest[..end]);
-        rest = &rest[end + 1..];
-    }
-    result
-}
-
-fn parse_hex(s: &str) -> Option<u32> {
-    u32::from_str_radix(s.trim(), 16).ok()
-}
-
-fn parse_unicode_hex(s: &str) -> Option<char> {
-    let bytes = hex_string_to_bytes(s)?;
-    if bytes.is_empty() {
-        return None;
-    }
-    if bytes.len() == 1 {
-        return char::from_u32(u32::from(bytes[0]));
-    }
-    utf16be_to_string(&bytes).chars().next()
-}
-
-fn hex_string_to_bytes(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut high = None;
-    for byte in s.bytes() {
-        if is_ps_whitespace(byte) {
-            continue;
         }
-        let value = hex_value(byte)?;
-        match high.take() {
-            Some(high_nibble) => out.push((high_nibble << 4) | value),
-            None => high = Some(value),
+        map.insert(code, ch);
+    }
+}
+#[cfg(test)]
+fn parse_bf_range_line(line: &str, map: &mut HashMap<u32, char>) {
+    if map.len() >= MAX_CMAP_MAPPINGS {
+        return;
+    }
+    let parsed = parse_to_unicode_cmap(format!("1 beginbfrange {line} endbfrange").as_bytes());
+    for (code, ch) in parsed {
+        if map.len() >= MAX_CMAP_MAPPINGS {
+            break;
         }
+        map.insert(code, ch);
     }
-    if let Some(high_nibble) = high {
-        out.push(high_nibble << 4);
-    }
-    Some(out)
 }
 
 #[cfg(test)]

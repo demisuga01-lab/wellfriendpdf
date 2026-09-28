@@ -36,6 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              for local development ONLY — set WELLFRIENDPDF_CORS_ALLOWED_ORIGINS in prod."
         );
     }
+    if !config.receipt_authentication_enabled() {
+        tracing::warn!(
+            "WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX is unset: authenticated paint-partition \
+             preview/apply endpoints are disabled"
+        );
+    }
 
     let _ = wellfriendpdf_server::config::CONFIG.set(config);
     let config = wellfriendpdf_server::config::get_config();

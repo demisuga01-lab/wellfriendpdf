@@ -470,7 +470,7 @@ impl ImageLocator {
                 WellfriendError::MalformedPdf(
                     "occurrence-owned inline image source has no pixel payload".to_string(),
                 )
-        })?;
+            })?;
         let params = Self::parse_inline_image_params(&id.operands);
         let reference = Self::inline_ref_from_params(page_number, 0, &params, Some(pixel_bytes))?;
         let filter_count = reference.filter.len();
@@ -512,7 +512,10 @@ impl ImageLocator {
             .transpose()?;
         let mut image_dictionary = PdfDictionary::empty();
         for (key, value) in &params.values {
-            image_dictionary.insert(Self::inline_full_key(key), Self::inline_operand_object(value)?);
+            image_dictionary.insert(
+                Self::inline_full_key(key),
+                Self::inline_operand_object(value)?,
+            );
         }
         Ok(InlineImageDecodeDetails {
             reference,

@@ -2,6 +2,64 @@ use crate::filters::decode_stream_lossless;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 
+/// Cache native CID -> GID for sfnt-wrapped CFF1. Bare CFF uses the existing
+/// rasterizer's charset path; mapping it here too would map the value twice.
+pub(crate) fn sfnt_cff_gid_map(
+    desc: Option<&PdfDictionary>,
+    reader: Option<&PdfReader>,
+) -> std::result::Result<Option<Vec<u16>>, String> {
+    let Some(desc) = desc.filter(|d| d.get_name("Subtype") == Some("CIDFontType0")) else {
+        return Ok(None);
+    };
+    let resolve = |obj: &PdfObject| {
+        reader.map_or_else(
+            || Ok(obj.clone()),
+            |r| r.resolve(obj.clone()).map_err(|e| e.to_string()),
+        )
+    };
+    let Some(descriptor) = desc.get("FontDescriptor") else {
+        return Ok(None);
+    };
+    let descriptor = resolve(descriptor)?;
+    let Some(file) = descriptor.as_dict().and_then(|d| d.get("FontFile3")) else {
+        return Ok(None);
+    };
+    let stream = resolve(file)?;
+    let PdfObject::Stream { dict, raw } = &stream else {
+        return Err("invalid CFF font file".into());
+    };
+    if dict.get_name("Subtype") != Some("OpenType") {
+        return Ok(None);
+    }
+    let bytes = match reader {
+        Some(reader) => {
+            decode_stream_lossless(&stream, reader)
+                .map_err(|e| e.to_string())?
+                .data
+        }
+        None => crate::filters::decode_stream_from_dict(dict, raw).map_err(|e| e.to_string())?,
+    };
+    if bytes.len() > 256 * 1024 * 1024 {
+        return Err("CFF program size limit".into());
+    }
+    let face = ttf_parser::Face::parse(&bytes, 0)
+        .map_err(|_| "invalid OpenType CFF container".to_string())?;
+    let cff = face
+        .raw_face()
+        .table(ttf_parser::Tag::from_bytes(b"CFF "))
+        .ok_or_else(|| "OpenType CIDFontType0 has no CFF1 table".to_string())?;
+    let identity = super::pdf_embedding::CffIdentity::parse(cff).map_err(|e| e.to_string())?;
+    if identity.gid_to_cid.len() != usize::from(face.number_of_glyphs()) {
+        return Err("CFF and maxp glyph counts differ".into());
+    }
+    let max = identity.gid_to_cid.iter().copied().max().unwrap_or(0);
+    let mut map = vec![0; usize::from(max) + 1];
+    for (gid, cid) in identity.gid_to_cid.into_iter().enumerate() {
+        map[usize::from(cid)] = gid as u16;
+    }
+    Ok(Some(map))
+}
+
 /// Map a CID to a TrueType glyph id for CIDFontType2 descendants.
 ///
 /// `/CIDToGIDMap /Identity` means CID == GID. When the map is a stream, it is a
@@ -65,6 +123,43 @@ mod tests {
     use super::*;
     use crate::engine::ContentEngine;
     use crate::fonts::resolver::get_descendant_font;
+
+    fn cff_descriptor(bytes: Vec<u8>, subtype: &str) -> PdfDictionary {
+        let mut file = PdfDictionary::empty();
+        file.insert("Subtype", PdfObject::Name(subtype.into()));
+        let mut descriptor = PdfDictionary::empty();
+        descriptor.insert(
+            "FontFile3",
+            PdfObject::Stream {
+                dict: file,
+                raw: bytes,
+            },
+        );
+        let mut descendant = PdfDictionary::empty();
+        descendant.insert("Subtype", PdfObject::Name("CIDFontType0".into()));
+        descendant.insert("FontDescriptor", PdfObject::Dictionary(descriptor));
+        descendant
+    }
+
+    #[test]
+    fn sfnt_cff_native_cids_map_once_and_reading_does_not_require_edit_permissions() {
+        let bytes = crate::fonts::pdf_embedding_fixtures::font(true, 4);
+        let desc = cff_descriptor(bytes, "OpenType");
+        let map = sfnt_cff_gid_map(Some(&desc), None).unwrap().unwrap();
+        assert_eq!(map[42], 1);
+        assert_eq!(map[7], 2);
+        assert_eq!(map[1000], 3);
+        assert_eq!(map[8], 0);
+    }
+
+    #[test]
+    fn bare_cff_keeps_its_rasterizer_owned_cid_mapping() {
+        let desc = cff_descriptor(
+            crate::fonts::pdf_embedding_fixtures::cff(true),
+            "CIDFontType0C",
+        );
+        assert!(sfnt_cff_gid_map(Some(&desc), None).unwrap().is_none());
+    }
 
     #[test]
     fn cid_to_gid_map_bytes_are_big_endian_pairs() {

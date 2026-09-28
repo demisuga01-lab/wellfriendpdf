@@ -27,7 +27,61 @@ docx_bytes = wellfriendpdf.pdf_to_docx("input.pdf", output="input.docx")
 pdf_bytes = wellfriendpdf.docx_to_pdf("input.docx", output="from_docx.pdf")
 ```
 
-### Report surfaces
+### ECBES universal transaction
+
+`doc.ecbes_universal_edit(request_json, output=...)` materializes the bounded
+canonical universal-edit candidates declared in the request from the same input
+revision and returns `(selected_pdf_bytes, report)`. If no candidate qualifies,
+the bytes are the exact original transport. Optional `output_user_password` and
+`output_owner_password` select the apply-only secured-output entry point; secrets
+are not serialized. See
+[`docs/research/evidence_constrained_bidirectional_edit_synthesis.md`](../../docs/research/evidence_constrained_bidirectional_edit_synthesis.md).
+
+### Retained editing sessions (source-only, not runtime-qualified)
+
+`StoryEditSession` keeps a PDF revision and bounded checkpoint history in memory.
+It uses the shared native story protocol, not a second Python PDF writer.
+
+```python
+import json
+
+with wellfriendpdf.StoryEditSession(pdf_bytes) as editor:
+    status = json.loads(editor.status_json())
+    sources = json.loads(editor.command_json('{"op":"source_model","page":1}'))
+    # request must bind this revision, exact source ranges and approved fonts.
+    reviewed = json.loads(editor.preview_json(json.dumps(request)))
+    # Obtain the user's approval of reviewed["preview"] before checkpointing.
+    report = json.loads(editor.checkpoint_json(
+        json.dumps(request), json.dumps(reviewed["receipt"])))
+    output_pdf = editor.bytes()
+    editor.undo()  # exact pre-checkpoint bytes; invalidates the old receipt
+    editor.redo()
+```
+
+All discovery, table synchronization and conservative merge operations are
+available through `command_json`; see [the protocol](../../docs/native_story_sessions.md).
+Rendering is only performed by an explicit `render_page_png(page, dpi=96)` call,
+bounded to 300 DPI / 16 million pixels. Input must be immutable Python `bytes`
+(1..=256 MiB); JSON commands are at most 32 MiB. Output PDFs/PNGs are independent
+`bytes`, JSON methods return strings, and `undo`/`redo` return booleans.
+
+Commands, preview, checkpoint, undo/redo, construction and rendering accept the
+optional existing `RenderCancellation` token. Native work detaches from the
+Python interpreter so another thread can signal it. Session calls are protected
+by a nonblocking mutex: concurrent calls, including close, fail as busy rather
+than wait; retry only after the active call completes. Sequential cross-thread
+use is allowed. `close()` is idempotent and a context manager closes on exit.
+Unwinding panics poison the retained session; close and reopen known bytes.
+No guarantee is made for aborting panics, OOM, native codec interruption or
+free-threaded wheel compatibility. Cancellation is never checked after a
+successfully published checkpoint in order to reclassify success as failure.
+
+This convenience session does not supply encryption credentials or bypass
+signature policies. It does not write paths or confer user authorization.
+No Python imports, tests, native builds, rendering or PDF workloads were run
+for this source addition. [Implementation report](../../docs/python_story_sessions.md).
+
+### Document reports
 
 Every report method returns a native dict (versioned-JSON envelope
 `{"schema_version", "kind", "report"}`), backed by the shared
@@ -51,6 +105,9 @@ doc.semantic_search("invoice") # semantic + dictionary-token provenance
 doc.image_decode_capability_report()
 doc.progressive_image_decode_lifecycle_report('{"image_index":0}')
 doc.table_proposal_status()    # hook/runtime/privacy status, no model load
+sources = doc.authored_typed_table_sources()
+data, rep = doc.mutate_authored_typed_table(request_json, font_bytes=None)
+# request_json may set prune_empty_continuations=true; retained pages include reasons
 
 # Output-producing (return (bytes, report)):
 data, rep = doc.sanitize(policy="balanced", output="clean.pdf")
@@ -171,3 +228,32 @@ instead of aborting the interpreter.
 
 Cross-platform prebuilt wheels are future CI work; the local platform wheel is
 built with maturin.
+
+### Revision-bound text paint partitions (source-only, unqualified)
+
+`Document.propose_text_range_paint_partitions(request_json)` returns a parsed,
+non-mutating proposal bound to the exact input and request. Review every
+candidate region/final-line layout, serialize the proposal envelope and an
+approval carrying the same `proposal_id`, then call
+`apply_text_range_paint_partitions(..., font_bytes=None)`. Optional approved
+font bytes drive shaping, measurement and PDF embedding when the retained
+source program lacks coverage. The engine recomputes the canonical proposal
+before mutation and rejects stale, altered, missing or reordered approvals.
+When `font_bytes` is supplied, the approval must carry its lowercase SHA-256 as
+`font_sha256`.
+Interactive hosts should use `preview_text_range_paint_partitions`, display its
+PNG evidence, and pass `report["publication_receipt"]` to
+`apply_reviewed_text_range_paint_partitions`; mismatched output is withheld.
+Trusted native hosts may call
+`wellfriendpdf.authenticate_text_range_paint_partition_receipt` and
+`wellfriendpdf.verify_authenticated_text_range_paint_partition_receipt` with a
+32..=256-byte HMAC-SHA-256 key. Do not expose a server-held key to untrusted
+Python plugin/client code; remote clients should use the authenticated HTTP
+preview/apply endpoints.
+This binding path has not been compiled or executed in the current source-only
+phase.
+
+Every SDK-backed Python document route whose native facade accepts an input
+password now forwards the retained zeroizing credential, including reflow,
+standards, XFA, signatures, semantics, redaction, associated files and
+sanitation. It is not serialized into reports or reused for output encryption.

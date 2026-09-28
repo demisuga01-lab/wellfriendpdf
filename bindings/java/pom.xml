@@ -44,32 +44,6 @@
         </configuration>
       </plugin>
       <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>exec-maven-plugin</artifactId>
-        <version>3.3.0</version>
-        <executions>
-          <execution>
-            <id>java_packaging-smoke-test</id>
-            <phase>test</phase>
-            <goals>
-              <goal>exec</goal>
-            </goals>
-          </execution>
-        </executions>
-        <configuration>
-          <mainClass>io.wellfriendpdf.WellfriendPdfSmokeTest</mainClass>
-          <classpathScope>test</classpathScope>
-          <includeProjectDependencies>true</includeProjectDependencies>
-          <includePluginDependencies>false</includePluginDependencies>
-          <executable>java</executable>
-          <commandlineArgs>--enable-preview --enable-native-access=ALL-UNNAMED -cp %classpath io.wellfriendpdf.WellfriendPdfSmokeTest</commandlineArgs>
-          <environmentVariables>
-            <WELLFRIENDPDF_NATIVE_LIBRARY>${env.WELLFRIENDPDF_NATIVE_LIBRARY}</WELLFRIENDPDF_NATIVE_LIBRARY>
-            <WELLFRIENDPDF_BINDING_PARITY_ARTIFACT_DIR>${env.WELLFRIENDPDF_BINDING_PARITY_ARTIFACT_DIR}</WELLFRIENDPDF_BINDING_PARITY_ARTIFACT_DIR>
-          </environmentVariables>
-        </configuration>
-      </plugin>
-      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>

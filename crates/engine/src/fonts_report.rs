@@ -841,14 +841,14 @@ fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
             diagnostics.push(FontDiagnostic {
                 severity: "info",
                 code: "font.cmap.predefined.used",
-                message: format!("Predefined CMap {name} is covered by bounded built-in metadata"),
+                message: format!("Predefined CMap {name} has a pinned built-in mapping resource; font collection compatibility and output still require validation"),
             });
         } else if predefined_cmap::looks_like_predefined_name(name) {
             diagnostics.push(FontDiagnostic {
                 severity: "warning",
                 code: "font.cmap.predefined.unsupported",
                 message: format!(
-                    "Predefined CMap {name} is not bundled; extraction/rendering use fallback mapping"
+                    "Predefined CMap {name} is not bundled; CID decoding refuses to assume an identity mapping"
                 ),
             });
         }

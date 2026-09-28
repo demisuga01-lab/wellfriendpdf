@@ -488,6 +488,21 @@ pub fn validate_ext_g_state_render_metadata(
     dict: &PdfDictionary,
     label: &str,
 ) -> std::result::Result<(), String> {
+    validate_ext_g_state_metadata(dict, label, true)
+}
+
+fn validate_ext_g_state_text_metadata(
+    dict: &PdfDictionary,
+    label: &str,
+) -> std::result::Result<(), String> {
+    validate_ext_g_state_metadata(dict, label, false)
+}
+
+fn validate_ext_g_state_metadata(
+    dict: &PdfDictionary,
+    label: &str,
+    require_identity_transfer: bool,
+) -> std::result::Result<(), String> {
     validate_ext_g_state_type(dict, label)?;
     validate_ext_g_state_unit_alpha(dict, "ca", label)?;
     validate_ext_g_state_unit_alpha(dict, "CA", label)?;
@@ -503,8 +518,16 @@ pub fn validate_ext_g_state_render_metadata(
     validate_ext_g_state_bool(dict, "SA", label)?;
     validate_ext_g_state_bool(dict, "AIS", label)?;
     validate_ext_g_state_bool(dict, "TK", label)?;
-    validate_ext_g_state_identity_transfer(dict, "TR", label)?;
-    validate_ext_g_state_identity_transfer(dict, "TR2", label)?;
+    // Transfer functions affect painted colour, not text decoding, text
+    // matrices, advances, or visibility.  Renderers must still fail closed
+    // when this compact graphics state cannot represent a non-identity
+    // transfer function.  Text collectors, however, must not reject a valid
+    // PDF merely because (for example) it uses the spec-defined
+    // `/TR2 /Default` value.
+    if require_identity_transfer {
+        validate_ext_g_state_identity_transfer(dict, "TR", label)?;
+        validate_ext_g_state_identity_transfer(dict, "TR2", label)?;
+    }
     validate_ext_g_state_nonnegative_number(dict, "FL", label)?;
     validate_ext_g_state_nonnegative_number(dict, "SM", label)?;
     validate_ext_g_state_dash_object(dict, label)?;
@@ -958,6 +981,12 @@ impl GraphicsState {
         self.stack.len()
     }
 
+    /// Enter a separately executed content program with the current state but
+    /// without allowing its Q operators to consume its caller's saved states.
+    pub(crate) fn clear_saved_states(&mut self) {
+        self.stack.clear();
+    }
+
     pub fn process(&mut self, op: &ContentOperation) {
         match op.operator.as_str() {
             "q" => self.push(),
@@ -1120,6 +1149,21 @@ impl GraphicsState {
         Ok(())
     }
 
+    /// Apply the subset of an ExtGState that can affect text extraction.
+    ///
+    /// Transfer functions are deliberately not required to be identity here:
+    /// they affect painted colour only.  Render paths continue to use
+    /// `try_apply_ext_g_state`, whose validation remains fail-closed.
+    pub fn try_apply_ext_g_state_for_text(
+        &mut self,
+        dict: &PdfDictionary,
+        label: &str,
+    ) -> std::result::Result<(), String> {
+        validate_ext_g_state_text_metadata(dict, label)?;
+        self.apply_ext_g_state(dict);
+        Ok(())
+    }
+
     pub fn text_position(&self) -> (f64, f64) {
         (self.text.tm[4], self.text.tm[5])
     }
@@ -1256,9 +1300,9 @@ impl GraphicsState {
         if let Some(name) = op.name(0) {
             self.stroke_color_space = color_space_from_name(name);
             self.stroke_color = default_color_for(&self.stroke_color_space);
-            if !self.stroke_color_space.is_pattern() {
-                self.stroke_pattern_name = None;
-            }
+            // CS always selects the new space's initial colour. For Pattern,
+            // that is no paint, not the previously selected pattern.
+            self.stroke_pattern_name = None;
         }
     }
 
@@ -1266,9 +1310,7 @@ impl GraphicsState {
         if let Some(name) = op.name(0) {
             self.fill_color_space = color_space_from_name(name);
             self.fill_color = default_color_for(&self.fill_color_space);
-            if !self.fill_color_space.is_pattern() {
-                self.fill_pattern_name = None;
-            }
+            self.fill_pattern_name = None;
         }
     }
 
@@ -1418,14 +1460,20 @@ pub fn color_space_from_name(name: &str) -> ColorSpace {
 pub fn default_color_for(cs: &ColorSpace) -> Color {
     Color {
         space: cs.clone(),
-        components: vec![0.0; cs.component_count()],
+        components: if matches!(cs, ColorSpace::DeviceCMYK) {
+            vec![0.0, 0.0, 0.0, 1.0]
+        } else {
+            vec![0.0; cs.component_count()]
+        },
     }
 }
 
 fn numeric_components(op: &ContentOperation) -> Vec<f64> {
+    // SC/SCN values belong to the selected colour space. Lab coordinates and
+    // Indexed palette indices are not unit components. Resource-aware colour
+    // conversion performs the appropriate range clipping later.
     (0..op.operands.len())
         .filter_map(|i| op.number(i))
-        .map(|value| value.clamp(0.0, 1.0))
         .collect()
 }
 
@@ -1558,6 +1606,34 @@ mod tests {
         assert_eq!(gs.text.font_size, 13.0);
         assert_eq!(gs.dash.pattern, vec![3.0, 1.0]);
         assert_eq!(gs.dash.phase, 2.0);
+    }
+
+    #[test]
+    fn text_ext_gstate_accepts_valid_default_transfer_without_weakening_render_validation() {
+        let mut ext = PdfDictionary::empty();
+        ext.insert("TR2", PdfObject::Name("Default".to_string()));
+        ext.insert("ca", PdfObject::Real(0.25));
+        ext.insert(
+            "Font",
+            PdfObject::Array(vec![
+                PdfObject::Name("FArabic".to_string()),
+                PdfObject::Real(12.0),
+            ]),
+        );
+
+        let mut text_state = GraphicsState::new();
+        text_state
+            .try_apply_ext_g_state_for_text(&ext, "ExtGState /GS1")
+            .expect("valid paint-only transfer metadata must not block text extraction");
+        assert_eq!(text_state.fill_alpha, 0.25);
+        assert_eq!(text_state.text.font_name, "FArabic");
+        assert_eq!(text_state.text.font_size, 12.0);
+
+        let mut render_state = GraphicsState::new();
+        let err = render_state
+            .try_apply_ext_g_state(&ext, "ExtGState /GS1")
+            .expect_err("render validation must continue to fail closed");
+        assert!(err.contains("/TR2 must be /Identity"), "{err}");
     }
 
     #[test]

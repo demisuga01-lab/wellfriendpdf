@@ -8,18 +8,17 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::editing::{AttachmentRedactionPolicy, ImageRedactionPolicy, RedactionOptions};
 use crate::security::{canonicalize_pdf, sanitize_pdf, CanonicalizeOptions, SanitizerOptions};
 use crate::semantic::{extract_semantic_document, SemanticDocument, SemanticElement};
 use crate::semantic_intelligence::{recover_parenttree_semantics, ParentTreeRecoveryReport};
 use crate::versioning::resource_digest;
-use crate::writer::{rewrite_document_objects, OutputObject, PdfWriter, WriterMode};
+use crate::writer::WriterMode;
 use crate::{
     improve_pdfua_best_effort, interactive_report, validate_pdfua, Color, ContentEngine, EditMode,
-    ImageRect, PdfDictionary, PdfEditor, PdfObject, Result, TextQuad, TextSearchOptions,
-    WellfriendError,
+    ImageRect, PdfEditor, PdfObject, Result, TextQuad, TextSearchOptions, WellfriendError,
 };
 
 pub const DOCUMENT_SECURITY_SCHEMA_VERSION: &str =
@@ -311,12 +310,12 @@ pub struct ResidualFinding {
 pub fn document_security_feature_matrix() -> Value {
     json!({
         "schema_version": DOCUMENT_SECURITY_SCHEMA_VERSION,
-        "verdict": "implementation complete_validation_deferred",
+        "verdict": "bounded_source_implementation_validation_deferred",
         "implementation_scope": {
             "tagged_pdf_model": "canonical semantic/StructTreeRoot extraction plus DocumentSecurity source mutation",
             "marked_content_mcid": "existing collector plus bounded structure metadata and ParentTree rebuild output",
-            "parent_tree_mcr_objr": "ParentTree rebuild and stale-structure verification reports",
-            "accessibility_repair": "PDF/UA-oriented language/MarkInfo/StructTree repair and SourceEditing-34 hook reporting",
+            "parent_tree_mcr_objr": "owner-indexed MCID arrays and OBJR entries, IDTree rebuild and reopened-output ownership validation",
+            "accessibility_repair": "language/MarkInfo and existing structure-ownership repair; no semantic inference or PDF/UA certification",
             "redaction": "canonical full-rewrite text/region/image/semantic/form/annotation/metadata/attachment paths",
             "sanitization": "explicit policy presets over the canonical sanitizer with post-run verification",
             "residual_verification": "raw, extractable, metadata, interactive, active-content, and XFA posture checks",
@@ -435,14 +434,29 @@ pub fn apply_document_security(
         } => {
             let language = language_or_default(lang.as_ref().or(request.language.as_ref()))?;
             let repaired = if *rebuild_parent_tree {
-                rebuild_parent_tree_pdf(input, &language)?
+                let (output, ownership) = rebuild_parent_tree_pdf(input, &language)?;
+                report.changed_structure_nodes = ownership.structure_elements;
+                report.details = json!({"parent_tree_ownership": ownership});
+                output
             } else {
+                report.changed_structure_nodes = 1;
                 let engine = ContentEngine::open_bytes(input.to_vec())?;
                 improve_pdfua_best_effort(engine.document(), &language)?
             };
-            report.changed_structure_nodes = 1;
             report.write_set.push("catalog.MarkInfo".to_string());
             report.write_set.push("catalog.StructTreeRoot".to_string());
+            if *rebuild_parent_tree {
+                report.write_set.extend(
+                    [
+                        "StructElem.P",
+                        "StructTreeRoot.ParentTree",
+                        "StructTreeRoot.IDTree",
+                        "content.StructParents",
+                        "object.StructParent",
+                    ]
+                    .map(str::to_string),
+                );
+            }
             repaired
         }
         DocumentSecurityAction::SetDocumentLanguage { lang } => {
@@ -474,26 +488,44 @@ pub fn apply_document_security(
         }
         DocumentSecurityAction::RebuildParentTree { lang } => {
             let language = language_or_default(lang.as_ref().or(request.language.as_ref()))?;
-            report.changed_structure_nodes = 1;
+            let (output, ownership) = rebuild_parent_tree_pdf(input, &language)?;
+            report.changed_structure_nodes = ownership.structure_elements;
+            report.details = json!({"parent_tree_ownership": ownership});
             report
                 .write_set
                 .push("StructTreeRoot.ParentTree".to_string());
-            rebuild_parent_tree_pdf(input, &language)?
+            report.write_set.extend(
+                [
+                    "StructTreeRoot.IDTree",
+                    "StructElem.P",
+                    "content.StructParents",
+                    "object.StructParent",
+                ]
+                .map(str::to_string),
+            );
+            output
         }
         DocumentSecurityAction::RepairAfterMutation { mutation, lang } => {
             let language = language_or_default(lang.as_ref().or(request.language.as_ref()))?;
-            let output = rebuild_parent_tree_pdf(input, &language)?;
-            report.changed_structure_nodes = 1;
+            let (output, ownership) = rebuild_parent_tree_pdf(input, &language)?;
+            report.changed_structure_nodes = ownership.structure_elements;
             report.details = json!({
                 "mutation": mutation,
-                "repair_hooks": [
-                    "source_editing_text_edit",
-                    "text_reflow_reflow_page_flow",
-                    "document_subsystems_tables_math_ocr_forms_annotations"
-                ],
-                "structure_child_order": "derived_from_tagged_or_text_reflow_reading_order",
-                "parent_tree_rebuilt": true
+                "repair_scope": "existing_K_ownership_graph; missing_owners_require_explicit_migration",
+                "structure_child_order": "preserved_from_existing_K_graph; not inferred",
+                "parent_tree_rebuilt": true,
+                "parent_tree_ownership": ownership
             });
+            report.write_set.extend(
+                [
+                    "StructTreeRoot.ParentTree",
+                    "StructTreeRoot.IDTree",
+                    "StructElem.P",
+                    "content.StructParents",
+                    "object.StructParent",
+                ]
+                .map(str::to_string),
+            );
             output
         }
         DocumentSecurityAction::RedactText {
@@ -628,7 +660,10 @@ pub fn apply_document_security(
     report.source_sha256 = source_sha256;
     report.output_sha256 = Some(resource_digest(&output));
     report.changed_objects = changed_object_estimate(input, &output);
-    report.signature_impact = if report.changed_objects > 0 {
+    report.signature_impact = if output != input && output.starts_with(input) {
+        "incremental_update_retains_signed_bytes_but_can_change_signature_validation_or_permissions"
+            .to_string()
+    } else if report.changed_objects > 0 {
         "full_rewrite_invalidates_existing_signed_byte_ranges".to_string()
     } else {
         "no_mutation".to_string()
@@ -1049,7 +1084,7 @@ fn redact_semantic_node_pdf(
     let engine = ContentEngine::open_bytes(input.to_vec())?;
     let pages: Vec<usize> = (1..=engine.page_count()?).collect();
     let semantic = extract_semantic_document(&engine, &pages)?;
-    let Some((page, bbox)) = find_semantic_bbox(&semantic.elements, selector) else {
+    let Some((page, bbox)) = find_semantic_bbox(&semantic.elements, selector)? else {
         return Err(WellfriendError::MalformedPdf(
             "document_security structure_element_not_found: selected semantic node has no source geometry"
                 .to_string(),
@@ -1061,7 +1096,7 @@ fn redact_semantic_node_pdf(
 fn find_semantic_bbox(
     elements: &[SemanticElement],
     selector: &StructureSelector,
-) -> Option<(usize, [f64; 4])> {
+) -> Result<Option<(usize, [f64; 4])>> {
     for element in elements {
         let role_ok = selector
             .role
@@ -1070,17 +1105,29 @@ fn find_semantic_bbox(
         let page_ok = selector.page.is_none_or(|page| element.page == Some(page));
         let mcid_ok = selector
             .mcid
-            .is_none_or(|mcid| element.mcids.iter().any(|candidate| candidate.mcid == mcid));
+            // This legacy selector has no stream field: an integer selects the
+            // page namespace, never an equal MCID in a newly extracted Form.
+            .is_none_or(|mcid| {
+                element
+                    .mcids
+                    .iter()
+                    .any(|candidate| candidate.mcid == mcid && candidate.stream.is_none())
+            });
         if role_ok && page_ok && mcid_ok {
+            if element.mcids.iter().any(|id| id.stream_owner.is_some()) {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "structure redaction requires an appearance-owner target; a page rectangle cannot certify removal of annotation content".into(),
+                ));
+            }
             if let (Some(page), Some(bbox)) = (element.page, element.bbox) {
-                return Some((page, bbox));
+                return Ok(Some((page, bbox)));
             }
         }
-        if let Some(found) = find_semantic_bbox(&element.children, selector) {
-            return Some(found);
+        if let Some(found) = find_semantic_bbox(&element.children, selector)? {
+            return Ok(Some(found));
         }
     }
-    None
+    Ok(None)
 }
 
 fn sanitize_metadata_pdf(input: &[u8]) -> Result<Vec<u8>> {
@@ -1124,126 +1171,12 @@ fn sanitizer_options(preset: SanitizationPreset) -> SanitizerOptions {
     }
 }
 
-fn rebuild_parent_tree_pdf(input: &[u8], lang: &str) -> Result<Vec<u8>> {
-    let language = validate_language(lang)?;
-    let engine = ContentEngine::open_bytes(input.to_vec())?;
-    let reader = engine.document().reader();
-    let (mut objects, root, info) = rewrite_document_objects(reader, &mut |_, _| {})?;
-    let mut max_number = objects
-        .iter()
-        .map(|object| object.number)
-        .max()
-        .unwrap_or(0);
-    let struct_root_ref = ensure_catalog_tagging(&mut objects, root, &language, &mut max_number)?;
-    let struct_root_number = struct_root_ref.0;
-    let mut struct_elem_refs = collect_struct_elem_refs(&objects);
-    if struct_elem_refs.is_empty() {
-        max_number += 1;
-        let document_elem = max_number;
-        objects.push(OutputObject {
-            number: document_elem,
-            object: PdfObject::Dictionary(dict_from([
-                ("Type", PdfObject::Name("StructElem".to_string())),
-                ("S", PdfObject::Name("Document".to_string())),
-                ("P", reference(struct_root_number)),
-                ("K", PdfObject::Array(Vec::new())),
-            ])),
-        });
-        struct_elem_refs.push(document_elem);
-        if let Some(root_obj) = objects
-            .iter_mut()
-            .find(|object| object.number == struct_root_number)
-        {
-            if let Some(root_dict) = root_obj.object.as_dict_mut() {
-                root_dict.insert("K", PdfObject::Array(vec![reference(document_elem)]));
-            }
-        }
-    }
-    max_number += 1;
-    let parent_tree_number = max_number;
-    let parent_array = PdfObject::Array(struct_elem_refs.iter().map(|n| reference(*n)).collect());
-    let parent_tree = PdfObject::Dictionary(dict_from([
-        (
-            "Nums",
-            PdfObject::Array(vec![PdfObject::Integer(0), parent_array]),
-        ),
-        (
-            "Limits",
-            PdfObject::Array(vec![PdfObject::Integer(0), PdfObject::Integer(0)]),
-        ),
-    ]));
-    objects.push(OutputObject {
-        number: parent_tree_number,
-        object: parent_tree,
-    });
-    for object in &mut objects {
-        if object.number == struct_root_number {
-            if let Some(dict) = object.object.as_dict_mut() {
-                dict.insert("ParentTree", reference(parent_tree_number));
-                dict.insert("ParentTreeNextKey", PdfObject::Integer(1));
-            }
-        }
-        if page_dictionary(&object.object) {
-            if let Some(dict) = object.object.as_dict_mut() {
-                dict.insert("StructParents", PdfObject::Integer(0));
-            }
-        }
-    }
-    objects.sort_by_key(|object| object.number);
-    PdfWriter::new(objects, root)
-        .with_info(info)
-        .with_id(reader.first_file_id())
-        .with_mode(WriterMode::XrefStreamWithObjStm)
-        .write()
-}
-
-fn ensure_catalog_tagging(
-    objects: &mut Vec<OutputObject>,
-    root: u32,
+fn rebuild_parent_tree_pdf(
+    input: &[u8],
     lang: &str,
-    max_number: &mut u32,
-) -> Result<(u32, u16)> {
-    let root_index = objects
-        .iter()
-        .position(|object| object.number == root)
-        .ok_or_else(|| {
-            WellfriendError::MalformedPdf("document_security catalog missing".to_string())
-        })?;
-    let struct_root_ref;
-    {
-        let catalog = objects[root_index].object.as_dict_mut().ok_or_else(|| {
-            WellfriendError::MalformedPdf(
-                "document_security catalog is not a dictionary".to_string(),
-            )
-        })?;
-        catalog.insert("Lang", PdfObject::String(lang.as_bytes().to_vec()));
-        catalog.insert(
-            "MarkInfo",
-            PdfObject::Dictionary(dict_from([("Marked", PdfObject::Boolean(true))])),
-        );
-        if let Some(reference) = catalog
-            .get("StructTreeRoot")
-            .and_then(PdfObject::as_reference)
-        {
-            struct_root_ref = reference;
-        } else {
-            *max_number += 1;
-            let struct_root_number = *max_number;
-            catalog.insert("StructTreeRoot", reference(struct_root_number));
-            struct_root_ref = (struct_root_number, 0);
-        }
-    }
-    let (number, generation) = struct_root_ref;
-    if !objects.iter().any(|object| object.number == number) {
-        objects.push(OutputObject {
-            number,
-            object: PdfObject::Dictionary(dict_from([
-                ("Type", PdfObject::Name("StructTreeRoot".to_string())),
-                ("K", PdfObject::Array(Vec::new())),
-            ])),
-        });
-    }
-    Ok((number, generation))
+) -> Result<(Vec<u8>, crate::tagged_structure::ParentTreeReport)> {
+    let language = validate_language(lang)?;
+    crate::tagged_structure::rebuild_parent_tree(input, &language)
 }
 
 fn set_structure_metadata_pdf(
@@ -1350,25 +1283,6 @@ fn object_contains_mcid(object: &PdfObject, mcid: i64, depth: usize) -> bool {
     }
 }
 
-fn collect_struct_elem_refs(objects: &[OutputObject]) -> Vec<u32> {
-    objects
-        .iter()
-        .filter_map(|object| {
-            object.object.as_dict().and_then(|dict| {
-                (dict.get_name("Type") == Some("StructElem")).then_some(object.number)
-            })
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn page_dictionary(object: &PdfObject) -> bool {
-    object
-        .as_dict()
-        .is_some_and(|dict| dict.get_name("Type") == Some("Page"))
-}
-
 fn changed_object_estimate(input: &[u8], output: &[u8]) -> usize {
     if input == output {
         0
@@ -1389,21 +1303,6 @@ fn document_security_exact_limits() -> Vec<String> {
     ]
 }
 
-fn dict_from<const N: usize>(items: [(&str, PdfObject); N]) -> PdfDictionary {
-    let mut map = BTreeMap::new();
-    for (key, value) in items {
-        map.insert(key.to_string(), value);
-    }
-    PdfDictionary::new(map)
-}
-
-fn reference(number: u32) -> PdfObject {
-    PdfObject::Reference {
-        number,
-        generation: 0,
-    }
-}
-
 fn term_hash(term: &str) -> String {
     resource_digest(term.as_bytes())
 }
@@ -1415,6 +1314,46 @@ fn json_err(err: serde_json::Error) -> WellfriendError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn appearance_owned_semantic_node_is_not_a_page_redaction_target() {
+        let element = SemanticElement {
+            element_type: "P".into(),
+            original_type: None,
+            text: "ANNOTATION".into(),
+            alt_text: None,
+            actual_text: None,
+            lang: None,
+            page: Some(1),
+            bbox: Some([10.0, 20.0, 50.0, 40.0]),
+            mcids: vec![crate::semantic::SemanticMcid {
+                page: 1,
+                mcid: 0,
+                stream: Some((5, 0)),
+                stream_owner: Some((7, 0)),
+            }],
+            recovery_evidence: None,
+            recovery_confidence: None,
+            children: Vec::new(),
+        };
+        let selector = StructureSelector {
+            object_number: None,
+            role: Some("P".into()),
+            page: Some(1),
+            mcid: None,
+        };
+        assert!(matches!(
+            find_semantic_bbox(&[element.clone()], &selector),
+            Err(WellfriendError::UnsupportedFeature(_))
+        ));
+        let mut page_element = element;
+        page_element.mcids[0].stream = None;
+        page_element.mcids[0].stream_owner = None;
+        assert_eq!(
+            find_semantic_bbox(&[page_element], &selector).unwrap(),
+            Some((1, [10.0, 20.0, 50.0, 40.0]))
+        );
+    }
 
     fn basic_pdf(text: &str) -> Vec<u8> {
         struct Builder {

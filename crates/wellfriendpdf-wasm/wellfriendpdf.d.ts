@@ -2,6 +2,168 @@ export default function init(input?: RequestInfo | URL | Response | BufferSource
 
 export type ReportJson = string;
 
+export interface FormTextInvocation {
+  resource_name: string;
+  owner_stream_object: number;
+  owner_stream_generation: number;
+  owner_operation_byte_start: number;
+  owner_operation_byte_end: number;
+  form_object: number;
+  form_generation: number;
+  depth: number;
+}
+/** Exact input-revision binding from formTextSourcesJson. Rediscover after
+ * unrelated mutations; editFormText reports the saved target for a second edit.
+ */
+export interface FormTextTarget {
+  input_sha256: string;
+  page: number;
+  content_stream_index: number;
+  invocation_path: FormTextInvocation[];
+}
+
+export interface OcrCarrierSelection {
+  span_ids: string[];
+  expected_text: string;
+  /** Required for an invisible carrier inside a nested Form occurrence. */
+  form_target?: FormTextTarget | null;
+}
+
+/** Exact selected normal appearance and nested Form source occurrence.
+ * Geometry is source-local, before Matrix/Rect placement. */
+export interface AppearanceTextTarget {
+  input_sha256: string;
+  page: number;
+  annotation_index: number;
+  annotation: [number, number];
+  appearance_stream: [number, number];
+  normal_state: string | null;
+  invocation_path: FormTextInvocation[];
+}
+export type AppearanceMetadataPolicy = "preserve_annotation_metadata" | "synchronize_free_text_plain_text";
+/** Default reject preserves the previous behavior. Splitting shared namespaces
+ * explicitly approves placing the new carrier after the old under the same
+ * logical owner; it does not infer reading order or certify accessibility. */
+export type TaggedAppearanceClonePolicy = "reject" | "move_exclusive_namespaces" | "split_shared_namespaces_after_source";
+export interface TaggedAppearanceCloneOptions {
+  policy?: TaggedAppearanceClonePolicy;
+  actual_text_updates?: Array<{
+    element: [number, number];
+    expected_text: string;
+    replacement_text: string;
+  }>;
+}
+/** Add `operation: {kind: "scoped_text", request: ...}` to a universal v2
+ * request. `source.request.edit` is the existing native MultiRunTextRangeRequest.
+ * Planner-owned planned_output_sha256 must be omitted from new requests. */
+export interface UniversalScopedTextRequest {
+  source:
+    | { scope: "form"; request: { target: FormTextTarget; edit: Record<string, unknown>; shared_form_policy: "clone_edit_one_instance" | "edit_all_uses" } }
+    | { scope: "appearance"; request: { target: AppearanceTextTarget; edit: Record<string, unknown>; metadata_policy: AppearanceMetadataPolicy; tagged_clone?: TaggedAppearanceCloneOptions } }
+    | { scope: "widget_field"; request: WidgetTextEditRequest };
+  approved_font_asset?: { lookup_name: string; bytes: number[] } | null;
+}
+
+export interface WidgetTextTarget { input_sha256:string; page:number; field:[number,number] }
+export type WidgetDefaultAppearance = {kind:"preserve_source_defaults"}
+  | {kind:"from_edited_appearance";widget:[number,number];font_resource:string;font_size:number;rgb:[number,number,number]};
+export interface WidgetTextEditRequest {
+  target:WidgetTextTarget; expected_value:string; replacement_value:string;
+  widgets:{appearance:{target:AppearanceTextTarget;edit:Record<string,unknown>;metadata_policy:"preserve_annotation_metadata";
+    tagged_clone?:TaggedAppearanceCloneOptions};expected_display:string;replacement_display:string}[];
+  default_appearance:WidgetDefaultAppearance;update_default_value?:boolean;discard_rich_text?:boolean;
+  allow_read_only?:boolean;preserve_actions_without_execution?:boolean;
+}
+
+export interface ImageFragmentBinding {
+  key: string;
+  page: number;
+  rect: [number, number, number, number];
+  content_sha256: string;
+}
+export interface ImageFragmentMove {
+  input_sha256: string;
+  source: { kind: "occurrence"; page: number; content_stream_index: number; occurrence_id: string }
+    | { kind: "owned"; binding: ImageFragmentBinding };
+  target_page: number;
+  target_rect: [number, number, number, number];
+  stack: "background" | "foreground";
+  /** Initial occurrence only; exact IDs/text from imageOcrSourcesJson.
+   * Owned groups retain their existing OCR automatically. Not OCR recognition.
+   * expected_text concatenates font-decoded selected spans in stream order;
+   * complete direct ActualText scopes are preserved separately.
+   */
+  ocr?: OcrCarrierSelection | null;
+  signature_policy_override?: boolean;
+}
+/** Entry in a linked-story request's figures array. Initial OCR decisions are
+ * consumed on save; reloaded owned groups carry their search layer intact.
+ */
+export interface StoryFigure {
+  id: string;
+  caption_paragraph: string;
+  source: ImageFragmentMove["source"];
+  ocr?: OcrCarrierSelection | null;
+  ocr_unrelated?: boolean;
+  width: number;
+  height: number;
+  gap?: number;
+  alignment?: "left" | "center" | "right";
+  stack: "background" | "foreground";
+}
+/** Standalone source-preserving image move, not automatic story/caption reflow.
+ * Call in a worker. Preview is geometry/source evidence, not a raster preview.
+ * It does not mutate an existing StoryEditSession. Reopen that session explicitly
+ * after accepting output; prior session receipts then belong to the old revision.
+ */
+export function imageFragmentBindingsJson(input: Uint8Array): ReportJson;
+/** Page-logical source spans, including render mode and exact span IDs.
+ * Nested Form carriers come from formTextSourcesJson and include form_target.
+ */
+export function imageOcrSourcesJson(input: Uint8Array, page: number): ReportJson;
+export function previewImageFragmentMoveJson(input: Uint8Array, requestJson: string): ReportJson;
+export function applyImageFragmentMove(input: Uint8Array, requestJson: string, approvedPlanSha256: string): ImageFragmentOutput;
+export class ImageFragmentOutput {
+  bytes(): Uint8Array;
+  reportJson(): ReportJson;
+  free(): void;
+}
+
+/** Retained native PDF editor. Run synchronous WASM methods in a dedicated worker.
+ * previewJson yields geometry and a revision/request-bound receipt, not raster proof.
+ * Merge methods return candidates/conflicts; they do not mutate or grant approval.
+ * Encrypted input requires its permissions/owner password and becomes an
+ * explicitly reported unencrypted working revision. Encrypted output uses the
+ * universal API.
+ */
+export class StoryEditSession {
+  constructor(bytes: Uint8Array);
+  static openWithPassword(bytes: Uint8Array, password: Uint8Array): StoryEditSession;
+  /** Shared v1 native/browser command envelope, limited to 32 MiB UTF-8 JSON. */
+  commandJson(commandJson: string): ReportJson;
+  bytes(): Uint8Array;
+  revisionSha256(): string;
+  savedStoriesJson(): ReportJson;
+  pagesJson(): ReportJson;
+  sourceModelJson(page: number): ReportJson;
+  annotationSourcesJson(): ReportJson;
+  imageSourcesJson(page: number): ReportJson;
+  tagSourcesJson(): ReportJson;
+  /** Pure draft evaluation. Table rowspan/tag ownership travels in table_layout;
+   * no PDF bytes are published and no preview approval is granted here. */
+  synchronizeTableValuesJson(requestJson: string): ReportJson;
+  pageGeometryJson(page: number, dpi: number): ReportJson;
+  previewJson(requestJson: string): ReportJson;
+  checkpointJson(requestJson: string, receiptJson: string): ReportJson;
+  mergeTextJson(requestJson: string): ReportJson;
+  mergeStructureJson(requestJson: string): ReportJson;
+  renderPagePng(page: number, dpi: number): Uint8Array;
+  undo(): boolean;
+  redo(): boolean;
+  close(): void;
+  free(): void;
+}
+
 export class WellfriendOutput {
   bytes(): Uint8Array;
   byteLength(): number;
@@ -104,6 +266,112 @@ export class AdjacentPagePrefetchExecution {
 }
 
 export class WellfriendPdf {
+  static universalEditingCapabilitiesV2Json(): ReportJson;
+  static universalEditingApprovalV2Json(planJson: string, decisionJson: string): ReportJson;
+  /** Authenticate a canonical publication receipt with a caller-held key.
+   * Never place a server-held key in browser-delivered code. All timestamps
+   * must be non-negative JavaScript safe integers.
+   */
+  static authenticateTextRangePaintPartitionReceipt(
+    publicationReceiptJson: string,
+    keyId: string,
+    audience: string,
+    issuedAtUnix: number,
+    expiresAtUnix: number,
+    hmacKey: Uint8Array,
+  ): ReportJson;
+  /** Verify a host-authenticated receipt and return the nested content receipt. */
+  static verifyAuthenticatedTextRangePaintPartitionReceipt(
+    authenticatedReceiptJson: string,
+    expectedKeyId: string,
+    expectedAudience: string,
+    nowUnix: number,
+    allowedFutureSkewSecs: number,
+    hmacKey: Uint8Array,
+  ): ReportJson;
+  /** Set include_scoped_text_sources for source-local Form/AP inventories. */
+  universalEditingAnalyzeV2Json(optionsJson?: string): ReportJson;
+  universalEditingPlanV2Json(requestJson: string): ReportJson;
+  /** Preview a revision-bound transfer of one saved native Figure between saved stories. */
+  storyFigureTransferPreviewJson(requestJson: string): ReportJson;
+  /** Apply the exact planSha256 returned by storyFigureTransferPreviewJson. */
+  storyFigureTransferApply(requestJson: string, approvedPlanSha256: string): WellfriendOutput;
+  /** Bounded before/candidate PNG byte arrays, without publishing candidate PDF bytes. */
+  universalEditingScopedPreviewV2Json(planJson: string, optionsJson?: string): ReportJson;
+  universalEditingApplyV2(planJson: string, approvalJson?: string): WellfriendOutput;
+  universalEditingApplyV2WithOutputCredentials(
+    planJson: string,
+    approvalJson: string | undefined,
+    inputPassword: Uint8Array | undefined,
+    outputUserPassword: Uint8Array,
+    outputOwnerPassword?: Uint8Array,
+  ): WellfriendOutput;
+  /** Materialize canonical candidates from one immutable revision and publish
+   * only the evidence-qualified ECBES selection (or the exact input bytes).
+   */
+  ecbesUniversalEdit(requestJson: string): WellfriendOutput;
+  /** ECBES variant for Standard-security output candidates. Credentials are
+   * apply-only and are excluded from the JSON report.
+   */
+  ecbesUniversalEditWithOutputCredentials(
+    requestJson: string,
+    inputPassword: Uint8Array | undefined,
+    outputUserPassword: Uint8Array,
+    outputOwnerPassword?: Uint8Array,
+  ): WellfriendOutput;
+  /** Inspect the page-local logical/source range model used by native text edits. */
+  advanced_editing_closeoutTextRangeAnalyzeJson(page: number): ReportJson;
+  /** Build a non-mutating, exact-revision paint-slot partition proposal. */
+  proposeTextRangePaintPartitions(requestJson: string): ReportJson;
+  /** Render bounded same-engine before/candidate PNGs without returning the candidate PDF. */
+  previewTextRangePaintPartitions(
+    requestJson: string,
+    proposalJson: string,
+    approvalJson: string,
+    fontBytes?: Uint8Array,
+    optionsJson?: string,
+  ): ReportJson;
+  /** Apply a direct multi-run text edit without a separate partition proposal. */
+  editTextRange(requestJson: string): WellfriendOutput;
+  /** Apply reviewed regions/final lines to the exact revision-bound proposal. */
+  applyTextRangePaintPartitions(
+    requestJson: string,
+    proposalJson: string,
+    approvalJson: string,
+    fontBytes?: Uint8Array,
+  ): WellfriendOutput;
+  /** Apply only the candidate bound by the canonical preview publication receipt. */
+  applyReviewedTextRangePaintPartitions(
+    requestJson: string,
+    proposalJson: string,
+    approvalJson: string,
+    publicationReceiptJson: string,
+    fontBytes?: Uint8Array,
+  ): WellfriendOutput;
+  /** Reopen-validated exact typed-cell owners, ranges and content rectangles. */
+  authoredTypedTableSourcesJson(): ReportJson;
+  /** Revision-bound typed value/formula mutation. Optional bytes are the
+   * approved shaping font used when the retained source font cannot cover the
+   * replacement. The current document object is not mutated.
+   */
+  mutateAuthoredTypedTable(requestJson: string, fontBytes?: Uint8Array): WellfriendOutput;
+  /** Direct text operands per page Form occurrence, not automatic reading order.
+   * Geometry and edit regions use Form-local coordinates, before its Matrix.
+   */
+  formTextSourcesJson(page: number): ReportJson;
+  /** JSON: {target: FormTextTarget, edit: MultiRunTextRangeRequest,
+   * shared_form_policy: "clone_edit_one_instance" | "edit_all_uses"}.
+   * Optional font bytes supply the shaping font; output does not mutate this
+   * document/session. Run in a worker and reopen accepted output explicitly.
+   */
+  editFormText(requestJson: string, fontBytes?: Uint8Array): WellfriendOutput;
+  /** Discover source-local direct text in existing annotation appearance/Form occurrences. */
+  appearanceTextSourcesJson(page: number): ReportJson;
+  /** Native selected-occurrence copy-on-write. requestJson contains target, edit
+   * (MultiRunTextRangeRequest), and an explicit metadata_policy. Returns new PDF
+   * bytes and a saved-revision target; does not mutate this document/session.
+   * Widget field synchronization and tagged stream cloning are not implemented. */
+  editAppearanceText(requestJson: string, fontBytes?: Uint8Array): WellfriendOutput;
   constructor(bytes: Uint8Array | ArrayBuffer | ArrayLike<number>);
   static openWithPassword(bytes: Uint8Array | ArrayBuffer | ArrayLike<number>, password: Uint8Array | ArrayLike<number>): WellfriendPdf;
   static sdkVersion(): string;

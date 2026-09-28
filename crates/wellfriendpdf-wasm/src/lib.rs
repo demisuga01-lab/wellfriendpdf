@@ -6,6 +6,12 @@
 //! matches Rust, Python, and the C ABI.
 
 #[cfg(target_arch = "wasm32")]
+mod story_session;
+
+#[cfg(target_arch = "wasm32")]
+mod image_fragments;
+
+#[cfg(target_arch = "wasm32")]
 mod wasm_api {
     use js_sys::{Function, Reflect};
     use serde::de::DeserializeOwned;
@@ -18,8 +24,8 @@ mod wasm_api {
     use wellfriendpdf_engine::{
         sdk, CancelToken, ChunkOptions, ContentEngine, DocType, EvidenceBundle, ExtractOptions,
         IncrementalSigner, IncrementalSigningOptions, IntermediateStore, NetworkBudget,
-        ParseOptions, PdfSigner, RenderDocumentCache, RetrievalPolicy, SignatureOptions,
-        SecretBytes, SignatureRevocationMode, SigningIntent, TrustStore, VerifyOptions,
+        ParseOptions, PdfSigner, RenderDocumentCache, RetrievalPolicy, SecretBytes,
+        SignatureOptions, SignatureRevocationMode, SigningIntent, TrustStore, VerifyOptions,
     };
 
     #[wasm_bindgen]
@@ -1154,7 +1160,8 @@ mod wasm_api {
         #[wasm_bindgen(js_name = imageDecodeCapabilityReportJson)]
         pub fn image_decode_capability_report_json(&self) -> Result<String, JsValue> {
             self.ensure_open()?;
-            sdk::image_decode_capability_report_json(&self.bytes, None).map_err(js_err)
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            sdk::image_decode_capability_report_json(&self.bytes, password).map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = progressiveImageDecodeLifecycleReportJson)]
@@ -1163,7 +1170,8 @@ mod wasm_api {
             request_json: &str,
         ) -> Result<String, JsValue> {
             self.ensure_open()?;
-            sdk::progressive_image_decode_lifecycle_report_json(&self.bytes, request_json, None)
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            sdk::progressive_image_decode_lifecycle_report_json(&self.bytes, request_json, password)
                 .map_err(js_err)
         }
 
@@ -1737,12 +1745,12 @@ mod wasm_api {
 
         #[wasm_bindgen(js_name = documentInfoJson)]
         pub fn document_info_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_info_json(b, None))
+            self.report_with_password(sdk::document_info_json)
         }
 
         #[wasm_bindgen(js_name = documentViewsReportJson)]
         pub fn document_views_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_views_report_json(b, None))
+            self.report_with_password(sdk::document_views_report_json)
         }
 
         #[wasm_bindgen(js_name = backendPlanArenaReportJson)]
@@ -1752,8 +1760,8 @@ mod wasm_api {
             dpi: u32,
             mode: Option<String>,
         ) -> Result<String, JsValue> {
-            self.report(|b| {
-                sdk::backend_plan_arena_report_json(b, page, dpi, mode.as_deref(), None)
+            self.report_with_password(|b, password| {
+                sdk::backend_plan_arena_report_json(b, page, dpi, mode.as_deref(), password)
             })
         }
 
@@ -1762,49 +1770,59 @@ mod wasm_api {
             &self,
             contract_json: &str,
         ) -> Result<String, JsValue> {
-            self.report(|b| {
-                sdk::backend_plan_arena_report_for_contract_json(b, contract_json, None)
+            self.report_with_password(|b, password| {
+                sdk::backend_plan_arena_report_for_contract_json(b, contract_json, password)
             })
         }
 
         #[wasm_bindgen(js_name = prepressPlateReportJson)]
         pub fn prepress_plate_report_json(&self, page: usize, dpi: u32) -> Result<String, JsValue> {
-            self.report(|b| sdk::prepress_plate_report_json(b, page, dpi, None))
+            self.report_with_password(|b, password| {
+                sdk::prepress_plate_report_json(b, page, dpi, password)
+            })
         }
 
         #[wasm_bindgen(js_name = securityReportJson)]
         pub fn security_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::security_report_json(b, None))
+            self.report_with_password(sdk::security_report_json)
         }
 
         #[wasm_bindgen(js_name = riskyContentReportJson)]
         pub fn risky_content_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::risky_content_report_json(b, None))
+            self.report_with_password(sdk::risky_content_report_json)
         }
 
         #[wasm_bindgen(js_name = parserReportJson)]
         pub fn parser_report_json(&self, mode: Option<String>) -> Result<String, JsValue> {
-            self.report(|b| sdk::parser_report_json(b, mode.as_deref(), None))
+            self.report_with_password(|b, password| {
+                sdk::parser_report_json(b, mode.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = colorReportJson)]
         pub fn color_report_json(&self, profile: Option<String>) -> Result<String, JsValue> {
-            self.report(|b| sdk::color_report_json(b, profile.as_deref()))
+            self.report_with_password(|b, password| {
+                sdk::color_report_json_with_password(b, profile.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = validateJson)]
         pub fn validate_json(&self, profile: Option<String>) -> Result<String, JsValue> {
-            self.report(|b| sdk::standards_profile_json(b, profile.as_deref(), None))
+            self.report_with_password(|b, password| {
+                sdk::standards_profile_json(b, profile.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = validatePdfaJson)]
         pub fn validate_pdfa_json(&self, profile: Option<String>) -> Result<String, JsValue> {
-            self.report(|b| sdk::pdfa_validation_json(b, profile.as_deref(), None))
+            self.report_with_password(|b, password| {
+                sdk::pdfa_validation_json(b, profile.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = validatePdfuaJson)]
         pub fn validate_pdfua_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::pdfua_validation_json(b, None))
+            self.report_with_password(sdk::pdfua_validation_json)
         }
 
         /// Incremental Signing Standards clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
@@ -1813,7 +1831,9 @@ mod wasm_api {
             &self,
             target: Option<String>,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::pdfa_standards_json(b, target.as_deref(), None))
+            self.report_with_password(|b, password| {
+                sdk::pdfa_standards_json(b, target.as_deref(), password)
+            })
         }
 
         /// Incremental Signing Standards clause-mapped PDF/UA validation. `target` e.g. "PDF/UA-1".
@@ -1822,7 +1842,9 @@ mod wasm_api {
             &self,
             target: Option<String>,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::pdfua_standards_json(b, target.as_deref(), None))
+            self.report_with_password(|b, password| {
+                sdk::pdfua_standards_json(b, target.as_deref(), password)
+            })
         }
 
         /// Incremental Signing Standards clause-mapped PDF/X validation. `target` e.g. "PDF/X-4".
@@ -1831,7 +1853,9 @@ mod wasm_api {
             &self,
             target: Option<String>,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::pdfx_standards_json(b, target.as_deref(), None))
+            self.report_with_password(|b, password| {
+                sdk::pdfx_standards_json(b, target.as_deref(), password)
+            })
         }
 
         /// Incremental Signing Standards combined PDF/A + PDF/UA + PDF/X validation with
@@ -1841,7 +1865,9 @@ mod wasm_api {
             &self,
             target: Option<String>,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::standards_all_json(b, target.as_deref(), None))
+            self.report_with_password(|b, password| {
+                sdk::standards_all_json(b, target.as_deref(), password)
+            })
         }
 
         /// Exact WASM signing capability posture. In-memory local signing with
@@ -1917,27 +1943,27 @@ mod wasm_api {
 
         #[wasm_bindgen(js_name = formsReportJson)]
         pub fn forms_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::forms_report_json(b, None))
+            self.report_with_password(sdk::forms_report_json)
         }
 
         #[wasm_bindgen(js_name = xfaReportJson)]
         pub fn xfa_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::xfa_report_json(b, None))
+            self.report_with_password(sdk::xfa_report_json)
         }
 
         #[wasm_bindgen(js_name = xfaExtractJson)]
         pub fn xfa_extract_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::xfa_extract_json(b, None))
+            self.report_with_password(sdk::xfa_extract_json)
         }
 
         #[wasm_bindgen(js_name = xfaScriptReportJson)]
         pub fn xfa_script_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::xfa_script_report_json(b, None))
+            self.report_with_password(sdk::xfa_script_report_json)
         }
 
         #[wasm_bindgen(js_name = xfaSecurityReportJson)]
         pub fn xfa_security_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::xfa_security_report_json(b, None))
+            self.report_with_password(sdk::xfa_security_report_json)
         }
 
         #[wasm_bindgen(js_name = xfaRuntimeReportJson)]
@@ -1946,19 +1972,19 @@ mod wasm_api {
             script_policy: Option<String>,
             execute_events: bool,
         ) -> Result<String, JsValue> {
-            self.report(|b| {
-                sdk::xfa_runtime_report_json(b, script_policy.as_deref(), execute_events, None)
+            self.report_with_password(|b, password| {
+                sdk::xfa_runtime_report_json(b, script_policy.as_deref(), execute_events, password)
             })
         }
 
         #[wasm_bindgen(js_name = annotationsReportJson)]
         pub fn annotations_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::annotation_report_json(b, None))
+            self.report_with_password(sdk::annotation_report_json)
         }
 
         #[wasm_bindgen(js_name = richMediaReportJson)]
         pub fn rich_media_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::rich_media_report_json(b, None))
+            self.report_with_password(sdk::rich_media_report_json)
         }
 
         #[wasm_bindgen(js_name = annotationAppearanceReportJson)]
@@ -1966,114 +1992,122 @@ mod wasm_api {
             &self,
             options_json: Option<String>,
         ) -> Result<String, JsValue> {
-            self.report(|b| {
-                sdk::annotation_appearance_report_json(b, options_json.as_deref(), None)
+            self.report_with_password(|b, password| {
+                sdk::annotation_appearance_report_json(b, options_json.as_deref(), password)
             })
         }
 
         #[wasm_bindgen(js_name = nonaxisRedactionPlanJson)]
         pub fn nonaxis_redaction_plan_json(&self, options_json: &str) -> Result<String, JsValue> {
-            self.report(|b| sdk::nonaxis_redaction_plan_json(b, options_json, None))
+            self.report_with_password(|b, password| {
+                sdk::nonaxis_redaction_plan_json(b, options_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = annotation_media_redactionReportJson)]
         pub fn annotation_media_redaction_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::annotation_media_redaction_report_json(b, None))
+            self.report_with_password(sdk::annotation_media_redaction_report_json)
         }
 
         #[wasm_bindgen(js_name = secure_mutationReportJson)]
         pub fn secure_mutation_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::secure_mutation_report_json(b, None))
+            self.report_with_password(sdk::secure_mutation_report_json)
         }
 
         #[wasm_bindgen(js_name = secure_mutation_closeoutReportJson)]
         pub fn secure_mutation_closeout_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::secure_mutation_closeout_report_json(b, None))
+            self.report_with_password(sdk::secure_mutation_closeout_report_json)
         }
 
         #[wasm_bindgen(js_name = formJsReportJson)]
         pub fn form_js_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::form_js_report_json(b, None))
+            self.report_with_password(sdk::form_js_report_json)
         }
 
         #[wasm_bindgen(js_name = formActionGraphJson)]
         pub fn form_action_graph_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::form_action_graph_json(b, None))
+            self.report_with_password(sdk::form_action_graph_json)
         }
 
         #[wasm_bindgen(js_name = interactiveDataReportJson)]
         pub fn interactive_data_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::interactive_data_closeout_report_json(b, None))
+            self.report_with_password(sdk::interactive_data_closeout_report_json)
         }
 
         #[wasm_bindgen(js_name = wordPaginationAuditJson)]
         pub fn word_pagination_audit_json(&self, layout: &str) -> Result<String, JsValue> {
-            self.report(|b| sdk::word_pagination_audit_json(b, layout, None))
+            self.report_with_password(|b, password| {
+                sdk::word_pagination_audit_json(b, layout, password)
+            })
         }
 
         #[wasm_bindgen(js_name = form_action_policyReportJson)]
         pub fn form_action_policy_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::form_action_policy_report_json(b, None))
+            self.report_with_password(sdk::form_action_policy_report_json)
         }
 
         #[wasm_bindgen(js_name = advanced_editingReportJson)]
         pub fn advanced_editing_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::advanced_editing_report_json(b, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::advanced_editing_report_json(b, password))
         }
 
         #[wasm_bindgen(js_name = advanced_editing_closeoutReportJson)]
         pub fn advanced_editing_closeout_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::advanced_editing_closeout_report_json(b, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::advanced_editing_closeout_report_json(b, password))
         }
 
         #[wasm_bindgen(js_name = source_editingReportJson)]
         pub fn source_editing_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::source_editing_report_json(b, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::source_editing_report_json(b, password))
         }
 
         #[wasm_bindgen(js_name = editing_transactionsReportJson)]
         pub fn editing_transactions_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::editing_transactions_report_json(b, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::editing_transactions_report_json(b, password))
         }
 
         #[wasm_bindgen(js_name = writer_historyReportJson)]
         pub fn writer_history_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::writer_history_report_json(b, None))
+            self.report_with_password(sdk::writer_history_report_json)
         }
 
         #[wasm_bindgen(js_name = compression_officeReportJson)]
         pub fn compression_office_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::compression_office_report_json(b, None))
+            self.report_with_password(sdk::compression_office_report_json)
         }
 
         #[wasm_bindgen(js_name = crypto_writerReportJson)]
         pub fn crypto_writer_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::crypto_writer_report_json(b, None))
+            self.report_with_password(sdk::crypto_writer_report_json)
         }
 
         #[wasm_bindgen(js_name = writerDeterminismAuditJson)]
         pub fn writer_determinism_audit_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::writer_determinism_audit_json(b, None))
+            self.report_with_password(sdk::writer_determinism_audit_json)
         }
 
         #[wasm_bindgen(js_name = writerExternalDiffJson)]
         pub fn writer_external_diff_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::writer_external_diff_json(b, None))
+            self.report_with_password(sdk::writer_external_diff_json)
         }
 
         #[wasm_bindgen(js_name = writerCloseoutReportJson)]
         pub fn writer_closeout_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::writer_closeout_report_json(b, None))
+            self.report_with_password(sdk::writer_closeout_report_json)
         }
 
         #[wasm_bindgen(js_name = pubsecReportJson)]
         pub fn pubsec_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::pubsec_report_json(b, None))
+            self.report_with_password(sdk::pubsec_report_json)
         }
 
         #[wasm_bindgen(js_name = aesGcmReportJson)]
         pub fn aes_gcm_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::aes_gcm_report_json(b, None))
+            self.report_with_password(sdk::aes_gcm_report_json)
         }
 
         #[wasm_bindgen(js_name = writer_historyRasterVectorReportJson)]
@@ -2094,12 +2128,12 @@ mod wasm_api {
 
         #[wasm_bindgen(js_name = writer_historyFontReconstructionReportJson)]
         pub fn writer_history_font_reconstruction_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::writer_history_font_reconstruction_report_json(b, None))
+            self.report_with_password(sdk::writer_history_font_reconstruction_report_json)
         }
 
         #[wasm_bindgen(js_name = writer_historyObjectStreamReportJson)]
         pub fn writer_history_object_stream_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::writer_history_object_stream_report_json(b, None))
+            self.report_with_password(sdk::writer_history_object_stream_report_json)
         }
 
         #[wasm_bindgen(js_name = advanced_editing_closeoutTextRangeAnalyzeJson)]
@@ -2107,7 +2141,108 @@ mod wasm_api {
             &self,
             page: usize,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::advanced_editing_closeout_text_range_analyze_json(b, page, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| {
+                sdk::advanced_editing_closeout_text_range_analyze_json(b, page, password)
+            })
+        }
+
+        /// Non-mutating exact-revision proposal for mapping a replacement to
+        /// the selected source text object's paint slots.
+        #[wasm_bindgen(js_name = proposeTextRangePaintPartitions)]
+        pub fn propose_text_range_paint_partitions(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| {
+                sdk::advanced_editing_closeout_paint_partition_propose_json(
+                    b,
+                    &request_json,
+                    password,
+                )
+            })
+        }
+
+        /// Render a private before/candidate comparison for one exact reviewed
+        /// paint partition. Candidate PDF bytes are never exposed.
+        #[wasm_bindgen(js_name = previewTextRangePaintPartitions)]
+        pub fn preview_text_range_paint_partitions(
+            &self,
+            request_json: String,
+            proposal_json: String,
+            approval_json: String,
+            font_bytes: Option<Vec<u8>>,
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| {
+                sdk::advanced_editing_closeout_paint_partition_preview_json(
+                    b,
+                    &request_json,
+                    &proposal_json,
+                    &approval_json,
+                    font_bytes.as_deref(),
+                    options_json.as_deref(),
+                    password,
+                )
+            })
+        }
+
+        /// Exact private owners, page-local ranges and bounded rectangles for
+        /// freshly authored typed-table cells.
+        #[wasm_bindgen(js_name = authoredTypedTableSourcesJson)]
+        pub fn authored_typed_table_sources_json(&self) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::authored_typed_table_sources_json(b, password))
+        }
+
+        /// Revision-bound direct text sources in page Form XObject occurrences.
+        #[wasm_bindgen(js_name = formTextSourcesJson)]
+        pub fn form_text_sources_json(&self, page: usize) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::advanced_editing_form_text_analyze_json(b, page, password))
+        }
+
+        #[wasm_bindgen(js_name = editFormText)]
+        pub fn edit_form_text(
+            &self,
+            request_json: String,
+            font_bytes: Option<Vec<u8>>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| {
+                sdk::advanced_editing_form_text_edit_json(
+                    b,
+                    &request_json,
+                    font_bytes.as_deref(),
+                    password,
+                )
+            })
+        }
+
+        /// Existing selected normal appearances; coordinates are source-local.
+        #[wasm_bindgen(js_name = appearanceTextSourcesJson)]
+        pub fn appearance_text_sources_json(&self, page: usize) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::advanced_editing_appearance_text_analyze_json(b, page, password))
+        }
+
+        #[wasm_bindgen(js_name = editAppearanceText)]
+        pub fn edit_appearance_text(
+            &self,
+            request_json: String,
+            font_bytes: Option<Vec<u8>>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| {
+                sdk::advanced_editing_appearance_text_edit_json(
+                    b,
+                    &request_json,
+                    font_bytes.as_deref(),
+                    password,
+                )
+            })
         }
 
         #[wasm_bindgen(js_name = source_editingProvenanceJson)]
@@ -2117,8 +2252,15 @@ mod wasm_api {
             source_text: String,
             replacement_text: String,
         ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.report(|b| {
-                sdk::source_editing_provenance_json(b, page, &source_text, &replacement_text, None)
+                sdk::source_editing_provenance_json(
+                    b,
+                    page,
+                    &source_text,
+                    &replacement_text,
+                    password,
+                )
             })
         }
 
@@ -2127,12 +2269,14 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::source_editing_edit_eligibility_json(b, &request_json, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::source_editing_edit_eligibility_json(b, &request_json, password))
         }
 
         #[wasm_bindgen(js_name = source_editingPathProvenanceJson)]
         pub fn source_editing_path_provenance_json(&self, page: usize) -> Result<String, JsValue> {
-            self.report(|b| sdk::source_editing_path_provenance_json(b, page, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::source_editing_path_provenance_json(b, page, password))
         }
 
         #[wasm_bindgen(js_name = source_editingImageEligibilityJson)]
@@ -2142,7 +2286,8 @@ mod wasm_api {
             occurrence: Option<String>,
         ) -> Result<String, JsValue> {
             let _ = occurrence.as_deref();
-            self.report(|b| sdk::source_editing_image_eligibility_json(b, page, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::source_editing_image_eligibility_json(b, page, password))
         }
 
         #[wasm_bindgen(js_name = universalEditingAnalyzeV2Json)]
@@ -2175,12 +2320,7 @@ mod wasm_api {
         ) -> Result<String, JsValue> {
             let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.report(|b| {
-                sdk::universal_editing_inspect_object_v2_json(
-                    b,
-                    number,
-                    generation,
-                    password,
-                )
+                sdk::universal_editing_inspect_object_v2_json(b, number, generation, password)
             })
         }
 
@@ -2193,13 +2333,40 @@ mod wasm_api {
             self.report(|b| sdk::universal_editing_plan_v2_json(b, &request_json, password))
         }
 
+        #[wasm_bindgen(js_name = storyFigureTransferPreviewJson)]
+        pub fn story_figure_transfer_preview_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::story_figure_transfer_preview_json(b, &request_json, password))
+        }
+
+        #[wasm_bindgen(js_name = universalEditingScopedPreviewV2Json)]
+        pub fn universal_editing_scoped_preview_v2_json(
+            &self,
+            plan_json: String,
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| {
+                sdk::universal_editing_scoped_preview_v2_json(
+                    b,
+                    &plan_json,
+                    options_json.as_deref(),
+                    password,
+                )
+            })
+        }
+
         #[wasm_bindgen(js_name = editing_transactionsSceneReportJson)]
         pub fn editing_transactions_scene_report_json(
             &self,
             pages_json: Option<String>,
         ) -> Result<String, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.report(|b| {
-                sdk::editing_transactions_scene_report_json(b, pages_json.as_deref(), None)
+                sdk::editing_transactions_scene_report_json(b, pages_json.as_deref(), password)
             })
         }
 
@@ -2208,7 +2375,8 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::editing_transactions_scene_select_json(b, &request_json, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::editing_transactions_scene_select_json(b, &request_json, password))
         }
 
         #[wasm_bindgen(js_name = editing_transactionsTransactionPlanJson)]
@@ -2216,7 +2384,10 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::editing_transactions_transaction_plan_json(b, &request_json, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| {
+                sdk::editing_transactions_transaction_plan_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = editing_transactionsTextMapJson)]
@@ -2269,7 +2440,7 @@ mod wasm_api {
 
         #[wasm_bindgen(js_name = text_reflowReportJson)]
         pub fn text_reflow_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_report_json(b, None))
+            self.report_with_password(sdk::text_reflow_report_json)
         }
 
         #[wasm_bindgen(js_name = text_reflowLayoutAnalyzeJson)]
@@ -2277,22 +2448,24 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_layout_analyze_json(b, &request_json, None))
+            self.report_with_password(|b, password| {
+                sdk::text_reflow_layout_analyze_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = text_reflowSemanticLayoutJson)]
         pub fn text_reflow_semantic_layout_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_semantic_layout_json(b, None))
+            self.report_with_password(sdk::text_reflow_semantic_layout_json)
         }
 
         #[wasm_bindgen(js_name = text_reflowReadingOrderReportJson)]
         pub fn text_reflow_reading_order_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_reading_order_report_json(b, None))
+            self.report_with_password(sdk::text_reflow_reading_order_report_json)
         }
 
         #[wasm_bindgen(js_name = text_reflowFlowGraphReportJson)]
         pub fn text_reflow_flow_graph_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_flow_graph_report_json(b, None))
+            self.report_with_password(sdk::text_reflow_flow_graph_report_json)
         }
 
         #[wasm_bindgen(js_name = text_reflowReflowPreviewJson)]
@@ -2300,7 +2473,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_reflow_preview_json(b, &request_json, None))
+            self.report_with_password(|b, password| {
+                sdk::text_reflow_reflow_preview_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = text_reflowOverflowReportJson)]
@@ -2308,7 +2483,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_overflow_report_json(b, &request_json, None))
+            self.report_with_password(|b, password| {
+                sdk::text_reflow_overflow_report_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = text_reflowConstraintsReportJson)]
@@ -2316,7 +2493,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_constraints_report_json(b, &request_json, None))
+            self.report_with_password(|b, password| {
+                sdk::text_reflow_constraints_report_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = text_reflowConfidenceReportJson)]
@@ -2324,7 +2503,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_confidence_report_json(b, &request_json, None))
+            self.report_with_password(|b, password| {
+                sdk::text_reflow_confidence_report_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = text_reflowValidateReflowOutputJson)]
@@ -2333,8 +2514,13 @@ mod wasm_api {
             output_pdf: Vec<u8>,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| {
-                sdk::text_reflow_validate_reflow_output_json(b, &output_pdf, &request_json, None)
+            self.report_with_password(|b, password| {
+                sdk::text_reflow_validate_reflow_output_json(
+                    b,
+                    &output_pdf,
+                    &request_json,
+                    password,
+                )
             })
         }
 
@@ -2343,17 +2529,19 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_reflow_reflow_operation_report_json(b, &request_json, None))
+            self.report_with_password(|b, password| {
+                sdk::text_reflow_reflow_operation_report_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = document_subsystemsReportJson)]
         pub fn document_subsystems_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_subsystems_report_json(b, None))
+            self.report_with_password(sdk::document_subsystems_report_json)
         }
 
         #[wasm_bindgen(js_name = document_subsystemsAnalyzeJson)]
         pub fn document_subsystems_analyze_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_subsystems_analyze_json(b, None))
+            self.report_with_password(sdk::document_subsystems_analyze_json)
         }
 
         #[wasm_bindgen(js_name = document_subsystemsPlanJson)]
@@ -2361,22 +2549,26 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_subsystems_plan_json(b, &request_json, None))
+            self.report_with_password(|b, password| {
+                sdk::document_subsystems_plan_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = document_securityReportJson)]
         pub fn document_security_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_security_report_json(b, None))
+            self.report_with_password(sdk::document_security_report_json)
         }
 
         #[wasm_bindgen(js_name = document_securityAnalyzeJson)]
         pub fn document_security_analyze_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_security_analyze_json(b, None))
+            self.report_with_password(sdk::document_security_analyze_json)
         }
 
         #[wasm_bindgen(js_name = document_securityPlanJson)]
         pub fn document_security_plan_json(&self, request_json: String) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_security_plan_json(b, &request_json, None))
+            self.report_with_password(|b, password| {
+                sdk::document_security_plan_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = document_securityVerifyResidualJson)]
@@ -2384,37 +2576,42 @@ mod wasm_api {
             &self,
             terms_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::document_security_verify_residual_json(b, &terms_json, None))
+            self.report_with_password(|b, password| {
+                sdk::document_security_verify_residual_json(b, &terms_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = advanced_editingVectorListJson)]
         pub fn advanced_editing_vector_list_json(&self, page: usize) -> Result<String, JsValue> {
-            self.report(|b| sdk::advanced_editing_vector_list_json(b, page, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.report(|b| sdk::advanced_editing_vector_list_json(b, page, password))
         }
 
         #[wasm_bindgen(js_name = associatedFilesReportJson)]
         pub fn associated_files_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::associated_files_report_json(b, None))
+            self.report_with_password(sdk::associated_files_report_json)
         }
 
         #[wasm_bindgen(js_name = editPolicyReportJson)]
         pub fn edit_policy_report_json(&self, operation: &str) -> Result<String, JsValue> {
-            self.report(|b| sdk::edit_policy_report_json(b, operation, None))
+            self.report_with_password(|b, password| {
+                sdk::edit_policy_report_json(b, operation, password)
+            })
         }
 
         #[wasm_bindgen(js_name = pagesReportJson)]
         pub fn pages_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::page_operations_report_json(b, None))
+            self.report_with_password(sdk::page_operations_report_json)
         }
 
         #[wasm_bindgen(js_name = interactiveReportJson)]
         pub fn interactive_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::interactive_report_json(b, None))
+            self.report_with_password(sdk::interactive_report_json)
         }
 
         #[wasm_bindgen(js_name = signatureReportJson)]
         pub fn signature_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::signature_report_json(b, None))
+            self.report_with_password(sdk::signature_report_json)
         }
 
         #[wasm_bindgen(js_name = signatureReportWithOptionsJson)]
@@ -2422,7 +2619,9 @@ mod wasm_api {
             &self,
             options_json: &str,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::signature_report_with_options_json(b, options_json, None))
+            self.report_with_password(|b, password| {
+                sdk::signature_report_with_options_json(b, options_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = signatureValidationWithEvidenceJson)]
@@ -2430,7 +2629,9 @@ mod wasm_api {
             &self,
             options_json: &str,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::signature_validation_with_evidence_json(b, options_json, None))
+            self.report_with_password(|b, password| {
+                sdk::signature_validation_with_evidence_json(b, options_json, password)
+            })
         }
 
         /// Offline Signature Validation validation with owned caller-supplied trust and
@@ -2503,37 +2704,43 @@ mod wasm_api {
 
         #[wasm_bindgen(js_name = fontReportJson)]
         pub fn font_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::font_report_json(b, None))
+            self.report_with_password(sdk::font_report_json)
         }
 
         #[wasm_bindgen(js_name = textSemanticJson)]
         pub fn text_semantic_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::text_semantic_json(b, &[], None))
+            self.report_with_password(|b, password| sdk::text_semantic_json(b, &[], password))
         }
 
         #[wasm_bindgen(js_name = semanticDocumentReportJson)]
         pub fn semantic_document_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::semantic_document_json(b, &[], None))
+            self.report_with_password(|b, password| sdk::semantic_document_json(b, &[], password))
         }
 
         #[wasm_bindgen(js_name = chunksJson)]
         pub fn chunks_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::chunk_report_json(b, None))
+            self.report_with_password(sdk::chunk_report_json)
         }
 
         #[wasm_bindgen(js_name = advancedChunksJson)]
         pub fn advanced_chunks_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::advanced_chunk_report_json(b, &[], None))
+            self.report_with_password(|b, password| {
+                sdk::advanced_chunk_report_json(b, &[], password)
+            })
         }
 
         #[wasm_bindgen(js_name = semanticBundleJson)]
         pub fn semantic_bundle_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::semantic_binding_report_json(b, &[], None))
+            self.report_with_password(|b, password| {
+                sdk::semantic_binding_report_json(b, &[], password)
+            })
         }
 
         #[wasm_bindgen(js_name = semanticSearchJson)]
         pub fn semantic_search_json(&self, query: &str) -> Result<String, JsValue> {
-            self.report(|b| sdk::semantic_search_report_json(b, &[], query, None))
+            self.report_with_password(|b, password| {
+                sdk::semantic_search_report_json(b, &[], query, password)
+            })
         }
 
         #[wasm_bindgen(js_name = tableProposalStatusJson)]
@@ -2551,6 +2758,7 @@ mod wasm_api {
             mode: &str,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.output(|b| {
                 sdk::advanced_editing_text_edit_json(
                     b,
@@ -2559,7 +2767,7 @@ mod wasm_api {
                     new_text,
                     mode,
                     options_json.as_deref(),
-                    None,
+                    password,
                 )
             })
         }
@@ -2569,7 +2777,8 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::source_editing_operator_text_edit_json(b, &request_json, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| sdk::source_editing_operator_text_edit_json(b, &request_json, password))
         }
 
         #[wasm_bindgen(js_name = editing_transactionsTransactionApply)]
@@ -2577,8 +2786,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.output(|b| {
-                sdk::editing_transactions_transaction_apply_json(b, &request_json, None)
+                sdk::editing_transactions_transaction_apply_json(b, &request_json, password)
             })
         }
 
@@ -2588,12 +2798,13 @@ mod wasm_api {
             request_json: String,
             render_invalidation_options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.output(|b| {
                 sdk::editing_transactions_transaction_apply_with_render_invalidation_json(
                     b,
                     &request_json,
                     render_invalidation_options_json.as_deref(),
-                    None,
+                    password,
                 )
             })
         }
@@ -2610,6 +2821,69 @@ mod wasm_api {
                     b,
                     &plan_json,
                     approval_json.as_deref(),
+                    password,
+                )
+            })
+        }
+
+        /// Execute evidence-constrained bidirectional edit synthesis over the
+        /// supplied canonical universal-edit candidates. Candidate PDF bytes
+        /// remain internal; only the selected output and its JSON receipt are
+        /// returned.
+        #[wasm_bindgen(js_name = ecbesUniversalEdit)]
+        pub fn ecbes_universal_edit(
+            &self,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| sdk::ecbes_universal_edit_json(b, &request_json, password))
+        }
+
+        /// ECBES variant for candidates whose universal policy requests
+        /// Standard-security output. Credentials are apply-only and are never
+        /// serialized into the report.
+        #[wasm_bindgen(js_name = ecbesUniversalEditWithOutputCredentials)]
+        pub fn ecbes_universal_edit_with_output_credentials(
+            &self,
+            request_json: String,
+            input_password: Option<Vec<u8>>,
+            output_user_password: Vec<u8>,
+            output_owner_password: Option<Vec<u8>>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let explicit_input_password = input_password.map(SecretBytes::new);
+            let output_user_password = SecretBytes::new(output_user_password);
+            let output_owner_password = output_owner_password.map(SecretBytes::new);
+            let retained_password = self.input_password.as_ref().map(|value| value.as_slice());
+            let input_password = explicit_input_password
+                .as_ref()
+                .map(|value| value.as_slice())
+                .or(retained_password);
+            self.output(|b| {
+                sdk::ecbes_universal_edit_with_output_credentials_json(
+                    b,
+                    &request_json,
+                    input_password,
+                    output_user_password.as_slice(),
+                    output_owner_password
+                        .as_ref()
+                        .map(|value| value.as_slice())
+                        .unwrap_or_else(|| output_user_password.as_slice()),
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = storyFigureTransferApply)]
+        pub fn story_figure_transfer_apply(
+            &self,
+            request_json: String,
+            approved_plan_sha256: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| {
+                sdk::story_figure_transfer_apply_json(
+                    b,
+                    &request_json,
+                    &approved_plan_sha256,
                     password,
                 )
             })
@@ -2652,7 +2926,10 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::editing_transactions_scene_edit_text_json(b, &request_json, None))
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| {
+                sdk::editing_transactions_scene_edit_text_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = text_reflowReflowRegion)]
@@ -2660,7 +2937,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::text_reflow_reflow_region_json(b, &request_json, None))
+            self.output_with_password(|b, password| {
+                sdk::text_reflow_reflow_region_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = text_reflowReflowDocument)]
@@ -2668,7 +2947,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::text_reflow_reflow_document_json(b, &request_json, None))
+            self.output_with_password(|b, password| {
+                sdk::text_reflow_reflow_document_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = text_reflowUndoReflow)]
@@ -2677,7 +2958,9 @@ mod wasm_api {
             output_pdf: Vec<u8>,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::text_reflow_undo_reflow_json(b, &output_pdf, &request_json, None))
+            self.output_with_password(|b, password| {
+                sdk::text_reflow_undo_reflow_json(b, &output_pdf, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = document_subsystemsApply)]
@@ -2685,7 +2968,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::document_subsystems_apply_json(b, &request_json, None))
+            self.output_with_password(|b, password| {
+                sdk::document_subsystems_apply_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = document_subsystemsUndo)]
@@ -2694,7 +2979,9 @@ mod wasm_api {
             output_pdf: Vec<u8>,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::document_subsystems_undo_json(b, &output_pdf, &request_json, None))
+            self.output_with_password(|b, password| {
+                sdk::document_subsystems_undo_json(b, &output_pdf, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = document_securityApply)]
@@ -2702,7 +2989,9 @@ mod wasm_api {
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::document_security_apply_json(b, &request_json, None))
+            self.output_with_password(|b, password| {
+                sdk::document_security_apply_json(b, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = document_securityUndo)]
@@ -2711,7 +3000,9 @@ mod wasm_api {
             output_pdf: Vec<u8>,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::document_security_undo_json(b, &output_pdf, &request_json, None))
+            self.output_with_password(|b, password| {
+                sdk::document_security_undo_json(b, &output_pdf, &request_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = source_editingPathEdit)]
@@ -2722,6 +3013,7 @@ mod wasm_api {
             operation_json: &str,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.output(|b| {
                 sdk::source_editing_path_edit_json(
                     b,
@@ -2729,7 +3021,7 @@ mod wasm_api {
                     stable_id,
                     operation_json,
                     options_json.as_deref(),
-                    None,
+                    password,
                 )
             })
         }
@@ -2742,6 +3034,7 @@ mod wasm_api {
             operation_json: &str,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.output(|b| {
                 sdk::advanced_editing_vector_edit_json(
                     b,
@@ -2749,7 +3042,7 @@ mod wasm_api {
                     stable_id,
                     operation_json,
                     options_json.as_deref(),
-                    None,
+                    password,
                 )
             })
         }
@@ -2762,6 +3055,7 @@ mod wasm_api {
             options_json: Option<String>,
             signature_policy_override: bool,
         ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.output(|b| {
                 sdk::advanced_editing_ink_fit_json(
                     b,
@@ -2769,7 +3063,7 @@ mod wasm_api {
                     annotation_index,
                     options_json.as_deref(),
                     signature_policy_override,
-                    None,
+                    password,
                 )
             })
         }
@@ -2781,24 +3075,34 @@ mod wasm_api {
             execute_events: bool,
             dpi: u32,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| {
-                sdk::xfa_render_preview_json(b, script_policy.as_deref(), execute_events, dpi, None)
+            self.output_with_password(|b, password| {
+                sdk::xfa_render_preview_json(
+                    b,
+                    script_policy.as_deref(),
+                    execute_events,
+                    dpi,
+                    password,
+                )
             })
         }
 
         #[wasm_bindgen(js_name = xfaFlatten)]
         pub fn xfa_flatten(&self, mode: Option<String>) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::xfa_flatten_json(b, mode.as_deref(), None))
+            self.output_with_password(|b, password| {
+                sdk::xfa_flatten_json(b, mode.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = xfaSanitize)]
         pub fn xfa_sanitize(&self, mode: Option<String>) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::xfa_sanitize_json(b, mode.as_deref(), None))
+            self.output_with_password(|b, password| {
+                sdk::xfa_sanitize_json(b, mode.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = annotationXfdfExport)]
         pub fn annotation_xfdf_export(&self) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::annotation_xfdf_export_json(b, None))
+            self.output_with_password(sdk::annotation_xfdf_export_json)
         }
 
         #[wasm_bindgen(js_name = annotationXfdfImport)]
@@ -2807,8 +3111,8 @@ mod wasm_api {
             xfdf: &[u8],
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| {
-                sdk::annotation_xfdf_import_json(b, xfdf, options_json.as_deref(), None)
+            self.output_with_password(|b, password| {
+                sdk::annotation_xfdf_import_json(b, xfdf, options_json.as_deref(), password)
             })
         }
 
@@ -2817,21 +3121,142 @@ mod wasm_api {
             &self,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| {
-                sdk::annotation_appearance_generate_json(b, options_json.as_deref(), None)
+            self.output_with_password(|b, password| {
+                sdk::annotation_appearance_generate_json(b, options_json.as_deref(), password)
             })
         }
 
         #[wasm_bindgen(js_name = editTextRange)]
         pub fn edit_text_range(&self, request_json: String) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
             self.output(|b| {
-                sdk::advanced_editing_closeout_text_range_edit_json(b, &request_json, None)
+                sdk::advanced_editing_closeout_text_range_edit_json(b, &request_json, password)
+            })
+        }
+
+        /// Apply reviewed physical regions/final lines to the exact proposal.
+        /// The engine recomputes the canonical proposal and fails closed when
+        /// input, request, proposal or approval identity is stale.
+        #[wasm_bindgen(js_name = applyTextRangePaintPartitions)]
+        pub fn apply_text_range_paint_partitions(
+            &self,
+            request_json: String,
+            proposal_json: String,
+            approval_json: String,
+            font_bytes: Option<Vec<u8>>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| {
+                sdk::advanced_editing_closeout_paint_partition_apply_with_font_json(
+                    b,
+                    &request_json,
+                    &proposal_json,
+                    &approval_json,
+                    font_bytes.as_deref(),
+                    password,
+                )
+            })
+        }
+
+        /// Apply only the exact candidate covered by a canonical preview
+        /// publication receipt.
+        #[wasm_bindgen(js_name = applyReviewedTextRangePaintPartitions)]
+        pub fn apply_reviewed_text_range_paint_partitions(
+            &self,
+            request_json: String,
+            proposal_json: String,
+            approval_json: String,
+            publication_receipt_json: String,
+            font_bytes: Option<Vec<u8>>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| {
+                sdk::advanced_editing_closeout_paint_partition_apply_reviewed_with_font_json(
+                    b,
+                    &request_json,
+                    &proposal_json,
+                    &approval_json,
+                    &publication_receipt_json,
+                    font_bytes.as_deref(),
+                    password,
+                )
+            })
+        }
+
+        /// Authenticate a canonical publication receipt with a caller-held
+        /// HMAC-SHA-256 key. Never ship a server key to browser code.
+        #[wasm_bindgen(js_name = authenticateTextRangePaintPartitionReceipt)]
+        pub fn authenticate_text_range_paint_partition_receipt(
+            publication_receipt_json: String,
+            key_id: String,
+            audience: String,
+            issued_at_unix: f64,
+            expires_at_unix: f64,
+            hmac_key: Vec<u8>,
+        ) -> Result<String, JsValue> {
+            install_panic_hook();
+            let hmac_key = SecretBytes::new(hmac_key);
+            let issued_at_unix = checked_unix_seconds(issued_at_unix, "issuedAtUnix")?;
+            let expires_at_unix = checked_unix_seconds(expires_at_unix, "expiresAtUnix")?;
+            sdk::advanced_editing_closeout_paint_partition_authenticate_receipt_json(
+                &publication_receipt_json,
+                &key_id,
+                &audience,
+                issued_at_unix,
+                expires_at_unix,
+                hmac_key.as_slice(),
+            )
+            .map_err(js_err)
+        }
+
+        /// Verify a host-authenticated receipt and return its nested ordinary
+        /// publication receipt envelope.
+        #[wasm_bindgen(js_name = verifyAuthenticatedTextRangePaintPartitionReceipt)]
+        pub fn verify_authenticated_text_range_paint_partition_receipt(
+            authenticated_receipt_json: String,
+            expected_key_id: String,
+            expected_audience: String,
+            now_unix: f64,
+            allowed_future_skew_secs: f64,
+            hmac_key: Vec<u8>,
+        ) -> Result<String, JsValue> {
+            install_panic_hook();
+            let hmac_key = SecretBytes::new(hmac_key);
+            let now_unix = checked_unix_seconds(now_unix, "nowUnix")?;
+            let allowed_future_skew_secs =
+                checked_unix_seconds(allowed_future_skew_secs, "allowedFutureSkewSecs")?;
+            sdk::advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json(
+                &authenticated_receipt_json,
+                &expected_key_id,
+                &expected_audience,
+                now_unix,
+                allowed_future_skew_secs,
+                hmac_key.as_slice(),
+            )
+            .map_err(js_err)
+        }
+
+        /// Revision-bound value/formula mutation with dependent recalculation.
+        #[wasm_bindgen(js_name = mutateAuthoredTypedTable)]
+        pub fn mutate_authored_typed_table(
+            &self,
+            request_json: String,
+            font_bytes: Option<Vec<u8>>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            self.output(|b| {
+                sdk::authored_typed_table_mutate_json(
+                    b,
+                    &request_json,
+                    font_bytes.as_deref(),
+                    password,
+                )
             })
         }
 
         #[wasm_bindgen(js_name = writer_historyPackObjectStreams)]
         pub fn writer_history_pack_object_streams(&self) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::writer_history_pack_object_streams_json(b, None))
+            self.output_with_password(sdk::writer_history_pack_object_streams_json)
         }
 
         #[wasm_bindgen(js_name = compression_officeOptimize)]
@@ -2839,8 +3264,8 @@ mod wasm_api {
             &self,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| {
-                sdk::compression_office_optimize_pdf_json(b, options_json.as_deref(), None)
+            self.output_with_password(|b, password| {
+                sdk::compression_office_optimize_pdf_json(b, options_json.as_deref(), password)
             })
         }
 
@@ -2850,14 +3275,14 @@ mod wasm_api {
             mode: Option<String>,
             custom_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| {
-                sdk::rich_media_sanitize_json(b, mode.as_deref(), custom_json.as_deref(), None)
+            self.output_with_password(|b, password| {
+                sdk::rich_media_sanitize_json(b, mode.as_deref(), custom_json.as_deref(), password)
             })
         }
 
         #[wasm_bindgen(js_name = richMediaFlattenPoster)]
         pub fn rich_media_flatten_poster(&self) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::rich_media_flatten_poster_json(b, None))
+            self.output_with_password(sdk::rich_media_flatten_poster_json)
         }
 
         #[wasm_bindgen(js_name = redactImageNonaxis)]
@@ -2865,17 +3290,23 @@ mod wasm_api {
             &self,
             options_json: &str,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::nonaxis_redaction_apply_json(b, options_json, None))
+            self.output_with_password(|b, password| {
+                sdk::nonaxis_redaction_apply_json(b, options_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = redactImageMask)]
         pub fn redact_image_mask(&self, options_json: &str) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::redact_image_mask_json(b, options_json, None))
+            self.output_with_password(|b, password| {
+                sdk::redact_image_mask_json(b, options_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = redactInlineImage)]
         pub fn redact_inline_image(&self, options_json: &str) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::redact_inline_image_json(b, options_json, None))
+            self.output_with_password(|b, password| {
+                sdk::redact_inline_image_json(b, options_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = associatedFileAdd)]
@@ -2884,7 +3315,9 @@ mod wasm_api {
             payload: &[u8],
             options_json: &str,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::associated_files_add_json(b, payload, options_json, None))
+            self.output_with_password(|b, password| {
+                sdk::associated_files_add_json(b, payload, options_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = associatedFileUpdateOwner)]
@@ -2893,7 +3326,9 @@ mod wasm_api {
             payload: &[u8],
             options_json: &str,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::associated_files_update_owner_json(b, payload, options_json, None))
+            self.output_with_password(|b, password| {
+                sdk::associated_files_update_owner_json(b, payload, options_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = associatedFileRemoveOwner)]
@@ -2901,7 +3336,9 @@ mod wasm_api {
             &self,
             options_json: &str,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::associated_files_remove_owner_json(b, options_json, None))
+            self.output_with_password(|b, password| {
+                sdk::associated_files_remove_owner_json(b, options_json, password)
+            })
         }
 
         #[wasm_bindgen(js_name = incrementalFormEdit)]
@@ -2959,7 +3396,9 @@ mod wasm_api {
             &self,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::associated_files_sanitize_json(b, options_json.as_deref(), None))
+            self.output_with_password(|b, password| {
+                sdk::associated_files_sanitize_json(b, options_json.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = formJsSanitize)]
@@ -2967,7 +3406,9 @@ mod wasm_api {
             &self,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::form_js_sanitize_json(b, options_json.as_deref(), None))
+            self.output_with_password(|b, password| {
+                sdk::form_js_sanitize_json(b, options_json.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = formJsFlattenValues)]
@@ -2975,7 +3416,9 @@ mod wasm_api {
             &self,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::form_js_flatten_values_json(b, options_json.as_deref(), None))
+            self.output_with_password(|b, password| {
+                sdk::form_js_flatten_values_json(b, options_json.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = associatedFilesRemove)]
@@ -2985,17 +3428,21 @@ mod wasm_api {
         ) -> Result<WellfriendOutput, JsValue> {
             let stable_ids: Vec<String> = serde_json::from_str(stable_ids_json)
                 .map_err(|error| JsValue::from_str(&error.to_string()))?;
-            self.output(|b| sdk::associated_files_remove_json(b, &stable_ids, None))
+            self.output_with_password(|b, password| {
+                sdk::associated_files_remove_json(b, &stable_ids, password)
+            })
         }
 
         #[wasm_bindgen(js_name = sanitize)]
         pub fn sanitize(&self, policy: Option<String>) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::sanitize_json(b, policy.as_deref(), None))
+            self.output_with_password(|b, password| {
+                sdk::sanitize_json(b, policy.as_deref(), password)
+            })
         }
 
         #[wasm_bindgen(js_name = canonicalize)]
         pub fn canonicalize(&self, date_epoch: Option<i64>) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::canonicalize_json(b, date_epoch, None))
+            self.output_with_password(|b, password| sdk::canonicalize_json(b, date_epoch, password))
         }
 
         #[wasm_bindgen(js_name = redactTermsJson)]
@@ -3006,7 +3453,9 @@ mod wasm_api {
         ) -> Result<WellfriendOutput, JsValue> {
             let terms: Vec<String> = serde_json::from_str(terms_json)
                 .map_err(|err| JsValue::from_str(&err.to_string()))?;
-            self.output(|b| sdk::redact_terms_json(b, &terms, strict, None))
+            self.output_with_password(|b, password| {
+                sdk::redact_terms_json(b, &terms, strict, password)
+            })
         }
 
         fn ensure_open(&self) -> Result<(), JsValue> {
@@ -3027,6 +3476,15 @@ mod wasm_api {
             f(&self.bytes).map_err(js_err)
         }
 
+        fn report_with_password<F>(&self, f: F) -> Result<String, JsValue>
+        where
+            F: FnOnce(&[u8], Option<&[u8]>) -> wellfriendpdf_engine::Result<String>,
+        {
+            self.ensure_open()?;
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            f(&self.bytes, password).map_err(js_err)
+        }
+
         fn output<F>(&self, f: F) -> Result<WellfriendOutput, JsValue>
         where
             F: FnOnce(&[u8]) -> wellfriendpdf_engine::Result<(Vec<u8>, String)>,
@@ -3035,6 +3493,26 @@ mod wasm_api {
             let (bytes, report_json) = f(&self.bytes).map_err(js_err)?;
             Ok(WellfriendOutput { bytes, report_json })
         }
+
+        fn output_with_password<F>(&self, f: F) -> Result<WellfriendOutput, JsValue>
+        where
+            F: FnOnce(&[u8], Option<&[u8]>) -> wellfriendpdf_engine::Result<(Vec<u8>, String)>,
+        {
+            self.ensure_open()?;
+            let password = self.input_password.as_ref().map(|value| value.as_slice());
+            let (bytes, report_json) = f(&self.bytes, password).map_err(js_err)?;
+            Ok(WellfriendOutput { bytes, report_json })
+        }
+    }
+
+    fn checked_unix_seconds(value: f64, name: &str) -> Result<u64, JsValue> {
+        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+        if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > MAX_SAFE_INTEGER {
+            return Err(JsValue::from_str(&format!(
+                "{name} must be a finite non-negative JavaScript safe integer number of seconds"
+            )));
+        }
+        Ok(value as u64)
     }
 
     #[wasm_bindgen]

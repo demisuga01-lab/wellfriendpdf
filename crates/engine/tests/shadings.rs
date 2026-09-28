@@ -166,9 +166,9 @@ fn radial_shading_type3_interpolates_between_circles() {
 
 #[test]
 fn function_based_shading_type1_varies_with_x() {
-    // 20x20 page. Shading type 1 over Domain [0 1 0 1]; Function is Type 2 with
-    // C0=[0,0,0] (black) at x=0 and C1=[1,0,0] (red) at x=1, N=1. /Matrix scales
-    // the unit domain to cover the page (20x20). Color depends on x only.
+    // 20x20 page. Shading type 1 supplies both x and y to its function, so use
+    // a two-input calculator function that drops y and returns [x, 0, 0].
+    // /Matrix scales the unit domain to cover the page (20x20).
     let mut b = PdfBuilder::new();
     b.add("<< /Type /Catalog /Pages 2 0 R >>"); // 1
     b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
@@ -182,7 +182,10 @@ fn function_based_shading_type1_varies_with_x() {
         "<< /ShadingType 1 /ColorSpace /DeviceRGB /Domain [0 1 0 1] \
          /Matrix [20 0 0 20 0 0] /Function 6 0 R >>",
     ); // 5
-    b.add("<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0] /C1 [1 0 0] /N 1 >>"); // 6
+    b.add_stream(
+        "/FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1]",
+        b"{ pop 0 0 }",
+    ); // 6
 
     let pdf = b.build();
     // Left edge (x small) -> near black; right edge (x large) -> near red.

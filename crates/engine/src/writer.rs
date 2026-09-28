@@ -37,6 +37,11 @@ use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 
+#[path = "writer_feature_version.rs"]
+mod feature_version;
+#[path = "writer_page_pruning.rs"]
+pub(crate) mod page_pruning;
+
 /// Maximum number of objects a single dependency-closure walk will copy.
 ///
 /// A pathological or hostile page tree could, in principle, reference an
@@ -256,7 +261,9 @@ impl PdfWriter {
         self
     }
 
-    /// Set the output PDF header version (e.g. `"1.7"`). Defaults to `1.7`.
+    /// Set the preferred output PDF header version. Defaults to `1.7`. The
+    /// final writer enforces minima for its xref/encryption modes and OpenType
+    /// font streams, even when this setter follows `with_mode`.
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
@@ -291,6 +298,7 @@ impl PdfWriter {
     /// Serialize the whole document to PDF bytes, using the configured
     /// [`WriterMode`].
     pub fn write(&self) -> Result<Vec<u8>> {
+        let version = feature_version::header(self)?;
         let pack = self.mode == WriterMode::XrefStreamWithObjStm;
 
         // Encryption interaction with object streams: objects packed INTO an
@@ -333,9 +341,9 @@ impl PdfWriter {
         }
 
         match self.mode {
-            WriterMode::ClassicXref => self.write_classic(&objects),
-            WriterMode::XrefStream => self.write_modern(&objects, false),
-            WriterMode::XrefStreamWithObjStm => self.write_modern(&objects, true),
+            WriterMode::ClassicXref => self.write_classic(&objects, &version),
+            WriterMode::XrefStream => self.write_modern(&objects, false, &version),
+            WriterMode::XrefStreamWithObjStm => self.write_modern(&objects, true, &version),
         }
     }
 
@@ -352,12 +360,12 @@ impl PdfWriter {
     }
 
     /// Classic `xref` table + `trailer` output (PDF 1.x).
-    fn write_classic(&self, objects: &[&OutputObject]) -> Result<Vec<u8>> {
+    fn write_classic(&self, objects: &[&OutputObject], version: &str) -> Result<Vec<u8>> {
         let max_number = objects.last().map(|o| o.number).unwrap_or(0);
         let size = max_number as usize + 1;
 
         let mut out = Vec::new();
-        out.extend_from_slice(format!("%PDF-{}\n", self.version).as_bytes());
+        out.extend_from_slice(format!("%PDF-{version}\n").as_bytes());
         out.extend_from_slice(b"%\xE2\xE3\xCF\xD3\n");
 
         // Body. Track the byte offset of each object number for the xref table.
@@ -460,7 +468,12 @@ impl PdfWriter {
     /// are PLAINTEXT (this function applies encryption at the right
     /// granularity); otherwise they are already in their final (possibly
     /// encrypted) form.
-    fn write_modern(&self, objects: &[&OutputObject], pack: bool) -> Result<Vec<u8>> {
+    fn write_modern(
+        &self,
+        objects: &[&OutputObject],
+        pack: bool,
+        version: &str,
+    ) -> Result<Vec<u8>> {
         let encrypting = self.encryption.is_some();
         let encrypt_obj_number = self.encryption.as_ref().map(|e| e.encrypt_obj_number);
 
@@ -512,7 +525,7 @@ impl PdfWriter {
         let mut entries: Vec<(u32, XrefEntryOut)> = Vec::new();
 
         let mut out = Vec::new();
-        out.extend_from_slice(format!("%PDF-{}\n", self.version).as_bytes());
+        out.extend_from_slice(format!("%PDF-{version}\n").as_bytes());
         out.extend_from_slice(b"%\xE2\xE3\xCF\xD3\n");
 
         // Helper to fetch an object body, applying per-object encryption for the
@@ -1290,8 +1303,7 @@ fn copy_closure(copier: &mut DocCopier, roots: &[(u32, u16)], next_number: &mut 
 
     while let Some((old_number, old_generation)) = stack.pop() {
         let new_number = match copier.remap.get(&old_number) {
-            Some(&n)
-                if copier.generations.get(&old_number).copied() == Some(old_generation) => n,
+            Some(&n) if copier.generations.get(&old_number).copied() == Some(old_generation) => n,
             Some(_) => {
                 return Err(WellfriendError::MalformedPdf(format!(
                     "writer closure scheduled object {old_number} with conflicting generations"
@@ -1476,16 +1488,27 @@ pub fn insert_authored_page_preserving_catalog(
     insert_at_page: usize,
     geometry: Option<AuthoredPageGeometry>,
 ) -> Result<Vec<u8>> {
-    let continuation_pages = continuation.get_pages()?;
-    if continuation_pages.len() != 1 {
-        return Err(WellfriendError::UnsupportedFeature(
-            "canonical page insertion requires exactly one authored continuation page".to_string(),
+    insert_authored_pages_preserving_catalog(source, &[(continuation, geometry)], insert_at_page)
+}
+
+/// Insert an ordered batch at one boundary, copying the source and serializing
+/// exactly once. Ancestor counts and page-label indices are adjusted once.
+pub fn insert_authored_pages_preserving_catalog(
+    source: &PdfDocument,
+    continuations: &[(&PdfDocument, Option<AuthoredPageGeometry>)],
+    insert_at_page: usize,
+) -> Result<Vec<u8>> {
+    if continuations.is_empty() || continuations.len() > 10_000 {
+        return Err(WellfriendError::invalid_input(
+            "authored page batch must contain 1..=10000 pages",
         ));
     }
+    let added_count = continuations.len() as i64;
     let source_pages = source.get_pages()?;
     if source_pages.is_empty() {
         return Err(WellfriendError::MalformedPdf(
-            "canonical page insertion requires a source document with at least one page".to_string(),
+            "canonical page insertion requires a source document with at least one page"
+                .to_string(),
         ));
     }
     if insert_at_page == 0 || insert_at_page > source_pages.len().saturating_add(1) {
@@ -1512,15 +1535,14 @@ pub fn insert_authored_page_preserving_catalog(
     let mut source_remap = HashMap::<u32, u32>::new();
     let mut next_number = 1u32;
     for (number, _) in source.reader().object_ids() {
-        if !source_remap.contains_key(&number) {
+        if let std::collections::hash_map::Entry::Vacant(e) = source_remap.entry(number) {
             let assigned = next_number;
             next_number = next_number.checked_add(1).ok_or_else(|| {
                 WellfriendError::ResourceLimit(
-                    "canonical page insertion exhausted the source object-number map"
-                        .to_string(),
+                    "canonical page insertion exhausted the source object-number map".to_string(),
                 )
             })?;
-            source_remap.insert(number, assigned);
+            e.insert(assigned);
         }
     }
     if !source_remap.contains_key(&source_pages_number) {
@@ -1542,34 +1564,6 @@ pub fn insert_authored_page_preserving_catalog(
             )
         })?;
 
-    let continuation_page = &continuation_pages[0];
-    let continuation_reader = continuation.reader();
-    let continuation_page_object = continuation_reader
-        .get_object(
-            continuation_page.object_number,
-            continuation_page.generation_number,
-        )?
-        .as_dict()
-        .cloned()
-        .ok_or_else(|| {
-            WellfriendError::MalformedPdf(
-                "canonical page insertion continuation leaf is not a page dictionary".to_string(),
-            )
-        })?;
-    let mut copier = DocCopier::new(continuation_reader);
-    if let Some(contents) = continuation_page_object.get("Contents") {
-        let mut references = Vec::new();
-        collect_reference_pairs(contents, &mut references);
-        copy_closure(&mut copier, &references, &mut next_number)?;
-    }
-    let mut resource_references = Vec::new();
-    collect_reference_pairs(
-        &PdfObject::Dictionary(continuation_page.resources.clone()),
-        &mut resource_references,
-    );
-    copy_closure(&mut copier, &resource_references, &mut next_number)?;
-
-    let inserted_page_number = next_number;
     let append_after_last = insert_at_page == source_pages.len() + 1;
     let anchor_page_index = if append_after_last {
         source_pages.len() - 1
@@ -1595,11 +1589,14 @@ pub fn insert_authored_page_preserving_catalog(
             ));
         }
     };
-    let copied_parent_number = source_remap.get(&source_parent_number).copied().ok_or_else(|| {
-        WellfriendError::MalformedPdf(
-            "canonical page insertion could not map the anchor /Parent".to_string(),
-        )
-    })?;
+    let copied_parent_number = source_remap
+        .get(&source_parent_number)
+        .copied()
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "canonical page insertion could not map the anchor /Parent".to_string(),
+            )
+        })?;
     let copied_anchor_number = source_remap
         .get(&anchor_page.object_number)
         .copied()
@@ -1609,63 +1606,113 @@ pub fn insert_authored_page_preserving_catalog(
             )
         })?;
 
-    let mut inserted_page = PdfDictionary::empty();
-    inserted_page.insert("Type", PdfObject::Name("Page".to_string()));
-    inserted_page.insert(
-        "Parent",
-        PdfObject::Reference {
-            number: copied_parent_number,
-            generation: 0,
-        },
-    );
-    let geometry = geometry.unwrap_or(AuthoredPageGeometry {
-        media_box: continuation_page.media_box,
-        crop_box: continuation_page.crop_box,
-        bleed_box: continuation_page.bleed_box,
-        trim_box: continuation_page.trim_box,
-        art_box: continuation_page.art_box,
-        rotate: continuation_page.rotate,
-        user_unit: continuation_page.user_unit,
-    });
-    inserted_page.insert("MediaBox", box_array(geometry.media_box));
-    if geometry.crop_box != geometry.media_box {
-        inserted_page.insert("CropBox", box_array(geometry.crop_box));
-    }
-    if geometry.bleed_box != geometry.crop_box {
-        inserted_page.insert("BleedBox", box_array(geometry.bleed_box));
-    }
-    if geometry.trim_box != geometry.crop_box {
-        inserted_page.insert("TrimBox", box_array(geometry.trim_box));
-    }
-    if geometry.art_box != geometry.crop_box {
-        inserted_page.insert("ArtBox", box_array(geometry.art_box));
-    }
-    if geometry.rotate != 0 {
-        inserted_page.insert(
-            "Rotate",
-            PdfObject::Integer(geometry.rotate as i64),
+    let mut inserted_numbers = Vec::with_capacity(continuations.len());
+    for &(continuation, geometry) in continuations {
+        crate::cancel::check_current_cancel("batch authored page insertion")?;
+        let continuation_pages = continuation.get_pages()?;
+        if continuation_pages.len() != 1 {
+            return Err(WellfriendError::invalid_input(
+                "each continuation must contain exactly one page",
+            ));
+        }
+        let continuation_page = &continuation_pages[0];
+        let continuation_reader = continuation.reader();
+        let continuation_page_object = continuation_reader
+            .get_object(
+                continuation_page.object_number,
+                continuation_page.generation_number,
+            )?
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "canonical page insertion continuation leaf is not a page dictionary"
+                        .to_string(),
+                )
+            })?;
+        let mut copier = DocCopier::new(continuation_reader);
+        if let Some(contents) = continuation_page_object.get("Contents") {
+            let mut references = Vec::new();
+            collect_reference_pairs(contents, &mut references);
+            copy_closure(&mut copier, &references, &mut next_number)?;
+        }
+        let mut resource_references = Vec::new();
+        collect_reference_pairs(
+            &PdfObject::Dictionary(continuation_page.resources.clone()),
+            &mut resource_references,
         );
-    }
-    if geometry.user_unit.is_finite()
-        && geometry.user_unit > 0.0
-        && (geometry.user_unit - 1.0).abs() > f64::EPSILON
-    {
-        inserted_page.insert("UserUnit", PdfObject::Real(geometry.user_unit));
-    }
-    inserted_page.insert(
-        "Resources",
-        rewrite_references(
-            PdfObject::Dictionary(continuation_page.resources.clone()),
-            &copier.remap,
-        ),
-    );
-    if let Some(contents) = continuation_page_object.get("Contents") {
-        inserted_page.insert(
-            "Contents",
-            rewrite_references(contents.clone(), &copier.remap),
-        );
-    }
+        copy_closure(&mut copier, &resource_references, &mut next_number)?;
 
+        let inserted_page_number = next_number;
+        next_number = next_number
+            .checked_add(1)
+            .ok_or_else(|| WellfriendError::ResourceLimit("page object number overflow".into()))?;
+        let mut inserted_page = PdfDictionary::empty();
+        inserted_page.insert("Type", PdfObject::Name("Page".to_string()));
+        inserted_page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: copied_parent_number,
+                generation: 0,
+            },
+        );
+        let geometry = geometry.unwrap_or(AuthoredPageGeometry {
+            media_box: continuation_page.media_box,
+            crop_box: continuation_page.crop_box,
+            bleed_box: continuation_page.bleed_box,
+            trim_box: continuation_page.trim_box,
+            art_box: continuation_page.art_box,
+            rotate: continuation_page.rotate,
+            user_unit: continuation_page.user_unit,
+        });
+        inserted_page.insert("MediaBox", box_array(geometry.media_box));
+        if geometry.crop_box != geometry.media_box {
+            inserted_page.insert("CropBox", box_array(geometry.crop_box));
+        }
+        if geometry.bleed_box != geometry.crop_box {
+            inserted_page.insert("BleedBox", box_array(geometry.bleed_box));
+        }
+        if geometry.trim_box != geometry.crop_box {
+            inserted_page.insert("TrimBox", box_array(geometry.trim_box));
+        }
+        if geometry.art_box != geometry.crop_box {
+            inserted_page.insert("ArtBox", box_array(geometry.art_box));
+        }
+        if geometry.rotate != 0 {
+            inserted_page.insert("Rotate", PdfObject::Integer(geometry.rotate as i64));
+        }
+        if geometry.user_unit.is_finite()
+            && geometry.user_unit > 0.0
+            && (geometry.user_unit - 1.0).abs() > f64::EPSILON
+        {
+            inserted_page.insert("UserUnit", PdfObject::Real(geometry.user_unit));
+        }
+        inserted_page.insert(
+            "Resources",
+            rewrite_references(
+                PdfObject::Dictionary(continuation_page.resources.clone()),
+                &copier.remap,
+            ),
+        );
+        if let Some(contents) = continuation_page_object.get("Contents") {
+            inserted_page.insert(
+                "Contents",
+                rewrite_references(contents.clone(), &copier.remap),
+            );
+        }
+
+        inserted_numbers.push(inserted_page_number);
+        objects.push(OutputObject {
+            number: inserted_page_number,
+            object: PdfObject::Dictionary(inserted_page),
+        });
+        for (number, object) in copier.copied {
+            objects.push(OutputObject {
+                number,
+                object: rewrite_references(object, &copier.remap),
+            });
+        }
+    }
     let parent_pages = objects
         .iter_mut()
         .find(|object| object.number == copied_parent_number)
@@ -1712,10 +1759,13 @@ pub fn insert_authored_page_preserving_catalog(
     } else {
         anchor_position
     };
-    kids.insert(insertion_index, PdfObject::Reference {
-        number: inserted_page_number,
-        generation: 0,
-    });
+    kids.splice(
+        insertion_index..insertion_index,
+        inserted_numbers.iter().map(|&number| PdfObject::Reference {
+            number,
+            generation: 0,
+        }),
+    );
     let mut source_ancestor = Some((source_parent_number, source_parent_generation));
     let mut visited_ancestors = HashSet::new();
     while let Some((number, generation)) = source_ancestor {
@@ -1747,10 +1797,8 @@ pub fn insert_authored_page_preserving_catalog(
                 "canonical page insertion /Pages ancestor has no integer /Count".to_string(),
             )
         })?;
-        let new_count = old_count.checked_add(1).ok_or_else(|| {
-            WellfriendError::ResourceLimit(
-                "canonical page insertion /Count overflow".to_string(),
-            )
+        let new_count = old_count.checked_add(added_count).ok_or_else(|| {
+            WellfriendError::ResourceLimit("canonical page insertion /Count overflow".to_string())
         })?;
         if old_count < 0 {
             return Err(WellfriendError::MalformedPdf(
@@ -1758,36 +1806,36 @@ pub fn insert_authored_page_preserving_catalog(
             ));
         }
         copied_dict.insert("Count", PdfObject::Integer(new_count));
-        let source_dict = source.reader().get_object(number, generation)?.as_dict().cloned().ok_or_else(|| {
-            WellfriendError::MalformedPdf(
-                "canonical page insertion source /Pages ancestor is not a dictionary".to_string(),
-            )
-        })?;
+        let source_dict = source
+            .reader()
+            .get_object(number, generation)?
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "canonical page insertion source /Pages ancestor is not a dictionary"
+                        .to_string(),
+                )
+            })?;
         source_ancestor = match source_dict.get("Parent") {
             Some(PdfObject::Reference { number, generation }) => Some((*number, *generation)),
             _ => None,
         };
     }
-    if !visited_ancestors.iter().any(|(number, _)| *number == source_pages_number) {
+    if !visited_ancestors
+        .iter()
+        .any(|(number, _)| *number == source_pages_number)
+    {
         return Err(WellfriendError::MalformedPdf(
             "canonical page insertion anchor parent chain does not reach catalog /Pages"
                 .to_string(),
         ));
     }
-    objects.push(OutputObject {
-        number: inserted_page_number,
-        object: PdfObject::Dictionary(inserted_page),
-    });
-    for (number, object) in copier.copied {
-        objects.push(OutputObject {
-            number,
-            object: rewrite_references(object, &copier.remap),
-        });
-    }
     shift_page_label_indices_after_insertion(
         &mut objects,
         root,
         insert_at_page.saturating_sub(1) as i64,
+        added_count,
     )?;
     PdfWriter::new(objects, root)
         .with_info(info)
@@ -1812,6 +1860,7 @@ fn shift_page_label_indices_after_insertion(
     objects: &mut [OutputObject],
     catalog_number: u32,
     insertion_index: i64,
+    added_count: i64,
 ) -> Result<()> {
     let mut page_labels = objects
         .iter()
@@ -1827,6 +1876,7 @@ fn shift_page_label_indices_after_insertion(
         &mut page_labels,
         objects,
         insertion_index,
+        added_count,
         &mut visited,
         0,
     )?;
@@ -1847,6 +1897,7 @@ fn shift_page_label_number_tree_value(
     value: &mut PdfObject,
     objects: &mut [OutputObject],
     insertion_index: i64,
+    added_count: i64,
     visited: &mut HashSet<u32>,
     depth: usize,
 ) -> Result<()> {
@@ -1873,6 +1924,7 @@ fn shift_page_label_number_tree_value(
             &mut object,
             objects,
             insertion_index,
+            added_count,
             visited,
             depth + 1,
         )?;
@@ -1893,7 +1945,9 @@ fn shift_page_label_number_tree_value(
         for index in (0..items.len()).step_by(2) {
             match &mut items[index] {
                 PdfObject::Integer(page_index) if *page_index >= insertion_index => {
-                    *page_index = page_index.saturating_add(1);
+                    *page_index = page_index.checked_add(added_count).ok_or_else(|| {
+                        WellfriendError::ResourceLimit("page label index overflow".into())
+                    })?;
                 }
                 PdfObject::Integer(_) => {}
                 _ => {
@@ -1908,7 +1962,9 @@ fn shift_page_label_number_tree_value(
         for limit in limits {
             if let PdfObject::Integer(page_index) = limit {
                 if *page_index >= insertion_index {
-                    *page_index = page_index.saturating_add(1);
+                    *page_index = page_index.checked_add(added_count).ok_or_else(|| {
+                        WellfriendError::ResourceLimit("page label index overflow".into())
+                    })?;
                 }
             }
         }
@@ -1919,6 +1975,7 @@ fn shift_page_label_number_tree_value(
                 kid,
                 objects,
                 insertion_index,
+                added_count,
                 visited,
                 depth + 1,
             )?;
@@ -2134,10 +2191,13 @@ pub fn write_document_roundtrip(reader: &PdfReader) -> Result<Vec<u8>> {
 /// and trailer with `/Prev` pointing at the previous `startxref`. This leaves
 /// the original byte prefix untouched, which is the required shape for later
 /// signature-preserving updates.
+/// Adding OpenType programs also raises the catalog `/Version` to at least
+/// 1.6 when needed, composed with any catalog update already in the batch.
 pub fn write_incremental_update(
     reader: &PdfReader,
-    changed_objects: Vec<IncrementalObject>,
+    mut changed_objects: Vec<IncrementalObject>,
 ) -> Result<Vec<u8>> {
+    feature_version::incremental(reader, &mut changed_objects)?;
     let mut raw_objects = Vec::with_capacity(changed_objects.len());
     for obj in changed_objects {
         let mut body = Vec::new();
@@ -2359,14 +2419,14 @@ pub fn rewrite_document_objects(
     let mut remap: HashMap<u32, u32> = HashMap::new();
     let mut next = 1u32;
     for &(number, _gen) in &ids {
-        if !remap.contains_key(&number) {
+        if let std::collections::hash_map::Entry::Vacant(e) = remap.entry(number) {
             let assigned = next;
             next = next.checked_add(1).ok_or_else(|| {
                 WellfriendError::ResourceLimit(
                     "cannot round-trip: PDF object-number space exhausted".to_string(),
                 )
             })?;
-            remap.insert(number, assigned);
+            e.insert(assigned);
         }
     }
 
@@ -2514,10 +2574,7 @@ fn validate_active_reference_generations(
     Ok(())
 }
 
-fn validate_reference_remap_coverage(
-    object: &PdfObject,
-    remap: &HashMap<u32, u32>,
-) -> Result<()> {
+fn validate_reference_remap_coverage(object: &PdfObject, remap: &HashMap<u32, u32>) -> Result<()> {
     let mut references = Vec::new();
     collect_reference_pairs(object, &mut references);
     if let Some((number, generation)) = references
@@ -3710,6 +3767,46 @@ fn number_object(value: f64) -> PdfObject {
 mod tests {
     use super::*;
     use crate::object::PdfObject;
+
+    #[test]
+    fn ordered_batch_insertion_preserves_source_pages_and_catalog() {
+        use crate::authoring::{FontFace, PageSize, PdfBuilder, TextStyle};
+        let build = |labels: &[&str]| {
+            let mut b = PdfBuilder::new();
+            for text in labels {
+                b.add_page(PageSize::custom(200.0, 200.0))
+                    .draw_text(
+                        *text,
+                        10.0,
+                        50.0,
+                        &TextStyle::new(FontFace::BuiltinUnicode, 12.0),
+                    )
+                    .unwrap();
+            }
+            crate::ContentEngine::open_bytes(b.to_bytes().unwrap()).unwrap()
+        };
+        let original = build(&["FIRST", "LAST"]);
+        let a = build(&["SECOND"]);
+        let b = build(&["THIRD"]);
+        let output = insert_authored_pages_preserving_catalog(
+            original.document(),
+            &[(a.document(), None), (b.document(), None)],
+            2,
+        )
+        .unwrap();
+        let reopened = crate::ContentEngine::open_bytes(output).unwrap();
+        assert_eq!(reopened.page_count().unwrap(), 4);
+        for (index, expected) in ["FIRST", "SECOND", "THIRD", "LAST"].iter().enumerate() {
+            assert!(reopened
+                .get_page_text(index + 1)
+                .unwrap()
+                .contains(expected));
+        }
+        assert_eq!(
+            reopened.document().get_catalog().unwrap().get_name("Type"),
+            Some("Catalog")
+        );
+    }
 
     fn ser(object: &PdfObject) -> Vec<u8> {
         let mut out = Vec::new();

@@ -223,6 +223,29 @@ pub struct TintTransformCacheReport {
     pub max_bytes: usize,
 }
 
+/// Cumulative observations on the current thread, not a per-document audit.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IccAlternateUsageReport {
+    pub scope: String,
+    pub native_conversions: u64,
+    pub policy_alternates: u64,
+    pub unavailable_profile_alternates: u64,
+    pub device_alternates: u64,
+    pub rejected_conversions: u64,
+}
+
+fn icc_alternate_usage_report() -> IccAlternateUsageReport {
+    let metrics = crate::render::icc_conversion::metrics();
+    IccAlternateUsageReport {
+        scope:"cumulative_current_thread_conversion_calls; not_per_document; nested_alternates_count_separately".into(),
+        native_conversions: metrics.native_conversions,
+        policy_alternates: metrics.policy_alternates,
+        unavailable_profile_alternates: metrics.unavailable_profile_alternates,
+        device_alternates: metrics.device_alternates,
+        rejected_conversions: metrics.rejected_conversions,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IccFidelityVector {
     pub name: String,
@@ -284,6 +307,8 @@ pub struct ColorReport {
     pub backend: ColorBackendDecision,
     pub limits: ColorLimits,
     pub icc_transform_cache: IccTransformCacheReport,
+    #[serde(default)]
+    pub icc_alternate_usage: IccAlternateUsageReport,
     pub tint_transform_cache: TintTransformCacheReport,
     pub icc_fidelity_vectors: Vec<IccFidelityVector>,
     pub color_spaces: Vec<ColorSpaceUsage>,
@@ -308,6 +333,7 @@ impl ColorReport {
             backend: ColorBackendDecision::default(),
             limits: ColorLimits::default(),
             icc_transform_cache: cache_report(cmm::icc_transform_cache_metrics()),
+            icc_alternate_usage: icc_alternate_usage_report(),
             tint_transform_cache: tint_transform_cache_report(
                 colorspace::tint_transform_cache_metrics(),
             ),
@@ -412,6 +438,7 @@ impl ColorReportBuilder {
             });
         }
         report.icc_transform_cache = cache_report(cmm::icc_transform_cache_metrics());
+        report.icc_alternate_usage = icc_alternate_usage_report();
         report.tint_transform_cache =
             tint_transform_cache_report(colorspace::tint_transform_cache_metrics());
         report.standards.device_color_policy_checked = matches!(

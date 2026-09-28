@@ -1,5 +1,11 @@
 # Resource Scope And Occurrences
 
+Historical bounded source-editing baseline, not the current universal-editor
+completion report. The capability descriptions below predate the active dirty
+candidate. Current source increments and unfinished requirements are tracked in
+`universal_editor_roadmap_tracking.md`; no universal/Adobe-level qualification is
+established by this document.
+
 Wellfriend PDF SDK source editing closes the operator-preserving true-editing layer by
 reusing the existing advanced editing source-range editing and writer paths instead of
 creating a second editor. A visual cover-up is not considered an edit.
@@ -32,4 +38,5 @@ creating a second editor. A visual cover-up is not considered an edit.
 
 ## Verdict
 
-source editing verdict: complete.
+Historical operator-preserving slice only; the full source-editing and universal
+editor roadmap remains incomplete and unqualified.

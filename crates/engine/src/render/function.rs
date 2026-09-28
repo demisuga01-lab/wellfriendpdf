@@ -2,11 +2,11 @@
 //! soft-mask transfer functions.
 //!
 //! Supported function types:
-//! - Type 0 (sampled): multi-dimensional sample array with multilinear
-//!   interpolation. 1D and 2D inputs are exercised by the corpus; higher input
-//!   dimensions are handled by the same generic multilinear code path.
-//! - Type 2 (exponential interpolation) and Type 3 (stitching): delegated to the
-//!   existing implementations in [`crate::render::shading`].
+//! - Type 0 (sampled): bounded tensor-product linear/cubic interpolation.
+//!   Cubic axes with fewer than four samples use linear interpolation.
+//!   Current source regression additions are not runtime qualification.
+//! - Type 2 (exponential interpolation) and Type 3 (stitching): immutable,
+//!   domain/range-aware graphs shared with the retained shading evaluator.
 //! - Type 4 (PostScript calculator): a small stack-based interpreter for the
 //!   restricted PostScript subset defined in spec Tables 42–44.
 //!
@@ -14,16 +14,50 @@
 //! (so 2-input functions used by ShadingType 1 and mesh shadings work), returning
 //! the output components. A single-input convenience wrapper lives in
 //! `crate::render::shading::eval_function`.
+#![allow(dead_code)] // Legacy test adapters; runtime rendering uses prepared graphs.
 
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
-use crate::render::shading::{eval_type2, eval_type3, get_float_array};
 
 pub(crate) const MAX_TYPE0_SAMPLE_VALUES: usize = 4_194_304;
 pub(crate) const MAX_TYPE0_INTERPOLATION_DIMENSIONS: usize = 8;
 pub(crate) const MAX_TYPE4_TOKENS: usize = 16_384;
 pub(crate) const MAX_TYPE4_STACK: usize = 1_024;
 const MAX_FUNCTION_ARRAY_COMPONENTS: usize = crate::render::colorspace::MAX_DEVICEN_COMPONENTS;
+const MAX_FUNCTION_VISITS: usize = 4096;
+
+#[cfg(test)]
+#[path = "function_domain_tests.rs"]
+mod domain_tests;
+
+#[path = "sampled_function.rs"]
+mod sampled;
+
+#[path = "prepared_function.rs"]
+mod prepared;
+pub(crate) use prepared::PreparedFunction;
+
+#[path = "function_cache.rs"]
+mod cache;
+pub(crate) use cache::FunctionCache;
+pub use cache::FunctionCacheMetrics;
+
+#[path = "function_resources.rs"]
+mod resources;
+pub(crate) use resources::{FunctionLease, FunctionResources};
+
+#[path = "transfer_function.rs"]
+mod transfer;
+pub(crate) use transfer::PreparedTransfer;
+
+// Shared across stitching children and component arrays, not reset by recursion.
+const MAX_FUNCTION_WORK: usize = 8_388_608;
+const MAX_TYPE4_PROGRAM_BYTES: usize = 1_048_576;
+
+fn charge_work(remaining: &mut usize, amount: usize) -> Option<()> {
+    *remaining = remaining.checked_sub(amount)?;
+    crate::cancel::check_current_cancel("PDF function work budget").ok()
+}
 
 /// Evaluate a PDF function with one or more inputs, returning its output
 /// components. Returns an empty `Vec` for unsupported types or malformed input
@@ -33,61 +67,11 @@ pub(crate) fn eval_function_n(
     inputs: &[f64],
     reader: &PdfReader,
 ) -> Vec<f64> {
-    let dict = match resolve_to_dict(func_obj, reader) {
-        Some(d) => d,
-        None => return Vec::new(),
-    };
-    match dict.get_integer("FunctionType") {
-        Some(0) => {
-            if validate_type0_shape(&dict).is_none() {
-                log::debug!("PDF Function Type 0 has malformed required shape");
-                return Vec::new();
-            }
-            eval_type0(func_obj, &dict, inputs, reader)
-        }
-        Some(2) => {
-            if validate_type2_shape(&dict).is_none() {
-                log::debug!("PDF Function Type 2 has malformed required shape");
-                return Vec::new();
-            }
-            let Some(input) = first_finite_input(inputs, "Type 2") else {
-                return Vec::new();
-            };
-            eval_type2(&dict, input)
-        }
-        Some(3) => {
-            if validate_type3_shape(&dict, reader, 1).is_none() {
-                log::debug!("PDF Function Type 3 has malformed required shape");
-                return Vec::new();
-            }
-            let Some(input) = first_finite_input(inputs, "Type 3") else {
-                return Vec::new();
-            };
-            eval_type3(&dict, input, reader)
-        }
-        Some(4) => {
-            let Some(input_count) = function_domain_input_count(&dict) else {
-                log::debug!("PDF Function Type 4 has malformed /Domain");
-                return Vec::new();
-            };
-            if validate_type4_shape(&dict, input_count).is_none() {
-                log::debug!("PDF Function Type 4 has malformed required shape");
-                return Vec::new();
-            }
-            let Some(inputs) = finite_inputs(inputs, input_count, "Type 4") else {
-                return Vec::new();
-            };
-            eval_type4(func_obj, &dict, inputs, reader)
-        }
-        Some(other) => {
-            log::debug!("PDF Function Type {other} not supported");
-            Vec::new()
-        }
-        None => {
-            log::debug!("PDF Function missing FunctionType");
-            Vec::new()
-        }
+    if !inputs.iter().all(|value| value.is_finite()) {
+        return Vec::new();
     }
+    PreparedFunction::cached_single(func_obj, inputs.len(), reader)
+        .map_or_else(Vec::new, |function| function.evaluate(inputs))
 }
 
 /// Evaluate a shading `/Function`, accepting either one normal PDF function or
@@ -97,22 +81,11 @@ pub(crate) fn eval_function_or_array_n(
     inputs: &[f64],
     reader: &PdfReader,
 ) -> Vec<f64> {
-    let Some(functions) = resolve_to_array(func_obj, reader) else {
-        return eval_function_n(func_obj, inputs, reader);
-    };
-    if functions.is_empty() || functions.len() > MAX_FUNCTION_ARRAY_COMPONENTS {
+    if !inputs.iter().all(|value| value.is_finite()) {
         return Vec::new();
     }
-
-    let mut outputs = Vec::with_capacity(functions.len());
-    for function in functions {
-        let value = eval_function_n(&function, inputs, reader);
-        match value.as_slice() {
-            [component] if component.is_finite() => outputs.push(*component),
-            _ => return Vec::new(),
-        }
-    }
-    outputs
+    PreparedFunction::cached(func_obj, inputs.len(), reader)
+        .map_or_else(Vec::new, |function| function.evaluate(inputs))
 }
 
 /// Validate the dictionary fields that `eval_function_n` would otherwise
@@ -123,7 +96,9 @@ pub(crate) fn validate_function_shape(
     input_count: usize,
     reader: &PdfReader,
 ) -> bool {
-    validate_function_shape_inner(func_obj, input_count.max(1), reader, 0).is_some()
+    let mut remaining = MAX_FUNCTION_VISITS;
+    input_count > 0
+        && validate_function_shape_inner(func_obj, input_count, reader, 0, &mut remaining).is_some()
 }
 
 /// Validate a shading `/Function`, accepting either one function or an array of
@@ -134,34 +109,20 @@ pub(crate) fn validate_function_or_array_shape(
     input_count: usize,
     reader: &PdfReader,
 ) -> bool {
-    let input_count = input_count.max(1);
+    if input_count == 0 {
+        return false;
+    }
+    let mut remaining = MAX_FUNCTION_VISITS;
     let Some(functions) = resolve_to_array(func_obj, reader) else {
-        return validate_function_shape_inner(func_obj, input_count, reader, 0).is_some();
+        return validate_function_shape_inner(func_obj, input_count, reader, 0, &mut remaining)
+            .is_some();
     };
     !functions.is_empty()
         && functions.len() <= MAX_FUNCTION_ARRAY_COMPONENTS
         && functions.iter().all(|function| {
-            validate_function_shape_inner(function, input_count, reader, 0).is_some()
+            validate_function_shape_inner(function, input_count, reader, 0, &mut remaining)
+                == Some(1)
         })
-}
-
-fn first_finite_input(inputs: &[f64], label: &str) -> Option<f64> {
-    finite_inputs(inputs, 1, label).map(|values| values[0])
-}
-
-fn finite_inputs<'a>(inputs: &'a [f64], expected: usize, label: &str) -> Option<&'a [f64]> {
-    let values = inputs.get(..expected)?;
-    if values.iter().all(|value| value.is_finite()) {
-        Some(values)
-    } else {
-        log::debug!("PDF Function {label} received non-finite input");
-        None
-    }
-}
-
-fn function_domain_input_count(dict: &PdfDictionary) -> Option<usize> {
-    let domain = require_strict_float_array_even(dict, "Domain")?;
-    Some(domain.len() / 2)
 }
 
 fn validate_function_shape_inner(
@@ -169,23 +130,41 @@ fn validate_function_shape_inner(
     input_count: usize,
     reader: &PdfReader,
     depth: usize,
-) -> Option<()> {
-    if depth > 16 {
+    remaining: &mut usize,
+) -> Option<usize> {
+    if depth > 16
+        || *remaining == 0
+        || crate::cancel::check_current_cancel("PDF function shape traversal").is_err()
+    {
         return None;
     }
+    *remaining -= 1;
     let dict = resolve_to_dict(func_obj, reader)?;
+    let domain = ordered_pairs(&dict, "Domain", true)??;
+    if domain.len() != input_count.checked_mul(2)? {
+        return None;
+    }
     match dict.get_integer("FunctionType")? {
         0 => validate_type0_shape(&dict),
         2 => validate_type2_shape(&dict),
-        3 => validate_type3_shape(&dict, reader, depth + 1),
+        3 => validate_type3_shape(&dict, reader, depth + 1, remaining),
         4 => validate_type4_shape(&dict, input_count),
         _ => None,
     }
 }
 
-fn validate_type0_shape(dict: &PdfDictionary) -> Option<()> {
+fn validate_type0_shape(dict: &PdfDictionary) -> Option<usize> {
     let size = strict_type0_size(dict)?;
-    let range = require_strict_float_array_even(dict, "Range")?;
+    strict_type0_order(dict)?;
+    let range = ordered_pairs(dict, "Range", true)??;
+    if size
+        .iter()
+        .try_fold(range.len() / 2, |count, &axis| count.checked_mul(axis))?
+        > MAX_TYPE0_SAMPLE_VALUES
+    {
+        return None;
+    }
+    ordered_pairs(dict, "Domain", true)??;
     require_strict_float_array_exact(dict, "Domain", size.len().checked_mul(2)?)?;
     let bps = usize::try_from(dict.get_integer("BitsPerSample")?).ok()?;
     if !matches!(bps, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32) {
@@ -201,7 +180,15 @@ fn validate_type0_shape(dict: &PdfDictionary) -> Option<()> {
             return None;
         }
     }
-    Some(())
+    Some(range.len() / 2)
+}
+
+fn strict_type0_order(dict: &PdfDictionary) -> Option<sampled::Order> {
+    match dict.get("Order") {
+        None | Some(PdfObject::Null) | Some(PdfObject::Integer(1)) => Some(sampled::Order::Linear),
+        Some(PdfObject::Integer(3)) => Some(sampled::Order::Cubic),
+        _ => None,
+    }
 }
 
 fn strict_type0_size(dict: &PdfDictionary) -> Option<Vec<usize>> {
@@ -220,50 +207,132 @@ fn strict_type0_size(dict: &PdfDictionary) -> Option<Vec<usize>> {
     Some(size)
 }
 
-fn validate_type2_shape(dict: &PdfDictionary) -> Option<()> {
-    require_strict_float_array_exact(dict, "Domain", 2)?;
-    let n = dict.get("N")?.as_number()?;
-    if !n.is_finite() {
+fn validate_type2_shape(dict: &PdfDictionary) -> Option<usize> {
+    let domain = ordered_pairs(dict, "Domain", true)??;
+    if domain.len() != 2 {
         return None;
     }
-    if let Some(range) = strict_float_array_field(dict, "Range").ok()? {
-        if range.len() < 2 || !range.len().is_multiple_of(2) {
+    let n = dict.get("N")?.as_number()?;
+    if !n.is_finite()
+        || (n.fract() != 0.0 && domain[0] < 0.0)
+        || (n < 0.0 && domain[0] <= 0.0 && domain[1] >= 0.0)
+    {
+        return None;
+    }
+    let mut count = None;
+    for key in ["C0", "C1"] {
+        let n = strict_float_array_field(dict, key)
+            .ok()?
+            .map_or(1, |v| v.len());
+        if n == 0 || count.is_some_and(|previous| previous != n) {
             return None;
         }
+        count = Some(n);
     }
-    for key in ["C0", "C1"] {
-        if let Some(values) = strict_float_array_field(dict, key).ok()? {
-            if values.is_empty() {
-                return None;
-            }
-        }
+    let count = count?;
+    if ordered_pairs(dict, "Range", false)?.is_some_and(|r| r.len() != 2 * count) {
+        return None;
     }
-    Some(())
+    Some(count)
 }
 
-fn validate_type3_shape(dict: &PdfDictionary, reader: &PdfReader, next_depth: usize) -> Option<()> {
-    require_strict_float_array_exact(dict, "Domain", 2)?;
-    if let Some(range) = strict_float_array_field(dict, "Range").ok()? {
-        if range.len() < 2 || !range.len().is_multiple_of(2) {
-            return None;
-        }
+fn validate_type3_shape(
+    dict: &PdfDictionary,
+    reader: &PdfReader,
+    next_depth: usize,
+    remaining: &mut usize,
+) -> Option<usize> {
+    let domain = ordered_pairs(dict, "Domain", true)??;
+    if domain.len() != 2 {
+        return None;
     }
     let functions = dict.get("Functions")?.as_array()?;
-    if functions.is_empty() {
+    if functions.is_empty()
+        || functions.len() > super::parameter_dictionary::MAX_STITCHING_FUNCTIONS
+        || (functions.len() > 1 && domain[0] >= domain[1])
+    {
         return None;
     }
-    require_strict_float_array_exact(dict, "Bounds", functions.len().saturating_sub(1))?;
-    require_strict_float_array_exact(dict, "Encode", functions.len().checked_mul(2)?)?;
-    for function in functions {
-        validate_function_shape_inner(function, 1, reader, next_depth)?;
+    let bounds =
+        require_strict_float_array_exact(dict, "Bounds", functions.len().saturating_sub(1))?;
+    let mut previous = domain[0];
+    for bound in bounds {
+        if bound <= previous || bound > domain[1] {
+            return None;
+        }
+        previous = bound;
     }
-    Some(())
+    require_strict_float_array_exact(dict, "Encode", functions.len().checked_mul(2)?)?;
+    let mut count = None;
+    for function in functions {
+        let n = validate_function_shape_inner(function, 1, reader, next_depth, remaining)?;
+        if count.is_some_and(|previous| previous != n) {
+            return None;
+        }
+        count = Some(n);
+    }
+    let count = count?;
+    if ordered_pairs(dict, "Range", false)?.is_some_and(|r| r.len() != 2 * count) {
+        return None;
+    }
+    Some(count)
 }
 
-fn validate_type4_shape(dict: &PdfDictionary, input_count: usize) -> Option<()> {
+fn validate_type4_shape(dict: &PdfDictionary, input_count: usize) -> Option<usize> {
     require_strict_float_array_exact(dict, "Domain", input_count.checked_mul(2)?)?;
-    require_strict_float_array_even(dict, "Range")?;
-    Some(())
+    ordered_pairs(dict, "Domain", true)??;
+    let range = ordered_pairs(dict, "Range", true)??;
+    Some(range.len() / 2)
+}
+
+fn ordered_pairs(dict: &PdfDictionary, key: &str, required: bool) -> Option<Option<Vec<f64>>> {
+    let values = strict_float_array_field(dict, key).ok()?;
+    match values {
+        None if required => None,
+        None => Some(None),
+        Some(values)
+            if !values.is_empty()
+                && values.len().is_multiple_of(2)
+                && values.chunks_exact(2).all(|p| p[0] <= p[1]) =>
+        {
+            Some(Some(values))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn clip_output(dict: &PdfDictionary, mut output: Vec<f64>) -> Option<Vec<f64>> {
+    if output.is_empty() || !output.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    if let Some(range) = ordered_pairs(dict, "Range", false)? {
+        if range.len() != output.len().checked_mul(2)? {
+            return None;
+        }
+        for (i, value) in output.iter_mut().enumerate() {
+            *value = value.clamp(range[2 * i], range[2 * i + 1]);
+        }
+    }
+    Some(output)
+}
+
+/// Relative position in an ordered, already clipped domain. No absolute cutoff
+/// is appropriate: tiny domains may map onto the entire sample lattice.
+pub(super) fn domain_position(x: f64, lo: f64, hi: f64) -> Option<f64> {
+    if ![x, lo, hi].iter().all(|v| v.is_finite()) || lo > hi {
+        return None;
+    }
+    if lo == hi {
+        return Some(0.0);
+    }
+    let x = x.clamp(lo, hi);
+    let width = hi - lo;
+    let position = if width.is_finite() {
+        (x - lo) / width
+    } else {
+        (x * 0.5 - lo * 0.5) / (hi * 0.5 - lo * 0.5)
+    };
+    position.is_finite().then(|| position.clamp(0.0, 1.0))
 }
 
 fn strict_float_array_field(
@@ -298,58 +367,59 @@ fn require_strict_float_array_exact(
     }
 }
 
-fn require_strict_float_array_even(dict: &PdfDictionary, key: &str) -> Option<Vec<f64>> {
-    let values = strict_float_array_field(dict, key).ok()??;
-    if values.len() >= 2 && values.len().is_multiple_of(2) {
-        Some(values)
-    } else {
-        None
-    }
-}
-
 /// Resolve a function reference / dict / stream to its dictionary.
 fn resolve_to_dict(obj: &PdfObject, reader: &PdfReader) -> Option<PdfDictionary> {
-    match obj {
-        PdfObject::Dictionary(d) => Some(d.clone()),
-        PdfObject::Stream { dict, .. } => Some(dict.clone()),
-        PdfObject::Reference { number, generation } => {
-            match reader.get_object(*number, *generation).ok()? {
-                PdfObject::Dictionary(d) => Some(d),
-                PdfObject::Stream { dict, .. } => Some(dict),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+    let resolved = match obj {
+        PdfObject::Reference { .. } => std::borrow::Cow::Owned(reader.resolve(obj.clone()).ok()?),
+        _ => std::borrow::Cow::Borrowed(obj),
+    };
+    let dict = match resolved.as_ref() {
+        PdfObject::Dictionary(d) | PdfObject::Stream { dict: d, .. } => d,
+        _ => return None,
+    };
+    Some(
+        super::parameter_dictionary::function(dict, Some(reader))
+            .ok()?
+            .into_owned(),
+    )
 }
 
 fn resolve_to_array(obj: &PdfObject, reader: &PdfReader) -> Option<Vec<PdfObject>> {
     match obj {
         PdfObject::Array(items) => Some(items.clone()),
-        PdfObject::Reference { number, generation } => {
-            match reader.get_object(*number, *generation).ok()? {
-                PdfObject::Array(items) => Some(items),
-                _ => None,
-            }
-        }
+        PdfObject::Reference { .. } => match reader.resolve(obj.clone()).ok()? {
+            PdfObject::Array(items) => Some(items),
+            _ => None,
+        },
         _ => None,
     }
 }
 
 /// Resolve a function object to its decoded stream bytes (Type 0 samples or
 /// Type 4 program text), applying any stream filters.
-fn resolve_stream_bytes(obj: &PdfObject, reader: &PdfReader) -> Option<Vec<u8>> {
+fn resolve_stream_bytes_limited(
+    obj: &PdfObject,
+    reader: &PdfReader,
+    max_bytes: Option<usize>,
+) -> Option<Vec<u8>> {
     let stream = match obj {
-        PdfObject::Stream { .. } => obj.clone(),
-        PdfObject::Reference { number, generation } => {
-            match reader.get_object(*number, *generation).ok()? {
-                s @ PdfObject::Stream { .. } => s,
-                _ => return None,
-            }
-        }
+        PdfObject::Stream { .. } => std::borrow::Cow::Borrowed(obj),
+        PdfObject::Reference { .. } => match reader.resolve(obj.clone()).ok()? {
+            s @ PdfObject::Stream { .. } => std::borrow::Cow::Owned(s),
+            _ => return None,
+        },
         _ => return None,
     };
-    crate::filters::decode_stream(&stream, reader).ok()
+    let mut limits = crate::filters::DecodeLimits::default();
+    if let Some(max_bytes) = max_bytes {
+        limits.max_decoded_bytes_per_stream =
+            limits.max_decoded_bytes_per_stream.min(max_bytes as u64);
+    }
+    let decoded = crate::filters::decode_stream_with_limits(&stream, reader, &limits).ok()?;
+    if max_bytes.is_some_and(|limit| decoded.len() > limit) {
+        return None;
+    }
+    Some(decoded)
 }
 
 // ---------------------------------------------------------------------------
@@ -414,726 +484,37 @@ pub(crate) fn max_value(bits: usize) -> f64 {
 // Type 0: sampled functions
 // ---------------------------------------------------------------------------
 
-fn eval_type0(
-    func_obj: &PdfObject,
-    dict: &PdfDictionary,
-    inputs: &[f64],
-    reader: &PdfReader,
-) -> Vec<f64> {
-    let size = match strict_type0_size(dict) {
-        Some(size) => size,
-        None => {
-            log::debug!("Type 0 function: missing or malformed /Size");
-            return Vec::new();
-        }
-    };
-    let Some(domain) = require_strict_float_array_exact(dict, "Domain", size.len() * 2) else {
-        log::debug!("Type 0 function: missing or malformed /Domain");
-        return Vec::new();
-    };
-    let Some(range) = require_strict_float_array_even(dict, "Range") else {
-        log::debug!("Type 0 function: missing or malformed /Range");
-        return Vec::new();
-    };
-    let m = size.len(); // number of input dimensions
-    let n = range.len() / 2; // number of output components
-    if m == 0 || n == 0 {
-        return Vec::new();
-    }
-    if m > MAX_TYPE0_INTERPOLATION_DIMENSIONS {
-        log::debug!(
-            "Type 0 function: {m} interpolation dimensions exceed limit {MAX_TYPE0_INTERPOLATION_DIMENSIONS}"
-        );
-        return Vec::new();
-    }
-    let Some(inputs) = finite_inputs(inputs, m, "Type 0") else {
-        log::debug!("Type 0 function: missing or malformed input dimensions");
-        return Vec::new();
-    };
-    let Some(bps) = dict
-        .get_integer("BitsPerSample")
-        .and_then(|value| usize::try_from(value).ok())
-    else {
-        log::debug!("Type 0 function: missing or invalid /BitsPerSample");
-        return Vec::new();
-    };
-    if !matches!(bps, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32) {
-        log::debug!("Type 0 function: unsupported BitsPerSample {bps}");
-        return Vec::new();
-    }
-    let Some(sample_values) = size.iter().try_fold(n, |acc, &dim| acc.checked_mul(dim)) else {
-        log::debug!("Type 0 function: sample count overflow");
-        return Vec::new();
-    };
-    if sample_values > MAX_TYPE0_SAMPLE_VALUES {
-        log::debug!("Type 0 function: sample count cap hit ({sample_values})");
-        return Vec::new();
-    }
-
-    // Encode maps each input domain interval onto sample-index space
-    // [0, Size_i - 1]; default is exactly that identity-to-index mapping.
-    let encode = match strict_float_array_field(dict, "Encode") {
-        Ok(Some(values)) if values.len() == m * 2 => values,
-        Ok(Some(_)) | Err(()) => {
-            log::debug!("Type 0 function: malformed /Encode");
-            return Vec::new();
-        }
-        Ok(None) => size
-            .iter()
-            .flat_map(|&s| [0.0, (s as f64 - 1.0).max(0.0)])
-            .collect(),
-    };
-    // Decode maps sample values [0, 2^bps - 1] onto the output range; default
-    // equals Range.
-    let decode = match strict_float_array_field(dict, "Decode") {
-        Ok(Some(values)) if values.len() == range.len() => values,
-        Ok(Some(_)) | Err(()) => {
-            log::debug!("Type 0 function: malformed /Decode");
-            return Vec::new();
-        }
-        Ok(None) => range.clone(),
-    };
-
-    let samples = match resolve_stream_bytes(func_obj, reader) {
-        Some(bytes) => bytes,
-        None => {
-            log::debug!("Type 0 function: could not read sample stream");
-            return Vec::new();
-        }
-    };
-    let Some(required_bits) = sample_values.checked_mul(bps) else {
-        log::debug!("Type 0 function: sample bit count overflow");
-        return Vec::new();
-    };
-    if samples.len().saturating_mul(8) < required_bits {
-        log::debug!(
-            "Type 0 function: sample stream too short ({} bytes for {required_bits} bits)",
-            samples.len()
-        );
-        return Vec::new();
-    }
-
-    // Encode each input into continuous sample-index coordinates `e_i`.
-    let mut e = Vec::with_capacity(m);
-    for i in 0..m {
-        let x = inputs[i];
-        let dmin = domain[2 * i];
-        let dmax = domain[2 * i + 1];
-        let emin = encode[2 * i];
-        let emax = encode[2 * i + 1];
-        let x = x.clamp(dmin.min(dmax), dmin.max(dmax));
-        let ei = if (dmax - dmin).abs() < 1e-12 {
-            emin
-        } else {
-            emin + (x - dmin) * (emax - emin) / (dmax - dmin)
-        };
-        e.push(ei.clamp(0.0, (size[i] as f64 - 1.0).max(0.0)));
-    }
-
-    let max_sample = max_value(bps);
-
-    // Multilinear interpolation over the 2^m surrounding grid corners.
-    let mut out = vec![0.0f64; n];
-    let corners = 1usize << m;
-    for corner in 0..corners {
-        // Build the integer sample index and the interpolation weight for this
-        // corner (low/high choice per dimension).
-        let mut weight = 1.0f64;
-        let mut idx = vec![0usize; m];
-        for i in 0..m {
-            let lo = e[i].floor();
-            let frac = e[i] - lo;
-            let take_high = (corner >> i) & 1 == 1;
-            let coord = if take_high {
-                (lo as usize + 1).min(size[i].saturating_sub(1))
-            } else {
-                lo as usize
-            };
-            idx[i] = coord.min(size[i].saturating_sub(1));
-            weight *= if take_high { frac } else { 1.0 - frac };
-        }
-        if weight == 0.0 {
-            continue;
-        }
-        // Flat sample offset: dimension 0 varies fastest (spec §7.10.2).
-        let mut flat = 0usize;
-        let mut stride = 1usize;
-        for i in 0..m {
-            flat += idx[i] * stride;
-            stride *= size[i];
-        }
-        for (j, slot) in out.iter_mut().enumerate() {
-            let sample_index = flat * n + j;
-            let Some(raw) = read_sample(&samples, sample_index, bps) else {
-                log::debug!("Type 0 function: failed to read sample {sample_index}");
-                return Vec::new();
-            };
-            // Decode raw [0, max] -> [decode_lo, decode_hi].
-            let dlo = decode[2 * j];
-            let dhi = decode[2 * j + 1];
-            let val = dlo + (raw / max_sample) * (dhi - dlo);
-            *slot += weight * val;
-        }
-    }
-
-    // Clamp to Range.
-    for (j, slot) in out.iter_mut().enumerate() {
-        let rlo = range[2 * j];
-        let rhi = range[2 * j + 1];
-        *slot = slot.clamp(rlo.min(rhi), rlo.max(rhi));
-    }
-    out
-}
-
 /// Read the `index`-th sample (each `bps` bits) from the packed sample stream.
 fn read_sample(data: &[u8], index: usize, bps: usize) -> Option<f64> {
+    if !matches!(bps, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32) {
+        return None;
+    }
     let bit_start = index.checked_mul(bps)?;
-    let mut reader = BitReader::new(data);
-    // Fast-forward to the sample's bit offset.
-    reader.bit_pos = bit_start;
-    reader.read(bps).map(|v| v as f64)
+    let byte_start = bit_start / 8;
+    let leading_bits = bit_start % 8;
+    let byte_count = (leading_bits + bps).div_ceil(8);
+    let bytes = data.get(byte_start..byte_start.checked_add(byte_count)?)?;
+    let word = bytes
+        .iter()
+        .fold(0_u64, |value, &byte| (value << 8) | u64::from(byte));
+    let trailing_bits = byte_count * 8 - leading_bits - bps;
+    Some(((word >> trailing_bits) & ((1_u64 << bps) - 1)) as f64)
 }
 
 // ---------------------------------------------------------------------------
 // Type 4: PostScript calculator functions
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-enum PsToken {
-    Num(f64),
-    Op(String),
-    ProcStart,
-    ProcEnd,
-}
+#[path = "calculator_function.rs"]
+mod calculator;
 
-/// A parsed value on the PostScript operand stack: a number, a boolean, or a
-/// deferred procedure (block of tokens) used by `if`/`ifelse`.
-#[derive(Debug, Clone)]
-enum PsValue {
-    Num(f64),
-    Bool(bool),
-    Proc(Vec<PsToken>),
-}
+use calculator::{compile as compile_type4_program, execute as exec_ps_with_budget};
 
-fn eval_type4(
-    func_obj: &PdfObject,
-    dict: &PdfDictionary,
-    inputs: &[f64],
-    reader: &PdfReader,
-) -> Vec<f64> {
-    let range = match get_float_array(dict, "Range") {
-        Some(r) if r.len() >= 2 => r,
-        _ => {
-            log::debug!("Type 4 function: missing /Range");
-            return Vec::new();
-        }
-    };
-    let n = range.len() / 2;
-
-    let program_bytes = match resolve_stream_bytes(func_obj, reader) {
-        Some(bytes) => bytes,
-        None => {
-            log::debug!("Type 4 function: could not read program stream");
-            return Vec::new();
-        }
-    };
-    let text = String::from_utf8_lossy(&program_bytes);
-    let tokens = tokenize_ps(&text);
-    if tokens.len() > MAX_TYPE4_TOKENS {
-        log::debug!("Type 4 function: token cap hit ({})", tokens.len());
-        return Vec::new();
-    }
-
-    // The outermost `{ ... }` wraps the whole program; strip it so we execute
-    // the body directly.
-    let body = strip_outer_proc(&tokens);
-
-    let mut stack: Vec<PsValue> = inputs.iter().map(|&v| PsValue::Num(v)).collect();
-    if exec_ps(&body, &mut stack, 0).is_err() {
-        log::debug!("Type 4 function: execution error");
-        return Vec::new();
-    }
-
-    let Some(outputs) = numeric_stack_suffix(&stack, n) else {
-        log::debug!("Type 4 function: final stack outputs are not numeric");
-        return Vec::new();
-    };
-    outputs
-        .into_iter()
-        .enumerate()
-        .map(|(j, v)| {
-            let rlo = range[2 * j];
-            let rhi = range[2 * j + 1];
-            v.clamp(rlo.min(rhi), rlo.max(rhi))
-        })
-        .collect()
-}
-
-fn numeric_stack_suffix(stack: &[PsValue], count: usize) -> Option<Vec<f64>> {
-    if count == 0 || stack.len() < count {
-        return None;
-    }
-    let start = stack.len() - count;
-    let mut output = Vec::with_capacity(count);
-    for value in &stack[start..] {
-        match value {
-            PsValue::Num(number) if number.is_finite() => output.push(*number),
-            _ => return None,
-        }
-    }
-    Some(output)
-}
-
-fn tokenize_ps(text: &str) -> Vec<PsToken> {
-    let mut tokens = Vec::new();
-    let mut chars = text.chars().peekable();
-    while let Some(&c) = chars.peek() {
-        match c {
-            '{' => {
-                tokens.push(PsToken::ProcStart);
-                chars.next();
-            }
-            '}' => {
-                tokens.push(PsToken::ProcEnd);
-                chars.next();
-            }
-            c if c.is_whitespace() => {
-                chars.next();
-            }
-            '%' => {
-                // Comment to end of line.
-                while let Some(&c) = chars.peek() {
-                    chars.next();
-                    if c == '\n' || c == '\r' {
-                        break;
-                    }
-                }
-            }
-            _ => {
-                let mut word = String::new();
-                while let Some(&c) = chars.peek() {
-                    if c.is_whitespace() || c == '{' || c == '}' || c == '%' {
-                        break;
-                    }
-                    word.push(c);
-                    chars.next();
-                }
-                if let Ok(num) = word.parse::<f64>() {
-                    tokens.push(PsToken::Num(num));
-                } else {
-                    tokens.push(PsToken::Op(word));
-                }
-            }
-        }
-    }
-    tokens
-}
-
-/// Validate a caller-supplied PDF FunctionType 4 program before it is embedded
-/// by an editing path.  Runtime evaluation already fails closed, but mutation
-/// must not knowingly serialize an unknown operator, unbalanced procedure, or
-/// non-finite numeric token into a newly authored resource graph.
+/// Validate PDF calculator syntax before an editing path embeds the program.
+/// Runtime types, branch-dependent stack arity and arithmetic still require
+/// evaluation; this syntax check is not a proof over all inputs.
 pub(crate) fn validate_type4_program(program: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(program) else {
-        return false;
-    };
-    let tokens = tokenize_ps(text);
-    if tokens.is_empty() || tokens.len() > MAX_TYPE4_TOKENS {
-        return false;
-    }
-    let Some((body, next)) = matches!(tokens.first(), Some(PsToken::ProcStart))
-        .then(|| collect_proc(&tokens, 1))
-        .flatten()
-    else {
-        return false;
-    };
-    next == tokens.len() && validate_type4_tokens(&body, 0)
-}
-
-fn validate_type4_tokens(tokens: &[PsToken], depth: usize) -> bool {
-    if depth > PS_MAX_DEPTH {
-        return false;
-    }
-    let mut index = 0usize;
-    while index < tokens.len() {
-        match &tokens[index] {
-            PsToken::Num(value) if value.is_finite() => {}
-            PsToken::Num(_) | PsToken::ProcEnd => return false,
-            PsToken::ProcStart => {
-                let Some((body, next)) = collect_proc(tokens, index + 1) else {
-                    return false;
-                };
-                if !validate_type4_tokens(&body, depth + 1) {
-                    return false;
-                }
-                index = next;
-                continue;
-            }
-            PsToken::Op(operator) if is_type4_operator(operator) => {}
-            PsToken::Op(_) => return false,
-        }
-        index += 1;
-    }
-    true
-}
-
-fn is_type4_operator(operator: &str) -> bool {
-    matches!(
-        operator,
-        "add"
-            | "sub"
-            | "mul"
-            | "div"
-            | "idiv"
-            | "mod"
-            | "neg"
-            | "abs"
-            | "sqrt"
-            | "sin"
-            | "cos"
-            | "atan"
-            | "exp"
-            | "ln"
-            | "log"
-            | "cvi"
-            | "cvr"
-            | "truncate"
-            | "floor"
-            | "ceiling"
-            | "round"
-            | "dup"
-            | "pop"
-            | "exch"
-            | "copy"
-            | "index"
-            | "roll"
-            | "eq"
-            | "ne"
-            | "gt"
-            | "ge"
-            | "lt"
-            | "le"
-            | "and"
-            | "or"
-            | "xor"
-            | "not"
-            | "bitshift"
-            | "true"
-            | "false"
-            | "if"
-            | "ifelse"
-    )
-}
-
-/// If the token stream is a single `{ ... }` block, return its inner tokens;
-/// otherwise return the tokens unchanged.
-fn strip_outer_proc(tokens: &[PsToken]) -> Vec<PsToken> {
-    if matches!(tokens.first(), Some(PsToken::ProcStart))
-        && matches!(tokens.last(), Some(PsToken::ProcEnd))
-    {
-        // Confirm the first ProcStart matches the last ProcEnd (balanced).
-        tokens[1..tokens.len() - 1].to_vec()
-    } else {
-        tokens.to_vec()
-    }
-}
-
-/// Collect a balanced procedure body starting just after a `ProcStart`. Returns
-/// (body tokens, index just past the matching ProcEnd).
-fn collect_proc(tokens: &[PsToken], start: usize) -> Option<(Vec<PsToken>, usize)> {
-    let mut depth = 1;
-    let mut body = Vec::new();
-    let mut i = start;
-    while i < tokens.len() {
-        match &tokens[i] {
-            PsToken::ProcStart => {
-                depth += 1;
-                body.push(tokens[i].clone());
-            }
-            PsToken::ProcEnd => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((body, i + 1));
-                }
-                body.push(tokens[i].clone());
-            }
-            t => body.push(t.clone()),
-        }
-        i += 1;
-    }
-    None
-}
-
-const PS_MAX_DEPTH: usize = 64;
-
-fn exec_ps(tokens: &[PsToken], stack: &mut Vec<PsValue>, depth: usize) -> Result<(), ()> {
-    if depth > PS_MAX_DEPTH {
-        return Err(());
-    }
-    let mut i = 0;
-    while i < tokens.len() {
-        match &tokens[i] {
-            PsToken::Num(x) if x.is_finite() => stack.push(PsValue::Num(*x)),
-            PsToken::Num(_) => return Err(()),
-            PsToken::ProcStart => {
-                let (body, next) = collect_proc(tokens, i + 1).ok_or(())?;
-                stack.push(PsValue::Proc(body));
-                check_ps_stack(stack)?;
-                i = next;
-                continue;
-            }
-            PsToken::ProcEnd => return Err(()),
-            PsToken::Op(name) => exec_ps_op(name, stack, depth)?,
-        }
-        check_ps_stack(stack)?;
-        i += 1;
-    }
-    Ok(())
-}
-
-fn check_ps_stack(stack: &[PsValue]) -> Result<(), ()> {
-    if stack.len() > MAX_TYPE4_STACK {
-        return Err(());
-    }
-    if stack.iter().any(|value| match value {
-        PsValue::Num(n) => !n.is_finite(),
-        _ => false,
-    }) {
-        return Err(());
-    }
-    Ok(())
-}
-
-fn pop_num(stack: &mut Vec<PsValue>) -> Result<f64, ()> {
-    match stack.pop() {
-        Some(PsValue::Num(x)) if x.is_finite() => Ok(x),
-        _ => Err(()),
-    }
-}
-
-fn pop_bool(stack: &mut Vec<PsValue>) -> Result<bool, ()> {
-    match stack.pop() {
-        Some(PsValue::Bool(b)) => Ok(b),
-        _ => Err(()),
-    }
-}
-
-fn pop_proc(stack: &mut Vec<PsValue>) -> Result<Vec<PsToken>, ()> {
-    match stack.pop() {
-        Some(PsValue::Proc(p)) => Ok(p),
-        _ => Err(()),
-    }
-}
-
-#[allow(clippy::too_many_lines)]
-fn exec_ps_op(name: &str, stack: &mut Vec<PsValue>, depth: usize) -> Result<(), ()> {
-    match name {
-        // Arithmetic
-        "add" => {
-            let b = pop_num(stack)?;
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a + b));
-        }
-        "sub" => {
-            let b = pop_num(stack)?;
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a - b));
-        }
-        "mul" => {
-            let b = pop_num(stack)?;
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a * b));
-        }
-        "div" => {
-            let b = pop_num(stack)?;
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(if b == 0.0 { 0.0 } else { a / b }));
-        }
-        "idiv" => {
-            let b = pop_num(stack)? as i64;
-            let a = pop_num(stack)? as i64;
-            stack.push(PsValue::Num(if b == 0 { 0.0 } else { (a / b) as f64 }));
-        }
-        "mod" => {
-            let b = pop_num(stack)? as i64;
-            let a = pop_num(stack)? as i64;
-            stack.push(PsValue::Num(if b == 0 { 0.0 } else { (a % b) as f64 }));
-        }
-        "neg" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(-a));
-        }
-        "abs" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a.abs()));
-        }
-        "sqrt" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a.max(0.0).sqrt()));
-        }
-        "sin" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a.to_radians().sin()));
-        }
-        "cos" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a.to_radians().cos()));
-        }
-        "atan" => {
-            let den = pop_num(stack)?;
-            let num = pop_num(stack)?;
-            let mut deg = num.atan2(den).to_degrees();
-            if deg < 0.0 {
-                deg += 360.0;
-            }
-            stack.push(PsValue::Num(deg));
-        }
-        "exp" => {
-            let exp = pop_num(stack)?;
-            let base = pop_num(stack)?;
-            stack.push(PsValue::Num(base.powf(exp)));
-        }
-        "ln" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(if a > 0.0 { a.ln() } else { 0.0 }));
-        }
-        "log" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(if a > 0.0 { a.log10() } else { 0.0 }));
-        }
-        "cvi" | "truncate" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a.trunc()));
-        }
-        "cvr" => { /* numbers are already real; no-op */ }
-        "floor" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a.floor()));
-        }
-        "ceiling" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a.ceil()));
-        }
-        "round" => {
-            let a = pop_num(stack)?;
-            stack.push(PsValue::Num(a.round()));
-        }
-        // Stack manipulation
-        "dup" => {
-            let a = stack.last().cloned().ok_or(())?;
-            stack.push(a);
-        }
-        "pop" => {
-            stack.pop().ok_or(())?;
-        }
-        "exch" => {
-            let n = stack.len();
-            if n < 2 {
-                return Err(());
-            }
-            stack.swap(n - 1, n - 2);
-        }
-        "copy" => {
-            let count = pop_num(stack)? as i64;
-            if count < 0 || count as usize > stack.len() {
-                return Err(());
-            }
-            let count = count as usize;
-            let start = stack.len() - count;
-            for k in 0..count {
-                stack.push(stack[start + k].clone());
-            }
-        }
-        "index" => {
-            let n = pop_num(stack)? as i64;
-            if n < 0 || n as usize >= stack.len() {
-                return Err(());
-            }
-            let v = stack[stack.len() - 1 - n as usize].clone();
-            stack.push(v);
-        }
-        "roll" => {
-            let j = pop_num(stack)? as i64;
-            let n = pop_num(stack)? as i64;
-            if n < 0 || n as usize > stack.len() {
-                return Err(());
-            }
-            let n = n as usize;
-            if n == 0 {
-                return Ok(());
-            }
-            let start = stack.len() - n;
-            let slice = &mut stack[start..];
-            let shift = ((j % n as i64) + n as i64) as usize % n;
-            slice.rotate_right(shift);
-        }
-        // Comparison / boolean
-        "eq" => bin_bool(stack, |a, b| a == b)?,
-        "ne" => bin_bool(stack, |a, b| a != b)?,
-        "gt" => bin_bool(stack, |a, b| a > b)?,
-        "ge" => bin_bool(stack, |a, b| a >= b)?,
-        "lt" => bin_bool(stack, |a, b| a < b)?,
-        "le" => bin_bool(stack, |a, b| a <= b)?,
-        "and" => {
-            let b = pop_num(stack)? as i64;
-            let a = pop_num(stack)? as i64;
-            stack.push(PsValue::Num((a & b) as f64));
-        }
-        "or" => {
-            let b = pop_num(stack)? as i64;
-            let a = pop_num(stack)? as i64;
-            stack.push(PsValue::Num((a | b) as f64));
-        }
-        "xor" => {
-            let b = pop_num(stack)? as i64;
-            let a = pop_num(stack)? as i64;
-            stack.push(PsValue::Num((a ^ b) as f64));
-        }
-        "not" => match stack.pop() {
-            Some(PsValue::Bool(b)) => stack.push(PsValue::Bool(!b)),
-            Some(PsValue::Num(x)) => stack.push(PsValue::Num(!(x as i64) as f64)),
-            _ => return Err(()),
-        },
-        "bitshift" => {
-            let shift = pop_num(stack)? as i64;
-            let a = pop_num(stack)? as i64;
-            let amount = shift.unsigned_abs().min(63) as u32;
-            let v = if shift >= 0 { a << amount } else { a >> amount };
-            stack.push(PsValue::Num(v as f64));
-        }
-        "true" => stack.push(PsValue::Bool(true)),
-        "false" => stack.push(PsValue::Bool(false)),
-        // Conditionals
-        "if" => {
-            let proc = pop_proc(stack)?;
-            let cond = pop_bool(stack)?;
-            if cond {
-                exec_ps(&proc, stack, depth + 1)?;
-            }
-        }
-        "ifelse" => {
-            let proc2 = pop_proc(stack)?;
-            let proc1 = pop_proc(stack)?;
-            let cond = pop_bool(stack)?;
-            if cond {
-                exec_ps(&proc1, stack, depth + 1)?;
-            } else {
-                exec_ps(&proc2, stack, depth + 1)?;
-            }
-        }
-        _ => {
-            log::debug!("Type 4 function: unknown operator '{name}'");
-            return Err(());
-        }
-    }
-    Ok(())
-}
-
-fn bin_bool(stack: &mut Vec<PsValue>, f: impl Fn(f64, f64) -> bool) -> Result<(), ()> {
-    let b = pop_num(stack)?;
-    let a = pop_num(stack)?;
-    stack.push(PsValue::Bool(f(a, b)));
-    Ok(())
+    compile_type4_program(program).is_some()
 }
 
 #[cfg(test)]
@@ -1143,25 +524,26 @@ mod tests {
     // ---- Type 4 tokenizer / interpreter --------------------------------
 
     fn run_ps(program: &str, inputs: &[f64], n_outputs: usize) -> Vec<f64> {
-        let tokens = tokenize_ps(program);
-        let body = strip_outer_proc(&tokens);
-        let mut stack: Vec<PsValue> = inputs.iter().map(|&v| PsValue::Num(v)).collect();
-        exec_ps(&body, &mut stack, 0).unwrap();
-        numeric_stack_suffix(&stack, n_outputs).unwrap()
+        let (body, _) = compile_type4_program(program.as_bytes()).unwrap();
+        let mut stack = calculator::initial_stack(inputs).unwrap();
+        let mut remaining = MAX_FUNCTION_WORK;
+        exec_ps_with_budget(&body, &mut stack, 0, &mut remaining).unwrap();
+        calculator::numeric_outputs(&stack, n_outputs).unwrap()
     }
 
     #[test]
-    fn ps_tokenizes_proc_blocks() {
-        let toks = tokenize_ps("{ 2 copy gt { exch } if pop }");
-        // Expect: { 2 copy gt { exch } if pop }
-        assert!(matches!(toks[0], PsToken::ProcStart));
-        assert!(matches!(toks[1], PsToken::Num(n) if (n - 2.0).abs() < 1e-9));
-        assert!(matches!(&toks[2], PsToken::Op(o) if o == "copy"));
-        assert!(matches!(&toks[3], PsToken::Op(o) if o == "gt"));
-        assert!(matches!(toks[4], PsToken::ProcStart));
-        assert!(matches!(&toks[5], PsToken::Op(o) if o == "exch"));
-        assert!(matches!(toks[6], PsToken::ProcEnd));
-        assert!(matches!(&toks[7], PsToken::Op(o) if o == "if"));
+    fn ps_compiles_conditional_blocks_without_operand_procedures() {
+        use calculator::{Instruction, Number, Op, Value};
+        let (code, _) = compile_type4_program(b"{ 2 copy gt { exch } if pop }").unwrap();
+        assert!(matches!(
+            code[0],
+            Instruction::Push(Value::Number(Number::Integer(2)))
+        ));
+        assert!(matches!(code[1], Instruction::Operator(Op::Copy)));
+        assert!(matches!(code[2], Instruction::Operator(Op::Gt)));
+        assert!(matches!(&code[3], Instruction::Branch { yes, no: None }
+            if matches!(yes.as_ref(), [Instruction::Operator(Op::Exch)])));
+        assert!(matches!(code[4], Instruction::Operator(Op::Pop)));
     }
 
     #[test]
@@ -1211,9 +593,8 @@ mod tests {
 
     #[test]
     fn ps_bitshift_min_shift_does_not_panic() {
-        let r = run_ps("{ 1 -9223372036854775808 bitshift }", &[], 1);
-        assert_eq!(r.len(), 1);
-        assert!(r[0].is_finite());
+        let r = run_ps("{ 1 -2147483648 bitshift }", &[], 1);
+        assert_eq!(r, vec![0.0]);
     }
 
     #[test]
@@ -1478,9 +859,7 @@ mod tests {
                 PdfObject::Array(vec![PdfObject::Integer(2), PdfObject::Name("Bad".into())]),
             );
         }
-        if let PdfObject::Stream { dict, .. } = &malformed_size {
-            assert!(eval_type0(&malformed_size, dict, &[1.0], &r).is_empty());
-        }
+        assert!(eval_function_n(&malformed_size, &[1.0], &r).is_empty());
 
         let mut malformed_encode = type0_stream(&[2], 8, &[0.0, 1.0], &[0.0, 1.0], vec![0, 255]);
         if let PdfObject::Stream { dict, .. } = &mut malformed_encode {
@@ -1489,9 +868,7 @@ mod tests {
                 PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Name("Bad".into())]),
             );
         }
-        if let PdfObject::Stream { dict, .. } = &malformed_encode {
-            assert!(eval_type0(&malformed_encode, dict, &[1.0], &r).is_empty());
-        }
+        assert!(eval_function_n(&malformed_encode, &[1.0], &r).is_empty());
 
         let mut overlong_decode = type0_stream(&[2], 8, &[0.0, 1.0], &[0.0, 1.0], vec![0, 255]);
         if let PdfObject::Stream { dict, .. } = &mut overlong_decode {
@@ -1505,9 +882,7 @@ mod tests {
                 ]),
             );
         }
-        if let PdfObject::Stream { dict, .. } = &overlong_decode {
-            assert!(eval_type0(&overlong_decode, dict, &[1.0], &r).is_empty());
-        }
+        assert!(eval_function_n(&overlong_decode, &[1.0], &r).is_empty());
     }
 
     #[test]
@@ -1555,7 +930,7 @@ mod tests {
         let obj = PdfObject::Array(vec![type2_component_object(&[0.0, 0.0], &[1.0, 1.0])]);
         let r = reader_for_tests();
 
-        assert!(validate_function_or_array_shape(&obj, 1, &r));
+        assert!(!validate_function_or_array_shape(&obj, 1, &r));
         assert!(
             eval_function_or_array_n(&obj, &[0.25], &r).is_empty(),
             "component arrays must not accept subfunctions with more than one output"
@@ -1597,7 +972,7 @@ mod tests {
 
     #[test]
     fn type4_rejects_missing_input_dimension_instead_of_empty_stack_default() {
-        let obj = type4_stream("{ 0.5 }", &[0.0, 1.0]);
+        let obj = type4_stream("{ pop 0.5 }", &[0.0, 1.0]);
         let r = reader_for_tests();
 
         assert!(
@@ -1611,7 +986,7 @@ mod tests {
     fn type4_rejects_boolean_or_procedure_outputs_instead_of_numeric_coercion() {
         let r = reader_for_tests();
 
-        let bool_output = type4_stream("{ true }", &[0.0, 1.0]);
+        let bool_output = type4_stream("{ pop true }", &[0.0, 1.0]);
         assert!(
             eval_function_n(&bool_output, &[0.25], &r).is_empty(),
             "Type 4 final booleans must not be coerced to 0/1 output components"
@@ -1693,7 +1068,7 @@ mod tests {
         let program = format!("{{ {} }}", "1 ".repeat(MAX_TYPE4_TOKENS + 1));
         let obj = type4_stream(&program, &[0.0, 1.0]);
         let r = reader_for_tests();
-        assert!(eval_function_n(&obj, &[], &r).is_empty());
+        assert!(eval_function_n(&obj, &[0.5], &r).is_empty());
     }
 
     #[test]
@@ -1701,6 +1076,6 @@ mod tests {
         let program = format!("{{ {} }}", "1 ".repeat(MAX_TYPE4_STACK + 1));
         let obj = type4_stream(&program, &[0.0, 1.0]);
         let r = reader_for_tests();
-        assert!(eval_function_n(&obj, &[], &r).is_empty());
+        assert!(eval_function_n(&obj, &[0.5], &r).is_empty());
     }
 }

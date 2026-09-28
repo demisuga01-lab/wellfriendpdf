@@ -8,6 +8,7 @@ pub(crate) struct XmlAttribute {
     pub name: String,
     pub local_name: String,
     pub value: String,
+    pub namespace_uri: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -261,6 +262,16 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
                 namespaces.insert(prefix.to_string(), attr.value.clone());
             }
         }
+        let mut attributes = attributes;
+        for attr in &mut attributes {
+            attr.namespace_uri = attr.name.split_once(':').and_then(|(prefix, _)| {
+                if prefix == "xml" {
+                    Some("http://www.w3.org/XML/1998/namespace".into())
+                } else {
+                    namespaces.get(prefix).cloned()
+                }
+            });
+        }
         let prefix = name.split_once(':').map(|(prefix, _)| prefix).unwrap_or("");
         let namespace_uri = namespaces.get(prefix).cloned();
         let node = XmlNode {
@@ -409,6 +420,7 @@ fn parse_start_tag(
             local_name: local_name(&attr_name).to_string(),
             name: attr_name,
             value,
+            namespace_uri: None,
         });
     }
     Ok((name, attributes, self_closing, pos))

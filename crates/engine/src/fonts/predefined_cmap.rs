@@ -1,117 +1,92 @@
-//! Bounded predefined CMap metadata.
-//!
-//! Full Adobe CMap packs are large data sets. Wellfriend keeps the complete CMap
-//! pack out of the core engine for now, but common UTF-16 predefined CMaps are
-//! valuable because the PDF character code is already Unicode scalar data. This
-//! module classifies those names, exposes their writing mode, and gives reports
-//! a stable way to distinguish supported bounded coverage from clean
-//! unsupported predefined CMaps.
+//! Offline predefined CMap resources, with exact case-sensitive names.
+//! See cmaps/manifest.json for pinned source revisions, hashes and licences.
+use super::character_code::CharacterCode;
+use super::cmap_program::{Kind, Program, Result};
+use std::sync::Arc;
+#[path = "predefined_resources.rs"]
+mod resources;
+#[path = "predefined_unicode.rs"]
+mod unicode;
+pub(crate) use unicode::{font_unicode, validate_font_system};
+#[cfg(test)]
+#[path = "predefined_cmap_tests.rs"]
+pub(crate) mod tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PredefinedCMapInfo {
     pub name: &'static str,
     pub collection: &'static str,
     pub vertical: bool,
+    /// Zero means mixed code lengths; decode through FontResolver::codes().
     pub code_size: u8,
     pub unicode_preserving: bool,
 }
-
-const SUPPORTED_UTF16_CMAPS: &[PredefinedCMapInfo] = &[
-    info("Identity-H", "Identity", false, true),
-    info("Identity-V", "Identity", true, true),
-    info("UniJIS-UTF16-H", "Adobe-Japan1", false, true),
-    info("UniJIS-UTF16-V", "Adobe-Japan1", true, true),
-    info("UniGB-UTF16-H", "Adobe-GB1", false, true),
-    info("UniGB-UTF16-V", "Adobe-GB1", true, true),
-    info("UniCNS-UTF16-H", "Adobe-CNS1", false, true),
-    info("UniCNS-UTF16-V", "Adobe-CNS1", true, true),
-    info("UniKS-UTF16-H", "Adobe-Korea1", false, true),
-    info("UniKS-UTF16-V", "Adobe-Korea1", true, true),
-];
-
-const fn info(
-    name: &'static str,
-    collection: &'static str,
-    vertical: bool,
-    unicode_preserving: bool,
-) -> PredefinedCMapInfo {
-    PredefinedCMapInfo {
-        name,
-        collection,
-        vertical,
-        code_size: 2,
-        unicode_preserving,
-    }
-}
-
 pub fn lookup(name: &str) -> Option<PredefinedCMapInfo> {
-    let clean = name.trim_start_matches('/');
-    SUPPORTED_UTF16_CMAPS
+    let name = name.trim_start_matches('/');
+    resources::METADATA
         .iter()
         .copied()
-        .find(|info| info.name.eq_ignore_ascii_case(clean))
+        .find(|entry| entry.name == name)
 }
-
 pub fn supported_names() -> &'static [PredefinedCMapInfo] {
-    SUPPORTED_UTF16_CMAPS
+    resources::METADATA
 }
-
 pub fn code_size_for_name(name: &str) -> Option<u8> {
-    lookup(name).map(|info| info.code_size)
+    lookup(name).map(|entry| entry.code_size)
 }
-
-pub fn unicode_for_code(name: &str, code: u16) -> Option<String> {
-    let info = lookup(name)?;
-    if !info.unicode_preserving {
-        return None;
-    }
-    char::from_u32(u32::from(code)).map(|ch| ch.to_string())
-}
-
 pub fn wmode_from_name(name: &str) -> Option<u8> {
-    lookup(name).map(|info| u8::from(info.vertical))
+    lookup(name).map(|entry| u8::from(entry.vertical))
 }
-
 pub fn is_supported_name(name: &str) -> bool {
     lookup(name).is_some()
 }
-
-pub fn looks_like_predefined_name(name: &str) -> bool {
-    let clean = name.trim_start_matches('/');
-    clean == "Identity-H"
-        || clean == "Identity-V"
-        || clean.starts_with("UniJIS-")
-        || clean.starts_with("UniGB-")
-        || clean.starts_with("UniCNS-")
-        || clean.starts_with("UniKS-")
-        || clean.starts_with("Adobe-Japan1-")
-        || clean.starts_with("Adobe-GB1-")
-        || clean.starts_with("Adobe-CNS1-")
-        || clean.starts_with("Adobe-Korea1-")
-        || clean.ends_with("-H")
-        || clean.ends_with("-V")
+pub(crate) fn load_program(name: &str, kind: Kind) -> Result<Arc<Program>> {
+    resources::load(name, kind)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn common_utf16_cmaps_are_supported_and_classified() {
-        let jis = lookup("UniJIS-UTF16-V").expect("supported cmap");
-        assert_eq!(jis.collection, "Adobe-Japan1");
-        assert!(jis.vertical);
-        assert_eq!(jis.code_size, 2);
-        assert_eq!(
-            unicode_for_code("UniJIS-UTF16-H", 0x65E5).as_deref(),
-            Some("日")
-        );
-    }
-
-    #[test]
-    fn unsupported_predefined_names_are_detectable_without_claiming_support() {
-        assert!(looks_like_predefined_name("90ms-RKSJ-H"));
-        assert!(!is_supported_name("90ms-RKSJ-H"));
-        assert_eq!(lookup("90ms-RKSJ-H"), None);
-    }
+// Compatibility helper for Unicode-encoded CMaps only. This is not a CID
+// decoder: Identity and legacy encodings need their character collection.
+pub fn unicode_for_code(name: &str, code: u16) -> Option<String> {
+    let asset = resources::asset(name, Kind::Cid)?;
+    let length = match asset.unicode_encoding {
+        2 | 16 => 2,
+        32 => 4,
+        8 => {
+            if code < 256 {
+                1
+            } else {
+                2
+            }
+        }
+        _ => return None,
+    };
+    unicode_encoded(name, CharacterCode::new(u32::from(code), length).ok()?)
+}
+pub(super) fn unicode_encoded(name: &str, code: CharacterCode) -> Option<String> {
+    let asset = resources::asset(name, Kind::Cid)?;
+    decode_unicode_encoding(asset.unicode_encoding, code)
+}
+pub(super) fn decode_unicode_encoding(encoding: u8, code: CharacterCode) -> Option<String> {
+    let bytes = code.bytes();
+    let text = match encoding {
+        8 => std::str::from_utf8(&bytes).ok()?.to_string(),
+        2 | 16 if bytes.len().is_multiple_of(2) => String::from_utf16(
+            &bytes
+                .chunks_exact(2)
+                .map(|p| u16::from_be_bytes([p[0], p[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .ok()?,
+        32 if bytes.len() == 4 => char::from_u32(code.value())?.to_string(),
+        _ => return None,
+    };
+    (text.chars().count() == 1).then_some(text)
+}
+pub fn looks_like_predefined_name(name: &str) -> bool {
+    let name = name.trim_start_matches('/');
+    is_supported_name(name)
+        || name.starts_with("Adobe-")
+        || name.starts_with("Uni")
+        || name.ends_with("-H")
+        || name.ends_with("-V")
 }

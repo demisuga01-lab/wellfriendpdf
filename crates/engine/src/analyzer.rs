@@ -1,6 +1,5 @@
 use crate::engine::ContentEngine;
 use crate::error::Result;
-use crate::text::collector::TextCollector;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -143,20 +142,7 @@ impl PdfAnalyzer {
     }
 
     fn analyze_single_page(engine: &ContentEngine, page_num: usize) -> Result<usize> {
-        let ops = engine.get_page_content(page_num)?;
-        let resources = engine.get_page_resources(page_num)?;
-
-        let text_op_count = ops
-            .iter()
-            .filter(|op| matches!(op.operator.as_str(), "Tj" | "TJ" | "'" | "\""))
-            .count();
-
-        if text_op_count == 0 {
-            return Ok(0);
-        }
-
-        let mut collector = TextCollector::new(resources, engine.document().reader());
-        let chunks = collector.collect(&ops);
+        let chunks = engine.collect_page_text_chunks(page_num)?;
 
         let non_ws: usize = chunks
             .iter()

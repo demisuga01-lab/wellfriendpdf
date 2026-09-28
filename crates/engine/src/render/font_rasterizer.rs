@@ -1470,8 +1470,10 @@ impl FontRasterizer {
             .unwrap_or_else(|| ttf_parser::GlyphId(char_code.saturating_sub(1)));
 
         let mut builder = GlyphToPath::new();
-        if face.outline_glyph(glyph_id, &mut builder).is_none() {
-            return true;
+        match crate::fonts::sfnt_outline::outline(&face, glyph_id, &mut builder) {
+            Ok(Some(_)) => {}
+            Ok(None) => return true,
+            Err(_) => return false,
         }
 
         let glyph_path = builder.into_path();

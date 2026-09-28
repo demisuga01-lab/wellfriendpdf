@@ -37,6 +37,23 @@ const MAX_MEDIA_BYTES: usize = 512 * 1024 * 1024;
 const MAX_REDACTION_POLYGONS: usize = 4_096;
 const MAX_REDACTION_POINTS: usize = 65_536;
 type AnnotationObjectEntry = (Option<(u32, u16)>, PdfObject);
+#[cfg(test)]
+#[path = "annotation_xfdf_identity_tests.rs"]
+mod identity_tests;
+#[path = "annotation_xfdf_identity.rs"]
+mod identity_transaction;
+#[cfg(test)]
+#[path = "annotation_relationship_tests.rs"]
+mod relationship_tests;
+#[path = "annotation_xfdf_relationships.rs"]
+mod relationships;
+pub use relationships::{AnnotationRelationshipChange, AnnotationRelationshipReport};
+#[path = "annotation_native_geometry.rs"]
+mod native_geometry;
+pub use crate::annotation_promotion::{promote_annotation_sources_pdf, AnnotationPromotionReport};
+pub use native_geometry::{
+    edit_annotation_geometries_pdf, AnnotationGeometryBatchReport, AnnotationGeometryChange,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,6 +117,9 @@ pub struct AnnotationActionInventory {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AnnotationXfdfRecord {
     pub id: String,
+    /// Original page-local NM; `id` is the shared source editing identity.
+    #[serde(default)]
+    pub pdf_name: Option<String>,
     pub page: usize,
     pub subtype: String,
     pub rect: Option<[f64; 4]>,
@@ -133,6 +153,12 @@ pub struct AnnotationXfdfRecord {
     pub reply_type: Option<String>,
     pub reply_to: Option<String>,
     pub popup_for: Option<String>,
+    /// Explicit relation removal; omission in a safe-field merge preserves IRT.
+    #[serde(default)]
+    pub clear_reply: bool,
+    /// Detach a popup into a standalone annotation, clearing its owner's backlink.
+    #[serde(default)]
+    pub detach_popup: bool,
     pub line_endings: Vec<String>,
     pub repeat_overlay: bool,
     pub ocg_object: Option<String>,
@@ -152,6 +178,10 @@ pub struct AnnotationXfdfDocument {
     pub file_ids: Vec<String>,
     pub annotations: Vec<AnnotationXfdfRecord>,
     pub diagnostics: Vec<AnnotationMediaRedactionDiagnostic>,
+    /// SDK export is bound to one exact input revision. Standard external XFDF
+    /// without this extension keeps legacy import semantics, with ambiguity checks.
+    #[serde(default)]
+    pub source_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +255,8 @@ pub struct AnnotationXfdfImportReport {
     pub unsupported: usize,
     pub duplicate_ids: Vec<String>,
     pub relationship_count: usize,
+    #[serde(default)]
+    pub relationship_transaction: AnnotationRelationshipReport,
     pub appearances_regenerated: usize,
     pub output_bytes: usize,
     pub output_sha256: String,
@@ -234,19 +266,25 @@ pub struct AnnotationXfdfImportReport {
     pub exact_limits: Vec<String>,
 }
 
-/// Result of a source-linked annotation move or resize.  Geometry arrays are
-/// transformed in the original annotation coordinate space before the
-/// canonical XFDF importer rewrites the real annotation dictionary and its
-/// appearance.
+/// Result of a native source-linked annotation geometry transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnnotationGeometryEditReport {
     pub schema_version: String,
     pub annotation_id: String,
     pub source_page: usize,
     pub output_page: usize,
+    /// Includes pages of widgets normalized through shared field dependencies.
+    #[serde(default)]
+    pub affected_pages: Vec<usize>,
+    /// Internal source-normalization receipt, not the final geometry output hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_normalization: Option<AnnotationPromotionReport>,
     pub old_rect: [f64; 4],
     pub new_rect: [f64; 4],
     pub transformed_geometry: Vec<String>,
+    #[serde(default)]
+    pub writer: String,
+    /// Compatibility summary field; native geometry does not import XFDF.
     pub canonical_import: AnnotationXfdfImportReport,
 }
 
@@ -274,6 +312,8 @@ pub fn export_annotation_xfdf(
         deterministic: true,
         diagnostics: document.diagnostics,
         exact_limits: vec![
+            "SDK exports are bound to the exact PDF SHA-256; re-export after other mutations".into(),
+            "XFDF name carries the opaque editing ID; the private pdf-name extension preserves the original NM and may be ignored by third-party tools".into(),
             "rich text exports as bounded plain text; arbitrary XHTML/CSS is not trusted or reproduced"
                 .to_string(),
             "unknown extension data is limited to scalar attributes and text under explicit namespaces"
@@ -284,135 +324,29 @@ pub fn export_annotation_xfdf(
     Ok((bytes, report))
 }
 
-/// Move or resize one existing annotation without recreating it from a visual
-/// approximation.  The record is first exported from the exact source object,
-/// then only that record is re-imported after its rectangle and coordinate
-/// linked geometry have been transformed.  This preserves `/NM`, contents,
-/// replies, popup relationships, colors, flags, and other supported scalar
-/// fields while leaving unrelated annotations untouched.
+/// Move or resize one annotation through the native object transaction. A
+/// related popup/reply group must instead be selected explicitly in the batch API.
 pub fn move_resize_annotation_pdf(
     input: &[u8],
     annotation_id: &str,
     page: usize,
     new_rect: [f64; 4],
 ) -> Result<(Vec<u8>, AnnotationGeometryEditReport)> {
-    if annotation_id.trim().is_empty() {
-        return Err(WellfriendError::UnsupportedFeature(
-            "annotation geometry update requires a nonempty stable annotation id".to_string(),
-        ));
-    }
-    if page == 0 {
-        return Err(WellfriendError::MalformedPdf(
-            "annotation geometry update pages are one-based".to_string(),
-        ));
-    }
-    if !valid_annotation_rect(new_rect) {
-        return Err(WellfriendError::MalformedPdf(
-            "annotation geometry update requires finite nonempty rectangle".to_string(),
-        ));
-    }
-    let engine = ContentEngine::open_bytes(input.to_vec())?;
-    if page > engine.page_count()? {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "annotation geometry update page {page} is outside the document"
-        )));
-    }
-    let (xfdf, _) = export_annotation_xfdf(&engine)?;
-    let mut document = parse_annotation_xfdf(&xfdf)?;
-    let record = document
-        .annotations
-        .iter_mut()
-        .find(|record| record.id == annotation_id)
-        .ok_or_else(|| {
-            WellfriendError::UnsupportedFeature(format!(
-                "annotation geometry update cannot resolve stable annotation id {annotation_id}"
-            ))
-        })?;
-    let old_rect = record.rect.ok_or_else(|| {
-        WellfriendError::UnsupportedFeature(format!(
-            "annotation geometry update cannot safely move annotation {annotation_id} without an exact Rect"
-        ))
-    })?;
-    if !valid_annotation_rect(old_rect) {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "annotation geometry update found invalid Rect for annotation {annotation_id}"
-        )));
-    }
-    let source_page = record.page;
-    let mut transformed_geometry = Vec::new();
-    transform_annotation_coordinates(&mut record.vertices, old_rect, new_rect);
-    if !record.vertices.is_empty() {
-        transformed_geometry.push("vertices".to_string());
-    }
-    transform_annotation_coordinates(&mut record.quad_points, old_rect, new_rect);
-    if !record.quad_points.is_empty() {
-        transformed_geometry.push("quad_points".to_string());
-    }
-    transform_annotation_coordinates(&mut record.line, old_rect, new_rect);
-    if !record.line.is_empty() {
-        transformed_geometry.push("line".to_string());
-    }
-    transform_annotation_coordinates(&mut record.callout, old_rect, new_rect);
-    if !record.callout.is_empty() {
-        transformed_geometry.push("callout".to_string());
-    }
-    for stroke in &mut record.ink_lists {
-        transform_annotation_coordinates(stroke, old_rect, new_rect);
-    }
-    if !record.ink_lists.is_empty() {
-        transformed_geometry.push("ink_lists".to_string());
-    }
-    record.page = page;
-    record.rect = Some(new_rect);
-    // Importing the selected record only is important: a move/resize must not
-    // rewrite, sanitize, or regenerate unrelated annotations as a side effect.
-    let selected = record.clone();
-    document.annotations = vec![selected];
-    document.diagnostics.clear();
-    let edited_xfdf = write_annotation_xfdf(&document);
-    let options = AnnotationXfdfImportOptions {
-        fail_on_unsupported: true,
-        ..AnnotationXfdfImportOptions::default()
-    };
-    let (output, canonical_import) =
-        import_annotation_xfdf_pdf(input, edited_xfdf.as_bytes(), &options)?;
-    Ok((
-        output,
-        AnnotationGeometryEditReport {
-            schema_version: ANNOTATION_MEDIA_REDACTION_SCHEMA_VERSION.to_string(),
-            annotation_id: annotation_id.to_string(),
-            source_page,
-            output_page: page,
-            old_rect,
-            new_rect,
-            transformed_geometry,
-            canonical_import,
-        },
-    ))
-}
-
-fn valid_annotation_rect(rect: [f64; 4]) -> bool {
-    rect.iter().all(|value| value.is_finite()) && rect[0] != rect[2] && rect[1] != rect[3]
-}
-
-fn transform_annotation_coordinates(values: &mut [f64], old_rect: [f64; 4], new_rect: [f64; 4]) {
-    let old_x0 = old_rect[0].min(old_rect[2]);
-    let old_y0 = old_rect[1].min(old_rect[3]);
-    let old_width = (old_rect[2] - old_rect[0]).abs();
-    let old_height = (old_rect[3] - old_rect[1]).abs();
-    let new_x0 = new_rect[0].min(new_rect[2]);
-    let new_y0 = new_rect[1].min(new_rect[3]);
-    let new_width = (new_rect[2] - new_rect[0]).abs();
-    let new_height = (new_rect[3] - new_rect[1]).abs();
-    if old_width <= f64::EPSILON || old_height <= f64::EPSILON {
-        return;
-    }
-    for pair in values.chunks_exact_mut(2) {
-        if pair[0].is_finite() && pair[1].is_finite() {
-            pair[0] = new_x0 + (pair[0] - old_x0) * new_width / old_width;
-            pair[1] = new_y0 + (pair[1] - old_y0) * new_height / old_height;
-        }
-    }
+    let (output, mut report) = edit_annotation_geometries_pdf(
+        input,
+        None,
+        &[AnnotationGeometryChange {
+            annotation_id: annotation_id.into(),
+            page,
+            rect: new_rect,
+        }],
+    )?;
+    let mut edit = report
+        .edits
+        .pop()
+        .ok_or_else(|| WellfriendError::invalid_input("missing annotation geometry result"))?;
+    edit.source_normalization = report.source_normalization;
+    Ok((output, edit))
 }
 
 pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {
@@ -440,6 +374,15 @@ pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {
         return Err(WellfriendError::MalformedPdf(format!(
             "annotation XFDF root must be {{{XFDF_NAMESPACE}}}xfdf"
         )));
+    }
+    let source_sha256 = xfdf_extension_attr(&parsed.root, "source-sha256")?.map(str::to_string);
+    if source_sha256
+        .as_ref()
+        .is_some_and(|v| v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err(WellfriendError::invalid_input(
+            "invalid XFDF source revision hash",
+        ));
     }
     let mut diagnostics = Vec::new();
     let href = parsed
@@ -515,15 +458,40 @@ pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {
         file_ids,
         annotations: records,
         diagnostics,
+        source_sha256,
     })
+}
+
+fn xfdf_extension_attr<'a>(node: &'a XmlNode, local: &str) -> Result<Option<&'a str>> {
+    let mut values = node.attributes.iter().filter(|a| {
+        a.local_name == local && a.namespace_uri.as_deref() == Some(WELLFRIENDPDF_XFDF_NAMESPACE)
+    });
+    let result = values.next().map(|a| a.value.as_str());
+    if values.next().is_some() {
+        return Err(WellfriendError::invalid_input(
+            "duplicate XFDF extension attribute",
+        ));
+    }
+    Ok(result)
+}
+
+fn xfdf_extension_bool(node: &XmlNode, local: &str) -> Result<bool> {
+    match xfdf_extension_attr(node, local)? {
+        None | Some("false" | "0") => Ok(false),
+        Some("true" | "1") => Ok(true),
+        _ => Err(WellfriendError::invalid_input(
+            "invalid XFDF relationship decision flag",
+        )),
+    }
 }
 
 fn annotation_xfdf_document(document: &PdfDocument) -> Result<AnnotationXfdfDocument> {
     let reader = document.reader();
+    let identities = crate::annotation_identity::index(document, MAX_ANNOTATIONS)?;
+    let relationships = crate::annotation_relationships::Graph::read(document, &identities)?;
     let pages = document.get_pages()?;
     let mut annotations = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut ref_to_id = BTreeMap::<(u32, u16), String>::new();
     let mut entries = Vec::<(usize, usize, Option<(u32, u16)>, PdfDictionary)>::new();
     for page in &pages {
         let page_obj = reader.get_and_resolve(page.object_number, page.generation_number)?;
@@ -545,10 +513,6 @@ fn annotation_xfdf_document(document: &PdfDocument) -> Result<AnnotationXfdfDocu
                 ));
                 continue;
             };
-            let (id, _) = stable_annotation_id(&dict, page.page_number, index, reader);
-            if let Some(reference) = reference {
-                ref_to_id.insert(reference, id);
-            }
             entries.push((page.page_number, index, reference, dict));
         }
     }
@@ -559,17 +523,16 @@ fn annotation_xfdf_document(document: &PdfDocument) -> Result<AnnotationXfdfDocu
         )));
     }
     for (page, index, _reference, dict) in entries {
-        let (id, provenance) = stable_annotation_id(&dict, page, index, reader);
-        let subtype = dict.get_name("Subtype").unwrap_or("Unknown").to_string();
+        let identity = &identities[&(page, index)];
+        let id = identity.id.clone();
+        let provenance = identity.provenance.to_string();
+        let subtype = crate::annotation_relationships::subtype(reader, &dict)?;
+        let is_widget = subtype == "Widget";
         let action = action_inventory(reader, dict.get("A"));
-        let reply_to = dict
-            .get("IRT")
-            .and_then(PdfObject::as_reference)
-            .and_then(|reference| ref_to_id.get(&reference).cloned());
-        let popup_for = if subtype == "Popup" {
-            dict.get("Parent")
-                .and_then(PdfObject::as_reference)
-                .and_then(|reference| ref_to_id.get(&reference).cloned())
+        let relationship = &relationships.nodes[&id];
+        let reply_to = relationship.reply_to.clone();
+        let popup_for = if relationship.parent_explicit {
+            relationship.parent.clone()
         } else {
             None
         };
@@ -595,6 +558,7 @@ fn annotation_xfdf_document(document: &PdfDocument) -> Result<AnnotationXfdfDocu
         }
         let record = AnnotationXfdfRecord {
             id,
+            pdf_name: identity.name.clone(),
             page,
             subtype,
             rect: number_array(reader, dict.get("Rect")).and_then(vec4),
@@ -643,9 +607,11 @@ fn annotation_xfdf_document(document: &PdfDocument) -> Result<AnnotationXfdfDocu
             icon: dict.get_name("Name").map(str::to_string),
             intent: dict.get_name("IT").map(str::to_string),
             review_state: dict.get_name("State").map(str::to_string),
-            reply_type: dict.get_name("RT").map(str::to_string),
+            reply_type: relationship.reply_type.clone(),
             reply_to,
             popup_for,
+            clear_reply: false,
+            detach_popup: false,
             line_endings: dict
                 .get("LE")
                 .and_then(|obj| reader.resolve(obj.clone()).ok())
@@ -664,9 +630,7 @@ fn annotation_xfdf_document(document: &PdfDocument) -> Result<AnnotationXfdfDocu
                 .get("OC")
                 .and_then(PdfObject::as_reference)
                 .map(ref_string),
-            widget_field: (dict.get_name("Subtype") == Some("Widget"))
-                .then(|| field_name(reader, &dict))
-                .flatten(),
+            widget_field: is_widget.then(|| field_name(reader, &dict)).flatten(),
             attachment_name,
             action,
             appearance,
@@ -691,19 +655,24 @@ fn annotation_xfdf_document(document: &PdfDocument) -> Result<AnnotationXfdfDocu
     Ok(AnnotationXfdfDocument {
         schema_version: ANNOTATION_MEDIA_REDACTION_SCHEMA_VERSION.to_string(),
         href: None,
+        source_sha256: Some(resource_digest(reader.file_bytes())),
         file_ids,
         annotations,
         diagnostics,
     })
 }
 
-fn write_annotation_xfdf(document: &AnnotationXfdfDocument) -> String {
+pub(crate) fn write_annotation_xfdf(document: &AnnotationXfdfDocument) -> String {
     let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<xfdf xmlns=\"");
     out.push_str(XFDF_NAMESPACE);
     out.push_str("\" xmlns:wellfriendpdf=\"");
     out.push_str(WELLFRIENDPDF_XFDF_NAMESPACE);
-    out.push_str("\" xml:space=\"preserve\">\n");
+    out.push_str("\" xml:space=\"preserve\"");
+    if let Some(revision) = &document.source_sha256 {
+        write_attr(&mut out, "wellfriendpdf:source-sha256", revision);
+    }
+    out.push_str(">\n");
     if let Some(href) = &document.href {
         out.push_str("  <f href=\"");
         out.push_str(&xml_escape(href));
@@ -725,6 +694,13 @@ fn write_annotation_xfdf(document: &AnnotationXfdfDocument) -> String {
         out.push_str("    <");
         out.push_str(element);
         write_attr(&mut out, "name", &record.id);
+        write_opt_attr(&mut out, "wellfriendpdf:pdf-name", record.pdf_name.clone());
+        if record.clear_reply {
+            write_attr(&mut out, "wellfriendpdf:clear-reply", "true");
+        }
+        if record.detach_popup {
+            write_attr(&mut out, "wellfriendpdf:detach-popup", "true");
+        }
         write_attr(&mut out, "page", &record.page.saturating_sub(1).to_string());
         write_opt_attr(
             &mut out,
@@ -955,6 +931,7 @@ fn parse_annotation_node(
     }
     Ok(Some(AnnotationXfdfRecord {
         id,
+        pdf_name: xfdf_extension_attr(node, "pdf-name")?.map(str::to_string),
         page,
         subtype,
         rect,
@@ -988,6 +965,8 @@ fn parse_annotation_node(
         reply_type: node.attr("replyType").map(str::to_string),
         reply_to: node.attr("inreplyto").map(str::to_string),
         popup_for: node.attr("popup-for").map(str::to_string),
+        clear_reply: xfdf_extension_bool(node, "clear-reply")?,
+        detach_popup: xfdf_extension_bool(node, "detach-popup")?,
         line_endings,
         repeat_overlay: matches!(node.attr("repeat"), Some("true" | "1")),
         ocg_object: node.attr("wellfriendpdf:ocg").map(str::to_string),
@@ -1026,35 +1005,6 @@ fn annotation_entries(
         out.push((reference, reader.resolve(item.clone())?));
     }
     Ok(out)
-}
-
-fn stable_annotation_id(
-    dict: &PdfDictionary,
-    page: usize,
-    index: usize,
-    reader: &PdfReader,
-) -> (String, String) {
-    if let Some(id) = dict
-        .get("NM")
-        .and_then(pdf_text_or_name)
-        .filter(|id| !id.trim().is_empty())
-    {
-        return (id, "pdf_nm_preserved".to_string());
-    }
-    let subtype = dict.get_name("Subtype").unwrap_or("Unknown");
-    let rect = number_array(reader, dict.get("Rect"))
-        .map(|values| format_numbers(&values))
-        .unwrap_or_default();
-    let contents = dict
-        .get("Contents")
-        .and_then(pdf_text_or_name)
-        .unwrap_or_default();
-    let seed = format!("p{page}|a{index}|{subtype}|{rect}|{contents}");
-    let digest = resource_digest(seed.as_bytes());
-    (
-        format!("wellfriendpdf-p17-p{page}-a{index}-{}", &digest[..12]),
-        "generated_stable_id".to_string(),
-    )
 }
 
 fn appearance_metadata(reader: &PdfReader, dict: &PdfDictionary) -> AnnotationAppearanceMetadata {
@@ -1228,7 +1178,7 @@ fn nested_number_arrays(reader: &PdfReader, object: Option<&PdfObject>) -> Optio
     )
 }
 
-fn pdf_text_or_name(object: &PdfObject) -> Option<String> {
+pub(crate) fn pdf_text_or_name(object: &PdfObject) -> Option<String> {
     match object {
         PdfObject::String(bytes) => Some(decode_pdf_text_string(bytes)),
         PdfObject::Name(name) => Some(name.clone()),
@@ -1546,10 +1496,78 @@ pub fn import_annotation_xfdf_pdf(
     options: &AnnotationXfdfImportOptions,
 ) -> Result<(Vec<u8>, AnnotationXfdfImportReport)> {
     let mut imported = parse_annotation_xfdf(xfdf)?;
+    let source_bound = imported.source_sha256.is_some();
+    if imported
+        .source_sha256
+        .as_ref()
+        .is_some_and(|hash| !hash.eq_ignore_ascii_case(&resource_digest(input)))
+    {
+        return Err(WellfriendError::invalid_input("XFDF source revision differs from the input PDF; re-export before applying source edits"));
+    }
     imported
         .annotations
         .sort_by(|a, b| (a.page, &a.id).cmp(&(b.page, &b.id)));
     let document = PdfDocument::open_bytes(input.to_vec())?;
+    let identities = crate::annotation_identity::index(&document, MAX_ANNOTATIONS)?;
+    let names = crate::annotation_identity::NameLookup::new(&identities);
+    for record in &mut imported.annotations {
+        if record.id.len() > 4096 || record.pdf_name.as_ref().is_some_and(|n| n.len() > 4096) {
+            return Err(WellfriendError::invalid_input(
+                "XFDF annotation identity budget exceeded",
+            ));
+        }
+        record.id = names.resolve(&record.id, source_bound)?;
+        for relation in [record.reply_to.as_mut(), record.popup_for.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            *relation = names.resolve(relation, source_bound)?;
+        }
+    }
+    let deletes: BTreeSet<String> = if options.delete_policy == AnnotationDeletePolicy::ExplicitIds
+    {
+        options
+            .delete_ids
+            .iter()
+            .map(|id| names.resolve(id, source_bound))
+            .collect::<Result<_>>()?
+    } else {
+        BTreeSet::new()
+    };
+    // Normalize every request ID against the original PDF before promotion
+    // changes its revision hash. Relation targets and deletion IDs count too.
+    let source_ids = identities
+        .values()
+        .map(|i| i.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let selected = imported
+        .annotations
+        .iter()
+        .flat_map(|r| {
+            std::iter::once(&r.id)
+                .chain(r.reply_to.iter())
+                .chain(r.popup_for.iter())
+        })
+        .chain(deletes.iter())
+        .filter(|id| source_ids.contains(id.as_str()))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let prepared = crate::annotation_promotion::prepare_if_direct(
+        input,
+        &identities,
+        &selected,
+        MAX_ANNOTATIONS,
+    )?;
+    let input = prepared
+        .as_ref()
+        .map(|(bytes, _)| bytes.as_slice())
+        .unwrap_or(input);
+    let document = PdfDocument::open_bytes(input.to_vec())?;
+    let identities = crate::annotation_identity::index(&document, MAX_ANNOTATIONS)?;
+    let identity_by_id = identities
+        .values()
+        .map(|i| (i.id.clone(), i))
+        .collect::<BTreeMap<_, _>>();
     let reader = document.reader();
     let pages = document.get_pages()?;
     let remap = source_object_remap(reader);
@@ -1576,27 +1594,36 @@ pub fn import_annotation_xfdf_pdf(
             let Some(dict) = object.as_dict() else {
                 continue;
             };
-            let (id, _) = stable_annotation_id(dict, page.page_number, index, reader);
-            let Some((source, _generation)) = reference else {
+            let id = identities[&(page.page_number, index)].id.clone();
+            let Some((source, generation)) = reference else {
                 diagnostics.push(
                     AnnotationMediaRedactionDiagnostic::warning(
                         "xfdf.import.direct_annotation_limited",
-                        "direct annotation dictionaries are exported but create/update matching is limited to indirect annotations",
+                        "unselected direct annotation preserved; selected ordinary direct sources are materialized by exact occurrence",
                     )
                     .with_annotation(&id, page.page_number),
                 );
                 continue;
             };
             let output_number = remap.get(&source).copied().unwrap_or(source);
-            existing_by_id
-                .entry(id.clone())
-                .or_insert(ExistingAnnotation {
-                    id,
-                    page: page.page_number,
-                    source_number: source,
-                    output_number,
-                    has_valid_appearance: normal_appearance_is_valid(reader, dict),
-                });
+            if existing_by_id
+                .insert(
+                    id.clone(),
+                    ExistingAnnotation {
+                        id: id.clone(),
+                        page: page.page_number,
+                        source_number: source,
+                        source_generation: generation,
+                        output_number,
+                        has_valid_appearance: normal_appearance_is_valid(reader, dict),
+                    },
+                )
+                .is_some()
+            {
+                return Err(WellfriendError::invalid_input(format!(
+                    "annotation id {id} has ambiguous source occurrences"
+                )));
+            }
         }
     }
     let mut duplicate_ids = Vec::new();
@@ -1612,9 +1639,11 @@ pub fn import_annotation_xfdf_pdf(
         }
         if unique.contains_key(&record.id) {
             duplicate_ids.push(record.id.clone());
-            if options.conflict_policy == AnnotationConflictPolicy::Reject {
+            if options.conflict_policy == AnnotationConflictPolicy::Reject
+                || unique.get(&record.id) != Some(&record)
+            {
                 return Err(WellfriendError::MalformedPdf(format!(
-                    "annotation XFDF contains duplicate id '{}'",
+                    "annotation XFDF contains conflicting or rejected duplicate id '{}'",
                     record.id
                 )));
             }
@@ -1622,13 +1651,16 @@ pub fn import_annotation_xfdf_pdf(
         }
         unique.insert(record.id.clone(), record);
     }
-    let deletes: BTreeSet<String> = if options.delete_policy == AnnotationDeletePolicy::ExplicitIds
-    {
-        options.delete_ids.iter().cloned().collect()
-    } else {
-        BTreeSet::new()
-    };
     let mut updates = BTreeMap::<u32, AnnotationXfdfRecord>::new();
+    if deletes.iter().any(|id| {
+        identity_by_id
+            .get(id)
+            .is_some_and(|i| i.reference.is_none())
+    }) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "direct annotation deletion requires explicit source occurrence handling".into(),
+        ));
+    }
     let mut creates = Vec::<AnnotationXfdfRecord>::new();
     let mut unchanged = 0usize;
     let mut unsupported = 0usize;
@@ -1637,6 +1669,13 @@ pub fn import_annotation_xfdf_pdf(
             continue;
         }
         if let Some(existing) = existing_by_id.get(&record.id) {
+            if record
+                .pdf_name
+                .as_ref()
+                .is_some_and(|name| identity_by_id[&record.id].name.as_ref() != Some(name))
+            {
+                return Err(WellfriendError::invalid_input("XFDF edit attempted to change the source NM; use an explicit name-change transaction"));
+            }
             if existing.page != record.page
                 && options.conflict_policy == AnnotationConflictPolicy::Reject
             {
@@ -1646,6 +1685,8 @@ pub fn import_annotation_xfdf_pdf(
                 )));
             }
             updates.insert(existing.source_number, record);
+        } else if identity_by_id.contains_key(&record.id) {
+            return Err(WellfriendError::UnsupportedFeature("direct annotation editing requires promotion; an existing direct occurrence cannot be recreated as a new annotation".into()));
         } else if record.subtype == "Widget" {
             unsupported += 1;
             diagnostics.push(
@@ -1670,6 +1711,21 @@ pub fn import_annotation_xfdf_pdf(
             unchanged += 1;
         }
     }
+    identity_transaction::validate_destination_names(&identities, &updates, &creates, &deletes)?;
+    let mut relationship_plan = relationships::Plan::new(
+        &document,
+        &identities,
+        &updates,
+        &creates,
+        &deletes,
+        &options.conflict_policy,
+    )?;
+    relationship_plan.report.promoted_source_ids = prepared
+        .as_ref()
+        .map(|(_, report)| report.promoted_ids.clone())
+        .unwrap_or_default();
+    relationship_plan.report.source_normalization =
+        prepared.as_ref().map(|(_, report)| report.clone());
 
     let mut next_number = remap.values().copied().max().unwrap_or(0).saturating_add(1);
     let mut created_numbers = BTreeMap::<String, u32>::new();
@@ -1692,10 +1748,20 @@ pub fn import_annotation_xfdf_pdf(
         }
     }
     let mut id_to_output = BTreeMap::<String, u32>::new();
+    let replaced_appearances = appearance_numbers
+        .keys()
+        .filter_map(|id| existing_by_id.get(id))
+        .map(|entry| (entry.source_number, entry.source_generation))
+        .collect::<BTreeSet<_>>();
+    crate::tagged_structure::check_annotation_appearance_replacements(
+        input,
+        &replaced_appearances,
+    )?;
     for existing in existing_by_id.values() {
         id_to_output.insert(existing.id.clone(), existing.output_number);
     }
     id_to_output.extend(created_numbers.clone());
+    let relationship_patches = relationship_plan.patches(&id_to_output)?;
 
     let deleted_source_numbers: BTreeSet<u32> = deletes
         .iter()
@@ -1705,8 +1771,74 @@ pub fn import_annotation_xfdf_pdf(
         .iter()
         .filter_map(|id| existing_by_id.get(id).map(|entry| entry.output_number))
         .collect();
+    let moved = existing_by_id
+        .values()
+        .filter_map(|entry| {
+            let updated = updates.get(&entry.source_number)?;
+            if updated.page == entry.page {
+                return None;
+            }
+            let page = &pages[updated.page - 1];
+            Some((
+                (entry.source_number, entry.source_generation),
+                (page.object_number, page.generation_number),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let moved_output_numbers = moved.keys().map(|(n, _)| remap[n]).collect::<BTreeSet<_>>();
+    let reference_remap = remap
+        .iter()
+        .map(|(&a, &b)| (a, b))
+        .collect::<std::collections::HashMap<_, _>>();
+    let deleted_references = deletes
+        .iter()
+        .filter_map(|id| {
+            existing_by_id
+                .get(id)
+                .map(|entry| (entry.source_number, entry.source_generation))
+        })
+        .collect::<BTreeSet<_>>();
+    let structure_updates = crate::tagged_structure::annotation_transaction_updates(
+        input,
+        &moved,
+        &deleted_references,
+    )?
+    .into_iter()
+    .map(|update| {
+        (
+            update.number,
+            crate::writer::rewrite_references(update.object, &reference_remap),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+    let tagged_source = document.get_catalog()?.contains_key("StructTreeRoot");
+    if tagged_source {
+        crate::tagged_structure::validate_parent_tree(input)?;
+    }
+    // Resolve indirect Annots arrays before the rewrite callback, while the
+    // original reader/reference namespace is available. Retain their order.
+    let mut source_page_annots = BTreeMap::new();
+    for page in &pages {
+        let object = reader.get_object(page.object_number, page.generation_number)?;
+        let dict = object
+            .as_dict()
+            .ok_or_else(|| WellfriendError::invalid_input("invalid annotation page"))?;
+        let values = match dict.get("Annots") {
+            None => Vec::new(),
+            Some(v) => reader
+                .resolve(v.clone())?
+                .as_array()
+                .ok_or_else(|| WellfriendError::invalid_input("invalid Annots array"))?
+                .to_vec(),
+        };
+        let rewritten =
+            crate::writer::rewrite_references(PdfObject::Array(values), &reference_remap);
+        source_page_annots.insert(page.page_number, rewritten.as_array().unwrap().to_vec());
+    }
     let new_by_page: BTreeMap<usize, Vec<u32>> = {
-        let mut map = BTreeMap::<usize, Vec<u32>>::new();
+        // Preserve the original Annots order of moved source groups. Sorting
+        // by opaque identity changes paint order and popup thread ordering.
+        let mut map = relationship_plan.incoming(&updates, &id_to_output);
         for record in &creates {
             if let Some(number) = created_numbers.get(&record.id) {
                 map.entry(record.page).or_default().push(*number);
@@ -1719,14 +1851,26 @@ pub fn import_annotation_xfdf_pdf(
         .map(|page| (page.object_number, page.page_number))
         .collect();
     let mut mutate = |source_number: u32, object: &mut PdfObject| {
+        if let Some(replacement) = structure_updates.get(&source_number) {
+            *object = replacement.clone();
+        }
         if let Some(record) = updates.get(&source_number) {
             if let PdfObject::Dictionary(dict) = object {
+                let original_name = dict.get("NM").cloned();
                 apply_record_to_annotation_dict(
                     dict,
                     record,
                     &id_to_output,
                     page_output.get(&record.page).copied(),
                 );
+                match original_name {
+                    Some(name) => {
+                        dict.insert("NM", name);
+                    }
+                    None => {
+                        dict.remove("NM");
+                    }
+                }
                 if let Some(ap_number) = appearance_numbers.get(&record.id) {
                     install_appearance_reference(dict, *ap_number);
                 }
@@ -1734,15 +1878,15 @@ pub fn import_annotation_xfdf_pdf(
         }
         if let Some(page_number) = page_source_to_number.get(&source_number).copied() {
             if let PdfObject::Dictionary(dict) = object {
-                let mut annots = dict
-                    .get("Annots")
-                    .and_then(PdfObject::as_array)
-                    .map(<[PdfObject]>::to_vec)
+                let mut annots = source_page_annots
+                    .get(&page_number)
+                    .cloned()
                     .unwrap_or_default();
                 annots.retain(|value| {
-                    value
-                        .as_reference()
-                        .is_none_or(|(number, _)| !deleted_output_numbers.contains(&number))
+                    value.as_reference().is_none_or(|(number, _)| {
+                        !deleted_output_numbers.contains(&number)
+                            && !moved_output_numbers.contains(&number)
+                    })
                 });
                 if let Some(additions) = new_by_page.get(&page_number) {
                     annots.extend(additions.iter().map(|number| PdfObject::Reference {
@@ -1750,13 +1894,17 @@ pub fn import_annotation_xfdf_pdf(
                         generation: 0,
                     }));
                 }
-                annots.sort_by_key(|object| object.as_reference().map(|reference| reference.0));
                 if annots.is_empty() {
                     dict.remove("Annots");
                 } else {
                     dict.insert("Annots", PdfObject::Array(annots));
                 }
             }
+        }
+        if let (Some((patch, is_popup)), PdfObject::Dictionary(dict)) =
+            (relationship_patches.get(&source_number), &mut *object)
+        {
+            relationships::apply_patch(dict, patch, *is_popup);
         }
         if deleted_source_numbers.contains(&source_number) {
             *object = PdfObject::Null;
@@ -1770,6 +1918,7 @@ pub fn import_annotation_xfdf_pdf(
             &id_to_output,
             page_output.get(&record.page).copied(),
         );
+        relationship_plan.install(&record.id, &mut dict, &id_to_output)?;
         if let Some(ap_number) = appearance_numbers.get(&record.id) {
             install_appearance_reference(&mut dict, *ap_number);
         }
@@ -1794,7 +1943,105 @@ pub fn import_annotation_xfdf_pdf(
         .with_id(reader.first_file_id())
         .with_mode(WriterMode::XrefStreamWithObjStm)
         .write()?;
+    let output = if tagged_source && !deleted_references.is_empty() {
+        let repaired = crate::tagged_structure::finalize_annotation_deletion(&output)?;
+        relationship_plan.report.tagged_ownership_rebuilt = true;
+        repaired
+    } else {
+        output
+    };
     ContentEngine::open_bytes(output.clone())?;
+    if tagged_source {
+        crate::tagged_structure::validate_parent_tree(&output)?;
+    }
+    // Check actual membership after canonical renumbering, not just /P or the
+    // import report. This also detects accidental duplicate page appearances.
+    let reopened = PdfDocument::open_bytes(output.clone())?;
+    let reopened_identities = crate::annotation_identity::index(&reopened, MAX_ANNOTATIONS)?;
+    relationship_plan.verify(&reopened, &reopened_identities, &id_to_output)?;
+    let reopened_by_id = reopened_identities
+        .values()
+        .map(|i| (i.id.clone(), i))
+        .collect::<BTreeMap<_, _>>();
+    let mut memberships = BTreeMap::<(u32, u16), Vec<usize>>::new();
+    let mut membership_count = 0usize;
+    for page in reopened.get_pages()? {
+        crate::cancel::check_current_cancel("annotation membership verification")?;
+        let page_object = reopened
+            .reader()
+            .get_object(page.object_number, page.generation_number)?;
+        let page_dict = page_object
+            .as_dict()
+            .ok_or_else(|| WellfriendError::invalid_input("invalid saved annotation page"))?;
+        for (reference, _) in annotation_entries(reopened.reader(), page_dict.get("Annots"))? {
+            membership_count += 1;
+            if membership_count > MAX_ANNOTATIONS {
+                return Err(WellfriendError::ResourceLimit(
+                    "annotation membership verification limit".into(),
+                ));
+            }
+            if let Some(reference) = reference {
+                memberships
+                    .entry(reference)
+                    .or_default()
+                    .push(page.page_number);
+            }
+        }
+    }
+    for entry in existing_by_id.values() {
+        let Some(record) = updates.get(&entry.source_number) else {
+            continue;
+        };
+        let identity = reopened_by_id.get(&entry.id).ok_or_else(|| {
+            WellfriendError::invalid_input("updated annotation lost its editing identity")
+        })?;
+        if identity.reference != Some((entry.output_number, 0))
+            || identity.name != identity_by_id[&entry.id].name
+            || identity.page != record.page
+        {
+            return Err(WellfriendError::invalid_input(
+                "saved annotation identity or original NM changed unexpectedly",
+            ));
+        }
+        if memberships
+            .get(&(entry.output_number, 0))
+            .map(Vec::as_slice)
+            != Some([record.page].as_slice())
+        {
+            return Err(WellfriendError::invalid_input(
+                "saved annotation membership disagrees with requested destination",
+            ));
+        }
+    }
+    for record in &creates {
+        let identity = reopened_by_id
+            .get(&record.id)
+            .ok_or_else(|| WellfriendError::invalid_input("created annotation identity missing"))?;
+        if identity.reference != Some((created_numbers[&record.id], 0))
+            || identity.name.as_deref() != Some(record.pdf_name.as_deref().unwrap_or(&record.id))
+        {
+            return Err(WellfriendError::invalid_input(
+                "created annotation name or source identity differs from the request",
+            ));
+        }
+        if memberships
+            .get(&(created_numbers[&record.id], 0))
+            .map(Vec::as_slice)
+            != Some([record.page].as_slice())
+        {
+            return Err(WellfriendError::invalid_input(
+                "created annotation has incorrect page membership",
+            ));
+        }
+    }
+    if deleted_output_numbers
+        .iter()
+        .any(|n| memberships.contains_key(&(*n, 0)))
+    {
+        return Err(WellfriendError::invalid_input(
+            "deleted annotation remains in a page Annots array",
+        ));
+    }
     let signature_impact = signature_impact(input);
     let relationship_count = creates
         .iter()
@@ -1814,6 +2061,7 @@ pub fn import_annotation_xfdf_pdf(
         unsupported,
         duplicate_ids,
         relationship_count,
+        relationship_transaction: relationship_plan.report,
         appearances_regenerated: appearance_numbers.len(),
         output_bytes: output.len(),
         output_sha256: resource_digest(&output),
@@ -1827,6 +2075,9 @@ pub fn import_annotation_xfdf_pdf(
                 .to_string(),
             "file attachment payloads are not imported from XFDF; scalar attachment metadata is retained for diagnostics"
                 .to_string(),
+            "direct annotations use exact occurrence promotion with unique reachable field/OBJR ownership; ambiguous names/owners and stale IDs are rejected; foreign-document ID remapping is not implemented".into(),
+            "source NM is retained on updates; destination name conflicts require explicit name-change approval outside generic XFDF import".into(),
+            "reply and popup dependencies are planned and verified atomically; deleting an owner requires explicit dependent deletion or reparenting, never an implicit cascade".into(),
         ],
     };
     Ok((output, report))
@@ -1837,10 +2088,12 @@ pub fn generate_annotation_appearances_pdf(
     options: &AnnotationAppearanceOptions,
 ) -> Result<(Vec<u8>, AnnotationAppearanceReport)> {
     let document = PdfDocument::open_bytes(input.to_vec())?;
+    let identities = crate::annotation_identity::index(&document, MAX_ANNOTATIONS)?;
     let reader = document.reader();
     let xfdf = annotation_xfdf_document(&document)?;
     let remap = source_object_remap(reader);
     let mut source_by_id = BTreeMap::<String, u32>::new();
+    let mut valid_normal_by_id = BTreeMap::<String, bool>::new();
     for page in document.get_pages()? {
         let page_obj = reader.get_and_resolve(page.object_number, page.generation_number)?;
         let Some(page_dict) = page_obj.as_dict() else {
@@ -1850,14 +2103,17 @@ pub fn generate_annotation_appearances_pdf(
             .into_iter()
             .enumerate()
         {
-            let Some(reference) = reference else {
-                continue;
-            };
             let Some(dict) = object.as_dict() else {
                 continue;
             };
-            let (id, _) = stable_annotation_id(dict, page.page_number, index, reader);
-            source_by_id.insert(id, reference.0);
+            let id = identities[&(page.page_number, index)].id.clone();
+            valid_normal_by_id.insert(id.clone(), normal_appearance_is_valid(reader, dict));
+            let Some(reference) = reference else { continue };
+            if source_by_id.insert(id, reference.0).is_some() {
+                return Err(WellfriendError::invalid_input(
+                    "appearance generation has ambiguous annotation ids",
+                ));
+            }
         }
     }
     let mut next = remap.values().copied().max().unwrap_or(0).saturating_add(1);
@@ -1866,16 +2122,15 @@ pub fn generate_annotation_appearances_pdf(
     let mut preserved = 0usize;
     let mut unsupported = 0usize;
     for record in &xfdf.annotations {
-        let previous = if record.appearance.has_normal {
-            "valid_or_present"
+        let valid_normal = valid_normal_by_id.get(&record.id).copied().unwrap_or(false);
+        let previous = if valid_normal {
+            "structurally_valid_selected_normal"
         } else {
             "missing_or_malformed"
         };
         let should_generate = match options.policy {
-            AnnotationAppearancePolicy::PreserveValid => !record.appearance.has_normal,
-            AnnotationAppearancePolicy::RegenerateMissingOrMalformed => {
-                !record.appearance.has_normal
-            }
+            AnnotationAppearancePolicy::PreserveValid => !valid_normal,
+            AnnotationAppearancePolicy::RegenerateMissingOrMalformed => !valid_normal,
             AnnotationAppearancePolicy::RegenerateAllSupported => true,
         };
         let supported =
@@ -1918,9 +2173,26 @@ pub fn generate_annotation_appearances_pdf(
             exact_limit: (!supported).then(|| unsupported_appearance_limit(&record.subtype)),
         });
     }
+    let replaced_appearances = reader
+        .object_ids()
+        .into_iter()
+        .filter(|(number, _)| plans.contains_key(number))
+        .collect::<BTreeSet<_>>();
+    crate::tagged_structure::check_annotation_appearance_replacements(
+        input,
+        &replaced_appearances,
+    )?;
+    let tagged_source = document.get_catalog()?.contains_key("StructTreeRoot");
+    if tagged_source {
+        crate::tagged_structure::validate_parent_tree(input)?;
+    }
     let mut mutate = |source_number: u32, object: &mut PdfObject| {
-        if let Some((_, ap_number)) = plans.get(&source_number) {
+        if let Some((record, ap_number)) = plans.get(&source_number) {
             if let PdfObject::Dictionary(dict) = object {
+                dict.insert(
+                    crate::annotation_identity::STABLE_ID,
+                    crate::annotation_identity::text_string(&record.id),
+                );
                 install_appearance_reference(dict, *ap_number);
             }
         }
@@ -1950,6 +2222,30 @@ pub fn generate_annotation_appearances_pdf(
         generated_output
     };
     ContentEngine::open_bytes(output.clone())?;
+    if tagged_source {
+        crate::tagged_structure::validate_parent_tree(&output)?;
+    }
+    if !options.flatten_after_generation {
+        let reopened = PdfDocument::open_bytes(output.clone())?;
+        let index = crate::annotation_identity::index(&reopened, MAX_ANNOTATIONS)?;
+        let by_id = index
+            .values()
+            .map(|i| (i.id.clone(), i))
+            .collect::<BTreeMap<_, _>>();
+        for (source, (record, _)) in &plans {
+            let identity = by_id.get(&record.id).ok_or_else(|| {
+                WellfriendError::invalid_input("appearance update lost annotation identity")
+            })?;
+            if identity.reference != Some((remap[source], 0))
+                || identity.name != record.pdf_name
+                || identity.page != record.page
+            {
+                return Err(WellfriendError::invalid_input(
+                    "appearance generation changed annotation name or ownership",
+                ));
+            }
+        }
+    }
     let report = AnnotationAppearanceReport {
         schema_version: ANNOTATION_MEDIA_REDACTION_SCHEMA_VERSION.to_string(),
         policy: options.policy.clone(),
@@ -1984,6 +2280,7 @@ struct ExistingAnnotation {
     id: String,
     page: usize,
     source_number: u32,
+    source_generation: u16,
     output_number: u32,
     has_valid_appearance: bool,
 }
@@ -2017,30 +2314,82 @@ fn normal_appearance_is_valid(reader: &PdfReader, dict: &PdfDictionary) -> bool 
     match normal {
         PdfObject::Stream { dict, raw } => {
             dict.get_name("Subtype") == Some("Form")
-                && valid_bbox(&dict)
+                && valid_appearance_mapping(reader, &dict)
                 && raw.len() <= 32 * 1024 * 1024
         }
-        PdfObject::Dictionary(states) => states.entries().any(|(_, state)| {
-            reader.resolve(state.clone()).ok().is_some_and(|object| {
-                matches!(object, PdfObject::Stream { ref dict, ref raw }
-                    if dict.get_name("Subtype") == Some("Form")
-                        && valid_bbox(dict)
-                        && raw.len() <= 32 * 1024 * 1024)
-            })
-        }),
+        PdfObject::Dictionary(states) => {
+            let selected = dict.get("AS").and_then(|v| reader.resolve(v.clone()).ok());
+            let Some(PdfObject::Name(selected)) = selected else {
+                return false;
+            };
+            states
+                .get(&selected)
+                .and_then(|state| reader.resolve(state.clone()).ok())
+                .is_some_and(|object| {
+                    matches!(object,PdfObject::Stream { ref dict,ref raw }
+                    if dict.get_name("Subtype")==Some("Form")
+                        && valid_appearance_mapping(reader,dict)
+                        && raw.len()<=32*1024*1024)
+                })
+        }
         _ => false,
     }
 }
 
-fn valid_bbox(dict: &PdfDictionary) -> bool {
-    dict.get("BBox")
-        .and_then(PdfObject::as_array)
-        .is_some_and(|values| {
-            values.len() == 4
-                && values
-                    .iter()
-                    .all(|value| value.as_number().is_some_and(f64::is_finite))
-        })
+fn valid_appearance_mapping(reader: &PdfReader, dict: &PdfDictionary) -> bool {
+    fn numbers<const N: usize>(reader: &PdfReader, v: &PdfObject) -> Option<[f64; N]> {
+        let object = reader.resolve(v.clone()).ok()?;
+        let values = object.as_array()?;
+        if values.len() != N {
+            return None;
+        }
+        let mut result = [0.0; N];
+        for (index, value) in values.iter().enumerate() {
+            result[index] = reader.resolve(value.clone()).ok()?.as_number()?;
+            if !result[index].is_finite() {
+                return None;
+            }
+        }
+        Some(result)
+    }
+    let Some(bbox) = dict.get("BBox").and_then(|v| numbers::<4>(reader, v)) else {
+        return false;
+    };
+    if bbox[0] == bbox[2] || bbox[1] == bbox[3] {
+        return false;
+    }
+    let matrix = match dict.get("Matrix") {
+        None => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        Some(v) => match numbers::<6>(reader, v) {
+            Some(n) => n,
+            None => return false,
+        },
+    };
+    let [a, b, c, d, e, f] = matrix;
+    let determinant = a * d - b * c;
+    if !determinant.is_finite() || determinant == 0.0 {
+        return false;
+    }
+    let mut extent = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for x in [bbox[0], bbox[2]] {
+        for y in [bbox[1], bbox[3]] {
+            let u = a * x + c * y + e;
+            let v = b * x + d * y + f;
+            if !u.is_finite() || !v.is_finite() {
+                return false;
+            }
+            extent[0] = extent[0].min(u);
+            extent[1] = extent[1].min(v);
+            extent[2] = extent[2].max(u);
+            extent[3] = extent[3].max(v);
+        }
+    }
+    extent[0] < extent[2] && extent[1] < extent[3]
 }
 
 fn install_appearance_reference(dict: &mut PdfDictionary, number: u32) {
@@ -2076,7 +2425,14 @@ fn apply_record_to_annotation_dict(
     id_to_output: &BTreeMap<String, u32>,
     page_output: Option<u32>,
 ) {
-    dict.insert("NM", pdf_text_string(&record.id));
+    dict.insert(
+        "NM",
+        pdf_text_string(record.pdf_name.as_deref().unwrap_or(&record.id)),
+    );
+    dict.insert(
+        crate::annotation_identity::STABLE_ID,
+        crate::annotation_identity::text_string(&record.id),
+    );
     if let Some(page) = page_output {
         dict.insert(
             "P",

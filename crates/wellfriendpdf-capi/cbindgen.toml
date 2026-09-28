@@ -3,27 +3,7 @@ include_guard = "WELLFRIENDPDF_H"
 usize_is_size_t = true
 cpp_compat = true
 
-[export]
-include = [
-  "WellfriendBuffer",
-  "WellfriendDocument",
-  "WellfriendOcrBackend",
-  "WellfriendOcrEmitWordFn",
-  "WellfriendOcrRecognizeFn",
-  "wellfriendpdf_document_open_from_bytes",
-  "wellfriendpdf_document_free",
-  "wellfriendpdf_string_free",
-  "wellfriendpdf_error_free",
-  "wellfriendpdf_buffer_free",
-  "wellfriendpdf_document_page_count",
-  "wellfriendpdf_document_extract_text",
-  "wellfriendpdf_document_parse_markdown",
-  "wellfriendpdf_document_parse_json",
-  "wellfriendpdf_document_set_ocr_backend",
-  "wellfriendpdf_document_parse_markdown_ocr",
-  "wellfriendpdf_document_parse_json_ocr",
-  "wellfriendpdf_document_extract_fields_json",
-  "wellfriendpdf_document_extract_semantic_json",
-  "wellfriendpdf_document_info_json",
-  "wellfriendpdf_document_render_page_png",
-]
+# Do not add an export allowlist here. The C crate intentionally exposes a
+# large stable ABI and the checked-in header must cover every explicit
+# `wellfriendpdf_*` Rust export. `scripts/check-c-api-header-parity.mjs` enforces
+# that one-way invariant without loading the native library.

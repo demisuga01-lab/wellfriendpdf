@@ -59,3 +59,45 @@ locations referenced below.
 
   The full per-license breakdown, the audit method, and reproduction steps are
   in docs/licenses.md.
+
+--------------------------------------------------------------------------------
+3. Bundled Adobe CMap and CID-to-Unicode resources
+--------------------------------------------------------------------------------
+
+  Adobe cmap-resources (202 Encoding resources)
+    Copyright 1990-2023 Adobe. All rights reserved.
+    License: BSD-3-Clause
+    Text: crates/engine/src/fonts/cmaps/cmap-resources-LICENSE.txt
+    Source: https://github.com/adobe-type-tools/cmap-resources
+    Revision: f5cf3bca7fdfeaceb77aa82847e974f2306c20b4
+
+  Adobe mapping-resources-pdf (five pdf2unicode resources)
+    Copyright 1990-2019 Adobe. All rights reserved.
+    License: BSD-3-Clause
+    Text: crates/engine/src/fonts/cmaps/mapping-resources-pdf-LICENSE.txt
+    Source: https://github.com/adobe-type-tools/mapping-resources-pdf
+    Revision: 2dd5e53fb74a01718b9dfd448a0d1cce6fff2aa5
+
+  Original bytes and embedded notices are retained in lossless gzip/hex form.
+  See the adjacent manifest.json and README.md for per-resource provenance.
+  Include both full licence texts with binary redistribution materials.
+  Adobe and contributor names do not imply endorsement of this SDK.
+
+--------------------------------------------------------------------------------
+4. Source-only contour-normalization dependency increment
+--------------------------------------------------------------------------------
+
+  linesweeper 0.4.0 (MIT OR Apache-2.0; MIT option selected)
+    Source: https://github.com/jneem/linesweeper
+    Registry archive SHA-256:
+      9c19728333c060c6569a53c9a0e56c4be0df52cb4e6e07a8fbe16084cecce769
+    Licence text: crates/engine/licenses/LICENSE-curve-dependencies-MIT.txt.
+    Include that full notice when redistributing binaries containing this dependency.
+
+  kurbo 0.13.1 (Apache-2.0 OR MIT; MIT option selected) is now a direct
+  dependency as well as an existing transitive dependency. Its original
+  licence notice must likewise accompany redistribution.
+
+  These dependency changes were inspected in source, not built or audited
+  with Cargo metadata. The dependency count and audit claims in section 2
+  are historical; they are not a fresh audit of the modified lockfile.

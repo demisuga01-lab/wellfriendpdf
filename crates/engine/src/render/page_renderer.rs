@@ -2,8 +2,8 @@ use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::parser::operand_to_pdf_object;
 use crate::content::state::{
-    color_space_from_name, concat_matrix, default_color_for, BlendMode, Color, ColorSpace,
-    GraphicsState, LineCap, LineDash, LineJoin,
+    color_space_from_name, concat_matrix, BlendMode, Color, ColorSpace, GraphicsState, LineCap,
+    LineDash, LineJoin,
 };
 use crate::decode_scheduler::{DecodeMemoryBudget, DecodeMemoryToken};
 use crate::engine::{ContentEngine, PageResources};
@@ -388,6 +388,7 @@ fn merge_artifact_cache_counts(dst: &mut RenderArtifactCacheStats, src: RenderAr
 /// keep one cache per document worker, while parallel rendering uses separate
 /// caches and remains deterministic.
 pub struct RenderDocumentCache {
+    function_cache: Arc<Mutex<crate::render::function::FunctionCache>>,
     glyph_cache: GlyphCache,
     glyph_mask_cache: GlyphMaskCache,
     type3_mask_cache: Type3MaskCache,
@@ -453,6 +454,7 @@ pub struct RenderDocumentCache {
 impl RenderDocumentCache {
     pub fn new() -> Self {
         Self {
+            function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             glyph_cache: GlyphCache::with_default_capacity(),
             glyph_mask_cache: GlyphMaskCache::default(),
             type3_mask_cache: Type3MaskCache::default(),
@@ -517,6 +519,8 @@ impl RenderDocumentCache {
     }
 
     pub fn clear(&mut self) {
+        self.function_cache =
+            Arc::new(Mutex::new(crate::render::function::FunctionCache::default()));
         self.glyph_cache.clear();
         self.glyph_mask_cache.clear();
         self.type3_mask_cache.clear();
@@ -580,6 +584,10 @@ impl RenderDocumentCache {
     }
 
     pub fn aggregate_resource_cache_bytes(&self) -> usize {
+        let functions = self.function_cache_metrics();
+        if !functions.available {
+            return usize::MAX;
+        }
         self.font_bytes_cache_bytes
             .saturating_add(self.font_resolver_cache_bytes)
             .saturating_add(self.glyph_cache.current_bytes())
@@ -600,6 +608,7 @@ impl RenderDocumentCache {
             .saturating_add(self.form_xobject_program_cache_bytes)
             .saturating_add(self.tiling_pattern_program_cache_bytes)
             .saturating_add(self.annotation_appearance_program_cache_bytes)
+            .saturating_add(functions.bytes)
     }
 
     fn enforce_bounded_maps(&mut self, budget: RenderResourceBudget) {
@@ -612,6 +621,13 @@ impl RenderDocumentCache {
         const OFFSCREEN_POOL_BYTES: usize = 64 * 1024 * 1024;
         const DISPLAY_LIST_CACHE_BYTES: usize = 128 * 1024 * 1024;
         let max_cache_bytes = budget_to_usize(budget.max_cache_bytes);
+        if self.function_cache.is_poisoned() {
+            self.function_cache =
+                Arc::new(Mutex::new(crate::render::function::FunctionCache::default()));
+        }
+        if let Ok(mut functions) = self.function_cache.lock() {
+            functions.set_byte_limit(max_cache_bytes);
+        }
 
         while self.font_bytes_cache_bytes > FONT_BYTES_BUDGET.min(max_cache_bytes) {
             if pop_front_font_bytes_cache_entry(
@@ -806,6 +822,13 @@ impl RenderDocumentCache {
         consider(17, self.type3_geometry_cache.oldest_entry_bytes());
         consider(18, self.type3_charproc_cache.oldest_entry_bytes());
         consider(19, self.type3_retained_charproc_cache.oldest_entry_bytes());
+        consider(
+            20,
+            self.function_cache
+                .lock()
+                .ok()
+                .and_then(|functions| functions.oldest_entry_bytes()),
+        );
 
         match candidate.map(|(kind, _)| kind) {
             Some(0) => {
@@ -1017,6 +1040,11 @@ impl RenderDocumentCache {
                 }
                 evicted
             }
+            Some(20) => self
+                .function_cache
+                .lock()
+                .map(|mut functions| functions.evict_one())
+                .unwrap_or(false),
             _ => false,
         }
     }
@@ -1591,6 +1619,15 @@ impl RenderDocumentCache {
 
     pub fn shading_mesh_entries(&self) -> usize {
         self.shading_mesh_cache.len()
+    }
+
+    /// Prepared graphs retained by this worker's cache, separate from any
+    /// standalone reader cache or live per-consumer temporary reservations.
+    pub fn function_cache_metrics(&self) -> crate::render::function::FunctionCacheMetrics {
+        self.function_cache
+            .lock()
+            .map(|cache| cache.metrics())
+            .unwrap_or_default()
     }
 
     pub fn shading_mesh_bytes(&self) -> usize {
@@ -2620,10 +2657,8 @@ impl DisplayListSpatialResourceState {
                         name,
                         object.as_ref(),
                     );
-                if !color_space_name_or_object_is_pattern(name, object.as_ref()) {
-                    self.stroke_pattern = None;
-                    self.stroke_pattern_dependency = None;
-                }
+                self.stroke_pattern = None;
+                self.stroke_pattern_dependency = None;
             }
             SetFillColorSpace { name, object } => {
                 self.fill_color_space = object_identity_from_named_resource_reference(
@@ -2638,10 +2673,8 @@ impl DisplayListSpatialResourceState {
                         name,
                         object.as_ref(),
                     );
-                if !color_space_name_or_object_is_pattern(name, object.as_ref()) {
-                    self.fill_pattern = None;
-                    self.fill_pattern_dependency = None;
-                }
+                self.fill_pattern = None;
+                self.fill_pattern_dependency = None;
             }
             SetStrokeColor {
                 name: Some(name),
@@ -2998,6 +3031,24 @@ impl PageRenderer {
         let mut source_refs = HashSet::new();
         let mut remaining_source_refs = PAGE_RENDER_DEPENDENCY_REF_LIMIT;
         let reader = engine.document().reader();
+        // Defaults may be selected by implicit device operators, image/shading
+        // dictionaries or an underlying special space. Conservatively retain
+        // all three chains for each tile, rather than leaving stale cached
+        // pixels after an ICC profile/default resource is edited.
+        let default_dependencies = ["DefaultGray", "DefaultRGB", "DefaultCMYK"]
+            .into_iter()
+            .flat_map(|name| {
+                color_space_dependency_objects_from_named_resource(resources, name, None)
+            })
+            .collect::<Vec<_>>();
+        collect_source_refs_for_objects(
+            engine,
+            cache,
+            default_dependencies.iter(),
+            reader,
+            &mut source_refs,
+            &mut remaining_source_refs,
+        );
         let mut marked_content_stack: Vec<(Vec<ObjectIdentityId>, Vec<PdfObject>)> = Vec::new();
         let mut active_marked_content_sources = Vec::new();
         let mut active_marked_content_dependencies = Vec::new();
@@ -5116,7 +5167,10 @@ struct ActivePatternResource {
 #[derive(Clone, Debug)]
 struct ActiveColorSpaceResource {
     name: String,
-    object: PdfObject,
+    // Selection and saved state share immutable graphs, including ICC streams.
+    // Lookup must not add another pair of profile copies before conversion.
+    object: Arc<PdfObject>,
+    source: Arc<PdfObject>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -5129,12 +5183,16 @@ struct ActiveResourceSnapshot {
 }
 
 struct RenderState<'a> {
+    function_cache: Arc<Mutex<crate::render::function::FunctionCache>>,
     engine: &'a ContentEngine,
     page_number: usize,
     buf: PixelBuffer,
     viewport: Viewport,
     resources: PageResources,
     gs: GraphicsState,
+    /// Immutable original page scope, distinct from nested program scopes and
+    /// from already-selected (object-bound) graphics-state resources.
+    page_resources: Arc<PageResources>,
     initial_rendering_intent: String,
     clip_stack: Vec<Arc<ClipNode>>,
     smask_stack: Vec<Option<AlphaMask>>,
@@ -5157,7 +5215,9 @@ struct RenderState<'a> {
     font_resolver_cache_order: VecDeque<String>,
     font_resolver_cache_bytes: usize,
     font_resolver_cache_stats: RenderArtifactCacheStats,
-    font_resource_key_cache: HashMap<(String, usize), String>,
+    // Dictionaries can be replaced in-place when scopes change; allocation
+    // addresses are not identities. Confirm the complete dictionary on reuse.
+    font_resource_key_cache: HashMap<String, (PdfDictionary, String)>,
     active_font_resource: Option<ActiveFontResource>,
     active_fill_color_space_resource: Option<ActiveColorSpaceResource>,
     active_stroke_color_space_resource: Option<ActiveColorSpaceResource>,
@@ -6813,11 +6873,13 @@ impl<'a> RenderState<'a> {
         let render_mode = buf.render_mode();
         let gs = GraphicsState::default();
         let initial_rendering_intent = gs.rendering_intent.clone();
-        Self {
+        let mut state = Self {
+            function_cache: std::mem::take(&mut cache.function_cache),
             engine,
             page_number,
             buf,
             viewport,
+            page_resources: Arc::new(resources.clone()),
             resources,
             gs,
             initial_rendering_intent,
@@ -6929,10 +6991,23 @@ impl<'a> RenderState<'a> {
             subpixel_text_policy: SmoothingPolicy::Disabled,
             path_smoothing_policy: SmoothingPolicy::Antialiased,
             image_smoothing_policy: SmoothingPolicy::Antialiased,
+        };
+        // A cache reused after a smaller contract must adopt this new state's
+        // policy; the previous caller's cap is not sticky for legacy renders.
+        if let Ok(mut cache) = state.function_cache.lock() {
+            cache.set_byte_limit(budget_to_usize(resource_budget.max_cache_bytes));
         }
+        // The page's initial DeviceGray selection is also subject to its
+        // default colour space. Offscreen children copy the selected state.
+        state.set_active_fill_color_space("DeviceGray", None);
+        state.set_active_stroke_color_space("DeviceGray", None);
+        state
     }
 
     fn apply_resource_budget(&mut self, budget: RenderResourceBudget) {
+        if let Ok(mut cache) = self.function_cache.lock() {
+            cache.set_byte_limit(budget_to_usize(budget.max_cache_bytes));
+        }
         self.resource_budget = budget;
         self.decode_limits = decode_limits_for_resource_budget(budget);
         self.decode_scheduler = RenderDecodeScheduler::new(&self.decode_limits);
@@ -6973,6 +7048,22 @@ impl<'a> RenderState<'a> {
             self.color_management_policy,
             &self.render_contract_fingerprint,
         )
+    }
+
+    fn function_resources(&self) -> crate::render::function::FunctionResources<'_> {
+        crate::render::function::FunctionResources {
+            memory: Some(&self.temporary_scheduler.budget),
+            max_graph_bytes: budget_to_usize(self.resource_budget.max_temporary_bytes),
+            max_stream_bytes: budget_to_usize(self.resource_budget.max_decoded_bytes),
+            cache: Some(self.function_cache.as_ref()),
+        }
+    }
+
+    fn image_color_options(&self) -> crate::images::decoder::ImageColorOptions<'_> {
+        crate::images::decoder::ImageColorOptions {
+            options: self.color_transform_options(),
+            functions: self.function_resources(),
+        }
     }
 
     fn effective_image_interpolate(&self, pdf_interpolate: bool) -> bool {
@@ -7094,11 +7185,7 @@ impl<'a> RenderState<'a> {
     }
 
     fn current_stroke_ext_g_state_paint_refusal(&self, operation: &str) -> Option<String> {
-        if self.gs.stroke_adjustment && paint_alpha_visible(self.gs.stroke_alpha) {
-            Some(format!(
-                "{operation} requires ExtGState /SA true stroke-adjustment semantics, which are outside the exact active-rendering policy"
-            ))
-        } else if self.gs.alpha_source && paint_alpha_visible(self.gs.stroke_alpha) {
+        if self.gs.alpha_source && paint_alpha_visible(self.gs.stroke_alpha) {
             Some(format!(
                 "{operation} requires ExtGState /AIS true alpha-source semantics, which are outside the exact active-rendering policy"
             ))
@@ -7118,12 +7205,6 @@ impl<'a> RenderState<'a> {
         if !self.gs.text_knockout {
             return Some(
                 "text paint requires ExtGState /TK false disabled-text-knockout semantics, which are outside the exact active-rendering policy"
-                    .to_string(),
-            );
-        }
-        if stroke_paints && self.gs.stroke_adjustment {
-            return Some(
-                "text stroke requires ExtGState /SA true stroke-adjustment semantics, which are outside the exact active-rendering policy"
                     .to_string(),
             );
         }
@@ -7296,6 +7377,7 @@ impl<'a> RenderState<'a> {
         let mut merged_font_substitution_log = std::mem::take(&mut cache.font_substitution_log);
         merged_font_substitution_log.absorb(self.font_substitution_log);
         *cache = RenderDocumentCache {
+            function_cache: self.function_cache,
             glyph_cache: self.glyph_cache,
             glyph_mask_cache: self.glyph_mask_cache,
             type3_mask_cache: self.type3_mask_cache,
@@ -7365,6 +7447,7 @@ impl<'a> RenderState<'a> {
 
     fn into_buffer_and_document_cache(self, cache: &mut RenderDocumentCache) -> PixelBuffer {
         let RenderState {
+            function_cache,
             buf,
             glyph_cache,
             glyph_mask_cache,
@@ -7441,6 +7524,7 @@ impl<'a> RenderState<'a> {
         let mut merged_font_substitution_log = std::mem::take(&mut cache.font_substitution_log);
         merged_font_substitution_log.absorb(font_substitution_log);
         *cache = RenderDocumentCache {
+            function_cache,
             glyph_cache,
             glyph_mask_cache,
             type3_mask_cache,
@@ -7685,11 +7769,12 @@ impl<'a> RenderState<'a> {
         let estimated = estimate_image_ref_decode_bytes(image_ref);
         let reader = self.engine.document().reader();
         let limits = self.decode_limits.clone();
-        let color_options = self.color_transform_options();
+        let color_options = self.image_color_options();
         let raw = self
             .decode_scheduler
             .run(estimated, &self.cancel, context, || {
                 if let Some((color_space_name, color_space_obj)) = color_space_override {
+                    let source_space = self.image_source_color_space(image_ref)?;
                     ImageDecoder::decode_with_resolved_color_space_and_limits_and_color_transform_options(
                         image_ref,
                         reader,
@@ -7697,6 +7782,7 @@ impl<'a> RenderState<'a> {
                         color_space_obj,
                         &limits,
                         color_options,
+                        source_space.as_ref(),
                     )
                 } else {
                     ImageDecoder::decode_with_limits_and_color_transform_options(
@@ -7802,31 +7888,21 @@ impl<'a> RenderState<'a> {
             .max(1);
         let reader = self.engine.document().reader();
         let limits = self.decode_limits.clone();
-        let color_options = self.color_transform_options();
+        let color_options = self.image_color_options();
         let raw = self
             .decode_scheduler
             .run(estimated, &self.cancel, context, || {
-                match component_selection {
-                    RawImageComponentSelection::All => {
-                        ImageDecoder::decode_raw_window_with_limits_and_color_transform_options(
-                            image_ref,
-                            reader,
-                            color_space_override,
-                            window,
-                            &limits,
-                            color_options,
-                        )
-                    }
-                    selection => ImageDecoder::decode_raw_window_components_with_limits_and_color_transform_options(
-                        image_ref,
-                        reader,
-                        color_space_override,
-                        window,
-                        selection,
-                        &limits,
-                        color_options,
-                    ),
-                }
+                let source_space = self.image_source_color_space(image_ref)?;
+                ImageDecoder::decode_raw_window_components_with_limits_and_color_transform_options(
+                    image_ref,
+                    reader,
+                    color_space_override,
+                    window,
+                    component_selection,
+                    &limits,
+                    color_options,
+                    source_space.as_ref(),
+                )
             })?;
         let raw = Arc::new(raw);
         let raw_bytes = raw.byte_count();
@@ -7866,10 +7942,11 @@ impl<'a> RenderState<'a> {
             estimate_scaled_image_ref_decode_bytes(image_ref, requested_width, requested_height);
         let reader = self.engine.document().reader();
         let limits = self.decode_limits.clone();
-        let color_options = self.color_transform_options();
+        let color_options = self.image_color_options();
         let raw = self
             .decode_scheduler
             .run(estimated, &self.cancel, context, || {
+                let source_space = self.image_source_color_space(image_ref)?;
                 ImageDecoder::decode_jpeg_scaled_with_limits_and_color_transform_options(
                     image_ref,
                     reader,
@@ -7878,6 +7955,7 @@ impl<'a> RenderState<'a> {
                     requested_height,
                     &limits,
                     color_options,
+                    source_space.as_ref(),
                 )
             })?;
         let raw = Arc::new(raw);
@@ -7951,7 +8029,17 @@ impl<'a> RenderState<'a> {
         color_space_override: Option<&(String, PdfObject)>,
     ) -> String {
         let source_key = color_space_override
-            .map(|(name, obj)| image_xobject_cache_key_with_color_space(image_ref, name, obj))
+            .map(|(name, obj)| {
+                let source = match self.image_source_color_space(image_ref) {
+                    Ok(source) => source.unwrap_or(PdfObject::Null),
+                    Err(error) => PdfObject::String(error.to_string().into_bytes()),
+                };
+                image_xobject_cache_key_with_color_space(
+                    image_ref,
+                    name,
+                    &PdfObject::Array(vec![source, obj.clone()]),
+                )
+            })
             .unwrap_or_else(|| image_xobject_cache_key(image_ref));
         format!(
             "rev:{:016x}:decode-policy:{}:{}",
@@ -8073,7 +8161,7 @@ impl<'a> RenderState<'a> {
     ) -> Result<RawImage> {
         let estimated = estimate_inline_image_decode_bytes(data.len(), width, height, bpc);
         let limits = self.decode_limits.clone();
-        let color_options = self.color_transform_options();
+        let color_options = self.image_color_options();
         self.decode_scheduler.run(
             estimated,
             &self.cancel,
@@ -8147,6 +8235,7 @@ impl<'a> RenderState<'a> {
         window: RawImageDecodeWindow,
         component_selection: RawImageComponentSelection,
         color_space_override: Option<&(String, PdfObject)>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
         let estimated = u64::from(window.width)
             .saturating_mul(u64::from(window.height))
@@ -8159,7 +8248,7 @@ impl<'a> RenderState<'a> {
             ))
             .max(1);
         let limits = self.decode_limits.clone();
-        let color_options = self.color_transform_options();
+        let color_options = self.image_color_options();
         self.decode_scheduler.run(
             estimated,
             &self.cancel,
@@ -8181,6 +8270,7 @@ impl<'a> RenderState<'a> {
                             &limits,
                             Some(self.engine.document().reader()),
                             color_options,
+                            source_space,
                         )
                     }
                     selection => ImageDecoder::decode_inline_raw_window_components_with_resolved_color_space_and_param_array(
@@ -8197,6 +8287,7 @@ impl<'a> RenderState<'a> {
                         &limits,
                         Some(self.engine.document().reader()),
                         color_options,
+                        source_space,
                     ),
                 }
             },
@@ -8215,13 +8306,14 @@ impl<'a> RenderState<'a> {
         requested_width: u32,
         requested_height: u32,
         color_space_override: Option<&(String, PdfObject)>,
+        source_space: Option<&PdfObject>,
     ) -> Result<RawImage> {
         let estimated = u64::from(requested_width)
             .saturating_mul(u64::from(requested_height))
             .saturating_mul(4)
             .max(1);
         let limits = self.decode_limits.clone();
-        let color_options = self.color_transform_options();
+        let color_options = self.image_color_options();
         self.decode_scheduler.run(
             estimated,
             &self.cancel,
@@ -8241,6 +8333,7 @@ impl<'a> RenderState<'a> {
                         &limits,
                         Some(self.engine.document().reader()),
                         color_options,
+                        source_space,
                     )
                 } else {
                     ImageDecoder::decode_inline_scaled_dct_with_resolved_color_space_and_param_array(
@@ -8254,8 +8347,9 @@ impl<'a> RenderState<'a> {
                         requested_width,
                         requested_height,
                         &limits,
-                        None,
-                        ColorTransformOptions::default(),
+                        Some(self.engine.document().reader()),
+                        color_options,
+                        source_space,
                     )
                 }
             },
@@ -8812,7 +8906,7 @@ impl<'a> RenderState<'a> {
         resolved_bbox: Option<[f64; 4]>,
         resolved_matrix: Option<[f64; 6]>,
     ) -> Option<Arc<FormXObjectProgram>> {
-        let parent_resource_fingerprint = page_resources_fingerprint(&self.resources);
+        let parent_resource_fingerprint = page_resources_fingerprint(&self.page_resources);
         let cache_key = form_xobject_program_cache_key(
             obj_num,
             gen_num,
@@ -8820,11 +8914,25 @@ impl<'a> RenderState<'a> {
             &self.render_contract_fingerprint,
             parent_resource_fingerprint,
         );
+        // A Form inherits the caller's graphics state. In particular, valid
+        // content may show text without issuing another `Tf`. Bind that state
+        // into the retained-program identity: otherwise a plan compiled while
+        // F1 is active can be incorrectly reused while F2 is active.
+        let cache_key = match self.active_font_resource.as_ref() {
+            Some(font) => format!("{cache_key}:inherited-font:{}", font.cache_key),
+            None => format!("{cache_key}:inherited-font:none"),
+        };
         if let Some(cached) = self.form_xobject_program_cache.get(&cache_key) {
             touch_program_cache_key(&mut self.form_xobject_program_cache_order, &cache_key);
             self.form_xobject_program_cache_stats.hits =
                 self.form_xobject_program_cache_stats.hits.saturating_add(1);
-            return cached.as_ref().map(Arc::clone);
+            let program = cached.as_ref().map(Arc::clone);
+            if program.is_none() {
+                self.record_fatal_render_error(format!(
+                    "Form XObject resource /{name} has a cached invalid program"
+                ));
+            }
+            return program;
         }
         self.form_xobject_program_cache_stats.misses = self
             .form_xobject_program_cache_stats
@@ -8899,16 +9007,50 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
-        let resources = form_dict
-            .get("Resources")
-            .map(|res_obj| crate::engine::parse_resources_from_obj(res_obj, reader));
-        let mut retained_resources = self.resources.clone();
-        if let Some(form_res) = resources.as_ref() {
-            overlay_page_resources(&mut retained_resources, form_res);
+        let resources = match PageResources::from_content_owner(&form_dict, reader) {
+            Ok(resources) => resources,
+            Err(err) => {
+                self.record_fatal_render_error(format!(
+                    "Form XObject resource /{name} invalid /Resources: {err}"
+                ));
+                self.insert_form_xobject_program_cache_entry(cache_key, None);
+                return None;
+            }
+        };
+        let mut retained_resources =
+            content_resource_scope(resources.as_ref(), &self.page_resources);
+        // A Form inherits fill/stroke state even when its own resource
+        // dictionary is empty. Force path operators through the stateful replay
+        // route so compilation never bakes the builder's default black into a
+        // context-dependent Form. The identity entry is compile-only; actual
+        // replay still uses the caller's bound paint resources and components.
+        retained_resources
+            .color_spaces
+            .entry("DefaultGray".into())
+            .or_insert_with(|| PdfObject::Name("DeviceGray".into()));
+        let mut retained_ops = ops.clone();
+        if let Some(font) = self.active_font_resource.as_ref() {
+            // Display-list compilation must resolve the inherited font just as
+            // direct interpretation does. Prepending a synthetic Tf is safe:
+            // it reproduces the already-active name and size, while a real Tf
+            // in the Form remains authoritative when encountered.
+            retained_resources
+                .fonts
+                .insert(font.name.clone(), font.dict.clone());
+            retained_ops.insert(
+                0,
+                ContentOperation::new(
+                    "Tf",
+                    vec![
+                        Operand::Name(font.name.clone()),
+                        Operand::Real(self.gs.text.font_size),
+                    ],
+                ),
+            );
         }
         let is_transparency_group = is_transparency_group(&form_dict);
         let (retained_plan, retained_plan_refusal) = retained_plan_cache_fields(
-            self.compile_form_xobject_retained_plan(name, &ops, &retained_resources),
+            self.compile_form_xobject_retained_plan(name, &retained_ops, &retained_resources),
         );
         let form_matrix = if let Some(matrix) = resolved_matrix {
             matrix
@@ -9130,6 +9272,10 @@ impl<'a> RenderState<'a> {
             self.page_number,
             &self.render_contract_fingerprint,
         );
+        let cache_key = format!(
+            "{cache_key}:page-resources:{:016x}",
+            page_resources_fingerprint(&self.page_resources)
+        );
         if let Some(cached) = self.annotation_appearance_program_cache.get(&cache_key) {
             touch_program_cache_key(
                 &mut self.annotation_appearance_program_cache_order,
@@ -9139,7 +9285,13 @@ impl<'a> RenderState<'a> {
                 .annotation_appearance_program_cache_stats
                 .hits
                 .saturating_add(1);
-            return cached.as_ref().map(Arc::clone);
+            let program = cached.as_ref().map(Arc::clone);
+            if program.is_none() {
+                self.record_fatal_render_error(format!(
+                    "annotation appearance '{name}' has a cached invalid program"
+                ));
+            }
+            return program;
         }
         self.annotation_appearance_program_cache_stats.misses = self
             .annotation_appearance_program_cache_stats
@@ -9147,6 +9299,9 @@ impl<'a> RenderState<'a> {
             .saturating_add(1);
 
         if form_dict.get_name("Subtype") != Some("Form") {
+            self.record_fatal_render_error(format!(
+                "annotation appearance '{name}' is not /Subtype /Form"
+            ));
             self.insert_annotation_appearance_program_cache_entry(cache_key, None);
             return None;
         }
@@ -9189,13 +9344,17 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
-        let resources = form_dict
-            .get("Resources")
-            .map(|res_obj| crate::engine::parse_resources_from_obj(res_obj, reader));
-        let mut retained_resources = self.resources.clone();
-        if let Some(form_res) = resources.as_ref() {
-            overlay_page_resources(&mut retained_resources, form_res);
-        }
+        let resources = match PageResources::from_content_owner(form_dict, reader) {
+            Ok(resources) => resources,
+            Err(err) => {
+                self.record_fatal_render_error(format!(
+                    "annotation appearance '{name}' invalid /Resources: {err}"
+                ));
+                self.insert_annotation_appearance_program_cache_entry(cache_key, None);
+                return None;
+            }
+        };
+        let retained_resources = content_resource_scope(resources.as_ref(), &self.page_resources);
         let (retained_plan, retained_plan_refusal) = retained_plan_cache_fields(
             self.compile_annotation_appearance_retained_plan(&ops, &retained_resources),
         );
@@ -9986,16 +10145,55 @@ impl<'a> RenderState<'a> {
                     return;
                 }
                 self.gs.process(op);
+                if op.operator == "Tf" {
+                    let name = self.gs.text.font_name.clone();
+                    let dict = self.resources.fonts.get(&name).cloned();
+                    self.set_active_text_font(&name, self.gs.text.font_size, dict);
+                }
             }
             "d0" | "d1" => {
                 let _ = self.validate_type3_glyph_metric_op_or_fatal(op);
             }
-            "cm" | "w" | "J" | "j" | "M" | "d" | "ri" | "i" | "G" | "g" | "RG" | "rg" | "K"
-            | "k" | "CS" | "cs" | "SC" | "SCN" | "sc" | "scn" => {
+            "G" | "g" | "RG" | "rg" | "K" | "k" => {
                 if !self.validate_graphics_state_op_or_fatal(op) {
                     return;
                 }
                 self.gs.process(op);
+                let stroke = matches!(op.operator.as_str(), "G" | "RG" | "K");
+                let color = if stroke {
+                    self.gs.stroke_color.clone()
+                } else {
+                    self.gs.fill_color.clone()
+                };
+                self.set_device_paint_color(color, stroke);
+            }
+            "CS" | "cs" => {
+                if !self.validate_graphics_state_op_or_fatal(op) {
+                    return;
+                }
+                let name = op.name(0).expect("validated colour-space name");
+                let object = self.resources.color_spaces.get(name).cloned();
+                if op.operator == "CS" {
+                    self.set_active_stroke_color_space(name, object);
+                } else {
+                    self.set_active_fill_color_space(name, object);
+                }
+            }
+            "cm" | "w" | "J" | "j" | "M" | "d" | "ri" | "i" | "SC" | "SCN" | "sc" | "scn" => {
+                if !self.validate_graphics_state_op_or_fatal(op) {
+                    return;
+                }
+                self.gs.process(op);
+                if matches!(op.operator.as_str(), "scn" | "SCN") {
+                    if let Some(Operand::Name(name)) = op.operands.last() {
+                        let object = self.resources.patterns.get(name).cloned();
+                        if op.operator == "SCN" {
+                            self.set_active_stroke_pattern(name, object);
+                        } else {
+                            self.set_active_fill_pattern(name, object);
+                        }
+                    }
+                }
             }
             "sh" => {
                 if !self.validate_resource_invocation_op_or_fatal(op) {
@@ -10157,23 +10355,21 @@ impl<'a> RenderState<'a> {
     }
 
     fn fill_pixel_color(&mut self) -> PixelColor {
+        if self.is_pattern_fill() && self.gs.fill_pattern_name.is_none() {
+            return crate::render::color::RenderColor::transparent().to_pixel_color();
+        }
         let fill_color = self.gs.fill_color.clone();
         let alpha = self.gs.fill_alpha as f32;
-        let named_space = match &fill_color.space {
-            ColorSpace::Named(name) => self.current_fill_color_space_object(name),
-            _ => None,
-        };
-        self.resolve_paint_color(&fill_color, alpha, named_space.as_ref(), "fill")
+        self.resolve_paint_color(&fill_color, alpha, false, "fill")
     }
 
     fn stroke_pixel_color(&mut self) -> PixelColor {
+        if self.is_pattern_stroke() && self.gs.stroke_pattern_name.is_none() {
+            return crate::render::color::RenderColor::transparent().to_pixel_color();
+        }
         let stroke_color = self.gs.stroke_color.clone();
         let alpha = self.gs.stroke_alpha as f32;
-        let named_space = match &stroke_color.space {
-            ColorSpace::Named(name) => self.current_stroke_color_space_object(name),
-            _ => None,
-        };
-        self.resolve_paint_color(&stroke_color, alpha, named_space.as_ref(), "stroke")
+        self.resolve_paint_color(&stroke_color, alpha, true, "stroke")
     }
 
     fn record_plate_contribution(
@@ -10185,7 +10381,12 @@ impl<'a> RenderState<'a> {
         let ColorSpace::Named(name) = &color.space else {
             return;
         };
-        let Some(space_obj) = self.resources.color_spaces.get(name).cloned() else {
+        let bound = if operation.contains("stroke") {
+            self.current_stroke_color_space_object(name)
+        } else {
+            self.current_fill_color_space_object(name)
+        };
+        let Some(space_obj) = bound else {
             return;
         };
         self.record_plate_contribution_for_space_obj(
@@ -10216,16 +10417,18 @@ impl<'a> RenderState<'a> {
             alpha,
             object.clone(),
         );
-        let contributions = prepress::plate_contributions_for_color_space_with_overprint(
-            space_obj,
-            components,
-            alpha,
-            reader,
-            object,
-            operation,
-            Some(self.page_number),
-            &overprint,
-        );
+        let contributions =
+            prepress::plate_contributions_for_color_space_with_overprint_and_resources(
+                space_obj,
+                components,
+                alpha,
+                reader,
+                object,
+                operation,
+                Some(self.page_number),
+                &overprint,
+                self.function_resources(),
+            );
         self.separation_framebuffer.record_all(contributions);
     }
 
@@ -10325,10 +10528,21 @@ impl<'a> RenderState<'a> {
     }
 
     fn record_pattern_caller_plate_sample(&mut self, operation: &str) {
-        let ColorSpace::Named(name) = &self.gs.fill_color.space else {
+        let stroke = operation.contains("stroke");
+        let (color, alpha) = if stroke {
+            (self.gs.stroke_color.clone(), self.gs.stroke_alpha)
+        } else {
+            (self.gs.fill_color.clone(), self.gs.fill_alpha)
+        };
+        let ColorSpace::Named(name) = &color.space else {
             return;
         };
-        let Some(space_obj) = self.resources.color_spaces.get(name).cloned() else {
+        let bound = if stroke {
+            self.current_stroke_color_space_object(name)
+        } else {
+            self.current_fill_color_space_object(name)
+        };
+        let Some(space_obj) = bound else {
             return;
         };
         let reader = self.engine.document().reader();
@@ -10352,8 +10566,8 @@ impl<'a> RenderState<'a> {
                 };
                 self.record_plate_contribution_for_space_obj(
                     &base_obj,
-                    &self.gs.fill_color.components.clone(),
-                    self.gs.fill_alpha as f32,
+                    &color.components,
+                    alpha as f32,
                     Some(format!(
                         "page {} pattern base /{}",
                         self.page_number, base_name
@@ -10364,8 +10578,8 @@ impl<'a> RenderState<'a> {
             PdfObject::Array(_) | PdfObject::Reference { .. } => {
                 self.record_plate_contribution_for_space_obj(
                     base_space,
-                    &self.gs.fill_color.components.clone(),
-                    self.gs.fill_alpha as f32,
+                    &color.components,
+                    alpha as f32,
                     Some(format!(
                         "page {} pattern base color space",
                         self.page_number
@@ -10389,43 +10603,51 @@ impl<'a> RenderState<'a> {
         &mut self,
         color: &crate::content::state::Color,
         alpha: f32,
-        named_space_override: Option<&PdfObject>,
+        stroke: bool,
         role: &str,
     ) -> PixelColor {
         if let ColorSpace::Named(name) = &color.space {
-            if let Some(space_obj) =
-                named_space_override.or_else(|| self.resources.color_spaces.get(name))
-            {
-                let reader = self.engine.document().reader();
-                match crate::render::colorspace::resolve_named_color_with_options(
-                    space_obj,
-                    &color.components,
-                    alpha,
-                    reader,
-                    self.color_transform_options(),
-                ) {
-                    crate::render::colorspace::NamedColor::Color(rc) => return rc.to_pixel_color(),
-                    crate::render::colorspace::NamedColor::NoPaint => {
-                        return crate::render::color::RenderColor::transparent().to_pixel_color();
-                    }
-                    crate::render::colorspace::NamedColor::Invalid(reason) => {
-                        self.record_fatal_render_error(format!(
-                            "{role} color space /{name} rejected: {reason}"
-                        ));
-                        return crate::render::color::RenderColor::transparent().to_pixel_color();
-                    }
-                    crate::render::colorspace::NamedColor::Unhandled => {
-                        self.record_fatal_render_error(format!(
-                            "{role} color space /{name} is unsupported for direct paint"
-                        ));
-                        return crate::render::color::RenderColor::transparent().to_pixel_color();
+            match self.current_paint_color_binding(name, stroke) {
+                Ok(binding) => {
+                    let reader = self.engine.document().reader();
+                    match crate::render::colorspace::resolve_named_color_with_resources(
+                        binding.object.as_ref(),
+                        Some(binding.source.as_ref()),
+                        &color.components,
+                        alpha,
+                        reader,
+                        self.color_transform_options(),
+                        self.function_resources(),
+                    ) {
+                        crate::render::colorspace::NamedColor::Color(rc) => {
+                            return rc.to_pixel_color()
+                        }
+                        crate::render::colorspace::NamedColor::NoPaint => {
+                            return crate::render::color::RenderColor::transparent()
+                                .to_pixel_color();
+                        }
+                        crate::render::colorspace::NamedColor::Invalid(reason) => {
+                            self.record_fatal_render_error(format!(
+                                "{role} color space /{name} rejected: {reason}"
+                            ));
+                            return crate::render::color::RenderColor::transparent()
+                                .to_pixel_color();
+                        }
+                        crate::render::colorspace::NamedColor::Unhandled => {
+                            self.record_fatal_render_error(format!(
+                                "{role} color space /{name} is unsupported for direct paint"
+                            ));
+                            return crate::render::color::RenderColor::transparent()
+                                .to_pixel_color();
+                        }
                     }
                 }
-            } else {
-                self.record_fatal_render_error(format!(
-                    "{role} color space /{name} resource is missing"
-                ));
-                return crate::render::color::RenderColor::transparent().to_pixel_color();
+                Err(reason) => {
+                    self.record_fatal_render_error(format!(
+                        "{role} color space /{name} rejected: {reason}"
+                    ));
+                    return crate::render::color::RenderColor::transparent().to_pixel_color();
+                }
             }
         }
         match ColorSpaceHandler::strict_to_render_color(color, alpha) {
@@ -10577,7 +10799,7 @@ impl<'a> RenderState<'a> {
         let stroke_color_state = self.gs.stroke_color.clone();
         self.record_plate_contribution(&stroke_color_state, self.gs.stroke_alpha as f32, "stroke");
         if self.is_pattern_stroke() {
-            if let Some(pattern_name) = self.active_stroke_pattern_name_or_fatal() {
+            if let Some(pattern_name) = self.gs.stroke_pattern_name.clone() {
                 self.paint_pattern_stroke(&pattern_name);
             }
             self.path.clear();
@@ -10650,7 +10872,7 @@ impl<'a> RenderState<'a> {
             return;
         }
         if self.is_pattern_fill() {
-            if let Some(pattern_name) = self.active_fill_pattern_name_or_fatal() {
+            if let Some(pattern_name) = self.gs.fill_pattern_name.clone() {
                 self.paint_pattern_fill(rule, &pattern_name);
             }
             self.path.clear();
@@ -10721,11 +10943,10 @@ impl<'a> RenderState<'a> {
         let stroke_color_state = self.gs.stroke_color.clone();
         self.record_plate_contribution(&fill_color_state, self.gs.fill_alpha as f32, "fill");
         if self.is_pattern_fill() {
-            let Some(pattern_name) = self.active_fill_pattern_name_or_fatal() else {
-                self.path.clear();
-                return;
-            };
-            self.paint_pattern_fill(rule, &pattern_name);
+            if let Some(pattern_name) = self.gs.fill_pattern_name.clone() {
+                self.paint_pattern_fill(rule, &pattern_name);
+            }
+            // Initial Pattern fill is no paint; still execute the stroke.
         } else {
             if self.fill_overprint_preview_enabled() {
                 if let Some(cmyk) = device_cmyk_components(&self.gs.fill_color) {
@@ -10799,7 +11020,7 @@ impl<'a> RenderState<'a> {
         }
         self.record_plate_contribution(&stroke_color_state, self.gs.stroke_alpha as f32, "stroke");
         if self.is_pattern_stroke() {
-            if let Some(pattern_name) = self.active_stroke_pattern_name_or_fatal() {
+            if let Some(pattern_name) = self.gs.stroke_pattern_name.clone() {
                 self.paint_pattern_stroke(&pattern_name);
             }
             self.path.clear();
@@ -10884,22 +11105,6 @@ impl<'a> RenderState<'a> {
         }
     }
 
-    fn active_fill_pattern_name_or_fatal(&mut self) -> Option<String> {
-        if let Some(name) = self.gs.fill_pattern_name.clone() {
-            return Some(name);
-        }
-        self.record_fatal_render_error("pattern fill requires an active pattern name");
-        None
-    }
-
-    fn active_stroke_pattern_name_or_fatal(&mut self) -> Option<String> {
-        if let Some(name) = self.gs.stroke_pattern_name.clone() {
-            return Some(name);
-        }
-        self.record_fatal_render_error("pattern stroke requires an active pattern name");
-        None
-    }
-
     fn fill_named_space_is_pattern(&self, name: &str) -> bool {
         self.current_fill_color_space_object(name)
             .as_ref()
@@ -10921,6 +11126,18 @@ impl<'a> RenderState<'a> {
             if let Err(err) = self.gs.try_apply_ext_g_state(&dict, &label) {
                 self.record_fatal_render_error(err);
                 return;
+            }
+            if let Some(font_name) = Self::packed_ext_g_state_font_name(&dict) {
+                let Some(font) = self.resources.fonts.get(&font_name).cloned() else {
+                    self.record_fatal_render_error(format!(
+                        "ExtGState /{name} font /{font_name} is missing"
+                    ));
+                    return;
+                };
+                // Bind the selected object, not just its resource name. A Form
+                // can reuse a page's name for a different font; inherited state
+                // must remain object-bound until a new Tf or Font-bearing gs.
+                self.set_active_text_font(&font_name, self.gs.text.font_size, Some(font));
             }
             self.sync_blend_mode();
             self.apply_ext_g_state_smask(&dict);
@@ -11025,11 +11242,12 @@ impl<'a> RenderState<'a> {
             }
         };
 
-        let g_resources = if let Some(res_obj) = g_dict.get("Resources") {
-            let form_res = crate::engine::parse_resources_from_obj(res_obj, reader);
-            merge_resources(form_res, &self.resources)
-        } else {
-            self.resources.clone()
+        let g_resources = match PageResources::from_content_owner(&g_dict, reader) {
+            Ok(resources) => content_resource_scope(resources.as_ref(), &self.page_resources),
+            Err(err) => {
+                self.record_fatal_render_error(format!("SMask /G invalid /Resources: {err}"));
+                return;
+            }
         };
         let smask_group_color_space = match transparency_group_dict(&g_dict) {
             Some(group) => {
@@ -11091,6 +11309,7 @@ impl<'a> RenderState<'a> {
             is_alpha,
             reader,
             &smask_group_color_space,
+            self.function_resources(),
         ) {
             Ok(identity) => identity,
             Err(err) => {
@@ -11247,11 +11466,13 @@ impl<'a> RenderState<'a> {
         let mask_current_clip = mask_clip_dag.intern_option(mask_buf.clip_mask());
 
         let mut mask_state = RenderState {
+            function_cache: Arc::clone(&self.function_cache),
             engine: self.engine,
             page_number: self.page_number,
             buf: mask_buf,
             viewport: mask_viewport.clone(),
             resources: g_resources,
+            page_resources: Arc::clone(&self.page_resources),
             gs: mask_gs,
             initial_rendering_intent: self.initial_rendering_intent.clone(),
             clip_stack: Vec::new(),
@@ -11276,11 +11497,11 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_bytes: self.font_resolver_cache_bytes,
             font_resolver_cache_stats: RenderArtifactCacheStats::default(),
             font_resource_key_cache: self.font_resource_key_cache.clone(),
-            active_font_resource: None,
-            active_fill_color_space_resource: None,
-            active_stroke_color_space_resource: None,
-            active_fill_pattern_resource: None,
-            active_stroke_pattern_resource: None,
+            active_font_resource: self.active_font_resource.clone(),
+            active_fill_color_space_resource: self.active_fill_color_space_resource.clone(),
+            active_stroke_color_space_resource: self.active_stroke_color_space_resource.clone(),
+            active_fill_pattern_resource: self.active_fill_pattern_resource.clone(),
+            active_stroke_pattern_resource: self.active_stroke_pattern_resource.clone(),
             active_resource_stack: Vec::new(),
             type3_geometry_cache: self.type3_geometry_cache.clone(),
             type3_charproc_cache: self.type3_charproc_cache.clone(),
@@ -11473,7 +11694,7 @@ impl<'a> RenderState<'a> {
                 "backdrop:{}:",
                 "transfer:{}:",
                 "ctm:{:?}:device:{:?}:",
-                "clip:{}:{:016x}:budget:{}:{}:{}:{}:ocg:{}"
+                "clip:{}:{:016x}:budget:{}:{}:{}:{}:ocg:{}:context:{:016x}:page-resources:{:016x}"
             ),
             seed,
             self.engine.canonical_document().revision().0,
@@ -11507,7 +11728,9 @@ impl<'a> RenderState<'a> {
             self.resource_budget.max_decoded_bytes,
             self.resource_budget.max_temporary_bytes,
             self.resource_budget.max_cache_bytes,
-            self.optional_content.visibility_fingerprint()
+            self.optional_content.visibility_fingerprint(),
+            self.inherited_paint_context_fingerprint(),
+            page_resources_fingerprint(&self.page_resources)
         )
     }
 
@@ -11516,37 +11739,25 @@ impl<'a> RenderState<'a> {
         let Some(tr) = smask_dict.get("TR") else {
             return Ok(None);
         };
-        // /Identity (a name) is the explicit no-op default.
-        if let PdfObject::Name(name) = tr {
-            if name == "Identity" {
-                return Ok(None);
-            }
-        }
-        let reader = self.engine.document().reader();
-        if !crate::render::function::validate_function_shape(tr, 1, reader) {
-            return Err(WellfriendError::UnsupportedFeature(
+        let transfer = crate::render::function::PreparedTransfer::prepare_with_resources(
+            tr,
+            self.engine.document().reader(),
+            self.function_resources(),
+        )
+        .ok_or_else(|| {
+            WellfriendError::UnsupportedFeature(
                 "unsupported or malformed SMask /TR function".to_string(),
-            ));
+            )
+        })?;
+        if transfer.is_identity() {
+            return Ok(None);
         }
-        let probe = crate::render::shading::eval_function(tr, 0.5, reader);
-        if probe.is_empty() {
-            return Err(WellfriendError::UnsupportedFeature(
-                "unsupported or malformed SMask /TR function".to_string(),
-            ));
-        }
-        let mut lut = [0u8; 256];
-        for (i, slot) in lut.iter_mut().enumerate() {
-            let t = i as f64 / 255.0;
-            let out = crate::render::shading::eval_function(tr, t, reader);
-            let Some(v) = out.first().copied() else {
-                return Err(WellfriendError::UnsupportedFeature(
-                    "SMask /TR function evaluation failed".to_string(),
-                ));
-            };
-            let v = v.clamp(0.0, 1.0);
-            *slot = (v * 255.0).round().clamp(0.0, 255.0) as u8;
-        }
-        Ok(Some(lut))
+        transfer.lookup_table().map(Some).ok_or_else(|| {
+            WellfriendError::UnsupportedFeature(
+                "SMask /TR function evaluation failed or exceeded its cumulative work budget"
+                    .to_string(),
+            )
+        })
     }
 
     /// Decode and paint an inline image (BI/ID/EI). `params` are the `ID`
@@ -11609,13 +11820,23 @@ impl<'a> RenderState<'a> {
                 }
             }
         };
-        let color_space = if is_mask {
-            "DeviceGray"
+        let source_color_space = if is_mask {
+            PdfObject::Name("DeviceGray".into())
         } else {
-            match dict_name(&dict, "ColorSpace") {
-                Some(name) => name,
-                None if dict.contains_key("ColorSpace") => {
-                    self.record_fatal_render_error("inline image /ColorSpace is not a name");
+            match dict.get("ColorSpace") {
+                Some(value @ (Operand::Name(_) | Operand::Array(_))) => {
+                    let Some(object) = inline_operand_object(value) else {
+                        self.record_fatal_render_error(
+                            "inline image /ColorSpace contains invalid operands",
+                        );
+                        return;
+                    };
+                    object
+                }
+                Some(_) => {
+                    self.record_fatal_render_error(
+                        "inline image /ColorSpace is not a name or array",
+                    );
                     return;
                 }
                 None => {
@@ -11624,9 +11845,20 @@ impl<'a> RenderState<'a> {
                 }
             }
         };
+        let Some(color_space) = crate::render::default_colorspace::family(&source_color_space)
+        else {
+            self.record_fatal_render_error("inline image /ColorSpace has no family");
+            return;
+        };
         let color_space_override = if is_mask {
             None
         } else if let Some(resolved) = resolved_color_space {
+            if !matches!(source_color_space, PdfObject::Name(_)) {
+                self.record_fatal_render_error(
+                    "packed named colour-space payload does not match inline array",
+                );
+                return;
+            }
             if resolved.name != color_space {
                 self.record_fatal_render_error(format!(
                     "packed inline image color-space /{} does not match /{}",
@@ -11634,17 +11866,27 @@ impl<'a> RenderState<'a> {
                 ));
                 return;
             }
-            let family = image_color_space_family_name(
-                &resolved.object,
-                &self.resources,
-                self.engine.document().reader(),
-                0,
-            )
-            .unwrap_or_else(|| canonical_image_color_space_name(color_space));
-            Some((family, resolved.object.clone()))
+            let canonical = canonical_image_color_space_name(color_space);
+            if matches!(
+                canonical.as_str(),
+                "DeviceGray" | "DeviceRGB" | "DeviceCMYK"
+            ) {
+                self.bound_image_space(&PdfObject::Name(canonical))
+            } else {
+                self.bound_image_space(&resolved.object)
+            }
         } else {
-            self.resolved_inline_image_color_space_override(color_space)
+            match crate::render::default_colorspace::canonical_inline(&source_color_space) {
+                Ok(object) => self.bound_image_space(&object),
+                Err(reason) => {
+                    self.record_fatal_render_error(reason);
+                    return;
+                }
+            }
         };
+        if self.fatal_render_error.is_some() {
+            return;
+        }
         let decode_color_space = color_space_override
             .as_ref()
             .map(|(name, _)| name.as_str())
@@ -11656,7 +11898,7 @@ impl<'a> RenderState<'a> {
                 return;
             }
         };
-        let image_dictionary = match inline_image_pdf_dictionary(&dict) {
+        let mut image_dictionary = match inline_image_pdf_dictionary(&dict) {
             Ok(dictionary) => dictionary,
             Err(error) => {
                 self.record_fatal_render_error(format!(
@@ -11665,6 +11907,27 @@ impl<'a> RenderState<'a> {
                 return;
             }
         };
+        if !is_mask {
+            let source = crate::render::default_colorspace::canonical_inline(&source_color_space)
+                .and_then(|source| {
+                    crate::render::default_colorspace::bind_source(
+                        &source,
+                        &self.resources,
+                        self.engine.document().reader(),
+                    )
+                });
+            match source {
+                Ok(source) => {
+                    image_dictionary.insert("ColorSpace", source);
+                }
+                Err(reason) => {
+                    self.record_fatal_render_error(format!(
+                        "inline source colour domain: {reason}"
+                    ));
+                    return;
+                }
+            }
+        }
         let interpolate = match inline_optional_bool(&dict, "Interpolate", "inline image") {
             Ok(interpolate) => interpolate,
             Err(reason) => {
@@ -11679,6 +11942,15 @@ impl<'a> RenderState<'a> {
         }
 
         let filters_for_plan = filters.iter().map(|filter| (*filter).to_string()).collect();
+        let cache_space = color_space_override.as_ref().map(|(_, bound)| {
+            PdfObject::Array(vec![
+                image_dictionary
+                    .get("ColorSpace")
+                    .cloned()
+                    .unwrap_or(PdfObject::Null),
+                bound.clone(),
+            ])
+        });
         let inline_cache_key = self.inline_image_decode_cache_base_key(InlineImageCacheKeyInput {
             width,
             height,
@@ -11686,7 +11958,7 @@ impl<'a> RenderState<'a> {
             color_space: decode_color_space,
             filters: &filters,
             data,
-            color_space_object: color_space_override.as_ref().map(|(_, object)| object),
+            color_space_object: cache_space.as_ref(),
         });
         let ctm = self.ctm();
         let decode_plan = plan_image_decode_with_identity(
@@ -11771,6 +12043,7 @@ impl<'a> RenderState<'a> {
                 window,
                 raw_component_selection,
                 color_space_override.as_ref(),
+                image_dictionary.get("ColorSpace"),
             )
         } else if let Some((requested_width, requested_height)) = native_reduction_target {
             match decode_plan.capability_report.codec {
@@ -11785,6 +12058,7 @@ impl<'a> RenderState<'a> {
                         requested_width,
                         requested_height,
                         color_space_override.as_ref(),
+                        image_dictionary.get("ColorSpace"),
                     ),
                 ImageDecodeCodec::Jpx => self.scheduled_decode_inline_jpx_scaled_with_color_space(
                     data,
@@ -11929,17 +12203,20 @@ impl<'a> RenderState<'a> {
         decode_plan: &ImageDecodePlan,
         source: &str,
     ) -> bool {
-        if self.exactness_policy != ExactnessPolicy::HighQualityExact
-            || !decode_plan.requires_unavailable_exact_decode_support()
+        if self.exactness_policy == ExactnessPolicy::HighQualityExact
+            && decode_plan.requires_unavailable_exact_decode_support()
         {
-            return false;
+            let _fallback_evidence = (
+                source,
+                decode_plan.exact_decode_limitation_summary(),
+                decode_plan.capability_report.codec,
+            );
         }
-        self.record_fatal_render_error(format!(
-            "HighQualityExact render contract refuses {source}: active {:?} image path is full-decode-only but this viewport requires {} decode support",
-            decode_plan.capability_report.codec,
-            decode_plan.exact_decode_limitation_summary()
-        ));
-        true
+        // Region/reduction/component decoding are performance optimizations.
+        // A codec with only full-image decode remains semantically renderable:
+        // decode the complete source sample grid, then crop/resample through
+        // the same paint transform.  Resource budgets still bound that work.
+        false
     }
 
     fn handle_do(&mut self, name: &str) {
@@ -12113,6 +12390,9 @@ impl<'a> RenderState<'a> {
         } else {
             self.resolved_image_color_space_override(dict)
         };
+        if self.fatal_render_error.is_some() {
+            return;
+        }
         let image_ref = ImageReference {
             page_number: self.page_number,
             xobject_name: name.to_string(),
@@ -12394,45 +12674,65 @@ impl<'a> RenderState<'a> {
     }
 
     fn resolved_image_color_space_override(
-        &self,
+        &mut self,
         dict: &PdfDictionary,
     ) -> Option<(String, PdfObject)> {
         let color_space = dict.get("ColorSpace").or_else(|| dict.get("CS"))?;
-        match color_space {
-            PdfObject::Name(resource_name) => {
-                let resource_obj = self.resources.color_spaces.get(resource_name)?.clone();
-                let family = image_color_space_family_name(
-                    &resource_obj,
-                    &self.resources,
-                    self.engine.document().reader(),
-                    0,
-                )
-                .unwrap_or_else(|| canonical_image_color_space_name(resource_name));
-                Some((family, resource_obj))
+        self.bound_image_space(color_space)
+    }
+
+    fn image_source_color_space(&self, image: &ImageReference) -> Result<Option<PdfObject>> {
+        let reader = self.engine.document().reader();
+        let object = reader.get_object(image.object_number, image.generation_number)?;
+        let PdfObject::Stream { dict, .. } = object else {
+            return Err(WellfriendError::MalformedPdf(
+                "image source is not a stream".into(),
+            ));
+        };
+        dict.get("ColorSpace")
+            .or_else(|| dict.get("CS"))
+            .map(|space| {
+                crate::render::default_colorspace::bind_source(space, &self.resources, reader)
+                    .map_err(WellfriendError::MalformedPdf)
+            })
+            .transpose()
+    }
+
+    fn bound_image_space(&mut self, object: &PdfObject) -> Option<(String, PdfObject)> {
+        match crate::render::default_colorspace::bind(
+            object,
+            &self.resources,
+            self.engine.document().reader(),
+        ) {
+            Ok(bound) => {
+                let Some(family) = crate::render::default_colorspace::family(&bound) else {
+                    self.record_fatal_render_error("image colour space has no family");
+                    return None;
+                };
+                Some((family.to_owned(), bound))
             }
-            PdfObject::Reference { .. } => {
-                let resource_obj = self
-                    .engine
-                    .document()
-                    .reader()
-                    .resolve(color_space.clone())
-                    .ok()?;
-                let family = image_color_space_family_name(
-                    &resource_obj,
-                    &self.resources,
-                    self.engine.document().reader(),
-                    0,
-                )?;
-                Some((family, resource_obj))
+            Err(reason) => {
+                let message = match object.as_name() {
+                    Some(name)
+                        if !matches!(
+                            name,
+                            "DeviceGray" | "DeviceRGB" | "DeviceCMYK" | "Pattern"
+                        ) && !self.resources.color_spaces.contains_key(name) =>
+                    {
+                        format!("unsupported image ColorSpace /{name}: {reason}")
+                    }
+                    _ => format!("image colour-space binding: {reason}"),
+                };
+                self.record_fatal_render_error(message);
+                None
             }
-            _ => None,
         }
     }
 
     fn resolved_image_color_space_override_from_payload(
         &mut self,
         dict: &PdfDictionary,
-        decoded_color_space: &str,
+        _decoded_color_space: &str,
         resolved: &ResolvedInlineImageColorSpace,
     ) -> Option<(String, PdfObject)> {
         let Some(PdfObject::Name(resource_name)) =
@@ -12450,29 +12750,14 @@ impl<'a> RenderState<'a> {
             ));
             return None;
         }
-        let family = image_color_space_family_name(
-            &resolved.object,
-            &self.resources,
-            self.engine.document().reader(),
-            0,
-        )
-        .unwrap_or_else(|| canonical_image_color_space_name(decoded_color_space));
-        Some((family, resolved.object.clone()))
-    }
-
-    fn resolved_inline_image_color_space_override(
-        &self,
-        resource_name: &str,
-    ) -> Option<(String, PdfObject)> {
-        let resource_obj = self.resources.color_spaces.get(resource_name)?.clone();
-        let family = image_color_space_family_name(
-            &resource_obj,
-            &self.resources,
-            self.engine.document().reader(),
-            0,
-        )
-        .unwrap_or_else(|| canonical_image_color_space_name(resource_name));
-        Some((family, resource_obj))
+        if matches!(
+            resource_name.as_str(),
+            "DeviceGray" | "DeviceRGB" | "DeviceCMYK"
+        ) {
+            self.bound_image_space(&PdfObject::Name(resource_name.clone()))
+        } else {
+            self.bound_image_space(&resolved.object)
+        }
     }
 
     fn handle_do_form(
@@ -12550,8 +12835,8 @@ impl<'a> RenderState<'a> {
 
         // â”€â”€ Step 5: Clip to the BBox (intersected with any existing clip) â”€â”€â”€â”€
 
-        // â”€â”€ Step 6: Merge the Form's own resources over the page resources â”€â”€â”€
-        // No /Resources: keep using the inherited (page) resources already set.
+        // Step 6: use the Form's complete resource namespace. Legacy omitted
+        // resources select the original page namespace, never the caller Form.
 
         // â”€â”€ Step 7: Decode and parse the content stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Render the cached Form XObject program; stream decode and content parsing happen once per object revision.
@@ -12565,11 +12850,7 @@ impl<'a> RenderState<'a> {
         let bbox = program.bbox;
         let form_resources = program.resources.as_ref();
         let retained_plan = program.retained_plan.as_deref();
-        let group_resources = if let Some(form_res) = form_resources {
-            merge_resources_ref(form_res, &self.resources)
-        } else {
-            self.resources.clone()
-        };
+        let group_resources = content_resource_scope(form_resources, &self.page_resources);
         // Group flags: /I (isolated) and /K (knockout), both default false.
         let (isolated, knockout, group_color_space) = match transparency_group_dict(form_dict) {
             Some(group) => {
@@ -12752,11 +13033,13 @@ impl<'a> RenderState<'a> {
         let group_current_clip = group_clip_dag.intern_option(group_buf.clip_mask());
 
         let mut group_state = RenderState {
+            function_cache: Arc::clone(&self.function_cache),
             engine: self.engine,
             page_number: self.page_number,
             buf: group_buf,
             viewport: group_viewport.clone(),
             resources: group_resources,
+            page_resources: Arc::clone(&self.page_resources),
             gs: group_gs,
             initial_rendering_intent: self.initial_rendering_intent.clone(),
             clip_stack: Vec::new(),
@@ -12781,11 +13064,11 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_bytes: self.font_resolver_cache_bytes,
             font_resolver_cache_stats: RenderArtifactCacheStats::default(),
             font_resource_key_cache: self.font_resource_key_cache.clone(),
-            active_font_resource: None,
-            active_fill_color_space_resource: None,
-            active_stroke_color_space_resource: None,
-            active_fill_pattern_resource: None,
-            active_stroke_pattern_resource: None,
+            active_font_resource: self.active_font_resource.clone(),
+            active_fill_color_space_resource: self.active_fill_color_space_resource.clone(),
+            active_stroke_color_space_resource: self.active_stroke_color_space_resource.clone(),
+            active_fill_pattern_resource: self.active_fill_pattern_resource.clone(),
+            active_stroke_pattern_resource: self.active_stroke_pattern_resource.clone(),
             active_resource_stack: Vec::new(),
             type3_geometry_cache: self.type3_geometry_cache.clone(),
             type3_charproc_cache: self.type3_charproc_cache.clone(),
@@ -13135,7 +13418,9 @@ impl<'a> RenderState<'a> {
             self.record_fatal_render_error(format!("annotation appearance '{name}' missing /BBox"));
             return;
         };
-        let Some(placement) = annotation_appearance_ctm(rect, bbox) else {
+        let Some(placement) =
+            crate::annotation_appearance::placement(rect, bbox, program.form_matrix)
+        else {
             return;
         };
 
@@ -13203,10 +13488,10 @@ impl<'a> RenderState<'a> {
             self.apply_form_bbox_clip(bb);
         }
 
-        let resource_overlay = program
-            .resources
-            .as_ref()
-            .map(|form_res| overlay_page_resources(&mut self.resources, form_res));
+        let saved_resources = std::mem::replace(
+            &mut self.resources,
+            content_resource_scope(program.resources.as_ref(), &self.page_resources),
+        );
 
         log::trace!("PageRenderer: replay cached Form program '{}'", name);
         if let Some(plan) = program.retained_plan.as_ref() {
@@ -13240,9 +13525,7 @@ impl<'a> RenderState<'a> {
                 retained_plan_refusal_reason(&program.retained_plan_refusal)
             ));
         }
-        if let Some(restore) = resource_overlay {
-            restore.restore(&mut self.resources);
-        }
+        self.resources = saved_resources;
         self.cleanup_after_form(saved_gs, saved_base_ctm);
         self.active_font_resource = saved_active_font_resource;
         self.active_fill_color_space_resource = saved_active_fill_color_space_resource;
@@ -13299,7 +13582,28 @@ impl<'a> RenderState<'a> {
             ));
             return;
         };
-        let shading_dict = self.shading_dict_with_resolved_color_space(shading_dict);
+        let (shading_dict, source_color_space) =
+            match self.shading_dict_with_resolved_color_space(shading_dict) {
+                Ok(bound) => bound,
+                Err(reason) => {
+                    self.record_fatal_render_error(format!("shading resource /{name} {reason}"));
+                    return;
+                }
+            };
+        let shading_memory = Arc::clone(&self.temporary_scheduler.budget);
+        let shading_functions = Arc::clone(&self.function_cache);
+        let shading_options = ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance())
+            .with_color_context(Some(&source_color_space), self.color_transform_options())
+            .with_memory_budget(&shading_memory)
+            .with_working_byte_limit(budget_to_usize(self.resource_budget.max_temporary_bytes))
+            .with_function_graph_byte_limit(budget_to_usize(
+                self.resource_budget.max_temporary_bytes,
+            ))
+            .with_function_stream_byte_limit(budget_to_usize(
+                self.resource_budget.max_decoded_bytes,
+            ))
+            .with_function_cache(shading_functions.as_ref())
+            .with_opacity(self.gs.fill_alpha as f32);
         let oc_label = format!("shading resource /{name}");
         if !self.object_optional_content_visible_or_record(shading_dict.get("OC"), &oc_label) {
             return;
@@ -13310,9 +13614,12 @@ impl<'a> RenderState<'a> {
             "shading_resource",
         );
         let shading_label = format!("shading resource /{name}");
-        if let Err(reason) =
-            validate_shading_dictionary_for_paint(&shading_dict, &shading_label, reader)
-        {
+        if let Err(reason) = validate_shading_dictionary_for_paint_with_options(
+            &shading_dict,
+            &shading_label,
+            reader,
+            shading_options,
+        ) {
             self.record_fatal_render_error(reason);
             return;
         }
@@ -13331,7 +13638,7 @@ impl<'a> RenderState<'a> {
             &mut self.buf,
             reader,
             mesh_data.as_deref().map(Vec::as_slice),
-            ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance()),
+            shading_options,
             &self.cancel,
             &self.shading_work_budget,
         ) {
@@ -13357,6 +13664,14 @@ impl<'a> RenderState<'a> {
             ));
             return;
         };
+        let pattern_dict =
+            match crate::render::parameter_dictionary::pattern(&pattern_dict, Some(reader)) {
+                Ok(dict) => dict.into_owned(),
+                Err(reason) => {
+                    self.record_fatal_render_error(reason);
+                    return;
+                }
+            };
         let oc_label = format!("pattern fill resource /{pattern_name}");
         if !self.object_optional_content_visible_or_record(pattern_dict.get("OC"), &oc_label) {
             return;
@@ -13398,6 +13713,14 @@ impl<'a> RenderState<'a> {
             ));
             return;
         };
+        let pattern_dict =
+            match crate::render::parameter_dictionary::pattern(&pattern_dict, Some(reader)) {
+                Ok(dict) => dict.into_owned(),
+                Err(reason) => {
+                    self.record_fatal_render_error(reason);
+                    return;
+                }
+            };
         let oc_label = format!("pattern stroke resource /{pattern_name}");
         if !self.object_optional_content_visible_or_record(pattern_dict.get("OC"), &oc_label) {
             return;
@@ -13462,6 +13785,13 @@ impl<'a> RenderState<'a> {
                 return;
             }
         };
+        let pat_dict = match crate::render::parameter_dictionary::pattern(&pat_dict, Some(reader)) {
+            Ok(dict) => dict.into_owned(),
+            Err(reason) => {
+                self.record_fatal_render_error(reason);
+                return;
+            }
+        };
         let bbox = match required_tiling_pattern_float_array_exact(&pat_dict, "BBox") {
             Ok(bbox) => bbox,
             Err(message) => {
@@ -13522,11 +13852,17 @@ impl<'a> RenderState<'a> {
             return;
         }
 
-        let pat_resources = if let Some(res_obj) = pat_dict.get("Resources") {
-            let pr = crate::engine::parse_resources_from_obj(res_obj, reader);
-            merge_resources(pr, &self.resources)
-        } else {
-            self.resources.clone()
+        let pat_resources = match PageResources::from_content_owner(&pat_dict, reader) {
+            Ok(Some(resources)) => resources,
+            // Unlike legacy Forms, patterns require their own dictionary.
+            Ok(None) => {
+                self.record_fatal_render_error("tiling pattern missing /Resources dictionary");
+                return;
+            }
+            Err(err) => {
+                self.record_fatal_render_error(format!("tiling pattern invalid /Resources: {err}"));
+                return;
+            }
         };
         let raw_hash = fingerprint_bytes64(&raw_bytes);
         let resource_hash = page_resources_fingerprint(&pat_resources);
@@ -13616,18 +13952,27 @@ impl<'a> RenderState<'a> {
             return;
         };
 
-        // For PaintType 2 (uncolored), the tile is painted in the current fill
-        // color; the tile's own content stream must not set color. The fill
-        // color space is the special Pattern space, so reconstruct the concrete
-        // color from the numeric components recorded by `scn` (by component
-        // count: 1 -> gray, 3 -> RGB, 4 -> CMYK).
+        // Bind the actual underlying space. Component count is not a colour
+        // space: one component may be CalGray/Separation, not DeviceGray.
         let forced_color = if paint_type == 2 {
             let color = if use_stroke_color {
                 &self.gs.stroke_color
             } else {
                 &self.gs.fill_color
             };
-            match uncolored_pattern_color(color) {
+            let bound = match &color.space {
+                ColorSpace::Named(name) => {
+                    match self.current_paint_color_binding(name, use_stroke_color) {
+                        Ok(binding) => Some(binding),
+                        Err(reason) => {
+                            self.record_fatal_render_error(reason);
+                            return;
+                        }
+                    }
+                }
+                _ => None,
+            };
+            match uncolored_pattern_color(color, bound.as_ref()) {
                 Ok(color) => Some(color),
                 Err(reason) => {
                     self.record_fatal_render_error(reason);
@@ -13673,7 +14018,11 @@ impl<'a> RenderState<'a> {
         program: &TilingPatternProgram,
         tile_ctm: Transform2D,
         bbox: [f64; 4],
-        forced_color: Option<&(ColorSpace, crate::content::state::Color)>,
+        forced_color: Option<&(
+            ColorSpace,
+            crate::content::state::Color,
+            ActiveColorSpaceResource,
+        )>,
     ) {
         let saved_gs = self.gs.clone();
         let saved_resources = self.resources.clone();
@@ -13691,11 +14040,17 @@ impl<'a> RenderState<'a> {
         self.gs.ctm = tile_ctm.to_array();
         self.base_ctm = tile_ctm;
         self.resources = program.resources.clone();
-        if let Some((space, color)) = forced_color {
+        if let Some((space, color, binding)) = forced_color {
             self.gs.fill_color_space = space.clone();
             self.gs.fill_color = color.clone();
             self.gs.stroke_color_space = space.clone();
             self.gs.stroke_color = color.clone();
+            self.active_fill_color_space_resource = Some(binding.clone());
+            self.active_stroke_color_space_resource = Some(binding.clone());
+            self.gs.fill_pattern_name = None;
+            self.gs.stroke_pattern_name = None;
+            self.active_fill_pattern_resource = None;
+            self.active_stroke_pattern_resource = None;
         }
 
         // Intersect the tile BBox so tile content cannot bleed past one cell.
@@ -13723,7 +14078,7 @@ impl<'a> RenderState<'a> {
 
         if let Some(plan) = program.retained_plan.as_ref() {
             let viewport = self.viewport.clone();
-            let forced_vector_color = forced_color.map(|(_, color)| color.clone());
+            let forced_vector_color = forced_color.map(|(_, color, _)| color.clone());
             let mut adapter = RenderStatePlanAdapter {
                 state: self,
                 viewport_ref: &viewport,
@@ -13771,20 +14126,29 @@ impl<'a> RenderState<'a> {
         let path_ctm = self.ctm();
         let flat = flatten_path(&self.path, &path_ctm, &self.viewport, 0.5);
         let path_clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
-        self.paint_shading_pattern_with_device_clip(pattern_dict, path_clip);
+        self.paint_shading_pattern_with_device_clip(
+            pattern_dict,
+            path_clip,
+            self.gs.fill_alpha as f32,
+        );
     }
 
     fn paint_shading_pattern_stroke(&mut self, pattern_dict: &PdfDictionary) {
         let Some((path_clip, _outline)) = self.stroke_device_clip() else {
             return;
         };
-        self.paint_shading_pattern_with_device_clip(pattern_dict, path_clip);
+        self.paint_shading_pattern_with_device_clip(
+            pattern_dict,
+            path_clip,
+            self.gs.stroke_alpha as f32,
+        );
     }
 
     fn paint_shading_pattern_with_device_clip(
         &mut self,
         pattern_dict: &PdfDictionary,
         path_clip: ClipMask,
+        opacity: f32,
     ) {
         let reader = self.engine.document().reader();
         let shading_obj = match pattern_dict.get("Shading") {
@@ -13800,7 +14164,29 @@ impl<'a> RenderState<'a> {
             );
             return;
         };
-        let shading_dict = self.shading_dict_with_resolved_color_space(shading_dict);
+        let (shading_dict, source_color_space) =
+            match self.shading_dict_with_resolved_color_space(shading_dict) {
+                Ok(bound) => bound,
+                Err(reason) => {
+                    self.record_fatal_render_error(format!("shading pattern /Shading {reason}"));
+                    return;
+                }
+            };
+        let shading_memory = Arc::clone(&self.temporary_scheduler.budget);
+        let shading_functions = Arc::clone(&self.function_cache);
+        let shading_options = ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance())
+            .with_color_context(Some(&source_color_space), self.color_transform_options())
+            .with_memory_budget(&shading_memory)
+            .with_working_byte_limit(budget_to_usize(self.resource_budget.max_temporary_bytes))
+            .with_function_graph_byte_limit(budget_to_usize(
+                self.resource_budget.max_temporary_bytes,
+            ))
+            .with_function_stream_byte_limit(budget_to_usize(
+                self.resource_budget.max_decoded_bytes,
+            ))
+            .with_function_cache(shading_functions.as_ref())
+            .with_opacity(opacity)
+            .for_pattern();
         self.record_shading_plate_sample(
             &shading_dict,
             format!("page {} shading pattern", self.page_number),
@@ -13812,9 +14198,12 @@ impl<'a> RenderState<'a> {
         // 32000-1 Â§8.7.3.1 the pattern matrix is relative to that *base* CTM, not
         // the CTM in effect at the moment of the fill, so combine it with
         // `base_ctm` (matching the tiling-pattern path).
-        if let Err(reason) =
-            validate_shading_dictionary_for_paint(&shading_dict, "shading pattern /Shading", reader)
-        {
+        if let Err(reason) = validate_shading_dictionary_for_paint_with_options(
+            &shading_dict,
+            "shading pattern /Shading",
+            reader,
+            shading_options,
+        ) {
             self.record_fatal_render_error(reason);
             return;
         }
@@ -13845,7 +14234,7 @@ impl<'a> RenderState<'a> {
             &mut self.buf,
             reader,
             mesh_data.as_deref().map(Vec::as_slice),
-            ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance()),
+            shading_options,
             &self.cancel,
             &self.shading_work_budget,
         ) {
@@ -13858,19 +14247,29 @@ impl<'a> RenderState<'a> {
 
     fn shading_dict_with_resolved_color_space(
         &self,
-        mut shading_dict: PdfDictionary,
-    ) -> PdfDictionary {
-        let Some(PdfObject::Name(resource_name)) = shading_dict
+        shading_dict: PdfDictionary,
+    ) -> std::result::Result<(PdfDictionary, PdfObject), String> {
+        let reader = self.engine.document().reader();
+        let mut shading_dict =
+            crate::render::parameter_dictionary::shading(&shading_dict, Some(reader))?.into_owned();
+        let original = shading_dict
             .get("ColorSpace")
             .or_else(|| shading_dict.get("CS"))
-        else {
-            return shading_dict;
-        };
-        let Some(resource_obj) = self.resources.color_spaces.get(resource_name).cloned() else {
-            return shading_dict;
-        };
-        shading_dict.insert("ColorSpace", resource_obj);
-        shading_dict
+            .ok_or("shading missing required /ColorSpace")?;
+        if let PdfObject::Name(name) = original {
+            if !matches!(name.as_str(), "DeviceGray" | "DeviceRGB" | "DeviceCMYK")
+                && !self.resources.color_spaces.contains_key(name)
+            {
+                return Err(format!("has unsupported ColorSpace /{name}"));
+            }
+        }
+        let source =
+            crate::render::default_colorspace::bind_source(original, &self.resources, reader)
+                .map_err(|reason| format!("shading source colour-space binding: {reason}"))?;
+        let target = crate::render::default_colorspace::bind(original, &self.resources, reader)
+            .map_err(|reason| format!("shading target colour-space binding: {reason}"))?;
+        shading_dict.insert("ColorSpace", target);
+        Ok((shading_dict, source))
     }
 
     fn stroke_device_clip(&self) -> Option<(ClipMask, FlatPath)> {
@@ -14387,16 +14786,14 @@ impl<'a> RenderState<'a> {
             }
         }
         if let Some(font_dict) = self.resources.fonts.get(font_name) {
-            let lookup = (
-                font_name.to_string(),
-                font_dict as *const PdfDictionary as usize,
-            );
-            if let Some(cached) = self.font_resource_key_cache.get(&lookup) {
-                return (Some(font_dict.clone()), cached.clone());
+            if let Some((cached_dict, cached_key)) = self.font_resource_key_cache.get(font_name) {
+                if cached_dict == font_dict {
+                    return (Some(font_dict.clone()), cached_key.clone());
+                }
             }
             let computed = self.font_resource_cache_key_for_contract(font_name, font_dict);
             self.font_resource_key_cache
-                .insert(lookup, computed.clone());
+                .insert(font_name.to_string(), (font_dict.clone(), computed.clone()));
             return (Some(font_dict.clone()), computed);
         }
         (None, format!("{font_name}:missing"))
@@ -14416,37 +14813,129 @@ impl<'a> RenderState<'a> {
     }
 
     fn set_active_fill_color_space(&mut self, name: &str, object: Option<PdfObject>) {
-        let cs = color_space_from_name(name);
-        self.gs.fill_color = default_color_for(&cs);
-        if !color_space_name_or_object_is_pattern(name, object.as_ref()) {
-            self.gs.fill_pattern_name = None;
-            self.active_fill_pattern_resource = None;
-        }
+        let Some((cs, object, components)) = self.bound_paint_space(name, object) else {
+            return;
+        };
+        self.gs.fill_color = Color {
+            space: cs.clone(),
+            components,
+        };
+        self.gs.fill_pattern_name = None;
+        self.active_fill_pattern_resource = None;
         self.gs.fill_color_space = cs;
-        self.active_fill_color_space_resource = object.map(|object| ActiveColorSpaceResource {
-            name: name.to_string(),
-            object,
-        });
+        self.active_fill_color_space_resource = object;
     }
 
     fn set_active_stroke_color_space(&mut self, name: &str, object: Option<PdfObject>) {
-        let cs = color_space_from_name(name);
-        self.gs.stroke_color = default_color_for(&cs);
-        if !color_space_name_or_object_is_pattern(name, object.as_ref()) {
-            self.gs.stroke_pattern_name = None;
-            self.active_stroke_pattern_resource = None;
-        }
+        let Some((cs, object, components)) = self.bound_paint_space(name, object) else {
+            return;
+        };
+        self.gs.stroke_color = Color {
+            space: cs.clone(),
+            components,
+        };
+        self.gs.stroke_pattern_name = None;
+        self.active_stroke_pattern_resource = None;
         self.gs.stroke_color_space = cs;
-        self.active_stroke_color_space_resource = object.map(|object| ActiveColorSpaceResource {
-            name: name.to_string(),
-            object,
+        self.active_stroke_color_space_resource = object;
+    }
+
+    fn bound_paint_space(
+        &mut self,
+        name: &str,
+        object: Option<PdfObject>,
+    ) -> Option<(ColorSpace, Option<ActiveColorSpaceResource>, Vec<f64>)> {
+        use crate::render::default_colorspace as defaults;
+        let intrinsic = matches!(name, "DeviceGray" | "DeviceRGB" | "DeviceCMYK" | "Pattern");
+        let source = if intrinsic {
+            PdfObject::Name(name.into())
+        } else {
+            object.unwrap_or_else(|| PdfObject::Name(name.into()))
+        };
+        let reader = self.engine.document().reader();
+        let bound = defaults::bind(&source, &self.resources, reader).and_then(|object| {
+            let original = defaults::bind_source(&source, &self.resources, reader)?;
+            defaults::initial_components(&source, &self.resources, reader)
+                .map(|components| (object, original, components))
         });
+        match bound {
+            Ok((object, source, components)) => {
+                let cs = color_space_from_name(name);
+                if intrinsic && name != "Pattern" && object == PdfObject::Name(name.into()) {
+                    Some((cs, None, components))
+                } else {
+                    Some((
+                        ColorSpace::Named(name.into()),
+                        Some(ActiveColorSpaceResource {
+                            name: name.into(),
+                            object: Arc::new(object),
+                            source: Arc::new(source),
+                        }),
+                        components,
+                    ))
+                }
+            }
+            Err(reason) => {
+                self.record_fatal_render_error(format!("colour-space /{name}: {reason}"));
+                None
+            }
+        }
+    }
+
+    fn set_device_paint_color(&mut self, color: Color, stroke: bool) {
+        let name = match color.space {
+            ColorSpace::DeviceGray => "DeviceGray",
+            ColorSpace::DeviceRGB => "DeviceRGB",
+            ColorSpace::DeviceCMYK => "DeviceCMYK",
+            _ => return,
+        };
+        if stroke {
+            self.set_active_stroke_color_space(name, None);
+            self.gs.stroke_color.components = color.components;
+        } else {
+            self.set_active_fill_color_space(name, None);
+            self.gs.fill_color.components = color.components;
+        }
+    }
+
+    fn current_paint_color_binding(
+        &self,
+        name: &str,
+        stroke: bool,
+    ) -> std::result::Result<ActiveColorSpaceResource, String> {
+        let active = if stroke {
+            self.active_stroke_color_space_resource.as_ref()
+        } else {
+            self.active_fill_color_space_resource.as_ref()
+        };
+        if let Some(active) = active.filter(|active| active.name == name) {
+            return Ok(active.clone());
+        }
+        let original = self
+            .resources
+            .color_spaces
+            .get(name)
+            .ok_or_else(|| format!("colour-space resource /{name} is missing"))?;
+        let reader = self.engine.document().reader();
+        Ok(ActiveColorSpaceResource {
+            name: name.into(),
+            object: Arc::new(crate::render::default_colorspace::bind(
+                original,
+                &self.resources,
+                reader,
+            )?),
+            source: Arc::new(crate::render::default_colorspace::bind_source(
+                original,
+                &self.resources,
+                reader,
+            )?),
+        })
     }
 
     fn current_fill_color_space_object(&self, name: &str) -> Option<PdfObject> {
         if let Some(active) = self.active_fill_color_space_resource.as_ref() {
             if active.name == name {
-                return Some(active.object.clone());
+                return Some(active.object.as_ref().clone());
             }
         }
         self.resources.color_spaces.get(name).cloned()
@@ -14455,7 +14944,7 @@ impl<'a> RenderState<'a> {
     fn current_stroke_color_space_object(&self, name: &str) -> Option<PdfObject> {
         if let Some(active) = self.active_stroke_color_space_resource.as_ref() {
             if active.name == name {
-                return Some(active.object.clone());
+                return Some(active.object.as_ref().clone());
             }
         }
         self.resources.color_spaces.get(name).cloned()
@@ -15060,6 +15549,25 @@ impl<'a> RenderState<'a> {
         let needs_clip = text_rendering_mode_clips(text_mode);
         let paints = text_rendering_mode_paints(text_mode);
         let geometry = self.cached_type3_glyph_geometry(font_name, font_dict, glyph_name);
+        let geometry_needs_bound_colour = if geometry.as_ref().is_some_and(|g| g._uses_color_state)
+        {
+            if let Some(charproc) = self.cached_type3_charproc(font_name, font_dict, glyph_name) {
+                match self.type3_charproc_resources(font_dict, &charproc) {
+                    Ok(resources) => crate::render::default_colorspace::has_defaults(&resources),
+                    Err(error) => {
+                        self.record_fatal_render_error(error.to_string());
+                        return None;
+                    }
+                }
+            } else {
+                self.record_fatal_render_error(
+                    "Type 3 colour scope requires a readable character procedure",
+                );
+                return None;
+            }
+        } else {
+            false
+        };
         if needs_clip && geometry.is_none() {
             log::debug!(
                 "PageRenderer: Type3 text clipping requested but charproc '{}' did not yield supported path geometry",
@@ -15070,7 +15578,7 @@ impl<'a> RenderState<'a> {
         }
 
         if paints {
-            if let Some(geometry) = geometry.as_ref() {
+            if let Some(geometry) = geometry.as_ref().filter(|_| !geometry_needs_bound_colour) {
                 let glyph_ctm = self.type3_glyph_ctm(font_dict)?;
                 if needs_clip {
                     self.accumulate_type3_text_clip(geometry.as_ref(), &glyph_ctm);
@@ -15086,6 +15594,12 @@ impl<'a> RenderState<'a> {
                     glyph_name,
                     charproc.as_ref(),
                 ) {
+                    if needs_clip {
+                        if let Some(geometry) = geometry.as_ref() {
+                            let glyph_ctm = self.type3_glyph_ctm(font_dict)?;
+                            self.accumulate_type3_text_clip(geometry, &glyph_ctm);
+                        }
+                    }
                     return charproc.advance_width.or(glyph.width);
                 }
                 if self.render_type3_charproc_full(
@@ -15094,15 +15608,23 @@ impl<'a> RenderState<'a> {
                     glyph_name,
                     charproc.as_ref(),
                 ) {
-                    if let Some(geometry) = geometry.as_ref() {
-                        let glyph_ctm = self.type3_glyph_ctm(font_dict)?;
-                        self.accumulate_type3_text_clip(geometry.as_ref(), &glyph_ctm);
+                    if needs_clip {
+                        if let Some(geometry) = geometry.as_ref() {
+                            let glyph_ctm = self.type3_glyph_ctm(font_dict)?;
+                            self.accumulate_type3_text_clip(geometry.as_ref(), &glyph_ctm);
+                        }
                     }
                     return charproc.advance_width.or(glyph.width);
                 }
             }
         }
 
+        if paints && geometry_needs_bound_colour {
+            self.record_fatal_render_error(
+                "Type 3 default-colour replay failed; refusing uncalibrated geometry fallback",
+            );
+            return None;
+        }
         let geometry = match geometry {
             Some(geometry) => geometry,
             None => {
@@ -15120,7 +15642,7 @@ impl<'a> RenderState<'a> {
         if needs_clip {
             self.accumulate_type3_text_clip(geometry.as_ref(), &glyph_ctm);
         }
-        if paints {
+        if paints && !geometry_needs_bound_colour {
             self.paint_type3_geometry(geometry.as_ref(), &glyph_ctm);
         }
         geometry.advance_width
@@ -15178,6 +15700,13 @@ impl<'a> RenderState<'a> {
             resolve_type3_charproc_object(font_dict, glyph_name, reader).ok_or_else(|| {
                 format!("Type 3 CharProc /{glyph_name} could not be resolved from /CharProcs")
             })?;
+        let resources = match &stream_obj {
+            PdfObject::Stream { dict, .. } => PageResources::from_content_owner(dict, reader)
+                .map_err(|err| {
+                    format!("Type 3 CharProc /{glyph_name} invalid /Resources: {err}")
+                })?,
+            _ => return Err(format!("Type 3 CharProc /{glyph_name} is not a stream")),
+        };
         let content = self
             .scheduled_decode_stream(
                 &stream_obj,
@@ -15206,6 +15735,7 @@ impl<'a> RenderState<'a> {
             ops,
             advance_width,
             glyph_bbox,
+            resources,
         })
     }
 
@@ -15267,14 +15797,13 @@ impl<'a> RenderState<'a> {
             return false;
         }
 
-        let reader = self.engine.document().reader();
-        let type3_resources = font_dict
-            .get("Resources")
-            .map(|res_obj| {
-                let font_res = crate::engine::parse_resources_from_obj(res_obj, reader);
-                merge_resources(font_res, &self.resources)
-            })
-            .unwrap_or_else(|| self.resources.clone());
+        let type3_resources = match self.type3_charproc_resources(font_dict, charproc) {
+            Ok(resources) => resources,
+            Err(err) => {
+                self.record_fatal_render_error(format!("Type 3 invalid /Resources: {err}"));
+                return false;
+            }
+        };
 
         let saved_gs = self.gs.clone();
         let saved_resources = self.resources.clone();
@@ -15394,6 +15923,24 @@ impl<'a> RenderState<'a> {
         rendered && !self.cancel.is_cancelled() && self.fatal_render_error.is_none()
     }
 
+    fn type3_charproc_resources(
+        &self,
+        font_dict: &PdfDictionary,
+        charproc: &Type3CharProc,
+    ) -> Result<PageResources> {
+        // ISO 32000-2 7.8.3: first explicit scope wins, without merging.
+        // A glyph stream can override the font's scope, including with <<>>.
+        if let Some(resources) = &charproc.resources {
+            return Ok(resources.clone());
+        }
+        let resources =
+            PageResources::from_content_owner(font_dict, self.engine.document().reader())?;
+        Ok(content_resource_scope(
+            resources.as_ref(),
+            &self.page_resources,
+        ))
+    }
+
     fn compile_type3_resource_charproc_retained_plan(
         &self,
         charproc: &Type3CharProc,
@@ -15482,6 +16029,67 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    fn inherited_paint_context_fingerprint(&self) -> u64 {
+        let mut active_hash = 0xcbf29ce484222325;
+        fnv1a_update(
+            &mut active_hash,
+            &[u8::from(self.active_font_resource.is_some())],
+        );
+        if let Some(font) = &self.active_font_resource {
+            hash_pdf_dictionary(&mut active_hash, &font.dict, 0);
+        }
+        for space in [
+            &self.active_fill_color_space_resource,
+            &self.active_stroke_color_space_resource,
+        ] {
+            if let Some(space) = space {
+                hash_pdf_object(&mut active_hash, &space.object, 0);
+                fnv1a_update(&mut active_hash, b"original-colour-graph");
+                hash_pdf_object(&mut active_hash, &space.source, 0);
+            }
+            fnv1a_update(&mut active_hash, &[u8::from(space.is_some())]);
+        }
+        for pattern in [
+            &self.active_fill_pattern_resource,
+            &self.active_stroke_pattern_resource,
+        ] {
+            if let Some(pattern) = pattern {
+                hash_pdf_object(&mut active_hash, &pattern.object, 0);
+            }
+            fnv1a_update(&mut active_hash, &[u8::from(pattern.is_some())]);
+        }
+        fnv1a_update(&mut active_hash, format!("{:?}", self.gs).as_bytes());
+        active_hash
+    }
+
+    fn type3_rendered_program_cache_key(
+        &self,
+        font_name: &str,
+        font_dict: &PdfDictionary,
+        glyph_name: &str,
+        charproc: &Type3CharProc,
+    ) -> Result<String> {
+        let resources = self.type3_charproc_resources(font_dict, charproc)?;
+        // A glyph program can invoke resources, inherit selected objects and
+        // contain position-dependent paints. Its raster is not identified by
+        // glyph/font/scale alone. Keep position in the context until a program
+        // has a proven translation-invariant dependency analysis.
+        let context_hash = self.inherited_paint_context_fingerprint();
+        Ok(format!(
+            "{}:page:{}:resources:{:016x}:page-resources:{:016x}:context:{context_hash:016x}:contract:{}:ocg:{}:viewport:{:?}:surface:{}:{}:base:{:?}",
+            self.type3_charproc_cache_key_for_render(font_name, font_dict, glyph_name),
+            self.page_number,
+            page_resources_fingerprint(&resources),
+            page_resources_fingerprint(&self.page_resources),
+            self.render_contract_fingerprint,
+            self.optional_content.visibility_fingerprint(),
+            self.viewport,
+            self.buf.width,
+            self.buf.height,
+            self.base_ctm,
+        ))
+    }
+
     fn paint_cached_type3_rendered_charproc(
         &mut self,
         font_name: &str,
@@ -15527,8 +16135,17 @@ impl<'a> RenderState<'a> {
         {
             return false;
         }
+        let glyph = match self
+            .type3_rendered_program_cache_key(font_name, font_dict, glyph_name, charproc)
+        {
+            Ok(key) => key,
+            Err(err) => {
+                self.record_fatal_render_error(format!("Type 3 raster invalid /Resources: {err}"));
+                return false;
+            }
+        };
         let cache_key = Type3RenderedGlyphCacheKey {
-            glyph: self.type3_charproc_cache_key_for_render(font_name, font_dict, glyph_name),
+            glyph,
             render_mode: self.gs.text.rendering_mode,
             fill_color: self.fill_pixel_color(),
             stroke_color: self.stroke_pixel_color(),
@@ -16375,26 +16992,30 @@ impl<'a> RenderState<'a> {
             self.advance_text(glyph_width, glyph.is_space);
             return Ok(());
         }
-        let mut advance_y = decoded_text_vertical_advance(glyph)? / 1000.0 * self.gs.text.font_size;
-        let spacing = self.gs.text.char_spacing
-            + if glyph.is_space {
-                self.gs.text.word_spacing
-            } else {
-                0.0
-            };
-        if spacing != 0.0 {
-            let sign = if advance_y < 0.0 { -1.0 } else { 1.0 };
-            advance_y += spacing * sign;
-        }
+        let advance_y = crate::fonts::resolver::vertical_text_advance(
+            decoded_text_vertical_advance(glyph)?,
+            self.gs.text.font_size,
+            self.gs.text.char_spacing,
+            self.gs.text.word_spacing,
+            glyph.is_space,
+        );
         self.translate_text_matrix(0.0, advance_y);
         Ok(())
     }
 
     fn adjust_text_position(&mut self, adjustment: f64) {
-        let tx = adjustment / 1000.0
-            * self.gs.text.font_size
-            * (self.gs.text.horizontal_scaling / 100.0);
-        self.translate_text_matrix(tx, 0.0);
+        let name = self.gs.text.font_name.clone();
+        let (font, key) = self.current_text_font_resource(&name);
+        let vertical = font
+            .as_ref()
+            .is_some_and(|d| self.get_font_resolver(&key, d).is_vertical());
+        let [tx, ty] = crate::fonts::resolver::text_position_adjustment(
+            adjustment,
+            self.gs.text.font_size,
+            self.gs.text.horizontal_scaling,
+            vertical,
+        );
+        self.translate_text_matrix(tx, ty);
     }
 
     fn translate_text_line_matrix(&mut self, tx: f64, ty: f64) {
@@ -16481,6 +17102,7 @@ struct Type3CharProc {
     ops: Vec<ContentOperation>,
     advance_width: Option<f64>,
     glyph_bbox: Option<[f64; 4]>,
+    resources: Option<PageResources>,
 }
 
 fn estimate_type3_path_bytes(path: &Path) -> usize {
@@ -16519,7 +17141,13 @@ impl Type3ProgramCacheValue for Type3GlyphGeometry {
 
 impl Type3ProgramCacheValue for Type3CharProc {
     fn approximate_bytes(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(estimate_content_program_bytes(&self.ops))
+        std::mem::size_of::<Self>()
+            .saturating_add(estimate_content_program_bytes(&self.ops))
+            .saturating_add(
+                self.resources
+                    .as_ref()
+                    .map_or(0, estimate_page_resources_bytes),
+            )
     }
 }
 
@@ -16600,9 +17228,9 @@ fn type3_charproc_retained_path_color_policy(
             }
             "cs" | "CS" => {
                 if op.operator == "cs" {
-                    fill_explicit = false;
+                    fill_explicit = true;
                 } else {
-                    stroke_explicit = false;
+                    stroke_explicit = true;
                 }
             }
             "f" | "F" | "f*" if !fill_explicit => {
@@ -17155,6 +17783,10 @@ impl Type3PathCollector {
             ));
             return;
         }
+        self.state.fill_color = match self.state.fill_color_space {
+            Type3DeviceColorSpace::Cmyk => type3_cmyk_color(0.0, 0.0, 0.0, 1.0),
+            _ => BLACK,
+        };
         self.uses_color_state = true;
     }
 
@@ -17173,6 +17805,10 @@ impl Type3PathCollector {
             ));
             return;
         }
+        self.state.stroke_color = match self.state.stroke_color_space {
+            Type3DeviceColorSpace::Cmyk => type3_cmyk_color(0.0, 0.0, 0.0, 1.0),
+            _ => BLACK,
+        };
         self.uses_color_state = true;
     }
 
@@ -17832,17 +18468,15 @@ impl<'a, 'b> RenderStatePlanAdapter<'a, 'b> {
     }
 
     fn effective_vector_color(&mut self, fallback: PixelColor) -> PixelColor {
-        let Some(color) = self.forced_vector_color.as_ref() else {
+        let Some(color) = self.forced_vector_color.clone() else {
             return fallback;
         };
-        ColorSpaceHandler::strict_to_render_color(color, f32::from(fallback[3]) / 255.0)
-            .unwrap_or_else(|reason| {
-                self.state.record_fatal_render_error(format!(
-                    "forced Type 3 vector color rejected: {reason}"
-                ));
-                crate::render::color::RenderColor::transparent()
-            })
-            .to_pixel_color()
+        self.state.resolve_paint_color(
+            &color,
+            f32::from(fallback[3]) / 255.0,
+            false,
+            "forced vector",
+        )
     }
 
     fn effective_vector_fill_color(&mut self, fallback: PixelColor, explicit: bool) -> PixelColor {
@@ -18081,6 +18715,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 self.state.gs.stroke_pattern_name = None;
                 self.state.active_stroke_pattern_resource = None;
                 self.state.active_stroke_color_space_resource = None;
+                self.state
+                    .set_device_paint_color(self.state.gs.stroke_color.clone(), true);
             }
             SetFillGray(g) => {
                 let g = g.clamp(0.0, 1.0);
@@ -18089,6 +18725,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 self.state.gs.fill_pattern_name = None;
                 self.state.active_fill_pattern_resource = None;
                 self.state.active_fill_color_space_resource = None;
+                self.state
+                    .set_device_paint_color(self.state.gs.fill_color.clone(), false);
             }
             SetStrokeRgb { r, g, b } => {
                 self.state.gs.stroke_color_space = ColorSpace::DeviceRGB;
@@ -18097,6 +18735,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 self.state.gs.stroke_pattern_name = None;
                 self.state.active_stroke_pattern_resource = None;
                 self.state.active_stroke_color_space_resource = None;
+                self.state
+                    .set_device_paint_color(self.state.gs.stroke_color.clone(), true);
             }
             SetFillRgb { r, g, b } => {
                 self.state.gs.fill_color_space = ColorSpace::DeviceRGB;
@@ -18105,6 +18745,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 self.state.gs.fill_pattern_name = None;
                 self.state.active_fill_pattern_resource = None;
                 self.state.active_fill_color_space_resource = None;
+                self.state
+                    .set_device_paint_color(self.state.gs.fill_color.clone(), false);
             }
             SetStrokeCmyk { c, m, y, k } => {
                 self.state.gs.stroke_color_space = ColorSpace::DeviceCMYK;
@@ -18117,6 +18759,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 self.state.gs.stroke_pattern_name = None;
                 self.state.active_stroke_pattern_resource = None;
                 self.state.active_stroke_color_space_resource = None;
+                self.state
+                    .set_device_paint_color(self.state.gs.stroke_color.clone(), true);
             }
             SetFillCmyk { c, m, y, k } => {
                 self.state.gs.fill_color_space = ColorSpace::DeviceCMYK;
@@ -18129,6 +18773,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 self.state.gs.fill_pattern_name = None;
                 self.state.active_fill_pattern_resource = None;
                 self.state.active_fill_color_space_resource = None;
+                self.state
+                    .set_device_paint_color(self.state.gs.fill_color.clone(), false);
             }
 
             // --- Color space operators ---
@@ -18159,7 +18805,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 if !components.is_empty() {
                     self.state.gs.stroke_color = Color {
                         space: self.state.gs.stroke_color_space.clone(),
-                        components: components.iter().map(|v| v.clamp(0.0, 1.0)).collect(),
+                        components: components.clone(),
                     };
                 }
             }
@@ -18177,7 +18823,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 if !components.is_empty() {
                     self.state.gs.fill_color = Color {
                         space: self.state.gs.fill_color_space.clone(),
-                        components: components.iter().map(|v| v.clamp(0.0, 1.0)).collect(),
+                        components: components.clone(),
                     };
                 }
             }
@@ -18903,18 +19549,18 @@ fn decoded_text_horizontal_advance(
             });
     }
     if exactness_policy == ExactnessPolicy::HighQualityExact {
-        let font_bytes = font_bytes.filter(|bytes| !bytes.is_empty()).ok_or_else(|| {
-            format!(
-                "HighQualityExact render contract refuses text glyph {} in font /{}: no PDF width and no font program advance metric",
-                glyph.code, font_name
-            )
-        })?;
-        return strict_glyph_horizontal_advance(glyph, font_bytes, variation).ok_or_else(|| {
-            format!(
-                "HighQualityExact render contract refuses text glyph {} in font /{}: no PDF width and no real font advance metric",
-                glyph.code, font_name
-            )
-        });
+        if let Some(font_bytes) = font_bytes.filter(|bytes| !bytes.is_empty()) {
+            if let Some(advance) = strict_glyph_horizontal_advance(glyph, font_bytes, variation) {
+                return Ok(advance);
+            }
+        }
+        if let Some(advance) = glyph_render_advance.filter(|advance| advance.is_finite()) {
+            return Ok(advance);
+        }
+        return Err(format!(
+            "HighQualityExact render contract refuses text glyph {} in font /{}: no PDF width, font-program metric, or decoded glyph advance",
+            glyph.code, font_name
+        ));
     }
     Ok(glyph_render_advance
         .filter(|advance| advance.is_finite())
@@ -19001,7 +19647,9 @@ fn fallback_font_covers_glyph(
     glyph: &DecodedGlyph,
 ) -> bool {
     if let Ok(mut face) = ttf_parser::Face::parse(font_bytes, 0) {
-        crate::fonts::variations::apply_request(&mut face, variation);
+        if crate::fonts::variations::apply_request_checked(&mut face, variation).is_err() {
+            return false;
+        }
         if glyph.is_gid {
             return glyph.code != 0 && glyph.code < face.number_of_glyphs();
         }
@@ -19168,10 +19816,6 @@ fn color_space_object_is_pattern(object: &PdfObject) -> bool {
             .is_some_and(|name| name == "Pattern"),
         _ => false,
     }
-}
-
-fn color_space_name_or_object_is_pattern(name: &str, object: Option<&PdfObject>) -> bool {
-    name == "Pattern" || object.is_some_and(color_space_object_is_pattern)
 }
 
 fn image_color_space_family_name(
@@ -19823,8 +20467,10 @@ struct InlineImageCacheKeyInput<'a> {
 fn inline_params_to_map(
     operands: &[Operand],
 ) -> std::result::Result<std::collections::HashMap<String, Operand>, String> {
+    let normalized = crate::content::parser::normalize_inline_image_operands(operands.to_vec())
+        .map_err(|error| error.to_string())?;
     let mut map = std::collections::HashMap::new();
-    let mut iter = operands.iter().enumerate();
+    let mut iter = normalized.iter().enumerate();
     while let Some((key_index, key_op)) = iter.next() {
         let Operand::Name(key) = key_op else {
             return Err(format!(
@@ -19900,16 +20546,6 @@ fn inline_optional_bool(
         None => Ok(false),
         Some(Operand::Boolean(value)) => Ok(*value),
         Some(_) => Err(format!("{label} /{key} is not boolean")),
-    }
-}
-
-fn dict_name<'a>(
-    map: &'a std::collections::HashMap<String, Operand>,
-    key: &str,
-) -> Option<&'a str> {
-    match map.get(key)? {
-        Operand::Name(n) => Some(n.as_str()),
-        _ => None,
     }
 }
 
@@ -20516,7 +21152,7 @@ fn apply_color_key_image_mask(
 
 fn image_mask_paints_ones(dict: &PdfDictionary) -> Result<bool> {
     let Some(obj) = dict.get("Decode") else {
-        return Ok(true);
+        return Ok(false);
     };
     let Some(items) = obj.as_array() else {
         return Err(WellfriendError::MalformedPdf(
@@ -20528,7 +21164,7 @@ fn image_mask_paints_ones(dict: &PdfDictionary) -> Result<bool> {
 
 fn inline_image_mask_paints_ones(map: &std::collections::HashMap<String, Operand>) -> Result<bool> {
     let Some(obj) = map.get("Decode") else {
-        return Ok(true);
+        return Ok(false);
     };
     let Some(items) = obj.as_array() else {
         return Err(WellfriendError::MalformedPdf(
@@ -20580,7 +21216,9 @@ fn decode_image_mask_decode_pair_paints_ones(zero: f64, one: f64, label: &str) -
             "{label} contains non-finite entries"
         )));
     }
-    Ok(one >= zero)
+    // A stencil paints where the decoded sample is zero. With the default
+    // [0 1], source zeroes paint; reversed [1 0] makes source ones paint.
+    Ok(zero > one)
 }
 
 /// Determine the opaque backdrop color for a luminosity soft mask.
@@ -20712,9 +21350,14 @@ fn smask_backdrop_cache_identity(
     is_alpha: bool,
     reader: &crate::reader::PdfReader,
     group_color_space: &TransparencyGroupColorSpacePolicy,
+    function_resources: crate::render::function::FunctionResources<'_>,
 ) -> Result<SoftMaskBackdropCacheIdentity> {
     if is_alpha {
-        if alpha_smask_uses_opaque_bc_backdrop(smask_dict, reader)? {
+        if alpha_smask_uses_opaque_bc_backdrop_with_resources(
+            smask_dict,
+            reader,
+            function_resources,
+        )? {
             Ok(SoftMaskBackdropCacheIdentity {
                 initial_pixel: [0, 0, 0, 255],
                 outside_alpha: 255,
@@ -20754,9 +21397,22 @@ fn smask_luminosity_default_alpha(bc: PixelColor) -> u8 {
         .clamp(0.0, 255.0) as u8
 }
 
+#[cfg(test)]
 fn alpha_smask_uses_opaque_bc_backdrop(
     smask_dict: &PdfDictionary,
     reader: &crate::reader::PdfReader,
+) -> Result<bool> {
+    alpha_smask_uses_opaque_bc_backdrop_with_resources(
+        smask_dict,
+        reader,
+        crate::render::function::FunctionResources::default(),
+    )
+}
+
+fn alpha_smask_uses_opaque_bc_backdrop_with_resources(
+    smask_dict: &PdfDictionary,
+    reader: &PdfReader,
+    resources: crate::render::function::FunctionResources<'_>,
 ) -> Result<bool> {
     if smask_backdrop_components(smask_dict)?.is_none() {
         return Ok(false);
@@ -20764,16 +21420,17 @@ fn alpha_smask_uses_opaque_bc_backdrop(
     let Some(tr) = smask_dict.get("TR") else {
         return Ok(true);
     };
-    if matches!(tr, PdfObject::Name(name) if name == "Identity") {
+    let transfer =
+        crate::render::function::PreparedTransfer::prepare_with_resources(tr, reader, resources)
+            .ok_or_else(|| {
+                WellfriendError::UnsupportedFeature(
+                    "unsupported or malformed SMask /TR function".to_string(),
+                )
+            })?;
+    if transfer.is_identity() {
         return Ok(true);
     }
-    if !crate::render::function::validate_function_shape(tr, 1, reader) {
-        return Err(WellfriendError::UnsupportedFeature(
-            "unsupported or malformed SMask /TR function".to_string(),
-        ));
-    }
-    let out = crate::render::shading::eval_function(tr, 0.0, reader);
-    let Some(value) = out.first().copied() else {
+    let Some(value) = transfer.evaluate(0.0) else {
         return Err(WellfriendError::UnsupportedFeature(
             "SMask /TR function evaluation failed".to_string(),
         ));
@@ -20980,7 +21637,23 @@ fn transparency_group_color_space_policy(
 ) -> std::result::Result<TransparencyGroupColorSpacePolicy, String> {
     match group.get("CS") {
         Some(color_space) => {
-            transparency_group_color_space_policy_object(color_space, resources, reader, 0)
+            if let PdfObject::Name(name) = color_space {
+                if transparency_group_known_non_device_color_space(name) {
+                    return Err(format!("group /CS has unsupported color space /{name}"));
+                }
+                if transparency_group_device_color_space_policy(name).is_none()
+                    && !resources.color_spaces.contains_key(name)
+                {
+                    return Err(format!("group /CS resource /{name} is missing"));
+                }
+            }
+            if matches!(color_space, PdfObject::Array(items) if items.first().and_then(PdfObject::as_name).is_none())
+            {
+                return Err("group /CS array is malformed".to_string());
+            }
+            let bound = crate::render::default_colorspace::bind(color_space, resources, reader)
+                .map_err(|reason| format!("group /CS binding failed: {reason}"))?;
+            transparency_group_color_space_policy_object(&bound, resources, reader, 0)
         }
         None => Ok(TransparencyGroupColorSpacePolicy::DefaultDeviceRgb),
     }
@@ -21139,7 +21812,7 @@ fn resolve_to_dict(obj: &PdfObject, reader: &crate::reader::PdfReader) -> Option
         PdfObject::Dictionary(d) => Some(d.clone()),
         PdfObject::Stream { dict, .. } => Some(dict.clone()),
         PdfObject::Reference { number, generation } => {
-            match reader.get_object(*number, *generation).ok()? {
+            match reader.get_and_resolve(*number, *generation).ok()? {
                 PdfObject::Dictionary(d) => Some(d),
                 PdfObject::Stream { dict, .. } => Some(dict),
                 _ => None,
@@ -21257,29 +21930,43 @@ fn fnv1a_hash_f64(hash: &mut u64, label: &[u8], value: f64) {
     fnv1a_update(hash, &value.to_bits().to_le_bytes());
 }
 
-/// Reconstruct the concrete fill color for an uncolored (PaintType 2) tiling
-/// pattern from the components recorded by `scn`. The fill color space is the
-/// abstract Pattern space, so the concrete base space is inferred from the
-/// number of numeric components.
+/// Retain the selected underlying colour graph across the tile resource switch.
 fn uncolored_pattern_color(
     fill_color: &crate::content::state::Color,
-) -> std::result::Result<(ColorSpace, crate::content::state::Color), String> {
+    selected_space: Option<&ActiveColorSpaceResource>,
+) -> std::result::Result<
+    (
+        ColorSpace,
+        crate::content::state::Color,
+        ActiveColorSpaceResource,
+    ),
+    String,
+> {
     let comps = fill_color.components.clone();
-    let space = match comps.len() {
-        1 => ColorSpace::DeviceGray,
-        3 => ColorSpace::DeviceRGB,
-        4 => ColorSpace::DeviceCMYK,
-        len => {
-            return Err(format!(
-                "uncolored tiling pattern color has {len} components, expected 1, 3, or 4"
-            ))
+    let selected = selected_space.ok_or("uncolored tiling pattern has no selected colour graph")?;
+    let base = |object: &PdfObject| -> std::result::Result<PdfObject, String> {
+        match object {
+            PdfObject::Array(items)
+                if items.len() == 2 && items[0].as_name() == Some("Pattern") =>
+            {
+                Ok(items[1].clone())
+            }
+            _ => Err(
+                "uncolored tiling pattern requires a selected [/Pattern base] colour space".into(),
+            ),
         }
     };
+    let binding = ActiveColorSpaceResource {
+        name: "WellfriendPatternBase".into(),
+        object: Arc::new(base(&selected.object)?),
+        source: Arc::new(base(&selected.source)?),
+    };
+    let space = ColorSpace::Named("WellfriendPatternBase".into());
     let color = crate::content::state::Color {
         space: space.clone(),
         components: comps,
     };
-    Ok((space, color))
+    Ok((space, color, binding))
 }
 
 fn page_resources_fingerprint(resources: &PageResources) -> u64 {
@@ -22281,11 +22968,7 @@ fn retained_stroke_ext_g_state_paint_refusal_for_alpha(
     operation: &str,
     alpha: u8,
 ) -> Option<String> {
-    if state.stroke_adjustment && paint_byte_alpha_visible(alpha) {
-        Some(format!(
-            "{operation} requires ExtGState /SA true stroke-adjustment semantics, which are outside the exact retained-rendering policy"
-        ))
-    } else if state.alpha_source && paint_byte_alpha_visible(alpha) {
+    if state.alpha_source && paint_byte_alpha_visible(alpha) {
         Some(format!(
             "{operation} requires ExtGState /AIS true alpha-source semantics, which are outside the exact retained-rendering policy"
         ))
@@ -22730,7 +23413,7 @@ fn resolve_to_stream(
     match obj {
         PdfObject::Stream { dict, raw } => Some((dict.clone(), raw.clone())),
         PdfObject::Reference { number, generation } => {
-            match reader.get_object(*number, *generation).ok()? {
+            match reader.get_and_resolve(*number, *generation).ok()? {
                 PdfObject::Stream { dict, raw } => Some((dict, raw)),
                 _ => None,
             }
@@ -22762,12 +23445,32 @@ fn path_device_bounds(flat: &FlatPath, width: u32, height: u32) -> (i32, i32, i3
     (x0, y0, x1, y1)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_shading_dictionary_for_paint(
     dict: &PdfDictionary,
     label: &str,
     reader: &PdfReader,
 ) -> std::result::Result<(), String> {
-    validate_shading_color_space_for_paint(dict, label, reader)?;
+    validate_shading_dictionary_for_paint_with_options(
+        dict,
+        label,
+        reader,
+        ShadingRenderOptions::default(),
+    )
+}
+
+pub(crate) fn validate_shading_dictionary_for_paint_with_options(
+    dict: &PdfDictionary,
+    label: &str,
+    reader: &PdfReader,
+    options: ShadingRenderOptions<'_>,
+) -> std::result::Result<(), String> {
+    let resolved = crate::render::parameter_dictionary::shading(dict, Some(reader))
+        .map_err(|e| format!("{label}: {e}"))?;
+    let dict = resolved.as_ref();
+    validate_shading_color_space_for_paint(dict, label, reader, options)?;
+    crate::render::shading::validate_common_shading_entries(dict, reader, options)
+        .map_err(|reason| format!("{label}: {reason}"))?;
     let shading_type = dict
         .get_integer("ShadingType")
         .ok_or_else(|| format!("{label} missing required /ShadingType"))?;
@@ -22775,27 +23478,27 @@ pub(crate) fn validate_shading_dictionary_for_paint(
         1 => {
             validate_optional_shading_float_array(dict, "Domain", label, 4)?;
             validate_optional_shading_matrix(dict, label)?;
-            require_shading_function(dict, label, reader, 2)
+            require_shading_function(dict, label, reader, 2, options)
         }
         2 => {
             require_shading_coords(dict, label, 4)?;
             validate_optional_shading_float_array(dict, "Domain", label, 2)?;
             validate_optional_shading_bool_pair(dict, "Extend", label)?;
-            require_shading_function(dict, label, reader, 1)
+            require_shading_function(dict, label, reader, 1, options)
         }
         3 => {
             require_shading_coords(dict, label, 6)?;
             validate_optional_shading_float_array(dict, "Domain", label, 2)?;
             validate_optional_shading_bool_pair(dict, "Extend", label)?;
-            require_shading_function(dict, label, reader, 1)
+            require_shading_function(dict, label, reader, 1, options)
         }
         4 | 6 | 7 => {
             require_mesh_shading_decode(dict, label, reader)?;
-            validate_optional_mesh_shading_function(dict, label, reader)
+            validate_optional_mesh_shading_function(dict, label, reader, options)
         }
         5 => {
             require_mesh_shading_decode(dict, label, reader)?;
-            validate_optional_mesh_shading_function(dict, label, reader)?;
+            validate_optional_mesh_shading_function(dict, label, reader, options)?;
             require_mesh_vertices_per_row(dict, label)
         }
         other => Err(format!("{label} has unsupported ShadingType {other}")),
@@ -22807,23 +23510,25 @@ fn require_shading_function(
     label: &str,
     reader: &PdfReader,
     input_count: usize,
+    options: ShadingRenderOptions<'_>,
 ) -> std::result::Result<(), String> {
     let func = dict
         .get("Function")
         .ok_or_else(|| format!("{label} missing required /Function"))?;
     let inputs = shading_function_sample_inputs(dict, label, input_count)?;
-    let outputs = validate_shading_function_output(func, label, reader, &inputs)?;
-    validate_shading_color_components(dict, label, reader, &outputs)
+    let outputs = validate_shading_function_output(func, label, reader, &inputs, options)?;
+    validate_shading_color_components(dict, label, reader, &outputs, options)
 }
 
 fn validate_optional_mesh_shading_function(
     dict: &PdfDictionary,
     label: &str,
     reader: &PdfReader,
+    options: ShadingRenderOptions<'_>,
 ) -> std::result::Result<(), String> {
     if let Some(func) = dict.get("Function") {
-        let outputs = validate_shading_function_output(func, label, reader, &[0.5])?;
-        validate_shading_color_components(dict, label, reader, &outputs)
+        let outputs = validate_shading_function_output(func, label, reader, &[0.5], options)?;
+        validate_shading_color_components(dict, label, reader, &outputs, options)
     } else {
         Ok(())
     }
@@ -22834,11 +23539,12 @@ fn validate_shading_function_output(
     label: &str,
     reader: &PdfReader,
     inputs: &[f64],
+    options: ShadingRenderOptions<'_>,
 ) -> std::result::Result<Vec<f64>, String> {
-    if !crate::render::function::validate_function_or_array_shape(func, inputs.len(), reader) {
-        return Err(format!("{label} /Function is unsupported or malformed"));
-    }
-    let outputs = crate::render::function::eval_function_or_array_n(func, inputs, reader);
+    let function = options
+        .prepare_function(func, inputs.len(), reader)
+        .ok_or_else(|| format!("{label} /Function is unsupported or malformed"))?;
+    let outputs = function.evaluate(inputs);
     if outputs.is_empty() {
         Err(format!("{label} /Function is unsupported or malformed"))
     } else {
@@ -22850,6 +23556,7 @@ fn validate_shading_color_space_for_paint(
     dict: &PdfDictionary,
     label: &str,
     reader: &PdfReader,
+    options: ShadingRenderOptions<'_>,
 ) -> std::result::Result<(), String> {
     let color_space = dict
         .get("ColorSpace")
@@ -22863,7 +23570,13 @@ fn validate_shading_color_space_for_paint(
             color_space_label(&resolved)
         )
     })?;
-    validate_shading_color_components_obj(&resolved, label, reader, &components)
+    validate_shading_color_components_obj_with_options(
+        &resolved,
+        label,
+        reader,
+        &components,
+        options,
+    )
 }
 
 fn validate_shading_color_components(
@@ -22871,6 +23584,7 @@ fn validate_shading_color_components(
     label: &str,
     reader: &PdfReader,
     components: &[f64],
+    options: ShadingRenderOptions<'_>,
 ) -> std::result::Result<(), String> {
     let color_space = dict
         .get("ColorSpace")
@@ -22878,7 +23592,9 @@ fn validate_shading_color_components(
         .ok_or_else(|| format!("{label} missing required /ColorSpace"))?;
     let resolved =
         resolve_color_space_object(color_space, reader).unwrap_or_else(|| color_space.clone());
-    validate_shading_color_components_obj(&resolved, label, reader, components)
+    validate_shading_color_components_obj_with_options(
+        &resolved, label, reader, components, options,
+    )
 }
 
 fn validate_shading_color_components_obj(
@@ -22886,6 +23602,22 @@ fn validate_shading_color_components_obj(
     label: &str,
     reader: &PdfReader,
     components: &[f64],
+) -> std::result::Result<(), String> {
+    validate_shading_color_components_obj_with_options(
+        color_space,
+        label,
+        reader,
+        components,
+        ShadingRenderOptions::default(),
+    )
+}
+
+fn validate_shading_color_components_obj_with_options(
+    color_space: &PdfObject,
+    label: &str,
+    reader: &PdfReader,
+    components: &[f64],
+    options: ShadingRenderOptions<'_>,
 ) -> std::result::Result<(), String> {
     let resolved =
         resolve_color_space_object(color_space, reader).unwrap_or_else(|| color_space.clone());
@@ -22904,8 +23636,14 @@ fn validate_shading_color_components_obj(
             Some(
                 "CalGray" | "CalRGB" | "Lab" | "ICCBased" | "Indexed" | "Separation" | "DeviceN",
             ) => {
-                match crate::render::colorspace::resolve_named_color(
-                    &resolved, components, 1.0, reader,
+                match crate::render::colorspace::resolve_named_color_with_resources(
+                    &resolved,
+                    options.source_color_space,
+                    components,
+                    1.0,
+                    reader,
+                    options.color_transform,
+                    options.function_resources(),
                 ) {
                     crate::render::colorspace::NamedColor::Color(_)
                     | crate::render::colorspace::NamedColor::NoPaint => Ok(()),
@@ -23038,7 +23776,7 @@ fn shading_function_sample_inputs(
         .map(|idx| {
             let lo = domain.get(idx * 2).copied().unwrap_or(0.0);
             let hi = domain.get(idx * 2 + 1).copied().unwrap_or(1.0);
-            lo + (hi - lo) * 0.5
+            crate::render::shading::shading_domain_value(lo, hi, 0.5)
         })
         .collect())
 }
@@ -23057,6 +23795,9 @@ fn require_shading_coords(
             "{label} malformed /Coords: expected {required_len} finite numbers, got {}",
             coords.len()
         ));
+    }
+    if required_len == 6 && (coords[2] < 0.0 || coords[5] < 0.0) {
+        return Err(format!("{label} radial /Coords radii must be nonnegative"));
     }
     Ok(())
 }
@@ -23269,59 +24010,17 @@ fn select_annotation_appearance(
     reader: &crate::reader::PdfReader,
     label: &str,
 ) -> std::result::Result<Option<(PdfDictionary, Vec<u8>)>, String> {
-    let Some(ap_obj) = annot.get("AP").cloned() else {
-        return Ok(None);
-    };
-    let ap = match reader.resolve(ap_obj) {
-        Ok(PdfObject::Dictionary(dict)) => dict,
-        Ok(other) => {
-            return Err(format!(
-                "{label} /AP resolved to {}, expected Dictionary",
-                other.variant_name()
-            ));
-        }
-        Err(err) => return Err(format!("{label} /AP failed to resolve: {err}")),
-    };
-    let Some(normal) = ap.get("N").cloned() else {
-        return Err(format!("{label} /AP missing /N"));
-    };
-    match reader.resolve(normal) {
-        Ok(PdfObject::Stream { dict, raw }) => Ok(Some((dict, raw))),
-        Ok(PdfObject::Dictionary(states)) => {
-            let (state_name, explicit_state) = match annot.get("AS") {
-                None => ("Off", false),
-                Some(PdfObject::Name(name)) => (name.as_str(), true),
-                Some(other) => {
-                    return Err(format!(
-                        "{label} /AS resolved to {}, expected Name",
-                        other.variant_name()
-                    ));
-                }
-            };
-            if let Some(selected) = states.get(state_name) {
-                return resolve_appearance_stream(selected, reader, label, state_name).map(Some);
-            }
-            if explicit_state {
-                return Ok(None);
-            }
-            if state_name != "Off" {
-                if let Some(off) = states.get("Off") {
-                    return resolve_appearance_stream(off, reader, label, "Off").map(Some);
-                }
-            }
-            match states.entries().find(|(name, _)| name.as_str() != "Off") {
-                Some((name, value)) => {
-                    resolve_appearance_stream(value, reader, label, name).map(Some)
-                }
-                None => Ok(None),
-            }
-        }
-        Ok(other) => Err(format!(
-            "{label} /AP /N resolved to {}, expected Stream or Dictionary",
-            other.variant_name()
-        )),
-        Err(err) => Err(format!("{label} /AP /N failed to resolve: {err}")),
-    }
+    crate::annotation_appearance::select_normal(annot, reader)
+        .map(|selected| selected.map(|appearance| (appearance.dict, appearance.raw)))
+        .map_err(|error| match error {
+            crate::error::WellfriendError::MalformedPdf(message) => format!(
+                "{label} {}",
+                message
+                    .strip_prefix("annotation appearance: ")
+                    .unwrap_or(&message)
+            ),
+            other => format!("{label} {other}"),
+        })
 }
 
 const FIELD_FLAG_MULTILINE: i64 = 1 << 12;
@@ -25118,24 +25817,6 @@ fn pdf_literal_bytes(bytes: &[u8]) -> String {
     out
 }
 
-fn resolve_appearance_stream(
-    value: &PdfObject,
-    reader: &crate::reader::PdfReader,
-    label: &str,
-    state_name: &str,
-) -> std::result::Result<(PdfDictionary, Vec<u8>), String> {
-    match reader.resolve(value.clone()) {
-        Ok(PdfObject::Stream { dict, raw }) => Ok((dict, raw)),
-        Ok(other) => Err(format!(
-            "{label} appearance state /{state_name} resolved to {}, expected Stream",
-            other.variant_name()
-        )),
-        Err(err) => Err(format!(
-            "{label} appearance state /{state_name} failed to resolve: {err}"
-        )),
-    }
-}
-
 fn required_rect(dict: &PdfDictionary, label: &str) -> std::result::Result<[f64; 4], String> {
     let Some(obj) = dict.get("Rect") else {
         return Err(format!("{label} missing /Rect"));
@@ -25144,24 +25825,6 @@ fn required_rect(dict: &PdfDictionary, label: &str) -> std::result::Result<[f64;
         return Err(format!("{label} malformed /Rect"));
     };
     exact_bbox_from_pdf_array(items).ok_or_else(|| format!("{label} malformed /Rect"))
-}
-
-fn annotation_appearance_ctm(rect: [f64; 4], bbox: [f64; 4]) -> Option<Transform2D> {
-    let rect_x0 = rect[0].min(rect[2]);
-    let rect_y0 = rect[1].min(rect[3]);
-    let rect_w = (rect[2] - rect[0]).abs();
-    let rect_h = (rect[3] - rect[1]).abs();
-    let bbox_x0 = bbox[0].min(bbox[2]);
-    let bbox_y0 = bbox[1].min(bbox[3]);
-    let bbox_w = (bbox[2] - bbox[0]).abs();
-    let bbox_h = (bbox[3] - bbox[1]).abs();
-    if rect_w <= 0.0 || rect_h <= 0.0 || bbox_w <= 0.0 || bbox_h <= 0.0 {
-        return None;
-    }
-    let to_origin = Transform2D::translation(-bbox_x0, -bbox_y0);
-    let scale = Transform2D::scale(rect_w / bbox_w, rect_h / bbox_h);
-    let to_rect = Transform2D::translation(rect_x0, rect_y0);
-    Some(to_origin.concat(&scale).concat(&to_rect))
 }
 
 /// Extract a Form XObject's `/BBox` as `[x_min, y_min, x_max, y_max]`.
@@ -25385,214 +26048,10 @@ fn extract_form_matrix(dict: &PdfDictionary) -> Result<crate::content::Matrix> {
     extract_optional_matrix(dict, "Matrix", "Form XObject /Matrix")
 }
 
-#[derive(Default)]
-struct ResourceOverlayRestore {
-    fonts: Vec<(String, Option<PdfDictionary>)>,
-    font_references: Vec<(String, Option<(u32, u16)>)>,
-    xobjects: Vec<(String, Option<(u32, u16)>)>,
-    xobject_subtypes: Vec<(String, Option<String>)>,
-    xobject_stream_dicts: Vec<(String, Option<PdfDictionary>)>,
-    xobject_bboxes: Vec<(String, Option<[f64; 4]>)>,
-    xobject_matrices: Vec<(String, Option<[f64; 6]>)>,
-    color_spaces: Vec<(String, Option<PdfObject>)>,
-    color_space_references: Vec<(String, Option<(u32, u16)>)>,
-    ext_g_states: Vec<(String, Option<PdfDictionary>)>,
-    ext_g_state_references: Vec<(String, Option<(u32, u16)>)>,
-    patterns: Vec<(String, Option<PdfObject>)>,
-    shadings: Vec<(String, Option<PdfObject>)>,
-    properties: Vec<(String, Option<PdfObject>)>,
-    properties_references: Vec<(String, Option<(u32, u16)>)>,
-}
-
-impl ResourceOverlayRestore {
-    fn restore(self, resources: &mut PageResources) {
-        restore_overlay_map(&mut resources.fonts, self.fonts);
-        restore_overlay_map(&mut resources.font_references, self.font_references);
-        restore_overlay_map(&mut resources.xobjects, self.xobjects);
-        restore_overlay_map(&mut resources.xobject_subtypes, self.xobject_subtypes);
-        restore_overlay_map(
-            &mut resources.xobject_stream_dicts,
-            self.xobject_stream_dicts,
-        );
-        restore_overlay_map(&mut resources.xobject_bboxes, self.xobject_bboxes);
-        restore_overlay_map(&mut resources.xobject_matrices, self.xobject_matrices);
-        restore_overlay_map(&mut resources.color_spaces, self.color_spaces);
-        restore_overlay_map(
-            &mut resources.color_space_references,
-            self.color_space_references,
-        );
-        restore_overlay_map(&mut resources.ext_g_states, self.ext_g_states);
-        restore_overlay_map(
-            &mut resources.ext_g_state_references,
-            self.ext_g_state_references,
-        );
-        restore_overlay_map(&mut resources.patterns, self.patterns);
-        restore_overlay_map(&mut resources.shadings, self.shadings);
-        restore_overlay_map(&mut resources.properties, self.properties);
-        restore_overlay_map(
-            &mut resources.properties_references,
-            self.properties_references,
-        );
-    }
-}
-
-fn overlay_page_resources(
-    resources: &mut PageResources,
-    form_res: &PageResources,
-) -> ResourceOverlayRestore {
-    let mut restore = ResourceOverlayRestore::default();
-    overlay_resource_map(&mut resources.fonts, &form_res.fonts, &mut restore.fonts);
-    overlay_resource_map(
-        &mut resources.font_references,
-        &form_res.font_references,
-        &mut restore.font_references,
-    );
-    overlay_resource_map(
-        &mut resources.xobjects,
-        &form_res.xobjects,
-        &mut restore.xobjects,
-    );
-    overlay_resource_map(
-        &mut resources.xobject_subtypes,
-        &form_res.xobject_subtypes,
-        &mut restore.xobject_subtypes,
-    );
-    overlay_resource_map(
-        &mut resources.xobject_stream_dicts,
-        &form_res.xobject_stream_dicts,
-        &mut restore.xobject_stream_dicts,
-    );
-    overlay_resource_map(
-        &mut resources.xobject_bboxes,
-        &form_res.xobject_bboxes,
-        &mut restore.xobject_bboxes,
-    );
-    overlay_resource_map(
-        &mut resources.xobject_matrices,
-        &form_res.xobject_matrices,
-        &mut restore.xobject_matrices,
-    );
-    overlay_resource_map(
-        &mut resources.color_spaces,
-        &form_res.color_spaces,
-        &mut restore.color_spaces,
-    );
-    overlay_resource_map(
-        &mut resources.color_space_references,
-        &form_res.color_space_references,
-        &mut restore.color_space_references,
-    );
-    overlay_resource_map(
-        &mut resources.ext_g_states,
-        &form_res.ext_g_states,
-        &mut restore.ext_g_states,
-    );
-    overlay_resource_map(
-        &mut resources.ext_g_state_references,
-        &form_res.ext_g_state_references,
-        &mut restore.ext_g_state_references,
-    );
-    overlay_resource_map(
-        &mut resources.patterns,
-        &form_res.patterns,
-        &mut restore.patterns,
-    );
-    overlay_resource_map(
-        &mut resources.shadings,
-        &form_res.shadings,
-        &mut restore.shadings,
-    );
-    overlay_resource_map(
-        &mut resources.properties,
-        &form_res.properties,
-        &mut restore.properties,
-    );
-    overlay_resource_map(
-        &mut resources.properties_references,
-        &form_res.properties_references,
-        &mut restore.properties_references,
-    );
-    restore
-}
-
-fn overlay_resource_map<T: Clone>(
-    target: &mut HashMap<String, T>,
-    source: &HashMap<String, T>,
-    restore: &mut Vec<(String, Option<T>)>,
-) {
-    for (key, value) in source {
-        restore.push((key.clone(), target.insert(key.clone(), value.clone())));
-    }
-}
-
-fn restore_overlay_map<T>(target: &mut HashMap<String, T>, restore: Vec<(String, Option<T>)>) {
-    for (key, previous) in restore.into_iter().rev() {
-        match previous {
-            Some(value) => {
-                target.insert(key, value);
-            }
-            None => {
-                target.remove(&key);
-            }
-        }
-    }
-}
-
-fn merge_resources_ref(form_res: &PageResources, page_res: &PageResources) -> PageResources {
-    let mut merged = page_res.clone();
-    for (k, v) in &form_res.fonts {
-        merged.fonts.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.font_references {
-        merged.font_references.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.xobjects {
-        merged.xobjects.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.xobject_subtypes {
-        merged.xobject_subtypes.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.xobject_stream_dicts {
-        merged.xobject_stream_dicts.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.xobject_bboxes {
-        merged.xobject_bboxes.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.xobject_matrices {
-        merged.xobject_matrices.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.color_spaces {
-        merged.color_spaces.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.color_space_references {
-        merged.color_space_references.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.ext_g_states {
-        merged.ext_g_states.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.ext_g_state_references {
-        merged.ext_g_state_references.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.patterns {
-        merged.patterns.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.shadings {
-        merged.shadings.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.properties {
-        merged.properties.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.properties_references {
-        merged.properties_references.insert(k.clone(), *v);
-    }
-    merged
-}
-
-/// Merge a Form XObject's resources over the parent page's resources. The
-/// Form's entries take priority on a name collision; names absent from the Form
-/// fall through to the page's resources.
-fn merge_resources(form_res: PageResources, page_res: &PageResources) -> PageResources {
-    merge_resources_ref(&form_res, page_res)
+/// An explicit content-program dictionary is a complete namespace. Legacy
+/// omitted Form/AP/Type3 scopes fall back to the original page, not the caller.
+fn content_resource_scope(local: Option<&PageResources>, page: &PageResources) -> PageResources {
+    local.unwrap_or(page).clone()
 }
 
 #[cfg(test)]
@@ -25600,6 +26059,11 @@ mod tests {
     use super::*;
     use crate::images::encoder::ImageEncoder;
     use crate::render::{flatten_path, Path, PathPainter, RenderColor, BLACK, BLUE, RED, WHITE};
+
+    include!("resource_scope_tests.rs");
+    include!("default_color_render_tests.rs");
+    include!("shading_parameter_render_tests.rs");
+    include!("function_cache_render_tests.rs");
 
     fn fixture(path: &str) -> String {
         format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), path)
@@ -25617,6 +26081,29 @@ mod tests {
             vertical_advance: None,
             vertical_origin: None,
         }
+    }
+
+    #[test]
+    fn vertical_spacing_and_numeric_tj_advance_share_the_original_writing_axis() {
+        let engine = ContentEngine::open_bytes(simple_vector_pdf("")).unwrap();
+        let mut state = blank_render_state(&engine);
+        let mut font = PdfDictionary::empty();
+        font.insert("Subtype", PdfObject::Name("Type0".into()));
+        font.insert("Encoding", PdfObject::Name("Identity-V".into()));
+        state.resources.fonts.insert("V".into(), font);
+        state.gs.text.font_name = "V".into();
+        state.gs.text.font_size = 10.0;
+        state.gs.text.char_spacing = 2.0;
+        state.gs.text.word_spacing = 4.0;
+        state.gs.text.horizontal_scaling = 50.0;
+        state.gs.text.tm = [0.0, 1.0, -1.0, 0.0, 20.0, 30.0];
+        let mut glyph = decoded_glyph('A', false, None);
+        glyph.is_vertical = true;
+        glyph.vertical_advance = Some(-1000.0);
+        state.advance_decoded_text(1000.0, &glyph).unwrap();
+        assert_eq!([state.gs.text.tm[4], state.gs.text.tm[5]], [28.0, 30.0]);
+        state.adjust_text_position(-1600.0);
+        assert_eq!([state.gs.text.tm[4], state.gs.text.tm[5]], [44.0, 30.0]);
     }
 
     fn blank_render_state(engine: &ContentEngine) -> RenderState<'_> {
@@ -26444,6 +26931,101 @@ mod tests {
         );
         assert_eq!(state.decode_limits.max_decoded_bytes_per_stream, 17);
         assert_eq!(state.decode_limits.max_image_decoded_bytes, 17);
+    }
+
+    #[test]
+    fn soft_mask_transfer_honors_graph_and_decoded_limits_cold_and_warm() {
+        use crate::render::parameter_dictionary::tests::{bytes_with_objects, numbers, reference};
+        let mut dict = PdfDictionary::empty();
+        dict.insert("FunctionType", PdfObject::Integer(0));
+        dict.insert("Domain", numbers(&[0.0, 1.0]));
+        dict.insert("Range", numbers(&[0.0, 1.0]));
+        dict.insert("Size", PdfObject::Array(vec![PdfObject::Integer(4)]));
+        dict.insert("BitsPerSample", PdfObject::Integer(8));
+        let object = PdfObject::Stream {
+            dict,
+            raw: vec![0, 0, 255, 255],
+        };
+        for warm in [false, true] {
+            for decoded_limit in [false, true] {
+                let engine =
+                    ContentEngine::open_bytes(bytes_with_objects(&[object.clone()])).unwrap();
+                let reader = engine.document().reader();
+                let cost =
+                    crate::render::function::PreparedFunction::prepare(&reference(4), 1, reader)
+                        .unwrap()
+                        .retained_bytes();
+                let mut state = blank_render_state(&engine);
+                if warm {
+                    crate::render::function::PreparedFunction::cached_with_resources(
+                        &reference(4),
+                        1,
+                        false,
+                        reader,
+                        state.function_resources(),
+                    )
+                    .unwrap();
+                }
+                state.apply_resource_budget(RenderResourceBudget {
+                    max_temporary_bytes: if decoded_limit { 4096 } else { cost as u64 - 1 },
+                    max_decoded_bytes: if decoded_limit { 3 } else { 4 },
+                    ..RenderResourceBudget::default()
+                });
+                let mut mask = PdfDictionary::empty();
+                mask.insert("TR", reference(4));
+                mask.insert("BC", numbers(&[1.0]));
+                assert!(
+                    state.build_transfer_lut(&mask).is_err(),
+                    "warm={warm} decoded={decoded_limit}"
+                );
+                assert!(alpha_smask_uses_opaque_bc_backdrop_with_resources(
+                    &mask,
+                    reader,
+                    state.function_resources()
+                )
+                .is_err());
+                drop(
+                    state
+                        .temporary_scheduler
+                        .budget
+                        .try_acquire(state.resource_budget.max_temporary_bytes)
+                        .unwrap(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn soft_mask_transfer_shares_budget_with_live_offscreen_storage() {
+        use crate::render::parameter_dictionary::tests::{bytes_with_objects, numbers, reference};
+        let mut dict = PdfDictionary::empty();
+        dict.insert("FunctionType", PdfObject::Integer(2));
+        dict.insert("Domain", numbers(&[0.0, 1.0]));
+        dict.insert("N", PdfObject::Integer(1));
+        let engine =
+            ContentEngine::open_bytes(bytes_with_objects(&[PdfObject::Dictionary(dict)])).unwrap();
+        let reader = engine.document().reader();
+        let graph =
+            crate::render::function::PreparedFunction::cached_single(&reference(4), 1, reader)
+                .unwrap();
+        let mut state = blank_render_state(&engine);
+        state.apply_resource_budget(RenderResourceBudget {
+            max_temporary_bytes: 4096,
+            ..RenderResourceBudget::default()
+        });
+        let mut mask = PdfDictionary::empty();
+        mask.insert("TR", reference(4));
+        let surface = state
+            .temporary_scheduler
+            .budget
+            .try_acquire(4096 - graph.retained_bytes() as u64 + 1)
+            .unwrap();
+        assert!(state.build_transfer_lut(&mask).is_err());
+        drop(surface);
+        let table = state.build_transfer_lut(&mask).unwrap().unwrap();
+        assert_eq!(table[0], 0);
+        assert_eq!(table[255], 255);
+        drop(state.temporary_scheduler.budget.try_acquire(4096).unwrap());
     }
 
     #[test]
@@ -27344,6 +27926,7 @@ mod tests {
                 },
                 RawImageComponentSelection::All,
                 None,
+                None,
             )
             .expect("inline raw window decode");
 
@@ -27554,7 +28137,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_type0_odd_text_code_returns_typed_refusal() {
+    fn renderer_type0_odd_text_code_paints_valid_prefix_and_ignores_only_suffix() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
         let mut state = blank_render_state(&engine);
         let mut font = PdfDictionary::empty();
@@ -27567,12 +28150,8 @@ mod tests {
         state.gs.text.font_size = 12.0;
 
         state.render_text_string(&[0x00, 0x48, 0x56]);
-        let error = state
-            .check_fatal_render_error()
-            .expect_err("odd Type0 text bytes must fail closed instead of padding a CID");
-        assert!(
-            format!("{error}").contains("incomplete 2-byte character code"),
-            "got {error}"
+        state.check_fatal_render_error().expect(
+            "valid Type0 prefix must survive an incomplete trailing code without padding it",
         );
     }
 
@@ -27601,7 +28180,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_text_advance_requires_real_metric_source() {
+    fn exact_text_advance_prefers_real_metric_and_accepts_decoded_advance() {
         let glyph = decoded_glyph('A', false, None);
         let font_bytes = get_fallback_font("Helvetica").expect("standard fallback font");
         let advance = decoded_text_horizontal_advance(
@@ -27616,7 +28195,7 @@ mod tests {
         .expect("standard fallback font has real metrics");
         assert!(advance > 0.0);
 
-        let error = decoded_text_horizontal_advance(
+        let decoded_advance = decoded_text_horizontal_advance(
             ExactnessPolicy::HighQualityExact,
             "BrokenFont",
             &glyph,
@@ -27625,11 +28204,8 @@ mod tests {
             &VariationRequest::none(),
             false,
         )
-        .expect_err("exact mode must reject synthetic fallback advances");
-        assert!(
-            error.contains("no real font advance metric"),
-            "unexpected error: {error}"
-        );
+        .expect("decoded glyph advance is a bounded metric source");
+        assert_eq!(decoded_advance, 500.0);
     }
 
     #[test]
@@ -29775,7 +30351,7 @@ mod tests {
     }
 
     #[test]
-    fn form_resource_overlay_preserves_properties_reference() {
+    fn form_resource_scope_isolates_and_restores_properties_reference() {
         let mut page_resources = PageResources::default();
         page_resources.properties.insert(
             "PageLayer".to_string(),
@@ -29801,18 +30377,18 @@ mod tests {
             .insert("FormLayer".to_string(), (6, 0));
 
         let mut overlaid = page_resources.clone();
-        let restore = overlay_page_resources(&mut overlaid, &form_resources);
-        assert_eq!(
-            overlaid.properties_references.get("PageLayer"),
-            Some(&(5, 0))
+        let restore = std::mem::replace(
+            &mut overlaid,
+            content_resource_scope(Some(&form_resources), &page_resources),
         );
+        assert!(!overlaid.properties_references.contains_key("PageLayer"));
         assert_eq!(
             overlaid.properties_references.get("FormLayer"),
             Some(&(6, 0))
         );
         assert!(overlaid.properties.contains_key("FormLayer"));
 
-        restore.restore(&mut overlaid);
+        overlaid = restore;
         assert_eq!(overlaid.properties, page_resources.properties);
         assert_eq!(
             overlaid.properties_references,
@@ -32964,6 +33540,46 @@ mod tests {
     }
 
     #[test]
+    fn multichannel_smask_transfer_is_not_silently_truncated() {
+        let content = "q /GS1 gs 0.2 0.6 0.9 rg 10 10 200 140 re f Q";
+        let mask = "1 g 50 50 100 100 re f";
+        let transfer =
+            "<< /FunctionType 2 /Domain [0 1] /C0 [0 1] /C1 [1 0] /N 1 /Range [0 1 0 1] >>";
+        let engine =
+            ContentEngine::open_bytes(pdf_with_alpha_smask(content, mask, "1", Some(transfer)))
+                .unwrap();
+        let error = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect_err("two-output SMask TR is not a scalar transfer");
+        assert!(error
+            .to_string()
+            .contains("unsupported or malformed SMask /TR function"));
+    }
+
+    #[test]
+    fn indirect_identity_smask_transfer_preserves_every_pixel() {
+        let content = "q /GS1 gs 0.2 0.6 0.9 rg 10 10 200 140 re f Q";
+        let mask = "0.5 g 50 50 100 100 re f";
+        let reference =
+            ContentEngine::open_bytes(pdf_with_alpha_smask(content, mask, "0", None)).unwrap();
+        // The helper stores /Identity in object 7 and uses /TR 7 0 R.
+        let candidate =
+            ContentEngine::open_bytes(pdf_with_alpha_smask(content, mask, "0", Some("/Identity")))
+                .unwrap();
+        let expected = reference
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .unwrap();
+        let actual = candidate
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .unwrap();
+        for y in 0..160 {
+            for x in 0..220 {
+                assert_eq!(actual.get_pixel(x, y), expected.get_pixel(x, y));
+            }
+        }
+    }
+
+    #[test]
     fn alpha_smask_backdrop_transfer_rejects_empty_function_output() {
         use std::collections::BTreeMap;
 
@@ -33206,25 +33822,27 @@ mod tests {
     }
 
     #[test]
-    fn pattern_color_space_without_pattern_name_returns_typed_refusal() {
+    fn pattern_color_space_initial_colour_paints_nothing() {
         let pdf = pdf_with_pattern_color_space_without_pattern_name();
-        let engine = ContentEngine::open_bytes(pdf).expect("open missing pattern-name PDF");
-        let error = engine
+        let engine = ContentEngine::open_bytes(pdf).expect("open initial Pattern colour PDF");
+        let rendered = engine
             .render_page_with_mode(1, 72, RenderMode::Compat)
-            .expect_err("pattern paint without a pattern name must not silently drop paint");
-        assert!(format!("{error}").contains("pattern fill requires an active pattern name"));
+            .expect("the initial Pattern colour is valid no-paint state");
+        assert_eq!(rendered.get_pixel(50, 50), WHITE);
     }
 
     #[test]
-    fn uncolored_tiling_pattern_invalid_component_count_returns_typed_refusal() {
-        let pdf = pdf_with_uncolored_tiling_pattern_invalid_component_count();
+    fn uncolored_tiling_pattern_without_declared_base_returns_typed_refusal() {
+        let pdf = pdf_with_uncolored_tiling_pattern_without_declared_base();
         let engine =
             ContentEngine::open_bytes(pdf).expect("open invalid uncolored pattern color PDF");
         let error = engine
             .render_page_with_mode(1, 72, RenderMode::Compat)
             .expect_err("invalid uncolored pattern color must not be inferred as RGB");
         assert!(
-            format!("{error}").contains("uncolored tiling pattern color has 2 components"),
+            format!("{error}").contains(
+                "uncolored tiling pattern requires a selected [/Pattern base] colour space"
+            ),
             "got {error}"
         );
     }
@@ -34606,7 +35224,7 @@ mod tests {
     }
 
     #[test]
-    fn extgstate_stroke_adjustment_refuses_only_visible_stroke_paint() {
+    fn extgstate_stroke_adjustment_renders_fill_and_stroke_paint() {
         let fill_pdf = simple_vector_pdf_with_extgstate(
             "/GS1 gs 1 0 0 rg 10 10 40 40 re f\n",
             "<< /Type /ExtGState /SA true >>",
@@ -34620,20 +35238,18 @@ mod tests {
             "/GS1 gs 1 0 0 RG 4 w 10 10 m 90 10 l S\n",
             "<< /Type /ExtGState /SA true >>",
         );
-        let direct = direct_render_error(stroke_pdf.clone());
-        assert!(
-            direct.contains("/SA true stroke-adjustment"),
-            "direct stroke refusal should name SA semantics: {direct}"
-        );
+        let direct_engine =
+            ContentEngine::open_bytes(stroke_pdf.clone()).expect("open SA stroke PDF");
+        direct_engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect(
+                "active renderer supports SA stroke adjustment through device-space rasterization",
+            );
 
         let engine = ContentEngine::open_bytes(stroke_pdf).expect("open SA stroke PDF");
-        let retained =
-            PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
-                .expect_err("retained replay must refuse SA true visible stroke");
-        let retained = format!("{retained}");
-        assert!(
-            retained.contains("/SA true stroke-adjustment"),
-            "retained stroke refusal should name SA semantics: {retained}"
+        PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
+            .expect(
+            "retained renderer supports SA stroke adjustment through device-space rasterization",
         );
     }
 
@@ -34707,26 +35323,20 @@ mod tests {
     }
 
     #[test]
-    fn extgstate_stroke_adjustment_refuses_visible_stroked_text_paint() {
+    fn extgstate_stroke_adjustment_renders_visible_stroked_text_paint() {
         let pdf = simple_text_pdf_with_extgstate(
             "/GS1 gs BT /F1 12 Tf 1 Tr 10 50 Td (A) Tj ET\n",
             "<< /Type /ExtGState /SA true >>",
         );
-        let direct = direct_render_error(pdf.clone());
-        assert!(
-            direct.contains("/SA true stroke-adjustment"),
-            "direct stroked-text refusal should name SA semantics: {direct}"
-        );
+        let direct_engine =
+            ContentEngine::open_bytes(pdf.clone()).expect("open SA stroked-text PDF");
+        direct_engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("active renderer supports SA stroked text");
 
         let engine = ContentEngine::open_bytes(pdf).expect("open retained SA stroked-text PDF");
-        let retained =
-            PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
-                .expect_err("retained replay must refuse SA true visible stroked text");
-        let retained = format!("{retained}");
-        assert!(
-            retained.contains("/SA true stroke-adjustment"),
-            "retained stroked-text refusal should name SA semantics: {retained}"
-        );
+        PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
+            .expect("retained renderer supports SA stroked text");
     }
 
     #[test]
@@ -34836,6 +35446,65 @@ mod tests {
         assert!(
             format!("{error}").contains("Packed plan replay: restore has no saved graphics state"),
             "got {error}"
+        );
+    }
+
+    #[test]
+    fn raw_ext_gstate_font_rebinds_the_object_even_when_a_form_reuses_its_name() {
+        let engine = ContentEngine::open_bytes(simple_vector_pdf("")).unwrap();
+        let mut state = blank_render_state(&engine);
+        let mut page_font = PdfDictionary::empty();
+        page_font.insert("Subtype", PdfObject::Name("Type1".into()));
+        page_font.insert("BaseFont", PdfObject::Name("Helvetica".into()));
+        state.set_active_text_font("F", 10.0, Some(page_font));
+        let mut form_font = PdfDictionary::empty();
+        form_font.insert("Subtype", PdfObject::Name("Type1".into()));
+        form_font.insert("BaseFont", PdfObject::Name("Courier".into()));
+        state.resources.fonts.insert("F".into(), form_font);
+        let mut gs = PdfDictionary::empty();
+        gs.insert(
+            "Font",
+            PdfObject::Array(vec![PdfObject::Name("F".into()), PdfObject::Integer(20)]),
+        );
+        state.resources.ext_g_states.insert("G".into(), gs);
+        assert_eq!(
+            state
+                .current_text_font_resource("F")
+                .0
+                .unwrap()
+                .get_name("BaseFont"),
+            Some("Helvetica")
+        );
+        state.apply_ext_g_state(&ContentOperation::new(
+            "gs",
+            vec![Operand::Name("G".into())],
+        ));
+        state.check_fatal_render_error().unwrap();
+        assert_eq!(state.gs.text.font_size, 20.0);
+        assert_eq!(
+            state
+                .current_text_font_resource("F")
+                .0
+                .unwrap()
+                .get_name("BaseFont"),
+            Some("Courier")
+        );
+        state.resources.fonts.remove("F");
+        state
+            .resources
+            .ext_g_states
+            .insert("Alpha".into(), PdfDictionary::empty());
+        state.apply_ext_g_state(&ContentOperation::new(
+            "gs",
+            vec![Operand::Name("Alpha".into())],
+        ));
+        assert_eq!(
+            state
+                .current_text_font_resource("F")
+                .0
+                .unwrap()
+                .get_name("BaseFont"),
+            Some("Courier")
         );
     }
 
@@ -34963,6 +35632,7 @@ mod tests {
             ops: retained_inner_ops_with_unbalanced_save(),
             advance_width: None,
             glyph_bbox: Some([0.0, 0.0, 1.0, 1.0]),
+            resources: Some(state.resources.clone()),
         };
 
         let rendered = state.render_type3_charproc_full_with_ctm(
@@ -36409,7 +37079,7 @@ mod tests {
         build_test_pdf_from_objects(&objects)
     }
 
-    fn pdf_with_uncolored_tiling_pattern_invalid_component_count() -> Vec<u8> {
+    fn pdf_with_uncolored_tiling_pattern_without_declared_base() -> Vec<u8> {
         let content = "/Pattern cs 0.2 0.4 /P1 scn\n0 0 100 100 re f\n";
         let pattern = "0 0 10 10 re f\n";
         let objects = [
@@ -39412,6 +40082,7 @@ mod tests {
 
     fn sample_type3_charproc() -> Arc<Type3CharProc> {
         Arc::new(Type3CharProc {
+            resources: None,
             ops: vec![
                 ContentOperation::new("d1", vec![Operand::Real(500.0), Operand::Real(0.0)]),
                 ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]),
@@ -39425,6 +40096,7 @@ mod tests {
 
     fn sample_retained_type3_charproc() -> Arc<Type3CharProc> {
         Arc::new(Type3CharProc {
+            resources: None,
             ops: vec![
                 ContentOperation::new("d0", vec![Operand::Real(500.0), Operand::Real(0.0)]),
                 ContentOperation::new(
@@ -39798,6 +40470,7 @@ mod tests {
             ops: vec![ContentOperation::new("QQQ", Vec::new())],
             advance_width: None,
             glyph_bbox: None,
+            resources: None,
         };
         let cache_key = type3_retained_charproc_plan_cache_key(
             "font-a\0A",
@@ -41223,7 +41896,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_resources_form_xobjects_override_page() {
+    fn explicit_form_scope_does_not_inherit_other_page_xobjects() {
         let mut page_res = PageResources::default();
         page_res.xobjects.insert("X1".into(), (10, 0));
         page_res.xobjects.insert("X2".into(), (11, 0));
@@ -41232,26 +41905,30 @@ mod tests {
         form_res.xobjects.insert("X1".into(), (20, 0)); // overrides X1
         form_res.xobjects.insert("X3".into(), (30, 0)); // new
 
-        let merged = merge_resources(form_res, &page_res);
+        let merged = content_resource_scope(Some(&form_res), &page_res);
         assert_eq!(merged.xobjects["X1"], (20, 0), "Form X1 overrides page X1");
-        assert_eq!(merged.xobjects["X2"], (11, 0), "page X2 inherited");
+        assert!(!merged.xobjects.contains_key("X2"), "page X2 must not leak");
         assert_eq!(merged.xobjects["X3"], (30, 0), "Form X3 added");
     }
 
     #[test]
-    fn merge_resources_empty_form_yields_page_resources() {
+    fn missing_form_scope_yields_page_resources_but_empty_does_not() {
         let mut page_res = PageResources::default();
         page_res.xobjects.insert("Im1".into(), (5, 0));
         page_res.fonts.insert("F1".into(), PdfDictionary::empty());
         page_res.font_references.insert("F1".into(), (6, 0));
-        let merged = merge_resources(PageResources::default(), &page_res);
+        let merged = content_resource_scope(None, &page_res);
         assert_eq!(merged.xobjects["Im1"], (5, 0));
         assert!(merged.fonts.contains_key("F1"));
         assert_eq!(merged.font_references["F1"], (6, 0));
+        let empty = content_resource_scope(Some(&PageResources::default()), &page_res);
+        assert!(empty.xobjects.is_empty());
+        assert!(empty.fonts.is_empty());
+        assert!(empty.font_references.is_empty());
     }
 
     #[test]
-    fn merge_resources_form_font_overrides_page_font() {
+    fn explicit_form_font_and_reference_replace_page_scope_together() {
         let mut page_res = PageResources::default();
         page_res
             .fonts
@@ -41264,7 +41941,7 @@ mod tests {
             .insert("F1".into(), dict_with(&[("Tag", PdfObject::Integer(2))]));
         form_res.font_references.insert("F1".into(), (20, 0));
 
-        let merged = merge_resources(form_res, &page_res);
+        let merged = content_resource_scope(Some(&form_res), &page_res);
         assert_eq!(
             merged.fonts["F1"].get_integer("Tag"),
             Some(2),

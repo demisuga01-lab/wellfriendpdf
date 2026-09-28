@@ -148,6 +148,70 @@ impl DecodeMemoryBudget {
         }
     }
 
+    /// Start an empty, nonblocking reservation which can grow as an immutable
+    /// resource is prepared. Zero bytes really reserve zero here.
+    pub(crate) fn reservation(self: &Arc<Self>) -> DecodeMemoryToken {
+        DecodeMemoryToken {
+            budget: Arc::clone(self),
+            bytes: 0,
+        }
+    }
+
+    /// Reserve a bounded decoder-output window atomically. Never wait while a
+    /// nested renderer already owns other tokens from this budget.
+    pub(crate) fn try_acquire_up_to(
+        self: &Arc<Self>,
+        minimum: u64,
+        maximum: u64,
+    ) -> Result<DecodeMemoryToken> {
+        if minimum > maximum {
+            return Err(WellfriendError::MalformedPdf(
+                "invalid decode reservation range".into(),
+            ));
+        }
+        crate::cancel::check_current_cancel("decode memory reservation")?;
+        let mut state = self.state.lock().map_err(|_| {
+            WellfriendError::ParseError("decode scheduler memory budget lock poisoned".into())
+        })?;
+        let bytes = maximum.min(self.limit.saturating_sub(state.reserved));
+        if bytes < minimum {
+            return Err(WellfriendError::MalformedPdf(
+                "insufficient decode reservation capacity".into(),
+            ));
+        }
+        state.reserved += bytes;
+        state.peak = state.peak.max(state.reserved);
+        Ok(DecodeMemoryToken {
+            budget: Arc::clone(self),
+            bytes,
+        })
+    }
+
+    /// Reserve without waiting. Nested rendering may already hold a surface
+    /// token from this budget on the same thread, so waiting there can deadlock.
+    pub(crate) fn try_acquire(self: &Arc<Self>, requested: u64) -> Result<DecodeMemoryToken> {
+        let requested = requested.max(1);
+        let mut state = self.state.lock().map_err(|_| {
+            WellfriendError::ParseError("decode scheduler memory budget lock poisoned".into())
+        })?;
+        let next = state
+            .reserved
+            .checked_add(requested)
+            .filter(|next| *next <= self.limit)
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(format!(
+                    "temporary render storage requested {requested} bytes with {} remaining",
+                    self.limit.saturating_sub(state.reserved)
+                ))
+            })?;
+        state.reserved = next;
+        state.peak = state.peak.max(next);
+        Ok(DecodeMemoryToken {
+            budget: Arc::clone(self),
+            bytes: requested,
+        })
+    }
+
     pub fn acquire(self: &Arc<Self>, requested: u64) -> Result<DecodeMemoryToken> {
         let requested = requested.max(1);
         if requested > self.limit {
@@ -241,6 +305,56 @@ impl DecodeSchedulerContext {
 pub struct DecodeMemoryToken {
     budget: Arc<DecodeMemoryBudget>,
     bytes: u64,
+}
+
+impl DecodeMemoryToken {
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Grow or shrink without releasing already-accounted live storage. Failed
+    /// growth leaves both the token and aggregate counter unchanged.
+    pub(crate) fn resize(&mut self, bytes: u64) -> Result<()> {
+        if bytes > self.bytes {
+            crate::cancel::check_current_cancel("decode reservation growth")?;
+        }
+        let mut state = self.budget.state.lock().map_err(|_| {
+            WellfriendError::ParseError("decode scheduler memory budget lock poisoned".into())
+        })?;
+        if bytes > self.bytes {
+            let next = state
+                .reserved
+                .checked_add(bytes - self.bytes)
+                .filter(|&next| next <= self.budget.limit)
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf(
+                        "decode reservation growth exceeds memory budget".into(),
+                    )
+                })?;
+            state.reserved = next;
+            state.peak = state.peak.max(next);
+        } else {
+            state.reserved -= self.bytes - bytes;
+            self.budget.available.notify_all();
+        }
+        self.bytes = bytes;
+        Ok(())
+    }
+
+    /// Transfer a decoder window to its retained graph without a release/grow
+    /// race or double charging. Different scheduler owners cannot be combined.
+    pub(crate) fn absorb(&mut self, mut other: Self) -> Result<()> {
+        if !Arc::ptr_eq(&self.budget, &other.budget) {
+            return Err(WellfriendError::MalformedPdf(
+                "cannot combine different memory budgets".into(),
+            ));
+        }
+        self.bytes = self.bytes.checked_add(other.bytes).ok_or_else(|| {
+            WellfriendError::MalformedPdf("decode reservation size overflow".into())
+        })?;
+        other.bytes = 0;
+        Ok(())
+    }
 }
 
 impl Drop for DecodeMemoryToken {
@@ -349,6 +463,80 @@ pub fn estimate_image_decode_bytes(image: &ImageReference) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_reservation_growth_failure_and_shrink_are_atomic() {
+        let budget = Arc::new(DecodeMemoryBudget::new(16));
+        let mut token = budget.reservation();
+        assert_eq!(budget.state.lock().unwrap().reserved, 0);
+        token.resize(10).unwrap();
+        assert!(token.resize(17).is_err());
+        assert_eq!(token.bytes(), 10);
+        assert_eq!(budget.state.lock().unwrap().reserved, 10);
+        token.resize(4).unwrap();
+        let other = budget.try_acquire(12).unwrap();
+        assert!(budget.try_acquire(1).is_err());
+        drop(token);
+        assert_eq!(budget.state.lock().unwrap().reserved, 12);
+        drop(other);
+        assert_eq!(budget.state.lock().unwrap().reserved, 0);
+        assert_eq!(budget.metrics().peak_reserved_bytes, 16);
+    }
+
+    #[test]
+    fn decoder_window_respects_minimum_and_live_sibling_reservations() {
+        let budget = Arc::new(DecodeMemoryBudget::new(16));
+        let sibling = budget.try_acquire(6).unwrap();
+        assert!(budget.try_acquire_up_to(11, 16).is_err());
+        assert!(budget.try_acquire_up_to(8, 7).is_err());
+        let window = budget.try_acquire_up_to(4, 16).unwrap();
+        assert_eq!(window.bytes(), 10);
+        assert_eq!(budget.state.lock().unwrap().reserved, 16);
+        drop(window);
+        drop(sibling);
+        assert_eq!(budget.state.lock().unwrap().reserved, 0);
+    }
+
+    #[test]
+    fn absorb_transfers_reservation_without_releasing_live_storage() {
+        let budget = Arc::new(DecodeMemoryBudget::new(16));
+        let mut graph = budget.try_acquire(6).unwrap();
+        let mut window = budget.try_acquire_up_to(4, 16).unwrap();
+        window.resize(4).unwrap();
+        graph.absorb(window).unwrap();
+        assert_eq!(graph.bytes(), 10);
+        assert_eq!(budget.state.lock().unwrap().reserved, 10);
+        let other_budget = Arc::new(DecodeMemoryBudget::new(16));
+        assert!(graph.absorb(other_budget.try_acquire(3).unwrap()).is_err());
+        assert_eq!(graph.bytes(), 10);
+        assert_eq!(other_budget.state.lock().unwrap().reserved, 0);
+        drop(graph);
+        assert_eq!(budget.state.lock().unwrap().reserved, 0);
+    }
+
+    #[test]
+    fn cancelled_growth_keeps_existing_reservation_and_can_still_release() {
+        let budget = Arc::new(DecodeMemoryBudget::new(16));
+        let mut graph = budget.try_acquire(4).unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert!(cancel.scope(|| graph.resize(5)).is_err());
+        assert!(cancel.scope(|| budget.try_acquire_up_to(1, 4)).is_err());
+        assert_eq!(graph.bytes(), 4);
+        cancel.scope(|| graph.resize(0)).unwrap();
+        assert_eq!(budget.state.lock().unwrap().reserved, 0);
+    }
+
+    #[test]
+    fn reservation_unwind_returns_all_accounted_bytes() {
+        let budget = Arc::new(DecodeMemoryBudget::new(16));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut token = budget.reservation();
+            token.resize(16).unwrap();
+            panic!("release live function reservation");
+        }));
+        assert_eq!(budget.state.lock().unwrap().reserved, 0);
+    }
 
     #[test]
     fn scheduler_preserves_output_order() {

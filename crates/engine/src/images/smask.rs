@@ -115,6 +115,7 @@ impl SmaskLoader {
                     RawImageComponentSelection::All,
                     limits,
                     ColorTransformOptions::default(),
+                    None,
                 )
             }
             None => ImageDecoder::decode_with_limits(&smask_image_ref, reader, limits),

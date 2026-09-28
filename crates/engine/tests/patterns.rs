@@ -133,12 +133,13 @@ fn uncolored_pattern_uses_fill_color_at_point_of_use() {
     b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
     b.add(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 40 20] /Contents 4 0 R \
-         /Resources << /Pattern << /P1 5 0 R >> >> >>",
+         /Resources << /ColorSpace << /PC [/Pattern /DeviceRGB] >> \
+         /Pattern << /P1 5 0 R >> >> >>",
     ); // 3
        // Left rect [0,0,20,20] in green pattern; right rect [20,0,20,20] in blue.
        // Pattern color space is [/Pattern /DeviceRGB] so scn takes color + name.
     let content = b"1 1 1 rg 0 0 40 20 re f\n\
-                    /Pattern cs\n\
+                    /PC cs\n\
                     0 1 0 /P1 scn 0 0 20 20 re f\n\
                     0 0 1 /P1 scn 20 0 20 20 re f\n";
     b.add_stream("", content); // 4

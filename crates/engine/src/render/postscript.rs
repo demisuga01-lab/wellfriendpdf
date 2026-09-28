@@ -57,6 +57,7 @@ use crate::filters::DecodeLimits;
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::locator::ImageReference;
 use crate::object::{PdfDictionary, PdfObject};
+use crate::reader::PdfReader;
 use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::glyph_outline::{font_size_scale, get_upem};
 use crate::render::line::DashState;
@@ -73,9 +74,8 @@ use crate::render::vector_fallback::{
     decode_inline_image_region, ensure_regional_raw_image, ensure_regional_stencil_mask,
     image_device_placement, inline_mask_sample_paints, load_vector_form_program,
     load_vector_shading_for_postscript_output, load_vector_shading_pattern_for_postscript_output,
-    load_vector_tiling_pattern, merged_vector_resources,
-    resolved_regional_image_color_space_override, stencil_mask_paints_ones,
-    vector_uncolored_tiling_paint_color, VectorFallbackDecision,
+    load_vector_tiling_pattern, resolved_regional_image_color_space_override,
+    stencil_mask_paints_ones, vector_uncolored_tiling_paint_color, VectorFallbackDecision,
     VectorPostScriptAlternateColorSpace, VectorPostScriptCmykStitchingFunction,
     VectorPostScriptNamedColorFamily, VectorPostScriptShadingColorSpace,
     VectorPostScriptShadingFunction, VectorPostScriptStitchingFunction,
@@ -206,6 +206,7 @@ fn render_vector_ps(
     let mut sink = PsSink::new(w, h);
     let mut state = PsRenderState {
         engine,
+        page_resources: resources.clone(),
         resources: resources.clone(),
         viewport: viewport.clone(),
         gs: GraphicsState::default(),
@@ -267,13 +268,14 @@ fn regional_image_reference(
     generation_number: u16,
     dict: &PdfDictionary,
     is_mask: bool,
+    reader: &PdfReader,
 ) -> Result<ImageReference> {
     let context = format!("regional PS image /{name}");
     let filter = extract_image_filter_names(dict, &context)?;
     let color_space = if is_mask {
         "DeviceGray".to_string()
     } else {
-        extract_image_color_space_name(dict, &context)?
+        extract_image_color_space_name(dict, reader, &context)?
     };
     Ok(ImageReference {
         page_number: 0,
@@ -384,21 +386,32 @@ fn regional_terminal_filter_carries_sample_depth(filters: &[String]) -> bool {
     )
 }
 
-fn extract_image_color_space_name(dict: &PdfDictionary, context: &str) -> Result<String> {
-    match dict.get("ColorSpace").or_else(|| dict.get("CS")) {
-        Some(PdfObject::Name(name)) => Ok(canonical_image_color_space_name(name)),
-        Some(PdfObject::Array(items)) => items
+fn extract_image_color_space_name(
+    dict: &PdfDictionary,
+    reader: &PdfReader,
+    context: &str,
+) -> Result<String> {
+    let source = dict
+        .get("ColorSpace")
+        .or_else(|| dict.get("CS"))
+        .ok_or_else(|| WellfriendError::MalformedPdf(format!("{context} missing /ColorSpace")))?;
+    let resolved = match source {
+        PdfObject::Reference { .. } => reader.resolve(source.clone()).map_err(|err| {
+            WellfriendError::MalformedPdf(format!("{context} failed to resolve /ColorSpace: {err}"))
+        })?,
+        other => other.clone(),
+    };
+    match &resolved {
+        PdfObject::Name(name) => Ok(canonical_image_color_space_name(&name)),
+        PdfObject::Array(items) => items
             .first()
             .and_then(PdfObject::as_name)
             .map(canonical_image_color_space_name)
             .ok_or_else(|| {
                 WellfriendError::MalformedPdf(format!("{context} malformed /ColorSpace array"))
             }),
-        Some(_) => Err(WellfriendError::MalformedPdf(format!(
+        _ => Err(WellfriendError::MalformedPdf(format!(
             "{context} /ColorSpace is not a name or array"
-        ))),
-        None => Err(WellfriendError::MalformedPdf(format!(
-            "{context} missing /ColorSpace"
         ))),
     }
 }
@@ -631,6 +644,7 @@ impl PsSink {
 struct PsRenderState<'a> {
     engine: &'a ContentEngine,
     resources: PageResources,
+    page_resources: PageResources,
     viewport: Viewport,
     gs: GraphicsState,
     path: Path,
@@ -901,7 +915,7 @@ impl PsRenderState<'_> {
         let context = format!("regional PS image /{name}");
         let is_mask = regional_image_bool(&dict, "ImageMask", "IM", &context)?;
         let _ = regional_image_bool(&dict, "Interpolate", "I", &context)?;
-        let image_ref = regional_image_reference(name, obj_num, gen_num, &dict, is_mask)?;
+        let image_ref = regional_image_reference(name, obj_num, gen_num, &dict, is_mask, reader)?;
         let color_space_override = (!is_mask)
             .then(|| {
                 resolved_regional_image_color_space_override(
@@ -921,6 +935,7 @@ impl PsRenderState<'_> {
                     color_space_obj,
                     &DecodeLimits::default(),
                     crate::render::cmm::ColorTransformOptions::default(),
+                    Some(color_space_obj),
                 )
             }
             None => self.engine.decode_image(&image_ref),
@@ -1299,28 +1314,45 @@ impl PsRenderState<'_> {
     /// path is used.
     fn emit_form_xobject(&mut self, name: &str) {
         if self.form_depth >= MAX_VECTOR_FORM_DEPTH {
+            self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                "PostScript Form /{name} nesting depth exceeded"
+            )));
             return;
         }
         let reader = self.engine.document().reader();
-        let Some(program) = load_vector_form_program(&self.resources, reader, name, &self.gs)
-        else {
+        let Some(program) = load_vector_form_program(
+            &self.resources,
+            &self.page_resources,
+            reader,
+            name,
+            &self.gs,
+        ) else {
+            self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                "PostScript Form /{name} cannot be resolved in its resource scope"
+            )));
             return;
         };
         let form_key = (program.object_number, program.generation_number);
         if self.form_object_stack.contains(&form_key) {
+            self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                "PostScript Form /{name} recursion cycle"
+            )));
             return;
         }
 
         let saved_gs = self.gs.clone();
         let saved_resources = self.resources.clone();
+        let saved_path = std::mem::replace(&mut self.path, Path::new());
+        let saved_pending_clip = self.pending_clip.take();
+        let saved_text_clip = self.text_clip_path.take();
         let saved_image_names = self.regional_image_names.clone();
         let saved_inline_count = self.regional_inline_image_count;
         let saved_form_names = self.regional_form_names.clone();
         let saved_shading_names = self.regional_shading_names.clone();
         let saved_pending_inline = self.pending_inline_params.take();
 
-        let form_resources = merged_vector_resources(program.resources.as_ref(), &self.resources);
-        self.resources = form_resources;
+        self.resources = program.resources.clone();
+        self.gs = program.inherited_gs.clone();
         let form_t = Transform2D::from(program.form_matrix);
         let current_t = Transform2D::from(saved_gs.ctm);
         self.gs.ctm = form_t.concat(&current_t).to_array();
@@ -1331,6 +1363,7 @@ impl PsRenderState<'_> {
         let decision = classify_scoped_postscript_vector_output(
             &program.ops,
             &self.resources,
+            &self.page_resources,
             self.viewport.scale,
             reader,
             self.gs.clone(),
@@ -1364,12 +1397,19 @@ impl PsRenderState<'_> {
             }
             self.run(&program.ops);
             self.sink.push_line("grestore");
+        } else if let VectorFallbackDecision::WholePageRaster { reason } = decision {
+            self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                "PostScript Form /{name} failed scoped vector validation: {reason}"
+            )));
         }
 
         self.form_object_stack.pop();
         self.form_depth = self.form_depth.saturating_sub(1);
         self.gs = saved_gs;
         self.resources = saved_resources;
+        self.path = saved_path;
+        self.pending_clip = saved_pending_clip;
+        self.text_clip_path = saved_text_clip;
         self.regional_image_names = saved_image_names;
         self.regional_inline_image_count = saved_inline_count;
         self.regional_form_names = saved_form_names;
@@ -1734,6 +1774,7 @@ impl PsRenderState<'_> {
         let decision = classify_scoped_postscript_vector_output(
             &program.ops,
             &self.resources,
+            &self.page_resources,
             self.viewport.scale,
             reader,
             self.gs.clone(),
@@ -2246,26 +2287,32 @@ impl PsRenderState<'_> {
             ));
             return false;
         };
-        let mut advance_y = vertical_advance / 1000.0 * self.gs.text.font_size;
-        let spacing = self.gs.text.char_spacing
-            + if glyph.is_space {
-                self.gs.text.word_spacing
-            } else {
-                0.0
-            };
-        if spacing != 0.0 {
-            let sign = if advance_y < 0.0 { -1.0 } else { 1.0 };
-            advance_y += spacing * sign;
-        }
+        let advance_y = crate::fonts::resolver::vertical_text_advance(
+            vertical_advance,
+            self.gs.text.font_size,
+            self.gs.text.char_spacing,
+            self.gs.text.word_spacing,
+            glyph.is_space,
+        );
         self.translate_text_matrix(0.0, advance_y);
         true
     }
 
     fn adjust_text_position(&mut self, adjustment: f64) {
-        let tx = adjustment / 1000.0
-            * self.gs.text.font_size
-            * (self.gs.text.horizontal_scaling / 100.0);
-        self.translate_text_matrix(tx, 0.0);
+        let vertical = self
+            .resources
+            .fonts
+            .get(&self.gs.text.font_name)
+            .is_some_and(|font| {
+                crate::fonts::resolver::uses_vertical_writing(font, self.engine.document().reader())
+            });
+        let [tx, ty] = crate::fonts::resolver::text_position_adjustment(
+            adjustment,
+            self.gs.text.font_size,
+            self.gs.text.horizontal_scaling,
+            vertical,
+        );
+        self.translate_text_matrix(tx, ty);
     }
 
     fn translate_text_matrix(&mut self, tx: f64, ty: f64) {
@@ -2440,10 +2487,10 @@ fn regional_binary_alpha_clip_path(
 
 fn ps_rgb_components(color: [f32; 3]) -> String {
     format!(
-        "{:.4} {:.4} {:.4}",
-        color[0].clamp(0.0, 1.0),
-        color[1].clamp(0.0, 1.0),
-        color[2].clamp(0.0, 1.0)
+        "{} {} {}",
+        ps_function_number(f64::from(color[0].clamp(0.0, 1.0)), 4),
+        ps_function_number(f64::from(color[1].clamp(0.0, 1.0)), 4),
+        ps_function_number(f64::from(color[2].clamp(0.0, 1.0)), 4)
     )
 }
 
@@ -2484,7 +2531,7 @@ fn ps_shading_domain_clause(
     domain: [f64; 2],
     exact: Option<&VectorPostScriptShadingFunction>,
 ) -> String {
-    if exact.is_some() && ((domain[0]).abs() > 1e-9 || (domain[1] - 1.0).abs() > 1e-9) {
+    if exact.is_some() && domain != [0.0, 1.0] {
         format!(" /Domain {}", ps_function_domain(domain))
     } else {
         String::new()
@@ -2582,7 +2629,10 @@ fn ps_rgb_shading_function(
         encode.push_str("0 1 ");
     }
     for stop in &stops[1..stops.len() - 1] {
-        bounds.push_str(&format!("{:.6} ", stop.offset.clamp(0.0, 1.0)));
+        bounds.push_str(&format!(
+            "{} ",
+            ps_function_number(stop.offset.clamp(0.0, 1.0), 6)
+        ));
     }
     format!(
         "<< /FunctionType 3 /Domain [0 1] /Functions [ {functions}] /Bounds [{bounds}] /Encode [{encode}] >>"
@@ -2594,9 +2644,9 @@ fn ps_rgb_exact_type2_function(function: &VectorPostScriptType2Function) -> Stri
     let c1 = ps_rgb_components_f64(function.c1);
     let range = ps_function_range(function.range.as_ref());
     format!(
-        "<< /FunctionType 2 /Domain {} /C0 [{c0}] /C1 [{c1}] /N {:.6}{range} >>",
+        "<< /FunctionType 2 /Domain {} /C0 [{c0}] /C1 [{c1}] /N {}{range} >>",
         ps_function_domain(function.domain),
-        function.n
+        ps_function_number(function.n, 6)
     )
 }
 
@@ -2614,11 +2664,11 @@ fn ps_rgb_exact_type2_component_function(
 ) -> String {
     let range = ps_component_function_range(function.range);
     format!(
-        "<< /FunctionType 2 /Domain {} /C0 [{:.4}] /C1 [{:.4}] /N {:.6}{range} >>",
+        "<< /FunctionType 2 /Domain {} /C0 [{}] /C1 [{}] /N {}{range} >>",
         ps_function_domain(function.domain),
-        function.c0.clamp(0.0, 1.0),
-        function.c1.clamp(0.0, 1.0),
-        function.n
+        ps_function_number(function.c0, 4),
+        ps_function_number(function.c1, 4),
+        ps_function_number(function.n, 6)
     )
 }
 
@@ -2627,9 +2677,9 @@ fn ps_cmyk_exact_type2_function(function: &VectorPostScriptType2CmykFunction) ->
     let c1 = ps_cmyk_components_f64(function.c1);
     let range = ps_function_range(function.range.as_ref());
     format!(
-        "<< /FunctionType 2 /Domain {} /C0 [{c0}] /C1 [{c1}] /N {:.6}{range} >>",
+        "<< /FunctionType 2 /Domain {} /C0 [{c0}] /C1 [{c1}] /N {}{range} >>",
         ps_function_domain(function.domain),
-        function.n
+        ps_function_number(function.n, 6)
     )
 }
 
@@ -2643,6 +2693,7 @@ fn ps_cmyk_exact_type2_function_array(function: &VectorPostScriptType2CmykArrayF
 }
 
 fn ps_rgb_exact_stitching_function(function: &VectorPostScriptStitchingFunction) -> String {
+    let range = ps_function_range(function.range.as_ref());
     let mut functions = String::new();
     let mut bounds = String::new();
     let mut encode = String::new();
@@ -2650,8 +2701,9 @@ fn ps_rgb_exact_stitching_function(function: &VectorPostScriptStitchingFunction)
         functions.push_str(&ps_rgb_exact_type2_function(&segment.function));
         functions.push(' ');
         encode.push_str(&format!(
-            "{:.6} {:.6} ",
-            segment.encode[0], segment.encode[1]
+            "{} {} ",
+            ps_function_number(segment.encode[0], 6),
+            ps_function_number(segment.encode[1], 6)
         ));
     }
     for segment in function
@@ -2659,15 +2711,16 @@ fn ps_rgb_exact_stitching_function(function: &VectorPostScriptStitchingFunction)
         .iter()
         .take(function.segments.len().saturating_sub(1))
     {
-        bounds.push_str(&format!("{:.6} ", segment.bound_end));
+        bounds.push_str(&format!("{} ", ps_function_number(segment.bound_end, 6)));
     }
     format!(
-        "<< /FunctionType 3 /Domain {} /Functions [ {functions}] /Bounds [{bounds}] /Encode [{encode}] >>",
+        "<< /FunctionType 3 /Domain {} /Functions [ {functions}] /Bounds [{bounds}] /Encode [{encode}]{range} >>",
         ps_function_domain(function.domain)
     )
 }
 
 fn ps_cmyk_exact_stitching_function(function: &VectorPostScriptCmykStitchingFunction) -> String {
+    let range = ps_function_range(function.range.as_ref());
     let mut functions = String::new();
     let mut bounds = String::new();
     let mut encode = String::new();
@@ -2675,8 +2728,9 @@ fn ps_cmyk_exact_stitching_function(function: &VectorPostScriptCmykStitchingFunc
         functions.push_str(&ps_cmyk_exact_type2_function(&segment.function));
         functions.push(' ');
         encode.push_str(&format!(
-            "{:.6} {:.6} ",
-            segment.encode[0], segment.encode[1]
+            "{} {} ",
+            ps_function_number(segment.encode[0], 6),
+            ps_function_number(segment.encode[1], 6)
         ));
     }
     for segment in function
@@ -2684,15 +2738,16 @@ fn ps_cmyk_exact_stitching_function(function: &VectorPostScriptCmykStitchingFunc
         .iter()
         .take(function.segments.len().saturating_sub(1))
     {
-        bounds.push_str(&format!("{:.6} ", segment.bound_end));
+        bounds.push_str(&format!("{} ", ps_function_number(segment.bound_end, 6)));
     }
     format!(
-        "<< /FunctionType 3 /Domain {} /Functions [ {functions}] /Bounds [{bounds}] /Encode [{encode}] >>",
+        "<< /FunctionType 3 /Domain {} /Functions [ {functions}] /Bounds [{bounds}] /Encode [{encode}]{range} >>",
         ps_function_domain(function.domain)
     )
 }
 
 fn ps_tint_exact_stitching_function(function: &VectorPostScriptTintStitchingFunction) -> String {
+    let range = ps_component_function_range(function.range);
     let mut functions = String::new();
     let mut bounds = String::new();
     let mut encode = String::new();
@@ -2700,8 +2755,9 @@ fn ps_tint_exact_stitching_function(function: &VectorPostScriptTintStitchingFunc
         functions.push_str(&ps_rgb_exact_type2_component_function(&segment.function));
         functions.push(' ');
         encode.push_str(&format!(
-            "{:.6} {:.6} ",
-            segment.encode[0], segment.encode[1]
+            "{} {} ",
+            ps_function_number(segment.encode[0], 6),
+            ps_function_number(segment.encode[1], 6)
         ));
     }
     for segment in function
@@ -2709,16 +2765,31 @@ fn ps_tint_exact_stitching_function(function: &VectorPostScriptTintStitchingFunc
         .iter()
         .take(function.segments.len().saturating_sub(1))
     {
-        bounds.push_str(&format!("{:.6} ", segment.bound_end));
+        bounds.push_str(&format!("{} ", ps_function_number(segment.bound_end, 6)));
     }
     format!(
-        "<< /FunctionType 3 /Domain {} /Functions [ {functions}] /Bounds [{bounds}] /Encode [{encode}] >>",
+        "<< /FunctionType 3 /Domain {} /Functions [ {functions}] /Bounds [{bounds}] /Encode [{encode}]{range} >>",
         ps_function_domain(function.domain)
     )
 }
 
 fn ps_function_domain(domain: [f64; 2]) -> String {
-    format!("[{:.6} {:.6}]", domain[0], domain[1])
+    format!(
+        "[{} {}]",
+        ps_function_number(domain[0], 6),
+        ps_function_number(domain[1], 6)
+    )
+}
+
+// Keep existing compact spellings when exact, but never round distinct function
+// bounds, exponents or coefficients together. PostScript accepts real exponents.
+fn ps_function_number(value: f64, precision: usize) -> String {
+    let compact = format!("{value:.precision$}");
+    if compact.len() <= 32 && compact.parse::<f64>().ok() == Some(value) {
+        compact
+    } else {
+        format!("{value:e}")
+    }
 }
 
 fn ps_function_range<const N: usize>(range: Option<&[[f64; 2]; N]>) -> String {
@@ -2728,9 +2799,9 @@ fn ps_function_range<const N: usize>(range: Option<&[[f64; 2]; N]>) -> String {
     let mut values = String::new();
     for pair in range {
         values.push_str(&format!(
-            "{:.6} {:.6} ",
-            pair[0].clamp(0.0, 1.0),
-            pair[1].clamp(0.0, 1.0)
+            "{} {} ",
+            ps_function_number(pair[0], 6),
+            ps_function_number(pair[1], 6)
         ));
     }
     format!(" /Range [{}]", values.trim_end())
@@ -2754,20 +2825,20 @@ fn ps_bool_pair(values: [bool; 2]) -> &'static str {
 
 fn ps_rgb_components_f64(color: [f64; 3]) -> String {
     format!(
-        "{:.4} {:.4} {:.4}",
-        color[0].clamp(0.0, 1.0),
-        color[1].clamp(0.0, 1.0),
-        color[2].clamp(0.0, 1.0)
+        "{} {} {}",
+        ps_function_number(color[0], 4),
+        ps_function_number(color[1], 4),
+        ps_function_number(color[2], 4)
     )
 }
 
 fn ps_cmyk_components_f64(color: [f64; 4]) -> String {
     format!(
-        "{:.4} {:.4} {:.4} {:.4}",
-        color[0].clamp(0.0, 1.0),
-        color[1].clamp(0.0, 1.0),
-        color[2].clamp(0.0, 1.0),
-        color[3].clamp(0.0, 1.0)
+        "{} {} {} {}",
+        ps_function_number(color[0], 4),
+        ps_function_number(color[1], 4),
+        ps_function_number(color[2], 4),
+        ps_function_number(color[3], 4)
     )
 }
 
@@ -2850,6 +2921,10 @@ fn ps_concat_matrix(transform: [f64; 6]) -> String {
 }
 
 #[cfg(test)]
+#[path = "postscript_function_tests.rs"]
+mod function_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2875,6 +2950,7 @@ mod tests {
         let mut sink = PsSink::new(10, 10);
         let mut state = PsRenderState {
             engine: &engine,
+            page_resources: resources.clone(),
             resources,
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 72),
             gs: GraphicsState::default(),
@@ -2919,6 +2995,7 @@ mod tests {
         let mut state = PsRenderState {
             engine: &engine,
             resources: PageResources::default(),
+            page_resources: PageResources::default(),
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 72),
             gs: GraphicsState::default(),
             path: Path::new(),
@@ -3253,6 +3330,7 @@ mod tests {
         let function =
             VectorPostScriptShadingFunction::StitchingCmyk(VectorPostScriptCmykStitchingFunction {
                 domain: [0.0, 1.0],
+                range: None,
                 segments: vec![
                     crate::render::vector_fallback::VectorPostScriptCmykStitchingSegment {
                         bound_end: 0.5,
@@ -3302,6 +3380,7 @@ mod tests {
         let function =
             VectorPostScriptShadingFunction::Stitching(VectorPostScriptStitchingFunction {
                 domain: [0.0, 1.0],
+                range: None,
                 segments: vec![
                     crate::render::vector_fallback::VectorPostScriptStitchingSegment {
                         bound_end: 0.5,

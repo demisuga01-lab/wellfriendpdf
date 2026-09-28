@@ -105,6 +105,7 @@ struct VectorOutputContext<'a> {
     target: VectorOutputTarget,
     viewport_scale: f64,
     form_stack: &'a [(u32, u16)],
+    page_resources: &'a PageResources,
 }
 
 /// Decoded vector-safe Form XObject program used by SVG/PS sinks.
@@ -114,7 +115,8 @@ pub(crate) struct VectorFormProgram {
     pub generation_number: u16,
     pub form_matrix: Matrix,
     pub bbox: Option<[f64; 4]>,
-    pub resources: Option<PageResources>,
+    pub resources: PageResources,
+    pub inherited_gs: GraphicsState,
     pub ops: Vec<ContentOperation>,
 }
 
@@ -262,6 +264,7 @@ pub(crate) struct VectorPostScriptType2CmykArrayFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VectorPostScriptStitchingFunction {
     pub domain: [f64; 2],
+    pub range: Option<[[f64; 2]; 3]>,
     pub segments: Vec<VectorPostScriptStitchingSegment>,
 }
 
@@ -275,6 +278,7 @@ pub(crate) struct VectorPostScriptStitchingSegment {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VectorPostScriptCmykStitchingFunction {
     pub domain: [f64; 2],
+    pub range: Option<[[f64; 2]; 4]>,
     pub segments: Vec<VectorPostScriptCmykStitchingSegment>,
 }
 
@@ -288,6 +292,7 @@ pub(crate) struct VectorPostScriptCmykStitchingSegment {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VectorPostScriptTintStitchingFunction {
     pub domain: [f64; 2],
+    pub range: Option<[f64; 2]>,
     pub segments: Vec<VectorPostScriptTintStitchingSegment>,
 }
 
@@ -344,6 +349,7 @@ pub fn classify_page_for_vector_output(
     classify_ops_for_vector_output(
         ops,
         resources,
+        resources,
         viewport_scale,
         None,
         GraphicsState::default(),
@@ -368,6 +374,7 @@ pub(crate) fn classify_page_for_svg_output_with_reader(
     classify_ops_for_vector_output(
         ops,
         resources,
+        resources,
         viewport_scale,
         Some(reader),
         GraphicsState::default(),
@@ -385,6 +392,7 @@ pub(crate) fn classify_page_for_postscript_output_with_reader(
     classify_ops_for_vector_output(
         ops,
         resources,
+        resources,
         viewport_scale,
         Some(reader),
         GraphicsState::default(),
@@ -396,6 +404,7 @@ pub(crate) fn classify_page_for_postscript_output_with_reader(
 pub(crate) fn classify_scoped_svg_vector_output(
     ops: &[ContentOperation],
     resources: &PageResources,
+    page_resources: &PageResources,
     viewport_scale: f64,
     reader: &PdfReader,
     initial_gs: GraphicsState,
@@ -404,6 +413,7 @@ pub(crate) fn classify_scoped_svg_vector_output(
     classify_ops_for_vector_output(
         ops,
         resources,
+        page_resources,
         viewport_scale,
         Some(reader),
         initial_gs,
@@ -415,6 +425,7 @@ pub(crate) fn classify_scoped_svg_vector_output(
 pub(crate) fn classify_scoped_postscript_vector_output(
     ops: &[ContentOperation],
     resources: &PageResources,
+    page_resources: &PageResources,
     viewport_scale: f64,
     reader: &PdfReader,
     initial_gs: GraphicsState,
@@ -423,6 +434,7 @@ pub(crate) fn classify_scoped_postscript_vector_output(
     classify_ops_for_vector_output(
         ops,
         resources,
+        page_resources,
         viewport_scale,
         Some(reader),
         initial_gs,
@@ -434,12 +446,21 @@ pub(crate) fn classify_scoped_postscript_vector_output(
 fn classify_ops_for_vector_output(
     ops: &[ContentOperation],
     resources: &PageResources,
+    page_resources: &PageResources,
     viewport_scale: f64,
     reader: Option<&PdfReader>,
     initial_gs: GraphicsState,
     target: VectorOutputTarget,
     form_stack: &mut Vec<(u32, u16)>,
 ) -> VectorFallbackDecision {
+    // The native raster interpreter binds defaults at colour selection. Until
+    // the SVG/PS emitters retain that same graph, do not emit uncalibrated device
+    // vector colours or decode regional images through a different graph.
+    if crate::render::default_colorspace::has_defaults(resources) {
+        return VectorFallbackDecision::WholePageRaster {
+            reason: "default colour spaces require scope-bound native rendering",
+        };
+    }
     let mut image_do_ops: Vec<ImageDoClassification> = Vec::new();
     let mut inline_image_count = 0usize;
     let mut form_do_names: Vec<String> = Vec::new();
@@ -605,6 +626,7 @@ fn classify_ops_for_vector_output(
                         target,
                         viewport_scale,
                         form_stack,
+                        page_resources,
                     },
                 )
                 .eligible
@@ -637,6 +659,7 @@ fn classify_ops_for_vector_output(
                         target,
                         viewport_scale,
                         form_stack,
+                        page_resources,
                     },
                 )
                 .eligible
@@ -662,6 +685,7 @@ fn classify_ops_for_vector_output(
                         target,
                         viewport_scale,
                         form_stack,
+                        page_resources,
                     },
                 ) {
                     regional_pattern_ops = regional_pattern_ops.saturating_add(1);
@@ -695,6 +719,7 @@ fn classify_ops_for_vector_output(
                         target,
                         viewport_scale,
                         form_stack,
+                        page_resources,
                     },
                 ) {
                     regional_pattern_ops = regional_pattern_ops.saturating_add(1);
@@ -731,6 +756,7 @@ fn classify_ops_for_vector_output(
                             target,
                             viewport_scale,
                             form_stack,
+                            page_resources,
                         },
                     )
                 {
@@ -747,6 +773,7 @@ fn classify_ops_for_vector_output(
                             target,
                             viewport_scale,
                             form_stack,
+                            page_resources,
                         },
                     )
                 {
@@ -855,6 +882,7 @@ fn classify_ops_for_vector_output(
                                 target,
                                 viewport_scale,
                                 form_stack,
+                                page_resources,
                             },
                         );
                         if !classification.eligible {
@@ -870,7 +898,8 @@ fn classify_ops_for_vector_output(
                                 reason: "Form XObject",
                             };
                         };
-                        let Some(program) = load_vector_form_program(resources, reader, &name, &gs)
+                        let Some(program) =
+                            load_vector_form_program(resources, page_resources, reader, &name, &gs)
                         else {
                             return VectorFallbackDecision::WholePageRaster {
                                 reason: "unresolvable Form XObject",
@@ -887,16 +916,16 @@ fn classify_ops_for_vector_output(
                                 reason: "Form XObject recursion cycle",
                             };
                         }
-                        let form_resources =
-                            merged_vector_resources(program.resources.as_ref(), resources);
-                        let mut form_gs = gs.clone();
+                        let form_resources = &program.resources;
+                        let mut form_gs = program.inherited_gs.clone();
                         let form_t = Transform2D::from(program.form_matrix);
                         let current_t = Transform2D::from(form_gs.ctm);
                         form_gs.ctm = form_t.concat(&current_t).to_array();
                         form_stack.push(form_key);
                         let decision = classify_ops_for_vector_output(
                             &program.ops,
-                            &form_resources,
+                            form_resources,
+                            page_resources,
                             viewport_scale,
                             Some(reader),
                             form_gs,
@@ -940,6 +969,7 @@ fn classify_ops_for_vector_output(
                             target,
                             viewport_scale,
                             form_stack,
+                            page_resources,
                         },
                     ) {
                         regional_pattern_ops = regional_pattern_ops.saturating_add(1);
@@ -1429,6 +1459,7 @@ fn vector_tiling_pattern_supported(
         classify_ops_for_vector_output(
             &program.ops,
             &program.resources,
+            context.page_resources,
             context.viewport_scale,
             Some(reader),
             tile_gs,
@@ -1627,6 +1658,7 @@ fn load_vector_shading_pattern_for_target(
 ) -> Option<VectorPatternShading> {
     let obj = resources.patterns.get(name)?;
     let pattern_dict = resolve_vector_dict(obj, reader)?;
+    let pattern_dict = super::parameter_dictionary::pattern(&pattern_dict, reader).ok()?;
     if pattern_dict.get_integer("PatternType")? != 2 {
         return None;
     }
@@ -1644,6 +1676,9 @@ pub(crate) fn load_vector_tiling_pattern(
 ) -> Option<VectorTilingPatternProgram> {
     let obj = resources.patterns.get(name)?;
     let (pattern_dict, raw) = resolve_vector_stream(obj, reader)?;
+    let pattern_dict = super::parameter_dictionary::pattern(&pattern_dict, Some(reader))
+        .ok()?
+        .into_owned();
     if pattern_dict.get_integer("PatternType")? != 1 {
         return None;
     }
@@ -1673,10 +1708,9 @@ pub(crate) fn load_vector_tiling_pattern(
     {
         return None;
     }
-    let pattern_resources = pattern_dict
-        .get("Resources")
-        .map(|obj| crate::engine::parse_resources_from_obj(obj, reader));
-    let resources = merged_vector_resources(pattern_resources.as_ref(), resources);
+    // Patterns have no legacy page-resource fallback; an explicit dictionary
+    // is required and is the complete scope, including when it is empty.
+    let resources = PageResources::from_content_owner(&pattern_dict, reader).ok()??;
     Some(VectorTilingPatternProgram {
         paint_type,
         matrix,
@@ -1719,6 +1753,8 @@ fn vector_shading_from_dict(
     dict: &PdfDictionary,
     target: VectorOutputTarget,
 ) -> Option<VectorShading> {
+    let resolved = super::parameter_dictionary::shading(dict, reader).ok()?;
+    let dict = resolved.as_ref();
     let shading_type = dict.get_integer("ShadingType")?;
     let bbox = match optional_strict_vector_float_array(dict, "BBox")? {
         Some(bbox)
@@ -1802,6 +1838,13 @@ fn vector_shading_from_dict(
     }
 }
 
+#[cfg(test)]
+#[path = "vector_parameter_tests.rs"]
+mod parameter_tests;
+
+#[path = "vector_function_stops.rs"]
+mod function_stops;
+
 fn svg_radial_extend_clip_supported(coords: &[f64]) -> bool {
     if coords.len() != 6 || !coords.iter().all(|value| value.is_finite()) {
         return false;
@@ -1813,9 +1856,7 @@ fn svg_radial_extend_clip_supported(coords: &[f64]) -> bool {
 }
 
 fn vector_shading_domain(domain: &[f64]) -> Option<[f64; 2]> {
-    if domain.len() != 2
-        || !domain.iter().all(|value| value.is_finite())
-        || (domain[0] - domain[1]).abs() <= 1e-9
+    if domain.len() != 2 || !domain.iter().all(|value| value.is_finite()) || domain[0] == domain[1]
     {
         return None;
     }
@@ -1879,6 +1920,8 @@ fn simple_vector_shading_stops(
     let ps_color_space = allow_exact_postscript
         .then(|| exact_postscript_named_shading_color_space(color_space, reader, resources))
         .flatten();
+    let indexed = vector_shading_color_space_family(color_space, reader, resources, 0).as_deref()
+        == Some("Indexed");
     let mut total_components = 0usize;
     for function in &functions {
         total_components = total_components.checked_add(function.component_count())?;
@@ -1888,14 +1931,30 @@ fn simple_vector_shading_stops(
     }
     let mut offsets = vector_shading_stop_offsets(shading_domain, &functions)?;
     offsets.sort_by(|a, b| a.total_cmp(b));
-    offsets.dedup_by(|a, b| (*a - *b).abs() <= 1e-9);
+    offsets.dedup();
     if offsets.len() < 2 {
         return None;
     }
+    if target != VectorOutputTarget::PostScript {
+        offsets = refine_vector_shading_offsets_for_rgb(
+            color_space,
+            &functions,
+            shading_domain,
+            offsets,
+            reader,
+            resources,
+        )?;
+    }
     let mut stops = Vec::with_capacity(offsets.len());
     for offset in offsets {
-        let t = shading_domain[0] + offset * (shading_domain[1] - shading_domain[0]);
+        crate::cancel::check_current_cancel("vector shading stops").ok()?;
+        let t = super::shading::shading_domain_value(shading_domain[0], shading_domain[1], offset);
         let components = sample_vector_shading_functions(&functions, t)?;
+        if indexed
+            && (components.len() != 1 || !components[0].is_finite() || components[0].fract() != 0.0)
+        {
+            return None;
+        }
         let rgb = vector_shading_rgb(
             color_space,
             &components,
@@ -1906,10 +1965,7 @@ fn simple_vector_shading_stops(
         )?;
         stops.push(VectorShadingStop { offset, rgb });
     }
-    if vector_shading_color_space_family(color_space, reader, resources, 0).as_deref()
-        == Some("Indexed")
-        && !vector_shading_stops_are_constant_rgb(&stops)
-    {
+    if indexed && !vector_shading_stops_are_constant_rgb(&stops) {
         return None;
     }
     let ps_function = allow_exact_postscript
@@ -1930,12 +1986,189 @@ fn simple_vector_shading_stops(
     if postscript_exact_function_required(&functions) && ps_function.is_none() {
         return None;
     }
+    if allow_exact_postscript
+        && !vector_shading_stops_are_constant_rgb(&stops)
+        && postscript_exact_rgb_mapping(color_space, reader, resources).is_none()
+        && ps_function.is_none()
+    {
+        return None;
+    }
     Some(VectorShadingStops {
         stops,
         ps_function,
         ps_color_space,
         extend,
     })
+}
+
+// ICC transforms commonly quantize through 8-bit device channels. Allow one
+// quantization step plus rounding while still subdividing visible curvature.
+const VECTOR_RGB_STOP_ERROR: f32 = 1.5 / 255.0;
+const VECTOR_RGB_STOP_MAX_DEPTH: usize = 12;
+
+fn refine_vector_shading_offsets_for_rgb(
+    color_space: &PdfObject,
+    functions: &[VectorShadingFunction],
+    shading_domain: [f64; 2],
+    mut offsets: Vec<f64>,
+    reader: Option<&PdfReader>,
+    resources: &PageResources,
+) -> Option<Vec<f64>> {
+    fn rgb_at(
+        offset: f64,
+        color_space: &PdfObject,
+        functions: &[VectorShadingFunction],
+        shading_domain: [f64; 2],
+        reader: Option<&PdfReader>,
+        resources: &PageResources,
+    ) -> Option<[f32; 3]> {
+        let input =
+            super::shading::shading_domain_value(shading_domain[0], shading_domain[1], offset);
+        let components = sample_vector_shading_functions(functions, input)?;
+        vector_shading_rgb(color_space, &components, reader, resources, 0, false)
+    }
+
+    fn interval_needs_split(
+        left_offset: f64,
+        right_offset: f64,
+        left_rgb: [f32; 3],
+        right_rgb: [f32; 3],
+        color_space: &PdfObject,
+        functions: &[VectorShadingFunction],
+        shading_domain: [f64; 2],
+        reader: Option<&PdfReader>,
+        resources: &PageResources,
+    ) -> Option<bool> {
+        for fraction in [0.25, 0.5, 0.75] {
+            let offset = left_offset + (right_offset - left_offset) * fraction;
+            let actual = rgb_at(
+                offset,
+                color_space,
+                functions,
+                shading_domain,
+                reader,
+                resources,
+            )?;
+            for channel in 0..3 {
+                let expected =
+                    left_rgb[channel] + (right_rgb[channel] - left_rgb[channel]) * fraction as f32;
+                if (actual[channel] - expected).abs() > VECTOR_RGB_STOP_ERROR {
+                    return Some(true);
+                }
+            }
+        }
+        Some(false)
+    }
+
+    fn refine_interval(
+        left_offset: f64,
+        right_offset: f64,
+        left_rgb: [f32; 3],
+        right_rgb: [f32; 3],
+        depth: usize,
+        color_space: &PdfObject,
+        functions: &[VectorShadingFunction],
+        shading_domain: [f64; 2],
+        reader: Option<&PdfReader>,
+        resources: &PageResources,
+        added: &mut Vec<f64>,
+    ) -> Option<()> {
+        crate::cancel::check_current_cancel("vector gradient colour refinement").ok()?;
+        if !interval_needs_split(
+            left_offset,
+            right_offset,
+            left_rgb,
+            right_rgb,
+            color_space,
+            functions,
+            shading_domain,
+            reader,
+            resources,
+        )? {
+            return Some(());
+        }
+        if depth >= VECTOR_RGB_STOP_MAX_DEPTH || added.len() >= function_stops::MAX_STOPS {
+            return None;
+        }
+        let middle_offset = left_offset + (right_offset - left_offset) * 0.5;
+        if middle_offset <= left_offset || middle_offset >= right_offset {
+            return None;
+        }
+        let middle_rgb = rgb_at(
+            middle_offset,
+            color_space,
+            functions,
+            shading_domain,
+            reader,
+            resources,
+        )?;
+        added.push(middle_offset);
+        refine_interval(
+            left_offset,
+            middle_offset,
+            left_rgb,
+            middle_rgb,
+            depth + 1,
+            color_space,
+            functions,
+            shading_domain,
+            reader,
+            resources,
+            added,
+        )?;
+        refine_interval(
+            middle_offset,
+            right_offset,
+            middle_rgb,
+            right_rgb,
+            depth + 1,
+            color_space,
+            functions,
+            shading_domain,
+            reader,
+            resources,
+            added,
+        )
+    }
+
+    let base_offsets = offsets.clone();
+    for pair in base_offsets.windows(2) {
+        let left_rgb = rgb_at(
+            pair[0],
+            color_space,
+            functions,
+            shading_domain,
+            reader,
+            resources,
+        )?;
+        let right_rgb = rgb_at(
+            pair[1],
+            color_space,
+            functions,
+            shading_domain,
+            reader,
+            resources,
+        )?;
+        refine_interval(
+            pair[0],
+            pair[1],
+            left_rgb,
+            right_rgb,
+            0,
+            color_space,
+            functions,
+            shading_domain,
+            reader,
+            resources,
+            &mut offsets,
+        )?;
+    }
+    if offsets.len() > function_stops::MAX_STOPS {
+        return None;
+    }
+    offsets.sort_by(f64::total_cmp);
+    offsets.dedup();
+    Some(offsets)
 }
 
 fn exact_postscript_shading_function(
@@ -2158,10 +2391,7 @@ fn exact_postscript_type2_function_array_cmyk_function(
         channels[2].c1,
         channels[3].c1,
     ];
-    if channels
-        .iter()
-        .all(|channel| (channel.n - channels[0].n).abs() <= 1e-9)
-    {
+    if channels.iter().all(|channel| channel.n == channels[0].n) {
         if let (Some(domain), Some(range)) = (
             component_function_domain(&channels),
             component_function_ranges(&channels),
@@ -2227,10 +2457,7 @@ fn exact_postscript_type2_function_array_rgb_function(
     let c1 = [channels[0].c1, channels[1].c1, channels[2].c1];
     let c0 = finite_unit_rgb(&c0)?;
     let c1 = finite_unit_rgb(&c1)?;
-    if channels
-        .iter()
-        .all(|channel| (channel.n - channels[0].n).abs() <= 1e-9)
-    {
+    if channels.iter().all(|channel| channel.n == channels[0].n) {
         if let (Some(domain), Some(range)) = (
             component_function_domain(&channels),
             component_function_ranges(&channels),
@@ -2335,7 +2562,7 @@ fn exact_postscript_stitching_rgb_function(
     let mut segments = Vec::with_capacity(function.segments.len());
     for segment in &function.segments {
         if !segment.input_domain.iter().all(|value| value.is_finite())
-            || segment.input_domain[0] >= segment.input_domain[1]
+            || segment.input_domain[0] > segment.input_domain[1]
         {
             return None;
         }
@@ -2347,6 +2574,7 @@ fn exact_postscript_stitching_rgb_function(
     }
     Some(VectorPostScriptStitchingFunction {
         domain: function.domain,
+        range: exact_postscript_rgb_ranges(function.range.as_deref(), mapping)?,
         segments,
     })
 }
@@ -2360,7 +2588,7 @@ fn exact_postscript_stitching_tint_function(
     let mut segments = Vec::with_capacity(function.segments.len());
     for segment in &function.segments {
         if !segment.input_domain.iter().all(|value| value.is_finite())
-            || segment.input_domain[0] >= segment.input_domain[1]
+            || segment.input_domain[0] > segment.input_domain[1]
         {
             return None;
         }
@@ -2372,6 +2600,7 @@ fn exact_postscript_stitching_tint_function(
     }
     Some(VectorPostScriptTintStitchingFunction {
         domain: function.domain,
+        range: finite_unit_component_ranges::<1>(function.range.as_deref())?.map(|range| range[0]),
         segments,
     })
 }
@@ -2385,7 +2614,7 @@ fn exact_postscript_stitching_cmyk_function(
     let mut segments = Vec::with_capacity(function.segments.len());
     for segment in &function.segments {
         if !segment.input_domain.iter().all(|value| value.is_finite())
-            || segment.input_domain[0] >= segment.input_domain[1]
+            || segment.input_domain[0] > segment.input_domain[1]
         {
             return None;
         }
@@ -2397,6 +2626,7 @@ fn exact_postscript_stitching_cmyk_function(
     }
     Some(VectorPostScriptCmykStitchingFunction {
         domain: function.domain,
+        range: finite_unit_component_ranges::<4>(function.range.as_deref())?,
         segments,
     })
 }
@@ -2408,7 +2638,7 @@ fn postscript_exact_function_required(functions: &[VectorShadingFunction]) -> bo
 }
 
 fn finite_nonzero_domain(domain: [f64; 2]) -> bool {
-    domain[0].is_finite() && domain[1].is_finite() && (domain[0] - domain[1]).abs() > 1e-9
+    domain[0].is_finite() && domain[1].is_finite() && domain[0] != domain[1]
 }
 
 fn finite_increasing_domain(domain: [f64; 2]) -> bool {
@@ -2416,7 +2646,7 @@ fn finite_increasing_domain(domain: [f64; 2]) -> bool {
 }
 
 fn same_domain(left: [f64; 2], right: [f64; 2]) -> bool {
-    (left[0] - right[0]).abs() <= 1e-9 && (left[1] - right[1]).abs() <= 1e-9
+    left == right
 }
 
 fn finite_unit_rgb(values: &[f64]) -> Option<[f64; 3]> {
@@ -2527,6 +2757,7 @@ struct VectorStitchingSegment {
 #[derive(Debug, Clone)]
 struct VectorStitchingFunction {
     domain: [f64; 2],
+    range: Option<Vec<[f64; 2]>>,
     segments: Vec<VectorStitchingSegment>,
     component_count: usize,
     continuous: bool,
@@ -2547,24 +2778,7 @@ impl VectorShadingFunction {
     }
 
     fn add_stop_offsets(&self, shading_domain: [f64; 2], offsets: &mut Vec<f64>) -> Option<()> {
-        match self {
-            Self::Type2(function) => {
-                for boundary in function.domain {
-                    push_domain_boundary_offset(shading_domain, boundary, offsets)?;
-                }
-            }
-            Self::Stitching(function) => {
-                for boundary in function.domain {
-                    push_domain_boundary_offset(shading_domain, boundary, offsets)?;
-                }
-                for segment in &function.segments {
-                    for boundary in segment.input_domain {
-                        push_domain_boundary_offset(shading_domain, boundary, offsets)?;
-                    }
-                }
-            }
-        }
-        Some(())
+        function_stops::add_offsets(self, shading_domain, offsets)
     }
 
     fn sample(&self, input: f64) -> Option<Vec<f64>> {
@@ -2585,13 +2799,13 @@ impl VectorShadingFunction {
 
     fn requires_exact_postscript(&self) -> bool {
         match self {
-            Self::Type2(function) => (function.n - 1.0).abs() > 1e-9,
+            Self::Type2(function) => function.n != 1.0,
             Self::Stitching(function) => {
                 !function.continuous
                     || function
                         .segments
                         .iter()
-                        .any(|segment| (segment.function.n - 1.0).abs() > 1e-9)
+                        .any(|segment| segment.function.n != 1.0)
             }
         }
     }
@@ -2600,12 +2814,16 @@ impl VectorShadingFunction {
 impl VectorStitchingFunction {
     fn sample(&self, input: f64) -> Option<Vec<f64>> {
         let input = input.clamp(self.domain[0], self.domain[1]);
-        let segment = self
+        // Bounds select half-open intervals. The last interval includes Domain[1],
+        // even when its width is zero. Do not widen boundaries with an epsilon.
+        let index = self
             .segments
-            .iter()
-            .find(|segment| input <= segment.input_domain[1] + 1e-9)
-            .or_else(|| self.segments.last())?;
-        sample_stitching_segment(segment, input)
+            .partition_point(|segment| input >= segment.input_domain[1]);
+        let segment = self.segments.get(index).or_else(|| self.segments.last())?;
+        clip_vector_function_range(
+            sample_stitching_segment(segment, input)?,
+            self.range.as_deref(),
+        )
     }
 }
 
@@ -2614,9 +2832,16 @@ fn parse_vector_shading_functions(
     reader: Option<&PdfReader>,
     allow_exact_postscript: bool,
 ) -> Option<Vec<VectorShadingFunction>> {
+    let resolved = match function_obj {
+        PdfObject::Reference { .. } => {
+            std::borrow::Cow::Owned(reader?.resolve(function_obj.clone()).ok()?)
+        }
+        _ => std::borrow::Cow::Borrowed(function_obj),
+    };
+    let function_obj = resolved.as_ref();
     match function_obj {
         PdfObject::Array(functions) => {
-            if functions.is_empty() {
+            if functions.is_empty() || functions.len() > MAX_DEVICEN_COMPONENTS {
                 return None;
             }
             let mut parsed = Vec::with_capacity(functions.len());
@@ -2625,6 +2850,9 @@ fn parse_vector_shading_functions(
                 let function = resolve_vector_dict(item, reader)?;
                 let function =
                     parse_vector_shading_function(&function, reader, allow_exact_postscript)?;
+                if function.component_count() != 1 {
+                    return None;
+                }
                 total_components = total_components.checked_add(function.component_count())?;
                 if total_components > MAX_DEVICEN_COMPONENTS {
                     return None;
@@ -2649,6 +2877,8 @@ fn parse_vector_shading_function(
     reader: Option<&PdfReader>,
     allow_exact_postscript: bool,
 ) -> Option<VectorShadingFunction> {
+    let resolved = super::parameter_dictionary::function(function, reader).ok()?;
+    let function = resolved.as_ref();
     match function.get_integer("FunctionType")? {
         2 => Some(VectorShadingFunction::Type2(parse_type2_function(
             function,
@@ -2665,10 +2895,13 @@ fn parse_type2_function(
     function: &PdfDictionary,
     allow_type2_exponent: bool,
 ) -> Option<VectorType2Function> {
+    if function.get_integer("FunctionType") != Some(2) {
+        return None;
+    }
     let (domain, n) = vector_type2_function_domain_and_exponent(function, allow_type2_exponent)?;
     let c0 = optional_strict_vector_float_array(function, "C0")?.unwrap_or_else(|| vec![0.0]);
     let c1 = optional_strict_vector_float_array(function, "C1")?.unwrap_or_else(|| vec![1.0]);
-    if c0.is_empty() || c0.len() != c1.len() {
+    if c0.is_empty() || c0.len() > MAX_DEVICEN_COMPONENTS || c0.len() != c1.len() {
         return None;
     }
     let range = vector_type2_function_range(function, c0.len())?;
@@ -2691,10 +2924,12 @@ fn parse_type3_stitching_function(
     }
     let domain = vector_stitching_domain(function)?;
     let functions = function.get("Functions")?.as_array()?;
-    if functions.is_empty() {
+    if functions.is_empty()
+        || functions.len() > super::parameter_dictionary::MAX_STITCHING_FUNCTIONS
+    {
         return None;
     }
-    let bounds = optional_strict_vector_float_array(function, "Bounds")?.unwrap_or_default();
+    let bounds = strict_vector_float_array(function, "Bounds")?;
     if bounds.len() + 1 != functions.len() {
         return None;
     }
@@ -2707,7 +2942,7 @@ fn parse_type3_stitching_function(
     input_bounds.push(domain[0]);
     let mut previous = domain[0];
     for bound in bounds {
-        if bound <= previous || bound >= domain[1] || !bound.is_finite() {
+        if bound <= previous || bound > domain[1] || !bound.is_finite() {
             return None;
         }
         input_bounds.push(bound);
@@ -2718,7 +2953,9 @@ fn parse_type3_stitching_function(
     let mut segments = Vec::with_capacity(functions.len());
     let mut component_count = None;
     for (idx, item) in functions.iter().enumerate() {
+        crate::cancel::check_current_cancel("vector stitching parameters").ok()?;
         let dict = resolve_vector_dict(item, reader)?;
+        let dict = super::parameter_dictionary::function(&dict, reader).ok()?;
         let function = parse_type2_function(&dict, allow_discontinuous)?;
         let count = function.c0.len();
         if let Some(expected) = component_count {
@@ -2741,6 +2978,7 @@ fn parse_type3_stitching_function(
     let component_count = component_count?;
     let stitching = VectorStitchingFunction {
         domain,
+        range: vector_type2_function_range(function, component_count)?,
         segments,
         component_count,
         continuous: false,
@@ -2766,28 +3004,25 @@ fn vector_stitching_domain(function: &PdfDictionary) -> Option<[f64; 2]> {
 
 fn vector_stitching_function_is_continuous(function: &VectorStitchingFunction) -> bool {
     function.segments.windows(2).all(|segments| {
-        let Some(left) = sample_stitching_segment(&segments[0], segments[0].input_domain[1]) else {
-            return false;
-        };
-        let Some(right) = sample_stitching_segment(&segments[1], segments[1].input_domain[0])
+        let Some(left) = sample_stitching_segment(&segments[0], segments[0].input_domain[1])
+            .and_then(|values| clip_vector_function_range(values, function.range.as_deref()))
         else {
             return false;
         };
-        left.len() == right.len()
-            && left
-                .iter()
-                .zip(right.iter())
-                .all(|(left, right)| (left - right).abs() <= 1e-7)
+        let Some(right) = sample_stitching_segment(&segments[1], segments[1].input_domain[0])
+            .and_then(|values| clip_vector_function_range(values, function.range.as_deref()))
+        else {
+            return false;
+        };
+        left == right
     })
 }
 
 fn sample_stitching_segment(segment: &VectorStitchingSegment, input: f64) -> Option<Vec<f64>> {
-    let span = segment.input_domain[1] - segment.input_domain[0];
-    if !span.is_finite() || span.abs() <= 1e-9 {
-        return None;
-    }
-    let encoded = segment.encode[0]
-        + (input - segment.input_domain[0]) * (segment.encode[1] - segment.encode[0]) / span;
+    let position =
+        super::function::domain_position(input, segment.input_domain[0], segment.input_domain[1])?;
+    let encoded =
+        super::shading::shading_domain_value(segment.encode[0], segment.encode[1], position);
     let encoded = encoded.clamp(segment.function.domain[0], segment.function.domain[1]);
     Some(sample_linear_type2_function(
         &segment.function.c0,
@@ -2802,8 +3037,7 @@ fn vector_shading_stop_offsets(
     shading_domain: [f64; 2],
     functions: &[VectorShadingFunction],
 ) -> Option<Vec<f64>> {
-    let span = shading_domain[1] - shading_domain[0];
-    if !span.is_finite() || span.abs() <= 1e-9 {
+    if !finite_nonzero_domain(shading_domain) {
         return None;
     }
     let mut offsets = vec![0.0, 1.0];
@@ -2818,15 +3052,22 @@ fn push_domain_boundary_offset(
     boundary: f64,
     offsets: &mut Vec<f64>,
 ) -> Option<()> {
-    let span = shading_domain[1] - shading_domain[0];
-    if !span.is_finite() || span.abs() <= 1e-9 || !boundary.is_finite() {
+    if !finite_nonzero_domain(shading_domain) || !boundary.is_finite() {
         return None;
     }
     let min_t = shading_domain[0].min(shading_domain[1]);
     let max_t = shading_domain[0].max(shading_domain[1]);
-    if boundary > min_t + 1e-9 && boundary < max_t - 1e-9 {
-        let offset = (boundary - shading_domain[0]) / span;
-        if offset.is_finite() && offset > 1e-9 && offset < 1.0 - 1e-9 {
+    if boundary > min_t && boundary < max_t {
+        let position = super::function::domain_position(boundary, min_t, max_t)?;
+        let offset = if shading_domain[0] < shading_domain[1] {
+            position
+        } else {
+            1.0 - position
+        };
+        if offset > 0.0 && offset < 1.0 {
+            if offsets.len() >= function_stops::MAX_STOPS {
+                return None;
+            }
             offsets.push(offset);
         }
     }
@@ -2842,7 +3083,11 @@ fn sample_vector_shading_functions(
         if values.len() + function.component_count() > MAX_DEVICEN_COMPONENTS {
             return None;
         }
-        values.extend(function.sample(input)?);
+        let components = function.sample(input)?;
+        if !components.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        values.extend(components);
     }
     Some(values)
 }
@@ -2855,12 +3100,15 @@ fn vector_type2_function_domain_and_exponent(
         return None;
     }
     let n = function.get("N").and_then(PdfObject::as_number)?;
-    if !n.is_finite() || n < 0.0 || (!allow_type2_exponent && (n - 1.0).abs() > 1e-9) {
+    if !n.is_finite() || n < 0.0 || (!allow_type2_exponent && n != 1.0) {
         return None;
     }
     let domain = strict_vector_float_array(function, "Domain")?;
     if domain.len() != 2 || !domain.iter().all(|value| value.is_finite()) || domain[0] >= domain[1]
     {
+        return None;
+    }
+    if n.fract() != 0.0 && domain[0] < 0.0 {
         return None;
     }
     Some(([domain[0], domain[1]], n))
@@ -2898,13 +3146,35 @@ fn sample_linear_type2_function(
         .zip(c1)
         .enumerate()
         .map(|(idx, (start, end))| {
-            let value = start + factor * (end - start);
+            let value = if (0.0..=1.0).contains(&factor) {
+                super::shading::shading_domain_value(*start, *end, factor)
+            } else {
+                factor.mul_add(end - start, *start)
+            };
             match range {
                 Some(range) => value.clamp(range[idx][0], range[idx][1]),
                 None => value,
             }
         })
         .collect()
+}
+
+fn clip_vector_function_range(
+    mut values: Vec<f64>,
+    range: Option<&[[f64; 2]]>,
+) -> Option<Vec<f64>> {
+    if values.is_empty() || !values.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    if let Some(range) = range {
+        if range.len() != values.len() {
+            return None;
+        }
+        for (value, bounds) in values.iter_mut().zip(range) {
+            *value = value.clamp(bounds[0], bounds[1]);
+        }
+    }
+    Some(values)
 }
 
 fn optional_strict_vector_float_array(dict: &PdfDictionary, key: &str) -> Option<Option<Vec<f64>>> {
@@ -2944,7 +3214,7 @@ fn resolve_vector_dict(obj: &PdfObject, reader: Option<&PdfReader>) -> Option<Pd
         PdfObject::Stream { dict, .. } => Some(dict.clone()),
         PdfObject::Reference { number, generation } => {
             let reader = reader?;
-            match reader.get_object(*number, *generation).ok()? {
+            match reader.get_and_resolve(*number, *generation).ok()? {
                 PdfObject::Dictionary(dict) => Some(dict),
                 PdfObject::Stream { dict, .. } => Some(dict),
                 _ => None,
@@ -2958,7 +3228,7 @@ fn resolve_vector_stream(obj: &PdfObject, reader: &PdfReader) -> Option<(PdfDict
     match obj {
         PdfObject::Stream { dict, raw } => Some((dict.clone(), raw.clone())),
         PdfObject::Reference { number, generation } => {
-            match reader.get_object(*number, *generation).ok()? {
+            match reader.get_and_resolve(*number, *generation).ok()? {
                 PdfObject::Stream { dict, raw } => Some((dict, raw)),
                 _ => None,
             }
@@ -3047,7 +3317,16 @@ fn vector_shading_rgb(
                     &color_space,
                     reader,
                 )?)?;
-                cmm::icc_components_to_srgb_with_options(&color_space, components, reader, options)
+                match resolve_named_color_with_options(
+                    &color_space,
+                    components,
+                    1.0,
+                    reader,
+                    options,
+                ) {
+                    NamedColor::Color(color) => Some([color.r, color.g, color.b]),
+                    NamedColor::NoPaint | NamedColor::Invalid(_) | NamedColor::Unhandled => None,
+                }
             }
             Some("Indexed") => {
                 let reader = reader?;
@@ -3397,12 +3676,13 @@ fn vector_device_shading_rgb(color_space: &str, components: &[f64]) -> Option<[f
 /// group color spaces remain refused because they can alter compositing/color-
 /// conversion semantics when transparency is observable.
 pub(crate) fn load_vector_form_program(
+    resources: &PageResources,
     page_resources: &PageResources,
     reader: &PdfReader,
     name: &str,
     inherited_gs: &GraphicsState,
 ) -> Option<VectorFormProgram> {
-    let (obj_num, gen_num) = *page_resources.xobjects.get(name)?;
+    let (obj_num, gen_num) = *resources.xobjects.get(name)?;
     let PdfObject::Stream { dict, raw } = reader.get_object(obj_num, gen_num).ok()? else {
         return None;
     };
@@ -3419,11 +3699,18 @@ pub(crate) fn load_vector_form_program(
         return None;
     }
     let ops = crate::content::ContentParser::parse(&decoded.data).ok()?;
-    let form_resources = dict
-        .get("Resources")
-        .map(|obj| crate::engine::parse_resources_from_obj(obj, reader));
-    let scoped_resources = merged_vector_resources(form_resources.as_ref(), page_resources);
-    if form_group_requires_raster(&dict, reader, &ops, &scoped_resources, inherited_gs) {
+    let form_resources = PageResources::from_content_owner(&dict, reader).ok()?;
+    let mut scoped_resources = form_resources.unwrap_or_else(|| page_resources.clone());
+    let mut inherited_gs = inherited_gs.clone();
+    crate::render::vector_resource_scope::bind_inherited_state(
+        &mut scoped_resources,
+        resources,
+        &mut inherited_gs,
+        &ops,
+        reader,
+    )
+    .ok()?;
+    if form_group_requires_raster(&dict, reader, &ops, &scoped_resources, &inherited_gs) {
         return None;
     }
     let form_matrix = extract_form_matrix(&dict)?;
@@ -3432,65 +3719,10 @@ pub(crate) fn load_vector_form_program(
         generation_number: gen_num,
         form_matrix,
         bbox: Some(bbox),
-        resources: form_resources,
+        resources: scoped_resources,
+        inherited_gs,
         ops,
     })
-}
-
-pub(crate) fn merged_vector_resources(
-    form_res: Option<&PageResources>,
-    page_res: &PageResources,
-) -> PageResources {
-    let Some(form_res) = form_res else {
-        return page_res.clone();
-    };
-    let mut merged = page_res.clone();
-    for (k, v) in &form_res.fonts {
-        merged.fonts.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.font_references {
-        merged.font_references.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.xobjects {
-        merged.xobjects.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.xobject_subtypes {
-        merged.xobject_subtypes.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.xobject_stream_dicts {
-        merged.xobject_stream_dicts.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.xobject_bboxes {
-        merged.xobject_bboxes.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.xobject_matrices {
-        merged.xobject_matrices.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.color_spaces {
-        merged.color_spaces.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.color_space_references {
-        merged.color_space_references.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.ext_g_states {
-        merged.ext_g_states.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.ext_g_state_references {
-        merged.ext_g_state_references.insert(k.clone(), *v);
-    }
-    for (k, v) in &form_res.patterns {
-        merged.patterns.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.shadings {
-        merged.shadings.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.properties {
-        merged.properties.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &form_res.properties_references {
-        merged.properties_references.insert(k.clone(), *v);
-    }
-    merged
 }
 
 pub(crate) fn extract_bbox(dict: &PdfDictionary) -> Option<[f64; 4]> {
@@ -4331,12 +4563,23 @@ pub(crate) fn resolved_regional_image_color_space_override(
     resources: &PageResources,
     reader: &PdfReader,
 ) -> Option<(String, PdfObject)> {
-    let PdfObject::Name(resource_name) = inline_image_get(dict, "ColorSpace")? else {
-        return None;
+    let source = inline_image_get(dict, "ColorSpace")?;
+    let resource_obj = match source {
+        PdfObject::Name(resource_name) => resources.color_spaces.get(resource_name)?.clone(),
+        // Image colour spaces may be indirect arrays/streams.  The regional
+        // sinks must pass that graph into the same scoped decoder used by the
+        // page renderer rather than reducing it to the family name alone.
+        PdfObject::Reference { .. } | PdfObject::Array(_) => source.clone(),
+        _ => return None,
     };
-    let resource_obj = resources.color_spaces.get(resource_name)?.clone();
     let family = regional_image_color_space_family_name(&resource_obj, resources, reader, 0)
-        .unwrap_or_else(|| canonical_regional_image_color_space_name(resource_name));
+        .unwrap_or_else(|| match source {
+            PdfObject::Name(name) => canonical_regional_image_color_space_name(name),
+            _ => "Unknown".to_string(),
+        });
+    if family == "Unknown" {
+        return None;
+    }
     Some((family, resource_obj))
 }
 
@@ -8251,6 +8494,7 @@ mod tests {
                     classify_ops_for_vector_output(
                         &ops,
                         &resources,
+                        &resources,
                         1.0,
                         None,
                         GraphicsState::default(),
@@ -8357,6 +8601,7 @@ mod tests {
             classify_ops_for_vector_output(
                 &ops,
                 &resources,
+                &resources,
                 1.0,
                 None,
                 GraphicsState::default(),
@@ -8388,6 +8633,7 @@ mod tests {
         assert!(matches!(
             classify_ops_for_vector_output(
                 &ops,
+                &resources,
                 &resources,
                 1.0,
                 None,
@@ -8431,6 +8677,7 @@ mod tests {
             assert!(matches!(
                 classify_ops_for_vector_output(
                     &ops,
+                    &resources,
                     &resources,
                     1.0,
                     None,

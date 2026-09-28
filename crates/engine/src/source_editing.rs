@@ -11,7 +11,7 @@ use crate::advanced_editing::{
     VectorEditOptions,
 };
 use crate::universal_editing::universal_image_occurrences_v2;
-use crate::{ContentEngine, Result, WellfriendError};
+use crate::{Result, WellfriendError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -285,18 +285,15 @@ pub fn operator_text_eligibility(
         &request.replacement_text,
         &patch_options,
     )?;
-    let selected = analysis
-        .candidates
-        .iter()
-        .find(|candidate| {
-            candidate.eligible
-                && selected_identity.is_none_or(|identity| {
-                    candidate.stream_object == identity.stream_object
-                        && candidate.stream_generation == identity.stream_generation
-                        && candidate.decoded_byte_start == identity.decoded_byte_range[0]
-                        && candidate.decoded_byte_end == identity.decoded_byte_range[1]
-                })
-        });
+    let selected = analysis.candidates.iter().find(|candidate| {
+        candidate.eligible
+            && selected_identity.is_none_or(|identity| {
+                candidate.stream_object == identity.stream_object
+                    && candidate.stream_generation == identity.stream_generation
+                    && candidate.decoded_byte_start == identity.decoded_byte_range[0]
+                    && candidate.decoded_byte_end == identity.decoded_byte_range[1]
+            })
+    });
     let refusal = selected.is_none().then(|| OperatorEditRefusal {
         code: analysis
             .candidates
@@ -376,7 +373,8 @@ pub fn edit_text_operator(
             signature_policy_override: request.signature_policy_override,
             target_stream_object: selected_identity.map(|identity| identity.stream_object),
             target_stream_generation: selected_identity.map(|identity| identity.stream_generation),
-            target_decoded_byte_range: selected_identity.map(|identity| identity.decoded_byte_range),
+            target_decoded_byte_range: selected_identity
+                .map(|identity| identity.decoded_byte_range),
             ..SameWidthPatchOptions::default()
         },
     )?;

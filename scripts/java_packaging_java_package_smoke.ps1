@@ -91,9 +91,10 @@ New-Item -ItemType Directory -Force -Path $SmokeDir | Out-Null
 $mvn = Ensure-Maven
 $nativeName = Get-NativeLibraryName
 $nativePath = Join-Path $Repo "target/debug/$nativeName"
-if (!(Test-Path $nativePath)) {
-    Invoke-Checked "cargo" @("build", "-p", "wellfriendpdf-capi") "cargo build -p wellfriendpdf-capi"
-}
+# A pre-existing DLL may come from an older ABI and can make the Java surface
+# appear broken even when the current Rust/header sources agree.  Always bind
+# the package smoke to a native artifact rebuilt from this exact working tree.
+Invoke-Checked "cargo" @("build", "-p", "wellfriendpdf-capi") "cargo build -p wellfriendpdf-capi"
 if (!(Test-Path $nativePath)) {
     throw "native library not found after build: $nativePath"
 }
@@ -103,7 +104,7 @@ $env:WELLFRIENDPDF_BINDING_PARITY_ARTIFACT_DIR = $ArtifactDir
 
 Invoke-Checked $mvn @("-f", $Pom, "-version") "mvn -version"
 Invoke-Checked $mvn @("-f", $Pom, "clean", "test") "mvn clean test"
-Invoke-Checked $mvn @("-f", $Pom, "package") "mvn package"
+Invoke-Checked $mvn @("-f", $Pom, "package", "-DskipTests") "mvn package -DskipTests"
 
 $jar = Join-Path $JavaDir "target/wellfriendpdf-sdk-0.1.0.jar"
 if (!(Test-Path $jar)) {
@@ -126,9 +127,9 @@ try {
 $requiredEntries = @(
     "META-INF/MANIFEST.MF",
     "io/wellfriendpdf/WellfriendPdf.class",
-    "io/wellfriendpdf/Wellfriend`$Document.class",
-    "io/wellfriendpdf/Wellfriend`$BinaryResult.class",
-    "io/wellfriendpdf/Wellfriend`$Office.class"
+    "io/wellfriendpdf/WellfriendPdf`$Document.class",
+    "io/wellfriendpdf/WellfriendPdf`$BinaryResult.class",
+    "io/wellfriendpdf/WellfriendPdf`$Office.class"
 )
 $missingEntries = @($requiredEntries | Where-Object { $entries -notcontains $_ })
 $forbiddenEntries = @($entries | Where-Object {
@@ -181,7 +182,7 @@ $payload = [ordered]@{
     commands = @(
         "mvn -version",
         "mvn clean test",
-        "mvn package",
+        "mvn package -DskipTests",
         "javac package smoke",
         "JAR runtime smoke"
     )

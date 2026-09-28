@@ -10,7 +10,7 @@ documentation = "https://docs.rs/wellfriendpdf-engine"
 homepage = "https://github.com/demisuga01-lab/wellfriendpdf"
 keywords = ["pdf", "parser", "rendering", "documents", "signatures"]
 categories = ["parser-implementations", "rendering", "text-processing"]
-include = ["src/**/*", "examples/**/*", "fonts/*.ttf", "fonts/LICENSE-*.txt", "fonts/README.md"]
+include = ["src/**/*", "examples/**/*", "fonts/*.ttf", "fonts/LICENSE-*.txt", "fonts/README.md", "licenses/*.txt"]
 
 [dependencies]
 aes = "0.8"
@@ -30,20 +30,27 @@ image-webp = "0.2"
 jpeg-decoder = "0.3"
 jpeg-encoder = "0.6"
 log = "0.4"
+# Pinned curve-preserving CFF contour normalization; no external executable.
+kurbo = "=0.13.1"
+linesweeper = { version = "=0.4.0", default-features = false }
 md-5 = "0.10"
 png = "0.17"
 qcms = { version = "0.3", default-features = true }
 wellfriendpdf-render-simd = { path = "../render-simd" }
 lcms2 = { version = "6.1.1", optional = true, default-features = true }
 rayon = "1"
-rustybuzz = "0.20"
+# Joining-context synopsis mirrors this version's state machine and property table.
+rustybuzz = "=0.20.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-ttf-parser = "0.21"
+# Match Rustybuzz's parser and its per-axis avar / phantom-metric fixes.
+ttf-parser = "=0.25.1"
 unicode-bidi = "0.3"
+unicode-script = "0.5"
 unicode-segmentation = "1.12"
 unicode-linebreak = "0.1.5"
+unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
 cassowary = "0.3.0"
 # text reflow uses only the auditable en-US and Spanish dictionaries from this
 # package.  The provider code is dual-permissive; text reflow records the

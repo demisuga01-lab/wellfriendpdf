@@ -1,4 +1,53 @@
-#[derive(Debug, Clone)]
+struct ReceiptHmacKeyInner(Vec<u8>);
+
+impl Drop for ReceiptHmacKeyInner {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+#[derive(Clone)]
+pub struct ReceiptHmacKey(std::sync::Arc<ReceiptHmacKeyInner>);
+
+impl From<Vec<u8>> for ReceiptHmacKey {
+    fn from(value: Vec<u8>) -> Self {
+        Self(std::sync::Arc::new(ReceiptHmacKeyInner(value)))
+    }
+}
+
+impl ReceiptHmacKey {
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_ref().0.as_slice()
+    }
+}
+
+impl std::fmt::Debug for ReceiptHmacKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReceiptHmacKey")
+            .field("bytes", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+#[doc(hidden)]
+pub struct ReceiptHmacVerificationKey {
+    key_id: String,
+    key: ReceiptHmacKey,
+}
+
+impl std::fmt::Debug for ReceiptHmacVerificationKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReceiptHmacVerificationKey")
+            .field("key_id", &self.key_id)
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct ServerConfig {
     pub port: u16,
     pub log_level: String,
@@ -71,6 +120,80 @@ pub struct ServerConfig {
     pub allow_external_network_providers: bool,
     /// Administrative policy: require OCR to stay local/self-hosted.
     pub local_only_ocr: bool,
+    /// Optional HMAC-SHA-256 key used only by the authenticated paint-partition
+    /// preview/publication endpoints. It is distinct from API keys and is
+    /// never serialized or reused for document encryption.
+    pub receipt_hmac_key: Option<ReceiptHmacKey>,
+    /// Public rotation identifier embedded in authenticated receipts.
+    pub receipt_hmac_key_id: String,
+    /// Bounded grace-period verification ring. Issuance always uses the active
+    /// key above; these entries can only verify already-issued receipts.
+    #[doc(hidden)]
+    pub receipt_hmac_previous_keys: Vec<ReceiptHmacVerificationKey>,
+    /// Audience binding embedded in authenticated receipts.
+    pub receipt_hmac_audience: String,
+    /// Maximum age of a server-issued review receipt.
+    pub receipt_hmac_ttl_secs: u64,
+    /// Deferred parse error so `from_env` stays infallible and startup
+    /// validation can fail closed with a precise message.
+    #[doc(hidden)]
+    pub receipt_hmac_config_error: Option<String>,
+}
+
+/// Deliberately omit every credential value. `ServerConfig` is commonly held
+/// in request state and may eventually be included in a panic or tracing
+/// context; deriving `Debug` would disclose all configured API keys.
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerConfig")
+            .field("port", &self.port)
+            .field("log_level", &self.log_level)
+            .field("max_file_size", &self.max_file_size)
+            .field("max_dpi", &self.max_dpi)
+            .field("max_pages", &self.max_pages)
+            .field("api_key_count", &self.api_keys.len())
+            .field("allow_unauthenticated", &self.allow_unauthenticated)
+            .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("cors_allow_any", &self.cors_allow_any)
+            .field("rate_limit_per_min", &self.rate_limit_per_min)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("max_render_pixels", &self.max_render_pixels)
+            .field("max_output_bytes", &self.max_output_bytes)
+            .field("max_image_count", &self.max_image_count)
+            .field("job_workers", &self.job_workers)
+            .field("job_queue_capacity", &self.job_queue_capacity)
+            .field("job_timeout_secs", &self.job_timeout_secs)
+            .field("job_retention_secs", &self.job_retention_secs)
+            .field("max_jobs", &self.max_jobs)
+            .field("max_progressive_sessions", &self.max_progressive_sessions)
+            .field(
+                "progressive_session_idle_secs",
+                &self.progressive_session_idle_secs,
+            )
+            .field("job_result_dir", &self.job_result_dir)
+            .field("runtime_config", &self.runtime_config)
+            .field("force_standard", &self.force_standard)
+            .field("allow_research", &self.allow_research)
+            .field(
+                "allow_external_network_providers",
+                &self.allow_external_network_providers,
+            )
+            .field("local_only_ocr", &self.local_only_ocr)
+            .field("receipt_hmac_configured", &self.receipt_hmac_key.is_some())
+            .field("receipt_hmac_key_id", &self.receipt_hmac_key_id)
+            .field(
+                "receipt_hmac_previous_key_count",
+                &self.receipt_hmac_previous_keys.len(),
+            )
+            .field("receipt_hmac_audience", &self.receipt_hmac_audience)
+            .field("receipt_hmac_ttl_secs", &self.receipt_hmac_ttl_secs)
+            .field(
+                "receipt_hmac_config_valid",
+                &self.receipt_hmac_config_error.is_none(),
+            )
+            .finish()
+    }
 }
 
 impl Default for ServerConfig {
@@ -125,6 +248,12 @@ impl Default for ServerConfig {
             allow_research: false,
             allow_external_network_providers: false,
             local_only_ocr: true,
+            receipt_hmac_key: None,
+            receipt_hmac_key_id: "primary".to_string(),
+            receipt_hmac_previous_keys: Vec::new(),
+            receipt_hmac_audience: "wellfriendpdf-server".to_string(),
+            receipt_hmac_ttl_secs: 900,
+            receipt_hmac_config_error: None,
         }
     }
 }
@@ -280,6 +409,50 @@ impl ServerConfig {
             cfg.local_only_ocr = parse_bool_env(&value);
         }
 
+        if let Ok(mut value) = std::env::var("WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX") {
+            match decode_secret_hex(value.trim()) {
+                Ok(secret) => {
+                    cfg.receipt_hmac_key = Some(ReceiptHmacKey::from(secret));
+                }
+                Err(error) => {
+                    cfg.receipt_hmac_config_error.get_or_insert_with(|| {
+                        format!("WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX is invalid: {error}")
+                    });
+                }
+            }
+            // Best-effort removal of the extra owned environment copy.
+            unsafe { value.as_mut_vec() }.fill(0);
+        }
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_RECEIPT_HMAC_KEY_ID") {
+            cfg.receipt_hmac_key_id = value;
+        }
+        if let Ok(mut value) = std::env::var("WELLFRIENDPDF_RECEIPT_HMAC_PREVIOUS_KEYS") {
+            match parse_previous_receipt_keys(value.trim()) {
+                Ok(keys) => cfg.receipt_hmac_previous_keys = keys,
+                Err(error) => {
+                    cfg.receipt_hmac_config_error.get_or_insert_with(|| {
+                        format!("WELLFRIENDPDF_RECEIPT_HMAC_PREVIOUS_KEYS is invalid: {error}")
+                    });
+                }
+            }
+            // This owned environment copy contains secret key material.
+            unsafe { value.as_mut_vec() }.fill(0);
+        }
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_RECEIPT_HMAC_AUDIENCE") {
+            cfg.receipt_hmac_audience = value;
+        }
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_RECEIPT_HMAC_TTL_SECS") {
+            match value.parse::<u64>() {
+                Ok(ttl) => cfg.receipt_hmac_ttl_secs = ttl,
+                Err(_) => {
+                    cfg.receipt_hmac_config_error.get_or_insert_with(|| {
+                        "WELLFRIENDPDF_RECEIPT_HMAC_TTL_SECS must be an unsigned integer"
+                            .to_string()
+                    });
+                }
+            }
+        }
+
         if let Ok(raw) = std::env::var("WELLFRIENDPDF_RUNTIME_CONFIG_JSON") {
             if let Ok(runtime) = wellfriendpdf_engine::RuntimeConfig::from_config_str(&raw) {
                 cfg.runtime_config = runtime;
@@ -304,6 +477,53 @@ impl ServerConfig {
     /// state. The governing rule: an empty API-key list must NOT silently
     /// leave every endpoint open — it requires the explicit dev opt-in.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(error) = &self.receipt_hmac_config_error {
+            return Err(error.clone());
+        }
+        if let Some(key) = &self.receipt_hmac_key {
+            if !(32..=256).contains(&key.as_slice().len()) {
+                return Err(
+                    "WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX must decode to 32..=256 bytes".to_string(),
+                );
+            }
+            if !valid_receipt_key_id(&self.receipt_hmac_key_id) {
+                return Err(
+                    "WELLFRIENDPDF_RECEIPT_HMAC_KEY_ID must be 1..=128 safe ASCII characters"
+                        .to_string(),
+                );
+            }
+            if self.receipt_hmac_audience.is_empty()
+                || self.receipt_hmac_audience.len() > 256
+                || self
+                    .receipt_hmac_audience
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control())
+            {
+                return Err(
+                    "WELLFRIENDPDF_RECEIPT_HMAC_AUDIENCE must be 1..=256 non-control bytes"
+                        .to_string(),
+                );
+            }
+            if !(1..=604_800).contains(&self.receipt_hmac_ttl_secs) {
+                return Err("WELLFRIENDPDF_RECEIPT_HMAC_TTL_SECS must be in 1..=604800".to_string());
+            }
+        }
+        if !self.receipt_hmac_previous_keys.is_empty() && self.receipt_hmac_key.is_none() {
+            return Err(
+                "WELLFRIENDPDF_RECEIPT_HMAC_PREVIOUS_KEYS requires an active WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX"
+                    .to_string(),
+            );
+        }
+        if self
+            .receipt_hmac_previous_keys
+            .iter()
+            .any(|entry| entry.key_id == self.receipt_hmac_key_id)
+        {
+            return Err(
+                "WELLFRIENDPDF_RECEIPT_HMAC_PREVIOUS_KEYS must not repeat the active key id"
+                    .to_string(),
+            );
+        }
         if self.api_keys.is_empty() && !self.allow_unauthenticated {
             return Err(
                 "WELLFRIENDPDF_API_KEYS is empty and WELLFRIENDPDF_ALLOW_UNAUTHENTICATED is not set; \
@@ -328,6 +548,22 @@ impl ServerConfig {
     /// dev-opt-in unauthenticated mode.
     pub fn auth_enforced(&self) -> bool {
         !self.api_keys.is_empty()
+    }
+
+    pub fn receipt_authentication_enabled(&self) -> bool {
+        self.receipt_hmac_key.is_some()
+    }
+
+    /// Resolve only an active or explicitly retained grace-period key. The
+    /// clone shares zeroizing storage and its Debug representation is redacted.
+    pub fn receipt_verification_key(&self, key_id: &str) -> Option<ReceiptHmacKey> {
+        if self.receipt_hmac_key_id == key_id {
+            return self.receipt_hmac_key.clone();
+        }
+        self.receipt_hmac_previous_keys
+            .iter()
+            .find(|entry| entry.key_id == key_id)
+            .map(|entry| entry.key.clone())
     }
 
     pub fn runtime_policy(&self) -> wellfriendpdf_engine::HostRuntimePolicy {
@@ -361,6 +597,136 @@ fn parse_bool_env(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "true" | "1" | "yes" | "on"
     )
+}
+
+fn decode_secret_hex(value: &str) -> Result<Vec<u8>, String> {
+    if !value.len().is_multiple_of(2) || value.is_empty() {
+        return Err("expected a non-empty even number of hexadecimal characters".to_string());
+    }
+    if value.len() > 512 {
+        return Err("decoded key would exceed 256 bytes".to_string());
+    }
+    let mut decoded = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let nibble = |byte: u8| -> Option<u8> {
+            match byte {
+                b'0'..=b'9' => Some(byte - b'0'),
+                b'a'..=b'f' => Some(byte - b'a' + 10),
+                b'A'..=b'F' => Some(byte - b'A' + 10),
+                _ => None,
+            }
+        };
+        decoded.push(
+            nibble(pair[0])
+                .and_then(|high| nibble(pair[1]).map(|low| (high << 4) | low))
+                .ok_or_else(|| "expected hexadecimal characters only".to_string())?,
+        );
+    }
+    Ok(decoded)
+}
+
+fn valid_receipt_key_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn parse_previous_receipt_keys(value: &str) -> Result<Vec<ReceiptHmacVerificationKey>, String> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut parsed = Vec::new();
+    for entry in value.split(',') {
+        if parsed.len() >= 8 {
+            return Err("at most 8 previous keys are allowed".to_string());
+        }
+        let (key_id, hex) = entry
+            .split_once('=')
+            .ok_or_else(|| "expected comma-separated key-id=hex entries".to_string())?;
+        let key_id = key_id.trim();
+        let hex = hex.trim();
+        if !valid_receipt_key_id(key_id) {
+            return Err("every previous key id must be 1..=128 safe ASCII characters".to_string());
+        }
+        if parsed
+            .iter()
+            .any(|candidate: &ReceiptHmacVerificationKey| candidate.key_id == key_id)
+        {
+            return Err(format!("duplicate previous key id '{key_id}'"));
+        }
+        let key = ReceiptHmacKey::from(decode_secret_hex(hex)?);
+        if !(32..=256).contains(&key.as_slice().len()) {
+            return Err(format!(
+                "previous key '{key_id}' must decode to 32..=256 bytes"
+            ));
+        }
+        parsed.push(ReceiptHmacVerificationKey {
+            key_id: key_id.to_string(),
+            key,
+        });
+    }
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod receipt_auth_tests {
+    use super::*;
+
+    #[test]
+    fn receipt_key_debug_is_redacted_and_secret_is_decoded_exactly() {
+        let bytes = decode_secret_hex(&"5a".repeat(32)).unwrap();
+        let key = ReceiptHmacKey::from(bytes);
+        assert_eq!(key.as_slice(), &[0x5a; 32]);
+        let debug = format!("{key:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("5a5a"));
+    }
+
+    #[test]
+    fn receipt_configuration_fails_closed_on_invalid_bounds() {
+        let mut config = ServerConfig {
+            allow_unauthenticated: true,
+            receipt_hmac_key: Some(ReceiptHmacKey::from(vec![0; 31])),
+            ..ServerConfig::default()
+        };
+        assert!(config.validate().is_err());
+        config.receipt_hmac_key = Some(ReceiptHmacKey::from(vec![0; 32]));
+        config.receipt_hmac_ttl_secs = 0;
+        assert!(config.validate().is_err());
+        config.receipt_hmac_ttl_secs = 900;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn receipt_verification_ring_is_bounded_and_verification_only() {
+        let previous = parse_previous_receipt_keys(&format!(
+            "old-a={},old-b={}",
+            "11".repeat(32),
+            "22".repeat(32)
+        ))
+        .unwrap();
+        let config = ServerConfig {
+            allow_unauthenticated: true,
+            receipt_hmac_key: Some(ReceiptHmacKey::from(vec![0x33; 32])),
+            receipt_hmac_key_id: "active".to_string(),
+            receipt_hmac_previous_keys: previous,
+            ..ServerConfig::default()
+        };
+        assert!(config.validate().is_ok());
+        assert_eq!(
+            config.receipt_verification_key("old-b").unwrap().as_slice(),
+            &[0x22; 32]
+        );
+        assert!(config.receipt_verification_key("missing").is_none());
+        assert!(parse_previous_receipt_keys(&format!(
+            "same={},same={}",
+            "11".repeat(32),
+            "22".repeat(32)
+        ))
+        .is_err());
+    }
 }
 
 pub static CONFIG: std::sync::OnceLock<ServerConfig> = std::sync::OnceLock::new();

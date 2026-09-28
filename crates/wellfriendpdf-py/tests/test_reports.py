@@ -118,6 +118,84 @@ def test_advanced_editing_closeout_report_analyze_and_edit(tmp_path):
             },
         }
     )
+    proposal_envelope = doc.propose_text_range_paint_partitions(request)
+    proposal = _envelope(
+        proposal_envelope,
+        "advanced_editing_closeout_paint_partition_proposal",
+    )
+    approval = json.dumps(
+        {
+            "proposal_id": proposal["proposal_id"],
+            "partitions": [
+                {
+                    "source_text_object": candidate["source_text_object"],
+                    "region": [20.0, 80.0, 180.0, 140.0],
+                    "final_lines": None,
+                }
+                for candidate in proposal["candidates"]
+            ],
+        }
+    )
+    preview_envelope = doc.preview_text_range_paint_partitions(
+        request,
+        json.dumps(proposal_envelope),
+        approval,
+        options_json=json.dumps({"pages": [1], "dpi": 72}),
+    )
+    preview = _envelope(
+        preview_envelope,
+        "advanced_editing_closeout_paint_partition_preview",
+    )
+    assert preview["pages"][0]["candidate"]["png"]
+    receipt_key = bytes([0x5A]) * 32
+    authenticated_envelope = wellfriendpdf.authenticate_text_range_paint_partition_receipt(
+        json.dumps(preview["publication_receipt"]),
+        "test-key",
+        "python-smoke",
+        1_000,
+        1_900,
+        receipt_key,
+    )
+    authenticated = _envelope(
+        authenticated_envelope,
+        "advanced_editing_closeout_authenticated_paint_partition_publication_receipt",
+    )
+    verified_envelope = wellfriendpdf.verify_authenticated_text_range_paint_partition_receipt(
+        json.dumps(authenticated),
+        "test-key",
+        "python-smoke",
+        1_500,
+        receipt_key,
+        0,
+    )
+    assert _envelope(
+        verified_envelope,
+        "advanced_editing_closeout_verified_paint_partition_publication_receipt",
+    ) == preview["publication_receipt"]
+    reviewed_out, reviewed_report = doc.apply_reviewed_text_range_paint_partitions(
+        request,
+        json.dumps(proposal_envelope),
+        approval,
+        json.dumps(preview["publication_receipt"]),
+    )
+    assert bytes(reviewed_out).startswith(b"%PDF-")
+    _envelope(
+        reviewed_report,
+        "advanced_editing_closeout_reviewed_multi_run_text_edit_report",
+    )
+    proposed_out, proposed_report = doc.apply_text_range_paint_partitions(
+        request,
+        json.dumps(proposal_envelope),
+        approval,
+        output=tmp_path / "advanced_editing_closeout-python-proposed.pdf",
+    )
+    assert bytes(proposed_out).startswith(b"%PDF-")
+    proposed_edit = _envelope(
+        proposed_report,
+        "advanced_editing_closeout_multi_run_text_edit_report",
+    )
+    assert proposed_edit["generated_paint_partitions"]
+
     out, edit_report = doc.edit_text_range(request, output=tmp_path / "advanced_editing_closeout-python.pdf")
     assert bytes(out).startswith(b"%PDF-")
     edited = _envelope(edit_report, "advanced_editing_closeout_multi_run_text_edit_report")

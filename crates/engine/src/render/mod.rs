@@ -5,6 +5,7 @@ pub mod color;
 pub(crate) mod color_glyph;
 pub mod colorspace;
 pub mod contract;
+pub(crate) mod default_colorspace;
 pub mod display_list;
 pub mod document_view;
 pub mod font_rasterizer;
@@ -12,11 +13,13 @@ pub mod font_substitution_report;
 pub mod function;
 pub mod glyph_cache;
 pub mod glyph_outline;
+pub(crate) mod icc_conversion;
 pub mod image_decode_planning;
 pub mod image_painter;
 pub mod invalidation;
 pub mod line;
 pub mod page_renderer;
+pub(crate) mod parameter_dictionary;
 pub mod path;
 pub mod plan;
 pub mod postscript;
@@ -29,6 +32,7 @@ pub mod text_decode;
 pub mod transaction_invalidation;
 pub mod transform;
 pub mod vector_fallback;
+pub(crate) mod vector_resource_scope;
 
 pub use buffer::{
     pixel_buffer_allocation_stats, pixel_compositor_backend,

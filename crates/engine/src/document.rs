@@ -246,7 +246,15 @@ impl PdfDocument {
                     object_ref.1
                 );
             }
-            let kids = dict.get_array("Kids").ok_or_else(|| {
+            let kids_object =
+                self.reader
+                    .resolve(dict.get("Kids").cloned().ok_or_else(|| {
+                        WellfriendError::MalformedPdf(format!(
+                            "page tree node {} {} is missing /Kids",
+                            object_ref.0, object_ref.1
+                        ))
+                    })?)?;
+            let kids = kids_object.as_array().ok_or_else(|| {
                 WellfriendError::MalformedPdf(format!(
                     "page tree node {} {} has non-array /Kids",
                     object_ref.0, object_ref.1

@@ -21,17 +21,15 @@ use crate::editing_transactions::{
     dirty_region_report, text_identity_report, undo_restoration_report, DocumentSnapshot,
     EditTransactionReport, EditableSceneGraph, SceneTextEditRequest, TransactionState,
 };
-use crate::filters::{
-    decode_stream_lossless, flate_encode_cancellable, StreamDecodeStatus,
-};
+use crate::filters::{decode_stream_lossless, flate_encode_cancellable, StreamDecodeStatus};
 use crate::render::get_fallback_font;
 use crate::source_editing::{operator_text_provenance, TrueEditingMode};
-use crate::writer::{
-    insert_authored_page_preserving_catalog, AuthoredPageGeometry, IncrementalObject,
-    write_incremental_update,
-};
 #[cfg(test)]
 use crate::writer::build_merged;
+use crate::writer::{
+    insert_authored_pages_preserving_catalog, write_incremental_update, AuthoredPageGeometry,
+    IncrementalObject,
+};
 use crate::{interactive_report, ContentEngine, PdfObject, Result, WellfriendError};
 use cassowary::strength::{MEDIUM, REQUIRED, STRONG, WEAK};
 use cassowary::WeightedRelation::*;
@@ -48,6 +46,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 pub const TEXT_REFLOW_SCHEMA_VERSION: &str = "text_reflow.geometric-semantic-reflow.v1";
 pub(crate) const MAX_PUBLIC_SEMANTIC_REPORT_PAGES: usize = 2;
+static CANONICAL_REFLOW_FONT_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -379,6 +378,7 @@ pub struct LayoutLine {
     /// remain here even though they are not painted as glyphs.
     pub text: String,
     pub visual_text: String,
+    pub bidi: crate::fonts::shaper::LineBidi,
     pub grapheme_range: [usize; 2],
     pub advance: f64,
     pub baseline: f64,
@@ -800,8 +800,46 @@ fn digest_hex(data: impl AsRef<[u8]>) -> String {
 }
 
 fn layout_extraction_equivalent(extracted: &str, expected: &str) -> bool {
-    extracted.split_whitespace().collect::<String>()
-        == expected.split_whitespace().collect::<String>()
+    normalized_layout_text(extracted) == normalized_layout_text(expected)
+}
+
+fn normalized_layout_text(text: &str) -> String {
+    text.split_whitespace().collect::<String>()
+}
+
+fn extraction_difference_summary(
+    extracted: &str,
+    expected: &str,
+    source_text: &str,
+    replacement_text: &str,
+) -> Value {
+    let actual = normalized_layout_text(extracted)
+        .chars()
+        .collect::<Vec<_>>();
+    let expected = normalized_layout_text(expected).chars().collect::<Vec<_>>();
+    let common_prefix = actual
+        .iter()
+        .zip(&expected)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let common_suffix = actual
+        .iter()
+        .rev()
+        .zip(expected.iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count()
+        .min(actual.len().saturating_sub(common_prefix))
+        .min(expected.len().saturating_sub(common_prefix));
+    json!({
+        "actual_normalized_scalar_count": actual.len(),
+        "expected_normalized_scalar_count": expected.len(),
+        "common_prefix_scalar_count": common_prefix,
+        "common_suffix_scalar_count": common_suffix,
+        "actual_scalar_at_first_difference": actual.get(common_prefix).map(|value| format!("U+{:04X}", *value as u32)),
+        "expected_scalar_at_first_difference": expected.get(common_prefix).map(|value| format!("U+{:04X}", *value as u32)),
+        "source_occurrences_after": extracted.matches(source_text).count(),
+        "replacement_occurrences_after": extracted.matches(replacement_text).count(),
+    })
 }
 
 fn unaffected_content_proof(
@@ -810,6 +848,7 @@ fn unaffected_content_proof(
     affected_page: usize,
     source_text: &str,
     replacement_text: &str,
+    target_logical_scalar_range: Option<[usize; 2]>,
     expected_link_rects: &[(usize, [f64; 4])],
     maximum_changed_existing_streams: usize,
 ) -> Value {
@@ -825,8 +864,47 @@ fn unaffected_content_proof(
     let source_page_after = after.get_page_text(affected_page).unwrap_or_default();
     let source_occurrences = source_page_before.matches(source_text).count();
     let expected_source_page = source_page_before.replacen(source_text, replacement_text, 1);
-    let source_extraction_exact_under_layout_policy = source_occurrences == 1
-        && layout_extraction_equivalent(&source_page_after, &expected_source_page);
+    let logical_range_proof = target_logical_scalar_range.and_then(|[start, end]| {
+        let before_model = analyze_multi_run_text_range(input, affected_page).ok()?;
+        let after_model = analyze_multi_run_text_range(output, affected_page).ok()?;
+        if start > end || end > before_model.logical_text.chars().count() {
+            return None;
+        }
+        let selected = before_model
+            .logical_text
+            .chars()
+            .skip(start)
+            .take(end - start)
+            .collect::<String>();
+        if selected != source_text {
+            return None;
+        }
+        let prefix = before_model.logical_text.chars().take(start).collect::<String>();
+        let suffix = before_model.logical_text.chars().skip(end).collect::<String>();
+        let expected = format!("{prefix}{replacement_text}{suffix}");
+        Some(json!({
+            "range": [start, end],
+            "selected_source_matches": true,
+            "logical_text_exact_under_layout_whitespace_policy": layout_extraction_equivalent(&after_model.logical_text, &expected),
+            "expected_sha256": digest_hex(expected.as_bytes()),
+            "actual_sha256": digest_hex(after_model.logical_text.as_bytes()),
+        }))
+    });
+    let source_extraction_exact_under_layout_policy = logical_range_proof
+        .as_ref()
+        .and_then(|proof| proof["logical_text_exact_under_layout_whitespace_policy"].as_bool())
+        .unwrap_or_else(|| {
+            source_occurrences == 1
+                && layout_extraction_equivalent(&source_page_after, &expected_source_page)
+        });
+    let extraction_difference = (!source_extraction_exact_under_layout_policy).then(|| {
+        extraction_difference_summary(
+            &source_page_after,
+            &expected_source_page,
+            source_text,
+            replacement_text,
+        )
+    });
     let page_stream_hashes = |engine: &ContentEngine, page: usize| -> Result<Vec<Value>> {
         let page = engine.document().get_page(page)?;
         page.contents
@@ -1036,9 +1114,13 @@ fn unaffected_content_proof(
         "page_count_after": page_count_after,
         "source_occurrences_before": source_occurrences,
         "affected_page_extraction_exact_under_layout_whitespace_policy": source_extraction_exact_under_layout_policy,
+        "source_aware_logical_range_proof": logical_range_proof,
+        "affected_page_extraction_difference": extraction_difference,
         "untouched_pages": untouched_pages,
         "untouched_pages_proven": untouched_pages_proven,
+        "affected_page_streams_proven": affected_page_streams_proven,
         "affected_page_stream_proof": affected_page_stream_proof,
+        "annotations_unchanged_or_expectedly_moved": annotations_unchanged_or_expectedly_moved,
         "annotation_proof": annotation_proof,
         "no_coverup_or_duplicate_old_source": !source_page_after.contains(source_text),
     })
@@ -1607,7 +1689,103 @@ fn mandatory_boundary_after(records: &[LineBreakRecord], start: usize) -> Option
         .find(|end| *end > start)
 }
 
+struct PreparedReflowFont<'a> {
+    bytes: &'a [u8],
+    digest: [u8; 32],
+    coverage: crate::fonts::coverage::PreparedCoverage<'a>,
+}
+
+impl<'a> PreparedReflowFont<'a> {
+    #[cfg(test)]
+    fn new(bytes: &'a [u8]) -> Result<Self> {
+        Self::new_with_digest(bytes, Sha256::digest(bytes).into())
+    }
+
+    fn new_with_digest(bytes: &'a [u8], digest: [u8; 32]) -> Result<Self> {
+        Ok(Self {
+            bytes,
+            digest,
+            coverage: crate::fonts::coverage::PreparedCoverage::new(bytes)?,
+        })
+    }
+
+    fn shape_resolved(
+        &self,
+        text: &str,
+        bidi: &crate::fonts::shaper::LineBidi,
+    ) -> Result<crate::fonts::ShapedRun> {
+        crate::fonts::TextShaper::shape_resolved_prehashed(
+            self.bytes,
+            &self.digest,
+            text,
+            bidi,
+            &Default::default(),
+        )
+    }
+
+    fn has_missing_glyphs(&self, text: &str, run: &crate::fonts::ShapedRun) -> Result<bool> {
+        self.coverage.has_missing_glyphs(text, run)
+    }
+}
+
+fn contextual_span_advance(
+    paragraph: &str,
+    prepared_bidi: &crate::fonts::shaper::ParagraphBidi<'_>,
+    font: &PreparedReflowFont<'_>,
+    graphemes: &[&str],
+    start: usize,
+    end: usize,
+    hyphen: bool,
+    direction: &str,
+    font_size: f64,
+) -> Result<f64> {
+    let logical = graphemes[start..end].concat();
+    let visible = strip_trailing_line_separators(&logical);
+    let visual = if hyphen {
+        format!("{visible}-")
+    } else {
+        visible.to_owned()
+    };
+    if direction == "vertical_rl" {
+        return shaped_advance(&visual, direction, font_size);
+    }
+    let options = crate::fonts::ShapeOptions {
+        direction: Some(if direction == "right_to_left" {
+            crate::fonts::TextDirection::RightToLeft
+        } else {
+            crate::fonts::TextDirection::LeftToRight
+        }),
+    };
+    let offset = graphemes[..start].iter().map(|g| g.len()).sum::<usize>();
+    if hyphen {
+        let mut virtual_paragraph = paragraph.to_owned();
+        virtual_paragraph.insert(offset + visible.len(), '-');
+        let prepared = crate::fonts::shaper::ParagraphBidi::new(&virtual_paragraph, options)?;
+        let bidi = prepared.line(offset..offset + visual.len())?;
+        let run = font.shape_resolved(&visual, &bidi)?;
+        return Ok(run
+            .glyphs
+            .iter()
+            .map(|g| crate::advanced_editing::canonical_number(g.advance).abs())
+            .sum::<f64>()
+            * font_size
+            / 1000.0);
+    }
+    let bidi = prepared_bidi.line(offset..offset + visual.len())?;
+    let run = font.shape_resolved(&visual, &bidi)?;
+    Ok(run
+        .glyphs
+        .iter()
+        .map(|g| crate::advanced_editing::canonical_number(g.advance).abs())
+        .sum::<f64>()
+        * font_size
+        / 1000.0)
+}
+
 fn range_advance(
+    paragraph: &str,
+    prepared_bidi: &crate::fonts::shaper::ParagraphBidi<'_>,
+    font: &PreparedReflowFont<'_>,
     graphemes: &[&str],
     start: usize,
     end: usize,
@@ -1626,13 +1804,26 @@ fn range_advance(
         )));
     }
     *measured_spans += 1;
-    let advance = shaped_advance(&graphemes[start..end].join(""), direction, font_size)?;
+    let advance = contextual_span_advance(
+        paragraph,
+        prepared_bidi,
+        font,
+        graphemes,
+        start,
+        end,
+        false,
+        direction,
+        font_size,
+    )?;
     cache.insert((start, end), advance);
     Ok(advance)
 }
 
 #[allow(clippy::too_many_arguments)] // Keeps shaped-metric cache ownership explicit at the DP boundary.
 fn candidate_advance(
+    paragraph: &str,
+    prepared_bidi: &crate::fonts::shaper::ParagraphBidi<'_>,
+    font: &PreparedReflowFont<'_>,
     graphemes: &[&str],
     start: usize,
     end: usize,
@@ -1642,10 +1833,6 @@ fn candidate_advance(
     cache: &mut BTreeMap<(usize, usize), f64>,
     measured_spans: &mut usize,
 ) -> Result<f64> {
-    let mut visual = graphemes[start..end].join("");
-    if record.is_some_and(is_mandatory_line_separator) {
-        visual = strip_trailing_line_separators(&visual).to_string();
-    }
     if record.is_some_and(|item| item.hyphenation_source.starts_with("dictionary:")) {
         if *measured_spans >= MAX_FINAL_LAYOUT_CANDIDATE_SPANS {
             return Err(WellfriendError::UnsupportedFeature(format!(
@@ -1654,7 +1841,17 @@ fn candidate_advance(
             )));
         }
         *measured_spans += 1;
-        return shaped_advance(&format!("{visual}-"), direction, font_size);
+        return contextual_span_advance(
+            paragraph,
+            prepared_bidi,
+            font,
+            graphemes,
+            start,
+            end,
+            true,
+            direction,
+            font_size,
+        );
     }
     if record.is_some_and(is_mandatory_line_separator) {
         if *measured_spans >= MAX_FINAL_LAYOUT_CANDIDATE_SPANS {
@@ -1664,9 +1861,22 @@ fn candidate_advance(
             )));
         }
         *measured_spans += 1;
-        return shaped_advance(&visual, direction, font_size);
+        return contextual_span_advance(
+            paragraph,
+            prepared_bidi,
+            font,
+            graphemes,
+            start,
+            end,
+            false,
+            direction,
+            font_size,
+        );
     }
     range_advance(
+        paragraph,
+        prepared_bidi,
+        font,
         graphemes,
         start,
         end,
@@ -1682,10 +1892,13 @@ fn is_mandatory_line_separator(record: &LineBreakRecord) -> bool {
 }
 
 fn strip_trailing_line_separators(text: &str) -> &str {
-    text.trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}'])
+    text.trim_end_matches(crate::fonts::hard_break::is_hard_break)
 }
 
 fn greedy_line_ranges(
+    paragraph: &str,
+    prepared_bidi: &crate::fonts::shaper::ParagraphBidi<'_>,
+    font: &PreparedReflowFont<'_>,
     graphemes: &[&str],
     records: &[LineBreakRecord],
     region_width: f64,
@@ -1701,28 +1914,33 @@ fn greedy_line_ranges(
         let mandatory_end = mandatory_boundary_after(records, start).unwrap_or(graphemes.len());
         let mut selected = None::<(usize, bool)>;
         for end in start + 1..=mandatory_end {
-            let record = line_record_at(records, end);
+            crate::cancel::check_current_cancel("reflow preview candidate")?;
+            let Some(record) = line_record_at(records, end).filter(|record| usable_break(record))
+            else {
+                continue;
+            };
             if candidate_advance(
+                paragraph,
+                prepared_bidi,
+                font,
                 graphemes,
                 start,
                 end,
-                record,
+                Some(record),
                 direction,
                 font_size,
                 cache,
                 measured_spans,
             )? > region_width
             {
-                break;
+                // Contextual advances need not grow monotonically.
+                continue;
             }
-            if record.is_some_and(usable_break) {
-                let dictionary_hyphen =
-                    record.is_some_and(|item| item.hyphenation_source.starts_with("dictionary:"));
-                if !dictionary_hyphen
-                    || consecutive_hyphenated_lines < HYPHENATION_MAX_CONSECUTIVE_HYPHENATED_LINES
-                {
-                    selected = Some((end, dictionary_hyphen));
-                }
+            let dictionary_hyphen = record.hyphenation_source.starts_with("dictionary:");
+            if !dictionary_hyphen
+                || consecutive_hyphenated_lines < HYPHENATION_MAX_CONSECUTIVE_HYPHENATED_LINES
+            {
+                selected = Some((end, dictionary_hyphen));
             }
         }
         let (end, dictionary_hyphen) = selected.unwrap_or((mandatory_end, false));
@@ -1741,6 +1959,9 @@ type LineRange = (usize, usize);
 type OptimizedLineRanges = Option<(Vec<LineRange>, f64)>;
 
 fn optimized_line_ranges(
+    paragraph: &str,
+    prepared_bidi: &crate::fonts::shaper::ParagraphBidi<'_>,
+    font: &PreparedReflowFont<'_>,
     graphemes: &[&str],
     records: &[LineBreakRecord],
     region_width: f64,
@@ -1783,7 +2004,11 @@ fn optimized_line_ranges(
                 if !usable_break(record) {
                     continue;
                 }
+                crate::cancel::check_current_cancel("reflow optimized candidate")?;
                 let advance = candidate_advance(
+                    paragraph,
+                    prepared_bidi,
+                    font,
                     graphemes,
                     start,
                     end,
@@ -1794,7 +2019,8 @@ fn optimized_line_ranges(
                     measured_spans,
                 )?;
                 if advance > region_width {
-                    break;
+                    // A later contextual substitution can reduce the width.
+                    continue;
                 }
                 let dictionary_hyphen = record.hyphenation_source.starts_with("dictionary:");
                 let next_hyphen_count = if dictionary_hyphen {
@@ -1856,6 +2082,8 @@ fn optimized_line_ranges(
 #[allow(clippy::too_many_arguments)] // Call-site keeps line context and mutable shaped-metric cache explicit.
 fn layout_lines_from_ranges(
     text: &str,
+    prepared_bidi: &crate::fonts::shaper::ParagraphBidi<'_>,
+    font: &PreparedReflowFont<'_>,
     graphemes: &[&str],
     ranges: &[(usize, usize)],
     records: &[LineBreakRecord],
@@ -1878,12 +2106,48 @@ fn layout_lines_from_ranges(
             };
             let hyphen_inserted = break_record
                 .is_some_and(|record| record.hyphenation_source.starts_with("dictionary:"));
-            let bidi = BidiInfo::new(&visual_text, None);
-            let mut visual_order = Vec::new();
-            for paragraph in &bidi.paragraphs {
-                let (_, ranges) = bidi.visual_runs(paragraph, paragraph.range.clone());
-                visual_order.extend(0..ranges.len());
+            let byte_start = graphemes[..*start].iter().map(|g| g.len()).sum::<usize>();
+            let shape_options = crate::fonts::ShapeOptions {
+                direction: Some(if direction == "right_to_left" {
+                    crate::fonts::TextDirection::RightToLeft
+                } else {
+                    crate::fonts::TextDirection::LeftToRight
+                }),
+            };
+            let resolved = if hyphen_inserted {
+                let insertion = byte_start + visual_text.len();
+                let mut virtual_paragraph = text.to_owned();
+                virtual_paragraph.insert(insertion, '-');
+                crate::fonts::shaper::resolve_line_bidi(
+                    &virtual_paragraph,
+                    byte_start..insertion + 1,
+                    shape_options,
+                )?
+            } else {
+                prepared_bidi.line(byte_start..byte_start + visual_text.len())?
+            };
+            let shaped_visual = if hyphen_inserted {
+                format!("{visual_text}-")
+            } else {
+                visual_text.clone()
+            };
+            let shaped = font.shape_resolved(&shaped_visual, &resolved)?;
+            if font.has_missing_glyphs(&shaped_visual, &shaped)? {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "canonical reflow font lacks contextual glyphs".into(),
+                ));
             }
+            let mut run_levels = resolved.levels.clone();
+            run_levels.dedup();
+            let run_levels = run_levels
+                .into_iter()
+                .map(|level| {
+                    unicode_bidi::Level::new(level).map_err(|_| {
+                        WellfriendError::invalid_input("invalid final-line bidi level")
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let visual_order = BidiInfo::reorder_visual(&run_levels);
             Ok(LayoutLine {
                 line_id: stable_id(
                     "line",
@@ -1891,8 +2155,12 @@ fn layout_lines_from_ranges(
                 ),
                 text: line_text,
                 visual_text,
+                bidi: resolved,
                 grapheme_range: [*start, *end],
                 advance: candidate_advance(
+                    text,
+                    prepared_bidi,
+                    font,
                     graphemes,
                     *start,
                     *end,
@@ -1933,6 +2201,19 @@ pub fn line_break_text(
     }
     let direction = direction_label(direction);
     let font_size = line_height / 1.2;
+    let shape_options = crate::fonts::ShapeOptions {
+        direction: Some(if direction == "right_to_left" {
+            crate::fonts::TextDirection::RightToLeft
+        } else {
+            crate::fonts::TextDirection::LeftToRight
+        }),
+    };
+    let prepared_bidi = crate::fonts::shaper::ParagraphBidi::new(text, shape_options)?;
+    let font_bytes = get_fallback_font("Symbol").ok_or_else(|| {
+        WellfriendError::UnsupportedFeature("canonical shaping font missing".into())
+    })?;
+    let digest = *CANONICAL_REFLOW_FONT_DIGEST.get_or_init(|| Sha256::digest(font_bytes).into());
+    let font = PreparedReflowFont::new_with_digest(font_bytes, digest)?;
     let graphemes = text.graphemes(true).collect::<Vec<_>>();
     let mut break_records = uax14_break_records(text);
     let hyphenation_plan = dictionary_hyphenation_plan(text, language, hyphenation);
@@ -1950,6 +2231,9 @@ pub fn line_break_text(
         vec![(0, 0)]
     } else {
         greedy_line_ranges(
+            text,
+            &prepared_bidi,
+            &font,
             &graphemes,
             &break_records,
             region_width,
@@ -1963,6 +2247,9 @@ pub fn line_break_text(
         Some((vec![(0, 0)], 0.0))
     } else {
         optimized_line_ranges(
+            text,
+            &prepared_bidi,
+            &font,
             &graphemes,
             &break_records,
             region_width,
@@ -1977,6 +2264,8 @@ pub fn line_break_text(
         .unwrap_or_else(|| (preview_ranges.clone(), f64::INFINITY, false));
     let preview_lines = layout_lines_from_ranges(
         text,
+        &prepared_bidi,
+        &font,
         &graphemes,
         &preview_ranges,
         &break_records,
@@ -1988,6 +2277,8 @@ pub fn line_break_text(
     )?;
     let lines = layout_lines_from_ranges(
         text,
+        &prepared_bidi,
+        &font,
         &graphemes,
         &final_ranges,
         &break_records,
@@ -2086,22 +2377,38 @@ pub fn analyze_geometric_region(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if source_instructions.is_empty() && request.font_policy == "preserve_original_per_run" {
+    if source_instructions.is_empty()
+        && (request.target_logical_scalar_range.is_some()
+            || request.font_policy == "preserve_original_per_run")
+    {
         if let Ok(model) = analyze_multi_run_text_range(input, request.page) {
-            if let Ok([start, end]) = unique_scalar_range(&model.logical_text, &request.source_text)
-            {
+            if let Ok([start, end]) = selected_scalar_range(request, &model) {
                 let selected = model
                     .source_spans
                     .iter()
-                    .filter(|span| span.logical_range[0] >= start && span.logical_range[1] <= end)
+                    .filter(|span| {
+                        if start == end {
+                            span.logical_range[0] == start || span.logical_range[1] == start
+                        } else {
+                            span.logical_range[0] < end && span.logical_range[1] > start
+                        }
+                    })
                     .collect::<Vec<_>>();
-                if selected
-                    .first()
-                    .is_some_and(|span| span.logical_range[0] == start)
-                    && selected
-                        .last()
-                        .is_some_and(|span| span.logical_range[1] == end)
-                {
+                let provenance_complete = if start == end {
+                    !selected.is_empty()
+                } else {
+                    let mut covered_until = start;
+                    for span in &selected {
+                        let overlap_start = span.logical_range[0].max(start);
+                        let overlap_end = span.logical_range[1].min(end);
+                        if overlap_start > covered_until || overlap_end <= overlap_start {
+                            break;
+                        }
+                        covered_until = covered_until.max(overlap_end);
+                    }
+                    covered_until == end
+                };
+                if provenance_complete {
                     source_instructions = selected
                         .into_iter()
                         .map(|span| {
@@ -3166,16 +3473,21 @@ fn source_reflow_options(
         target_stream_object: request.target_stream_object,
         target_stream_generation: request.target_stream_generation,
         target_decoded_byte_range: request.target_decoded_byte_range,
+        paint_order_policy: crate::advanced_editing::GeneratedPaintOrderPolicy::default(),
+        paint_partitions: Vec::new(),
     })
 }
+
+#[cfg(test)]
+#[path = "text_reflow_font_coverage_tests.rs"]
+mod font_coverage_tests;
 
 /// Resolve only a font that has already been selected by the v2 approval
 /// boundary. The lookup name is carried in the immutable operation request, so
 /// generated Type0 output, shaping, line measurement, and continuation flow all
-/// consume the same exact bundled bytes.
-fn approved_reflow_font<'a>(
-    request: &'a GeometricReflowRequest,
-) -> Result<Option<(&'a str, &'a [u8])>> {
+/// consume the same exact caller or bundled bytes. Coverage follows the actual
+/// writing mode and shaped outlines, never just nominal scalar cmap entries.
+fn approved_reflow_font(request: &GeometricReflowRequest) -> Result<Option<(&str, &[u8])>> {
     let Some(lookup_name) = request.font_policy.strip_prefix("approved_substitute:") else {
         return Ok(None);
     };
@@ -3184,7 +3496,8 @@ fn approved_reflow_font<'a>(
             "text_reflow approved substitute font lookup name is empty",
         ));
     }
-    if let Some(asset) = request.approved_font_asset.as_ref() {
+    crate::cancel::check_current_cancel("approved reflow font coverage")?;
+    let bytes = if let Some(asset) = request.approved_font_asset.as_ref() {
         if asset.lookup_name != lookup_name {
             return Err(WellfriendError::invalid_input(
                 "text_reflow approved font asset name differs from the immutable font policy",
@@ -3195,28 +3508,43 @@ fn approved_reflow_font<'a>(
                 "text_reflow approved font asset is empty or exceeds 256 MiB".to_string(),
             ));
         }
-        let face = ttf_parser::Face::parse(&asset.bytes, 0).map_err(|_| {
-            WellfriendError::invalid_input(
-                "text_reflow approved font asset is not a supported sfnt/OpenType face",
-            )
-        })?;
-        if let Some(character) = request
-            .replacement_text
-            .chars()
-            .find(|character| !character.is_control() && face.glyph_index(*character).is_none())
-        {
-            return Err(WellfriendError::UnsupportedFeature(format!(
-                "text_reflow approved font asset has no glyph for U+{:04X}",
-                character as u32
-            )));
-        }
-        return Ok(Some((asset.lookup_name.as_str(), asset.bytes.as_slice())));
+        asset.bytes.as_slice()
+    } else {
+        get_fallback_font(lookup_name).ok_or_else(|| {
+            WellfriendError::UnsupportedFeature(format!(
+                "text_reflow approved substitute font is unavailable: {lookup_name}"
+            ))
+        })?
+    };
+    if !crate::fonts::fallback::editable_font(bytes) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "text_reflow approved font does not permit supported editable outline embedding".into(),
+        ));
     }
-    let bytes = get_fallback_font(lookup_name).ok_or_else(|| {
-        WellfriendError::UnsupportedFeature(format!(
-            "text_reflow approved substitute font is unavailable: {lookup_name}"
-        ))
-    })?;
+    let mode = source_reflow_mode(request);
+    let options = crate::fonts::ShapeOptions {
+        direction: Some(if mode == AdvancedTextMode::ParagraphReflowRtl {
+            crate::fonts::TextDirection::RightToLeft
+        } else {
+            crate::fonts::TextDirection::LeftToRight
+        }),
+    };
+    let covered = if mode == AdvancedTextMode::ParagraphReflowVertical {
+        crate::fonts::vertical_fonts::covers(
+            bytes,
+            &request.replacement_text,
+            options,
+            &Default::default(),
+        )?
+    } else {
+        let run = crate::fonts::TextShaper::shape(bytes, &request.replacement_text, options)?;
+        !crate::fonts::shaper::has_missing_glyphs(bytes, &request.replacement_text, &run)?
+    };
+    if !covered {
+        return Err(WellfriendError::UnsupportedFeature(
+            "text_reflow approved font lacks final shaped-cluster outline coverage".into(),
+        ));
+    }
     Ok(Some((lookup_name, bytes)))
 }
 
@@ -3225,6 +3553,7 @@ fn source_output_lines(lines: &[LayoutLine]) -> Vec<ExplicitLayoutLine> {
         .iter()
         .map(|line| ExplicitLayoutLine {
             logical_text: line.text.clone(),
+            bidi: Some(line.bidi.clone()),
             visual_text: if line.hyphen_inserted {
                 format!("{}-", line.visual_text)
             } else {
@@ -3565,15 +3894,24 @@ fn apply_source_linked_reflow(
         request.page,
         &request.source_text,
         &request.replacement_text,
+        request.target_logical_scalar_range,
         &expected_downstream_link_rects(request),
         1 + request.downstream_vector_moves.len(),
     );
     if unaffected_proof["status"]
         != Value::String("pass_with_documented_layout_whitespace_policy".to_string())
     {
-        return Err(WellfriendError::MalformedPdf(
-            "text_reflow unaffected-content proof failed after source rewrite".to_string(),
-        ));
+        return Err(WellfriendError::MalformedPdf(format!(
+            "text_reflow unaffected-content proof failed after source rewrite: {}",
+            json!({
+                "affected_page_extraction_exact_under_layout_whitespace_policy": unaffected_proof["affected_page_extraction_exact_under_layout_whitespace_policy"],
+                "affected_page_extraction_difference": unaffected_proof["affected_page_extraction_difference"],
+                "untouched_pages_proven": unaffected_proof["untouched_pages_proven"],
+                "affected_page_streams_proven": unaffected_proof["affected_page_streams_proven"],
+                "annotations_unchanged_or_expectedly_moved": unaffected_proof["annotations_unchanged_or_expectedly_moved"],
+                "source_occurrences_before": unaffected_proof["source_occurrences_before"],
+            })
+        )));
     }
     report.applied_mode = Some(request.requested_mode);
     report.refusal = None;
@@ -3720,6 +4058,7 @@ fn apply_source_linked_reflow(
         signature_impact: signature_impact(request),
         conformance_impact: conformance_impact(request),
         validation_plan: Vec::new(),
+        validation_evidence: report.validation_evidence.clone(),
         inverse_operations: report.inverse_operation.clone().into_iter().collect(),
         commit_policy: "text_reflow_proxy_for_undo_proof".into(),
         operation_log_hash: digest_hex(request.replacement_text.as_bytes()),
@@ -3878,81 +4217,80 @@ fn apply_single_paragraph_existing_target_flow(
         first_resource,
         continuation_evidence,
         continuation_resource,
-    ) =
-        if target_page == request.page {
-            // A same-page story must be one generated source stream: separate
-            // incremental generated streams are extracted newest-first by the
-            // canonical reader. Per-line rectangles let advanced editing emit both
-            // fragments in logical order while preserving their distinct
-            // geometric target regions.
-            let font_size = request.line_height / 1.2;
-            let line_advance = font_size * 1.2;
-            let positioned_lines = layout
-                .lines
-                .iter()
-                .enumerate()
-                .map(|(index, line)| {
-                    let (region, local_index) = if index < max_lines {
-                        (source_region, index)
-                    } else {
-                        (target_region, index - max_lines)
-                    };
-                    let baseline = region[3] - font_size - local_index as f64 * line_advance;
-                    PositionedExplicitLayoutLine {
-                        line: source_output_lines(std::slice::from_ref(line))
-                            .into_iter()
-                            .next()
-                            .expect("one source output line"),
-                        region: [region[0], baseline, region[2], baseline + font_size],
-                    }
-                })
-                .collect::<Vec<_>>();
-            let (output, first_apply) = edit_advanced_text_pdf_with_positioned_visual_layout(
-                input,
-                request.page,
-                &request.source_text,
-                &request.replacement_text,
-                source_reflow_mode(request),
-                &options,
-                approved_font.map(|(_, bytes)| bytes),
-                &positioned_lines,
-            )?;
-            (
-                output,
-                serde_json::to_value(&first_apply).map_err(|error| {
-                    WellfriendError::ParseError(format!(
-                        "text_reflow positioned apply report serialization failed: {error}"
-                    ))
-                })?,
-                first_apply.removed_old_reachable_content,
-                format!(
-                    "generated_type0_font_resource:{}",
-                    first_apply.font_resource
-                ),
-                json!({
-                    "operation": "single_canonical_positioned_source_rewrite",
-                    "line_count": positioned_lines.len(),
-                    "target_region": target_region,
-                    "output_sha256": first_apply.output_sha256,
-                }),
-                format!(
-                    "generated_type0_font_resource:{}",
-                    first_apply.font_resource
-                ),
-            )
-        } else {
-            let insertion = MultiRunTextRangeRequest {
-                page: target_page,
-                logical_start: 0,
-                logical_end: 0,
-                replacement_text: continuation_text.clone(),
-                mode: source_reflow_mode(request),
-                style_policy: MultiRunStylePolicy::InheritLeading,
-                options: target_options,
-                final_lines: Some(continuation_lines),
-            };
-            let (first_output, first_apply, first_old_text_absent, first_resource) =
-                apply_selected_source_segment_with_layout(
+    ) = if target_page == request.page {
+        // A same-page story must be one generated source stream: separate
+        // incremental generated streams are extracted newest-first by the
+        // canonical reader. Per-line rectangles let advanced editing emit both
+        // fragments in logical order while preserving their distinct
+        // geometric target regions.
+        let font_size = request.line_height / 1.2;
+        let line_advance = font_size * 1.2;
+        let positioned_lines = layout
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                let (region, local_index) = if index < max_lines {
+                    (source_region, index)
+                } else {
+                    (target_region, index - max_lines)
+                };
+                let baseline = region[3] - font_size - local_index as f64 * line_advance;
+                PositionedExplicitLayoutLine {
+                    line: source_output_lines(std::slice::from_ref(line))
+                        .into_iter()
+                        .next()
+                        .expect("one source output line"),
+                    region: [region[0], baseline, region[2], baseline + font_size],
+                }
+            })
+            .collect::<Vec<_>>();
+        let (output, first_apply) = edit_advanced_text_pdf_with_positioned_visual_layout(
+            input,
+            request.page,
+            &request.source_text,
+            &request.replacement_text,
+            source_reflow_mode(request),
+            &options,
+            approved_font.map(|(_, bytes)| bytes),
+            &positioned_lines,
+        )?;
+        (
+            output,
+            serde_json::to_value(&first_apply).map_err(|error| {
+                WellfriendError::ParseError(format!(
+                    "text_reflow positioned apply report serialization failed: {error}"
+                ))
+            })?,
+            first_apply.removed_old_reachable_content,
+            format!(
+                "generated_type0_font_resource:{}",
+                first_apply.font_resource
+            ),
+            json!({
+                "operation": "single_canonical_positioned_source_rewrite",
+                "line_count": positioned_lines.len(),
+                "target_region": target_region,
+                "output_sha256": first_apply.output_sha256,
+            }),
+            format!(
+                "generated_type0_font_resource:{}",
+                first_apply.font_resource
+            ),
+        )
+    } else {
+        let insertion = MultiRunTextRangeRequest {
+            page: target_page,
+            logical_start: 0,
+            logical_end: 0,
+            replacement_text: continuation_text.clone(),
+            mode: source_reflow_mode(request),
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options: target_options,
+            final_lines: Some(continuation_lines),
+        };
+        let (first_output, first_apply, first_old_text_absent, first_resource) =
+            apply_selected_source_segment_with_layout(
                 input,
                 request,
                 &first_text,
@@ -3960,31 +4298,30 @@ fn apply_single_paragraph_existing_target_flow(
                 approved_font,
                 &first_lines,
             )?;
-            if !first_old_text_absent {
-                return Err(WellfriendError::MalformedPdf(
-                    "text_reflow selected source occurrence remained reachable after downstream split"
-                        .to_string(),
-                ));
-            }
-            let (output, continuation_apply) =
-                edit_multi_run_text_range(
-                    &first_output,
-                    &insertion,
-                    approved_font.map(|(_, bytes)| bytes),
-                )?;
-            let continuation_resource = format!(
-                "generated_type0_font_resource:{}",
-                continuation_apply.output_sha256
-            );
-            (
-                output,
-                first_apply,
-                first_old_text_absent,
-                first_resource,
-                json!(continuation_apply),
-                continuation_resource,
-            )
-        };
+        if !first_old_text_absent {
+            return Err(WellfriendError::MalformedPdf(
+                "text_reflow selected source occurrence remained reachable after downstream split"
+                    .to_string(),
+            ));
+        }
+        let (output, continuation_apply) = edit_multi_run_text_range(
+            &first_output,
+            &insertion,
+            approved_font.map(|(_, bytes)| bytes),
+        )?;
+        let continuation_resource = format!(
+            "generated_type0_font_resource:{}",
+            continuation_apply.output_sha256
+        );
+        (
+            output,
+            first_apply,
+            first_old_text_absent,
+            first_resource,
+            json!(continuation_apply),
+            continuation_resource,
+        )
+    };
     let reopened = ContentEngine::open_bytes(output.clone())?;
     if reopened.page_count()? != engine.page_count()? {
         return Err(WellfriendError::MalformedPdf(
@@ -4183,8 +4520,7 @@ fn wrap_authored_page_with_actual_text(input: &[u8], logical_text: &str) -> Resu
     let page = engine.document().get_page(1)?;
     if page.contents.len() != 1 {
         return Err(WellfriendError::MalformedPdf(
-            "text_reflow authored continuation page must contain one content stream"
-                .to_string(),
+            "text_reflow authored continuation page must contain one content stream".to_string(),
         ));
     }
     let (number, generation) = page.contents[0];
@@ -4193,8 +4529,7 @@ fn wrap_authored_page_with_actual_text(input: &[u8], logical_text: &str) -> Resu
     let decoded = decode_stream_lossless(&object, reader)?;
     if decoded.status != StreamDecodeStatus::Complete {
         return Err(WellfriendError::UnsupportedFeature(
-            "text_reflow authored continuation stream is not losslessly decodable"
-                .to_string(),
+            "text_reflow authored continuation stream is not losslessly decodable".to_string(),
         ));
     }
     let PdfObject::Stream { dict, .. } = object else {
@@ -4350,17 +4685,18 @@ fn apply_single_paragraph_page_creation(
     crate::cancel::check_current_cancel("text reflow first-page source mutation")?;
     let (first_output, first_apply, first_old_text_absent, first_font_resource) =
         apply_selected_source_segment_with_layout(
-        input,
-        request,
-        &first_text,
-        &first_options,
-        approved_font,
-        &first_output_lines,
-    )?;
+            input,
+            request,
+            &first_text,
+            &first_options,
+            approved_font,
+            &first_output_lines,
+        )?;
     let page_width = page_info.media_box[2] - page_info.media_box[0];
     let page_height = page_info.media_box[3] - page_info.media_box[1];
     let continuation_page_count = continuation_line_count.div_ceil(max_lines);
     let mut output = first_output;
+    let mut authored_continuations = Vec::with_capacity(continuation_page_count);
     let mut continuation_page_numbers = Vec::with_capacity(continuation_page_count);
     let mut continuation_page_line_counts = Vec::with_capacity(continuation_page_count);
     for (continuation_index, lines) in line_breaking.lines[max_lines..]
@@ -4392,7 +4728,8 @@ fn apply_single_paragraph_page_creation(
             } else {
                 line.visual_text.clone()
             };
-            continuation_page.draw_text(&visual, region[0], baseline, &style)?;
+            continuation_page
+                .draw_text_resolved(&visual, region[0], baseline, &style, &line.bidi)?;
         }
         let chunk_text = lines
             .iter()
@@ -4403,8 +4740,7 @@ fn apply_single_paragraph_page_creation(
             continuation_bytes =
                 wrap_authored_page_with_actual_text(&continuation_bytes, &chunk_text)?;
         }
-        let current_engine = ContentEngine::open_bytes(output)?;
-        let continuation_engine = ContentEngine::open_bytes(continuation_bytes)?;
+        authored_continuations.push(ContentEngine::open_bytes(continuation_bytes)?);
         let continuation_page_number = request
             .page
             .checked_add(continuation_index + 1)
@@ -4413,23 +4749,28 @@ fn apply_single_paragraph_page_creation(
                     "text_reflow continuation page number overflowed".to_string(),
                 )
             })?;
-        output = insert_authored_page_preserving_catalog(
-            current_engine.document(),
-            continuation_engine.document(),
-            continuation_page_number,
-            Some(AuthoredPageGeometry {
-                media_box: page_info.media_box,
-                crop_box: page_info.crop_box,
-                bleed_box: page_info.bleed_box,
-                trim_box: page_info.trim_box,
-                art_box: page_info.art_box,
-                rotate: page_info.rotate,
-                user_unit: page_info.user_unit,
-            }),
-        )?;
         continuation_page_numbers.push(continuation_page_number);
         continuation_page_line_counts.push(lines.len());
     }
+    let current_engine = ContentEngine::open_bytes(output)?;
+    let geometry = Some(AuthoredPageGeometry {
+        media_box: page_info.media_box,
+        crop_box: page_info.crop_box,
+        bleed_box: page_info.bleed_box,
+        trim_box: page_info.trim_box,
+        art_box: page_info.art_box,
+        rotate: page_info.rotate,
+        user_unit: page_info.user_unit,
+    });
+    let batch = authored_continuations
+        .iter()
+        .map(|engine| (engine.document(), geometry))
+        .collect::<Vec<_>>();
+    output = insert_authored_pages_preserving_catalog(
+        current_engine.document(),
+        &batch,
+        request.page + 1,
+    )?;
     let reopened = ContentEngine::open_bytes(output.clone())?;
     let output_page_count = source_page_count
         .checked_add(continuation_page_count)
@@ -4454,8 +4795,7 @@ fn apply_single_paragraph_page_creation(
     }
     report.applied_mode = Some(TrueEditingMode::SemanticDocument);
     report.refusal = None;
-    report.scope_of_movement =
-        "semantic_single_paragraph_explicit_multi_page_flow".to_string();
+    report.scope_of_movement = "semantic_single_paragraph_explicit_multi_page_flow".to_string();
     report.line_breaking = line_breaking;
     report.overflow_status = OverflowStatus::FitAfterPageFlow;
     report.constraints.infeasible = false;
@@ -4477,9 +4817,8 @@ fn apply_single_paragraph_page_creation(
         .push(page_creation_constraint);
     report.constraints.fixed_constraint_count =
         report.constraints.hard_constraints.len() + report.constraints.soft_constraints.len();
-    report.pages_columns_affected = vec![
-        json!({"page": request.page, "kind": "source_region", "lines": first_lines.len()}),
-    ];
+    report.pages_columns_affected =
+        vec![json!({"page": request.page, "kind": "source_region", "lines": first_lines.len()})];
     report.pages_columns_affected.extend(
         continuation_page_numbers
             .iter()
@@ -4543,7 +4882,7 @@ fn apply_single_paragraph_page_creation(
         "output_reopened": true,
         "page_count": output_page_count,
         "source_rewrite": first_apply,
-        "page_tree_writer": "canonical_writer_insert_authored_page_preserving_catalog",
+        "page_tree_writer": "canonical_writer_insert_authored_pages_preserving_catalog",
         "extraction_exact_under_layout_whitespace_policy": true,
         "original_source_text_absent": true,
         "catalog_reference_preservation": catalog_reference_preservation,
@@ -4599,7 +4938,11 @@ pub fn apply_reflow_document(
         }
         let engine = ContentEngine::open_bytes(input.to_vec())?;
         if request.page < engine.page_count()? {
-            match apply_single_paragraph_existing_next_page_flow(input, request, preliminary.clone()) {
+            match apply_single_paragraph_existing_next_page_flow(
+                input,
+                request,
+                preliminary.clone(),
+            ) {
                 Ok(applied) => return Ok(applied),
                 Err(WellfriendError::UnsupportedFeature(_)) if request.allow_page_creation => {
                     return apply_single_paragraph_page_creation(input, request, preliminary);
@@ -4656,11 +4999,12 @@ pub fn analyze_semantic_layout(
     input: &[u8],
     request: Option<&GeometricReflowRequest>,
 ) -> Result<SemanticLayoutReport> {
-    // A local GeometricBlock preview invalidates only its selected page.  A
-    // SemanticDocument request, in contrast, needs the bounded document-wide
-    // graph to evaluate repeated headers/footers and explicit page-flow
-    // candidates.  Keeping the distinction here prevents a silent mode
-    // upgrade while avoiding full-document analysis for keystroke previews.
+    // Edit-time analysis is always scoped to the selected page. SemanticDocument
+    // names the mutation policy; it must not silently turn a page-local edit
+    // into a 64-page, per-character materialization. Explicit next-region,
+    // next-column, existing-next-page, and page-creation writers validate their
+    // destination geometry/content at their own transaction boundaries.
+    // Document-wide semantic reports still use the bounded public-report scope.
     let public_report_pages = if request.is_none() {
         let engine = ContentEngine::open_bytes(input.to_vec())?;
         let page_count = engine.page_count()?;
@@ -4669,25 +5013,15 @@ pub fn analyze_semantic_layout(
         Vec::new()
     };
     let graph_pages = match request {
-        Some(item) if item.requested_mode == TrueEditingMode::GeometricBlock => vec![item.page],
+        Some(item) => vec![item.page],
         None => public_report_pages.clone(),
-        _ => Vec::new(),
     };
     let graph = if request.is_none() {
         build_scene_graph_for_analysis(input, &graph_pages)?
     } else {
         build_scene_graph(input, &graph_pages)?
     };
-    semantic_layout_from_graph(
-        input,
-        &graph,
-        request,
-        if request.is_none() {
-            Some(public_report_pages.as_slice())
-        } else {
-            None
-        },
-    )
+    semantic_layout_from_graph(input, &graph, request, Some(graph_pages.as_slice()))
 }
 
 fn quad_bounds(quad: crate::text::TextQuad) -> [f64; 4] {
@@ -4788,12 +5122,9 @@ fn semantic_region_graph_invariants(
             "invalidated_pages": invalidated_pages,
             "mode": request.map(|item| item.requested_mode),
             "geometric_block_is_page_local": request.is_some_and(|item| item.requested_mode == TrueEditingMode::GeometricBlock),
-            "semantic_document_uses_document_scope_only_when_requested": request.is_none_or(|item| item.requested_mode == TrueEditingMode::SemanticDocument),
-            // Only the explicit local GeometricBlock path can reuse pages.
-            // A SemanticDocument request intentionally reconstructs the bounded
-            // document scope so its cross-page inference is not presented as
-            // an incremental result.
-            "unaffected_pages_reused_without_full_page_analysis": request.is_some_and(|item| item.requested_mode == TrueEditingMode::GeometricBlock),
+            "edit_requests_are_page_local": request.is_some(),
+            "document_reports_use_bounded_document_scope": request.is_none(),
+            "unaffected_pages_reused_without_full_page_analysis": request.is_some(),
         },
         "valid": stable_ids_unique && edge_ids_unique && no_dangling_edges && finite_nonempty_bounds && bounded_edge_count,
     })
@@ -5119,6 +5450,7 @@ fn validate_downstream_vector_moves(
             "vector_stable_id": movement.vector_stable_id,
             "scene_node_id": own_scene_nodes[0].node_id,
             "source_stream_object": vector.provenance.object_number,
+            "source_stream_index": vector.provenance.content_stream_index,
             "source_operation_byte_start": vector.provenance.operation_byte_start,
             "relationship": movement.relationship,
             "dependency_edge_id": movement.dependency_edge_id,
@@ -5202,10 +5534,52 @@ fn apply_downstream_vector_moves(
             .then_with(|| right_offset.cmp(&left_offset))
     });
     for (index, movement) in execution {
+        let source_object = applied[index]["source_stream_object"]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "text_reflow downstream vector plan lost its source object".into(),
+                )
+            })?;
+        let source_offset = applied[index]["source_operation_byte_start"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "text_reflow downstream vector plan lost its source offset".into(),
+                )
+            })?;
+        let source_stream_index = applied[index]["source_stream_index"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "text_reflow downstream vector plan lost its source stream index".into(),
+                )
+            })?;
+        // A stable ID is revision-bound, so the first successful mutation
+        // necessarily invalidates every remaining ID. Rebind each still-
+        // untouched occurrence by the already validated immutable source
+        // object and descending byte offset; descending order guarantees that
+        // later rewrites cannot shift this provenance.
+        let current_id = list_vector_objects(&output, request.page)?
+            .objects
+            .into_iter()
+            .find(|candidate| {
+                candidate.provenance.content_stream_index == source_stream_index
+                    && candidate.provenance.operation_byte_start == source_offset
+            })
+            .map(|candidate| candidate.stable_id)
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(format!(
+                    "text_reflow validated downstream vector at object {source_object} byte {source_offset} disappeared before atomic mutation"
+                ))
+            })?;
         let (next_output, report) = edit_vector_object(
             &output,
             request.page,
-            &movement.vector_stable_id,
+            &current_id,
             VectorEditOperation::Move {
                 dx: movement.dx,
                 dy: movement.dy,
@@ -6124,7 +6498,7 @@ fn semantic_layout_from_graph(
                 evidence_kind: TextReflowEvidenceKind::DeterministicGeometry,
                 confidence: json!({"geometry": 0.98, "semantic_type": f64::from(block.role_confidence), "overall": f64::from(block.confidence), "role_source": block.role_source}),
                 coordinate_space: "page_user_space".to_string(),
-                source_evidence: json!({"semantic_role": block.role, "role_source": block.role_source, "mcids": block.mcids, "structure_role": block.struct_role, "original_role": block.original_role}),
+                source_evidence: json!({"semantic_role": block.role, "role_source": block.role_source, "mcids": block.mcids, "marked_content": block.marked_content, "structure_role": block.struct_role, "original_role": block.original_role}),
                 alternatives: Vec::new(),
                 transaction_revision: graph.revision_id.clone(),
             })?;
@@ -6401,7 +6775,7 @@ fn semantic_layout_from_graph(
                     evidence_kind: TextReflowEvidenceKind::DeterministicGeometry,
                     confidence: json!({"geometry": f64::from(line.confidence), "semantic_type": f64::from(line.role_confidence), "overall": f64::from(line.confidence)}),
                     coordinate_space: "page_user_space".to_string(),
-                    source_evidence: json!({"role": line.role, "role_source": line.role_source, "mcids": line.mcids, "direction": line.direction}),
+                    source_evidence: json!({"role": line.role, "role_source": line.role_source, "mcids": line.mcids, "marked_content": line.marked_content, "direction": line.direction}),
                     alternatives: Vec::new(),
                     transaction_revision: graph.revision_id.clone(),
                 })?;
@@ -6433,7 +6807,7 @@ fn semantic_layout_from_graph(
                         evidence_kind: TextReflowEvidenceKind::DeterministicGeometry,
                         confidence: json!({"geometry": f64::from(word.confidence), "overall": f64::from(word.confidence)}),
                         coordinate_space: "page_user_space".to_string(),
-                        source_evidence: json!({"char_range": word.char_range, "mcids": word.mcids, "provenance": word.provenance_summary}),
+                        source_evidence: json!({"char_range": word.char_range, "mcids": word.mcids, "marked_content": word.marked_content, "provenance": word.provenance_summary}),
                         alternatives: Vec::new(),
                         transaction_revision: graph.revision_id.clone(),
                     })?;
@@ -6717,16 +7091,12 @@ pub fn approve_structure_correction(input: &[u8], correction_json: &str) -> Resu
         .get("accepted_relationships")
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            WellfriendError::invalid_input(
-                "structure correction requires accepted_relationships",
-            )
+            WellfriendError::invalid_input("structure correction requires accepted_relationships")
         })?
         .iter()
         .map(|value| {
             value.as_str().map(str::to_string).ok_or_else(|| {
-                WellfriendError::invalid_input(
-                    "accepted_relationships entries must be strings",
-                )
+                WellfriendError::invalid_input("accepted_relationships entries must be strings")
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -6958,6 +7328,7 @@ pub fn validate_reflow_output(
         request.page,
         &request.source_text,
         &request.replacement_text,
+        request.target_logical_scalar_range,
         &expected_downstream_link_rects(request),
         1 + request.downstream_vector_moves.len(),
     );
@@ -7980,7 +8351,20 @@ mod tests {
 
         let mut preview_cache = BTreeMap::new();
         let mut preview_spans = 0;
+        let prepared = crate::fonts::shaper::ParagraphBidi::new(
+            text,
+            crate::fonts::ShapeOptions {
+                direction: Some(crate::fonts::TextDirection::LeftToRight),
+            },
+        )
+        .expect("prepared bidi");
+        let font =
+            PreparedReflowFont::new(get_fallback_font("Symbol").expect("canonical shaping font"))
+                .expect("prepared canonical shaping font");
         let preview = greedy_line_ranges(
+            text,
+            &prepared,
+            &font,
             &graphemes,
             &records,
             width,
@@ -8005,6 +8389,9 @@ mod tests {
         let mut final_cache = BTreeMap::new();
         let mut final_spans = 0;
         let optimized = optimized_line_ranges(
+            text,
+            &prepared,
+            &font,
             &graphemes,
             &records,
             width,
@@ -8018,6 +8405,74 @@ mod tests {
             optimized.is_none(),
             "the optimizer must refuse a layout that requires more than the configured generated-hyphen run"
         );
+    }
+
+    #[test]
+    fn preview_and_final_reflow_consider_narrower_candidates_after_wide_ones() {
+        // Inject synthetic contextual metrics, not a claim about any one font.
+        let text = "a b c";
+        let graphemes = text.graphemes(true).collect::<Vec<_>>();
+        let mut records = uax14_break_records(text);
+        records.retain(|r| matches!(r.grapheme_index, Some(2 | 4 | 5)));
+        for record in &mut records {
+            record.disposition = "allowed".into();
+            record.hyphenation_source = "none".into();
+            record.source_output_supported = true;
+        }
+        let mut cache = BTreeMap::new();
+        for start in 0..graphemes.len() {
+            for end in start + 1..=graphemes.len() {
+                cache.insert(
+                    (start, end),
+                    match (start, end) {
+                        (0, 4) => 4.0,
+                        (4, 5) => 1.0,
+                        _ => 20.0,
+                    },
+                );
+            }
+        }
+        let mut measured = 0;
+        let prepared = crate::fonts::shaper::ParagraphBidi::new(
+            text,
+            crate::fonts::ShapeOptions {
+                direction: Some(crate::fonts::TextDirection::LeftToRight),
+            },
+        )
+        .expect("prepared bidi");
+        let font =
+            PreparedReflowFont::new(get_fallback_font("Symbol").expect("canonical shaping font"))
+                .expect("prepared canonical shaping font");
+        let preview = greedy_line_ranges(
+            text,
+            &prepared,
+            &font,
+            &graphemes,
+            &records,
+            5.0,
+            "left_to_right",
+            12.0,
+            &mut cache,
+            &mut measured,
+        )
+        .unwrap();
+        assert_eq!(preview, vec![(0, 4), (4, 5)]);
+        let optimized = optimized_line_ranges(
+            text,
+            &prepared,
+            &font,
+            &graphemes,
+            &records,
+            5.0,
+            "left_to_right",
+            12.0,
+            &mut cache,
+            &mut measured,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(optimized.0, preview);
+        assert_eq!(measured, 0);
     }
 
     #[test]
@@ -8354,7 +8809,7 @@ mod tests {
         assert_eq!(report.region_graph_invariants["bounded_edge_count"], true);
         assert_eq!(
             report.region_graph_invariants["incremental_invalidation"]
-                ["semantic_document_uses_document_scope_only_when_requested"],
+                ["document_reports_use_bounded_document_scope"],
             true
         );
         assert!(report
@@ -8406,7 +8861,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_document_analysis_uses_bounded_document_scope_while_geometric_stays_local() {
+    fn edit_semantic_analysis_is_page_local_for_both_mutation_modes() {
         let input = two_page_fixture(
             b"BT /F1 12 Tf 10 150 Td (FIRST BODY) Tj ET\n",
             b"BT /F1 12 Tf 10 150 Td (SECOND BODY) Tj ET\n",
@@ -8416,11 +8871,15 @@ mod tests {
         let semantic =
             analyze_semantic_layout(&input, Some(&semantic_request)).expect("semantic scope");
         assert!(semantic.nodes.iter().any(|node| node.page == 1));
-        assert!(semantic.nodes.iter().any(|node| node.page == 2));
+        assert!(semantic.nodes.iter().all(|node| node.page == 1));
+        assert_eq!(
+            semantic.region_graph_invariants["incremental_invalidation"]["invalidated_pages"],
+            json!([1])
+        );
         assert_eq!(
             semantic.region_graph_invariants["incremental_invalidation"]
                 ["unaffected_pages_reused_without_full_page_analysis"],
-            false
+            true
         );
 
         let geometric = analyze_semantic_layout(&input, Some(&request("FIRST BODY", "FIRST BODY")))
@@ -8434,6 +8893,87 @@ mod tests {
             geometric.region_graph_invariants["incremental_invalidation"]
                 ["unaffected_pages_reused_without_full_page_analysis"],
             true
+        );
+    }
+
+    #[test]
+    fn exact_partial_tj_range_supplies_source_provenance_for_local_reconstruction() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td [(HEL) 0 (LO,)] TJ ET\n");
+        let model = analyze_multi_run_text_range(&input, 1).expect("multi-run model");
+        let byte_start = model.logical_text.find("HELLO").expect("source text");
+        let byte_end = byte_start + "HELLO".len();
+        let mut req = request("HELLO", "WORLD");
+        req.region = None;
+        req.target_logical_scalar_range = Some([
+            model.logical_text[..byte_start].chars().count(),
+            model.logical_text[..byte_end].chars().count(),
+        ]);
+        req.font_policy = "allow_substitute".to_string();
+
+        let region = analyze_geometric_region(&input, &req).expect("source-bound region");
+        assert!(!region.source_instructions.is_empty());
+        assert!(region
+            .source_instructions
+            .iter()
+            .all(|instruction| instruction.starts_with("multirun:p1:")));
+    }
+
+    #[test]
+    fn partial_tj_replacement_preserves_source_order_logical_text() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td [(HEL) 0 (LO,)] TJ ET\n");
+        let model = analyze_multi_run_text_range(&input, 1).expect("multi-run model");
+        let byte_start = model.logical_text.find("HELLO").expect("source text");
+        let byte_end = byte_start + "HELLO".len();
+        let mut req = request("HELLO", "WORLD");
+        req.region = None;
+        req.target_logical_scalar_range = Some([
+            model.logical_text[..byte_start].chars().count(),
+            model.logical_text[..byte_end].chars().count(),
+        ]);
+
+        let (output, report) = apply_reflow_region(&input, &req).expect("source-order reflow");
+        let reopened = ContentEngine::open_bytes(output).expect("source-order reopen");
+        let extracted = reopened.get_page_text(1).expect("source-order extract");
+        let normalized = extracted.split_whitespace().collect::<String>();
+        assert!(
+            normalized.contains("WORLD,"),
+            "replacement must remain before the untouched suffix: {normalized:?}"
+        );
+        assert!(!normalized.contains("HELLO"));
+        assert_eq!(
+            report.validation_evidence["unaffected_content_proof"]["status"],
+            "pass_with_documented_layout_whitespace_policy"
+        );
+    }
+
+    #[test]
+    fn partial_tj_generated_font_replacement_preserves_source_order_logical_text() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td [(HEL) 0 (LO,)] TJ ET\n");
+        let model = analyze_multi_run_text_range(&input, 1).expect("multi-run model");
+        let byte_start = model.logical_text.find("HELLO").expect("source text");
+        let byte_end = byte_start + "HELLO".len();
+        let mut req = request("HELLO", "Ω");
+        req.region = None;
+        req.target_logical_scalar_range = Some([
+            model.logical_text[..byte_start].chars().count(),
+            model.logical_text[..byte_end].chars().count(),
+        ]);
+
+        let (output, report) =
+            apply_reflow_region(&input, &req).expect("generated source-order reflow");
+        let reopened = ContentEngine::open_bytes(output).expect("generated source-order reopen");
+        let extracted = reopened
+            .get_page_text(1)
+            .expect("generated source-order extract");
+        let normalized = extracted.split_whitespace().collect::<String>();
+        assert!(
+            normalized.contains("Ω,"),
+            "generated replacement must remain before the untouched suffix: {normalized:?}"
+        );
+        assert!(!normalized.contains("HELLO"));
+        assert_eq!(
+            report.validation_evidence["unaffected_content_proof"]["status"],
+            "pass_with_documented_layout_whitespace_policy"
         );
     }
 
@@ -8799,13 +9339,17 @@ mod tests {
         let mut session = ReflowMutationSession::new(input.clone()).expect("session");
         let report = session.apply_semantic(&req).expect("page flow apply");
         assert_eq!(report.overflow_status, OverflowStatus::FitAfterPageFlow);
-        assert_eq!(report.pages_columns_affected.len(), 2);
+        let affected_pages = report.pages_columns_affected.len();
+        assert!(
+            affected_pages > 2,
+            "a one-line continuation frame must allocate every required continuation page"
+        );
         assert_eq!(
             ContentEngine::open_bytes(session.bytes().to_vec())
                 .expect("reopen")
                 .page_count()
                 .expect("page count"),
-            2
+            affected_pages
         );
         let undo = session.undo_reflow().expect("page flow undo");
         assert!(undo.undone);
@@ -8837,7 +9381,7 @@ mod tests {
         );
         assert_eq!(
             report.validation_evidence["page_tree_writer"],
-            "canonical_writer_insert_authored_page_preserving_catalog"
+            "canonical_writer_insert_authored_pages_preserving_catalog"
         );
     }
 

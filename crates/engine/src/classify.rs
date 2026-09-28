@@ -130,18 +130,14 @@ fn classify_page_inner(
     page: usize,
     cfg: &ClassifyConfig,
 ) -> Result<PageClassification> {
-    use crate::text::TextCollector;
-
     let (pw, ph) = engine.page_dimensions(page)?;
     let page_area = (pw * ph).max(1.0);
 
     let ops = engine.get_page_content(page)?;
-    let resources = engine.get_page_resources(page)?;
 
     // Text signals: collect chunks, count non-whitespace chars, sum text box area,
     // and note any invisible (Tr 3) text.
-    let mut collector = TextCollector::new(resources, engine.document().reader());
-    let chunks = collector.collect(&ops);
+    let chunks = engine.collect_page_text_chunks(page)?;
     let mut char_count = 0usize;
     let mut text_area = 0.0f64;
     let mut has_invisible_text = false;

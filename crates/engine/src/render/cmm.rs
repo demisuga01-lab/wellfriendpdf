@@ -6,7 +6,6 @@
 //! LittleCMS/lcms2. Device spaces still need local fallbacks because PDF
 //! DeviceCMYK/Cal/Lab often appear without an ICC profile.
 
-use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use sha2::{Digest, Sha256};
@@ -1082,49 +1081,19 @@ pub(crate) fn cal_rgb_bytes_to_rgb(pixels: &[u8], params: CalRgbParams) -> Vec<u
     rgb
 }
 
-pub(crate) fn icc_bytes_to_rgb_with_options(
+/// Native CMM attempt only. PDF metadata, range validation and Alternate
+/// selection are owned by icc_conversion, shared by paint and image callers.
+pub(crate) fn transform_icc_profile_samples(
+    profile_bytes: &[u8],
+    components: u8,
     pixels: &[u8],
-    dict: &PdfDictionary,
-    reader: &PdfReader,
     options: ColorTransformOptions,
 ) -> Option<(Vec<u8>, u8)> {
-    let (profile_dict, profile_bytes) = icc_profile_stream(dict, reader)?;
-    let n = icc_profile_component_count(&profile_dict)?;
     ICC_TRANSFORM_CACHE.with(|cache| {
         cache
             .borrow_mut()
-            .transform_profile_to_srgb(&profile_bytes, n, pixels, options)
+            .transform_profile_to_srgb(profile_bytes, components, pixels, options)
     })
-}
-
-pub(crate) fn icc_components_to_srgb_with_options(
-    space_obj: &PdfObject,
-    components: &[f64],
-    reader: &PdfReader,
-    options: ColorTransformOptions,
-) -> Option<[f32; 3]> {
-    let (profile_dict, profile_bytes) = icc_profile_stream_from_space(space_obj, reader)?;
-    let n = icc_profile_component_count(&profile_dict)?;
-    let component_count = usize::from(n);
-    if components.len() != component_count
-        || components.iter().any(|component| !component.is_finite())
-    {
-        return None;
-    }
-    let mut src = vec![0u8; component_count];
-    for (i, byte) in src.iter_mut().enumerate() {
-        *byte = unit_to_u8(components[i] as f32);
-    }
-    let (dst, _) = ICC_TRANSFORM_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .transform_profile_to_srgb(&profile_bytes, n, &src, options)
-    })?;
-    Some([
-        dst[0] as f32 / 255.0,
-        dst[1] as f32 / 255.0,
-        dst[2] as f32 / 255.0,
-    ])
 }
 
 fn qcms_data_type_for_components(components: u8) -> Option<qcms::DataType> {
@@ -1474,60 +1443,13 @@ fn valid_xyz(values: &[f64]) -> bool {
         && values[2] >= 0.0
 }
 
-fn icc_profile_stream(
-    dict: &PdfDictionary,
-    reader: &PdfReader,
-) -> Option<(PdfDictionary, Vec<u8>)> {
-    let (profile_dict, stream_obj) = icc_profile_object(dict, reader)?;
-    let decoded = decode_stream_lossless(&stream_obj, reader).ok()?;
-    match decoded.status {
-        StreamDecodeStatus::Complete if decoded.data.len() <= DEFAULT_MAX_ICC_PROFILE_BYTES => {
-            Some((profile_dict, decoded.data))
-        }
-        StreamDecodeStatus::Complete => None,
-        StreamDecodeStatus::StoppedAtImageFilter(_) => None,
-    }
-}
-
-fn icc_profile_stream_from_space(
-    space_obj: &PdfObject,
-    reader: &PdfReader,
-) -> Option<(PdfDictionary, Vec<u8>)> {
-    let (profile_dict, stream_obj) = icc_profile_object_from_space(space_obj, reader)?;
-    let decoded = decode_stream_lossless(&stream_obj, reader).ok()?;
-    match decoded.status {
-        StreamDecodeStatus::Complete if decoded.data.len() <= DEFAULT_MAX_ICC_PROFILE_BYTES => {
-            Some((profile_dict, decoded.data))
-        }
-        StreamDecodeStatus::Complete => None,
-        StreamDecodeStatus::StoppedAtImageFilter(_) => None,
-    }
-}
-
 fn icc_profile_object(
     dict: &PdfDictionary,
     reader: &PdfReader,
 ) -> Option<(PdfDictionary, PdfObject)> {
-    let arr = dict.get("ColorSpace")?.as_array()?;
-    if arr.first().and_then(PdfObject::as_name) != Some("ICCBased") {
-        return None;
-    }
-    let obj = reader.resolve(arr.get(1)?.clone()).ok()?;
-    match obj {
-        PdfObject::Stream { dict, raw } => {
-            let profile_dict = dict.clone();
-            Some((profile_dict, PdfObject::Stream { dict, raw }))
-        }
-        _ => None,
-    }
-}
-
-fn icc_profile_object_from_space(
-    space_obj: &PdfObject,
-    reader: &PdfReader,
-) -> Option<(PdfDictionary, PdfObject)> {
-    let resolved = match space_obj {
-        PdfObject::Reference { .. } => reader.resolve(space_obj.clone()).ok()?,
+    let space = dict.get("ColorSpace").or_else(|| dict.get("CS"))?;
+    let resolved = match space {
+        PdfObject::Reference { .. } => reader.resolve(space.clone()).ok()?,
         other => other.clone(),
     };
     let arr = resolved.as_array()?;

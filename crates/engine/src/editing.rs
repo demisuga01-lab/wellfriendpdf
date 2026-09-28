@@ -21,7 +21,6 @@ use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
-use crate::text::collector::extract_char_codes;
 use crate::text::{TextQuad, TextSearchOptions};
 use crate::versioning::resource_digest;
 use crate::writer::{
@@ -2129,6 +2128,9 @@ struct RedactionReport {
     removed_text: BTreeSet<String>,
     scrub_metadata: bool,
 }
+#[cfg(test)]
+#[path = "editing_variable_cmap_tests.rs"]
+mod variable_cmap_tests;
 
 #[derive(Clone)]
 struct RedactionState {
@@ -2352,13 +2354,19 @@ impl RedactionState {
     /// Total text-space advance of a show string, using real font metrics when a
     /// resolver is available and a conservative per-em estimate otherwise.
     fn string_advance(&self, bytes: &[u8], resolver: Option<&FontResolver>) -> f64 {
-        let code_size = resolver.map(FontResolver::code_size).unwrap_or(1).max(1);
-        extract_char_codes(bytes, code_size)
-            .into_iter()
-            .map(|code| match resolver {
-                Some(r) => self.glyph_advance(r.glyph_width(code), r.is_space_code(code)),
-                None => self.glyph_advance(FALLBACK_GLYPH_WIDTH, code == 0x20),
-            })
+        if let Some(resolver) = resolver {
+            if let Ok(advance) = resolver.codes(bytes).try_fold(0.0, |sum, code| {
+                let code = code?.code;
+                Ok::<_, String>(
+                    sum + self.glyph_advance(resolver.width_for_code(code), code.is_word_space()),
+                )
+            }) {
+                return advance;
+            }
+        }
+        bytes
+            .iter()
+            .map(|byte| self.glyph_advance(FALLBACK_GLYPH_WIDTH, *byte == 32))
             .sum()
     }
 
@@ -2813,10 +2821,13 @@ fn string_glyphs_intersect(
     let Some(resolver) = resolver else {
         return failclosed_string_intersects(bytes, state, redactions);
     };
-    let code_size = resolver.code_size().max(1);
     let mut pen = state.text_matrix[4];
-    for code in extract_char_codes(bytes, code_size) {
-        let width_units = resolver.glyph_width(code);
+    for decoded in resolver.codes(bytes) {
+        let Ok(decoded) = decoded else {
+            return failclosed_string_intersects(bytes, state, redactions);
+        };
+        let code = decoded.code;
+        let width_units = resolver.width_for_code(code);
         let box_w = width_units / 1000.0 * state.font_size * state.h_scale;
         let rect = glyph_rect_at(state, pen, box_w);
         if redactions
@@ -2825,7 +2836,7 @@ fn string_glyphs_intersect(
         {
             return true;
         }
-        pen += state.glyph_advance(width_units, resolver.is_space_code(code));
+        pen += state.glyph_advance(width_units, code.is_word_space());
     }
     false
 }
@@ -2930,20 +2941,24 @@ fn redact_string_bytes(
         return Some(vec![Operand::String(bytes.to_vec())]);
     };
 
-    let code_size = resolver.code_size().max(1) as usize;
-    let codes = extract_char_codes(bytes, resolver.code_size().max(1));
+    let codes = match resolver
+        .codes(bytes)
+        .collect::<std::result::Result<Vec<_>, _>>()
+    {
+        Ok(codes) => codes,
+        Err(_) => return redact_string_bytes(bytes, state, None, redactions, report),
+    };
     let mut out: Vec<Operand> = Vec::new();
     let mut current: Vec<u8> = Vec::new();
     let mut removed: Vec<u8> = Vec::new();
     let mut pending_adv = 0.0_f64;
     let mut pen = state.text_matrix[4];
 
-    for (index, code) in codes.into_iter().enumerate() {
-        let start = index * code_size;
-        let end = (start + code_size).min(bytes.len());
-        let glyph_bytes = &bytes[start..end];
-        let width_units = resolver.glyph_width(code);
-        let is_space = resolver.is_space_code(code);
+    for decoded in codes {
+        let code = decoded.code;
+        let glyph_bytes = &bytes[decoded.byte_start..decoded.byte_end];
+        let width_units = resolver.width_for_code(code);
+        let is_space = code.is_word_space();
         let box_w = width_units / 1000.0 * state.font_size * state.h_scale;
         let advance = state.glyph_advance(width_units, is_space);
         let rect = glyph_rect_at(state, pen, box_w);

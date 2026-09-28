@@ -1051,8 +1051,8 @@ fn password_flag_accepted_by_render_and_images() {
 
 /// Regression (Renderer Benchmark 0A, Part B): a hostile page declaring a giant
 /// `/MediaBox` must NOT abort the process with a multi-hundred-gigabyte
-/// allocation. The CLI must survive, exit 0, skip the page with a clean warning,
-/// and write a (page-less) output archive.
+/// allocation. The CLI must survive, fail closed with a clean resource-limit
+/// diagnostic, and leave no misleading partial output archive.
 #[test]
 fn render_rejects_huge_page_without_abort() {
     // A parseable single-page PDF whose /MediaBox is [0 0 200000 200000]. At 144
@@ -1062,6 +1062,7 @@ fn render_rejects_huge_page_without_abort() {
     let input = tmp("huge_page.pdf");
     std::fs::write(&input, huge_page_pdf()).expect("write huge-page fixture");
     let o = tmp("huge_page.zip");
+    remove_path(&o);
 
     let out = run(&[
         "render",
@@ -1072,10 +1073,11 @@ fn render_rejects_huge_page_without_abort() {
         "144",
     ]);
 
-    // The process survives and exits cleanly (no abort/panic/signal).
+    // The process survives without an abort/panic/signal and reports that the
+    // requested output could not be produced.
     assert!(
-        out.status.success(),
-        "huge-page render must exit cleanly, got status {:?}; stderr: {}",
+        !out.status.success(),
+        "huge-page render must fail closed, got status {:?}; stderr: {}",
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
@@ -1083,6 +1085,10 @@ fn render_rejects_huge_page_without_abort() {
     assert!(
         stderr.contains("resource limit") || stderr.contains("skipped page"),
         "expected a clean resource-limit warning, got stderr: {stderr}"
+    );
+    assert!(
+        !o.exists(),
+        "a failed render must not leave a partial output archive"
     );
     let _ = std::fs::remove_file(&input);
     let _ = std::fs::remove_file(&o);
@@ -2291,9 +2297,13 @@ fn phase4_office_conversions_run_across_cli_surface() {
     remove_path(&from_pptx);
     remove_path(&from_docx);
 
+    // This is a command-surface smoke test, not the real-document corpus gate.
+    // Keep it bounded so debug workspace tests do not spend tens of minutes
+    // rebuilding a 14-page research paper through all three Office formats.
+    let source_pdf = fx("minimal.pdf");
     let xlsx_out = run(&[
         "pdf-to-xlsx",
-        fx("tracemonkey.pdf").to_str().unwrap(),
+        source_pdf.to_str().unwrap(),
         "--out",
         xlsx.to_str().unwrap(),
         "--layout",
@@ -2313,7 +2323,7 @@ fn phase4_office_conversions_run_across_cli_surface() {
 
     let pptx_out = run(&[
         "pdf-to-pptx",
-        fx("tracemonkey.pdf").to_str().unwrap(),
+        source_pdf.to_str().unwrap(),
         "--out",
         pptx.to_str().unwrap(),
         "--json",
@@ -2331,7 +2341,7 @@ fn phase4_office_conversions_run_across_cli_surface() {
 
     let docx_out = run(&[
         "pdf-to-docx",
-        fx("tracemonkey.pdf").to_str().unwrap(),
+        source_pdf.to_str().unwrap(),
         "--out",
         docx.to_str().unwrap(),
         "--json",

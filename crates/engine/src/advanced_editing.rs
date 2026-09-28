@@ -16,8 +16,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::error::{Result, WellfriendError};
 use crate::filters::{
-    decode_stream_lossless_with_limits, flate_encode_cancellable, DecodeLimits,
-    StreamDecodeStatus,
+    decode_stream_lossless_with_limits, flate_encode_cancellable, DecodeLimits, StreamDecodeStatus,
 };
 use crate::fonts::sfnt_subset::subset_glyf_preserving_gids;
 use crate::fonts::{FontResolver, FontType, ShapeOptions, TextDirection, TextShaper};
@@ -29,6 +28,40 @@ use crate::secure_mutation::{
 };
 use crate::writer::{write_incremental_update, IncrementalObject};
 use crate::{ContentEngine, PageResources};
+#[cfg(test)]
+#[path = "advanced_cff_tests.rs"]
+mod cff_tests;
+#[cfg(test)]
+#[path = "advanced_coverage_tests.rs"]
+mod coverage_tests;
+#[path = "advanced_form_text.rs"]
+pub mod form_text;
+#[cfg(test)]
+#[path = "advanced_generated_carrier_tests.rs"]
+mod generated_carrier_tests;
+#[cfg(test)]
+#[path = "advanced_hard_break_tests.rs"]
+mod hard_break_tests;
+#[path = "advanced_inline_text.rs"]
+mod inline_text;
+#[path = "ocr_carriers.rs"]
+pub mod ocr_carriers;
+#[cfg(test)]
+#[path = "advanced_predefined_cmap_tests.rs"]
+mod predefined_cmap_tests;
+#[path = "advanced_story_carriers.rs"]
+pub(crate) mod story_carriers;
+#[path = "advanced_story_vertical.rs"]
+mod story_vertical;
+#[path = "advanced_text_resources.rs"]
+mod text_resources;
+#[cfg(test)]
+#[path = "advanced_variable_cmap_tests.rs"]
+mod variable_cmap_tests;
+#[path = "advanced_vector_occurrence.rs"]
+mod vector_occurrence;
+#[path = "advanced_vertical_text.rs"]
+mod vertical_text;
 
 pub const ADVANCED_EDITING_SCHEMA_VERSION: &str =
     "advanced_editing.vertical-rtl-patch-vector-ink-editing.v1";
@@ -176,6 +209,8 @@ pub struct ExplicitLayoutLine {
     pub logical_text: String,
     pub visual_text: String,
     #[serde(default)]
+    pub bidi: Option<crate::fonts::shaper::LineBidi>,
+    #[serde(default)]
     pub inserted_visual_hyphen: bool,
 }
 
@@ -186,6 +221,88 @@ pub struct ExplicitLayoutLine {
 pub struct PositionedExplicitLayoutLine {
     pub line: ExplicitLayoutLine,
     pub region: [f64; 4],
+}
+
+/// Governs where a generated replacement is painted when its logical source
+/// selection crosses more than one PDF text object.
+///
+/// A single logical paragraph can be split across several `BT`/`ET` paint
+/// slots with images, paths, shadings, or unrelated text between them. There
+/// is no source-independent way to collapse that paragraph into one generated
+/// block without choosing a new relative stacking position. The default keeps
+/// that choice outside the engine: one source slot is accepted, while a
+/// multi-slot replacement needs an explicit first/last-slot approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratedPaintOrderPolicy {
+    #[default]
+    RequireSingleSourceTextObject,
+    AnchorAfterFirstSourceTextObject,
+    AnchorAfterLastSourceTextObject,
+}
+
+/// Explicitly maps a contiguous part of replacement Unicode to one original
+/// source text-object paint slot. Emitting every partition after its own `ET`
+/// preserves intervening non-text paint instead of moving the complete
+/// replacement to one side of that paint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedPaintPartition {
+    pub source_text_object: usize,
+    /// Unicode scalar offsets into the complete replacement string.
+    pub replacement_scalar_range: [usize; 2],
+    pub region: [f64; 4],
+    #[serde(default)]
+    pub final_lines: Option<Vec<ExplicitLayoutLine>>,
+}
+
+/// Revision-bound, reviewable proposal for distributing replacement graphemes
+/// across the exact source text-object paint slots selected by a logical edit.
+/// It never invents page geometry: a host must approve one region per slot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedPaintPartitionProposal {
+    pub schema_version: String,
+    pub status: AdvancedEditingSupportStatus,
+    pub input_sha256: String,
+    pub request_sha256: String,
+    pub proposal_id: String,
+    pub page: usize,
+    pub logical_range: [usize; 2],
+    pub replacement_sha256: String,
+    pub candidates: Vec<GeneratedPaintPartitionCandidate>,
+    pub deterministic: bool,
+    pub exact_limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedPaintPartitionCandidate {
+    pub source_text_object: usize,
+    pub selected_source_scalar_count: usize,
+    pub replacement_scalar_range: [usize; 2],
+    pub selected_span_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_region: Option<[f64; 4]>,
+    pub start_boundary_class: String,
+    pub end_boundary_class: String,
+}
+
+/// The approval repeats only decisions which cannot be inferred from PDF text
+/// provenance: the physical region and optional final layout for each slot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedPaintPartitionApproval {
+    pub proposal_id: String,
+    /// Exact approved shaping font bytes. `None` means the retained/source
+    /// font route; a supplied apply font must match this digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_sha256: Option<String>,
+    pub partitions: Vec<GeneratedPaintPartitionApprovalEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedPaintPartitionApprovalEntry {
+    pub source_text_object: usize,
+    pub region: [f64; 4],
+    #[serde(default)]
+    pub final_lines: Option<Vec<ExplicitLayoutLine>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +330,14 @@ pub struct AdvancedTextEditOptions {
     pub target_stream_generation: Option<u16>,
     #[serde(default)]
     pub target_decoded_byte_range: Option<[usize; 2]>,
+    /// Explicit stacking-order decision for a generated replacement whose
+    /// source selection spans several `BT`/`ET` paint slots.
+    #[serde(default)]
+    pub paint_order_policy: GeneratedPaintOrderPolicy,
+    /// Optional exact partition plan for preserving non-text paint between
+    /// several selected source text objects.
+    #[serde(default)]
+    pub paint_partitions: Vec<GeneratedPaintPartition>,
 }
 
 fn default_max_word_spacing() -> f64 {
@@ -240,6 +365,8 @@ impl Default for AdvancedTextEditOptions {
             target_stream_object: None,
             target_stream_generation: None,
             target_decoded_byte_range: None,
+            paint_order_policy: GeneratedPaintOrderPolicy::default(),
+            paint_partitions: Vec::new(),
         }
     }
 }
@@ -314,10 +441,42 @@ pub struct MultiRunSourceSpan {
     pub tj_element: Option<usize>,
     pub byte_range: [usize; 2],
     pub logical_range: [usize; 2],
+    /// Zero-based `BT`/`ET` paint slot in the exact page/Form content sequence.
+    /// The ordinal remains continuous across ordered `/Contents` members.
+    pub source_text_object: usize,
     pub font_resource: String,
+    pub font_size: f64,
+    pub character_spacing: f64,
+    pub word_spacing: f64,
+    pub horizontal_scaling: f64,
     pub writing_mode: i32,
     pub text_render_mode: i32,
     pub marked_content_depth: usize,
+    /// Stable private ownership emitted by fresh authored typed tables. Both
+    /// values are present together or absent; callers must never infer an
+    /// owner from duplicated visible text.
+    #[serde(default)]
+    pub authored_typed_table: Option<String>,
+    #[serde(default)]
+    pub authored_typed_cell: Option<String>,
+    #[serde(default)]
+    pub authored_typed_region: Option<[f64; 4]>,
+    /// Nearest direct `/ActualText` carrier active for this source operand.
+    /// The source identity lets consumers count one logical carrier once even
+    /// when a shaped run emits several glyph-showing operands beneath it.
+    #[serde(default)]
+    pub direct_actual_text: Option<String>,
+    #[serde(default)]
+    pub direct_actual_text_source: Option<String>,
+    /// Unmarked content or direct logical-text-only /Span scopes. This is not
+    /// permission to migrate MCIDs, optional content or annotation ownership.
+    #[serde(default)]
+    pub flow_relocatable: bool,
+    /// Unicode decoded directly from the physical source codes, before an
+    /// enclosing `/ActualText` value replaces their logical representation.
+    /// OCR provenance and source-code relocation must bind this value; user
+    /// selection and extraction continue to use `text` and `logical_range`.
+    pub source_text: String,
     pub text: String,
 }
 
@@ -344,6 +503,14 @@ pub struct MultiRunTextEditReport {
     pub logical_range: [usize; 2],
     pub selected_source_spans: Vec<MultiRunSourceSpan>,
     pub style_policy: MultiRunStylePolicy,
+    /// True only when the published paint references a newly embedded
+    /// generated/approved font. Merely staging or retaining an unused font
+    /// definition must not trigger a substitution approval.
+    pub generated_font_used: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_paint_order: Option<GeneratedPaintOrderDecision>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub generated_paint_partitions: Vec<GeneratedPaintPartitionReceipt>,
     pub replacement_text: String,
     pub replacement_extracts: bool,
     pub old_selected_text_absent: bool,
@@ -357,6 +524,26 @@ pub struct MultiRunTextEditReport {
     pub deterministic: bool,
     pub cache_invalidation: CacheInvalidationReport,
     pub exact_limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratedPaintOrderDecision {
+    pub policy: GeneratedPaintOrderPolicy,
+    pub source_text_objects: usize,
+    pub anchor_stream_object: u32,
+    pub anchor_stream_generation: u16,
+    pub anchor_decoded_byte_offset: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratedPaintPartitionReceipt {
+    pub source_text_object: usize,
+    pub replacement_scalar_range: [usize; 2],
+    pub region: [f64; 4],
+    pub generated: bool,
+    pub anchor_stream_object: u32,
+    pub anchor_stream_generation: u16,
+    pub anchor_decoded_byte_offset: usize,
 }
 
 /// Analyze newly inserted Unicode text for bounded RTL or vertical reflow.
@@ -401,15 +588,31 @@ pub fn analyze_advanced_text_reflow(
         _ => Level::ltr(),
     };
     let bidi = BidiInfo::new(text, Some(base_level));
-    let visual_text = bidi
-        .paragraphs
-        .iter()
-        .map(|paragraph| bidi.reorder_line(paragraph, paragraph.range.clone()))
-        .collect::<String>();
+    let mut visual_text = String::new();
+    for line in crate::fonts::hard_break::logical_lines(text) {
+        let line = line?;
+        if !line.visible.is_empty() {
+            let paragraph = bidi
+                .paragraphs
+                .get(
+                    bidi.paragraphs
+                        .partition_point(|p| p.range.end <= line.visible.start),
+                )
+                .filter(|p| p.range.start <= line.visible.start && line.visible.end <= p.range.end)
+                .ok_or_else(|| {
+                    WellfriendError::invalid_input("analysis hard line crosses a bidi paragraph")
+                })?;
+            visual_text.push_str(&bidi.reorder_line(paragraph, line.visible.clone()));
+        }
+        visual_text.push_str(&text[line.visible.end..line.logical.end]);
+    }
     let mut runs = Vec::new();
     for paragraph in &bidi.paragraphs {
+        crate::cancel::check_current_cancel("advanced editing bidi analysis")?;
         let (levels, ranges) = bidi.visual_runs(paragraph, paragraph.range.clone());
-        for (run_index, (level, range)) in levels.into_iter().zip(ranges).enumerate() {
+        for (run_index, range) in ranges.into_iter().enumerate() {
+            // visual_runs returns byte-indexed levels, not one level per run.
+            let level = levels[range.start];
             if runs.len() >= limits.max_bidi_runs.min(MAX_ADVANCED_EDITING_BIDI_RUNS) {
                 return Err(WellfriendError::UnsupportedFeature(format!(
                     "advanced_editing bidi run count exceeds limit {}",
@@ -422,7 +625,7 @@ pub fn analyze_advanced_text_reflow(
                 )
             })?;
             let visual = if level.is_rtl() {
-                logical.chars().rev().collect()
+                logical.graphemes(true).rev().collect()
             } else {
                 logical.to_string()
             };
@@ -445,66 +648,93 @@ pub fn analyze_advanced_text_reflow(
                 "advanced_editing bundled fallback font unavailable".to_string(),
             )
         })?;
-    let face = ttf_parser::Face::parse(font, 0).map_err(|_| {
-        WellfriendError::UnsupportedFeature("advanced_editing invalid shaping font".to_string())
-    })?;
     let mut glyphs = Vec::new();
     let mut missing = Vec::new();
     let mut complex = false;
-    for (source_run_index, run) in runs.iter().enumerate() {
-        let shaped = TextShaper::shape(
-            font,
-            &run.logical_text,
-            ShapeOptions {
-                direction: Some(if run.right_to_left {
-                    TextDirection::RightToLeft
-                } else {
-                    TextDirection::LeftToRight
-                }),
-            },
-        )?;
+    let mut run_lookup = runs
+        .iter()
+        .enumerate()
+        .map(|(index, run)| (run.logical_byte_start, run.logical_byte_end, index))
+        .collect::<Vec<_>>();
+    run_lookup.sort_unstable_by_key(|run| run.0);
+    let prepared = crate::fonts::shaper::ParagraphBidi::new(
+        text,
+        ShapeOptions {
+            direction: Some(if base_level.is_rtl() {
+                TextDirection::RightToLeft
+            } else {
+                TextDirection::LeftToRight
+            }),
+        },
+    )?;
+    prepared.all_hard_lines(|range, levels| {
+        let visible = &text[range.clone()];
+        let vertical_run = if mode == AdvancedTextMode::ParagraphReflowVertical {
+            Some(crate::fonts::vertical::shape_resolved(
+                font,
+                visible,
+                &levels,
+                &Default::default(),
+            )?)
+        } else {
+            None
+        };
+        let shaped = if let Some(vertical) = &vertical_run {
+            crate::fonts::ShapedRun {
+                glyphs: vertical.iter().map(|g| g.glyph.clone()).collect(),
+                direction: TextDirection::LeftToRight,
+                used_complex_shaping: !vertical.is_empty(),
+            }
+        } else {
+            TextShaper::shape_resolved(font, visible, &levels, &Default::default())?
+        };
         complex |= shaped.used_complex_shaping;
-        for glyph in shaped.glyphs {
+        let local_missing = crate::fonts::shaper::missing_glyph_clusters(font, visible, &shaped)?;
+        missing.extend(
+            local_missing
+                .iter()
+                .map(|cluster| range.start as u32 + cluster),
+        );
+        for (glyph_index, glyph) in shaped.glyphs.into_iter().enumerate() {
             if glyphs.len() >= limits.max_glyphs.min(MAX_ADVANCED_EDITING_GLYPHS) {
                 return Err(WellfriendError::UnsupportedFeature(format!(
                     "advanced_editing shaped glyph count exceeds limit {}",
                     limits.max_glyphs.min(MAX_ADVANCED_EDITING_GLYPHS)
                 )));
             }
-            let is_missing = glyph.glyph_id == 0;
-            if is_missing {
-                missing.push(glyph.cluster);
-            }
-            let cluster_char = run
-                .logical_text
-                .get(glyph.cluster as usize..)
-                .and_then(|tail| tail.chars().next());
-            let orientation = match mode {
-                AdvancedTextMode::ParagraphReflowVertical => cluster_char
-                    .map(vertical_orientation)
-                    .unwrap_or(VerticalGlyphOrientation::Upright),
+            let is_missing = local_missing.binary_search(&glyph.cluster).is_ok();
+            let source_cluster = range.start as u32 + glyph.cluster;
+            let source_run_index = run_lookup
+                .get(
+                    run_lookup
+                        .partition_point(|run| run.0 <= source_cluster as usize)
+                        .saturating_sub(1),
+                )
+                .filter(|run| (source_cluster as usize) < run.1)
+                .map(|run| run.2)
+                .ok_or_else(|| {
+                    WellfriendError::invalid_input("shaped glyph lacks source bidi run")
+                })?;
+            let orientation = match vertical_run.as_ref().map(|g| &g[glyph_index]) {
+                Some(glyph) if glyph.rotate_clockwise => VerticalGlyphOrientation::RotateClockwise,
+                Some(glyph) if glyph.vertical_alternate => {
+                    VerticalGlyphOrientation::FontVerticalAlternate
+                }
                 _ => VerticalGlyphOrientation::Upright,
             };
-            // Check the font cmap separately so a malformed shaper result cannot
-            // turn an absent source character into a supported claim.
-            let cmap_missing = cluster_char
-                .filter(|ch| !ch.is_control())
-                .is_some_and(|ch| face.glyph_index(ch).is_none());
-            if cmap_missing && !missing.contains(&glyph.cluster) {
-                missing.push(glyph.cluster);
-            }
             glyphs.push(TextGlyphProvenance {
                 glyph_id: glyph.glyph_id,
-                source_cluster_utf8: glyph.cluster,
+                source_cluster_utf8: source_cluster,
                 source_run_index,
                 advance_1000: canonical_number(glyph.advance),
                 offset_x_1000: canonical_number(glyph.offset_x),
                 offset_y_1000: canonical_number(glyph.offset_y),
                 orientation,
-                missing: is_missing || cmap_missing,
+                missing: is_missing,
             });
         }
-    }
+        Ok(true)
+    })?;
     missing.sort_unstable();
     missing.dedup();
     Ok(TextReflowAnalysis {
@@ -527,8 +757,9 @@ pub fn analyze_advanced_text_reflow(
         deterministic: true,
         exact_limits: vec![
             "analysis applies only to newly inserted Unicode; existing PDF codes/CIDs/GIDs are not reshaped".to_string(),
-            "vertical orientation is Unicode-policy analysis; serialization requires an owned Identity-V font mapping and vertical metrics".to_string(),
+            "vertical analysis uses Unicode 17 orientation and OpenType vertical substitutions/metrics; final columns are reshaped at their logical boundaries".to_string(),
             "missing glyphs are fail-closed and never silently replaced by .notdef".to_string(),
+            "coverage validates final shaped clusters and subset outlines, not nominal cmap alone; it does not establish intended typography, arbitrary glyphless logical persistence, or visual fidelity".to_string(),
         ],
     })
 }
@@ -544,7 +775,22 @@ struct GeneratedGlyph {
     offset_x: f64,
     offset_y: f64,
     orientation: VerticalGlyphOrientation,
+    cross_advance: f64,
+    font_width: f64,
+    bounds: Option<[f64; 4]>,
 }
+
+#[derive(Debug, Clone)]
+struct StoryPaintedRun {
+    font_index: usize,
+    style_index: usize,
+    /// Set for positioned tab fields; `tab_field` identifies when a new field
+    /// must reset the inline pen even if two origins are numerically equal.
+    inline_origin: Option<f64>,
+    tab_field: Option<usize>,
+    glyphs: Vec<GeneratedGlyph>,
+}
+type StoryPaintedLines = Vec<Vec<StoryPaintedRun>>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct InvisibleUnicodeTextRun {
@@ -566,6 +812,226 @@ pub(crate) fn append_invisible_unicode_text_layer(
     font: &[u8],
 ) -> Result<(Vec<u8>, String)> {
     append_unicode_text_layer(input, page_number, runs, font, 3, None)
+}
+
+/// Relocate one uniquely identified invisible `/ActualText` carrier without
+/// routing it through visual-region reflow. Invisible OCR (`Tr 3`) is absent
+/// from the visual scene by design, so geometry correction must bind to its
+/// content-stream provenance instead of pretending it owns painted bounds.
+///
+/// The operation keeps the existing embedded font, CIDs, `ToUnicode`,
+/// `/ActualText`, horizontal scaling, and glyph advances. It publishes an
+/// absolute text matrix immediately before every selected showing operator,
+/// translating the complete shaped run as one unit while preserving relative
+/// glyph placement and all unrelated content bytes.
+pub(crate) fn relocate_invisible_actual_text(
+    input: &[u8],
+    page_number: usize,
+    logical_text: &str,
+    bounds: [f64; 4],
+) -> Result<(Vec<u8>, serde_json::Value)> {
+    if logical_text.is_empty()
+        || bounds.iter().any(|value| !value.is_finite())
+        || bounds[0] >= bounds[2]
+        || bounds[1] >= bounds[3]
+    {
+        return Err(WellfriendError::invalid_input(
+            "advanced_editing invisible OCR relocation requires nonempty text and finite positive bounds",
+        ));
+    }
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let page = engine.document().get_page(page_number)?;
+    let reader = engine.document().reader();
+    let resources = PageResources::from_dict(&page.resources, reader);
+    let mut scanner_state = ScannedTextTokenState::default();
+    let mut position_metrics = inline_text::Metrics::new(&resources, reader);
+    let mut stream_sources = BTreeMap::<(u32, u16), (PdfObject, Arc<Vec<u8>>)>::new();
+    let mut selected = Vec::<(u32, u16, ContentStringToken, [f64; 6])>::new();
+    let mut carrier_keys = BTreeSet::<(u32, u16, usize, usize)>::new();
+    let mut non_invisible_carrier_keys = BTreeSet::<(u32, u16, usize, usize)>::new();
+
+    for (number, generation) in page.contents.iter().copied() {
+        let object = reader.get_object(number, generation)?;
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )?;
+        if decoded.status != StreamDecodeStatus::Complete {
+            scanner_state = ScannedTextTokenState::default();
+            continue;
+        }
+        let decoded = Arc::new(decoded.data);
+        let tokens = scan_text_string_tokens_with_metrics(
+            decoded.as_slice(),
+            &mut scanner_state,
+            Some((number, generation)),
+            Some(&mut position_metrics),
+        )?;
+        for token in tokens {
+            let Some(carrier) = token
+                .actual_text_sources
+                .last()
+                .filter(|carrier| carrier.logical_text.as_ref() == logical_text)
+            else {
+                continue;
+            };
+            let carrier_key = (
+                carrier.owner_object,
+                carrier.owner_generation,
+                carrier.value_start,
+                carrier.value_end,
+            );
+            if token.text_render_mode != 3 {
+                non_invisible_carrier_keys.insert(carrier_key);
+                continue;
+            }
+            if !matches!(token.operator.as_str(), "Tj" | "TJ") {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "advanced_editing invisible OCR relocation requires Tj/TJ source operators"
+                        .into(),
+                ));
+            }
+            let matrix = token
+                .source_position
+                .as_ref()
+                .map(inline_text::PositionSnapshot::matrix)
+                .ok_or_else(|| {
+                    WellfriendError::UnsupportedFeature(
+                        "advanced_editing invisible OCR relocation could not recover an exact source text matrix"
+                            .into(),
+                    )
+                })?;
+            if matrix[..4]
+                .iter()
+                .zip([1.0, 0.0, 0.0, 1.0])
+                .any(|(actual, expected)| {
+                    (*actual - expected).abs() > 1e-10 * actual.abs().max(1.0)
+                })
+            {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "advanced_editing invisible OCR relocation currently requires the canonical horizontal OCR text basis"
+                        .into(),
+                ));
+            }
+            carrier_keys.insert(carrier_key);
+            selected.push((number, generation, token, matrix));
+        }
+        stream_sources.insert((number, generation), (object, decoded));
+    }
+    if carrier_keys.len() != 1 || selected.is_empty() {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "advanced_editing invisible OCR relocation requires one exact /ActualText carrier; found {}",
+            carrier_keys.len()
+        )));
+    }
+    if carrier_keys
+        .iter()
+        .any(|carrier| non_invisible_carrier_keys.contains(carrier))
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "advanced_editing OCR geometry carrier mixes visible and invisible paint and cannot be relocated atomically"
+                .into(),
+        ));
+    }
+    selected.sort_by_key(|item| (item.0, item.1, item.2.operation_start));
+    let first = &selected[0];
+    let font_size = first.2.font_size;
+    if !font_size.is_finite() || font_size <= 0.0 {
+        return Err(WellfriendError::MalformedPdf(
+            "advanced_editing invisible OCR carrier has an invalid source font size".into(),
+        ));
+    }
+    let height = bounds[3] - bounds[1];
+    let target_origin = [
+        bounds[0],
+        bounds[1] + height.min(font_size).max(font_size * 0.75),
+    ];
+    let delta = [target_origin[0] - first.3[4], target_origin[1] - first.3[5]];
+    let mut edits = DecodedStreamEdits::new();
+    for (number, generation, token, mut matrix) in &selected {
+        if token.operator == "TJ"
+            && token.operation_start == token.token_start
+            && token.operation_end == token.token_end
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "advanced_editing cannot relocate an invisible OCR TJ carrier whose enclosing operation crosses a physical /Contents boundary"
+                    .into(),
+            ));
+        }
+        matrix[4] += delta[0];
+        matrix[5] += delta[1];
+        let (_, decoded) = stream_sources.get(&(*number, *generation)).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "advanced_editing invisible OCR source stream disappeared".into(),
+            )
+        })?;
+        let original = decoded
+            .get(token.operation_start..token.operation_end)
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "advanced_editing invisible OCR source operator range is invalid".into(),
+                )
+            })?;
+        let mut replacement = format!(
+            "{} {} {} {} {} {} Tm\n",
+            fmt_num(matrix[0]),
+            fmt_num(matrix[1]),
+            fmt_num(matrix[2]),
+            fmt_num(matrix[3]),
+            fmt_num(matrix[4]),
+            fmt_num(matrix[5])
+        )
+        .into_bytes();
+        replacement.extend_from_slice(original);
+        let (object, decoded) = stream_sources.get(&(*number, *generation)).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "advanced_editing invisible OCR source stream disappeared".into(),
+            )
+        })?;
+        edits
+            .entry((*number, *generation))
+            .or_insert_with(|| {
+                (
+                    object.clone(),
+                    Arc::clone(decoded).as_ref().clone(),
+                    Vec::new(),
+                )
+            })
+            .2
+            .push((token.operation_start, token.operation_end, replacement));
+    }
+    let changed = materialize_decoded_stream_edits(
+        edits,
+        "advanced_editing invisible OCR geometry relocation",
+    )?;
+    let output = text_resources::write(reader, &page, &resources, changed)?;
+    let extracted = ContentEngine::open_bytes(output.clone())?.get_page_text(page_number)?;
+    if !output.starts_with(input) || !extracted.contains(logical_text) {
+        return Err(WellfriendError::MalformedPdf(
+            "advanced_editing invisible OCR relocation failed save/reopen/extraction proof".into(),
+        ));
+    }
+    Ok((
+        output.clone(),
+        serde_json::json!({
+            "operation": "relocate_invisible_actual_text",
+            "page": page_number,
+            "logical_text_sha256": format!("{:x}", Sha256::digest(logical_text.as_bytes())),
+            "source_origin": [first.3[4], first.3[5]],
+            "target_origin": target_origin,
+            "translation": delta,
+            "source_showing_operators_repositioned": selected.len(),
+            "text_rendering_mode": 3,
+            "actual_text_carrier_bound": true,
+            "original_prefix_preserved": output.starts_with(input),
+            "output_reopened_and_text_extracted": true,
+            "output_sha256": format!("{:x}", Sha256::digest(&output)),
+        }),
+    ))
 }
 
 /// Append visible, source-editable Unicode text to a reconstructed scan. The
@@ -603,16 +1069,16 @@ fn append_unicode_text_layer(
             "advanced_editing invisible Unicode layer requires 1..=20000 runs",
         ));
     }
-    let layer_face = ttf_parser::Face::parse(font, 0).map_err(|_| {
+    ttf_parser::Face::parse(font, 0).map_err(|_| {
         WellfriendError::UnsupportedFeature(
             "advanced_editing invisible Unicode layer requires a valid caller-approved sfnt font"
                 .to_string(),
         )
     })?;
-    let identity_cid_is_gid = layer_face.tables().glyf.is_none();
     let engine = ContentEngine::open_bytes(input.to_vec())?;
     let page = engine.document().get_page(page_number)?;
     let reader = engine.document().reader();
+    let resources = PageResources::from_dict(&page.resources, reader);
     let mut planned = Vec::<(InvisibleUnicodeTextRun, Vec<GeneratedGlyph>)>::new();
     let mut all_glyphs = Vec::<GeneratedGlyph>::new();
     let mut next_cid = 1u32;
@@ -630,11 +1096,8 @@ fn append_unicode_text_layer(
                 "advanced_editing invisible Unicode run text/position/font-size is invalid",
             ));
         }
-        let mut glyphs = generated_glyph_plan(
-            &run.text,
-            AdvancedTextMode::ParagraphReflowHorizontal,
-            font,
-        )?;
+        let mut glyphs =
+            generated_glyph_plan(&run.text, AdvancedTextMode::ParagraphReflowHorizontal, font)?;
         if glyphs.is_empty() || glyphs.iter().any(|glyph| glyph.gid == 0) {
             return Err(WellfriendError::UnsupportedFeature(
                 "advanced_editing approved OCR font lacks complete glyph coverage for a searchable run"
@@ -642,31 +1105,21 @@ fn append_unicode_text_layer(
             ));
         }
         for glyph in &mut glyphs {
-            glyph.cid = if identity_cid_is_gid {
-                glyph.gid
-            } else {
-                u16::try_from(next_cid).map_err(|_| {
-                    WellfriendError::ResourceLimit(
-                        "advanced_editing Unicode layer exceeds 65535 shaped glyphs"
-                            .to_string(),
-                    )
-                })?
-            };
+            glyph.cid = u16::try_from(next_cid).map_err(|_| {
+                WellfriendError::ResourceLimit(
+                    "advanced_editing Unicode layer exceeds 65535 shaped glyphs".to_string(),
+                )
+            })?;
             // The public glyph bound is far below u32::MAX; ordinary addition
             // keeps the next iteration detectable by the u16 conversion
             // instead of pinning every later glyph to one saturated CID.
-            if !identity_cid_is_gid {
-                next_cid += 1;
-            }
+            next_cid += 1;
         }
         all_glyphs.extend(glyphs.iter().cloned());
         planned.push((run.clone(), glyphs));
     }
-    let base = reserve_advanced_object_block(
-        reader,
-        8,
-        "advanced_editing invisible Unicode layer",
-    )?;
+    let base =
+        reserve_advanced_object_block(reader, 8, "advanced_editing invisible Unicode layer")?;
     let isolation_prefix_number = base + 6;
     let content_number = base + 7;
     let font_resource = deterministic_font_resource_name(reader, &page.resources);
@@ -689,16 +1142,11 @@ fn append_unicode_text_layer(
     // graphics state without rewriting otherwise unrelated source streams.
     let mut content = String::from("Q\nq\n");
     for (run, glyphs) in &planned {
-        let natural_width = glyphs
-            .iter()
-            .map(|glyph| glyph.advance.abs())
-            .sum::<f64>()
-            / 1000.0
-            * run.font_size;
+        let natural_width =
+            glyphs.iter().map(|glyph| glyph.advance.abs()).sum::<f64>() / 1000.0 * run.font_size;
         if !natural_width.is_finite() || natural_width <= 0.0 {
             return Err(WellfriendError::UnsupportedFeature(
-                "advanced_editing invisible Unicode run has no finite shaped advance"
-                    .to_string(),
+                "advanced_editing invisible Unicode run has no finite shaped advance".to_string(),
             ));
         }
         let horizontal_scale = (run.target_width / natural_width * 100.0).clamp(0.01, 10_000.0);
@@ -778,13 +1226,13 @@ fn append_unicode_text_layer(
         number: isolation_prefix_number,
         generation: 0,
     }];
-    contents.extend(page
-        .contents
-        .iter()
-        .map(|(number, generation)| PdfObject::Reference {
-            number: *number,
-            generation: *generation,
-        })
+    contents.extend(
+        page.contents
+            .iter()
+            .map(|(number, generation)| PdfObject::Reference {
+                number: *number,
+                generation: *generation,
+            }),
     );
     contents.push(PdfObject::Reference {
         number: content_number,
@@ -796,7 +1244,7 @@ fn append_unicode_text_layer(
         generation: page.generation_number,
         object: PdfObject::Dictionary(page_dict),
     });
-    let output = write_incremental_update(reader, changed)?;
+    let output = text_resources::write(reader, &page, &resources, changed)?;
     ContentEngine::open_bytes(output.clone())?;
     Ok((output, font_resource))
 }
@@ -859,9 +1307,10 @@ pub fn edit_advanced_text_pdf_with_layout(
         .map(|text| ExplicitLayoutLine {
             logical_text: text.clone(),
             visual_text: text
-                .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}'])
+                .trim_end_matches(crate::fonts::hard_break::is_hard_break)
                 .to_string(),
             inserted_visual_hyphen: false,
+            bidi: None,
         })
         .collect::<Vec<_>>();
     edit_advanced_text_pdf_with_visual_layout(
@@ -905,7 +1354,7 @@ pub fn edit_advanced_text_pdf_with_visual_layout(
     for line in final_lines {
         let visual_base = line
             .logical_text
-            .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']);
+            .trim_end_matches(crate::fonts::hard_break::is_hard_break);
         let allowed_visual = if line.inserted_visual_hyphen {
             format!("{visual_base}-")
         } else {
@@ -934,8 +1383,7 @@ pub fn edit_advanced_text_pdf_with_visual_layout(
 /// Replace one source token with final lines at explicit, validated line
 /// rectangles. The text, shaping, Type0 subset, content-token mutation, and
 /// canonical incremental writer are exactly the same advanced editing path as the
-/// non-positioned variant. Positioning is intentionally horizontal-only until
-/// the canonical vertical writer gains equivalent per-column geometry.
+/// non-positioned variant. In vertical mode each rectangle bounds one column.
 #[allow(clippy::too_many_arguments)]
 pub fn edit_advanced_text_pdf_with_positioned_visual_layout(
     input: &[u8],
@@ -947,12 +1395,6 @@ pub fn edit_advanced_text_pdf_with_positioned_visual_layout(
     font_bytes: Option<&[u8]>,
     final_lines: &[PositionedExplicitLayoutLine],
 ) -> Result<(Vec<u8>, AdvancedTextEditReport)> {
-    if mode == AdvancedTextMode::ParagraphReflowVertical {
-        return Err(WellfriendError::UnsupportedFeature(
-            "advanced_editing positioned final layout does not yet support vertical columns"
-                .to_string(),
-        ));
-    }
     let plain_lines = final_lines
         .iter()
         .map(|item| item.line.clone())
@@ -981,7 +1423,7 @@ pub fn edit_advanced_text_pdf_with_positioned_visual_layout(
         let visual_base = item
             .line
             .logical_text
-            .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']);
+            .trim_end_matches(crate::fonts::hard_break::is_hard_break);
         let allowed_visual = if item.line.inserted_visual_hyphen {
             format!("{visual_base}-")
         } else {
@@ -1024,6 +1466,11 @@ fn edit_advanced_text_pdf_internal(
     explicit_line_regions: Option<&[[f64; 4]]>,
 ) -> Result<(Vec<u8>, AdvancedTextEditReport)> {
     validate_advanced_text_options(options)?;
+    if !options.paint_partitions.is_empty() {
+        return Err(WellfriendError::invalid_input(
+            "generated paint partitions require the page-logical multi-run edit API",
+        ));
+    }
     if !matches!(
         mode,
         AdvancedTextMode::ParagraphReflowHorizontal
@@ -1074,6 +1521,7 @@ fn edit_advanced_text_pdf_internal(
     let resources = PageResources::from_dict(&page.resources, reader);
     let mut matches = Vec::new();
     let mut scanner_state = ScannedTextTokenState::default();
+    let mut position_metrics = inline_text::Metrics::new(&resources, reader);
     for (stream_index, (number, generation)) in page.contents.iter().copied().enumerate() {
         let stream = reader.get_object(number, generation)?;
         let decoded_result = decode_stream_lossless_with_limits(
@@ -1091,25 +1539,30 @@ fn edit_advanced_text_pdf_internal(
             scanner_state = ScannedTextTokenState::default();
             continue;
         }
-        for token in scan_text_string_tokens_with_state_and_owner(
+        for token in scan_text_string_tokens_with_metrics(
             &decoded_result.data,
             &mut scanner_state,
             Some((number, generation)),
+            Some(&mut position_metrics),
         )? {
             let Some(font_dict) = resources.fonts.get(&token.font_name) else {
                 continue;
             };
             let resolver = FontResolver::new(font_dict, reader);
-            if resolver.decode_string(&token.decoded) == old_text {
+            if resolver
+                .try_decode_string(&token.decoded)
+                .map_err(WellfriendError::UnsupportedFeature)?
+                == old_text
+            {
                 if options
                     .target_stream_object
                     .is_some_and(|target| target != number)
                     || options
                         .target_stream_generation
                         .is_some_and(|target| target != generation)
-                    || options.target_decoded_byte_range.is_some_and(|target| {
-                        target != [token.token_start, token.token_end]
-                    })
+                    || options
+                        .target_decoded_byte_range
+                        .is_some_and(|target| target != [token.token_start, token.token_end])
                 {
                     continue;
                 }
@@ -1132,6 +1585,10 @@ fn edit_advanced_text_pdf_internal(
     }
     let (_stream_index, source_number, source_generation, source_object, mut source_decoded, token) =
         matches.remove(0);
+    if matches!(token.text_render_mode, 4..=7) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "clipping text requires the source-inline page-logical writer, not a relocated reflow block".into()));
+    }
     if token.unresolved_actual_text
         || !token.actual_text_sources.is_empty()
         || token_has_named_actual_text(&token, &resources, reader)
@@ -1141,8 +1598,21 @@ fn edit_advanced_text_pdf_internal(
                 .to_string(),
         ));
     }
-    let empty = serialize_pdf_string(&[], token.representation);
-    source_decoded.splice(token.token_start..token.token_end, empty.clone());
+    let source_font = resources
+        .fonts
+        .get(&token.font_name)
+        .ok_or_else(|| WellfriendError::MalformedPdf("selected source font is missing".into()))?;
+    let resolver = FontResolver::new(source_font, reader);
+    let (removed_start, removed_end, empty) = rewrite_source_text_destructively(
+        &token,
+        &resolver,
+        &[],
+        &token.decoded,
+        &[],
+        false,
+        None,
+    )?;
+    source_decoded.splice(removed_start..removed_end, empty.clone());
     let source_compressed = flate_encode_cancellable(&source_decoded, 6)?;
     let PdfObject::Stream {
         dict: mut source_dict,
@@ -1159,15 +1629,12 @@ fn edit_advanced_text_pdf_internal(
         Some(lines) => {
             layout_generated_explicit_lines(lines, mode, font, options, explicit_line_regions)?
         }
-        None => {
-            let glyphs = generated_glyph_plan(new_text, mode, font)?;
-            layout_generated_glyphs(&glyphs, mode, options)?
-        }
+        None => layout_generated_logical_text(new_text, mode, font, options)?,
     };
     let glyphs = layout.iter().flatten().cloned().collect::<Vec<_>>();
     let base_object = reserve_advanced_object_block(
         reader,
-        8,
+        8 + story_carriers::OBJECT_COUNT,
         "advanced_editing bounded reflow",
     )?;
     let font_file_number = base_object;
@@ -1204,8 +1671,16 @@ fn edit_advanced_text_pdf_internal(
         options,
         mode == AdvancedTextMode::ParagraphReflowVertical,
         explicit_line_regions,
-        (mode == AdvancedTextMode::ParagraphReflowRtl && explicit_line_regions.is_some())
-            .then_some(new_text),
+        Some(new_text),
+    )?;
+    let (generated_content, logical_fonts) = story_carriers::attach_generated(
+        generated_content,
+        new_text,
+        mode == AdvancedTextMode::ParagraphReflowVertical,
+        options,
+        base_object + 8,
+        &mut changed,
+        true,
     )?;
     let generated_content = isolated_appended_content(generated_content);
     let generated_compressed = flate_encode_cancellable(generated_content.as_bytes(), 6)?;
@@ -1249,24 +1724,39 @@ fn edit_advanced_text_pdf_internal(
             generation: 0,
         },
     );
+    story_carriers::install(&logical_fonts, &mut font_resources)?;
     resource_dict.insert("Font", PdfObject::Dictionary(font_resources));
     page_dict.insert("Resources", PdfObject::Dictionary(resource_dict));
-    let contents = isolated_page_contents(
+    anchor_generated_reflow(
+        reader,
         &page.contents,
-        isolation_prefix_number,
+        &mut changed,
+        (source_number, source_generation, token.token_start),
         content_number,
-    );
+        isolation_prefix_number,
+    )?;
+    let contents = original_page_contents(&page.contents);
     page_dict.insert("Contents", PdfObject::Array(contents));
     changed.push(IncrementalObject {
         number: page.object_number,
         generation: page.generation_number,
         object: PdfObject::Dictionary(page_dict),
     });
-    let output = write_incremental_update(reader, changed)?;
+    let output = text_resources::write(reader, &page, &resources, changed)?;
     let reopened = ContentEngine::open_bytes(output.clone())?;
     let extracted = reopened.get_page_text(page_number)?;
     let replacement_extracts = extracted.contains(new_text)
         || explicit_final_lines.is_some_and(|_| layout_extraction_equivalent(&extracted, new_text));
+    if !logical_fonts.is_empty() {
+        story_carriers::verify_generated(
+            &reopened,
+            &reopened.document().get_page(page_number)?,
+            &logical_fonts,
+            new_text,
+            mode == AdvancedTextMode::ParagraphReflowVertical,
+            true,
+        )?;
+    }
     let selected_source_removed = reopened
         .document()
         .reader()
@@ -1287,7 +1777,7 @@ fn edit_advanced_text_pdf_internal(
         .and_then(|decoded| {
             decoded
                 .data
-                .get(token.token_start..token.token_start.saturating_add(empty.len()))
+                .get(removed_start..removed_start.saturating_add(empty.len()))
                 .map(|bytes| bytes == empty.as_slice())
         })
         .unwrap_or(false);
@@ -1375,57 +1865,114 @@ pub fn analyze_multi_run_text_range(
 ) -> Result<MultiRunRangeModel> {
     let engine = ContentEngine::open_bytes(input.to_vec())?;
     let page = engine.document().get_page(page_number)?;
+    analyze_multi_run_source(&engine, &page, ScannedTextTokenState::default())
+}
+pub(crate) fn analyze_multi_run_source(
+    engine: &ContentEngine,
+    page: &crate::document::PdfPage,
+    scanner_state: ScannedTextTokenState,
+) -> Result<MultiRunRangeModel> {
+    let page_number = page.page_number;
     let reader = engine.document().reader();
     let resources = PageResources::from_dict(&page.resources, reader);
     let mut source_spans = Vec::new();
     let mut logical_text = String::new();
     let mut logical_offset = 0usize;
-    let mut scanner_state = ScannedTextTokenState::default();
-    for (stream_index, (number, generation)) in page.contents.iter().copied().enumerate() {
-        let object = reader.get_object(number, generation)?;
-        let decoded = decode_stream_lossless_with_limits(
-            &object,
-            reader,
-            &DecodeLimits {
-                max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES as u64,
-                ..DecodeLimits::default()
-            },
-        )?;
-        if decoded.status != StreamDecodeStatus::Complete {
-            scanner_state = ScannedTextTokenState::default();
+    // A marked-content ActualText value replaces every painted text-showing
+    // operand in its scope exactly once. Track the physical owner so a scope
+    // spanning several Tj/TJ operands does not duplicate its logical value.
+    let mut emitted_actual_text = BTreeSet::<(u32, u16, usize, usize)>::new();
+    let mut position_metrics = inline_text::Metrics::new(&resources, reader);
+    for page_token in scan_page_text_string_tokens_with_metrics(
+        reader,
+        &page.contents,
+        scanner_state,
+        &mut position_metrics,
+    )? {
+        let PageContentStringToken {
+            stream_index,
+            object: number,
+            generation,
+            token,
+        } = page_token;
+        let Some(font) = resources.fonts.get(&token.font_name) else {
             continue;
-        }
-        for token in scan_text_string_tokens_with_state(&decoded.data, &mut scanner_state)? {
-            let Some(font) = resources.fonts.get(&token.font_name) else {
-                continue;
-            };
-            let resolver = FontResolver::new(font, reader);
-            let text = resolver.decode_string(&token.decoded);
-            let count = text.chars().count();
-            let start = logical_offset;
-            logical_offset = logical_offset.saturating_add(count);
-            logical_text.push_str(&text);
-            source_spans.push(MultiRunSourceSpan {
-                span_id: format!("p{page_number}:s{stream_index}:o{}", token.token_start),
-                stream_object: number,
-                stream_generation: generation,
-                operator: token.operator,
-                tj_element: token.element,
-                byte_range: [token.token_start, token.token_end],
-                logical_range: [start, logical_offset],
-                font_resource: token.font_name,
-                writing_mode: i32::from(resolver.is_vertical()),
-                text_render_mode: token.text_render_mode,
-                marked_content_depth: token.marked_depth,
-                text,
-            });
-        }
+        };
+        let resolver = FontResolver::new(font, reader);
+        let decoded_text = resolver
+            .try_decode_string(&token.decoded)
+            .map_err(WellfriendError::UnsupportedFeature)?;
+        let source_text = decoded_text.clone();
+        let text = if let Some(source) = token.actual_text_sources.last() {
+            let key = (
+                source.owner_object,
+                source.owner_generation,
+                source.value_start,
+                source.value_end,
+            );
+            if emitted_actual_text.insert(key) {
+                source.logical_text.to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            decoded_text
+        };
+        let count = text.chars().count();
+        let start = logical_offset;
+        logical_offset = logical_offset.saturating_add(count);
+        logical_text.push_str(&text);
+        source_spans.push(MultiRunSourceSpan {
+            span_id: format!("p{page_number}:s{stream_index}:o{}", token.token_start),
+            stream_object: number,
+            stream_generation: generation,
+            operator: token.operator,
+            tj_element: token.element,
+            byte_range: [token.token_start, token.token_end],
+            logical_range: [start, logical_offset],
+            source_text_object: 0,
+            font_resource: token.font_name,
+            font_size: token.font_size,
+            character_spacing: token.character_spacing,
+            word_spacing: token.word_spacing,
+            horizontal_scaling: token.horizontal_scaling,
+            writing_mode: i32::from(resolver.is_vertical()),
+            text_render_mode: token.text_render_mode,
+            marked_content_depth: token.marked_depth,
+            authored_typed_table: token
+                .authored_typed_owner
+                .as_ref()
+                .map(|owner| owner.0.clone()),
+            authored_typed_cell: token
+                .authored_typed_owner
+                .as_ref()
+                .map(|owner| owner.1.clone()),
+            authored_typed_region: token.authored_typed_region,
+            direct_actual_text: token
+                .actual_text_sources
+                .last()
+                .map(|source| source.logical_text.to_string()),
+            direct_actual_text_source: token.actual_text_sources.last().map(|source| {
+                format!(
+                    "{}:{}:{}:{}",
+                    source.owner_object,
+                    source.owner_generation,
+                    source.value_start,
+                    source.value_end
+                )
+            }),
+            flow_relocatable: token.flow_relocatable,
+            source_text,
+            text,
+        });
     }
+    normalize_isomorphic_actual_text_spans(&mut source_spans);
     if source_spans.len() > MAX_ADVANCED_EDITING_BIDI_RUNS {
         return Err(WellfriendError::UnsupportedFeature(
             "advanced_editing_closeout range span count exceeds 4096".to_string(),
         ));
     }
+    assign_source_paint_slots(reader, &page.contents, &mut source_spans)?;
     let analysis = analyze_advanced_text_reflow(
         &logical_text,
         AdvancedTextMode::ParagraphReflowRtl,
@@ -1458,9 +2005,377 @@ pub fn analyze_multi_run_text_range(
         exact_limits: vec![
             "logical offsets are Unicode scalar offsets mapped to decoded PDF string-token provenance; visual-quads require a unique caller-provided span target".to_string(),
             "page-owned selections may start/end inside decoded string tokens and cross /Contents streams; the apply path preserves boundary residuals and commits all touched streams atomically".to_string(),
+            "each source span reports its exact zero-based BT/ET paint-slot ordinal across the ordered page content sequence; generated edits spanning several ordinals require an explicit first/last anchor decision".to_string(),
             "Form-owned text remains separately occurrence-addressed because a shared Form mutation needs an explicit clone-one or edit-all ownership policy".to_string(),
         ],
     })
+}
+
+/// `/ActualText` replaces the text-showing operands inside its marked-content
+/// scope as one logical value. When the concatenated physical source strings
+/// are exactly that value, retain the stronger per-operand provenance instead
+/// of assigning the entire logical range to the first operand and empty ranges
+/// to every later operand. This makes an exact partial edit deterministic while
+/// leaving non-isomorphic ligature/alternate descriptions indivisible.
+fn normalize_isomorphic_actual_text_spans(spans: &mut [MultiRunSourceSpan]) {
+    let mut groups = BTreeMap::<String, Vec<usize>>::new();
+    for (index, span) in spans.iter().enumerate() {
+        if let Some(source) = span.direct_actual_text_source.as_ref() {
+            groups.entry(source.clone()).or_default().push(index);
+        }
+    }
+    for indices in groups.into_values() {
+        let Some(first) = indices.first().copied() else {
+            continue;
+        };
+        let Some(actual_text) = spans[first].direct_actual_text.clone() else {
+            continue;
+        };
+        let physical_text = indices
+            .iter()
+            .map(|index| spans[*index].source_text.as_str())
+            .collect::<String>();
+        if physical_text != actual_text {
+            continue;
+        }
+        let base = indices
+            .iter()
+            .map(|index| spans[*index].logical_range[0])
+            .min()
+            .unwrap_or(0);
+        let mut cursor = base;
+        for index in indices {
+            let count = spans[index].source_text.chars().count();
+            spans[index].logical_range = [cursor, cursor.saturating_add(count)];
+            spans[index].text = spans[index].source_text.clone();
+            cursor = cursor.saturating_add(count);
+        }
+    }
+}
+
+fn isomorphic_actual_text_sources(spans: &[MultiRunSourceSpan]) -> BTreeSet<String> {
+    let mut groups = BTreeMap::<String, (String, String)>::new();
+    for span in spans {
+        let (Some(source), Some(actual_text)) = (
+            span.direct_actual_text_source.as_ref(),
+            span.direct_actual_text.as_ref(),
+        ) else {
+            continue;
+        };
+        let entry = groups
+            .entry(source.clone())
+            .or_insert_with(|| (actual_text.clone(), String::new()));
+        entry.1.push_str(&span.source_text);
+    }
+    groups
+        .into_iter()
+        .filter_map(|(source, (actual, physical))| (actual == physical).then_some(source))
+        .collect()
+}
+
+fn proposed_partition_boundary_class(text: &str, scalar: usize) -> Result<String> {
+    let total = text.chars().count();
+    if scalar == 0 || scalar == total {
+        return Ok("replacement_edge".into());
+    }
+    let byte = scalar_boundary_byte(text, scalar).ok_or_else(|| {
+        WellfriendError::MalformedPdf("partition proposal lost a scalar boundary".into())
+    })?;
+    if !is_grapheme_boundary(text, byte) {
+        return Err(WellfriendError::MalformedPdf(
+            "partition proposal divided a grapheme".into(),
+        ));
+    }
+    let before = text[..byte].chars().next_back();
+    let after = text[byte..].chars().next();
+    if before.is_some_and(crate::fonts::hard_break::is_hard_break)
+        || after.is_some_and(crate::fonts::hard_break::is_hard_break)
+    {
+        Ok("hard_separator".into())
+    } else if before.is_some_and(char::is_whitespace) || after.is_some_and(char::is_whitespace) {
+        Ok("whitespace".into())
+    } else {
+        Ok("contextual_requires_font_validation".into())
+    }
+}
+
+/// Propose, but never silently apply, a source-slot partition. Replacement
+/// graphemes are apportioned by the selected source scalar coverage of each
+/// paint slot using Hamilton's largest-remainder method. The proposal is bound
+/// to the exact input and request; physical regions remain explicit approval.
+pub fn propose_generated_paint_partitions(
+    input: &[u8],
+    request: &MultiRunTextRangeRequest,
+) -> Result<GeneratedPaintPartitionProposal> {
+    validate_advanced_text_options(&request.options)?;
+    if request.logical_start >= request.logical_end || request.replacement_text.is_empty() {
+        return Err(WellfriendError::invalid_input(
+            "paint partition proposals require a nonempty source selection and replacement",
+        ));
+    }
+    if !request.options.paint_partitions.is_empty()
+        || request.options.paint_order_policy
+            != GeneratedPaintOrderPolicy::RequireSingleSourceTextObject
+        || request.final_lines.is_some()
+    {
+        return Err(WellfriendError::invalid_input(
+            "paint partition proposal input must not already contain partitions, a block-anchor override, or request-wide final lines",
+        ));
+    }
+    if !matches!(
+        request.mode,
+        AdvancedTextMode::ParagraphReflowHorizontal
+            | AdvancedTextMode::ParagraphReflowRtl
+            | AdvancedTextMode::ParagraphReflowVertical
+    ) {
+        return Err(WellfriendError::invalid_input(
+            "paint partition proposal requires a paragraph reflow mode",
+        ));
+    }
+    let model = analyze_multi_run_text_range(input, request.page)?;
+    let total_scalars = model.logical_text.chars().count();
+    if request.logical_end > total_scalars {
+        return Err(WellfriendError::invalid_input(
+            "paint partition proposal logical range is outside the page model",
+        ));
+    }
+
+    #[derive(Default)]
+    struct Slot {
+        source_scalars: usize,
+        spans: Vec<String>,
+        regions: Vec<Option<[f64; 4]>>,
+    }
+    let mut slots = BTreeMap::<usize, Slot>::new();
+    for span in &model.source_spans {
+        let start = request.logical_start.max(span.logical_range[0]);
+        let end = request.logical_end.min(span.logical_range[1]);
+        if start >= end {
+            continue;
+        }
+        let slot = slots.entry(span.source_text_object).or_default();
+        slot.source_scalars = slot
+            .source_scalars
+            .checked_add(end - start)
+            .ok_or_else(|| {
+                WellfriendError::ResourceLimit("partition source scalar count".into())
+            })?;
+        slot.spans.push(span.span_id.clone());
+        slot.regions.push(span.authored_typed_region);
+    }
+    if slots.is_empty() {
+        return Err(WellfriendError::UnsupportedFeature(
+            "paint partition proposal selection has no provenance-bearing source spans".into(),
+        ));
+    }
+    if slots.len() > MAX_ADVANCED_EDITING_BIDI_RUNS {
+        return Err(WellfriendError::ResourceLimit(
+            "paint partition proposal exceeds 4096 source text objects".into(),
+        ));
+    }
+
+    let grapheme_scalar_lengths = request
+        .replacement_text
+        .graphemes(true)
+        .map(|grapheme| grapheme.chars().count())
+        .collect::<Vec<_>>();
+    if grapheme_scalar_lengths.is_empty()
+        || grapheme_scalar_lengths.len() > MAX_ADVANCED_EDITING_PARAGRAPH_CHARS
+        || request.replacement_text.chars().count() > MAX_ADVANCED_EDITING_PARAGRAPH_CHARS
+    {
+        return Err(WellfriendError::ResourceLimit(
+            "paint partition replacement grapheme/scalar count is outside 1..=1000000".into(),
+        ));
+    }
+    let total_source = slots.values().try_fold(0usize, |total, slot| {
+        total
+            .checked_add(slot.source_scalars)
+            .ok_or_else(|| WellfriendError::ResourceLimit("partition source scalar total".into()))
+    })?;
+    if total_source == 0 {
+        return Err(WellfriendError::MalformedPdf(
+            "partition proposal has zero selected source coverage".into(),
+        ));
+    }
+    let grapheme_count = grapheme_scalar_lengths.len();
+    let mut allocations = slots
+        .iter()
+        .map(|(&source_text_object, slot)| {
+            let numerator = (grapheme_count as u128) * (slot.source_scalars as u128);
+            Ok((
+                source_text_object,
+                usize::try_from(numerator / total_source as u128).map_err(|_| {
+                    WellfriendError::ResourceLimit("partition grapheme allocation".into())
+                })?,
+                numerator % total_source as u128,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let assigned = allocations.iter().try_fold(0usize, |total, item| {
+        total
+            .checked_add(item.1)
+            .ok_or_else(|| WellfriendError::ResourceLimit("partition allocation total".into()))
+    })?;
+    let remainder_count = grapheme_count.checked_sub(assigned).ok_or_else(|| {
+        WellfriendError::MalformedPdf("partition apportionment exceeded replacement".into())
+    })?;
+    let mut remainder_order = (0..allocations.len()).collect::<Vec<_>>();
+    remainder_order.sort_by(|&left, &right| {
+        allocations[right]
+            .2
+            .cmp(&allocations[left].2)
+            .then_with(|| allocations[left].0.cmp(&allocations[right].0))
+    });
+    for index in remainder_order.into_iter().take(remainder_count) {
+        allocations[index].1 = allocations[index].1.checked_add(1).ok_or_else(|| {
+            WellfriendError::ResourceLimit("partition remainder allocation".into())
+        })?;
+    }
+
+    let mut grapheme_cursor = 0usize;
+    let mut scalar_cursor = 0usize;
+    let mut candidates = Vec::with_capacity(allocations.len());
+    for (source_text_object, count, _) in allocations {
+        let start = scalar_cursor;
+        let grapheme_end = grapheme_cursor
+            .checked_add(count)
+            .ok_or_else(|| WellfriendError::ResourceLimit("partition grapheme cursor".into()))?;
+        let assigned_graphemes = grapheme_scalar_lengths
+            .get(grapheme_cursor..grapheme_end)
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "partition apportionment exceeded replacement graphemes".into(),
+                )
+            })?;
+        for length in assigned_graphemes {
+            scalar_cursor = scalar_cursor.checked_add(*length).ok_or_else(|| {
+                WellfriendError::ResourceLimit("partition replacement scalar cursor".into())
+            })?;
+        }
+        grapheme_cursor = grapheme_end;
+        let slot = slots.get(&source_text_object).ok_or_else(|| {
+            WellfriendError::MalformedPdf("partition proposal lost its source slot".into())
+        })?;
+        let suggested_region = slot.regions.first().copied().flatten().filter(|region| {
+            region.iter().all(|value| value.is_finite())
+                && region[0] < region[2]
+                && region[1] < region[3]
+                && slot
+                    .regions
+                    .iter()
+                    .all(|candidate| candidate == &Some(*region))
+        });
+        candidates.push(GeneratedPaintPartitionCandidate {
+            source_text_object,
+            selected_source_scalar_count: slot.source_scalars,
+            replacement_scalar_range: [start, scalar_cursor],
+            selected_span_ids: slot.spans.clone(),
+            suggested_region,
+            start_boundary_class: proposed_partition_boundary_class(
+                &request.replacement_text,
+                start,
+            )?,
+            end_boundary_class: proposed_partition_boundary_class(
+                &request.replacement_text,
+                scalar_cursor,
+            )?,
+        });
+    }
+    if grapheme_cursor != grapheme_count
+        || scalar_cursor != request.replacement_text.chars().count()
+    {
+        return Err(WellfriendError::MalformedPdf(
+            "partition proposal did not cover the replacement exactly".into(),
+        ));
+    }
+
+    let input_sha256 = format!("{:x}", Sha256::digest(input));
+    let request_json = serde_json::to_vec(request)
+        .map_err(|error| WellfriendError::invalid_input(error.to_string()))?;
+    let request_sha256 = format!("{:x}", Sha256::digest(&request_json));
+    let replacement_sha256 = format!("{:x}", Sha256::digest(request.replacement_text.as_bytes()));
+    let proposal_payload = serde_json::to_vec(&(
+        "advanced_editing.paint-partition-proposal.v1",
+        &input_sha256,
+        &request_sha256,
+        request.page,
+        [request.logical_start, request.logical_end],
+        &replacement_sha256,
+        &candidates,
+    ))
+    .map_err(|error| WellfriendError::invalid_input(error.to_string()))?;
+    let proposal_id = format!("{:x}", Sha256::digest(proposal_payload));
+    Ok(GeneratedPaintPartitionProposal {
+        schema_version: "advanced_editing.paint-partition-proposal.v1".into(),
+        status: AdvancedEditingSupportStatus::ImplementedWithLimits,
+        input_sha256,
+        request_sha256,
+        proposal_id,
+        page: request.page,
+        logical_range: [request.logical_start, request.logical_end],
+        replacement_sha256,
+        candidates,
+        deterministic: true,
+        exact_limits: vec![
+            "Hamilton apportionment uses selected source scalar coverage and never claims author-intent recovery".into(),
+            "candidate boundaries are grapheme-safe; the apply path still requires the approved font to reproduce the unsplit OpenType result exactly".into(),
+            "regions are suggested only for one identical authored typed region across the slot; every physical region and optional final layout requires explicit approval".into(),
+        ],
+    })
+}
+
+/// Recompute the proposal against the current bytes, bind every approved
+/// region to its exact source slot, then execute the ordinary governed edit.
+pub fn apply_generated_paint_partition_proposal(
+    input: &[u8],
+    request: &MultiRunTextRangeRequest,
+    proposal: &GeneratedPaintPartitionProposal,
+    approval: &GeneratedPaintPartitionApproval,
+    font_bytes: Option<&[u8]>,
+) -> Result<(Vec<u8>, MultiRunTextEditReport)> {
+    let canonical = propose_generated_paint_partitions(input, request)?;
+    if proposal.proposal_id != canonical.proposal_id
+        || proposal.input_sha256 != canonical.input_sha256
+        || proposal.request_sha256 != canonical.request_sha256
+        || approval.proposal_id != canonical.proposal_id
+    {
+        return Err(WellfriendError::invalid_input(
+            "paint partition proposal or approval is stale, altered, or belongs to another request",
+        ));
+    }
+    let supplied_font_sha256 = font_bytes.map(|font| format!("{:x}", Sha256::digest(font)));
+    if approval.font_sha256 != supplied_font_sha256 {
+        return Err(WellfriendError::invalid_input(
+            "paint partition approval font_sha256 does not match the supplied shaping font bytes",
+        ));
+    }
+    if approval.partitions.len() != canonical.candidates.len() {
+        return Err(WellfriendError::invalid_input(
+            "paint partition approval must cover every proposed source slot exactly once",
+        ));
+    }
+    let mut approved_request = request.clone();
+    approved_request.options.paint_order_policy =
+        GeneratedPaintOrderPolicy::RequireSingleSourceTextObject;
+    approved_request.options.paint_partitions = canonical
+        .candidates
+        .iter()
+        .zip(&approval.partitions)
+        .map(|(candidate, approved)| {
+            if candidate.source_text_object != approved.source_text_object {
+                return Err(WellfriendError::invalid_input(
+                    "paint partition approval source-slot order differs from the proposal",
+                ));
+            }
+            Ok(GeneratedPaintPartition {
+                source_text_object: candidate.source_text_object,
+                replacement_scalar_range: candidate.replacement_scalar_range,
+                region: approved.region,
+                final_lines: approved.final_lines.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    edit_multi_run_text_range(input, &approved_request, font_bytes)
 }
 
 /// Replace or delete a selection spanning multiple Tj/TJ/quote operands.
@@ -1473,6 +2388,106 @@ pub fn edit_multi_run_text_range(
     input: &[u8],
     request: &MultiRunTextRangeRequest,
     font_bytes: Option<&[u8]>,
+) -> Result<(Vec<u8>, MultiRunTextEditReport)> {
+    edit_multi_run_text_range_in_scope(input, request, font_bytes, None, None, false, false)
+}
+
+/// Relocation receipts keep exact source-font names on the origin page so a
+/// later backward compaction can recreate cells which are currently painted on
+/// another page. Those names have no reachable `Tf` while the receipt is
+/// active, so ordinary reachability-based font retirement must treat the
+/// receipt as an explicit dependency.
+fn authored_relocation_receipt_fonts(
+    reader: &crate::PdfReader,
+    page: &crate::document::PdfPage,
+) -> Result<BTreeSet<String>> {
+    let page_object = reader.get_object(page.object_number, page.generation_number)?;
+    let dictionary = page_object.as_dict().ok_or_else(|| {
+        WellfriendError::MalformedPdf("authored font owner is not a page dictionary".into())
+    })?;
+    let Some(marker) = dictionary.get("WFTableRelocation") else {
+        return Ok(BTreeSet::new());
+    };
+    let marker = reader
+        .resolve(marker.clone())?
+        .as_dict()
+        .cloned()
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "authored table relocation font receipt is not a dictionary".into(),
+            )
+        })?;
+    let cells = marker
+        .get("Cells")
+        .cloned()
+        .map(|value| reader.resolve(value))
+        .transpose()?
+        .and_then(|value| value.as_array().map(|items| items.to_vec()))
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "authored table relocation font receipt has no cell array".into(),
+            )
+        })?;
+    if cells.is_empty() || cells.len() > 4096 {
+        return Err(WellfriendError::ResourceLimit(
+            "authored table relocation font receipt cell count".into(),
+        ));
+    }
+    let mut fonts = BTreeSet::new();
+    for cell in cells {
+        let cell = reader.resolve(cell)?;
+        let font = cell
+            .as_dict()
+            .and_then(|dictionary| dictionary.get_name("Font"))
+            .filter(|name| !name.is_empty() && name.len() <= 255)
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "authored table relocation cell has no valid font receipt".into(),
+                )
+            })?;
+        fonts.insert(font.to_string());
+    }
+    Ok(fonts)
+}
+
+pub(crate) fn edit_multi_run_text_range_for_authored_owner(
+    input: &[u8],
+    request: &MultiRunTextRangeRequest,
+    font_bytes: Option<&[u8]>,
+    table_identity: &str,
+    cell_identity: &str,
+    force_generated_style: bool,
+) -> Result<(Vec<u8>, MultiRunTextEditReport)> {
+    if table_identity.is_empty()
+        || table_identity.len() > 16 * 1024
+        || table_identity.contains('\0')
+        || cell_identity.is_empty()
+        || cell_identity.len() > 16 * 1024
+        || cell_identity.contains('\0')
+    {
+        return Err(WellfriendError::invalid_input(
+            "authored typed-table source owner must be bounded and nonempty",
+        ));
+    }
+    edit_multi_run_text_range_in_scope(
+        input,
+        request,
+        font_bytes,
+        None,
+        Some((table_identity, cell_identity)),
+        request.final_lines.is_some(),
+        force_generated_style,
+    )
+}
+
+pub(crate) fn edit_multi_run_text_range_in_scope(
+    input: &[u8],
+    request: &MultiRunTextRangeRequest,
+    font_bytes: Option<&[u8]>,
+    scope: Option<&form_text::Scope>,
+    required_authored_owner: Option<(&str, &str)>,
+    authored_positioned_layout: bool,
+    force_generated_preserved_style: bool,
 ) -> Result<(Vec<u8>, MultiRunTextEditReport)> {
     validate_advanced_text_options(&request.options)?;
     if !matches!(
@@ -1497,17 +2512,42 @@ pub fn edit_multi_run_text_range(
         request.options.signature_policy_override,
         "multi-run text range edit",
     )?;
-    let page = engine.document().get_page(request.page)?;
+    let page = match scope {
+        Some(scope) => scope.source_page.clone(),
+        None => engine.document().get_page(request.page)?,
+    };
     let reader = engine.document().reader();
     let resources = PageResources::from_dict(&page.resources, reader);
+    let initial_scanner_state = scope.map(|scope| scope.initial.clone()).unwrap_or_default();
+    let normalized_model = analyze_multi_run_source(&engine, &page, initial_scanner_state.clone())?;
+    let isomorphic_actual_text = isomorphic_actual_text_sources(&normalized_model.source_spans);
+    let normalized_source_spans = normalized_model
+        .source_spans
+        .into_iter()
+        .map(|span| {
+            (
+                (
+                    span.stream_object,
+                    span.stream_generation,
+                    span.byte_range[0],
+                    span.byte_range[1],
+                ),
+                span,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut selected = Vec::<SelectedMultiRunOperand>::new();
     let mut total = 0usize;
     let mut logical_text = String::new();
-    let mut candidate_insertion: Option<SelectedMultiRunOperand> = None;
+    let mut insertion_before: Option<SelectedMultiRunOperand> = None;
+    let mut insertion_after: Option<SelectedMultiRunOperand> = None;
+    let mut insertion_inside: Option<SelectedMultiRunOperand> = None;
     let mut stream_sources = BTreeMap::<(u32, u16), (Arc<PdfObject>, Arc<Vec<u8>>)>::new();
     let mut actual_text_coverages = BTreeMap::<(u32, u16, usize, usize), ActualTextCoverage>::new();
-    let mut scanner_state = ScannedTextTokenState::default();
-    for (stream_index, (number, generation)) in page.contents.iter().copied().enumerate() {
+    let mut emitted_actual_text = BTreeSet::<(u32, u16, usize, usize)>::new();
+    let mut authored_page_fonts = authored_relocation_receipt_fonts(reader, &page)?;
+    let mut position_metrics = inline_text::Metrics::new(&resources, reader);
+    for (number, generation) in page.contents.iter().copied() {
         crate::cancel::check_current_cancel("advanced multi-run stream scan")?;
         // One immutable source object and decoded buffer are shared by every
         // selected operand in this stream. Per-operand deep clones made a
@@ -1522,7 +2562,6 @@ pub fn edit_multi_run_text_range(
             },
         )?;
         if decoded_result.status != StreamDecodeStatus::Complete {
-            scanner_state = ScannedTextTokenState::default();
             continue;
         }
         let decoded = Arc::new(decoded_result.data);
@@ -1530,93 +2569,192 @@ pub fn edit_multi_run_text_range(
             (number, generation),
             (Arc::clone(&object), Arc::clone(&decoded)),
         );
-        let mut spans_here = Vec::new();
-        for token in scan_text_string_tokens_with_state_and_owner(
-            decoded.as_slice(),
-            &mut scanner_state,
-            Some((number, generation)),
-        )? {
-            let Some(font) = resources.fonts.get(&token.font_name) else {
-                continue;
-            };
-            let resolver = FontResolver::new(font, reader);
-            let text = resolver.decode_string(&token.decoded);
-            let start = total;
-            let end = start.saturating_add(text.chars().count());
-            total = end;
-            logical_text.push_str(&text);
-            for source in &token.actual_text_sources {
-                let key = (
+    }
+    for page_token in scan_page_text_string_tokens_with_metrics(
+        reader,
+        &page.contents,
+        initial_scanner_state,
+        &mut position_metrics,
+    )? {
+        let PageContentStringToken {
+            stream_index,
+            object: number,
+            generation,
+            token,
+        } = page_token;
+        let (object, decoded) = stream_sources
+            .get(&(number, generation))
+            .cloned()
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "advanced multi-run source stream disappeared after page tokenization"
+                        .to_string(),
+                )
+            })?;
+        if required_authored_owner.is_some_and(|(table, _)| {
+            token
+                .authored_typed_owner
+                .as_ref()
+                .is_some_and(|owner| owner.0 == table)
+        }) {
+            authored_page_fonts.insert(token.font_name.clone());
+        }
+        let Some(font) = resources.fonts.get(&token.font_name) else {
+            continue;
+        };
+        let resolver = FontResolver::new(font, reader);
+        let decoded_text = resolver
+            .try_decode_string(&token.decoded)
+            .map_err(WellfriendError::UnsupportedFeature)?;
+        let source_text = decoded_text.clone();
+        let text = if let Some(source) = token.actual_text_sources.last() {
+            let key = (
+                source.owner_object,
+                source.owner_generation,
+                source.value_start,
+                source.value_end,
+            );
+            if emitted_actual_text.insert(key) {
+                source.logical_text.to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            decoded_text
+        };
+        let start = total;
+        let end = start.saturating_add(text.chars().count());
+        total = end;
+        logical_text.push_str(&text);
+        for source in &token.actual_text_sources {
+            let key = (
+                source.owner_object,
+                source.owner_generation,
+                source.value_start,
+                source.value_end,
+            );
+            actual_text_coverages
+                .entry(key)
+                .and_modify(|coverage| {
+                    coverage.logical_start = coverage.logical_start.min(start);
+                    coverage.logical_end = coverage.logical_end.max(end);
+                })
+                .or_insert_with(|| ActualTextCoverage {
+                    source: source.clone(),
+                    logical_start: start,
+                    logical_end: end,
+                });
+        }
+        let mut span = MultiRunSourceSpan {
+            span_id: format!("p{}:s{stream_index}:o{}", request.page, token.token_start),
+            stream_object: number,
+            stream_generation: generation,
+            operator: token.operator.clone(),
+            tj_element: token.element,
+            byte_range: [token.token_start, token.token_end],
+            logical_range: [start, end],
+            source_text_object: 0,
+            font_resource: token.font_name.clone(),
+            font_size: token.font_size,
+            character_spacing: token.character_spacing,
+            word_spacing: token.word_spacing,
+            horizontal_scaling: token.horizontal_scaling,
+            writing_mode: i32::from(resolver.is_vertical()),
+            text_render_mode: token.text_render_mode,
+            marked_content_depth: token.marked_depth,
+            authored_typed_table: token
+                .authored_typed_owner
+                .as_ref()
+                .map(|owner| owner.0.clone()),
+            authored_typed_cell: token
+                .authored_typed_owner
+                .as_ref()
+                .map(|owner| owner.1.clone()),
+            authored_typed_region: token.authored_typed_region,
+            direct_actual_text: token
+                .actual_text_sources
+                .last()
+                .map(|source| source.logical_text.to_string()),
+            direct_actual_text_source: token.actual_text_sources.last().map(|source| {
+                format!(
+                    "{}:{}:{}:{}",
+                    source.owner_object,
+                    source.owner_generation,
+                    source.value_start,
+                    source.value_end
+                )
+            }),
+            flow_relocatable: token.flow_relocatable,
+            source_text,
+            text: text.clone(),
+        };
+        if let Some(normalized) = normalized_source_spans.get(&(
+            number,
+            generation,
+            span.byte_range[0],
+            span.byte_range[1],
+        )) {
+            span.logical_range = normalized.logical_range;
+            span.text = normalized.text.clone();
+        }
+        let [span_start, span_end] = span.logical_range;
+        let owner_matches = required_authored_owner.is_none_or(|(table, cell)| {
+            token
+                .authored_typed_owner
+                .as_ref()
+                .is_some_and(|owner| owner.0 == table && owner.1 == cell)
+        });
+        let complete_actual_text_owner = token
+            .actual_text_sources
+            .last()
+            .and_then(|source| {
+                actual_text_coverages.get(&(
                     source.owner_object,
                     source.owner_generation,
                     source.value_start,
                     source.value_end,
-                );
-                actual_text_coverages
-                    .entry(key)
-                    .and_modify(|coverage| {
-                        coverage.logical_start = coverage.logical_start.min(start);
-                        coverage.logical_end = coverage.logical_end.max(end);
-                    })
-                    .or_insert_with(|| ActualTextCoverage {
-                        source: source.clone(),
-                        logical_start: start,
-                        logical_end: end,
-                    });
-            }
-            let span = MultiRunSourceSpan {
-                span_id: format!("p{}:s{stream_index}:o{}", request.page, token.token_start),
-                stream_object: number,
-                stream_generation: generation,
-                operator: token.operator.clone(),
-                tj_element: token.element,
-                byte_range: [token.token_start, token.token_end],
-                logical_range: [start, end],
-                font_resource: token.font_name.clone(),
-                writing_mode: i32::from(resolver.is_vertical()),
-                text_render_mode: token.text_render_mode,
-                marked_content_depth: token.marked_depth,
-                text: text.clone(),
-            };
-            if request.logical_start == request.logical_end
-                && (request.logical_start == start || request.logical_start == end)
-            {
-                candidate_insertion.get_or_insert_with(|| {
-                    (
-                        number,
-                        generation,
-                        Arc::clone(&object),
-                        Arc::clone(&decoded),
-                        token.clone(),
-                        span.clone(),
-                    )
-                });
-            }
-            if request.logical_start < request.logical_end
-                && start < request.logical_end
-                && end > request.logical_start
-            {
-                if selected.len().saturating_add(spans_here.len())
-                    >= MAX_ADVANCED_EDITING_BIDI_RUNS
-                {
-                    return Err(WellfriendError::ResourceLimit(format!(
-                        "advanced_editing_closeout selected source span count exceeds {MAX_ADVANCED_EDITING_BIDI_RUNS}"
-                    )));
-                }
-                spans_here.push((token, span));
-            }
-        }
-        if !spans_here.is_empty() {
-            for (token, span) in spans_here {
-                selected.push((
+                ))
+            })
+            .is_some_and(|coverage| {
+                request.logical_start <= coverage.logical_start
+                    && request.logical_end >= coverage.logical_end
+            });
+        if owner_matches && request.logical_start == request.logical_end {
+            let candidate = || {
+                (
                     number,
                     generation,
                     Arc::clone(&object),
                     Arc::clone(&decoded),
-                    token,
-                    span,
-                ));
+                    token.clone(),
+                    span.clone(),
+                )
+            };
+            if span_start == span_end && request.logical_start == span_start {
+                // Authored empty cells deliberately retain an empty
+                // text-showing operand as a zero-width provenance carrier.
+                // It is a valid insertion anchor even though it contributes
+                // no scalar to the page-logical text.
+                insertion_inside.get_or_insert_with(candidate);
+            } else if span_start < span_end && request.logical_start == span_end {
+                insertion_before.get_or_insert_with(candidate);
+            } else if span_start < span_end && request.logical_start == span_start {
+                insertion_after.get_or_insert_with(candidate);
+            } else if span_start < request.logical_start && request.logical_start < span_end {
+                insertion_inside.get_or_insert_with(candidate);
             }
+        }
+        if owner_matches
+            && request.logical_start < request.logical_end
+            && ((span_start < request.logical_end && span_end > request.logical_start)
+                || complete_actual_text_owner)
+        {
+            if selected.len() >= MAX_ADVANCED_EDITING_BIDI_RUNS {
+                return Err(WellfriendError::ResourceLimit(format!(
+                        "advanced_editing_closeout selected source span count exceeds {MAX_ADVANCED_EDITING_BIDI_RUNS}"
+                    )));
+            }
+            selected.push((number, generation, object, decoded, token, span));
         }
     }
     if request.logical_end > total {
@@ -1625,9 +2763,35 @@ pub fn edit_multi_run_text_range(
             request.logical_start, request.logical_end
         )));
     }
+    // At an interior boundary, leading inheritance belongs to the following
+    // source run and trailing inheritance belongs to the preceding run. At a
+    // document edge the only adjacent provenance-bearing run is used. Explicit
+    // supplied and preserve-per-segment retain the historical preceding anchor.
+    let mut candidate_insertion = if request.logical_start == request.logical_end {
+        if let Some(inside) = insertion_inside {
+            Some(inside)
+        } else {
+            match request.style_policy {
+                MultiRunStylePolicy::InheritLeading => insertion_after.or(insertion_before),
+                MultiRunStylePolicy::InheritTrailing => insertion_before.or(insertion_after),
+                _ => insertion_before.or(insertion_after),
+            }
+        }
+    } else {
+        None
+    };
+    if request.logical_start == request.logical_end {
+        let insertion_byte = scalar_boundary_byte(&logical_text, request.logical_start)
+            .ok_or_else(|| WellfriendError::invalid_input("invalid insertion scalar boundary"))?;
+        if !is_grapheme_boundary(&logical_text, insertion_byte) {
+            return Err(WellfriendError::invalid_input(
+                "zero-width insertion must target a grapheme boundary",
+            ));
+        }
+    }
     if request.logical_start < request.logical_end {
         selected.sort_by_key(|item| item.5.logical_range[0]);
-        let first = selected.first().ok_or_else(|| {
+        let _first = selected.first().ok_or_else(|| {
             WellfriendError::UnsupportedFeature(
                 "advanced_editing_closeout range has no provenance-bearing source spans"
                     .to_string(),
@@ -1635,6 +2799,13 @@ pub fn edit_multi_run_text_range(
         })?;
         let mut covered_until = request.logical_start;
         for item in &selected {
+            if item.5.logical_range[0] == item.5.logical_range[1] {
+                // A non-isomorphic ActualText owner may cover several physical
+                // Tj/TJ operands while contributing its logical value once.
+                // Those later operands are still selected for source removal,
+                // but do not advance logical coverage.
+                continue;
+            }
             let overlap_start = item.5.logical_range[0].max(request.logical_start);
             let overlap_end = item.5.logical_range[1].min(request.logical_end);
             if overlap_start > covered_until || overlap_end <= overlap_start {
@@ -1659,8 +2830,35 @@ pub fn edit_multi_run_text_range(
             )
         })?;
     }
+    let paint_sources = selected
+        .iter()
+        .chain(candidate_insertion.as_ref())
+        .map(|item| (item.0, item.1, item.4.token_start))
+        .collect::<Vec<_>>();
+    let paint_slots = locate_source_paint_slots(reader, &page.contents, &paint_sources)?
+        .into_iter()
+        .map(|(slot, source)| (source, slot))
+        .collect::<BTreeMap<_, _>>();
+    for item in &mut selected {
+        item.5.source_text_object = *paint_slots
+            .get(&(item.0, item.1, item.4.token_start))
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "selected source span lost its text-object paint slot".into(),
+                )
+            })?;
+    }
+    if let Some(item) = candidate_insertion.as_mut() {
+        item.5.source_text_object = *paint_slots
+            .get(&(item.0, item.1, item.4.token_start))
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "insertion source span lost its text-object paint slot".into(),
+                )
+            })?;
+    }
     let mut named_properties = BTreeSet::<String>::new();
-    for item in &selected {
+    for item in selected.iter() {
         named_properties.extend(item.4.named_marked_properties.iter().cloned());
     }
     if let Some(anchor) = candidate_insertion.as_ref() {
@@ -1699,11 +2897,32 @@ pub fn edit_multi_run_text_range(
     // partial operands, nested BDC/BMC scopes, and multiple owner streams keep
     // their existing ParentTree identity and source ordering without cloning
     // or inventing structure elements.
-    let source_has_marked_content = !request.replacement_text.is_empty()
-        && selected
-            .iter()
-            .any(|item| item.4.marked_depth > 0);
+    let source_has_marked_content =
+        !request.replacement_text.is_empty() && selected.iter().any(|item| item.4.marked_depth > 0);
     let source_requires_inline_replacement = source_has_clipping || source_has_marked_content;
+    if !request.options.paint_partitions.is_empty() {
+        if request.replacement_text.is_empty() {
+            return Err(WellfriendError::invalid_input(
+                "deletion-only edits do not accept generated paint partitions",
+            ));
+        }
+        if selected.is_empty() {
+            return Err(WellfriendError::invalid_input(
+                "generated paint partitions require a nonempty source selection",
+            ));
+        }
+        if source_requires_inline_replacement {
+            return Err(WellfriendError::UnsupportedFeature(
+                "generated paint partitions cannot move clipping or marked-content-owned text outside its original source scope"
+                    .into(),
+            ));
+        }
+        if request.final_lines.is_some() {
+            return Err(WellfriendError::invalid_input(
+                "use each generated paint partition's final_lines instead of the request-wide final_lines",
+            ));
+        }
+    }
     let mut actual_text_cleanup_patches = Vec::<ActualTextCleanupPatch>::new();
     let mut actual_text_keys = BTreeSet::<(u32, u16, usize, usize)>::new();
     if request.logical_start < request.logical_end {
@@ -1730,14 +2949,16 @@ pub fn edit_multi_run_text_range(
                 "advanced_editing active ActualText source has no logical coverage".to_string(),
             )
         })?;
-        let decoded_source = logical_text
-            .chars()
-            .skip(coverage.logical_start)
-            .take(coverage.logical_end - coverage.logical_start)
-            .collect::<String>();
-        let replaces_complete_actual_text_scope = request.logical_start == coverage.logical_start
-            && request.logical_end == coverage.logical_end;
-        if decoded_source != coverage.source.logical_text.as_ref()
+        let replaces_complete_actual_text_scope = request.logical_start <= coverage.logical_start
+            && request.logical_end >= coverage.logical_end;
+        let source_identity = format!(
+            "{}:{}:{}:{}",
+            coverage.source.owner_object,
+            coverage.source.owner_generation,
+            coverage.source.value_start,
+            coverage.source.value_end
+        );
+        if !isomorphic_actual_text.contains(&source_identity)
             && !replaces_complete_actual_text_scope
         {
             return Err(WellfriendError::UnsupportedFeature(
@@ -1745,17 +2966,73 @@ pub fn edit_multi_run_text_range(
                     .to_string(),
             ));
         }
-        let owner = (coverage.source.owner_object, coverage.source.owner_generation);
+        let owner = (
+            coverage.source.owner_object,
+            coverage.source.owner_generation,
+        );
         stream_sources.get(&owner).ok_or_else(|| {
             WellfriendError::MalformedPdf(
                 "advanced_editing ActualText owner stream is unavailable".to_string(),
             )
         })?;
-        actual_text_cleanup_patches.push((
+        actual_text_cleanup_patches.push(ActualTextCleanupPatch {
             owner,
-            coverage.source.value_start,
-            coverage.source.value_end,
-        ));
+            value_start: coverage.source.value_start,
+            value_end: coverage.source.value_end,
+            logical_text: Arc::clone(&coverage.source.logical_text),
+            logical_range: [coverage.logical_start, coverage.logical_end],
+        });
+    }
+    if authored_positioned_layout && !request.replacement_text.is_empty() {
+        let authored_selection = if selected.is_empty() {
+            std::slice::from_ref(candidate_insertion.as_ref().ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "authored positioned insertion lost its empty owner carrier".into(),
+                )
+            })?)
+        } else {
+            selected.as_slice()
+        };
+        return edit_authored_owner_positioned_fragment(
+            input,
+            request,
+            font_bytes,
+            &page,
+            &resources,
+            scope,
+            authored_selection,
+            &stream_sources,
+            &actual_text_cleanup_patches,
+            &old_selected,
+            signature_policy,
+            force_generated_preserved_style,
+            &authored_page_fonts,
+        );
+    }
+    if selected.is_empty()
+        && !request.replacement_text.is_empty()
+        && matches!(
+            request.style_policy,
+            MultiRunStylePolicy::InheritLeading | MultiRunStylePolicy::InheritTrailing
+        )
+    {
+        return edit_zero_width_insertion_inline_source_style(
+            input,
+            request,
+            font_bytes,
+            &page,
+            &resources,
+            reader,
+            scope,
+            candidate_insertion.as_ref().ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "source-style insertion lost its provenance anchor".into(),
+                )
+            })?,
+            &stream_sources,
+            &actual_text_cleanup_patches,
+            signature_policy,
+        );
     }
     let mut stream_edits = DecodedStreamEdits::new();
     add_actual_text_cleanup_edits(
@@ -1763,7 +3040,16 @@ pub fn edit_multi_run_text_range(
         &stream_sources,
         &actual_text_cleanup_patches,
     )?;
-    for item in &selected {
+    let replacement_needs_dedicated_carrier =
+        story_carriers::needs_text_carrier(&request.replacement_text);
+    let source_order_append_route = !selected.is_empty()
+        && !source_requires_inline_replacement
+        && request.options.paint_partitions.is_empty()
+        && !request.replacement_text.is_empty()
+        && !replacement_needs_dedicated_carrier;
+    let planned_generated_font_resource = source_order_append_route
+        .then(|| deterministic_font_resource_name(reader, &page.resources));
+    for (selected_index, item) in selected.iter().enumerate() {
         let font = resources.fonts.get(&item.5.font_resource).ok_or_else(|| {
             WellfriendError::MalformedPdf(format!(
                 "advanced_editing source font /{} disappeared during range mutation",
@@ -1772,21 +3058,74 @@ pub fn edit_multi_run_text_range(
         })?;
         let overlap_start = request.logical_start.max(item.5.logical_range[0]);
         let overlap_end = request.logical_end.min(item.5.logical_range[1]);
-        let prefix_len = overlap_start.saturating_sub(item.5.logical_range[0]);
-        let suffix_start = overlap_end.saturating_sub(item.5.logical_range[0]);
         let resolver = FontResolver::new(font, reader);
-        let (prefix, selected_bytes, suffix) = split_source_text_bytes_at_scalars(
-            &resolver,
-            &item.4.decoded,
-            prefix_len,
-            suffix_start,
-        )?;
+        let source_order_carrier_bytes = if selected_index == 0 && source_order_append_route {
+            // The carrier needs one valid text-showing code, not a complete
+            // source-font encoding of the replacement: /ActualText owns the
+            // full logical value. Prefer a scalar from the new text so a
+            // generated page font is not required merely for logical order.
+            // Ambiguous reverse mappings are acceptable here because the code
+            // is nonpainting and its Unicode is explicitly overridden.
+            request.replacement_text.chars().find_map(|character| {
+                encode_with_existing_font(&resolver, &character.to_string())
+                    .ok()
+                    .and_then(|(encoded, _ambiguous)| (!encoded.is_empty()).then_some(encoded))
+            })
+        } else {
+            None
+        };
+        let complete_actual_text_owner = item
+            .4
+            .actual_text_sources
+            .last()
+            .and_then(|source| {
+                actual_text_coverages.get(&(
+                    source.owner_object,
+                    source.owner_generation,
+                    source.value_start,
+                    source.value_end,
+                ))
+            })
+            .is_some_and(|coverage| {
+                request.logical_start <= coverage.logical_start
+                    && request.logical_end >= coverage.logical_end
+            });
+        let (prefix, selected_bytes, suffix) = if complete_actual_text_owner {
+            (Vec::new(), item.4.decoded.clone(), Vec::new())
+        } else {
+            split_selected_source_operand(
+                &resolver,
+                &item.4.decoded,
+                item.5.logical_range,
+                [overlap_start, overlap_end],
+            )?
+        };
         let (edit_start, edit_end, replacement) = rewrite_source_text_destructively(
             &item.4,
             &resolver,
             &prefix,
             &selected_bytes,
             &suffix,
+            required_authored_owner.is_some()
+                && request.replacement_text.is_empty()
+                && selected_index == 0,
+            if selected_index == 0 && source_order_append_route {
+                Some(SourceOrderActualTextCarrier {
+                    logical_text: request.replacement_text.as_str(),
+                    glyph: if let Some(encoded) = source_order_carrier_bytes.as_deref() {
+                        SourceOrderCarrierGlyph::SourceEncoded(encoded)
+                    } else {
+                        SourceOrderCarrierGlyph::Generated {
+                            font_resource: planned_generated_font_resource
+                                .as_deref()
+                                .expect("append route reserves a generated font resource"),
+                            cid: 1,
+                        }
+                    },
+                })
+            } else {
+                None
+            },
         )?;
         stream_edits
             .entry((item.0, item.1))
@@ -1800,11 +3139,24 @@ pub fn edit_multi_run_text_range(
                 "advanced_editing_closeout insertion lost its source-order anchor".to_string(),
             )
         })?;
-        let actual_text = if request.logical_start == anchor.5.logical_range[0] {
-            format!("{}{}", request.replacement_text, anchor.5.text)
-        } else {
-            format!("{}{}", anchor.5.text, request.replacement_text)
-        };
+        let local_scalar = request
+            .logical_start
+            .checked_sub(anchor.5.logical_range[0])
+            .filter(|offset| *offset <= anchor.5.text.chars().count())
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "insertion caret is outside its provenance anchor".into(),
+                )
+            })?;
+        let local_byte = scalar_boundary_byte(&anchor.5.text, local_scalar).ok_or_else(|| {
+            WellfriendError::MalformedPdf("invalid insertion anchor scalar boundary".into())
+        })?;
+        let actual_text = format!(
+            "{}{}{}",
+            &anchor.5.text[..local_byte],
+            request.replacement_text,
+            &anchor.5.text[local_byte..]
+        );
         let (edit_start, edit_end, replacement) = rewrite_source_insertion_anchor_with_actual_text(
             &anchor.4,
             &[],
@@ -1824,14 +3176,19 @@ pub fn edit_multi_run_text_range(
             .2
             .push((edit_start, edit_end, replacement));
     }
-    let mut source_updates = materialize_decoded_stream_edits(
-        stream_edits,
-        "advanced_editing_closeout range source",
-    )?;
+    let mut source_updates =
+        materialize_decoded_stream_edits(stream_edits, "advanced_editing_closeout range source")?;
     if request.replacement_text.is_empty() {
-        let output = write_incremental_update(reader, source_updates)?;
+        let output = form_text::write_scope_with_protected_fonts(
+            reader,
+            &page,
+            &resources,
+            source_updates,
+            scope,
+            &authored_page_fonts,
+        )?;
         let reopened = ContentEngine::open_bytes(output.clone())?;
-        let extracted = reopened.get_page_text(request.page)?;
+        let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
         let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
         // `old_absent` is intentionally a document-wide observation, not the
         // identity proof for this edit: another, unrelated occurrence may
@@ -1843,9 +3200,9 @@ pub fn edit_multi_run_text_range(
                     .to_string(),
             ));
         }
-        return Ok((output.clone(), MultiRunTextEditReport { schema_version:"advanced_editing_closeout.multirun-form-appearance-closure.v1".to_string(), status:AdvancedEditingSupportStatus::ImplementedWithLimits, operation:"delete".to_string(), page:request.page, logical_range:[request.logical_start,request.logical_end], selected_source_spans:selected.into_iter().map(|item| item.5).collect(), style_policy:request.style_policy, replacement_text:request.replacement_text.clone(), replacement_extracts:true, old_selected_text_absent:old_absent, unrelated_text_preserved:true, reachable_source_tokens_removed:true, output_reopened:true, original_prefix_preserved:output.starts_with(input), output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:request.options.deterministic, cache_invalidation:advanced_editing_cache_invalidation(input,&output,true,false,false), exact_limits:vec!["selected source codes are absent from the current reachable stream revision; numeric TJ displacement preserves their horizontal or vertical text advance so following operands retain position".to_string(),"selection boundaries must align to complete source CMap mappings; deleting clipping text deliberately removes its selected clipping contribution".to_string(),"incremental output retains historical bytes in the earlier revision and is not a sanitizing redaction; use the full-rewrite redaction path when historical byte removal is required".to_string(),"logical/visual mapping uses bidi shaping provenance, never x-coordinate sorting; visual quad selection is accepted only after the caller resolves it to one unambiguous logical range".to_string()] }));
+        return Ok((output.clone(), MultiRunTextEditReport { schema_version:"advanced_editing_closeout.multirun-form-appearance-closure.v1".to_string(), status:AdvancedEditingSupportStatus::ImplementedWithLimits, operation:"delete".to_string(), page:request.page, logical_range:[request.logical_start,request.logical_end], selected_source_spans:selected.into_iter().map(|item| item.5).collect(), style_policy:request.style_policy, generated_font_used:false, generated_paint_order:None, generated_paint_partitions:Vec::new(), replacement_text:request.replacement_text.clone(), replacement_extracts:true, old_selected_text_absent:old_absent, unrelated_text_preserved:true, reachable_source_tokens_removed:true, output_reopened:true, original_prefix_preserved:output.starts_with(input), output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:request.options.deterministic, cache_invalidation:advanced_editing_cache_invalidation(input,&output,true,false,false), exact_limits:vec!["selected source codes are absent from the current reachable stream revision; numeric TJ displacement preserves their horizontal or vertical text advance so following operands retain position".to_string(),"selection boundaries must align to complete source CMap mappings; deleting clipping text deliberately removes its selected clipping contribution".to_string(),"incremental output retains historical bytes in the earlier revision and is not a sanitizing redaction; use the full-rewrite redaction path when historical byte removal is required".to_string(),"logical/visual mapping uses bidi shaping provenance, never x-coordinate sorting; visual quad selection is accepted only after the caller resolves it to one unambiguous logical range".to_string()] }));
     }
-    if request.style_policy == MultiRunStylePolicy::PreservePerSegment
+    if (request.style_policy != MultiRunStylePolicy::ExplicitSupplied && !selected.is_empty())
         || source_requires_inline_replacement
     {
         if selected.is_empty() {
@@ -1871,7 +3228,7 @@ pub fn edit_multi_run_text_range(
             for line in lines {
                 let visual_base = line
                     .logical_text
-                    .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']);
+                    .trim_end_matches(crate::fonts::hard_break::is_hard_break);
                 let expected_visual = if line.inserted_visual_hyphen {
                     format!("{visual_base}-")
                 } else {
@@ -1902,11 +3259,19 @@ pub fn edit_multi_run_text_range(
             }
             lines
         } else {
-            fallback_lines = vec![ExplicitLayoutLine {
-                logical_text: request.replacement_text.clone(),
-                visual_text: request.replacement_text.clone(),
-                inserted_visual_hyphen: false,
-            }];
+            // Retain mandatory boundaries without flattening CRLF or discarding
+            // blank lines. This is not implicit word wrapping or a font change.
+            fallback_lines = crate::fonts::hard_break::logical_lines(&request.replacement_text)
+                .map(|line| {
+                    let line = line?;
+                    Ok(ExplicitLayoutLine {
+                        logical_text: request.replacement_text[line.logical].to_owned(),
+                        visual_text: request.replacement_text[line.visible].to_owned(),
+                        inserted_visual_hyphen: false,
+                        bidi: None,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
             fallback_lines.as_slice()
         };
         // Preserve source styles for replacements whose length changes without
@@ -1920,39 +3285,72 @@ pub fn edit_multi_run_text_range(
         // grapheme-safe ownership decision has been made.
         let mut source_styles_by_grapheme = Vec::<(PreservedTextStyle, usize)>::new();
         let mut scalar_offset = 0usize;
-        for (selected_index, item) in selected.iter().enumerate() {
-            let token = &item.4;
-            let source_span = &item.5;
-            let mut style = preserved_style_from_token(token)?;
-            style.vertical = source_span.writing_mode == 1;
-            let selected_start = request.logical_start.max(source_span.logical_range[0]);
-            let selected_end = request.logical_end.min(source_span.logical_range[1]);
-            let selected_text = source_span
-                .text
-                .chars()
-                .skip(selected_start.saturating_sub(source_span.logical_range[0]))
-                .take(selected_end.saturating_sub(selected_start))
-                .collect::<String>();
-            let span_scalars = selected_text.chars().count();
-            let source_boundary = scalar_boundary_byte(&old_selected, scalar_offset + span_scalars)
-                .ok_or_else(|| {
-                    WellfriendError::MalformedPdf(
+        if story_carriers::needs_text_carrier(&old_selected) {
+            // A logical carrier may encode one grapheme (notably CRLF) as
+            // several zero-advance PDF operands. Operand boundaries are not
+            // style boundaries. Coalesce them only when their complete text
+            // state is identical; otherwise the source does not define a
+            // unique grapheme-level style and must still fail closed.
+            let mut owner_style = None::<PreservedTextStyle>;
+            for item in &selected {
+                let mut style = preserved_style_from_token(&item.4)?;
+                style.vertical = item.5.writing_mode == 1;
+                if owner_style.as_ref().is_some_and(|owner| owner != &style) {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "advanced_editing logical carrier spans incompatible source styles inside one grapheme"
+                            .into(),
+                    ));
+                }
+                owner_style.get_or_insert(style);
+            }
+            let owner_style = owner_style.ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "advanced_editing logical carrier has no source style owner".into(),
+                )
+            })?;
+            source_styles_by_grapheme.extend(
+                old_selected
+                    .graphemes(true)
+                    .map(|_| (owner_style.clone(), 0)),
+            );
+            scalar_offset = old_selected.chars().count();
+        } else {
+            for (selected_index, item) in selected.iter().enumerate() {
+                let token = &item.4;
+                let source_span = &item.5;
+                let mut style = preserved_style_from_token(token)?;
+                style.vertical = source_span.writing_mode == 1;
+                let selected_start = request.logical_start.max(source_span.logical_range[0]);
+                let selected_end = request.logical_end.min(source_span.logical_range[1]);
+                let selected_text = source_span
+                    .text
+                    .chars()
+                    .skip(selected_start.saturating_sub(source_span.logical_range[0]))
+                    .take(selected_end.saturating_sub(selected_start))
+                    .collect::<String>();
+                let span_scalars = selected_text.chars().count();
+                let source_boundary =
+                    scalar_boundary_byte(&old_selected, scalar_offset + span_scalars).ok_or_else(
+                        || {
+                            WellfriendError::MalformedPdf(
                         "advanced_editing preserve_per_segment cannot map source style boundary"
                             .to_string(),
                     )
-                })?;
-            if !is_grapheme_boundary(&old_selected, source_boundary) {
-                return Err(WellfriendError::UnsupportedFeature(
-                    "advanced_editing preserve_per_segment refuses a source style boundary inside a grapheme or shaping cluster"
-                        .to_string(),
-                ));
+                        },
+                    )?;
+                if !is_grapheme_boundary(&old_selected, source_boundary) {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "advanced_editing preserve_per_segment refuses a source style boundary inside a grapheme or shaping cluster"
+                            .to_string(),
+                    ));
+                }
+                source_styles_by_grapheme.extend(
+                    selected_text
+                        .graphemes(true)
+                        .map(|_| (style.clone(), selected_index)),
+                );
+                scalar_offset = scalar_offset.saturating_add(span_scalars);
             }
-            source_styles_by_grapheme.extend(
-                selected_text
-                    .graphemes(true)
-                    .map(|_| (style.clone(), selected_index)),
-            );
-            scalar_offset = scalar_offset.saturating_add(span_scalars);
         }
         if scalar_offset != old_selected.chars().count() || source_styles_by_grapheme.is_empty() {
             return Err(WellfriendError::MalformedPdf(
@@ -1971,18 +3369,40 @@ pub fn edit_multi_run_text_range(
         let mut replacement_by_selected = vec![String::new(); selected.len()];
         let mut replacement_style_spans = Vec::<PreservedStyleSpan>::new();
         let mut replacement_byte_cursor = 0usize;
-        let mut requires_generated_style_font = request.mode
-            != AdvancedTextMode::ParagraphReflowHorizontal
+        let logical_only_replacement =
+            story_carriers::needs_text_carrier(&request.replacement_text);
+        let mut requires_generated_style_font = force_generated_preserved_style
+            || request.style_policy == MultiRunStylePolicy::ExplicitSupplied
+            || !request.options.paint_partitions.is_empty()
+            || request.mode != AdvancedTextMode::ParagraphReflowHorizontal
+            || logical_only_replacement
+            || selected.iter().any(|item| {
+                item.5.writing_mode
+                    != i32::from(request.mode == AdvancedTextMode::ParagraphReflowVertical)
+            })
             || contains_rtl_or_bidi_controls(&request.replacement_text)
             || request.options.alignment == GeneratedTextAlignment::Justify
             || logical_lines.iter().any(|line| line.inserted_visual_hyphen);
         for (replacement_grapheme_index, grapheme) in replacement_graphemes.iter().enumerate() {
-            let source_grapheme_index = replacement_grapheme_index
-                .saturating_mul(source_styles_by_grapheme.len())
-                / replacement_graphemes.len();
-            let (style, selected_index) = source_styles_by_grapheme
+            let source_grapheme_index = match request.style_policy {
+                MultiRunStylePolicy::InheritLeading => 0,
+                MultiRunStylePolicy::InheritTrailing => source_styles_by_grapheme.len() - 1,
+                _ => {
+                    replacement_grapheme_index.saturating_mul(source_styles_by_grapheme.len())
+                        / replacement_graphemes.len()
+                }
+            };
+            let (style, mut selected_index) = source_styles_by_grapheme
                 [source_grapheme_index.min(source_styles_by_grapheme.len().saturating_sub(1))]
             .clone();
+            // Inheritance chooses typography, not insertion order. The full
+            // replacement stays at the first selected source occurrence.
+            if matches!(
+                request.style_policy,
+                MultiRunStylePolicy::InheritLeading | MultiRunStylePolicy::InheritTrailing
+            ) {
+                selected_index = 0;
+            }
             replacement_by_selected[selected_index].push_str(grapheme);
             let replacement_byte_end = replacement_byte_cursor.saturating_add(grapheme.len());
             replacement_style_spans.push(PreservedStyleSpan {
@@ -2001,10 +3421,8 @@ pub fn edit_multi_run_text_range(
             for character in grapheme.chars() {
                 let text = character.to_string();
                 let (encoded, ambiguous) = if requires_generated_style_font
-                    || matches!(
-                    character,
-                    '\r' | '\n' | '\u{0085}' | '\u{2028}' | '\u{2029}'
-                ) {
+                    || crate::fonts::hard_break::is_hard_break(character)
+                {
                     (Vec::new(), false)
                 } else {
                     match encode_with_existing_font(&resolver, &text) {
@@ -2016,7 +3434,7 @@ pub fn edit_multi_run_text_range(
                     }
                 };
                 debug_assert!(!ambiguous);
-                let advance = preserved_run_advance(&resolver, &encoded, &text, &style);
+                let advance = preserved_run_advance(&resolver, &encoded, &text, &style)?;
                 runs_by_scalar.push(PreservedStyledRun {
                     text,
                     encoded,
@@ -2027,10 +3445,23 @@ pub fn edit_multi_run_text_range(
         }
         let clipping_inline = source_has_clipping;
         let tagged_inline = source_has_marked_content;
+        // Different inherited typography must not be encoded under the first
+        // operand's original font by the exact-CMap inline shortcut.
+        if source_requires_inline_replacement
+            && selected.len() > 1
+            && matches!(
+                request.style_policy,
+                MultiRunStylePolicy::InheritLeading | MultiRunStylePolicy::InheritTrailing
+            )
+        {
+            requires_generated_style_font = true;
+        }
         if clipping_inline || tagged_inline {
-            if request.replacement_text.chars().any(|character| {
-                    matches!(character, '\r' | '\n' | '\u{0085}' | '\u{2028}' | '\u{2029}')
-                })
+            if !logical_only_replacement
+                && request
+                    .replacement_text
+                    .chars()
+                    .any(crate::fonts::hard_break::is_hard_break)
             {
                 return Err(WellfriendError::UnsupportedFeature(
                     "advanced_editing inline semantic replacement requires one logical line inside each original BT/ET and marked-content scope"
@@ -2038,14 +3469,41 @@ pub fn edit_multi_run_text_range(
                 ));
             }
             if requires_generated_style_font {
-                let font = font_bytes
-                    .or_else(|| get_fallback_font("Symbol"))
-                    .ok_or_else(|| {
-                        WellfriendError::UnsupportedFeature(
-                            "advanced_editing inline semantic replacement shaping font unavailable"
-                                .to_string(),
-                        )
-                    })?;
+                let inherited_owner =
+                    if request.style_policy == MultiRunStylePolicy::InheritTrailing {
+                        selected.last()
+                    } else {
+                        selected.first()
+                    };
+                let inherited_font = inherited_owner
+                    .and_then(|owner| resources.fonts.get(&owner.5.font_resource))
+                    .and_then(|dict| crate::fonts::provider::embedded_program(reader, dict));
+                let inherited_font = inherited_font.filter(|bytes| {
+                    TextShaper::shape(bytes, &request.replacement_text, ShapeOptions::default())
+                        .is_ok_and(|run| {
+                            crate::fonts::shaper::has_missing_glyphs(
+                                bytes,
+                                &request.replacement_text,
+                                &run,
+                            )
+                            .is_ok_and(|missing| !missing)
+                        })
+                });
+                let font = if logical_only_replacement {
+                    get_fallback_font("Symbol")
+                } else {
+                    font_bytes
+                        .or(inherited_font
+                            .as_deref()
+                            .filter(|bytes| ttf_parser::Face::parse(bytes, 0).is_ok()))
+                        .or_else(|| get_fallback_font("Symbol"))
+                }
+                .ok_or_else(|| {
+                    WellfriendError::UnsupportedFeature(
+                        "advanced_editing inline semantic replacement shaping font unavailable"
+                            .to_string(),
+                    )
+                })?;
                 let analysis = analyze_advanced_text_reflow(
                     &request.replacement_text,
                     request.mode,
@@ -2064,31 +3522,22 @@ pub fn edit_multi_run_text_range(
                             .to_string(),
                     )
                 })?;
-                let identity_cid_is_gid = face.tables().glyf.is_none();
                 let mut next_cid = 1u32;
                 let mut planned_glyphs = Vec::<Vec<GeneratedGlyph>>::with_capacity(selected.len());
                 let mut all_glyphs = Vec::<GeneratedGlyph>::new();
                 for text in &replacement_by_selected {
-                    let mut glyphs = generated_glyph_plan(text, request.mode, font)?;
+                    let mut glyphs = if logical_only_replacement {
+                        story_carriers::inline_glyphs(text, &face)?
+                    } else {
+                        generated_glyph_plan(text, request.mode, font)?
+                    };
                     if glyphs.iter().any(|glyph| glyph.gid == 0) {
                         return Err(WellfriendError::UnsupportedFeature(
                             "advanced_editing inline semantic replacement produced a missing glyph"
-                            .to_string(),
-                        ));
-                    }
-                    if request.mode == AdvancedTextMode::ParagraphReflowVertical
-                        && glyphs.iter().any(|glyph| {
-                            glyph.orientation == VerticalGlyphOrientation::RotateClockwise
-                                || glyph.offset_x.abs() > EPSILON
-                                || glyph.offset_y.abs() > EPSILON
-                        })
-                    {
-                        return Err(WellfriendError::UnsupportedFeature(
-                            "advanced_editing vertical inline semantic replacement requires upright glyphs with zero shaping offsets; rotated or offset glyphs require an explicit source text-matrix snapshot"
                                 .to_string(),
                         ));
                     }
-                    if !identity_cid_is_gid {
+                    if !logical_only_replacement {
                         for glyph in &mut glyphs {
                             glyph.cid = u16::try_from(next_cid).map_err(|_| {
                                 WellfriendError::ResourceLimit(
@@ -2119,34 +3568,45 @@ pub fn edit_multi_run_text_range(
                     &actual_text_cleanup_patches,
                 )?;
                 for (selected_index, item) in selected.iter().enumerate() {
-                    let font_dict = resources.fonts.get(&item.5.font_resource).ok_or_else(|| {
-                        WellfriendError::MalformedPdf(
-                            "advanced_editing inline semantic source font resource disappeared"
-                                .to_string(),
-                        )
-                    })?;
+                    let font_dict =
+                        resources.fonts.get(&item.5.font_resource).ok_or_else(|| {
+                            WellfriendError::MalformedPdf(
+                                "advanced_editing inline semantic source font resource disappeared"
+                                    .to_string(),
+                            )
+                        })?;
                     let resolver = FontResolver::new(font_dict, reader);
                     let overlap_start = request.logical_start.max(item.5.logical_range[0]);
                     let overlap_end = request.logical_end.min(item.5.logical_range[1]);
-                    let prefix_len = overlap_start.saturating_sub(item.5.logical_range[0]);
-                    let suffix_start = overlap_end.saturating_sub(item.5.logical_range[0]);
-                    let (prefix, selected_bytes, suffix) = split_source_text_bytes_at_scalars(
+                    let (prefix, selected_bytes, suffix) = split_selected_source_operand(
                         &resolver,
                         &item.4.decoded,
-                        prefix_len,
-                        suffix_start,
+                        item.5.logical_range,
+                        [overlap_start, overlap_end],
                     )?;
-                    let (edit_start, edit_end, replacement) =
-                        rewrite_source_text_inline_generated(
-                            &item.4,
-                            &resolver,
-                            &prefix,
-                            &selected_bytes,
-                            &replacement_by_selected[selected_index],
-                            &planned_glyphs[selected_index],
-                            &font_resource,
-                            &suffix,
-                        )?;
+                    let (edit_start, edit_end, replacement) = rewrite_source_text_inline_generated(
+                        &item.4,
+                        match request.style_policy {
+                            MultiRunStylePolicy::InheritLeading => &selected[0].4,
+                            MultiRunStylePolicy::InheritTrailing => &selected[selected.len() - 1].4,
+                            _ => &item.4,
+                        },
+                        &resolver,
+                        &prefix,
+                        &selected_bytes,
+                        &replacement_by_selected[selected_index],
+                        &planned_glyphs[selected_index],
+                        &font_resource,
+                        request.mode == AdvancedTextMode::ParagraphReflowVertical,
+                        match request.style_policy {
+                            MultiRunStylePolicy::InheritLeading => selected[0].5.writing_mode == 1,
+                            MultiRunStylePolicy::InheritTrailing => {
+                                selected[selected.len() - 1].5.writing_mode == 1
+                            }
+                            _ => item.5.writing_mode == 1,
+                        },
+                        &suffix,
+                    )?;
                     inline_edits
                         .entry((item.0, item.1))
                         .or_insert_with(|| {
@@ -2159,6 +3619,10 @@ pub fn edit_multi_run_text_range(
                     inline_edits,
                     "advanced_editing inline generated semantic source",
                 )?;
+                if logical_only_replacement {
+                    let mut used_codes = BTreeSet::new();
+                    all_glyphs.retain(|glyph| used_codes.insert(glyph.cid));
+                }
                 let mut changed = build_type0_font_objects(
                     font,
                     &all_glyphs,
@@ -2170,6 +3634,18 @@ pub fn edit_multi_run_text_range(
                     base + 4,
                     base + 5,
                 )?;
+                if logical_only_replacement {
+                    let dict = changed
+                        .iter_mut()
+                        .find(|object| object.number == base + 5)
+                        .and_then(|object| object.object.as_dict_mut())
+                        .ok_or_else(|| {
+                            WellfriendError::MalformedPdf(
+                                "inline logical carrier font missing".into(),
+                            )
+                        })?;
+                    dict.insert("WFLogicalLineCarrier", PdfObject::Integer(1));
+                }
                 changed.extend(source_updates);
                 install_generated_font_in_selected_form_updates(
                     reader,
@@ -2181,7 +3657,8 @@ pub fn edit_multi_run_text_range(
                 let page_object = reader.get_object(page.object_number, page.generation_number)?;
                 let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
                     WellfriendError::MalformedPdf(
-                        "advanced_editing inline semantic page object is not a dictionary".to_string(),
+                        "advanced_editing inline semantic page object is not a dictionary"
+                            .to_string(),
                     )
                 })?;
                 let mut page_resources = page.resources.clone();
@@ -2201,9 +3678,9 @@ pub fn edit_multi_run_text_range(
                     generation: page.generation_number,
                     object: PdfObject::Dictionary(page_dict),
                 });
-                let output = write_incremental_update(reader, changed)?;
+                let output = form_text::write_scope(reader, &page, &resources, changed, scope)?;
                 let reopened = ContentEngine::open_bytes(output.clone())?;
-                let extracted = reopened.get_page_text(request.page)?;
+                let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
                 let replacement_extracts = extracted.contains(&request.replacement_text)
                     || layout_extraction_equivalent(&extracted, &request.replacement_text);
                 let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
@@ -2225,6 +3702,9 @@ pub fn edit_multi_run_text_range(
                     logical_range: [request.logical_start, request.logical_end],
                     selected_source_spans: selected.iter().map(|item| item.5.clone()).collect(),
                     style_policy: request.style_policy,
+                    generated_font_used: true,
+                    generated_paint_order: None,
+                    generated_paint_partitions: Vec::new(),
                     replacement_text: request.replacement_text.clone(),
                     replacement_extracts,
                     old_selected_text_absent: old_absent,
@@ -2253,19 +3733,18 @@ pub fn edit_multi_run_text_range(
             for (selected_index, item) in selected.iter().enumerate() {
                 let font_dict = resources.fonts.get(&item.5.font_resource).ok_or_else(|| {
                     WellfriendError::MalformedPdf(
-                        "advanced_editing inline semantic source font resource disappeared".to_string(),
+                        "advanced_editing inline semantic source font resource disappeared"
+                            .to_string(),
                     )
                 })?;
                 let resolver = FontResolver::new(font_dict, reader);
                 let overlap_start = request.logical_start.max(item.5.logical_range[0]);
                 let overlap_end = request.logical_end.min(item.5.logical_range[1]);
-                let prefix_len = overlap_start.saturating_sub(item.5.logical_range[0]);
-                let suffix_start = overlap_end.saturating_sub(item.5.logical_range[0]);
-                let (prefix, selected_bytes, suffix) = split_source_text_bytes_at_scalars(
+                let (prefix, selected_bytes, suffix) = split_selected_source_operand(
                     &resolver,
                     &item.4.decoded,
-                    prefix_len,
-                    suffix_start,
+                    item.5.logical_range,
+                    [overlap_start, overlap_end],
                 )?;
                 let (replacement_bytes, ambiguous) =
                     encode_with_existing_font(&resolver, &replacement_by_selected[selected_index])?;
@@ -2295,9 +3774,9 @@ pub fn edit_multi_run_text_range(
                 inline_edits,
                 "advanced_editing inline semantic source",
             )?;
-            let output = write_incremental_update(reader, source_updates)?;
+            let output = form_text::write_scope(reader, &page, &resources, source_updates, scope)?;
             let reopened = ContentEngine::open_bytes(output.clone())?;
-            let extracted = reopened.get_page_text(request.page)?;
+            let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
             let replacement_extracts = extracted.contains(&request.replacement_text)
                 || layout_extraction_equivalent(&extracted, &request.replacement_text);
             let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
@@ -2319,6 +3798,9 @@ pub fn edit_multi_run_text_range(
                 logical_range: [request.logical_start, request.logical_end],
                 selected_source_spans: selected.iter().map(|item| item.5.clone()).collect(),
                 style_policy: request.style_policy,
+                generated_font_used: false,
+                generated_paint_order: None,
+                generated_paint_partitions: Vec::new(),
                 replacement_text: request.replacement_text.clone(),
                 replacement_extracts,
                 old_selected_text_absent: old_absent,
@@ -2359,6 +3841,22 @@ pub fn edit_multi_run_text_range(
                         .to_string(),
                 ));
             }
+            if !request.options.paint_partitions.is_empty() {
+                return edit_partitioned_generated_reflow(
+                    input,
+                    request,
+                    font,
+                    &page,
+                    &resources,
+                    reader,
+                    scope,
+                    source_updates,
+                    &selected,
+                    &old_selected,
+                    signature_policy,
+                    Some(&replacement_style_spans),
+                );
+            }
             let mut layout = layout_generated_explicit_lines(
                 logical_lines,
                 request.mode,
@@ -2369,16 +3867,23 @@ pub fn edit_multi_run_text_range(
             let mut line_byte_base = 0usize;
             for (line, glyphs) in logical_lines.iter().zip(layout.iter_mut()) {
                 for glyph in glyphs {
-                    glyph.logical_byte_start = glyph
-                        .logical_byte_start
-                        .saturating_add(line_byte_base);
+                    glyph.logical_byte_start =
+                        glyph.logical_byte_start.saturating_add(line_byte_base);
                 }
                 line_byte_base = line_byte_base.saturating_add(line.logical_text.len());
             }
             let glyphs = layout.iter().flatten().cloned().collect::<Vec<_>>();
+            let generated_owns_logical_text =
+                !selected.is_empty() && replacement_needs_dedicated_carrier;
+            if !generated_owns_logical_text && glyphs.first().map(|glyph| glyph.cid) != Some(1) {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "advanced_editing source-order logical replacement requires at least one generated style glyph carrier"
+                        .to_string(),
+                ));
+            }
             let base = reserve_advanced_object_block(
                 reader,
-                8,
+                8 + story_carriers::OBJECT_COUNT,
                 "advanced_editing generated per-segment styles",
             )?;
             let isolation_prefix_number = base + 6;
@@ -2396,15 +3901,28 @@ pub fn edit_multi_run_text_range(
                 base + 4,
                 base + 5,
             )?);
-            let (generated_content, _line_adjustments) =
-                serialize_generated_preserved_styles(
-                    &layout,
-                    &replacement_style_spans,
-                    &font_resource,
-                    &request.options,
-                    request.mode == AdvancedTextMode::ParagraphReflowVertical,
-                    &request.replacement_text,
-                )?;
+            let (generated_content, _line_adjustments) = serialize_generated_preserved_styles(
+                &layout,
+                &replacement_style_spans,
+                &font_resource,
+                &request.options,
+                request.mode == AdvancedTextMode::ParagraphReflowVertical,
+                None,
+            )?;
+            let (generated_content, logical_fonts) = story_carriers::attach_generated(
+                generated_content,
+                &request.replacement_text,
+                request.mode == AdvancedTextMode::ParagraphReflowVertical,
+                &request.options,
+                base + 8,
+                &mut changed,
+                generated_owns_logical_text,
+            )?;
+            let generated_content = if generated_owns_logical_text {
+                generated_content
+            } else {
+                wrap_generated_visual_as_artifact(generated_content)
+            };
             let generated_content = isolated_appended_content(generated_content);
             let generated = flate_encode_cancellable(generated_content.as_bytes(), 6)?;
             let mut generated_dict = crate::PdfDictionary::empty();
@@ -2438,25 +3956,45 @@ pub fn edit_multi_run_text_range(
                     generation: 0,
                 },
             );
+            story_carriers::install(&logical_fonts, &mut fonts)?;
             page_resources.insert("Font", PdfObject::Dictionary(fonts));
             page_dict.insert("Resources", PdfObject::Dictionary(page_resources));
-            let contents = isolated_page_contents(
+            let paint_sources = selected
+                .iter()
+                .map(|item| (item.0, item.1, item.4.token_start))
+                .collect::<Vec<_>>();
+            let generated_paint_order = anchor_generated_reflow_for_sources(
+                reader,
                 &page.contents,
-                isolation_prefix_number,
+                &mut changed,
+                &paint_sources,
+                request.options.paint_order_policy,
                 content_number,
-            );
+                isolation_prefix_number,
+            )?;
+            let contents = original_page_contents(&page.contents);
             page_dict.insert("Contents", PdfObject::Array(contents));
             changed.push(IncrementalObject {
                 number: page.object_number,
                 generation: page.generation_number,
                 object: PdfObject::Dictionary(page_dict),
             });
-            let output = write_incremental_update(reader, changed)?;
+            let output = form_text::write_scope(reader, &page, &resources, changed, scope)?;
             let reopened = ContentEngine::open_bytes(output.clone())?;
-            let extracted = reopened.get_page_text(request.page)?;
+            let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
             let replacement_extracts = extracted.contains(&request.replacement_text)
                 || layout_extraction_equivalent(&extracted, &request.replacement_text);
             let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
+            if !logical_fonts.is_empty() {
+                story_carriers::verify_generated(
+                    &reopened,
+                    &form_text::output_page(&reopened, request.page, scope)?,
+                    &logical_fonts,
+                    &request.replacement_text,
+                    request.mode == AdvancedTextMode::ParagraphReflowVertical,
+                    generated_owns_logical_text,
+                )?;
+            }
             if !replacement_extracts || !output.starts_with(input) {
                 return Err(WellfriendError::MalformedPdf(
                     "advanced_editing generated per-segment save/reopen/extraction proof failed"
@@ -2471,6 +4009,9 @@ pub fn edit_multi_run_text_range(
                 logical_range: [request.logical_start, request.logical_end],
                 selected_source_spans: selected.iter().map(|item| item.5.clone()).collect(),
                 style_policy: request.style_policy,
+                generated_font_used: true,
+                generated_paint_order: Some(generated_paint_order),
+                generated_paint_partitions: Vec::new(),
                 replacement_text: request.replacement_text.clone(),
                 replacement_extracts,
                 old_selected_text_absent: old_absent,
@@ -2485,7 +4026,7 @@ pub fn edit_multi_run_text_range(
                 cache_invalidation: advanced_editing_cache_invalidation(input, &output, true, false, false),
                 exact_limits: vec![
                     "RTL and vertical replacements are shaped with the approved embedded Type0 font while font size, spacing, scaling, rise, render mode, and exact source paint commands remain assigned per replacement grapheme".to_string(),
-                    "HarfBuzz glyph offsets and bidi visual order are positioned explicitly; one ActualText span preserves the requested logical order".to_string(),
+                    "HarfBuzz glyph offsets and bidi visual order are positioned explicitly; a nonpainting source-order ActualText carrier owns the requested logical text while the relocated generated glyphs are an Artifact".to_string(),
                     "source font-family identity is substituted only for the shaped replacement because arbitrary source PDF encodings are not shaping fonts".to_string(),
                 ],
             }));
@@ -2496,23 +4037,35 @@ pub fn edit_multi_run_text_range(
             &request.options,
             request.mode,
         )?;
-        let generated_content = wrap_generated_visual_with_actual_text(
-            generated_content,
-            &request.replacement_text,
-        );
-        let generated_content = isolated_appended_content(generated_content);
         let append_base = reserve_advanced_object_block(
             reader,
-            2,
+            2 + story_carriers::OBJECT_COUNT,
             "advanced_editing preserve_per_segment append isolation",
         )?;
+        let mut changed = source_updates;
+        let generated_owns_logical_text =
+            !selected.is_empty() && replacement_needs_dedicated_carrier;
+        let (generated_content, logical_fonts) = story_carriers::attach_generated(
+            generated_content,
+            &request.replacement_text,
+            request.mode == AdvancedTextMode::ParagraphReflowVertical,
+            &request.options,
+            append_base + 2,
+            &mut changed,
+            generated_owns_logical_text,
+        )?;
+        let generated_content = if generated_owns_logical_text {
+            generated_content
+        } else {
+            wrap_generated_visual_as_artifact(generated_content)
+        };
+        let generated_content = isolated_appended_content(generated_content);
         let isolation_prefix_number = append_base;
         let content_number = append_base + 1;
         let generated = flate_encode_cancellable(generated_content.as_bytes(), 6)?;
         let mut generated_dict = crate::PdfDictionary::empty();
         generated_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
         generated_dict.insert("Length", PdfObject::Integer(generated.len() as i64));
-        let mut changed = source_updates;
         changed.push(IncrementalObject {
             number: content_number,
             generation: 0,
@@ -2530,25 +4083,52 @@ pub fn edit_multi_run_text_range(
                 "advanced_editing preserve_per_segment page object is not a dictionary".to_string(),
             )
         })?;
-        let contents = isolated_page_contents(
+        if !logical_fonts.is_empty() {
+            let mut page_resources = page.resources.clone();
+            let mut fonts = resolve_advanced_editing_dict(page_resources.get("Font"), reader)
+                .unwrap_or_else(crate::PdfDictionary::empty);
+            story_carriers::install(&logical_fonts, &mut fonts)?;
+            page_resources.insert("Font", PdfObject::Dictionary(fonts));
+            page_dict.insert("Resources", PdfObject::Dictionary(page_resources));
+        }
+        let paint_sources = selected
+            .iter()
+            .map(|item| (item.0, item.1, item.4.token_start))
+            .collect::<Vec<_>>();
+        let generated_paint_order = anchor_generated_reflow_for_sources(
+            reader,
             &page.contents,
-            isolation_prefix_number,
+            &mut changed,
+            &paint_sources,
+            request.options.paint_order_policy,
             content_number,
-        );
+            isolation_prefix_number,
+        )?;
+        let contents = original_page_contents(&page.contents);
         page_dict.insert("Contents", PdfObject::Array(contents));
         changed.push(IncrementalObject {
             number: page.object_number,
             generation: page.generation_number,
             object: PdfObject::Dictionary(page_dict),
         });
-        let output = write_incremental_update(reader, changed)?;
+        let output = form_text::write_scope(reader, &page, &resources, changed, scope)?;
         let reopened = ContentEngine::open_bytes(output.clone())?;
-        let extracted = reopened.get_page_text(request.page)?;
+        let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
         let replacement_extracts = extracted.contains(&request.replacement_text)
             || layout_extraction_equivalent(&extracted, &request.replacement_text);
         let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
         // Do not reject an otherwise exact source edit merely because the same
         // old text also exists at an unrelated occurrence on the page.
+        if !logical_fonts.is_empty() {
+            story_carriers::verify_generated(
+                &reopened,
+                &form_text::output_page(&reopened, request.page, scope)?,
+                &logical_fonts,
+                &request.replacement_text,
+                request.mode == AdvancedTextMode::ParagraphReflowVertical,
+                generated_owns_logical_text,
+            )?;
+        }
         if !replacement_extracts || !output.starts_with(input) {
             return Err(WellfriendError::MalformedPdf(
                 "advanced_editing preserve_per_segment save/reopen/extraction proof failed"
@@ -2563,6 +4143,9 @@ pub fn edit_multi_run_text_range(
             logical_range: [request.logical_start, request.logical_end],
             selected_source_spans: selected.iter().map(|item| item.5.clone()).collect(),
             style_policy: request.style_policy,
+            generated_font_used: false,
+            generated_paint_order: Some(generated_paint_order),
+            generated_paint_partitions: Vec::new(),
             replacement_text: request.replacement_text.clone(),
             replacement_extracts,
             old_selected_text_absent: old_absent,
@@ -2578,7 +4161,7 @@ pub fn edit_multi_run_text_range(
             exact_limits: vec![
                 "preserve_per_segment supports exact source CMap encoding and horizontal layout; changed-length replacements assign each complete replacement grapheme to a deterministic proportional source-style owner without flattening styles or splitting a source grapheme".to_string(),
                 "font resource, font size, character/word spacing, horizontal scaling, rise, render mode, and exact source Device, calibrated, ICC, spot, DeviceN, or Pattern paint commands are replayed from each source text-showing operand".to_string(),
-                "selected source codes are physically absent from reachable content; equivalent TJ displacement preserves following positions and the positioned visual replacement carries logical ActualText once".to_string(),
+                "selected source codes are physically absent from reachable content; a nonpainting source-order ActualText carrier and exact TJ displacement preserve logical order and following positions while relocated visual glyphs are an Artifact".to_string(),
             ],
         }));
     }
@@ -2610,44 +4193,51 @@ pub fn edit_multi_run_text_range(
             "advanced_editing_closeout replacement has missing glyph clusters in selected shaping font".to_string(),
         ));
     }
-    let layout = if let Some(lines) = request.final_lines.as_deref() {
-        if lines.is_empty()
-            || lines
-                .iter()
-                .map(|line| line.logical_text.as_str())
-                .collect::<String>()
-                != request.replacement_text
-        {
-            return Err(WellfriendError::invalid_input(
-                "advanced_editing_closeout explicit final lines must concatenate exactly to replacement text",
-            ));
-        }
-        for line in lines {
-            let visual_base = line
-                .logical_text
-                .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']);
-            let allowed_visual = if line.inserted_visual_hyphen {
-                format!("{visual_base}-")
-            } else {
-                visual_base.to_string()
-            };
-            if line.visual_text != allowed_visual {
-                return Err(WellfriendError::UnsupportedFeature(
-                    "advanced_editing_closeout visual final layout permits only trailing mandatory separators and one end-of-line dictionary hyphen"
-                        .to_string(),
-                ));
-            }
-        }
-        layout_generated_explicit_lines(lines, request.mode, font, &request.options, None)?
-    } else {
-        let glyphs = generated_glyph_plan(&request.replacement_text, request.mode, font)?;
-        layout_generated_glyphs(&glyphs, request.mode, &request.options)?
-    };
+    if !request.options.paint_partitions.is_empty() {
+        return edit_partitioned_generated_reflow(
+            input,
+            request,
+            font,
+            &page,
+            &resources,
+            reader,
+            scope,
+            source_updates,
+            &selected,
+            &old_selected,
+            signature_policy,
+            None,
+        );
+    }
+    let layout = layout_generated_replacement(
+        &request.replacement_text,
+        request.final_lines.as_deref(),
+        request.mode,
+        font,
+        &request.options,
+    )?;
     let glyphs = layout.iter().flatten().cloned().collect::<Vec<_>>();
-    let base = reserve_advanced_object_block(reader, 8, "advanced_editing multi-run edit")?;
+    let generated_owns_logical_text = !selected.is_empty() && replacement_needs_dedicated_carrier;
+    if !selected.is_empty()
+        && !generated_owns_logical_text
+        && glyphs.first().map(|glyph| glyph.cid) != Some(1)
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "advanced_editing source-order logical replacement requires at least one generated glyph carrier"
+                .to_string(),
+        ));
+    }
+    let base = reserve_advanced_object_block(
+        reader,
+        8 + story_carriers::OBJECT_COUNT,
+        "advanced_editing multi-run edit",
+    )?;
     let isolation_prefix_number = base + 6;
     let content_number = base + 7;
-    let font_resource = deterministic_font_resource_name(reader, &page.resources);
+    let font_resource = match planned_generated_font_resource {
+        Some(font_resource) => font_resource,
+        None => deterministic_font_resource_name(reader, &page.resources),
+    };
     let mut changed = source_updates;
     changed.extend(build_type0_font_objects(
         font,
@@ -2660,19 +4250,31 @@ pub fn edit_multi_run_text_range(
         base + 4,
         base + 5,
     )?);
-    let insertion_uses_source_order_actual_text = selected.is_empty();
     let (generated_content, _line_adjustments) = serialize_generated_text(
         &layout,
         &font_resource,
         &request.options,
         request.mode == AdvancedTextMode::ParagraphReflowVertical,
         None,
-        (!insertion_uses_source_order_actual_text).then_some(request.replacement_text.as_str()),
+        None,
     )?;
-    let generated_content = if insertion_uses_source_order_actual_text {
-        wrap_generated_visual_as_artifact(generated_content)
-    } else {
+    let (generated_content, logical_fonts) = story_carriers::attach_generated(
+        generated_content,
+        &request.replacement_text,
+        request.mode == AdvancedTextMode::ParagraphReflowVertical,
+        &request.options,
+        base + 8,
+        &mut changed,
+        generated_owns_logical_text,
+    )?;
+    // Logical ownership remains at the original source position: insertion
+    // uses its existing source-order anchor, while replacement injects a new
+    // empty ActualText carrier into the first selected operand. The relocated
+    // Type0 glyph stream is therefore always visual-only.
+    let generated_content = if generated_owns_logical_text {
         generated_content
+    } else {
+        wrap_generated_visual_as_artifact(generated_content)
     };
     let generated_content = isolated_appended_content(generated_content);
     let generated = flate_encode_cancellable(generated_content.as_bytes(), 6)?;
@@ -2706,22 +4308,33 @@ pub fn edit_multi_run_text_range(
             generation: 0,
         },
     );
+    story_carriers::install(&logical_fonts, &mut fonts)?;
     page_resources.insert("Font", PdfObject::Dictionary(fonts));
     page_dict.insert("Resources", PdfObject::Dictionary(page_resources));
-    let contents = isolated_page_contents(
+    let paint_sources = selected
+        .iter()
+        .chain(candidate_insertion.as_ref())
+        .map(|item| (item.0, item.1, item.4.token_start))
+        .collect::<Vec<_>>();
+    let generated_paint_order = anchor_generated_reflow_for_sources(
+        reader,
         &page.contents,
-        isolation_prefix_number,
+        &mut changed,
+        &paint_sources,
+        request.options.paint_order_policy,
         content_number,
-    );
+        isolation_prefix_number,
+    )?;
+    let contents = original_page_contents(&page.contents);
     page_dict.insert("Contents", PdfObject::Array(contents));
     changed.push(IncrementalObject {
         number: page.object_number,
         generation: page.generation_number,
         object: PdfObject::Dictionary(page_dict),
     });
-    let output = write_incremental_update(reader, changed)?;
+    let output = form_text::write_scope(reader, &page, &resources, changed, scope)?;
     let reopened = ContentEngine::open_bytes(output.clone())?;
-    let extracted = reopened.get_page_text(request.page)?;
+    let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
     let replacement_extracts = request.replacement_text.is_empty()
         || extracted.contains(&request.replacement_text)
         || request
@@ -2732,13 +4345,987 @@ pub fn edit_multi_run_text_range(
     // Global text absence is useful diagnostics but cannot identify the
     // selected occurrence when duplicate text exists.  Occurrence identity is
     // carried by the immutable source spans above.
+    if !logical_fonts.is_empty() {
+        story_carriers::verify_generated(
+            &reopened,
+            &form_text::output_page(&reopened, request.page, scope)?,
+            &logical_fonts,
+            &request.replacement_text,
+            request.mode == AdvancedTextMode::ParagraphReflowVertical,
+            generated_owns_logical_text,
+        )?;
+    }
     if !replacement_extracts || !output.starts_with(input) {
         return Err(WellfriendError::MalformedPdf(
             "advanced_editing_closeout multi-run save/reopen/extract proof failed".to_string(),
         ));
     }
     let removed_selected_source = !selected.is_empty();
-    Ok((output.clone(), MultiRunTextEditReport { schema_version:"advanced_editing_closeout.multirun-form-appearance-closure.v1".to_string(), status:AdvancedEditingSupportStatus::ImplementedWithLimits, operation:if request.replacement_text.is_empty(){"delete".to_string()} else if old_selected.is_empty(){"insert".to_string()} else {"replace".to_string()}, page:request.page, logical_range:[request.logical_start,request.logical_end], selected_source_spans:selected.into_iter().map(|item| item.5).collect(), style_policy:request.style_policy, replacement_text:request.replacement_text.clone(), replacement_extracts, old_selected_text_absent:old_absent, unrelated_text_preserved:true, reachable_source_tokens_removed:removed_selected_source, output_reopened:true, original_prefix_preserved:output.starts_with(input), output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:request.options.deterministic, cache_invalidation:advanced_editing_cache_invalidation(input,&output,true,false,false), exact_limits:vec!["logical source selections may cross decoded string-token and page-content-stream boundaries; selected source codes are removed and equivalent numeric TJ displacement preserves the original writing-axis advance".to_string(),"the positioned generated Type0 replacement carries logical ActualText directly; zero-width insertion retains the source-order anchor carrier because no selected source code exists to remove".to_string(),"selection boundaries must align to complete source CMap mappings; clipping-mode deletion removes the selected clipping contribution, while nonempty clipping replacement is replayed by the preserved-style route".to_string(),"incremental editing removes selected codes from the current reachable revision but is not historical-byte sanitization".to_string()] }))
+    Ok((output.clone(), MultiRunTextEditReport { schema_version:"advanced_editing_closeout.multirun-form-appearance-closure.v1".to_string(), status:AdvancedEditingSupportStatus::ImplementedWithLimits, operation:if request.replacement_text.is_empty(){"delete".to_string()} else if old_selected.is_empty(){"insert".to_string()} else {"replace".to_string()}, page:request.page, logical_range:[request.logical_start,request.logical_end], selected_source_spans:selected.into_iter().map(|item| item.5).collect(), style_policy:request.style_policy, generated_font_used:true, generated_paint_order:Some(generated_paint_order), generated_paint_partitions:Vec::new(), replacement_text:request.replacement_text.clone(), replacement_extracts, old_selected_text_absent:old_absent, unrelated_text_preserved:true, reachable_source_tokens_removed:removed_selected_source, output_reopened:true, original_prefix_preserved:output.starts_with(input), output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:request.options.deterministic, cache_invalidation:advanced_editing_cache_invalidation(input,&output,true,false,false), exact_limits:vec!["logical source selections may cross decoded string-token and page-content-stream boundaries; selected source codes are removed and equivalent numeric TJ displacement preserves the original writing-axis advance".to_string(),"replacement Unicode is owned by a positioned source-order ActualText carrier while the generated Type0 glyph stream is marked as an Artifact; zero-width insertion retains its existing source-order anchor because no selected source code exists to remove".to_string(),"selection boundaries must align to complete source CMap mappings; clipping-mode deletion removes the selected clipping contribution, while nonempty clipping replacement is replayed by the preserved-style route".to_string(),"incremental editing removes selected codes from the current reachable revision but is not historical-byte sanitization".to_string()] }))
+}
+
+fn scalar_range_to_bytes(
+    text: &str,
+    scalar_offsets: &[usize],
+    range: [usize; 2],
+) -> Result<std::ops::Range<usize>> {
+    let start = scalar_offsets.get(range[0]).copied().ok_or_else(|| {
+        WellfriendError::invalid_input("paint partition scalar start is outside replacement text")
+    })?;
+    let end = scalar_offsets.get(range[1]).copied().ok_or_else(|| {
+        WellfriendError::invalid_input("paint partition scalar end is outside replacement text")
+    })?;
+    if end > text.len() || start > end {
+        return Err(WellfriendError::invalid_input(
+            "paint partition scalar range is reversed or outside replacement text",
+        ));
+    }
+    Ok(start..end)
+}
+
+fn grapheme_safe_paint_partition_boundary(
+    text: &str,
+    scalar_offsets: &[usize],
+    scalar: usize,
+) -> Result<bool> {
+    let total = scalar_offsets.len().saturating_sub(1);
+    if scalar == 0 || scalar == total {
+        return Ok(true);
+    }
+    let byte = scalar_offsets.get(scalar).copied().ok_or_else(|| {
+        WellfriendError::invalid_input("paint partition boundary is outside replacement text")
+    })?;
+    Ok(is_grapheme_boundary(text, byte))
+}
+
+/// A caller-approved paint split may change where glyphs are painted, but it
+/// must not change the OpenType result. Shape each hard line once as a whole,
+/// then shape the exact partition pieces with the whole paragraph's resolved
+/// bidi and non-emitting joining context. A boundary is accepted only when the
+/// per-piece glyph IDs, clusters, advances and offsets equal the corresponding
+/// slice of the unsplit line. This catches ligatures, kerning and contextual
+/// substitutions which cannot safely be divided between paint slots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PaintPartitionShapedGlyph {
+    glyph_id: u16,
+    cluster: u32,
+    advance: u64,
+    offset_x: u64,
+    offset_y: u64,
+    rotate_clockwise: bool,
+    vertical_alternate: bool,
+    cross_advance: u64,
+}
+
+fn paint_partition_shape_signature(
+    font: &[u8],
+    text: &str,
+    bidi: &crate::fonts::shaper::LineBidi,
+    mode: AdvancedTextMode,
+) -> Result<Vec<PaintPartitionShapedGlyph>> {
+    if mode == AdvancedTextMode::ParagraphReflowVertical {
+        return Ok(
+            crate::fonts::vertical::shape_resolved(font, text, bidi, &Default::default())?
+                .into_iter()
+                .map(|glyph| PaintPartitionShapedGlyph {
+                    glyph_id: glyph.glyph.glyph_id,
+                    cluster: glyph.glyph.cluster,
+                    advance: glyph.glyph.advance.to_bits(),
+                    offset_x: glyph.glyph.offset_x.to_bits(),
+                    offset_y: glyph.glyph.offset_y.to_bits(),
+                    rotate_clockwise: glyph.rotate_clockwise,
+                    vertical_alternate: glyph.vertical_alternate,
+                    cross_advance: glyph.cross_advance.to_bits(),
+                })
+                .collect(),
+        );
+    }
+    Ok(
+        TextShaper::shape_resolved(font, text, bidi, &Default::default())?
+            .glyphs
+            .into_iter()
+            .map(|glyph| PaintPartitionShapedGlyph {
+                glyph_id: glyph.glyph_id,
+                cluster: glyph.cluster,
+                advance: glyph.advance.to_bits(),
+                offset_x: glyph.offset_x.to_bits(),
+                offset_y: glyph.offset_y.to_bits(),
+                rotate_clockwise: false,
+                vertical_alternate: false,
+                cross_advance: 0.0f64.to_bits(),
+            })
+            .collect(),
+    )
+}
+
+fn validate_contextual_paint_partition_boundaries(
+    text: &str,
+    boundary_bytes: &[usize],
+    mode: AdvancedTextMode,
+    font: &[u8],
+) -> Result<()> {
+    if text.is_empty() || boundary_bytes.is_empty() {
+        return Ok(());
+    }
+    let shape_options = ShapeOptions {
+        direction: Some(if mode == AdvancedTextMode::ParagraphReflowRtl {
+            TextDirection::RightToLeft
+        } else {
+            TextDirection::LeftToRight
+        }),
+    };
+    let paragraph = crate::fonts::shaper::ParagraphBidi::new(text, shape_options)?;
+    for hard_line in crate::fonts::hard_break::logical_lines(text) {
+        crate::cancel::check_current_cancel("paint partition shaping equivalence")?;
+        let line = hard_line?.visible;
+        let mut cuts = boundary_bytes
+            .iter()
+            .copied()
+            .filter(|boundary| line.start < *boundary && *boundary < line.end)
+            .collect::<Vec<_>>();
+        cuts.sort_unstable();
+        cuts.dedup();
+        if cuts.is_empty() {
+            continue;
+        }
+        let whole_bidi = paragraph.line(line.clone())?;
+        let whole = paint_partition_shape_signature(font, &text[line.clone()], &whole_bidi, mode)?;
+        let mut edges = Vec::with_capacity(cuts.len() + 2);
+        edges.push(line.start);
+        edges.extend(cuts.iter().copied());
+        edges.push(line.end);
+        for edge in edges.windows(2) {
+            let segment = edge[0]..edge[1];
+            let segment_bidi = paragraph.line(segment.clone())?;
+            let shaped =
+                paint_partition_shape_signature(font, &text[segment.clone()], &segment_bidi, mode)?;
+            let local_start = u32::try_from(segment.start - line.start).map_err(|_| {
+                WellfriendError::ResourceLimit("paint partition line offset exceeds u32".into())
+            })?;
+            let local_end = u32::try_from(segment.end - line.start).map_err(|_| {
+                WellfriendError::ResourceLimit("paint partition line offset exceeds u32".into())
+            })?;
+            let expected = whole
+                .iter()
+                .filter(|glyph| local_start <= glyph.cluster && glyph.cluster < local_end)
+                .cloned()
+                .map(|mut glyph| {
+                    glyph.cluster -= local_start;
+                    glyph
+                })
+                .collect::<Vec<_>>();
+            if shaped != expected {
+                let boundary = if segment.start == line.start {
+                    segment.end
+                } else {
+                    segment.start
+                };
+                return Err(WellfriendError::UnsupportedFeature(format!(
+                    "generated paint partition at UTF-8 byte {boundary} divides an OpenType ligature, kerning pair, or contextual substitution"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn edit_partitioned_generated_reflow(
+    input: &[u8],
+    request: &MultiRunTextRangeRequest,
+    font: &[u8],
+    page: &crate::document::PdfPage,
+    resources: &PageResources,
+    reader: &crate::PdfReader,
+    scope: Option<&form_text::Scope>,
+    source_updates: Vec<IncrementalObject>,
+    selected: &[SelectedMultiRunOperand],
+    old_selected: &str,
+    signature_policy: EditPolicyReport,
+    preserved_styles: Option<&[PreservedStyleSpan]>,
+) -> Result<(Vec<u8>, MultiRunTextEditReport)> {
+    #[derive(Debug)]
+    struct PreparedPartition {
+        source_text_object: usize,
+        replacement_scalar_range: [usize; 2],
+        region: [f64; 4],
+        text: String,
+        options: AdvancedTextEditOptions,
+        layout: Vec<Vec<GeneratedGlyph>>,
+        style_spans: Vec<PreservedStyleSpan>,
+        anchor: (u32, u16, usize),
+    }
+
+    let mut source_anchors = BTreeMap::<usize, (u32, u16, usize)>::new();
+    for item in selected {
+        source_anchors.entry(item.5.source_text_object).or_insert((
+            item.0,
+            item.1,
+            item.4.token_start,
+        ));
+    }
+    if source_anchors.is_empty() {
+        return Err(WellfriendError::MalformedPdf(
+            "partitioned generated reflow lost its source text objects".into(),
+        ));
+    }
+    if request.options.paint_partitions.len() != source_anchors.len() {
+        return Err(WellfriendError::invalid_input(format!(
+            "generated paint partitions must cover every selected source text object exactly once: expected {}, received {}",
+            source_anchors.len(),
+            request.options.paint_partitions.len()
+        )));
+    }
+
+    let mut scalar_offsets = request
+        .replacement_text
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    scalar_offsets.push(request.replacement_text.len());
+    let replacement_scalars = scalar_offsets.len().saturating_sub(1);
+    let mut partition_byte_ranges = Vec::with_capacity(request.options.paint_partitions.len());
+    let mut contextual_boundaries = Vec::new();
+    let mut next_scalar = 0usize;
+    let mut previous_slot = None;
+    for partition in &request.options.paint_partitions {
+        crate::cancel::check_current_cancel("generated paint partition validation")?;
+        if previous_slot.is_some_and(|slot| slot >= partition.source_text_object) {
+            return Err(WellfriendError::invalid_input(
+                "generated paint partitions must be in strictly increasing source-text-object order",
+            ));
+        }
+        if !source_anchors.contains_key(&partition.source_text_object) {
+            return Err(WellfriendError::invalid_input(format!(
+                "generated paint partition references unselected source text object {}",
+                partition.source_text_object
+            )));
+        }
+        let [start, end] = partition.replacement_scalar_range;
+        if start != next_scalar || end < start || end > replacement_scalars {
+            return Err(WellfriendError::invalid_input(
+                "generated paint partition scalar ranges must be contiguous, ordered, and inside the complete replacement",
+            ));
+        }
+        if !grapheme_safe_paint_partition_boundary(
+            &request.replacement_text,
+            &scalar_offsets,
+            start,
+        )? || !grapheme_safe_paint_partition_boundary(
+            &request.replacement_text,
+            &scalar_offsets,
+            end,
+        )? {
+            return Err(WellfriendError::UnsupportedFeature(
+                "generated paint partition boundary divides a grapheme cluster".into(),
+            ));
+        }
+        let byte_range =
+            scalar_range_to_bytes(&request.replacement_text, &scalar_offsets, [start, end])?;
+        if end < replacement_scalars {
+            contextual_boundaries.push(byte_range.end);
+        }
+        partition_byte_ranges.push(byte_range);
+        next_scalar = end;
+        previous_slot = Some(partition.source_text_object);
+    }
+    if next_scalar != replacement_scalars {
+        return Err(WellfriendError::invalid_input(
+            "generated paint partitions do not cover the complete replacement text",
+        ));
+    }
+    validate_contextual_paint_partition_boundaries(
+        &request.replacement_text,
+        &contextual_boundaries,
+        request.mode,
+        font,
+    )?;
+
+    let mut prepared = Vec::with_capacity(request.options.paint_partitions.len());
+    for (partition, byte_range) in request
+        .options
+        .paint_partitions
+        .iter()
+        .zip(partition_byte_ranges)
+    {
+        crate::cancel::check_current_cancel("generated paint partition preparation")?;
+        let [start, end] = partition.replacement_scalar_range;
+        let anchor = source_anchors
+            .get(&partition.source_text_object)
+            .copied()
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "validated generated paint partition lost its source anchor".into(),
+                )
+            })?;
+        let text = request.replacement_text[byte_range.clone()].to_string();
+        if text.is_empty()
+            && partition
+                .final_lines
+                .as_ref()
+                .is_some_and(|lines| !lines.is_empty())
+        {
+            return Err(WellfriendError::invalid_input(
+                "an empty generated paint partition cannot contain final lines",
+            ));
+        }
+        let mut options = request.options.clone();
+        options.region = partition.region;
+        options.paint_partitions.clear();
+        validate_advanced_text_options(&options)?;
+        let style_spans = preserved_styles
+            .map(|spans| {
+                spans
+                    .iter()
+                    .filter_map(|span| {
+                        let overlap_start = span.byte_start.max(byte_range.start);
+                        let overlap_end = span.byte_end.min(byte_range.end);
+                        (overlap_start < overlap_end).then(|| PreservedStyleSpan {
+                            byte_start: overlap_start - byte_range.start,
+                            byte_end: overlap_end - byte_range.start,
+                            style: span.style.clone(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if preserved_styles.is_some()
+            && !text.is_empty()
+            && (style_spans.first().is_none_or(|span| span.byte_start != 0)
+                || style_spans
+                    .windows(2)
+                    .any(|pair| pair[0].byte_end != pair[1].byte_start)
+                || style_spans
+                    .last()
+                    .is_none_or(|span| span.byte_end != text.len()))
+        {
+            return Err(WellfriendError::MalformedPdf(
+                "partitioned generated style spans do not cover their replacement segment".into(),
+            ));
+        }
+        let layout = if text.is_empty() {
+            Vec::new()
+        } else {
+            let analysis_text = partition
+                .final_lines
+                .as_ref()
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .map(|line| line.visual_text.as_str())
+                        .collect::<String>()
+                })
+                .unwrap_or_else(|| text.clone());
+            let analysis = analyze_advanced_text_reflow(
+                &analysis_text,
+                request.mode,
+                Some(font),
+                TextReflowLimits::default(),
+            )?;
+            if !analysis.missing_glyph_clusters.is_empty() {
+                return Err(WellfriendError::UnsupportedFeature(format!(
+                    "generated paint partition {} has missing glyph clusters {:?}",
+                    partition.source_text_object, analysis.missing_glyph_clusters
+                )));
+            }
+            layout_generated_partition_with_context(
+                &request.replacement_text,
+                byte_range,
+                partition.final_lines.as_deref(),
+                request.mode,
+                font,
+                &options,
+            )?
+        };
+        prepared.push(PreparedPartition {
+            source_text_object: partition.source_text_object,
+            replacement_scalar_range: [start, end],
+            region: partition.region,
+            text,
+            options,
+            layout,
+            style_spans,
+            anchor,
+        });
+    }
+
+    // Every partition is shaped independently, so its local layout starts CID
+    // assignment at one. The shared embedded Type0 resource needs one global
+    // collision-free code space across every emitted partition.
+    let mut next_cid = 1u32;
+    for partition in &mut prepared {
+        for glyph in partition.layout.iter_mut().flatten() {
+            glyph.cid = u16::try_from(next_cid).map_err(|_| {
+                WellfriendError::ResourceLimit(
+                    "partitioned generated reflow exceeds 65535 shaped glyphs".into(),
+                )
+            })?;
+            next_cid = next_cid.checked_add(1).ok_or_else(|| {
+                WellfriendError::ResourceLimit("partitioned generated CID counter".into())
+            })?;
+        }
+    }
+    let glyphs = prepared
+        .iter()
+        .flat_map(|partition| partition.layout.iter().flatten().cloned())
+        .collect::<Vec<_>>();
+    if glyphs.is_empty() {
+        return Err(WellfriendError::MalformedPdf(
+            "nonempty partitioned replacement produced no generated glyphs".into(),
+        ));
+    }
+    let generated_count = u32::try_from(
+        prepared
+            .iter()
+            .filter(|partition| !partition.text.is_empty())
+            .count(),
+    )
+    .map_err(|_| WellfriendError::ResourceLimit("generated paint partition count".into()))?;
+    let per_partition = 2u32
+        .checked_add(story_carriers::OBJECT_COUNT)
+        .ok_or_else(|| WellfriendError::ResourceLimit("paint partition object count".into()))?;
+    let object_count = generated_count
+        .checked_mul(per_partition)
+        .and_then(|count| count.checked_add(6))
+        .ok_or_else(|| WellfriendError::ResourceLimit("paint partition object block".into()))?;
+    let base = reserve_advanced_object_block(
+        reader,
+        object_count,
+        "advanced_editing partitioned generated reflow",
+    )?;
+    let reservation_end = base.checked_add(object_count).ok_or_else(|| {
+        WellfriendError::ResourceLimit(
+            "partitioned generated reflow needs a one-past object cursor".into(),
+        )
+    })?;
+    let font_resource = deterministic_font_resource_name(reader, &page.resources);
+    let mut changed = source_updates;
+    changed.extend(build_type0_font_objects(
+        font,
+        &glyphs,
+        request.mode == AdvancedTextMode::ParagraphReflowVertical,
+        base,
+        base + 1,
+        base + 2,
+        base + 3,
+        base + 4,
+        base + 5,
+    )?);
+
+    let mut cursor = base + 6;
+    let mut logical_fonts = crate::PdfDictionary::empty();
+    let mut verification = Vec::<(crate::PdfDictionary, String)>::new();
+    let mut anchor_jobs = Vec::<(usize, (u32, u16, usize), u32, u32)>::new();
+    let mut receipts = Vec::with_capacity(prepared.len());
+    for partition in &prepared {
+        let mut receipt = GeneratedPaintPartitionReceipt {
+            source_text_object: partition.source_text_object,
+            replacement_scalar_range: partition.replacement_scalar_range,
+            region: partition.region,
+            generated: false,
+            anchor_stream_object: partition.anchor.0,
+            anchor_stream_generation: partition.anchor.1,
+            anchor_decoded_byte_offset: partition.anchor.2,
+        };
+        if !partition.text.is_empty() {
+            let isolation_number = cursor;
+            let content_number = cursor + 1;
+            let carrier_base = cursor + 2;
+            cursor = cursor.checked_add(per_partition).ok_or_else(|| {
+                WellfriendError::ResourceLimit("paint partition object cursor".into())
+            })?;
+            let (generated_content, _) = if preserved_styles.is_some() {
+                serialize_generated_preserved_styles(
+                    &partition.layout,
+                    &partition.style_spans,
+                    &font_resource,
+                    &partition.options,
+                    request.mode == AdvancedTextMode::ParagraphReflowVertical,
+                    Some(&partition.text),
+                )?
+            } else {
+                serialize_generated_text(
+                    &partition.layout,
+                    &font_resource,
+                    &partition.options,
+                    request.mode == AdvancedTextMode::ParagraphReflowVertical,
+                    None,
+                    Some(&partition.text),
+                )?
+            };
+            let (generated_content, segment_fonts) = story_carriers::attach_generated(
+                generated_content,
+                &partition.text,
+                request.mode == AdvancedTextMode::ParagraphReflowVertical,
+                &partition.options,
+                carrier_base,
+                &mut changed,
+                true,
+            )?;
+            story_carriers::install(&segment_fonts, &mut logical_fonts)?;
+            verification.push((segment_fonts, partition.text.clone()));
+            let generated = flate_encode_cancellable(
+                isolated_appended_content(generated_content).as_bytes(),
+                6,
+            )?;
+            let mut generated_dict = crate::PdfDictionary::empty();
+            generated_dict.insert("Filter", PdfObject::Name("FlateDecode".into()));
+            generated_dict.insert("Length", PdfObject::Integer(generated.len() as i64));
+            changed.push(IncrementalObject {
+                number: content_number,
+                generation: 0,
+                object: PdfObject::Stream {
+                    dict: generated_dict,
+                    raw: generated,
+                },
+            });
+            changed.push(page_graphics_state_isolation_prefix(isolation_number));
+            anchor_jobs.push((
+                partition.source_text_object,
+                partition.anchor,
+                content_number,
+                isolation_number,
+            ));
+            receipt.generated = true;
+        }
+        receipts.push(receipt);
+    }
+    if cursor != reservation_end {
+        return Err(WellfriendError::MalformedPdf(
+            "partitioned generated reflow object reservation drifted".into(),
+        ));
+    }
+
+    // Later insertions are applied first. Generated content contains its own
+    // ET operators; descending source order keeps original ET ordinals stable
+    // when several anchors share one physical content stream.
+    anchor_jobs.sort_by_key(|job| std::cmp::Reverse(job.0));
+    for (_, anchor, content_number, isolation_number) in anchor_jobs {
+        anchor_generated_reflow(
+            reader,
+            &page.contents,
+            &mut changed,
+            anchor,
+            content_number,
+            isolation_number,
+        )?;
+    }
+
+    let page_object = reader.get_object(page.object_number, page.generation_number)?;
+    let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
+        WellfriendError::MalformedPdf(
+            "partitioned generated reflow page object is not a dictionary".into(),
+        )
+    })?;
+    let mut page_resources = page.resources.clone();
+    let mut fonts = resolve_advanced_editing_dict(page_resources.get("Font"), reader)
+        .unwrap_or_else(crate::PdfDictionary::empty);
+    fonts.insert(
+        font_resource,
+        PdfObject::Reference {
+            number: base + 5,
+            generation: 0,
+        },
+    );
+    story_carriers::install(&logical_fonts, &mut fonts)?;
+    page_resources.insert("Font", PdfObject::Dictionary(fonts));
+    page_dict.insert("Resources", PdfObject::Dictionary(page_resources));
+    page_dict.insert(
+        "Contents",
+        PdfObject::Array(original_page_contents(&page.contents)),
+    );
+    changed.push(IncrementalObject {
+        number: page.object_number,
+        generation: page.generation_number,
+        object: PdfObject::Dictionary(page_dict),
+    });
+
+    let output = form_text::write_scope(reader, page, resources, changed, scope)?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
+    let replacement_extracts = extracted.contains(&request.replacement_text)
+        || layout_extraction_equivalent(&extracted, &request.replacement_text);
+    let old_absent = old_selected.is_empty() || !extracted.contains(old_selected);
+    for (fonts, text) in &verification {
+        story_carriers::verify_generated(
+            &reopened,
+            &form_text::output_page(&reopened, request.page, scope)?,
+            fonts,
+            text,
+            request.mode == AdvancedTextMode::ParagraphReflowVertical,
+            true,
+        )?;
+    }
+    if !replacement_extracts || !output.starts_with(input) {
+        return Err(WellfriendError::MalformedPdf(
+            "partitioned generated reflow save/reopen/extraction proof failed".into(),
+        ));
+    }
+    Ok((
+        output.clone(),
+        MultiRunTextEditReport {
+            schema_version:
+                "advanced_editing_closeout.partitioned-generated-paint-order.v1".into(),
+            status: AdvancedEditingSupportStatus::ImplementedWithLimits,
+            operation: if preserved_styles.is_some() {
+                "replace_partitioned_preserving_source_styles".into()
+            } else {
+                "replace_partitioned_by_source_paint_order".into()
+            },
+            page: request.page,
+            logical_range: [request.logical_start, request.logical_end],
+            selected_source_spans: selected.iter().map(|item| item.5.clone()).collect(),
+            style_policy: request.style_policy,
+            generated_font_used: true,
+            generated_paint_order: None,
+            generated_paint_partitions: receipts,
+            replacement_text: request.replacement_text.clone(),
+            replacement_extracts,
+            old_selected_text_absent: old_absent,
+            unrelated_text_preserved: true,
+            reachable_source_tokens_removed: true,
+            output_reopened: true,
+            original_prefix_preserved: output.starts_with(input),
+            output_sha256: format!("{:x}", Sha256::digest(&output)),
+            signature_policy,
+            cryptographic_validity_claimed: false,
+            deterministic: request.options.deterministic,
+            cache_invalidation: advanced_editing_cache_invalidation(
+                input, &output, true, false, false,
+            ),
+            exact_limits: vec![
+                "each replacement segment is source-slot-bound and inserted after that exact source text object's ET; descending mutation order preserves later ET ordinals inside shared content streams".into(),
+                "partition ranges cover the replacement exactly and may leave a selected source slot empty; every generated segment owns its own logical ActualText and approved region".into(),
+                "partition boundaries are grapheme-safe and retain whole-paragraph bidi/joining context; the transaction refuses any split whose independently emitted glyph IDs, clusters, advances or offsets differ from the unsplit OpenType result".into(),
+                "automatic and caller-supplied vertical columns retain the full paragraph context and undergo the same exact vertical shaping-equivalence validation".into(),
+                "inherit-leading, inherit-trailing and preserve-per-segment policies retain grapheme-owned source size, spacing, scaling, rise, render mode and exact paint commands; the approved embedded Type0 font supplies replacement glyph outlines".into(),
+                "selected current-revision source codes are removed atomically, but incremental history is not sanitizing redaction".into(),
+            ],
+        },
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn edit_zero_width_insertion_inline_source_style(
+    input: &[u8],
+    request: &MultiRunTextRangeRequest,
+    font_bytes: Option<&[u8]>,
+    page: &crate::document::PdfPage,
+    resources: &PageResources,
+    reader: &crate::PdfReader,
+    scope: Option<&form_text::Scope>,
+    anchor: &SelectedMultiRunOperand,
+    stream_sources: &BTreeMap<(u32, u16), (Arc<PdfObject>, Arc<Vec<u8>>)>,
+    actual_text_cleanup_patches: &[ActualTextCleanupPatch],
+    signature_policy: EditPolicyReport,
+) -> Result<(Vec<u8>, MultiRunTextEditReport)> {
+    if request.logical_start != request.logical_end || request.replacement_text.is_empty() {
+        return Err(WellfriendError::MalformedPdf(
+            "source-style insertion helper received a non-insertion request".into(),
+        ));
+    }
+    if request
+        .replacement_text
+        .chars()
+        .any(crate::fonts::hard_break::is_hard_break)
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "source-style zero-width insertion requires one logical line inside the original BT/ET text object"
+                .into(),
+        ));
+    }
+    // Validate the complete inherited paint state before choosing a replacement
+    // font. The positioned writer consumes these exact source values; it does
+    // not approximate them from page-level defaults.
+    let _style = preserved_style_from_token(&anchor.4)?;
+    let source_font = resources
+        .fonts
+        .get(&anchor.5.font_resource)
+        .ok_or_else(|| WellfriendError::MalformedPdf("insertion source font disappeared".into()))?;
+    let resolver = FontResolver::new(source_font, reader);
+    let source_vertical = resolver.is_vertical();
+    let generated_vertical = request.mode == AdvancedTextMode::ParagraphReflowVertical;
+    if source_vertical != generated_vertical {
+        return Err(WellfriendError::UnsupportedFeature(
+            "source-style insertion must use the adjacent source writing mode; select the matching horizontal/vertical mode or use explicit supplied style"
+                .into(),
+        ));
+    }
+    let supports = |font: &[u8]| {
+        crate::fonts::pdf_embedding::EmbeddingInfo::parse(font).is_ok()
+            && ttf_parser::Face::parse(font, 0).is_ok()
+            && TextShaper::shape(font, &request.replacement_text, ShapeOptions::default())
+                .is_ok_and(|run| {
+                    crate::fonts::shaper::has_missing_glyphs(font, &request.replacement_text, &run)
+                        .is_ok_and(|missing| !missing)
+                })
+    };
+    let logical_only_replacement = story_carriers::needs_text_carrier(&request.replacement_text);
+    let embedded = crate::fonts::provider::embedded_program(reader, source_font);
+    let font = if logical_only_replacement {
+        get_fallback_font("Symbol").filter(|candidate| supports(candidate))
+    } else {
+        embedded
+            .as_deref()
+            .filter(|candidate| supports(candidate))
+            .or_else(|| font_bytes.filter(|candidate| supports(candidate)))
+            .or_else(|| get_fallback_font("Symbol").filter(|candidate| supports(candidate)))
+    }
+    .ok_or_else(|| {
+        WellfriendError::UnsupportedFeature(
+            "source-style insertion has no embeddable font with complete shaped coverage".into(),
+        )
+    })?;
+    let face = ttf_parser::Face::parse(font, 0).map_err(|_| {
+        WellfriendError::UnsupportedFeature(
+            "source-style insertion requires a valid standalone sfnt font".into(),
+        )
+    })?;
+    let (visible_text, resolved_bidi) = if let Some(lines) = request.final_lines.as_deref() {
+        let [line] = lines else {
+            return Err(WellfriendError::UnsupportedFeature(
+                "source-style zero-width insertion accepts exactly one final line inside the original text object"
+                    .into(),
+            ));
+        };
+        if line.logical_text != request.replacement_text
+            || line.inserted_visual_hyphen
+            || line.visual_text != line.logical_text
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "source-style zero-width insertion final line must preserve the exact replacement text without a discretionary visual hyphen"
+                    .into(),
+            ));
+        }
+        let bidi = match &line.bidi {
+            Some(bidi) => bidi.clone(),
+            None => {
+                let options = ShapeOptions {
+                    direction: Some(if request.mode == AdvancedTextMode::ParagraphReflowRtl {
+                        TextDirection::RightToLeft
+                    } else {
+                        TextDirection::LeftToRight
+                    }),
+                };
+                crate::fonts::shaper::ParagraphBidi::new(&line.visual_text, options)?
+                    .line(0..line.visual_text.len())?
+            }
+        };
+        (line.visual_text.as_str(), bidi)
+    } else {
+        let options = ShapeOptions {
+            direction: Some(if request.mode == AdvancedTextMode::ParagraphReflowRtl {
+                TextDirection::RightToLeft
+            } else {
+                TextDirection::LeftToRight
+            }),
+        };
+        let bidi = crate::fonts::shaper::ParagraphBidi::new(&request.replacement_text, options)?
+            .line(0..request.replacement_text.len())?;
+        (request.replacement_text.as_str(), bidi)
+    };
+    let mut glyphs = if logical_only_replacement {
+        story_carriers::inline_glyphs(visible_text, &face)?
+    } else if generated_vertical {
+        vertical_text::glyph_plan(visible_text, font, Some(&resolved_bidi))?
+    } else {
+        let shaped =
+            TextShaper::shape_resolved(font, visible_text, &resolved_bidi, &Default::default())?;
+        generated_glyphs_from_shaped(visible_text, font, shaped)?
+    };
+    if glyphs.iter().any(|glyph| glyph.gid == 0) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "source-style insertion produced a missing glyph".into(),
+        ));
+    }
+    if !logical_only_replacement {
+        for (index, glyph) in glyphs.iter_mut().enumerate() {
+            glyph.cid = u16::try_from(index + 1).map_err(|_| {
+                WellfriendError::ResourceLimit(
+                    "source-style insertion exceeds 65535 shaped glyphs".into(),
+                )
+            })?;
+        }
+    }
+
+    let local_scalar = request
+        .logical_start
+        .checked_sub(anchor.5.logical_range[0])
+        .filter(|offset| *offset <= anchor.5.logical_range[1] - anchor.5.logical_range[0])
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "source-style insertion is outside its provenance anchor".into(),
+            )
+        })?;
+    let (prefix, selected_bytes, suffix) = split_source_text_bytes_at_scalars(
+        &resolver,
+        &anchor.4.decoded,
+        local_scalar,
+        local_scalar,
+    )?;
+    debug_assert!(selected_bytes.is_empty());
+    let base =
+        reserve_advanced_object_block(reader, 6, "advanced_editing inline inherited insertion")?;
+    let font_resource = deterministic_font_resource_name_for_selected_owners(
+        reader,
+        &page.resources,
+        std::slice::from_ref(anchor),
+    )?;
+    let mut inline_edits = DecodedStreamEdits::new();
+    add_actual_text_insertion_edits(
+        &mut inline_edits,
+        stream_sources,
+        actual_text_cleanup_patches,
+        request.logical_start,
+        &request.replacement_text,
+    )?;
+    let (edit_start, edit_end, replacement) = rewrite_source_text_inline_generated(
+        &anchor.4,
+        &anchor.4,
+        &resolver,
+        &prefix,
+        &selected_bytes,
+        &request.replacement_text,
+        &glyphs,
+        &font_resource,
+        generated_vertical,
+        source_vertical,
+        &suffix,
+    )?;
+    inline_edits
+        .entry((anchor.0, anchor.1))
+        .or_insert_with(|| {
+            (
+                anchor.2.as_ref().clone(),
+                anchor.3.as_ref().clone(),
+                Vec::new(),
+            )
+        })
+        .2
+        .push((edit_start, edit_end, replacement));
+    let source_updates = materialize_decoded_stream_edits(
+        inline_edits,
+        "advanced_editing inline inherited insertion source",
+    )?;
+    if logical_only_replacement {
+        let mut used_codes = BTreeSet::new();
+        glyphs.retain(|glyph| used_codes.insert(glyph.cid));
+    }
+    let mut changed = build_type0_font_objects(
+        font,
+        &glyphs,
+        generated_vertical,
+        base,
+        base + 1,
+        base + 2,
+        base + 3,
+        base + 4,
+        base + 5,
+    )?;
+    if logical_only_replacement {
+        let dict = changed
+            .iter_mut()
+            .find(|object| object.number == base + 5)
+            .and_then(|object| object.object.as_dict_mut())
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "source-style inline logical carrier font is missing".into(),
+                )
+            })?;
+        dict.insert("WFLogicalLineCarrier", PdfObject::Integer(1));
+    }
+    changed.extend(source_updates);
+    install_generated_font_in_selected_form_updates(
+        reader,
+        std::slice::from_ref(anchor),
+        &mut changed,
+        &font_resource,
+        base + 5,
+    )?;
+    let page_object = reader.get_object(page.object_number, page.generation_number)?;
+    let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
+        WellfriendError::MalformedPdf("source-style insertion page is not a dictionary".into())
+    })?;
+    let mut page_resources = page.resources.clone();
+    let mut fonts = resolve_advanced_editing_dict(page_resources.get("Font"), reader)
+        .unwrap_or_else(crate::PdfDictionary::empty);
+    fonts.insert(
+        font_resource,
+        PdfObject::Reference {
+            number: base + 5,
+            generation: 0,
+        },
+    );
+    page_resources.insert("Font", PdfObject::Dictionary(fonts));
+    page_dict.insert("Resources", PdfObject::Dictionary(page_resources));
+    changed.push(IncrementalObject {
+        number: page.object_number,
+        generation: page.generation_number,
+        object: PdfObject::Dictionary(page_dict),
+    });
+    let output = form_text::write_scope(reader, page, resources, changed, scope)?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
+    let replacement_extracts = extracted.contains(&request.replacement_text)
+        || request
+            .final_lines
+            .as_ref()
+            .is_some_and(|_| layout_extraction_equivalent(&extracted, &request.replacement_text));
+    if !replacement_extracts || !output.starts_with(input) {
+        return Err(WellfriendError::MalformedPdf(
+            "source-style inline insertion save/reopen/extraction proof failed".into(),
+        ));
+    }
+    Ok((
+        output.clone(),
+        MultiRunTextEditReport {
+            schema_version:
+                "advanced_editing_closeout.multirun-form-appearance-closure.v1".into(),
+            status: AdvancedEditingSupportStatus::ImplementedWithLimits,
+            operation: match request.style_policy {
+                MultiRunStylePolicy::InheritLeading => {
+                    "insert_inline_inheriting_leading_source_style".into()
+                }
+                MultiRunStylePolicy::InheritTrailing => {
+                    "insert_inline_inheriting_trailing_source_style".into()
+                }
+                _ => unreachable!(),
+            },
+            page: request.page,
+            logical_range: [request.logical_start, request.logical_end],
+            selected_source_spans: vec![anchor.5.clone()],
+            style_policy: request.style_policy,
+            generated_font_used: true,
+            generated_paint_order: None,
+            generated_paint_partitions: Vec::new(),
+            replacement_text: request.replacement_text.clone(),
+            replacement_extracts,
+            old_selected_text_absent: true,
+            unrelated_text_preserved: true,
+            reachable_source_tokens_removed: false,
+            output_reopened: true,
+            original_prefix_preserved: true,
+            output_sha256: format!("{:x}", Sha256::digest(&output)),
+            signature_policy,
+            cryptographic_validity_claimed: false,
+            deterministic: request.options.deterministic,
+            cache_invalidation: advanced_editing_cache_invalidation(
+                input, &output, true, false, false,
+            ),
+            exact_limits: vec![
+                "zero-width leading inheritance selects the following source run; trailing inheritance selects the preceding run, falling back only at document edges"
+                    .into(),
+                "the inherited run binds font size, spacing, scaling, rise, render mode, writing mode and exact fill/stroke paint commands while an embedded or approved coverage font supplies shaped outlines"
+                    .into(),
+                "the insertion is emitted inside the original BT/ET and marked-content scope; clipping render modes therefore union the generated outlines before the original ET establishes the clip"
+                    .into(),
+                "the positioned writer preserves resolved transformed source matrices and restores Tlm/Tm with exact numeric writing-axis displacement without matrix inversion"
+                    .into(),
+                "no source glyph code is removed; the generated nested ActualText span owns only the inserted logical text"
+                    .into(),
+            ],
+        },
+    ))
 }
 
 fn collect_annotation_appearance_vectors(
@@ -2855,6 +5442,7 @@ fn collect_annotation_appearance_vectors(
             resolve_advanced_editing_dict(dict.get("Resources"), reader).unwrap_or_default();
         collect_form_vector_objects(
             reader,
+            &page.resources,
             &appearance_resources,
             &decoded.data,
             page_number,
@@ -2877,15 +5465,29 @@ fn validate_advanced_text_options(options: &AdvancedTextEditOptions) -> Result<(
     if options
         .region
         .iter()
-        .chain([options.font_size, options.line_spacing].iter())
+        .chain(
+            [
+                options.font_size,
+                options.line_spacing,
+                options.max_word_spacing,
+                options.max_character_spacing,
+            ]
+            .iter(),
+        )
         .any(|value| !value.is_finite())
         || options.region[0] >= options.region[2]
         || options.region[1] >= options.region[3]
         || options.font_size <= 0.0
         || options.line_spacing <= 0.0
+        || options.max_word_spacing < 0.0
+        || options.max_character_spacing < 0.0
+        || !(options.region[2] - options.region[0]).is_finite()
+        || !(options.region[3] - options.region[1]).is_finite()
+        || !(options.font_size * options.line_spacing).is_finite()
+        || options.font_size * options.line_spacing <= 0.0
     {
         return Err(WellfriendError::MalformedPdf(
-            "advanced_editing text region/font size/line spacing must be finite and positive"
+            "advanced_editing requires finite positive region extents, font size and line advance, and finite nonnegative spacing limits"
                 .to_string(),
         ));
     }
@@ -2907,7 +5509,42 @@ fn validate_advanced_text_options(options: &AdvancedTextEditOptions) -> Result<(
             "advanced_editing selected reflow source byte range is empty or reversed",
         ));
     }
+    if options.paint_partitions.len() > MAX_ADVANCED_EDITING_BIDI_RUNS {
+        return Err(WellfriendError::ResourceLimit(
+            "advanced_editing generated paint partition count exceeds 4096".into(),
+        ));
+    }
+    if !options.paint_partitions.is_empty()
+        && options.paint_order_policy != GeneratedPaintOrderPolicy::RequireSingleSourceTextObject
+    {
+        return Err(WellfriendError::invalid_input(
+            "generated paint partitions and first/last block anchoring are mutually exclusive",
+        ));
+    }
+    for partition in &options.paint_partitions {
+        if partition.replacement_scalar_range[0] > partition.replacement_scalar_range[1]
+            || partition.region.iter().any(|value| !value.is_finite())
+            || partition.region[0] >= partition.region[2]
+            || partition.region[1] >= partition.region[3]
+        {
+            return Err(WellfriendError::invalid_input(
+                "generated paint partition has a reversed scalar range or invalid region",
+            ));
+        }
+    }
     Ok(())
+}
+
+fn horizontal_line_capacity(options: &AdvancedTextEditOptions) -> Result<usize> {
+    validate_advanced_text_options(options)?;
+    let available = options.region[3] - options.region[1] - options.font_size;
+    if available < 0.0 {
+        return Ok(0);
+    }
+    // Clamp in the floating-point domain before converting or adding. A valid
+    // finite frame and tiny positive line advance can produce an infinite ratio.
+    let intervals = (available / (options.font_size * options.line_spacing)).floor();
+    Ok(1 + intervals.min((options.max_lines_or_columns - 1) as f64) as usize)
 }
 
 fn generated_glyph_plan(
@@ -2915,134 +5552,156 @@ fn generated_glyph_plan(
     mode: AdvancedTextMode,
     font: &[u8],
 ) -> Result<Vec<GeneratedGlyph>> {
-    let face = ttf_parser::Face::parse(font, 0).map_err(|_| {
-        WellfriendError::UnsupportedFeature(
-            "advanced_editing generated glyph plan requires a valid sfnt font".to_string(),
-        )
-    })?;
-    let identity_cid_is_gid = face.tables().glyf.is_none();
-    let base = if mode == AdvancedTextMode::ParagraphReflowRtl {
-        Level::rtl()
-    } else {
-        Level::ltr()
-    };
-    let bidi = BidiInfo::new(text, Some(base));
-    let mut glyphs = Vec::new();
-    for paragraph in &bidi.paragraphs {
-        let (levels, ranges) = bidi.visual_runs(paragraph, paragraph.range.clone());
-        for (level, range) in levels.into_iter().zip(ranges) {
-            let run_text = text.get(range).ok_or_else(|| {
-                WellfriendError::ParseError(
-                    "advanced_editing bidi run is not UTF-8 aligned".to_string(),
-                )
-            })?;
-            let shaped = TextShaper::shape(
-                font,
-                run_text,
-                ShapeOptions {
-                    direction: Some(if level.is_rtl() {
-                        TextDirection::RightToLeft
-                    } else {
-                        TextDirection::LeftToRight
-                    }),
-                },
-            )?;
-            let mut cluster_starts = shaped
-                .glyphs
-                .iter()
-                .map(|glyph| glyph.cluster as usize)
-                .collect::<Vec<_>>();
-            cluster_starts.push(run_text.len());
-            cluster_starts.sort_unstable();
-            cluster_starts.dedup();
-            for shaped_glyph in shaped.glyphs {
-                let start = shaped_glyph.cluster as usize;
-                let end = cluster_starts
-                    .iter()
-                    .copied()
-                    .find(|cluster| *cluster > start)
-                    .unwrap_or(run_text.len());
-                let unicode = run_text.get(start..end).unwrap_or("\u{FFFD}").to_string();
-                let orientation = if mode == AdvancedTextMode::ParagraphReflowVertical {
-                    unicode
-                        .chars()
-                        .next()
-                        .map(vertical_orientation)
-                        .unwrap_or(VerticalGlyphOrientation::Upright)
-                } else {
-                    VerticalGlyphOrientation::Upright
-                };
-                let cid = if identity_cid_is_gid {
-                    shaped_glyph.glyph_id
-                } else {
-                    u16::try_from(glyphs.len() + 1).map_err(|_| {
-                        WellfriendError::UnsupportedFeature(
-                            "advanced_editing generated CID count exceeds 65535".to_string(),
-                        )
-                    })?
-                };
-                glyphs.push(GeneratedGlyph {
-                    cid,
-                    gid: shaped_glyph.glyph_id,
-                    logical_byte_start: range.start.saturating_add(start),
-                    visual_unicode: unicode.clone(),
-                    to_unicode: Some(unicode),
-                    advance: shaped_glyph.advance,
-                    offset_x: shaped_glyph.offset_x,
-                    offset_y: shaped_glyph.offset_y,
-                    orientation,
-                });
-            }
-        }
+    if mode == AdvancedTextMode::ParagraphReflowVertical {
+        return vertical_text::glyph_plan(text, font, None);
     }
-    Ok(glyphs)
+    let shaped = TextShaper::shape(
+        font,
+        text,
+        ShapeOptions {
+            direction: Some(if mode == AdvancedTextMode::ParagraphReflowRtl {
+                TextDirection::RightToLeft
+            } else {
+                TextDirection::LeftToRight
+            }),
+        },
+    )?;
+    generated_glyphs_from_shaped(text, font, shaped)
 }
 
-fn layout_generated_glyphs(
-    glyphs: &[GeneratedGlyph],
-    mode: AdvancedTextMode,
-    options: &AdvancedTextEditOptions,
-) -> Result<Vec<Vec<GeneratedGlyph>>> {
-    let width_1000 = (options.region[2] - options.region[0]) / options.font_size * 1000.0;
-    let height_1000 = (options.region[3] - options.region[1]) / options.font_size * 1000.0;
-    let available = if mode == AdvancedTextMode::ParagraphReflowVertical {
-        height_1000
-    } else {
-        width_1000
-    };
-    let mut groups = vec![Vec::new()];
-    let mut advance = 0.0;
-    for glyph in glyphs {
-        let glyph_advance = if mode == AdvancedTextMode::ParagraphReflowVertical {
-            1000.0
-        } else {
-            glyph.advance.abs()
-        };
-        if advance + glyph_advance > available && !groups.last().is_some_and(Vec::is_empty) {
-            if groups.len() >= options.max_lines_or_columns {
-                match options.overflow_policy {
-                    TextOverflowPolicy::Error => {
-                        return Err(WellfriendError::UnsupportedFeature(format!(
-                            "advanced_editing text overflow exceeds {} lines/columns",
-                            options.max_lines_or_columns
-                        )))
-                    }
-                    TextOverflowPolicy::Clip => break,
-                    TextOverflowPolicy::ExpandRegion => {}
-                }
-            }
-            groups.push(Vec::new());
-            advance = 0.0;
-        }
-        groups.last_mut().expect("group exists").push(glyph.clone());
-        advance += glyph_advance;
-    }
-    if groups.len() > options.max_lines_or_columns {
-        return Err(WellfriendError::UnsupportedFeature(
-            "advanced_editing expanded text still exceeds hard line/column limit".to_string(),
+/// Measure exactly the horizontal advance later emitted by
+/// `serialize_generated_preserved_styles` for one paragraph-derived line.
+/// Authored table redistribution uses this instead of a second approximate
+/// width model, so the preflight decision and canonical writer share shaping,
+/// clusters, source spacing and horizontal scaling.
+pub(crate) fn measure_generated_preserved_line(
+    text: &str,
+    bidi: &crate::fonts::shaper::LineBidi,
+    font: &[u8],
+    font_size: f64,
+    character_spacing: f64,
+    word_spacing: f64,
+    horizontal_scaling: f64,
+) -> Result<f64> {
+    if !font_size.is_finite()
+        || font_size <= 0.0
+        || !character_spacing.is_finite()
+        || !word_spacing.is_finite()
+        || !horizontal_scaling.is_finite()
+        || horizontal_scaling <= 0.0
+    {
+        return Err(WellfriendError::MalformedPdf(
+            "invalid authored generated-text measurement state".into(),
         ));
     }
-    Ok(groups)
+    let shaped = TextShaper::shape_resolved(font, text, bidi, &Default::default())?;
+    if crate::fonts::shaper::has_missing_glyphs(font, text, &shaped)? {
+        return Err(WellfriendError::UnsupportedFeature(
+            "approved authored-table shaping font lacks replacement glyph coverage".into(),
+        ));
+    }
+    let glyphs = generated_glyphs_from_shaped(text, font, shaped)?;
+    let width = glyphs.iter().try_fold(0.0, |width, glyph| {
+        let advance = (glyph.advance.abs() / 1000.0 * font_size
+            + character_spacing
+            + if glyph.visual_unicode == " " {
+                word_spacing
+            } else {
+                0.0
+            })
+            * (horizontal_scaling / 100.0);
+        let width = width + advance;
+        if width.is_finite() && width >= 0.0 {
+            Ok(width)
+        } else {
+            Err(WellfriendError::MalformedPdf(
+                "authored generated-text measurement overflow".into(),
+            ))
+        }
+    })?;
+    Ok(width)
+}
+
+fn generated_glyphs_from_shaped(
+    text: &str,
+    font: &[u8],
+    shaped: crate::fonts::ShapedRun,
+) -> Result<Vec<GeneratedGlyph>> {
+    let missing = crate::fonts::shaper::missing_glyph_clusters(font, text, &shaped)?;
+    if !missing.is_empty() {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "generated glyph output lacks coverage at UTF-8 clusters {missing:?}"
+        )));
+    }
+    let face = ttf_parser::Face::parse(font, 0).map_err(|_| {
+        WellfriendError::UnsupportedFeature("generated glyph plan needs a valid sfnt font".into())
+    })?;
+    let outliner = crate::fonts::sfnt_outline::Outliner::new(&face)?;
+    let mut cluster_starts = shaped
+        .glyphs
+        .iter()
+        .map(|g| g.cluster as usize)
+        .collect::<Vec<_>>();
+    cluster_starts.push(text.len());
+    cluster_starts.sort_unstable();
+    cluster_starts.dedup();
+    let mut mapped = BTreeSet::new();
+    let mut glyphs = Vec::new();
+    let font_scale = 1000.0 / f64::from(face.units_per_em()).max(1.0);
+    let mut glyph_bounds = BTreeMap::new();
+    for (index, glyph) in shaped.glyphs.into_iter().enumerate() {
+        if index % 1024 == 0 {
+            crate::cancel::check_current_cancel("generated glyph conversion")?;
+        }
+        let start = glyph.cluster as usize;
+        let end = cluster_starts
+            .get(cluster_starts.partition_point(|n| *n <= start))
+            .copied()
+            .unwrap_or(text.len());
+        let unicode = text
+            .get(start..end)
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf("shaper returned a non-Unicode cluster".into())
+            })?
+            .to_owned();
+        let orientation = VerticalGlyphOrientation::Upright;
+        let cid = {
+            u16::try_from(glyphs.len() + 1).map_err(|_| {
+                WellfriendError::ResourceLimit("generated CID count exceeds 65535".into())
+            })?
+        };
+        let gid = ttf_parser::GlyphId(glyph.glyph_id);
+        let bounds = if let Some(bounds) = glyph_bounds.get(&glyph.glyph_id) {
+            *bounds
+        } else {
+            let bounds = outliner.bounds(gid)?.map(|b| {
+                [
+                    f64::from(b.x_min) * font_scale,
+                    f64::from(b.y_min) * font_scale,
+                    f64::from(b.x_max) * font_scale,
+                    f64::from(b.y_max) * font_scale,
+                ]
+            });
+            glyph_bounds.insert(glyph.glyph_id, bounds);
+            bounds
+        };
+        glyphs.push(GeneratedGlyph {
+            cid,
+            gid: glyph.glyph_id,
+            logical_byte_start: start,
+            visual_unicode: unicode.clone(),
+            to_unicode: mapped.insert(start).then_some(unicode),
+            advance: glyph.advance,
+            offset_x: glyph.offset_x,
+            offset_y: glyph.offset_y,
+            orientation,
+            cross_advance: 0.0,
+            font_width: f64::from(face.glyph_hor_advance(gid).unwrap_or(face.units_per_em()))
+                * font_scale,
+            bounds,
+        });
+    }
+    Ok(glyphs)
 }
 
 fn layout_generated_explicit_lines(
@@ -3064,14 +5723,33 @@ fn layout_generated_explicit_lines(
             options.max_lines_or_columns
         )));
     }
-    let face = ttf_parser::Face::parse(font, 0).map_err(|_| {
+    if line_regions.is_none()
+        && mode != AdvancedTextMode::ParagraphReflowVertical
+        && lines.len() > horizontal_line_capacity(options)?
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+                "advanced_editing explicit final layout exceeds frame line capacity; use linked-story flow".into()));
+    }
+    let _face = ttf_parser::Face::parse(font, 0).map_err(|_| {
         WellfriendError::UnsupportedFeature(
             "advanced_editing explicit layout requires a valid sfnt font".to_string(),
         )
     })?;
-    let identity_cid_is_gid = face.tables().glyf.is_none();
-    let mut next_cid = 1u16;
+    let mut next_cid = 1u32;
     let mut layout = Vec::with_capacity(lines.len());
+    let paragraph_text = lines
+        .iter()
+        .map(|line| line.logical_text.as_str())
+        .collect::<String>();
+    let shape_options = ShapeOptions {
+        direction: Some(if mode == AdvancedTextMode::ParagraphReflowRtl {
+            TextDirection::RightToLeft
+        } else {
+            TextDirection::LeftToRight
+        }),
+    };
+    let paragraph_bidi = crate::fonts::shaper::ParagraphBidi::new(&paragraph_text, shape_options)?;
+    let mut logical_offset = 0usize;
     for (index, line) in lines.iter().enumerate() {
         let region = line_regions
             .and_then(|regions| regions.get(index).copied())
@@ -3081,37 +5759,66 @@ fn layout_generated_explicit_lines(
         } else {
             (region[2] - region[0]) / options.font_size * 1000.0
         };
-        let mut glyphs = generated_glyph_plan(&line.visual_text, mode, font)?;
-        let advance = glyphs
-            .iter()
-            .map(|glyph| {
-                if mode == AdvancedTextMode::ParagraphReflowVertical {
-                    1000.0
-                } else {
-                    glyph.advance.abs()
-                }
-            })
-            .sum::<f64>();
+        let visual_base = line
+            .logical_text
+            .trim_end_matches(crate::fonts::hard_break::is_hard_break);
+        let expected = if line.inserted_visual_hyphen {
+            format!("{visual_base}-")
+        } else {
+            visual_base.to_owned()
+        };
+        if line.visual_text != expected {
+            return Err(WellfriendError::invalid_input(
+                "explicit line differs from its logical text beyond a declared hyphen",
+            ));
+        }
+        let bidi = if let Some(resolved) = &line.bidi {
+            resolved.clone()
+        } else if line.inserted_visual_hyphen {
+            let insertion = logical_offset + visual_base.len();
+            let mut virtual_paragraph = paragraph_text.clone();
+            virtual_paragraph.insert(insertion, '-');
+            crate::fonts::shaper::resolve_line_bidi(
+                &virtual_paragraph,
+                logical_offset..insertion + 1,
+                shape_options,
+            )?
+        } else {
+            paragraph_bidi.line(logical_offset..logical_offset + visual_base.len())?
+        };
+        let mut glyphs = if mode == AdvancedTextMode::ParagraphReflowVertical {
+            vertical_text::glyph_plan(&line.visual_text, font, Some(&bidi))?
+        } else {
+            let shaped =
+                TextShaper::shape_resolved(font, &line.visual_text, &bidi, &Default::default())?;
+            generated_glyphs_from_shaped(&line.visual_text, font, shaped)?
+        };
+        logical_offset += line.logical_text.len();
+        let advance = if mode == AdvancedTextMode::ParagraphReflowVertical {
+            vertical_text::extent(&glyphs, options.font_size)? / options.font_size * 1000.0
+        } else {
+            glyphs.iter().map(|glyph| glyph.advance.abs()).sum::<f64>()
+        };
         if advance > available + EPSILON {
             return Err(WellfriendError::UnsupportedFeature(
                 "advanced_editing explicit final layout line exceeds its source region".to_string(),
             ));
         }
         for glyph in &mut glyphs {
-            if !identity_cid_is_gid {
-                glyph.cid = next_cid;
-                next_cid = next_cid.checked_add(1).ok_or_else(|| {
-                    WellfriendError::UnsupportedFeature(
-                        "advanced_editing explicit final layout CID count exceeds 65535"
-                            .to_string(),
-                    )
-                })?;
-            }
+            glyph.cid = u16::try_from(next_cid).map_err(|_| {
+                WellfriendError::UnsupportedFeature(
+                    "advanced_editing explicit final layout CID count exceeds 65535".to_string(),
+                )
+            })?;
+            next_cid += 1;
         }
         if line.inserted_visual_hyphen {
-            let Some(last) = glyphs.last_mut() else {
+            let Some(last) = glyphs
+                .iter_mut()
+                .find(|glyph| glyph.logical_byte_start == line.visual_text.len() - 1)
+            else {
                 return Err(WellfriendError::MalformedPdf(
-                    "advanced_editing inserted dictionary hyphen line has no generated glyph"
+                    "advanced_editing inserted dictionary hyphen line has no bound glyph"
                         .to_string(),
                 ));
             };
@@ -3335,25 +6042,2339 @@ fn isolated_appended_content(content: String) -> String {
     format!("Q\n{content}")
 }
 
-fn isolated_page_contents(
-    existing: &[(u32, u16)],
-    prefix_number: u32,
-    content_number: u32,
-) -> Vec<PdfObject> {
-    let mut contents = Vec::with_capacity(existing.len() + 2);
-    contents.push(PdfObject::Reference {
-        number: prefix_number,
-        generation: 0,
+fn layout_generated_logical_text(
+    text: &str,
+    mode: AdvancedTextMode,
+    font: &[u8],
+    options: &AdvancedTextEditOptions,
+) -> Result<Vec<Vec<GeneratedGlyph>>> {
+    if mode == AdvancedTextMode::ParagraphReflowVertical {
+        return vertical_text::layout(text, font, options);
+    }
+    let lines = crate::fonts::line_layout::break_lines(
+        font,
+        text,
+        options.font_size,
+        options.region[2] - options.region[0],
+        ShapeOptions {
+            direction: Some(if mode == AdvancedTextMode::ParagraphReflowRtl {
+                TextDirection::RightToLeft
+            } else {
+                TextDirection::LeftToRight
+            }),
+        },
+    )?;
+    if lines.len() > horizontal_line_capacity(options)? {
+        return Err(WellfriendError::UnsupportedFeature(
+            "shaped text exceeds frame capacity; use linked-story flow".into(),
+        ));
+    }
+    let explicit = lines
+        .iter()
+        .map(|line| {
+            let logical_text = text[line.bytes.clone()].to_string();
+            let visual_text = logical_text
+                .trim_end_matches(crate::fonts::hard_break::is_hard_break)
+                .to_string();
+            ExplicitLayoutLine {
+                logical_text,
+                visual_text,
+                inserted_visual_hyphen: false,
+                bidi: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    layout_generated_explicit_lines(&explicit, mode, font, options, None)
+}
+
+fn layout_generated_replacement(
+    text: &str,
+    final_lines: Option<&[ExplicitLayoutLine]>,
+    mode: AdvancedTextMode,
+    font: &[u8],
+    options: &AdvancedTextEditOptions,
+) -> Result<Vec<Vec<GeneratedGlyph>>> {
+    let Some(lines) = final_lines else {
+        return layout_generated_logical_text(text, mode, font, options);
+    };
+    if lines.is_empty()
+        || lines
+            .iter()
+            .map(|line| line.logical_text.as_str())
+            .collect::<String>()
+            != text
+    {
+        return Err(WellfriendError::invalid_input(
+            "explicit final lines must concatenate exactly to their replacement text",
+        ));
+    }
+    for line in lines {
+        let visual_base = line
+            .logical_text
+            .trim_end_matches(crate::fonts::hard_break::is_hard_break);
+        let allowed_visual = if line.inserted_visual_hyphen {
+            format!("{visual_base}-")
+        } else {
+            visual_base.to_string()
+        };
+        if line.visual_text != allowed_visual {
+            return Err(WellfriendError::UnsupportedFeature(
+                "visual final layout permits only trailing mandatory separators and one end-of-line dictionary hyphen"
+                    .into(),
+            ));
+        }
+    }
+    layout_generated_explicit_lines(lines, mode, font, options, None)
+}
+
+fn layout_generated_partition_with_context(
+    full_text: &str,
+    segment_byte_range: std::ops::Range<usize>,
+    final_lines: Option<&[ExplicitLayoutLine]>,
+    mode: AdvancedTextMode,
+    font: &[u8],
+    options: &AdvancedTextEditOptions,
+) -> Result<Vec<Vec<GeneratedGlyph>>> {
+    let text = full_text.get(segment_byte_range.clone()).ok_or_else(|| {
+        WellfriendError::invalid_input("paint partition byte range is outside replacement text")
+    })?;
+    if mode == AdvancedTextMode::ParagraphReflowVertical && final_lines.is_none() {
+        return vertical_text::layout_with_context(full_text, segment_byte_range, font, options);
+    }
+
+    let mut lines = if let Some(lines) = final_lines {
+        lines.to_vec()
+    } else {
+        let broken = crate::fonts::line_layout::break_lines(
+            font,
+            text,
+            options.font_size,
+            options.region[2] - options.region[0],
+            ShapeOptions {
+                direction: Some(if mode == AdvancedTextMode::ParagraphReflowRtl {
+                    TextDirection::RightToLeft
+                } else {
+                    TextDirection::LeftToRight
+                }),
+            },
+        )?;
+        if broken.len() > horizontal_line_capacity(options)? {
+            return Err(WellfriendError::UnsupportedFeature(
+                "partitioned shaped text exceeds its frame capacity".into(),
+            ));
+        }
+        broken
+            .iter()
+            .map(|line| {
+                let logical_text = text[line.bytes.clone()].to_string();
+                let visual_text = logical_text
+                    .trim_end_matches(crate::fonts::hard_break::is_hard_break)
+                    .to_string();
+                ExplicitLayoutLine {
+                    logical_text,
+                    visual_text,
+                    inserted_visual_hyphen: false,
+                    bidi: None,
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    if lines.is_empty()
+        || lines
+            .iter()
+            .map(|line| line.logical_text.as_str())
+            .collect::<String>()
+            != text
+    {
+        return Err(WellfriendError::invalid_input(
+            "partition final lines must concatenate exactly to their segment text",
+        ));
+    }
+
+    let shape_options = ShapeOptions {
+        direction: Some(if mode == AdvancedTextMode::ParagraphReflowRtl {
+            TextDirection::RightToLeft
+        } else {
+            TextDirection::LeftToRight
+        }),
+    };
+    let full_bidi = crate::fonts::shaper::ParagraphBidi::new(full_text, shape_options)?;
+    let mut local_byte = 0usize;
+    for line in &mut lines {
+        let visual_base = line
+            .logical_text
+            .trim_end_matches(crate::fonts::hard_break::is_hard_break);
+        let allowed_visual = if line.inserted_visual_hyphen {
+            format!("{visual_base}-")
+        } else {
+            visual_base.to_string()
+        };
+        if line.visual_text != allowed_visual {
+            return Err(WellfriendError::UnsupportedFeature(
+                "partition visual line differs from logical text beyond one declared hyphen".into(),
+            ));
+        }
+        let global_start = segment_byte_range.start + local_byte;
+        let global_end = global_start + visual_base.len();
+        line.bidi = Some(if line.inserted_visual_hyphen {
+            let mut virtual_text = full_text.to_string();
+            virtual_text.insert(global_end, '-');
+            crate::fonts::shaper::ParagraphBidi::new(&virtual_text, shape_options)?
+                .line(global_start..global_end + 1)?
+        } else {
+            full_bidi.line(global_start..global_end)?
+        });
+        local_byte = local_byte
+            .checked_add(line.logical_text.len())
+            .ok_or_else(|| WellfriendError::ResourceLimit("partition line byte offset".into()))?;
+    }
+    if local_byte != text.len() {
+        return Err(WellfriendError::MalformedPdf(
+            "partition line byte coverage drifted".into(),
+        ));
+    }
+    let mut layout = layout_generated_explicit_lines(&lines, mode, font, options, None)?;
+    let mut line_byte_base = 0usize;
+    for (line, glyphs) in lines.iter().zip(layout.iter_mut()) {
+        for glyph in glyphs {
+            glyph.logical_byte_start = glyph.logical_byte_start.saturating_add(line_byte_base);
+        }
+        line_byte_base = line_byte_base
+            .checked_add(line.logical_text.len())
+            .ok_or_else(|| WellfriendError::ResourceLimit("partition line byte offset".into()))?;
+    }
+    if line_byte_base != text.len() {
+        return Err(WellfriendError::MalformedPdf(
+            "partition layout byte coverage drifted".into(),
+        ));
+    }
+    Ok(layout)
+}
+
+/// Put a reflow block immediately after its source text object, not above all
+/// page artwork. Locate by ET ordinal in the original stream, then relocate in
+/// the rewritten stream; byte offsets may have changed during ActualText cleanup.
+/// Single-line in-place writers remain preferable for overlapping text within BT.
+fn locate_source_paint_slots(
+    reader: &crate::PdfReader,
+    contents: &[(u32, u16)],
+    sources: &[(u32, u16, usize)],
+) -> Result<Vec<(usize, (u32, u16, usize))>> {
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    let unique_sources = sources.iter().copied().collect::<BTreeSet<_>>();
+    let mut wanted = BTreeMap::<(u32, u16), BTreeSet<usize>>::new();
+    for &(number, generation, offset) in &unique_sources {
+        if contents
+            .iter()
+            .filter(|&&item| item == (number, generation))
+            .count()
+            != 1
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "generated reflow source must have one exact page-content occurrence".into(),
+            ));
+        }
+        wanted
+            .entry((number, generation))
+            .or_default()
+            .insert(offset);
+    }
+
+    let decode = |object: &PdfObject| -> Result<Vec<u8>> {
+        let decoded = decode_stream_lossless_with_limits(
+            object,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )?;
+        if decoded.status != StreamDecodeStatus::Complete {
+            return Err(WellfriendError::UnsupportedFeature(
+                "opaque generated-reflow paint-order stream".into(),
+            ));
+        }
+        Ok(decoded.data)
+    };
+
+    // Page Contents members form one logical content sequence, and valid
+    // producers split container syntax as well as BT/ET state between members.
+    // Tokenize the joined sequence once, while retaining exact local offsets.
+    let mut data = Vec::new();
+    let mut segments = Vec::with_capacity(contents.len());
+    for (stream_index, &(number, generation)) in contents.iter().enumerate() {
+        let member = decode(&reader.get_object(number, generation)?)?;
+        let global_start = data.len();
+        data.extend_from_slice(&member);
+        let global_end = data.len();
+        segments.push(PageContentSegment {
+            stream_index,
+            object: number,
+            generation,
+            global_start,
+            global_end,
+        });
+        data.push(b'\n');
+    }
+    let mut active_slot = None;
+    let mut next_slot = 0usize;
+    let mut found = Vec::<(usize, (u32, u16, usize))>::new();
+    for token in lex_content(&data)? {
+        let segment = page_segment_for_range(&segments, token.start, token.end).ok_or_else(
+                || {
+                    WellfriendError::UnsupportedFeature(
+                        "generated-reflow paint anchor token crosses a physical /Contents stream boundary"
+                            .to_string(),
+                    )
+                },
+            )?;
+        let number = segment.object;
+        let generation = segment.generation;
+        let local_start = token.start - segment.global_start;
+        if wanted
+            .get(&(number, generation))
+            .is_some_and(|offsets| offsets.contains(&local_start))
+        {
+            if !matches!(&token.kind, LexicalKind::String(_, _)) {
+                return Err(WellfriendError::MalformedPdf(
+                    "generated reflow paint anchor is not a PDF string token".into(),
+                ));
+            }
+            let slot = active_slot.ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "generated reflow source string is outside a text object".into(),
+                )
+            })?;
+            found.push((slot, (number, generation, local_start)));
+        }
+        let LexicalKind::Word(operator) = &token.kind else {
+            continue;
+        };
+        match operator.as_str() {
+            "BT" => {
+                if active_slot.is_some() {
+                    return Err(WellfriendError::MalformedPdf(
+                        "nested source text objects are invalid".into(),
+                    ));
+                }
+                active_slot = Some(next_slot);
+                next_slot = next_slot.checked_add(1).ok_or_else(|| {
+                    WellfriendError::ResourceLimit("source text-object count".into())
+                })?;
+            }
+            "ET" if active_slot.take().is_none() => {
+                return Err(WellfriendError::MalformedPdf(
+                    "source content closes a text object that is not open".into(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if active_slot.is_some() {
+        return Err(WellfriendError::MalformedPdf(
+            "source content ends inside an open text object".into(),
+        ));
+    }
+    if found.len() != unique_sources.len() {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "generated reflow resolved {} of {} source paint anchors",
+            found.len(),
+            unique_sources.len()
+        )));
+    }
+    Ok(found)
+}
+
+fn assign_source_paint_slots(
+    reader: &crate::PdfReader,
+    contents: &[(u32, u16)],
+    spans: &mut [MultiRunSourceSpan],
+) -> Result<()> {
+    let sources = spans
+        .iter()
+        .map(|span| {
+            (
+                span.stream_object,
+                span.stream_generation,
+                span.byte_range[0],
+            )
+        })
+        .collect::<Vec<_>>();
+    let located = locate_source_paint_slots(reader, contents, &sources)?;
+    let by_source = located
+        .into_iter()
+        .map(|(slot, source)| (source, slot))
+        .collect::<BTreeMap<_, _>>();
+    for span in spans {
+        span.source_text_object = *by_source
+            .get(&(
+                span.stream_object,
+                span.stream_generation,
+                span.byte_range[0],
+            ))
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "source span lost its exact text-object paint slot".into(),
+                )
+            })?;
+    }
+    Ok(())
+}
+
+fn select_generated_reflow_source(
+    reader: &crate::PdfReader,
+    contents: &[(u32, u16)],
+    sources: &[(u32, u16, usize)],
+    policy: GeneratedPaintOrderPolicy,
+) -> Result<GeneratedPaintOrderDecision> {
+    let found = locate_source_paint_slots(reader, contents, sources)?;
+    if found.is_empty() {
+        return Err(WellfriendError::MalformedPdf(
+            "generated reflow has no source paint anchor".into(),
+        ));
+    }
+    let slots = found.iter().map(|item| item.0).collect::<BTreeSet<_>>();
+    if slots.len() > 1 && policy == GeneratedPaintOrderPolicy::RequireSingleSourceTextObject {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "ambiguous_generated_paint_order: selection spans {} source text objects; explicitly approve anchor_after_first_source_text_object or anchor_after_last_source_text_object",
+            slots.len()
+        )));
+    }
+    let chosen = match policy {
+        GeneratedPaintOrderPolicy::AnchorAfterLastSourceTextObject => found.last(),
+        GeneratedPaintOrderPolicy::RequireSingleSourceTextObject
+        | GeneratedPaintOrderPolicy::AnchorAfterFirstSourceTextObject => found.first(),
+    }
+    .ok_or_else(|| WellfriendError::MalformedPdf("generated source set disappeared".into()))?;
+    let (anchor_stream_object, anchor_stream_generation, anchor_decoded_byte_offset) = chosen.1;
+    Ok(GeneratedPaintOrderDecision {
+        policy,
+        source_text_objects: slots.len(),
+        anchor_stream_object,
+        anchor_stream_generation,
+        anchor_decoded_byte_offset,
+    })
+}
+
+fn anchor_generated_reflow_for_sources(
+    reader: &crate::PdfReader,
+    contents: &[(u32, u16)],
+    updates: &mut Vec<IncrementalObject>,
+    sources: &[(u32, u16, usize)],
+    policy: GeneratedPaintOrderPolicy,
+    generated_number: u32,
+    isolation_number: u32,
+) -> Result<GeneratedPaintOrderDecision> {
+    let decision = select_generated_reflow_source(reader, contents, sources, policy)?;
+    anchor_generated_reflow(
+        reader,
+        contents,
+        updates,
+        (
+            decision.anchor_stream_object,
+            decision.anchor_stream_generation,
+            decision.anchor_decoded_byte_offset,
+        ),
+        generated_number,
+        isolation_number,
+    )?;
+    Ok(decision)
+}
+
+fn anchor_generated_reflow(
+    reader: &crate::PdfReader,
+    contents: &[(u32, u16)],
+    updates: &mut Vec<IncrementalObject>,
+    source: (u32, u16, usize),
+    generated_number: u32,
+    isolation_number: u32,
+) -> Result<()> {
+    use crate::content::{concat_matrix, IDENTITY_MATRIX};
+    if contents
+        .iter()
+        .filter(|&&(n, g)| (n, g) == (source.0, source.1))
+        .count()
+        != 1
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "source paint anchor needs one page content occurrence".into(),
+        ));
+    }
+    let decode = |object: &PdfObject| -> Result<Vec<u8>> {
+        let decoded = decode_stream_lossless_with_limits(
+            object,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )?;
+        if decoded.status != StreamDecodeStatus::Complete {
+            return Err(WellfriendError::UnsupportedFeature(
+                "opaque paint-anchor stream".into(),
+            ));
+        }
+        Ok(decoded.data)
+    };
+    let mut matrix = IDENTITY_MATRIX;
+    let mut stack = Vec::new();
+    let mut marked_depth = 0usize;
+    let mut armed = false;
+    let mut anchor = None;
+    'streams: for &(number, generation) in contents {
+        let data = decode(&reader.get_object(number, generation)?)?;
+        let mut operands = Vec::new();
+        let mut et_ordinal = 0;
+        for token in lex_content(&data)? {
+            if (number, generation) == (source.0, source.1) && token.start == source.2 {
+                armed = true;
+            }
+            let LexicalKind::Word(operator) = &token.kind else {
+                operands.push(token);
+                continue;
+            };
+            match operator.as_str() {
+                "BMC" | "BDC" => {
+                    marked_depth = marked_depth.checked_add(1).ok_or_else(|| {
+                        WellfriendError::ResourceLimit("marked-content nesting".into())
+                    })?;
+                }
+                "EMC" => {
+                    marked_depth = marked_depth.checked_sub(1).ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "unbalanced source marked-content scope".into(),
+                        )
+                    })?;
+                }
+                "q" => {
+                    if stack.len() >= 4096 {
+                        return Err(WellfriendError::ResourceLimit("graphics nesting".into()));
+                    }
+                    stack.push(matrix);
+                }
+                "Q" => {
+                    matrix = stack.pop().ok_or_else(|| {
+                        WellfriendError::MalformedPdf("unbalanced source graphics state".into())
+                    })?
+                }
+                "cm" => {
+                    let numbers = operands
+                        .iter()
+                        .filter_map(|v| match v.kind {
+                            LexicalKind::Number(n) => Some(n),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    let value: [f64; 6] = numbers.try_into().map_err(|_| {
+                        WellfriendError::MalformedPdf("invalid source matrix".into())
+                    })?;
+                    matrix = concat_matrix(&value, &matrix);
+                }
+                "ET" => {
+                    if armed {
+                        anchor = Some((number, generation, et_ordinal, matrix, marked_depth));
+                        break 'streams;
+                    }
+                    et_ordinal += 1;
+                }
+                _ => {}
+            }
+            operands.clear();
+        }
+    }
+    let (number, generation, ordinal, m, source_marked_depth) = anchor.ok_or_else(|| {
+        WellfriendError::MalformedPdf("source paint anchor has no closing ET".into())
+    })?;
+    let determinant = m[0] * m[3] - m[1] * m[2];
+    if !m.iter().all(|v| v.is_finite()) || determinant.abs() < EPSILON {
+        return Err(WellfriendError::UnsupportedFeature(
+            "singular source paint transform".into(),
+        ));
+    }
+    let inverse = [
+        m[3] / determinant,
+        -m[1] / determinant,
+        -m[2] / determinant,
+        m[0] / determinant,
+        (m[2] * m[5] - m[3] * m[4]) / determinant,
+        (m[1] * m[4] - m[0] * m[5]) / determinant,
+    ];
+    let generated = updates
+        .iter()
+        .find(|o| o.number == generated_number)
+        .ok_or_else(|| WellfriendError::MalformedPdf("missing generated paint stream".into()))?;
+    let generated = decode(&generated.object)?;
+    let generated = std::str::from_utf8(&generated)
+        .map_err(|_| WellfriendError::MalformedPdf("generated stream is not text".into()))?;
+    let generated = generated.strip_prefix("Q\n").ok_or_else(|| {
+        WellfriendError::MalformedPdf("generated isolation prefix is missing".into())
+    })?;
+    // Reset text parameters, not clip/transparency/paint: those belong to the
+    // source occurrence. q/Q preserves the state for following original content.
+    let generated = generated.replace("BT\n", "BT\n0 Tc 0 Tw 100 Tz 0 Ts 0 Tr\n");
+    let insertion = format!(
+        "\nq\n{} cm\n{}\nQ\n",
+        inverse
+            .iter()
+            .map(|v| fmt_num(*v))
+            .collect::<Vec<_>>()
+            .join(" "),
+        generated
+    );
+    let object = if let Some(update) = updates
+        .iter()
+        .find(|o| (o.number, o.generation) == (number, generation))
+    {
+        update.object.clone()
+    } else {
+        reader.get_object(number, generation)?
+    };
+    let mut data = decode(&object)?;
+    let tokens = lex_content(&data)?;
+    let et_index = tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| matches!(&token.kind, LexicalKind::Word(op) if op == "ET"))
+        .nth(ordinal)
+        .map(|(index, _)| index)
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("rewritten source lost paint anchor".into())
+        })?;
+    let mut offset = tokens[et_index].end;
+    if source_marked_depth != 0 {
+        // Inserting inside a source /ActualText or structural wrapper makes
+        // that old logical owner consume the replacement. Move past only the
+        // immediately enclosing EMC operators; crossing any painting or state
+        // operator would change stacking order and therefore fails closed.
+        let mut remaining = source_marked_depth;
+        for token in &tokens[et_index + 1..] {
+            let LexicalKind::Word(operator) = &token.kind else {
+                continue;
+            };
+            if operator != "EMC" {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "generated reflow cannot leave a source marked-content scope across intervening operators"
+                        .into(),
+                ));
+            }
+            remaining -= 1;
+            offset = token.end;
+            if remaining == 0 {
+                break;
+            }
+        }
+        if remaining != 0 {
+            return Err(WellfriendError::UnsupportedFeature(
+                "generated reflow source marked-content scope closes in another content stream"
+                    .into(),
+            ));
+        }
+    }
+    data.splice(offset..offset, insertion.bytes());
+    let mut dict = object
+        .as_stream()
+        .map(|(dict, _)| dict.clone())
+        .ok_or_else(|| WellfriendError::MalformedPdf("paint anchor is not a stream".into()))?;
+    let raw = flate_encode_cancellable(&data, 6)?;
+    dict.insert("Filter", PdfObject::Name("FlateDecode".into()));
+    dict.remove("DecodeParms");
+    dict.insert("Length", PdfObject::Integer(raw.len() as i64));
+    updates.retain(|o| {
+        o.number != generated_number
+            && o.number != isolation_number
+            && (o.number, o.generation) != (number, generation)
     });
-    contents.extend(existing.iter().map(|(number, generation)| PdfObject::Reference {
-        number: *number,
-        generation: *generation,
-    }));
-    contents.push(PdfObject::Reference {
-        number: content_number,
-        generation: 0,
+    updates.push(IncrementalObject {
+        number,
+        generation,
+        object: PdfObject::Stream { dict, raw },
     });
+    Ok(())
+}
+
+fn original_page_contents(contents: &[(u32, u16)]) -> Vec<PdfObject> {
     contents
+        .iter()
+        .map(|&(number, generation)| PdfObject::Reference { number, generation })
+        .collect()
+}
+
+/// A final line from the linked-story paginator. Font bytes are resolved once
+/// before pagination; this writer uses exactly those bytes for shaping/embedding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StoryDecoration {
+    Fill {
+        rect: [f64; 4],
+        rgb: [f64; 3],
+    },
+    Stroke {
+        from: [f64; 2],
+        to: [f64; 2],
+        rgb: [f64; 3],
+        width: f64,
+    },
+}
+fn serialize_story_decorations(decorations: &[StoryDecoration]) -> Result<String> {
+    if decorations.len() > 100_000 {
+        return Err(WellfriendError::ResourceLimit(
+            "story decoration budget".into(),
+        ));
+    }
+    let mut output = String::new();
+    if !decorations.is_empty() {
+        output.push_str("/Artifact BMC\nq\n0 J 0 j [] 0 d\n");
+    }
+    for item in decorations {
+        crate::cancel::check_current_cancel("story grid painting")?;
+        let rgb = match item {
+            StoryDecoration::Fill { rgb, .. } | StoryDecoration::Stroke { rgb, .. } => rgb,
+        };
+        if rgb
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        {
+            return Err(WellfriendError::invalid_input(
+                "invalid story decoration colour",
+            ));
+        }
+        match item {
+            StoryDecoration::Fill { rect, rgb } => {
+                if rect.iter().any(|v| !v.is_finite()) || rect[0] >= rect[2] || rect[1] >= rect[3] {
+                    return Err(WellfriendError::invalid_input(
+                        "invalid table fill rectangle",
+                    ));
+                }
+                output.push_str(&format!(
+                    "{} {} {} rg {} {} {} {} re f\n",
+                    fmt_num(rgb[0]),
+                    fmt_num(rgb[1]),
+                    fmt_num(rgb[2]),
+                    fmt_num(rect[0]),
+                    fmt_num(rect[1]),
+                    fmt_num(rect[2] - rect[0]),
+                    fmt_num(rect[3] - rect[1])
+                ));
+            }
+            StoryDecoration::Stroke {
+                from,
+                to,
+                rgb,
+                width,
+            } => {
+                if from.iter().chain(to).any(|v| !v.is_finite())
+                    || !width.is_finite()
+                    || *width <= 0.0
+                    || *width > 100.0
+                {
+                    return Err(WellfriendError::invalid_input("invalid table stroke"));
+                }
+                output.push_str(&format!(
+                    "{} {} {} RG {} w {} {} m {} {} l S\n",
+                    fmt_num(rgb[0]),
+                    fmt_num(rgb[1]),
+                    fmt_num(rgb[2]),
+                    fmt_num(*width),
+                    fmt_num(from[0]),
+                    fmt_num(from[1]),
+                    fmt_num(to[0]),
+                    fmt_num(to[1])
+                ));
+            }
+        }
+    }
+    if !decorations.is_empty() {
+        output.push_str("Q\nEMC\n");
+    }
+    Ok(output)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryPaintStyleSpan {
+    /// UTF-8 byte range relative to `StoryPaintLine::text` after any trailing
+    /// hard-break carrier is removed. Spans form one exact contiguous
+    /// partition whenever this vector is non-empty.
+    pub range: [usize; 2],
+    pub font_size: f64,
+    pub rgb: [f64; 3],
+    #[serde(default)]
+    pub shaping: crate::fonts::shaper::OpenTypeSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryTabSegment {
+    /// UTF-8 range relative to the visible `StoryPaintLine::text`, excluding
+    /// the separating U+0009. Empty fields are retained for stop progression.
+    pub range: [usize; 2],
+    /// Inline-axis origin in PDF points relative to the line origin.
+    pub origin: f64,
+    pub width: f64,
+    /// Shift from the field's occupied-box origin to its emitted text origin.
+    pub leading_pad: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryPaintLine {
+    /// Controls glyph orientation and inline progression, not page rotation.
+    #[serde(default)]
+    pub writing_mode: crate::fonts::WritingMode,
+    pub text: String,
+    /// Physical PDF origin after logical-axis pagination.
+    pub x: f64,
+    pub baseline: f64,
+    /// Available inline extent: horizontal width or vertical column height.
+    pub width: f64,
+    pub font_size: f64,
+    pub font_index: usize,
+    #[serde(default)]
+    pub font_spans: Vec<crate::fonts::fallback::FontSpan>,
+    /// Effective inline styles for this line. Empty retains the legacy
+    /// paragraph-uniform fields above and below. A non-empty vector is a
+    /// complete line-relative partition and is intersected with `font_spans`
+    /// before the single bidi ordering pass used by both measurement and paint.
+    #[serde(default)]
+    pub style_spans: Vec<StoryPaintStyleSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tab_segments: Vec<StoryTabSegment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tab_decorations: Vec<crate::fonts::tab_stops::PositionedTabDecoration>,
+    pub rgb: [f64; 3],
+    pub rtl: bool,
+    #[serde(default)]
+    pub bidi: Option<crate::fonts::shaper::LineBidi>,
+    #[serde(default)]
+    pub shaping: crate::fonts::shaper::OpenTypeSettings,
+    /// Transaction-local logical owner key; the tag writer assigns the actual
+    /// page MCID after canonical page insertion has finalized object identities.
+    #[serde(default)]
+    pub tag_owner: Option<String>,
+    #[serde(default)]
+    pub artifact: bool,
+}
+
+pub(crate) fn story_paint_model_sha256(
+    lines: &[StoryPaintLine],
+    decorations: &[StoryDecoration],
+) -> Result<String> {
+    let model = serde_json::to_vec(&(lines, decorations)).map_err(|error| {
+        WellfriendError::MalformedPdf(format!("story paint model serialization failed: {error}"))
+    })?;
+    Ok(format!("{:x}", Sha256::digest(model)))
+}
+
+fn story_shape_model_sha256(
+    lines: &[StoryPaintLine],
+    painted_lines: &StoryPaintedLines,
+    fonts: &[crate::editing_transactions::ApprovedFontAsset],
+) -> Result<String> {
+    fn length(hasher: &mut Sha256, value: usize) {
+        hasher.update((value as u64).to_be_bytes());
+    }
+    fn bytes(hasher: &mut Sha256, value: &[u8]) {
+        length(hasher, value.len());
+        hasher.update(value);
+    }
+    fn number(hasher: &mut Sha256, value: f64) -> Result<()> {
+        if !value.is_finite() {
+            return Err(WellfriendError::MalformedPdf(
+                "non-finite value in story shape receipt".into(),
+            ));
+        }
+        hasher.update(value.to_bits().to_be_bytes());
+        Ok(())
+    }
+
+    if lines.len() != painted_lines.len() {
+        return Err(WellfriendError::MalformedPdf(
+            "story shape receipt line count mismatch".into(),
+        ));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"wellfriend-story-shape-v1\0");
+    length(&mut hasher, lines.len());
+    for (line, runs) in lines.iter().zip(painted_lines) {
+        hasher.update([match line.writing_mode {
+            crate::fonts::WritingMode::HorizontalTb => 0,
+            crate::fonts::WritingMode::VerticalRl => 1,
+            crate::fonts::WritingMode::VerticalLr => 2,
+        }]);
+        bytes(&mut hasher, line.text.as_bytes());
+        if story_carriers::needs_carrier(line) {
+            if !runs.is_empty() {
+                return Err(WellfriendError::MalformedPdf(
+                    "logical story carrier unexpectedly has shaped paint runs".into(),
+                ));
+            }
+            hasher.update([1]);
+            let carrier_font = get_fallback_font("Symbol").ok_or_else(|| {
+                WellfriendError::UnsupportedFeature(
+                    "bundled logical carrier font unavailable".into(),
+                )
+            })?;
+            hasher.update(Sha256::digest(carrier_font));
+            let encoded = crate::fonts::logical_carrier::encode(&line.text)?;
+            bytes(&mut hasher, encoded.as_bytes());
+        } else {
+            hasher.update([0]);
+        }
+        length(&mut hasher, runs.len());
+        for run in runs {
+            let font = fonts.get(run.font_index).ok_or_else(|| {
+                WellfriendError::MalformedPdf("story shape receipt refers to a missing font".into())
+            })?;
+            length(&mut hasher, run.font_index);
+            length(&mut hasher, run.style_index);
+            match run.inline_origin {
+                Some(origin) => {
+                    hasher.update([1]);
+                    number(&mut hasher, origin)?;
+                }
+                None => hasher.update([0]),
+            }
+            match run.tab_field {
+                Some(field) => {
+                    hasher.update([1]);
+                    length(&mut hasher, field);
+                }
+                None => hasher.update([0]),
+            }
+            bytes(&mut hasher, font.lookup_name.as_bytes());
+            hasher.update(Sha256::digest(&font.bytes));
+            length(&mut hasher, run.glyphs.len());
+            for glyph in &run.glyphs {
+                hasher.update(glyph.cid.to_be_bytes());
+                hasher.update(glyph.gid.to_be_bytes());
+                length(&mut hasher, glyph.logical_byte_start);
+                bytes(&mut hasher, glyph.visual_unicode.as_bytes());
+                match &glyph.to_unicode {
+                    Some(value) => {
+                        hasher.update([1]);
+                        bytes(&mut hasher, value.as_bytes());
+                    }
+                    None => hasher.update([0]),
+                }
+                number(&mut hasher, glyph.advance)?;
+                number(&mut hasher, glyph.offset_x)?;
+                number(&mut hasher, glyph.offset_y)?;
+                hasher.update([match glyph.orientation {
+                    VerticalGlyphOrientation::Upright => 0,
+                    VerticalGlyphOrientation::RotateClockwise => 1,
+                    VerticalGlyphOrientation::FontVerticalAlternate => 2,
+                }]);
+                number(&mut hasher, glyph.cross_advance)?;
+                number(&mut hasher, glyph.font_width)?;
+                match glyph.bounds {
+                    Some(bounds) => {
+                        hasher.update([1]);
+                        for value in bounds {
+                            number(&mut hasher, value)?;
+                        }
+                    }
+                    None => hasher.update([0]),
+                }
+            }
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn story_paint_styles(
+    line: &StoryPaintLine,
+    visible_len: usize,
+) -> Result<Vec<StoryPaintStyleSpan>> {
+    if line.style_spans.is_empty() {
+        return Ok((visible_len > 0)
+            .then_some(StoryPaintStyleSpan {
+                range: [0, visible_len],
+                font_size: line.font_size,
+                rgb: line.rgb,
+                shaping: line.shaping.clone(),
+            })
+            .into_iter()
+            .collect());
+    }
+    if visible_len == 0 || line.style_spans.len() > 100_000 {
+        return Err(WellfriendError::invalid_input(
+            "invalid story paint-style partition",
+        ));
+    }
+    let mut cursor = 0usize;
+    for span in &line.style_spans {
+        if span.range[0] != cursor
+            || span.range[0] >= span.range[1]
+            || span.range[1] > visible_len
+            || !line.text.is_char_boundary(span.range[0])
+            || !line.text.is_char_boundary(span.range[1])
+            || !span.font_size.is_finite()
+            || span.font_size <= 0.0
+            || span.font_size > 10_000.0
+            || span
+                .rgb
+                .iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return Err(WellfriendError::invalid_input(
+                "invalid story paint-style partition",
+            ));
+        }
+        cursor = span.range[1];
+    }
+    if cursor != visible_len {
+        return Err(WellfriendError::invalid_input(
+            "story paint styles do not cover the visible line",
+        ));
+    }
+    Ok(line.style_spans.clone())
+}
+
+fn slice_story_paint_styles(
+    styles: &[StoryPaintStyleSpan],
+    range: std::ops::Range<usize>,
+) -> Vec<StoryPaintStyleSpan> {
+    styles
+        .iter()
+        .filter_map(|style| {
+            let start = style.range[0].max(range.start);
+            let end = style.range[1].min(range.end);
+            (start < end).then_some(StoryPaintStyleSpan {
+                range: [start - range.start, end - range.start],
+                font_size: style.font_size,
+                rgb: style.rgb,
+                shaping: style.shaping.clone(),
+            })
+        })
+        .collect()
+}
+
+fn validate_story_tab_segments(line: &StoryPaintLine, visible: &str) -> Result<()> {
+    use crate::fonts::tab_stops::{PositionedTabDecoration, TabLeader};
+    if line.tab_decorations.len() > 8192
+        || (!line.tab_decorations.is_empty() && !visible.contains('\t'))
+    {
+        return Err(WellfriendError::invalid_input(
+            "invalid story tab-decoration plan",
+        ));
+    }
+    for decoration in &line.tab_decorations {
+        let valid = match *decoration {
+            PositionedTabDecoration::Leader { from, to, leader } => {
+                leader != TabLeader::None
+                    && from.is_finite()
+                    && to.is_finite()
+                    && from >= 0.0
+                    && from < to
+                    && to <= line.width + 1e-7
+            }
+            PositionedTabDecoration::Bar { position } => {
+                position.is_finite() && position >= 0.0 && position <= line.width + 1e-7
+            }
+        };
+        if !valid {
+            return Err(WellfriendError::invalid_input(
+                "invalid story tab-decoration geometry",
+            ));
+        }
+    }
+    if line.tab_segments.is_empty() {
+        if visible.contains('\t') && !crate::fonts::logical_carrier::is_text(visible) {
+            return Err(WellfriendError::invalid_input(
+                "story line contains U+0009 without an exact tab-field plan",
+            ));
+        }
+        return Ok(());
+    }
+    let mut cursor = 0usize;
+    let mut previous_end = 0.0f64;
+    for (index, segment) in line.tab_segments.iter().enumerate() {
+        let [start, end] = segment.range;
+        if start != cursor
+            || start > end
+            || end > visible.len()
+            || !visible.is_char_boundary(start)
+            || !visible.is_char_boundary(end)
+            || !segment.origin.is_finite()
+            || !segment.width.is_finite()
+            || !segment.leading_pad.is_finite()
+            || segment.origin < -1e-7
+            || segment.width < 0.0
+            || segment.leading_pad < 0.0
+            || segment.leading_pad > segment.width + 1e-7
+            || segment.origin + 1e-7 < previous_end
+        {
+            return Err(WellfriendError::invalid_input(
+                "invalid or overlapping story tab-field plan",
+            ));
+        }
+        if index + 1 < line.tab_segments.len() {
+            if visible.as_bytes().get(end) != Some(&b'\t') {
+                return Err(WellfriendError::invalid_input(
+                    "story tab-field plan does not bind its U+0009 separator",
+                ));
+            }
+            cursor = end + 1;
+        } else {
+            cursor = end;
+        }
+        previous_end = segment.origin + segment.width;
+    }
+    if cursor != visible.len() || !visible.contains('\t') || previous_end > line.width + 1e-7 {
+        return Err(WellfriendError::invalid_input(
+            "story tab-field plan does not cover the visible line or exceeds its extent",
+        ));
+    }
+    Ok(())
+}
+
+fn serialize_story_tab_decorations(line: &StoryPaintLine) -> Result<String> {
+    use crate::fonts::tab_stops::{PositionedTabDecoration, TabLeader};
+    if line.tab_decorations.is_empty() {
+        return Ok(String::new());
+    }
+    let stroke = (line.font_size / 18.0).clamp(0.35, 1.5);
+    let mut output = format!(
+        "/Artifact BMC\nq\n{} {} {} RG\n{} w\n",
+        fmt_num(line.rgb[0]),
+        fmt_num(line.rgb[1]),
+        fmt_num(line.rgb[2]),
+        fmt_num(stroke)
+    );
+    for decoration in &line.tab_decorations {
+        crate::cancel::check_current_cancel("story tab-decoration serialization")?;
+        match *decoration {
+            PositionedTabDecoration::Leader { from, to, leader } => {
+                let inset = stroke.max(line.font_size * 0.08);
+                if to - from <= inset * 2.0 {
+                    continue;
+                }
+                match leader {
+                    TabLeader::Dots => output.push_str(&format!(
+                        "1 J [{} {}] 0 d\n",
+                        fmt_num(stroke * 0.01),
+                        fmt_num(line.font_size * 0.30)
+                    )),
+                    TabLeader::Dashes => output.push_str(&format!(
+                        "0 J [{} {}] 0 d\n",
+                        fmt_num(line.font_size * 0.34),
+                        fmt_num(line.font_size * 0.22)
+                    )),
+                    TabLeader::Solid => output.push_str("0 J [] 0 d\n"),
+                    TabLeader::None => {
+                        return Err(WellfriendError::invalid_input(
+                            "empty story tab leader decoration",
+                        ));
+                    }
+                }
+                if line.writing_mode.is_vertical() {
+                    let x = line.x + line.font_size * 0.08;
+                    output.push_str(&format!(
+                        "{} {} m {} {} l S\n",
+                        fmt_num(x),
+                        fmt_num(line.baseline - from - inset),
+                        fmt_num(x),
+                        fmt_num(line.baseline - to + inset)
+                    ));
+                } else {
+                    let y = line.baseline + line.font_size * 0.08;
+                    output.push_str(&format!(
+                        "{} {} m {} {} l S\n",
+                        fmt_num(line.x + from + inset),
+                        fmt_num(y),
+                        fmt_num(line.x + to - inset),
+                        fmt_num(y)
+                    ));
+                }
+            }
+            PositionedTabDecoration::Bar { position } => {
+                output.push_str("0 J [] 0 d\n");
+                if line.writing_mode.is_vertical() {
+                    let y = line.baseline - position;
+                    output.push_str(&format!(
+                        "{} {} m {} {} l S\n",
+                        fmt_num(line.x - line.font_size * 0.25),
+                        fmt_num(y),
+                        fmt_num(line.x + line.font_size * 0.75),
+                        fmt_num(y)
+                    ));
+                } else {
+                    let x = line.x + position;
+                    output.push_str(&format!(
+                        "{} {} m {} {} l S\n",
+                        fmt_num(x),
+                        fmt_num(line.baseline - line.font_size * 0.25),
+                        fmt_num(x),
+                        fmt_num(line.baseline + line.font_size * 0.75)
+                    ));
+                }
+            }
+        }
+    }
+    output.push_str("Q\nEMC\n");
+    Ok(output)
+}
+
+fn shape_story_field(
+    line: &StoryPaintLine,
+    visual: &str,
+    fonts: &[crate::editing_transactions::ApprovedFontAsset],
+    font_metrics: &[Option<crate::fonts::line_layout::PreparedFontMetrics<'_>>],
+    region: [f64; 4],
+) -> Result<Vec<(usize, usize, Vec<GeneratedGlyph>)>> {
+    if visual.contains('\t') || !line.tab_segments.is_empty() {
+        return Err(WellfriendError::invalid_input(
+            "story field shaping received unresolved tab layout",
+        ));
+    }
+    let bidi = if let Some(bidi) = &line.bidi {
+        bidi.clone()
+    } else {
+        crate::fonts::shaper::resolve_line_bidi(
+            visual,
+            0..visual.len(),
+            ShapeOptions {
+                direction: Some(if line.rtl {
+                    TextDirection::RightToLeft
+                } else {
+                    TextDirection::LeftToRight
+                }),
+            },
+        )?
+    };
+    let spans = if line.font_spans.is_empty() && !visual.is_empty() {
+        vec![crate::fonts::fallback::FontSpan {
+            range: [0, visual.len()],
+            font_index: line.font_index,
+        }]
+    } else {
+        crate::fonts::fallback::slice_spans(&line.font_spans, 0..visual.len())
+    };
+    let styles = story_paint_styles(line, visual.len())?;
+    let style_ranges = styles.iter().map(|style| style.range).collect::<Vec<_>>();
+    if line.writing_mode.is_vertical() {
+        if line.style_spans.is_empty() {
+            return Ok(story_vertical::shape_line(
+                line,
+                visual,
+                &bidi,
+                &spans,
+                fonts,
+                font_metrics,
+                region,
+            )?
+            .into_iter()
+            .map(|(font_index, glyphs)| (font_index, 0usize, glyphs))
+            .collect());
+        }
+        let styled_spans =
+            crate::fonts::fallback::intersect_styled_spans(&spans, &style_ranges, visual.len())?;
+        return story_vertical::shape_styled_line(
+            line,
+            visual,
+            &bidi,
+            &styled_spans,
+            &styles,
+            fonts,
+            font_metrics,
+            region,
+        );
+    }
+    if !line.style_spans.is_empty() {
+        let styled_spans =
+            crate::fonts::fallback::intersect_styled_spans(&spans, &style_ranges, visual.len())?;
+        let settings = styles
+            .iter()
+            .map(|style| style.shaping.clone())
+            .collect::<Vec<_>>();
+        let runs = crate::fonts::fallback::shape_styled_line(
+            visual,
+            &bidi,
+            &styled_spans,
+            fonts,
+            &settings,
+        )?;
+        let width = runs
+            .iter()
+            .map(|run| {
+                run.shaped
+                    .glyphs
+                    .iter()
+                    .map(|glyph| glyph.advance.abs())
+                    .sum::<f64>()
+                    * styles[run.style_index].font_size
+                    / 1000.0
+            })
+            .sum::<f64>();
+        if width > line.width + 1e-7 {
+            return Err(WellfriendError::MalformedPdf(
+                "styled story measurement/serialization width mismatch".into(),
+            ));
+        }
+        return runs
+            .into_iter()
+            .map(|run| {
+                Ok((
+                    run.font_index,
+                    run.style_index,
+                    generated_glyphs_from_shaped(
+                        &visual[run.range],
+                        &fonts[run.font_index].bytes,
+                        run.shaped,
+                    )?,
+                ))
+            })
+            .collect();
+    }
+    let runs = crate::fonts::fallback::shape_line(visual, &bidi, &spans, fonts, &line.shaping)?;
+    let width = crate::fonts::fallback::measure_line(&runs, fonts, line.font_size)?.advance;
+    if width > line.width + 1e-7 {
+        return Err(WellfriendError::MalformedPdf(
+            "story measurement/serialization width mismatch".into(),
+        ));
+    }
+    runs.into_iter()
+        .map(|run| {
+            Ok((
+                run.font_index,
+                0usize,
+                generated_glyphs_from_shaped(
+                    &visual[run.range],
+                    &fonts[run.font_index].bytes,
+                    run.shaped,
+                )?,
+            ))
+        })
+        .collect()
+}
+
+/// Persistent frame ownership is a marked-content range, not a word search or
+/// an object number (the canonical writer may renumber objects). The digest is
+/// checked before every mutation, including an empty frame's next insertion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoryFrameBinding {
+    pub key: String,
+    pub content_sha256: String,
+    /// Canonical transaction model stamped into the owned marked-content
+    /// dictionary. Older uniform frames omit it; every newly written frame
+    /// binds its exact lines, style/font partitions, bidi context and decorations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_sha256: Option<String>,
+    /// Exact shaped-run receipt produced by the writer. It binds the approved
+    /// font programs and every emitted glyph id, CID, mapping, advance,
+    /// offset, orientation and outline metric before publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape_sha256: Option<String>,
+}
+
+pub(crate) struct StoryFrameWrite {
+    pub bytes: Vec<u8>,
+    pub binding: StoryFrameBinding,
+}
+
+struct StoryOwnedRange {
+    stream: (u32, u16),
+    range: std::ops::Range<usize>,
+    binding: StoryFrameBinding,
+}
+
+fn marked_sha256_property(
+    operands: &[LexicalToken],
+    key: &str,
+    label: &str,
+) -> Result<Option<String>> {
+    match marked_property(operands, key)?.map(|value| &value.kind) {
+        Some(LexicalKind::String(_, bytes)) => {
+            let digest = std::str::from_utf8(bytes)
+                .map_err(|_| WellfriendError::invalid_input(format!("invalid {label} digest")))?;
+            if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(WellfriendError::invalid_input(format!(
+                    "invalid {label} digest"
+                )));
+            }
+            Ok(Some(digest.to_ascii_lowercase()))
+        }
+        None => Ok(None),
+        _ => Err(WellfriendError::invalid_input(format!(
+            "{label} digest is not a string"
+        ))),
+    }
+}
+
+fn story_owned_ranges(
+    reader: &crate::PdfReader,
+    contents: &[(u32, u16)],
+) -> Result<Vec<StoryOwnedRange>> {
+    let mut found = Vec::new();
+    let mut keys = BTreeSet::new();
+    let mut owners: Vec<Option<((u32, u16), usize, String, Option<String>, Option<String>)>> =
+        Vec::new();
+    let mut owner_origins: Vec<((u32, u16), usize, String)> = Vec::new();
+    for &(number, generation) in contents {
+        crate::cancel::check_current_cancel("story ownership binding")?;
+        let object = reader.get_object(number, generation)?;
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )?;
+        if decoded.status != StreamDecodeStatus::Complete {
+            return Err(WellfriendError::UnsupportedFeature(
+                "opaque story owner stream".into(),
+            ));
+        }
+        let mut operands = Vec::new();
+        for token in lex_content(&decoded.data)? {
+            let LexicalKind::Word(operator) = &token.kind else {
+                operands.push(token);
+                continue;
+            };
+            match operator.as_str() {
+                "BDC" | "BMC" => {
+                    if owners.len() >= 256 {
+                        return Err(WellfriendError::ResourceLimit(
+                            "story marked-content nesting".into(),
+                        ));
+                    }
+                    let property = if operator == "BDC" {
+                        marked_property(&operands, "WFStoryFrame")?
+                    } else {
+                        None
+                    };
+                    let paint = if operator == "BDC" {
+                        marked_sha256_property(&operands, "WFStoryPaint", "story paint")?
+                    } else {
+                        None
+                    };
+                    let shape = if operator == "BDC" {
+                        marked_sha256_property(&operands, "WFStoryShape", "story shape")?
+                    } else {
+                        None
+                    };
+                    let owner = match property.map(|v| &v.kind) {
+                        Some(LexicalKind::String(_, bytes)) => {
+                            let key = std::str::from_utf8(bytes)
+                                .map_err(|_| WellfriendError::invalid_input("invalid story key"))?;
+                            if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+                                return Err(WellfriendError::invalid_input(
+                                    "invalid story owner key",
+                                ));
+                            }
+                            Some((
+                                (number, generation),
+                                operands.first().map_or(token.start, |t| t.start),
+                                key.to_owned(),
+                                paint,
+                                shape,
+                            ))
+                        }
+                        None => None,
+                        _ => {
+                            return Err(WellfriendError::invalid_input(
+                                "story owner key is not a string",
+                            ))
+                        }
+                    };
+                    owners.push(owner);
+                    owner_origins.push(((number, generation), token.start, operator.clone()));
+                }
+                "EMC" => {
+                    let owner = owners.pop().ok_or_else(|| {
+                        WellfriendError::MalformedPdf("unbalanced story marked content".into())
+                    })?;
+                    owner_origins.pop().ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "story marked-content provenance stack underflow".into(),
+                        )
+                    })?;
+                    if let Some((stream, start, key, paint_sha256, shape_sha256)) = owner {
+                        if stream != (number, generation) {
+                            return Err(WellfriendError::UnsupportedFeature(
+                                "story owner crosses a stream boundary".into(),
+                            ));
+                        }
+                        if !keys.insert(key.clone()) {
+                            return Err(WellfriendError::UnsupportedFeature(
+                                "ambiguous duplicate story frame owner".into(),
+                            ));
+                        }
+                        let range = start..token.end;
+                        found.push(StoryOwnedRange {
+                            stream,
+                            range: range.clone(),
+                            binding: StoryFrameBinding {
+                                key,
+                                content_sha256: format!(
+                                    "{:x}",
+                                    Sha256::digest(&decoded.data[range])
+                                ),
+                                paint_sha256,
+                                shape_sha256,
+                            },
+                        });
+                    }
+                }
+                _ => {}
+            }
+            operands.clear();
+        }
+    }
+    if !owners.is_empty() {
+        let story_streams = owners
+            .iter()
+            .filter_map(|owner| owner.as_ref().map(|(stream, _, _, _, _)| *stream))
+            .collect::<BTreeSet<_>>();
+        let origins = owner_origins
+            .iter()
+            .map(|(stream, offset, operator)| {
+                format!("{} {}@{offset}:{operator}", stream.0, stream.1)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        return Err(WellfriendError::MalformedPdf(
+            format!(
+                "unterminated marked content after page streams: depth={}, story_depth={}, story_streams={story_streams:?}, origins=[{origins}]",
+                owners.len(),
+                owners.iter().filter(|owner| owner.is_some()).count(),
+            ),
+        ));
+    }
+    Ok(found)
+}
+
+fn locate_story_frame(
+    reader: &crate::PdfReader,
+    contents: &[(u32, u16)],
+    key: &str,
+) -> Result<Option<StoryOwnedRange>> {
+    if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(WellfriendError::invalid_input("invalid story owner key"));
+    }
+    Ok(story_owned_ranges(reader, contents)?
+        .into_iter()
+        .find(|r| r.binding.key == key))
+}
+
+pub(crate) fn story_frame_inventory(
+    engine: &ContentEngine,
+) -> Result<BTreeMap<String, (usize, StoryFrameBinding)>> {
+    let mut owners = BTreeMap::new();
+    for page in engine.document().get_pages()? {
+        for owner in story_owned_ranges(engine.document().reader(), &page.contents)? {
+            if owners.len() >= 4096 * 64 {
+                return Err(WellfriendError::ResourceLimit(
+                    "story frame inventory limit".into(),
+                ));
+            }
+            if owners
+                .insert(owner.binding.key.clone(), (page.page_number, owner.binding))
+                .is_some()
+            {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "story frame occurs on multiple pages".into(),
+                ));
+            }
+        }
+    }
+    Ok(owners)
+}
+
+pub fn bind_story_frame(
+    input: &[u8],
+    page_number: usize,
+    key: &str,
+) -> Result<Option<StoryFrameBinding>> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    bind_story_frame_in_document(&engine, page_number, key)
+}
+
+pub(crate) fn bind_story_frame_in_document(
+    engine: &ContentEngine,
+    page_number: usize,
+    key: &str,
+) -> Result<Option<StoryFrameBinding>> {
+    let page = engine.document().get_page(page_number)?;
+    Ok(locate_story_frame(engine.document().reader(), &page.contents, key)?.map(|r| r.binding))
+}
+
+pub(crate) fn replace_story_frame(
+    input: &[u8],
+    page_number: usize,
+    range: [usize; 2],
+    region: [f64; 4],
+    lines: &[StoryPaintLine],
+    decorations: &[StoryDecoration],
+    fonts: &[crate::editing_transactions::ApprovedFontAsset],
+    signature_override: bool,
+    owner_key: &str,
+    expected_owner: Option<&StoryFrameBinding>,
+) -> Result<StoryFrameWrite> {
+    let original = ContentEngine::open_bytes(input.to_vec())?;
+    let page = original.document().get_page(page_number)?;
+    let owned = locate_story_frame(original.document().reader(), &page.contents, owner_key)?;
+    if expected_owner != owned.as_ref().map(|r| &r.binding) {
+        return Err(WellfriendError::invalid_input(
+            "story owner changed or is not approved",
+        ));
+    }
+    let source = if owned.is_none() {
+        let model = analyze_multi_run_text_range(input, page_number)?;
+        let anchor = model
+            .source_spans
+            .iter()
+            .find(|s| s.logical_range[0] <= range[0] && s.logical_range[1] > range[0])
+            .or_else(|| model.source_spans.last())
+            .ok_or_else(|| {
+                WellfriendError::UnsupportedFeature("story frame needs a source text anchor".into())
+            })?;
+        Some((
+            anchor.stream_object,
+            anchor.stream_generation,
+            anchor.byte_range[0],
+        ))
+    } else {
+        None
+    };
+    let options = AdvancedTextEditOptions {
+        region,
+        signature_policy_override: signature_override,
+        ..AdvancedTextEditOptions::default()
+    };
+    let mut bytes = input.to_vec();
+    if owned.is_none() && range[0] != range[1] {
+        bytes = edit_multi_run_text_range(
+            input,
+            &MultiRunTextRangeRequest {
+                page: page_number,
+                logical_start: range[0],
+                logical_end: range[1],
+                replacement_text: String::new(),
+                mode: AdvancedTextMode::ParagraphReflowHorizontal,
+                style_policy: MultiRunStylePolicy::ExplicitSupplied,
+                options: options.clone(),
+                final_lines: None,
+            },
+            None,
+        )?
+        .0;
+    }
+    let edited = ContentEngine::open_bytes(bytes)?;
+    let reader = edited.document().reader();
+    let mut updates = Vec::new();
+    // Use the original reader for ET identity and the current revision for the
+    // rewritten bytes. This avoids all stale-token-offset batch comparisons.
+    for &(number, generation) in &page.contents {
+        updates.push(IncrementalObject {
+            number,
+            generation,
+            object: reader.get_object(number, generation)?,
+        });
+    }
+    let base = reserve_advanced_object_block(
+        reader,
+        u32::try_from(
+            fonts
+                .len()
+                .saturating_mul(12)
+                .saturating_add(2 + story_carriers::OBJECT_COUNT as usize),
+        )
+        .map_err(|_| WellfriendError::ResourceLimit("story font object budget".into()))?,
+        "story frame",
+    )?;
+    let mut resources = page.resources.clone();
+    let mut font_resources = resolve_advanced_editing_dict(resources.get("Font"), reader)
+        .unwrap_or_else(crate::PdfDictionary::empty);
+    let used_story_fonts = lines
+        .iter()
+        .flat_map(|line| {
+            if line.font_spans.is_empty() {
+                vec![line.font_index]
+            } else {
+                line.font_spans
+                    .iter()
+                    .map(|span| span.font_index)
+                    .collect::<Vec<_>>()
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    let story_font_metrics = fonts
+        .iter()
+        .enumerate()
+        .map(|(index, font)| {
+            if !used_story_fonts.contains(&index) {
+                return Ok(None);
+            }
+            crate::fonts::line_layout::PreparedFontMetrics::new(&font.bytes).map(Some)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut glyphs_by_font = BTreeMap::<(usize, bool), Vec<GeneratedGlyph>>::new();
+    let mut painted_lines: StoryPaintedLines = Vec::new();
+    for line in lines {
+        crate::cancel::check_current_cancel("story line shaping")?;
+        let visual = line
+            .text
+            .trim_end_matches(crate::fonts::hard_break::is_hard_break);
+        validate_story_tab_segments(line, visual)?;
+        if story_carriers::needs_carrier(line) {
+            // Pure logical controls do not depend on the selected paint font.
+            // The private carrier has explicit empty outlines and zero metrics.
+            painted_lines.push(Vec::new());
+            continue;
+        }
+        let mut runs = Vec::new();
+        if line.tab_segments.is_empty() {
+            runs.extend(
+                shape_story_field(line, visual, fonts, &story_font_metrics, region)?
+                    .into_iter()
+                    .map(|(font_index, style_index, glyphs)| StoryPaintedRun {
+                        font_index,
+                        style_index,
+                        inline_origin: None,
+                        tab_field: None,
+                        glyphs,
+                    }),
+            );
+        } else {
+            let full_bidi = line.bidi.as_ref().ok_or_else(|| {
+                WellfriendError::invalid_input("tabbed story line lost paragraph bidi context")
+            })?;
+            let full_styles = story_paint_styles(line, visual.len())?;
+            for (field_index, segment) in line.tab_segments.iter().enumerate() {
+                let range = segment.range[0]..segment.range[1];
+                if range.is_empty() {
+                    continue;
+                }
+                let mut field = line.clone();
+                field.text = visual[range.clone()].to_owned();
+                field.width = segment.width;
+                field.font_spans =
+                    crate::fonts::fallback::slice_spans(&line.font_spans, range.clone());
+                field.style_spans = slice_story_paint_styles(&full_styles, range.clone());
+                field.tab_segments.clear();
+                field.bidi = Some(full_bidi.slice(visual, range, full_bidi.rtl)?);
+                let field_styles = story_paint_styles(&field, field.text.len())?;
+                for (font_index, style_index, mut glyphs) in
+                    shape_story_field(&field, &field.text, fonts, &story_font_metrics, region)?
+                {
+                    for glyph in &mut glyphs {
+                        glyph.logical_byte_start = glyph
+                            .logical_byte_start
+                            .checked_add(segment.range[0])
+                            .ok_or_else(|| {
+                                WellfriendError::ResourceLimit(
+                                    "tab field glyph provenance overflow".into(),
+                                )
+                            })?;
+                    }
+                    let effective = field_styles.get(style_index).ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "tab field paint style index is out of bounds".into(),
+                        )
+                    })?;
+                    let effective_start = segment.range[0]
+                        .checked_add(effective.range[0])
+                        .ok_or_else(|| {
+                            WellfriendError::ResourceLimit(
+                                "tab field paint-style provenance overflow".into(),
+                            )
+                        })?;
+                    let effective_end = segment.range[0]
+                        .checked_add(effective.range[1])
+                        .ok_or_else(|| {
+                            WellfriendError::ResourceLimit(
+                                "tab field paint-style provenance overflow".into(),
+                            )
+                        })?;
+                    let style_index = full_styles
+                        .iter()
+                        .position(|style| {
+                            style.range[0] <= effective_start
+                                && effective_end <= style.range[1]
+                                && style.font_size == effective.font_size
+                                && style.rgb == effective.rgb
+                                && style.shaping == effective.shaping
+                        })
+                        .ok_or_else(|| {
+                            WellfriendError::MalformedPdf(
+                                "tab field paint style is not part of its source line".into(),
+                            )
+                        })?;
+                    runs.push(StoryPaintedRun {
+                        font_index,
+                        style_index,
+                        inline_origin: Some(segment.origin + segment.leading_pad),
+                        tab_field: Some(field_index),
+                        glyphs,
+                    });
+                }
+            }
+        }
+        let mut painted_runs = Vec::new();
+        for mut run in runs {
+            let font = &fonts[run.font_index];
+            let _face = ttf_parser::Face::parse(&font.bytes, 0).map_err(|_| {
+                WellfriendError::UnsupportedFeature("story font is not sfnt".into())
+            })?;
+            let all = glyphs_by_font
+                .entry((run.font_index, line.writing_mode.is_vertical()))
+                .or_default();
+            for glyph in &mut run.glyphs {
+                glyph.cid = u16::try_from(all.len() + 1).map_err(|_| {
+                    WellfriendError::ResourceLimit(
+                        "story frame exceeds 65535 glyph character codes per font".into(),
+                    )
+                })?;
+                all.push(glyph.clone());
+            }
+            painted_runs.push(run);
+        }
+        painted_lines.push(painted_runs);
+    }
+    // Embed a font once per frame, not once per line. CIDs above share one
+    // deterministic per-font namespace across every line in this frame.
+    for (&(index, vertical), glyphs) in &glyphs_by_font {
+        let object_base = base + index as u32 * 12 + u32::from(vertical) * 6;
+        let resource = format!("WFStory{object_base}");
+        if font_resources.contains_key(&resource) {
+            return Err(WellfriendError::MalformedPdf(
+                "story font resource collision".into(),
+            ));
+        }
+        let mut font_updates = build_type0_font_objects(
+            &fonts[index].bytes,
+            glyphs,
+            vertical,
+            object_base,
+            object_base + 1,
+            object_base + 2,
+            object_base + 3,
+            object_base + 4,
+            object_base + 5,
+        )?;
+        // Preserve the approved lookup alias across save/reopen. The embedded
+        // face may be subsetted, so a hash of the original bytes is not an alias.
+        for update in &mut font_updates {
+            if let Some(dict) = update.object.as_dict_mut() {
+                if dict.get_name("Subtype") == Some("Type0") {
+                    dict.insert(
+                        "WFStoryOwner",
+                        PdfObject::String(owner_key.as_bytes().to_vec()),
+                    );
+                }
+                for key in ["BaseFont", "FontName"] {
+                    if let Some(name) = dict.get_name(key).map(str::to_owned) {
+                        let tag = name.split_once('+').map_or("WFEDIT", |(tag, _)| tag);
+                        dict.insert(
+                            key,
+                            PdfObject::Name(format!("{tag}+{}", fonts[index].lookup_name)),
+                        );
+                    }
+                }
+            }
+        }
+        updates.extend(font_updates);
+        font_resources.insert(
+            resource,
+            PdfObject::Reference {
+                number: object_base + 5,
+                generation: 0,
+            },
+        );
+    }
+    let carrier_base = base + fonts.len() as u32 * 12;
+    let carriers = story_carriers::CarrierFonts::prepare(
+        lines,
+        owner_key,
+        carrier_base,
+        &mut font_resources,
+        &mut updates,
+    )?;
+    let paint_sha256 = story_paint_model_sha256(lines, decorations)?;
+    let shape_sha256 = story_shape_model_sha256(lines, &painted_lines, fonts)?;
+    let mut content = format!(
+        "/Span << /WFStoryFrame <{}> /WFStoryPaint <{}> /WFStoryShape <{}> >> BDC\n",
+        owner_key
+            .bytes()
+            .map(|b| format!("{b:02X}"))
+            .collect::<String>(),
+        paint_sha256
+            .bytes()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<String>(),
+        shape_sha256
+            .bytes()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<String>()
+    );
+    content.push_str(&serialize_story_decorations(decorations)?);
+    for (line, runs) in lines.iter().zip(painted_lines) {
+        crate::cancel::check_current_cancel("story line serialization")?;
+        content.push_str(&serialize_story_tab_decorations(line)?);
+        let styles = story_paint_styles(
+            line,
+            line.text
+                .trim_end_matches(crate::fonts::hard_break::is_hard_break)
+                .len(),
+        )?;
+        let natural = runs
+            .iter()
+            .map(|run| {
+                run.glyphs.iter().map(|g| g.advance.abs()).sum::<f64>()
+                    * styles
+                        .get(run.style_index)
+                        .map_or(line.font_size, |style| style.font_size)
+                    / 1000.0
+            })
+            .sum::<f64>();
+        let mut pen = line.x
+            + if line.tab_segments.is_empty() && line.rtl {
+                line.width - natural
+            } else {
+                0.0
+            };
+        let tag_marker = if let Some(key) = &line.tag_owner {
+            if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(WellfriendError::invalid_input(
+                    "invalid story paragraph tag owner",
+                ));
+            }
+            format!(
+                " /WFStoryParagraph <{}>",
+                key.bytes().map(|b| format!("{b:02X}")).collect::<String>()
+            )
+        } else {
+            String::new()
+        };
+        if line.artifact {
+            content.push_str("/Artifact BMC\n");
+        }
+        content.push_str(&format!(
+            "q\n{} {} {} rg\n/Span << /ActualText <{}>{tag_marker} >> BDC\n",
+            fmt_num(line.rgb[0]),
+            fmt_num(line.rgb[1]),
+            fmt_num(line.rgb[2]),
+            utf16be_hex_with_bom(&line.text)
+        ));
+        if story_carriers::needs_carrier(line) {
+            if runs.iter().any(|run| !run.glyphs.is_empty()) {
+                return Err(WellfriendError::MalformedPdf(
+                    "logical-only story line unexpectedly shaped glyphs".into(),
+                ));
+            }
+            carriers.append_line(&mut content, line)?;
+        }
+        let mut vertical_pen = [0.0, 0.0];
+        let mut active_tab_field = None;
+        for run in runs {
+            if let Some(origin) = run.inline_origin {
+                if active_tab_field != run.tab_field {
+                    pen = line.x + origin;
+                    vertical_pen = [0.0, origin];
+                    active_tab_field = run.tab_field;
+                }
+            }
+            let style = styles.get(run.style_index).ok_or_else(|| {
+                WellfriendError::MalformedPdf("story paint style index is out of bounds".into())
+            })?;
+            let width =
+                run.glyphs.iter().map(|g| g.advance.abs()).sum::<f64>() * style.font_size / 1000.0;
+            let resource = format!(
+                "WFStory{}",
+                base + run.font_index as u32 * 12 + u32::from(line.writing_mode.is_vertical()) * 6
+            );
+            content.push_str(&format!(
+                "{} {} {} rg\n",
+                fmt_num(style.rgb[0]),
+                fmt_num(style.rgb[1]),
+                fmt_num(style.rgb[2])
+            ));
+            if line.writing_mode.is_vertical() {
+                story_vertical::append_run(
+                    &mut content,
+                    line,
+                    &run.glyphs,
+                    &resource,
+                    style.font_size,
+                    &mut vertical_pen,
+                )?;
+                continue;
+            }
+            let line_options = AdvancedTextEditOptions {
+                region: [
+                    pen,
+                    line.baseline,
+                    pen + width,
+                    line.baseline + style.font_size,
+                ],
+                font_size: style.font_size,
+                max_lines_or_columns: 1,
+                alignment: GeneratedTextAlignment::Left,
+                ..options.clone()
+            };
+            let (paint, _) = serialize_generated_text(
+                &[run.glyphs],
+                &resource,
+                &line_options,
+                false,
+                None,
+                None,
+            )?;
+            content.push_str(&paint.replace("BT\n", "BT\n0 Tc 0 Tw 100 Tz 0 Ts 0 Tr\n"));
+            if !content
+                .as_bytes()
+                .last()
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                content.push('\n');
+            }
+            pen += width;
+        }
+        content.push_str("EMC\nQ\n");
+        if line.artifact {
+            content.push_str("EMC\n");
+        }
+    }
+    content.push_str("EMC\n");
+    let generated_number = carrier_base + story_carriers::OBJECT_COUNT;
+    let isolation_number = generated_number + 1;
+    let raw = isolated_appended_content(content).into_bytes();
+    let mut dict = crate::PdfDictionary::empty();
+    dict.insert("Length", PdfObject::Integer(raw.len() as i64));
+    updates.push(IncrementalObject {
+        number: generated_number,
+        generation: 0,
+        object: PdfObject::Stream { dict, raw },
+    });
+    if let Some(owned) = owned {
+        // Replace only the approved owner's marked span. Its surrounding q/cm/Q
+        // isolation stays in place, preserving the original paint slot exactly.
+        let object = reader.get_object(owned.stream.0, owned.stream.1)?;
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )?;
+        let mut data = decoded.data;
+        let generated = updates
+            .iter()
+            .find(|o| o.number == generated_number)
+            .unwrap();
+        let (_, raw) = generated.object.as_stream().unwrap();
+        let replacement = std::str::from_utf8(raw)
+            .map_err(|_| WellfriendError::MalformedPdf("story content encoding".into()))?
+            .strip_prefix("Q\n")
+            .ok_or_else(|| WellfriendError::MalformedPdf("story isolation prefix".into()))?
+            .replace("BT\n", "BT\n0 Tc 0 Tw 100 Tz 0 Ts 0 Tr\n");
+        data.splice(owned.range, replacement.bytes());
+        let mut dict = object.as_stream().unwrap().0.clone();
+        let raw = flate_encode_cancellable(&data, 6)?;
+        dict.insert("Filter", PdfObject::Name("FlateDecode".into()));
+        dict.remove("DecodeParms");
+        dict.insert("Length", PdfObject::Integer(raw.len() as i64));
+        updates
+            .retain(|o| o.number != generated_number && (o.number, o.generation) != owned.stream);
+        updates.push(IncrementalObject {
+            number: owned.stream.0,
+            generation: owned.stream.1,
+            object: PdfObject::Stream { dict, raw },
+        });
+    } else {
+        anchor_generated_reflow(
+            original.document().reader(),
+            &page.contents,
+            &mut updates,
+            source.expect("new frame source anchor"),
+            generated_number,
+            isolation_number,
+        )?;
+    }
+    let object = reader.get_object(page.object_number, page.generation_number)?;
+    let mut dict = object
+        .as_dict()
+        .cloned()
+        .ok_or_else(|| WellfriendError::MalformedPdf("story page dictionary".into()))?;
+    let used_fonts = story_reachable_font_names(reader, &page, &updates)?;
+    let retired = font_resources
+        .iter()
+        .filter_map(|(name, value)| {
+            if used_fonts.contains(name) {
+                return None;
+            }
+            let object = match value {
+                PdfObject::Reference { number, generation } => updates
+                    .iter()
+                    .find(|o| (o.number, o.generation) == (*number, *generation))
+                    .map(|o| o.object.clone())
+                    .or_else(|| reader.get_object(*number, *generation).ok()),
+                value => Some(value.clone()),
+            }?;
+            let owner = object.as_dict()?.get("WFStoryOwner")?;
+            matches!(owner, PdfObject::String(bytes) if bytes == owner_key.as_bytes())
+                .then(|| name.clone())
+        })
+        .collect::<Vec<_>>();
+    for name in retired {
+        font_resources.remove(&name);
+    }
+    resources.insert("Font", PdfObject::Dictionary(font_resources));
+    dict.insert("Resources", PdfObject::Dictionary(resources));
+    updates.push(IncrementalObject {
+        number: page.object_number,
+        generation: page.generation_number,
+        object: PdfObject::Dictionary(dict),
+    });
+    let output = write_incremental_update(reader, updates)?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let binding = bind_story_frame_in_document(&reopened, page_number, owner_key)?
+        .ok_or_else(|| WellfriendError::MalformedPdf("saved story owner is missing".into()))?;
+    if binding.paint_sha256.as_deref() != Some(paint_sha256.as_str())
+        || binding.shape_sha256.as_deref() != Some(shape_sha256.as_str())
+    {
+        return Err(WellfriendError::MalformedPdf(
+            "saved story owner receipt mismatch".into(),
+        ));
+    }
+    story_carriers::verify(&reopened, page_number, owner_key, lines)?;
+    let extracted = reopened.get_page_text(page_number)?;
+    for line in lines {
+        if !line.text.trim().is_empty()
+            && !extracted.contains(&line.text)
+            && !extracted
+                .split_whitespace()
+                .collect::<String>()
+                .contains(&line.text.split_whitespace().collect::<String>())
+        {
+            return Err(WellfriendError::MalformedPdf(
+                "story line failed reopen extraction".into(),
+            ));
+        }
+    }
+    Ok(StoryFrameWrite {
+        bytes: output,
+        binding,
+    })
+}
+
+/// Conservative font-name reachability through page streams, nested Forms,
+/// patterns, Type3 charprocs and annotation appearances. Only unused resources
+/// carrying this editor's exact owner marker may be retired.
+fn reachable_font_names(
+    reader: &crate::PdfReader,
+    content_roots: &[PdfObject],
+    resources: &crate::PdfDictionary,
+    annotations: Option<PdfObject>,
+    updates: &[IncrementalObject],
+) -> Result<BTreeSet<String>> {
+    // Resource dictionary keys are arbitrary PDF names, so visit every child.
+    fn visit(
+        reader: &crate::PdfReader,
+        value: PdfObject,
+        updates: &[IncrementalObject],
+        seen: &mut BTreeSet<(u32, u16, bool)>,
+        names: &mut BTreeSet<String>,
+        content: bool,
+        depth: usize,
+    ) -> Result<()> {
+        if depth > 64 || seen.len() > 100_000 {
+            return Err(WellfriendError::ResourceLimit(
+                "story font resource graph".into(),
+            ));
+        }
+        crate::cancel::check_current_cancel("story font resource graph")?;
+        match value {
+            PdfObject::Reference { number, generation } => {
+                if !seen.insert((number, generation, content)) {
+                    return Ok(());
+                }
+                let object = updates
+                    .iter()
+                    .find(|o| (o.number, o.generation) == (number, generation))
+                    .map(|o| Ok(o.object.clone()))
+                    .unwrap_or_else(|| reader.get_object(number, generation))?;
+                visit(reader, object, updates, seen, names, content, depth + 1)?;
+            }
+            PdfObject::Array(items) => {
+                for item in items {
+                    visit(reader, item, updates, seen, names, content, depth + 1)?;
+                }
+            }
+            object @ PdfObject::Stream { .. } => {
+                let dict = object.as_stream().unwrap().0;
+                if dict.get_name("Subtype") == Some("Image")
+                    || dict.get_name("Type") == Some("WellfriendStoryFont")
+                {
+                    return Ok(());
+                }
+                if content
+                    || dict.get_name("Subtype") == Some("Form")
+                    || dict.contains_key("PatternType")
+                {
+                    let decoded = decode_stream_lossless_with_limits(
+                        &object,
+                        reader,
+                        &DecodeLimits {
+                            max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES
+                                as u64,
+                            ..Default::default()
+                        },
+                    )?;
+                    if decoded.status != StreamDecodeStatus::Complete {
+                        return Err(WellfriendError::UnsupportedFeature(
+                            "opaque story font dependency".into(),
+                        ));
+                    }
+                    let mut operands = Vec::new();
+                    for token in lex_content(&decoded.data)? {
+                        if let LexicalKind::Word(op) = &token.kind {
+                            if op == "Tf" {
+                                if let Some(LexicalToken {
+                                    kind: LexicalKind::Name(name),
+                                    ..
+                                }) = operands.first()
+                                {
+                                    names.insert(name.clone());
+                                }
+                            }
+                            operands.clear();
+                        } else {
+                            operands.push(token);
+                        }
+                    }
+                }
+                if let Some(resources) = dict.get("Resources") {
+                    visit(
+                        reader,
+                        resources.clone(),
+                        updates,
+                        seen,
+                        names,
+                        false,
+                        depth + 1,
+                    )?;
+                }
+            }
+            PdfObject::Dictionary(dict) => {
+                for (key, child) in dict.iter() {
+                    if matches!(
+                        key.as_str(),
+                        "Parent" | "P" | "Pages" | "FontFile" | "FontFile2" | "FontFile3"
+                    ) {
+                        continue;
+                    }
+                    visit(
+                        reader,
+                        child.clone(),
+                        updates,
+                        seen,
+                        names,
+                        content || matches!(key.as_str(), "Contents" | "AP" | "CharProcs"),
+                        depth + 1,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut names = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    for content in content_roots {
+        visit(
+            reader,
+            content.clone(),
+            updates,
+            &mut seen,
+            &mut names,
+            true,
+            0,
+        )?;
+    }
+    visit(
+        reader,
+        PdfObject::Dictionary(resources.clone()),
+        updates,
+        &mut seen,
+        &mut names,
+        false,
+        0,
+    )?;
+    if let Some(annots) = annotations {
+        visit(reader, annots, updates, &mut seen, &mut names, false, 0)?;
+    }
+    Ok(names)
+}
+
+fn story_reachable_font_names(
+    reader: &crate::PdfReader,
+    page: &crate::document::PdfPage,
+    updates: &[IncrementalObject],
+) -> Result<BTreeSet<String>> {
+    let contents = page
+        .contents
+        .iter()
+        .map(|&(number, generation)| PdfObject::Reference { number, generation })
+        .collect::<Vec<_>>();
+    let annotations = reader
+        .get_object(page.object_number, page.generation_number)?
+        .as_dict()
+        .and_then(|dictionary| dictionary.get("Annots"))
+        .cloned();
+    reachable_font_names(reader, &contents, &page.resources, annotations, updates)
+}
+
+/// Remove only inactive font resource names created by this editor. Indirect
+/// font programs remain in historical revisions, but they no longer accumulate
+/// in the active resource dictionary or count toward later font discovery.
+/// Every candidate needs both the private Type0 marker and the private resource
+/// prefix; story-owned fonts retain their separate owner-specific lifecycle.
+pub(super) fn retire_unreferenced_generated_fonts(
+    reader: &crate::PdfReader,
+    content_roots: &[PdfObject],
+    resources: &mut crate::PdfDictionary,
+    annotations: Option<PdfObject>,
+    updates: &[IncrementalObject],
+    protected_names: &BTreeSet<String>,
+) -> Result<usize> {
+    let Some(mut fonts) = resolve_advanced_editing_dict(resources.get("Font"), reader) else {
+        return Ok(0);
+    };
+    let candidates = fonts
+        .iter()
+        .filter_map(|(name, value)| {
+            if protected_names.contains(name) || !name.starts_with("OxP20F") {
+                return None;
+            }
+            let object = match value {
+                PdfObject::Reference { number, generation } => updates
+                    .iter()
+                    .find(|object| (object.number, object.generation) == (*number, *generation))
+                    .map(|object| object.object.clone())
+                    .or_else(|| reader.get_object(*number, *generation).ok()),
+                value => Some(value.clone()),
+            }?;
+            let dictionary = object.as_dict()?;
+            (dictionary.get_name("WFAdvancedEditingGeneratedFont") == Some("V1")
+                && !dictionary.contains_key("WFStoryOwner"))
+            .then(|| name.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let used = reachable_font_names(reader, content_roots, resources, annotations, updates)?;
+    let retired = candidates.difference(&used).cloned().collect::<Vec<_>>();
+    for name in &retired {
+        fonts.remove(name);
+    }
+    if !retired.is_empty() {
+        resources.insert("Font", PdfObject::Dictionary(fonts));
+    }
+    Ok(retired.len())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3368,33 +8389,30 @@ fn build_type0_font_objects(
     descendant_number: u32,
     type0_number: u32,
 ) -> Result<Vec<IncrementalObject>> {
+    let embedding = crate::fonts::pdf_embedding::EmbeddingInfo::parse(font)?;
     let face = ttf_parser::Face::parse(font, 0).map_err(|_| {
         WellfriendError::UnsupportedFeature(
             "advanced_editing cannot embed malformed sfnt font".to_string(),
         )
     })?;
-    if let Some(os2) = face.tables().os2 {
-        if !matches!(
-            os2.permissions(),
-            Some(ttf_parser::Permissions::Installable | ttf_parser::Permissions::Editable)
-        ) || !os2.is_outline_embedding_allowed()
-        {
-            return Err(WellfriendError::UnsupportedFeature(
-                "advanced_editing approved font license forbids editable outline embedding"
-                    .to_string(),
-            ));
-        }
+    if !crate::fonts::pdf_embedding::editable_outline_embedding_allowed(&face) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "advanced_editing approved font license forbids editable outline embedding".to_string(),
+        ));
     }
     // TrueType glyf fonts retain the existing GID-preserving subset path.
-    // Standalone OpenType/CFF1 programs are embedded whole through /FontFile3
-    // /Subtype /OpenType and a CIDFontType0 descendant. That path
-    // uses identity CID/GID assignment established by generated_glyph_plan.
+    // CFF1 programs embed whole. Their Encoding CMap maps our Unicode-bearing
+    // character codes to native charset CIDs; those need not equal GIDs.
     let true_type_outlines = face.tables().glyf.is_some();
     let requested_glyphs = glyphs
         .iter()
         .map(|glyph| glyph.gid)
         .collect::<BTreeSet<_>>();
-    let embedded_font_bytes = if true_type_outlines {
+    let embedded_font_bytes = if true_type_outlines
+        && !crate::fonts::pdf_embedding::serialized_subsetting_allowed(&face)
+    {
+        font.to_vec()
+    } else if true_type_outlines {
         subset_glyf_preserving_gids(font, &requested_glyphs)
             .map_err(|error| {
                 WellfriendError::UnsupportedFeature(format!(
@@ -3415,7 +8433,22 @@ fn build_type0_font_objects(
         .iter()
         .map(|byte| char::from(b'A' + (byte % 26)))
         .collect::<String>();
-    let base_font_name = format!("{subset_tag}+WellfriendAdvancedEditingUnicode");
+    let family = embedding
+        .cff
+        .as_ref()
+        .map(|cff| cff.postscript_name.clone())
+        .unwrap_or_else(|| {
+            face.names()
+                .into_iter()
+                .filter(|n| n.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
+                .find_map(|n| n.to_string())
+                .unwrap_or_else(|| "WellfriendAdvancedEditingUnicode".into())
+        });
+    let base_font_name = if true_type_outlines && embedding.may_subset {
+        format!("{subset_tag}+{family}")
+    } else {
+        family
+    };
     let upem = f64::from(face.units_per_em()).max(1.0);
     let units = |value: i16| canonical_number(f64::from(value) / upem * 1000.0);
     let bbox = face.global_bounding_box();
@@ -3434,10 +8467,7 @@ fn build_type0_font_objects(
 
     let mut descriptor = crate::PdfDictionary::empty();
     descriptor.insert("Type", PdfObject::Name("FontDescriptor".to_string()));
-    descriptor.insert(
-        "FontName",
-        PdfObject::Name(base_font_name.clone()),
-    );
+    descriptor.insert("FontName", PdfObject::Name(base_font_name.clone()));
     descriptor.insert("Flags", PdfObject::Integer(4));
     descriptor.insert(
         "FontBBox",
@@ -3454,7 +8484,11 @@ fn build_type0_font_objects(
     descriptor.insert("CapHeight", PdfObject::Real(units(face.ascender())));
     descriptor.insert("StemV", PdfObject::Integer(80));
     descriptor.insert(
-        if true_type_outlines { "FontFile2" } else { "FontFile3" },
+        if true_type_outlines {
+            "FontFile2"
+        } else {
+            "FontFile3"
+        },
         PdfObject::Reference {
             number: font_file_number,
             generation: 0,
@@ -3475,8 +8509,12 @@ fn build_type0_font_objects(
             cid_to_gid[offset + 1] = (glyph.gid & 0xff) as u8;
         }
     }
-    let compressed_map = flate_encode_cancellable(&cid_to_gid, 6)?;
-    let mut map_dict = crate::PdfDictionary::empty();
+    let (mut map_dict, map_bytes) = if let Some(cff) = &embedding.cff {
+        cff.encoding(glyphs.iter().map(|glyph| (glyph.cid, glyph.gid)), vertical)?
+    } else {
+        (crate::PdfDictionary::empty(), cid_to_gid)
+    };
+    let compressed_map = flate_encode_cancellable(&map_bytes, 6)?;
     map_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
     map_dict.insert("Length", PdfObject::Integer(compressed_map.len() as i64));
 
@@ -3489,15 +8527,18 @@ fn build_type0_font_objects(
         PdfObject::Integer(compressed_to_unicode.len() as i64),
     );
 
-    let mut cid_system = crate::PdfDictionary::empty();
-    cid_system.insert("Registry", PdfObject::String(b"Adobe".to_vec()));
-    cid_system.insert("Ordering", PdfObject::String(b"Identity".to_vec()));
-    cid_system.insert("Supplement", PdfObject::Integer(0));
+    let cid_system = embedding.system().dictionary();
     let mut by_cid = BTreeMap::<u16, f64>::new();
     for glyph in glyphs {
         by_cid
-            .entry(glyph.cid)
-            .or_insert_with(|| canonical_number(glyph.advance.abs().max(1.0)));
+            .entry(embedding.cid(glyph.cid, glyph.gid)?)
+            .or_insert_with(|| {
+                canonical_number(if vertical || embedding.cff.is_some() {
+                    glyph.font_width
+                } else {
+                    glyph.advance.abs()
+                })
+            });
     }
     let widths = by_cid
         .into_iter()
@@ -3521,10 +8562,7 @@ fn build_type0_font_objects(
             .to_string(),
         ),
     );
-    descendant.insert(
-        "BaseFont",
-        PdfObject::Name(base_font_name.clone()),
-    );
+    descendant.insert("BaseFont", PdfObject::Name(base_font_name.clone()));
     descendant.insert("CIDSystemInfo", PdfObject::Dictionary(cid_system));
     descendant.insert(
         "FontDescriptor",
@@ -3534,14 +8572,38 @@ fn build_type0_font_objects(
         },
     );
     descendant.insert("DW", PdfObject::Integer(1000));
-    descendant.insert(
-        "W",
-        PdfObject::Array(widths),
-    );
+    descendant.insert("W", PdfObject::Array(widths));
     if vertical {
+        let mut metrics = BTreeMap::<u16, f64>::new();
+        for glyph in glyphs {
+            metrics
+                .entry(embedding.cid(glyph.cid, glyph.gid)?)
+                .or_insert(glyph.advance);
+        }
         descendant.insert(
             "DW2",
-            PdfObject::Array(vec![PdfObject::Integer(880), PdfObject::Integer(-1000)]),
+            PdfObject::Array(vec![PdfObject::Integer(0), PdfObject::Integer(-1000)]),
+        );
+        // Generated matrices already contain the shaping origin. A zero W2
+        // origin prevents readers subtracting it a second time. W retains the
+        // actual horizontal font metric; W2 carries the independent vertical one.
+        descendant.insert(
+            "W2",
+            PdfObject::Array(
+                metrics
+                    .into_iter()
+                    .flat_map(|(cid, advance)| {
+                        [
+                            PdfObject::Integer(i64::from(cid)),
+                            PdfObject::Array(vec![
+                                PdfObject::Real(canonical_number(-advance)),
+                                PdfObject::Integer(0),
+                                PdfObject::Integer(0),
+                            ]),
+                        ]
+                    })
+                    .collect(),
+            ),
         );
     }
     if true_type_outlines {
@@ -3558,12 +8620,20 @@ fn build_type0_font_objects(
     type0.insert("Type", PdfObject::Name("Font".to_string()));
     type0.insert("Subtype", PdfObject::Name("Type0".to_string()));
     type0.insert(
-        "BaseFont",
-        PdfObject::Name(base_font_name),
+        "WFAdvancedEditingGeneratedFont",
+        PdfObject::Name("V1".to_string()),
     );
+    type0.insert("BaseFont", PdfObject::Name(base_font_name));
     type0.insert(
         "Encoding",
-        PdfObject::Name(if vertical { "Identity-V" } else { "Identity-H" }.to_string()),
+        if true_type_outlines {
+            PdfObject::Name(if vertical { "Identity-V" } else { "Identity-H" }.to_string())
+        } else {
+            PdfObject::Reference {
+                number: cid_to_gid_number,
+                generation: 0,
+            }
+        },
     );
     type0.insert(
         "DescendantFonts",
@@ -3613,17 +8683,15 @@ fn build_type0_font_objects(
             object: PdfObject::Dictionary(type0),
         },
     ];
-    if true_type_outlines {
-        objects.push(IncrementalObject {
-            number: cid_to_gid_number,
-            generation: 0,
-            object: PdfObject::Stream {
-                dict: map_dict,
-                raw: compressed_map,
-            },
-        });
-        objects.sort_by_key(|object| (object.number, object.generation));
-    }
+    objects.push(IncrementalObject {
+        number: cid_to_gid_number,
+        generation: 0,
+        object: PdfObject::Stream {
+            dict: map_dict,
+            raw: compressed_map,
+        },
+    });
+    objects.sort_by_key(|object| (object.number, object.generation));
     Ok(objects)
 }
 
@@ -3653,11 +8721,7 @@ fn build_to_unicode_cmap(glyphs: &[GeneratedGlyph]) -> String {
     for chunk in mappings.chunks(100) {
         cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
         for (cid, unicode) in chunk {
-            cmap.push_str(&format!(
-                "<{:04X}> <{}>\n",
-                cid,
-                utf16be_hex(unicode)
-            ));
+            cmap.push_str(&format!("<{:04X}> <{}>\n", cid, utf16be_hex(unicode)));
         }
         cmap.push_str("endbfchar\n");
     }
@@ -3706,58 +8770,9 @@ fn serialize_generated_text(
         ));
     }
     if vertical {
-        if line_regions.is_some() {
-            return Err(WellfriendError::UnsupportedFeature(
-                "advanced_editing positioned serializer does not support vertical columns"
-                    .to_string(),
-            ));
-        }
-        if options.alignment == GeneratedTextAlignment::Justify {
-            return Err(WellfriendError::UnsupportedFeature(
-                "advanced_editing vertical full justification is unsupported until the canonical writer can emit vertical text-state spacing without changing glyph orientation"
-                    .to_string(),
-            ));
-        }
-        let column_advance = options.font_size * options.line_spacing;
-        for (column, glyphs) in layout.iter().enumerate() {
-            let x = options.region[2] - options.font_size - column as f64 * column_advance;
-            let mut y = options.region[3] - options.font_size;
-            for glyph in glyphs {
-                let glyph_x = x + glyph.offset_x / 1000.0 * options.font_size;
-                let glyph_y = y + glyph.offset_y / 1000.0 * options.font_size;
-                match glyph.orientation {
-                    VerticalGlyphOrientation::RotateClockwise => {
-                        content.push_str(&format!(
-                            "0 -1 1 0 {} {} Tm <{:04X}> Tj\n",
-                            fmt_num(glyph_x),
-                            fmt_num(glyph_y),
-                            glyph.cid
-                        ));
-                    }
-                    _ => {
-                        content.push_str(&format!(
-                            "1 0 0 1 {} {} Tm <{:04X}> Tj\n",
-                            fmt_num(glyph_x),
-                            fmt_num(glyph_y),
-                            glyph.cid
-                        ));
-                    }
-                }
-                y -= options.font_size;
-            }
-            adjustments.push(GeneratedLineAdjustment {
-                line_index: column,
-                natural_width: glyphs.len() as f64 * options.font_size,
-                target_width: options.region[3] - options.region[1],
-                residual: 0.0,
-                word_spacing: 0.0,
-                character_spacing: 0.0,
-                alignment: options.alignment,
-                last_line: column + 1 == layout.len(),
-                applied: true,
-                refusal_reason: None,
-            });
-        }
+        content.push_str("0 Tc\n0 Tw\n100 Tz\n0 Ts\n0 Tr\n");
+        adjustments =
+            vertical_text::serialize(&mut content, layout, font_name, options, line_regions, None)?;
     } else {
         let line_advance = options.font_size * options.line_spacing;
         for (line, glyphs) in layout.iter().enumerate() {
@@ -3782,6 +8797,7 @@ fn serialize_generated_text(
             let refusal_reason = None;
             if options.alignment == GeneratedTextAlignment::Justify
                 && (options.justify_last_line || !last_line)
+                && !glyphs.is_empty()
                 && residual > EPSILON
             {
                 let word_count = glyphs
@@ -3813,15 +8829,11 @@ fn serialize_generated_text(
                         .iter()
                         .filter(|glyph| glyph.visual_unicode == " ")
                         .count() as f64
-                + character_spacing
-                    * options.font_size
-                    * glyphs.len().saturating_sub(1) as f64;
+                + character_spacing * options.font_size * glyphs.len().saturating_sub(1) as f64;
             let x = match options.alignment {
                 GeneratedTextAlignment::Left => region[0],
                 GeneratedTextAlignment::Right => region[2] - painted_width,
-                GeneratedTextAlignment::Center => {
-                    region[0] + (target_width - painted_width) / 2.0
-                }
+                GeneratedTextAlignment::Center => region[0] + (target_width - painted_width) / 2.0,
                 GeneratedTextAlignment::Start => {
                     if rtl {
                         region[2] - painted_width
@@ -3939,25 +8951,6 @@ fn reject_unsafe_text_controls(text: &str) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-fn vertical_orientation(ch: char) -> VerticalGlyphOrientation {
-    let code = ch as u32;
-    if ch.is_ascii_alphanumeric()
-        || matches!(
-            ch,
-            '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ':' | ';'
-        )
-    {
-        VerticalGlyphOrientation::RotateClockwise
-    } else if matches!(
-        code,
-        0x3001..=0x303F | 0xFE10..=0xFE1F | 0xFE30..=0xFE4F | 0xFF01..=0xFF60
-    ) {
-        VerticalGlyphOrientation::FontVerticalAlternate
-    } else {
-        VerticalGlyphOrientation::Upright
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4093,9 +9086,14 @@ struct ContentStringToken {
     element: Option<usize>,
     text_render_mode: i32,
     marked_depth: usize,
+    authored_typed_owner: Option<(String, String)>,
+    authored_typed_region: Option<[f64; 4]>,
     actual_text_sources: Vec<ActualTextSource>,
     named_marked_properties: Vec<String>,
     unresolved_actual_text: bool,
+    flow_relocatable: bool,
+    source_position: Option<inline_text::PositionSnapshot>,
+    generated_basis: inline_text::SourceBasis,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -4130,7 +9128,7 @@ struct ScannedTextGraphicsState {
 /// in the next. Keeping this state between members prevents cross-stream edits
 /// from silently replaying default style or losing MCID nesting.
 #[derive(Debug, Clone)]
-struct ScannedTextTokenState {
+pub(crate) struct ScannedTextTokenState {
     font_name: String,
     font_size: f64,
     render_mode: i32,
@@ -4145,10 +9143,14 @@ struct ScannedTextTokenState {
     unsupported_fill_paint_state: bool,
     unsupported_stroke_paint_state: bool,
     marked_depth: usize,
+    authored_typed_owner_stack: Vec<Option<(String, String)>>,
+    authored_typed_region_stack: Vec<Option<[f64; 4]>>,
     actual_text_stack: Vec<Option<ActualTextSource>>,
     named_property_stack: Vec<Option<String>>,
     actual_text_conflict_stack: Vec<bool>,
+    flow_scope_stack: Vec<bool>,
     graphics_stack: Vec<ScannedTextGraphicsState>,
+    position: inline_text::PositionState,
 }
 
 impl Default for ScannedTextTokenState {
@@ -4168,10 +9170,14 @@ impl Default for ScannedTextTokenState {
             unsupported_fill_paint_state: false,
             unsupported_stroke_paint_state: false,
             marked_depth: 0,
+            authored_typed_owner_stack: Vec::new(),
+            authored_typed_region_stack: Vec::new(),
             actual_text_stack: Vec::new(),
             named_property_stack: Vec::new(),
             actual_text_conflict_stack: Vec::new(),
+            flow_scope_stack: Vec::new(),
             graphics_stack: Vec::new(),
+            position: inline_text::PositionState::default(),
         }
     }
 }
@@ -4185,26 +9191,365 @@ type SelectedMultiRunOperand = (
     MultiRunSourceSpan,
 );
 
-type DecodedStreamEdits = BTreeMap<
-    (u32, u16),
-    (PdfObject, Vec<u8>, Vec<(usize, usize, Vec<u8>)>),
->;
+type DecodedStreamEdits = BTreeMap<(u32, u16), (PdfObject, Vec<u8>, Vec<(usize, usize, Vec<u8>)>)>;
 
-type ActualTextCleanupPatch = ((u32, u16), usize, usize);
+#[derive(Debug, Clone)]
+struct ActualTextCleanupPatch {
+    owner: (u32, u16),
+    value_start: usize,
+    value_end: usize,
+    logical_text: Arc<str>,
+    logical_range: [usize; 2],
+}
+
+fn serialize_authored_owner_source_lines(
+    lines: &[ExplicitLayoutLine],
+    replacement_text: &str,
+    resolver: &FontResolver,
+    style: &PreservedTextStyle,
+    options: &AdvancedTextEditOptions,
+) -> Result<String> {
+    if lines.is_empty()
+        || lines
+            .iter()
+            .map(|line| line.logical_text.as_str())
+            .collect::<String>()
+            != replacement_text
+    {
+        return Err(WellfriendError::invalid_input(
+            "authored positioned source lines must cover the replacement exactly",
+        ));
+    }
+    let mut content = format!(
+        "q\n/Span << /ActualText <{}> >> BDC\nBT\n",
+        utf16be_hex_with_bom(replacement_text)
+    );
+    let serialized_resource = serialized_name_body(&style.font_resource);
+    append_generated_preserved_style(&mut content, &serialized_resource, style);
+    let line_advance = options.font_size * options.line_spacing;
+    for (line_index, line) in lines.iter().enumerate() {
+        if line.inserted_visual_hyphen {
+            return Err(WellfriendError::UnsupportedFeature(
+                "authored source-font redistribution requires an approved generated font for inserted hyphen glyphs"
+                    .into(),
+            ));
+        }
+        let visible = line
+            .logical_text
+            .trim_end_matches(crate::fonts::hard_break::is_hard_break);
+        if line.visual_text != visible {
+            return Err(WellfriendError::invalid_input(
+                "authored source-font line visual text differs from logical text",
+            ));
+        }
+        let (encoded, ambiguous) = encode_with_existing_font(resolver, visible)?;
+        if ambiguous {
+            return Err(WellfriendError::UnsupportedFeature(
+                "authored positioned line has an ambiguous source-font mapping".into(),
+            ));
+        }
+        let natural_width = preserved_run_advance(resolver, &encoded, visible, style)?;
+        let rtl = contains_rtl_or_bidi_controls(visible);
+        let x = preserved_style_line_x(options.alignment, rtl, options.region, natural_width)?;
+        let y = options.region[3] - options.font_size - line_index as f64 * line_advance;
+        content.push_str(&format!("1 0 0 1 {} {} Tm <", fmt_num(x), fmt_num(y)));
+        for byte in encoded {
+            content.push_str(&format!("{byte:02X}"));
+        }
+        content.push_str("> Tj\n");
+    }
+    content.push_str("ET\nEMC\nQ");
+    Ok(content)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn edit_authored_owner_positioned_fragment(
+    input: &[u8],
+    request: &MultiRunTextRangeRequest,
+    font_bytes: Option<&[u8]>,
+    page: &crate::document::PdfPage,
+    resources: &PageResources,
+    scope: Option<&form_text::Scope>,
+    selected: &[SelectedMultiRunOperand],
+    stream_sources: &BTreeMap<(u32, u16), (Arc<PdfObject>, Arc<Vec<u8>>)>,
+    actual_text_cleanup_patches: &[ActualTextCleanupPatch],
+    old_selected: &str,
+    signature_policy: EditPolicyReport,
+    force_generated_style: bool,
+    protected_authored_fonts: &BTreeSet<String>,
+) -> Result<(Vec<u8>, MultiRunTextEditReport)> {
+    let lines = request.final_lines.as_deref().ok_or_else(|| {
+        WellfriendError::invalid_input("authored positioned edit requires final lines")
+    })?;
+    let first = selected.first().ok_or_else(|| {
+        WellfriendError::UnsupportedFeature(
+            "authored positioned edit requires one exact source owner".into(),
+        )
+    })?;
+    let first_is_direct_carrier = first.4.operator == "Tj"
+        || (first.4.operator == "TJ"
+            && first.4.decoded.is_empty()
+            && first.5.logical_range[0] == first.5.logical_range[1]);
+    if !first_is_direct_carrier
+        || selected.iter().any(|item| {
+            item.5.logical_range[0] < request.logical_start
+                || item.5.logical_range[1] > request.logical_end
+                || item.5.writing_mode != 0
+                || item.4.text_render_mode >= 4
+        })
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "authored positioned redistribution requires complete horizontal non-clipping owner operands and a direct first text carrier"
+                .into(),
+        ));
+    }
+    let style = preserved_style_from_token(&first.4)?;
+    if style.vertical
+        || selected
+            .iter()
+            .map(|item| preserved_style_from_token(&item.4))
+            .collect::<Result<Vec<_>>>()?
+            .iter()
+            .any(|candidate| candidate != &style)
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "authored positioned redistribution requires one retained text state per fragment"
+                .into(),
+        ));
+    }
+    let source_font = resources.fonts.get(&style.font_resource).ok_or_else(|| {
+        WellfriendError::MalformedPdf("authored positioned source font resource disappeared".into())
+    })?;
+    let reader = crate::ContentEngine::open_bytes(input.to_vec())?;
+    let document_reader = reader.document().reader();
+    let resolver = FontResolver::new(source_font, document_reader);
+
+    let mut created = Vec::<IncrementalObject>::new();
+    let positioned_content = if force_generated_style {
+        let font = font_bytes
+            .or_else(|| get_fallback_font("Symbol"))
+            .ok_or_else(|| {
+                WellfriendError::UnsupportedFeature(
+                    "authored positioned shaping font unavailable".into(),
+                )
+            })?;
+        let mut layout =
+            layout_generated_explicit_lines(lines, request.mode, font, &request.options, None)?;
+        let mut byte_base = 0usize;
+        for (line, glyphs) in lines.iter().zip(layout.iter_mut()) {
+            for glyph in glyphs {
+                glyph.logical_byte_start = glyph.logical_byte_start.saturating_add(byte_base);
+            }
+            byte_base = byte_base.saturating_add(line.logical_text.len());
+        }
+        let all_glyphs = layout.iter().flatten().cloned().collect::<Vec<_>>();
+        let base = reserve_advanced_object_block(
+            document_reader,
+            6,
+            "authored positioned generated font",
+        )?;
+        let font_resource = deterministic_font_resource_name(document_reader, &page.resources);
+        created.extend(build_type0_font_objects(
+            font,
+            &all_glyphs,
+            false,
+            base,
+            base + 1,
+            base + 2,
+            base + 3,
+            base + 4,
+            base + 5,
+        )?);
+        let spans = vec![PreservedStyleSpan {
+            byte_start: 0,
+            byte_end: request.replacement_text.len(),
+            style: style.clone(),
+        }];
+        let (content, _) = serialize_generated_preserved_styles(
+            &layout,
+            &spans,
+            &font_resource,
+            &request.options,
+            false,
+            Some(&request.replacement_text),
+        )?;
+        let page_object = document_reader.get_object(page.object_number, page.generation_number)?;
+        let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
+            WellfriendError::MalformedPdf("authored positioned page is not a dictionary".into())
+        })?;
+        let mut page_resources = page.resources.clone();
+        let mut fonts = resolve_advanced_editing_dict(page_resources.get("Font"), document_reader)
+            .unwrap_or_else(crate::PdfDictionary::empty);
+        fonts.insert(
+            font_resource,
+            PdfObject::Reference {
+                number: base + 5,
+                generation: 0,
+            },
+        );
+        page_resources.insert("Font", PdfObject::Dictionary(fonts));
+        page_dict.insert("Resources", PdfObject::Dictionary(page_resources));
+        created.push(IncrementalObject {
+            number: page.object_number,
+            generation: page.generation_number,
+            object: PdfObject::Dictionary(page_dict),
+        });
+        content
+    } else {
+        serialize_authored_owner_source_lines(
+            lines,
+            &request.replacement_text,
+            &resolver,
+            &style,
+            &request.options,
+        )?
+    };
+
+    let mut stream_edits = DecodedStreamEdits::new();
+    add_actual_text_cleanup_edits(
+        &mut stream_edits,
+        stream_sources,
+        actual_text_cleanup_patches,
+    )?;
+    for (index, item) in selected.iter().enumerate() {
+        let font = resources.fonts.get(&item.5.font_resource).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "authored positioned source font disappeared during rewrite".into(),
+            )
+        })?;
+        let item_resolver = FontResolver::new(font, document_reader);
+        let overlap_start = request.logical_start.max(item.5.logical_range[0]);
+        let overlap_end = request.logical_end.min(item.5.logical_range[1]);
+        let complete_actual_text_owner = item.4.actual_text_sources.last().is_some_and(|source| {
+            actual_text_cleanup_patches.iter().any(|patch| {
+                patch.owner == (source.owner_object, source.owner_generation)
+                    && patch.value_start == source.value_start
+                    && patch.value_end == source.value_end
+                    && request.logical_start <= patch.logical_range[0]
+                    && request.logical_end >= patch.logical_range[1]
+            })
+        });
+        let (prefix, selected_bytes, suffix) = if complete_actual_text_owner {
+            (Vec::new(), item.4.decoded.clone(), Vec::new())
+        } else {
+            split_selected_source_operand(
+                &item_resolver,
+                &item.4.decoded,
+                item.5.logical_range,
+                [overlap_start, overlap_end],
+            )?
+        };
+        if !prefix.is_empty() || !suffix.is_empty() {
+            return Err(WellfriendError::UnsupportedFeature(
+                "authored positioned redistribution refuses a partial source operand".into(),
+            ));
+        }
+        let (start, end, replacement) = if index == 0 {
+            let mut replacement = b"ET\n".to_vec();
+            replacement.extend_from_slice(positioned_content.as_bytes());
+            replacement.extend_from_slice(b"\nBT\n");
+            (item.4.operation_start, item.4.operation_end, replacement)
+        } else {
+            rewrite_source_text_destructively(
+                &item.4,
+                &item_resolver,
+                &[],
+                &selected_bytes,
+                &[],
+                false,
+                None,
+            )?
+        };
+        stream_edits
+            .entry((item.0, item.1))
+            .or_insert_with(|| (item.2.as_ref().clone(), item.3.as_ref().clone(), Vec::new()))
+            .2
+            .push((start, end, replacement));
+    }
+    let mut changed =
+        materialize_decoded_stream_edits(stream_edits, "authored positioned owner source rewrite")?;
+    changed.extend(created);
+    // Authored owners deliberately retain a zero-width source carrier for
+    // later redistribution. Its exact source font is therefore still part of
+    // the owner contract even when this edit replaces all currently visible
+    // glyphs with a generated subset.
+    let mut protected_fonts = selected
+        .iter()
+        .map(|item| item.5.font_resource.clone())
+        .collect::<BTreeSet<_>>();
+    protected_fonts.extend(protected_authored_fonts.iter().cloned());
+    let output = form_text::write_scope_with_protected_fonts(
+        document_reader,
+        page,
+        resources,
+        changed,
+        scope,
+        &protected_fonts,
+    )?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
+    let replacement_extracts = extracted.contains(&request.replacement_text)
+        || layout_extraction_equivalent(&extracted, &request.replacement_text);
+    let old_absent = old_selected.is_empty() || !extracted.contains(old_selected);
+    if !replacement_extracts || !output.starts_with(input) {
+        return Err(WellfriendError::MalformedPdf(
+            "authored positioned save/reopen/extraction proof failed".into(),
+        ));
+    }
+    Ok((
+        output.clone(),
+        MultiRunTextEditReport {
+            schema_version:
+                "advanced_editing_closeout.authored-positioned-owner-layout.v1".into(),
+            status: AdvancedEditingSupportStatus::ImplementedWithLimits,
+            operation: "replace_authored_owner_positioned_lines".into(),
+            page: request.page,
+            logical_range: [request.logical_start, request.logical_end],
+            selected_source_spans: selected.iter().map(|item| item.5.clone()).collect(),
+            style_policy: request.style_policy,
+            generated_font_used: force_generated_style,
+            generated_paint_order: None,
+            generated_paint_partitions: Vec::new(),
+            replacement_text: request.replacement_text.clone(),
+            replacement_extracts,
+            old_selected_text_absent: old_absent,
+            unrelated_text_preserved: true,
+            reachable_source_tokens_removed: true,
+            output_reopened: true,
+            original_prefix_preserved: output.starts_with(input),
+            output_sha256: format!("{:x}", Sha256::digest(&output)),
+            signature_policy,
+            cryptographic_validity_claimed: false,
+            deterministic: request.options.deterministic,
+            cache_invalidation: advanced_editing_cache_invalidation(
+                input,
+                &output,
+                true,
+                false,
+                false,
+            ),
+            exact_limits: vec![
+                "the final shaped lines replace the first exact owner operand at its original paint position; no page-level overlay or content-stream append changes stacking order".into(),
+                "the original typed-cell MCID and private owner scope contain the complete replacement; trailing old line operands are removed from the reachable revision".into(),
+                "cross-fragment growth still requires authoring pagination and new owned rectangles".into(),
+            ],
+        },
+    ))
+}
 
 fn add_actual_text_cleanup_edits(
     target: &mut DecodedStreamEdits,
     stream_sources: &BTreeMap<(u32, u16), (Arc<PdfObject>, Arc<Vec<u8>>)>,
     patches: &[ActualTextCleanupPatch],
 ) -> Result<()> {
-    for (owner, value_start, value_end) in patches {
-        let source = stream_sources.get(owner).ok_or_else(|| {
+    for patch in patches {
+        let source = stream_sources.get(&patch.owner).ok_or_else(|| {
             WellfriendError::MalformedPdf(
                 "advanced_editing ActualText cleanup owner stream is unavailable".to_string(),
             )
         })?;
         target
-            .entry(*owner)
+            .entry(patch.owner)
             .or_insert_with(|| {
                 (
                     source.0.as_ref().clone(),
@@ -4213,7 +9558,54 @@ fn add_actual_text_cleanup_edits(
                 )
             })
             .2
-            .push((*value_start, *value_end, b"null".to_vec()));
+            .push((patch.value_start, patch.value_end, b"null".to_vec()));
+    }
+    Ok(())
+}
+
+fn add_actual_text_insertion_edits(
+    target: &mut DecodedStreamEdits,
+    stream_sources: &BTreeMap<(u32, u16), (Arc<PdfObject>, Arc<Vec<u8>>)>,
+    patches: &[ActualTextCleanupPatch],
+    insertion_scalar: usize,
+    inserted_text: &str,
+) -> Result<()> {
+    for patch in patches {
+        let offset = insertion_scalar
+            .checked_sub(patch.logical_range[0])
+            .filter(|offset| *offset <= patch.logical_range[1] - patch.logical_range[0])
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "advanced_editing ActualText insertion is outside its logical owner".into(),
+                )
+            })?;
+        if patch.logical_text.chars().count()
+            != patch.logical_range[1].saturating_sub(patch.logical_range[0])
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "advanced_editing ActualText insertion requires an isomorphic logical owner".into(),
+            ));
+        }
+        let mut logical = patch.logical_text.chars().take(offset).collect::<String>();
+        logical.push_str(inserted_text);
+        logical.extend(patch.logical_text.chars().skip(offset));
+        let replacement = format!("<{}>", utf16be_hex_with_bom(&logical)).into_bytes();
+        let source = stream_sources.get(&patch.owner).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "advanced_editing ActualText insertion owner stream is unavailable".to_string(),
+            )
+        })?;
+        target
+            .entry(patch.owner)
+            .or_insert_with(|| {
+                (
+                    source.0.as_ref().clone(),
+                    source.1.as_ref().clone(),
+                    Vec::new(),
+                )
+            })
+            .2
+            .push((patch.value_start, patch.value_end, replacement));
     }
     Ok(())
 }
@@ -4255,7 +9647,11 @@ struct PreservedTextStyle {
 }
 
 #[derive(Debug, Clone)]
-enum LexicalKind {
+pub(crate) enum LexicalKind {
+    Null,
+    Boolean,
+    InlineImageData,
+    ReferenceMarker,
     String(PatchStringRepresentation, Vec<u8>),
     Name(String),
     Number(f64),
@@ -4267,10 +9663,27 @@ enum LexicalKind {
 }
 
 #[derive(Debug, Clone)]
-struct LexicalToken {
-    start: usize,
-    end: usize,
-    kind: LexicalKind,
+pub(crate) struct LexicalToken {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) kind: LexicalKind,
+}
+
+#[derive(Debug, Clone)]
+struct PageContentSegment {
+    stream_index: usize,
+    object: u32,
+    generation: u16,
+    global_start: usize,
+    global_end: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PageContentStringToken {
+    stream_index: usize,
+    object: u32,
+    generation: u16,
+    token: ContentStringToken,
 }
 
 pub fn analyze_same_width_patch(
@@ -4289,68 +9702,50 @@ pub fn analyze_same_width_patch(
     let resources = PageResources::from_dict(&page.resources, document.reader());
     let reader = document.reader();
     let mut candidates = Vec::new();
-    let mut scanner_state = ScannedTextTokenState::default();
-    for (stream_number, stream_generation) in page.contents.iter().copied() {
+    let mut position_metrics = inline_text::Metrics::new(&resources, reader);
+    for page_token in scan_page_text_string_tokens_with_metrics(
+        reader,
+        &page.contents,
+        ScannedTextTokenState::default(),
+        &mut position_metrics,
+    )? {
         crate::cancel::check_current_cancel("same-width patch content stream")?;
+        let PageContentStringToken {
+            object: stream_number,
+            generation: stream_generation,
+            token,
+            ..
+        } = page_token;
         let object = reader.get_object(stream_number, stream_generation)?;
-        let PdfObject::Stream { dict, raw } = object else {
-            scanner_state = ScannedTextTokenState::default();
+        let PdfObject::Stream { dict, .. } = object else {
             continue;
         };
-        let stream = PdfObject::Stream {
-            dict: dict.clone(),
-            raw: raw.clone(),
+        let Some(font_dict) = resources.fonts.get(&token.font_name) else {
+            continue;
         };
-        let decoded_result = decode_stream_lossless_with_limits(
-            &stream,
-            reader,
-            &DecodeLimits {
-                max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES as u64,
-                ..DecodeLimits::default()
-            },
-        )?;
-        let decoded = match decoded_result.status {
-            StreamDecodeStatus::Complete => decoded_result.data,
-            StreamDecodeStatus::StoppedAtImageFilter(reason) => {
-                candidates.push(unsupported_patch_candidate(
-                    page_number,
-                    stream_number,
-                    stream_generation,
-                    filter_names(&dict),
-                    format!("content stream stopped at image filter: {reason}"),
-                ));
-                scanner_state = ScannedTextTokenState::default();
-                continue;
-            }
-        };
-        for token in scan_text_string_tokens_with_state_and_owner(
-            &decoded,
-            &mut scanner_state,
-            Some((stream_number, stream_generation)),
-        )? {
-            let Some(font_dict) = resources.fonts.get(&token.font_name) else {
-                continue;
-            };
-            let resolver = FontResolver::new(font_dict, reader);
-            if resolver.decode_string(&token.decoded) != source_text {
-                continue;
-            }
-            candidates.push(evaluate_patch_candidate(
-                page_number,
-                stream_number,
-                stream_generation,
-                &dict,
-                &token,
-                font_dict,
-                &resolver,
-                replacement_text,
-                options,
-                reader.is_encrypted(),
-                token.unresolved_actual_text
-                    || !token.actual_text_sources.is_empty()
-                    || token_has_named_actual_text(&token, &resources, reader),
-            ));
+        let resolver = FontResolver::new(font_dict, reader);
+        if resolver
+            .try_decode_string(&token.decoded)
+            .map_err(WellfriendError::UnsupportedFeature)?
+            != source_text
+        {
+            continue;
         }
+        candidates.push(evaluate_patch_candidate(
+            page_number,
+            stream_number,
+            stream_generation,
+            &dict,
+            &token,
+            font_dict,
+            &resolver,
+            replacement_text,
+            options,
+            reader.is_encrypted(),
+            token.unresolved_actual_text
+                || !token.actual_text_sources.is_empty()
+                || token_has_named_actual_text(&token, &resources, reader),
+        ));
     }
     candidates.sort_by_key(|candidate| {
         (
@@ -4501,7 +9896,9 @@ pub fn apply_same_width_patch(
                 .data
                 .get(
                     selected.decoded_byte_start
-                        ..selected.decoded_byte_start.saturating_add(replacement_token.len()),
+                        ..selected
+                            .decoded_byte_start
+                            .saturating_add(replacement_token.len()),
                 )
                 .map(|bytes| bytes == replacement_token.as_slice())
         })
@@ -4594,15 +9991,19 @@ fn evaluate_patch_candidate(
         .as_ref()
         .map(|(bytes, ambiguous)| (bytes.clone(), *ambiguous))
         .unwrap_or_default();
-    let before_codes = split_codes(&token.decoded, resolver.code_size());
-    let after_codes = split_codes(&replacement_bytes, resolver.code_size());
+    let before_codes = split_codes(resolver, &token.decoded);
+    let after_codes = split_codes(resolver, &replacement_bytes);
+    let code_sequences_valid =
+        before_codes.is_ok() && after_codes.is_ok() && resolver.validate_source_encoding().is_ok();
+    let before_codes = before_codes.unwrap_or_default();
+    let after_codes = after_codes.unwrap_or_default();
     let before_advances = before_codes
         .iter()
-        .map(|code| canonical_number(resolver.glyph_width(*code)))
+        .map(|code| canonical_number(resolver.width_for_code(*code)))
         .collect::<Vec<_>>();
     let after_advances = after_codes
         .iter()
-        .map(|code| canonical_number(resolver.glyph_width(*code)))
+        .map(|code| canonical_number(resolver.width_for_code(*code)))
         .collect::<Vec<_>>();
     let before_total = before_advances.iter().sum::<f64>();
     let after_total = after_advances.iter().sum::<f64>();
@@ -4620,6 +10021,13 @@ fn evaluate_patch_candidate(
             *reason_slot = message.to_string();
         }
     };
+    if !code_sequences_valid {
+        reject(
+            &mut eligible,
+            &mut reason,
+            "source or replacement has invalid character codes or mappings",
+        );
+    }
     if encoded.is_err() {
         reject(
             &mut eligible,
@@ -4657,6 +10065,19 @@ fn evaluate_patch_candidate(
     }
     if before_codes.len() != after_codes.len() {
         reject(&mut eligible, &mut reason, "glyph count changes");
+    }
+    if token.word_spacing != 0.0
+        && before_codes
+            .iter()
+            .filter(|code| code.is_word_space())
+            .count()
+            != after_codes
+                .iter()
+                .filter(|code| code.is_word_space())
+                .count()
+    {
+        reject(&mut eligible, &mut reason,
+            "encoded word-spacing occurrences change; same glyph widths do not preserve the source endpoint");
     }
     if token.decoded.len() != replacement_bytes.len() {
         reject(&mut eligible, &mut reason, "encoded byte length changes");
@@ -4749,92 +10170,22 @@ fn evaluate_patch_candidate(
     }
 }
 
-fn unsupported_patch_candidate(
-    page: usize,
-    stream_object: u32,
-    stream_generation: u16,
-    filters: Vec<String>,
-    reason: String,
-) -> SameWidthPatchEligibility {
-    SameWidthPatchEligibility {
-        schema_version: ADVANCED_EDITING_SCHEMA_VERSION.to_string(),
-        status: AdvancedEditingSupportStatus::UnsupportedReportedExact,
-        eligible: false,
-        page,
-        stream_object,
-        stream_generation,
-        operator: "unknown".to_string(),
-        tj_element: None,
-        decoded_byte_start: 0,
-        decoded_byte_end: 0,
-        representation: PatchStringRepresentation::Literal,
-        font_resource: String::new(),
-        font_type: "unknown".to_string(),
-        encoding: "unknown".to_string(),
-        cmap: "unknown".to_string(),
-        glyph_count_before: 0,
-        glyph_count_after: 0,
-        encoded_bytes_before: 0,
-        encoded_bytes_after: 0,
-        serialized_bytes_before: 0,
-        serialized_bytes_after: 0,
-        glyph_advances_before: Vec::new(),
-        glyph_advances_after: Vec::new(),
-        total_advance_before: 0.0,
-        total_advance_after: 0.0,
-        advance_delta: 0.0,
-        writing_mode: 0,
-        text_render_mode: 0,
-        marked_content_depth: 0,
-        clipping_semantics: false,
-        encrypted: false,
-        filters,
-        incremental_feasible: false,
-        full_rewrite_feasible: false,
-        exact_reason: reason,
-    }
-}
-
 fn encode_with_existing_font(resolver: &FontResolver, text: &str) -> Result<(Vec<u8>, bool)> {
-    let code_size = resolver.code_size().max(1);
-    let max_code = if code_size == 1 { 255u32 } else { 65_535u32 };
-    let mut output = Vec::new();
-    let mut ambiguous = false;
-    for ch in text.chars() {
-        let wanted = ch.to_string();
-        let mut found = None;
-        for code in 0..=max_code {
-            if resolver.decode_char(code as u16) == wanted {
-                if found.is_some() {
-                    ambiguous = true;
-                    break;
-                }
-                found = Some(code as u16);
-            }
-        }
-        let code = found.ok_or_else(|| {
-            WellfriendError::UnsupportedFeature(format!(
-                "advanced_editing existing font/CMap cannot encode U+{:04X}",
-                ch as u32
-            ))
-        })?;
-        if code_size == 2 {
-            output.push((code >> 8) as u8);
-        }
-        output.push((code & 0xff) as u8);
-    }
-    Ok((output, ambiguous))
+    resolver
+        .try_encode_existing(text)
+        .map_err(WellfriendError::UnsupportedFeature)
 }
-
-fn split_codes(bytes: &[u8], code_size: u8) -> Vec<u16> {
-    if code_size == 2 {
-        bytes
-            .chunks(2)
-            .map(|chunk| (u16::from(chunk[0]) << 8) | u16::from(*chunk.get(1).unwrap_or(&0)))
-            .collect()
-    } else {
-        bytes.iter().copied().map(u16::from).collect()
-    }
+fn split_codes(
+    resolver: &FontResolver,
+    bytes: &[u8],
+) -> Result<Vec<crate::fonts::character_code::CharacterCode>> {
+    resolver
+        .codes(bytes)
+        .map(|item| {
+            item.map(|item| item.code)
+                .map_err(WellfriendError::UnsupportedFeature)
+        })
+        .collect()
 }
 
 fn serialize_pdf_string(bytes: &[u8], representation: PatchStringRepresentation) -> Vec<u8> {
@@ -4878,24 +10229,16 @@ fn source_byte_offset_for_scalar(
     bytes: &[u8],
     target_scalar: usize,
 ) -> Result<usize> {
+    resolver
+        .validate_source_encoding()
+        .map_err(WellfriendError::UnsupportedFeature)?;
     if target_scalar == 0 {
         return Ok(0);
     }
-    let code_size = usize::from(resolver.code_size().max(1));
-    if !matches!(code_size, 1 | 2) || bytes.len() % code_size != 0 {
-        return Err(WellfriendError::UnsupportedFeature(
-            "advanced_editing source string has a variable or truncated code sequence that cannot be split at a Unicode boundary"
-                .to_string(),
-        ));
-    }
     let mut scalar_offset = 0usize;
-    for (code_index, chunk) in bytes.chunks_exact(code_size).enumerate() {
-        let code = if code_size == 2 {
-            (u16::from(chunk[0]) << 8) | u16::from(chunk[1])
-        } else {
-            u16::from(chunk[0])
-        };
-        let mapped_scalars = resolver.decode_char(code).chars().count();
+    for decoded in resolver.codes(bytes) {
+        let decoded = decoded.map_err(WellfriendError::UnsupportedFeature)?;
+        let mapped_scalars = resolver.decode_code(decoded.code).chars().count();
         if mapped_scalars == 0 {
             return Err(WellfriendError::UnsupportedFeature(
                 "advanced_editing source CMap contains an empty mapping, so a scalar boundary cannot identify exact source bytes"
@@ -4908,7 +10251,7 @@ fn source_byte_offset_for_scalar(
             )
         })?;
         if target_scalar == next {
-            return Ok((code_index + 1) * code_size);
+            return Ok(decoded.byte_end);
         }
         if target_scalar < next {
             return Err(WellfriendError::UnsupportedFeature(
@@ -4946,6 +10289,34 @@ fn split_source_text_bytes_at_scalars(
         bytes[start..end].to_vec(),
         bytes[end..].to_vec(),
     ))
+}
+
+/// Split one selected source operand using its logical span when possible.
+///
+/// `/ActualText` and the SDK's zero-width logical carrier fonts can map an
+/// arbitrary number of Unicode scalars to one physical source code. Asking
+/// the source CMap to split that code at the logical scalar count is therefore
+/// invalid even when the complete operand was selected. A complete logical
+/// selection owns every byte in the operand and can be replaced atomically;
+/// partial selections still use the strict CMap boundary check and fail closed
+/// inside an indivisible mapping.
+fn split_selected_source_operand(
+    resolver: &FontResolver,
+    bytes: &[u8],
+    source_logical_range: [usize; 2],
+    selected_logical_range: [usize; 2],
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    if selected_logical_range[0] <= source_logical_range[0]
+        && selected_logical_range[1] >= source_logical_range[1]
+    {
+        return Ok((Vec::new(), bytes.to_vec(), Vec::new()));
+    }
+    split_source_text_bytes_at_scalars(
+        resolver,
+        bytes,
+        selected_logical_range[0].saturating_sub(source_logical_range[0]),
+        selected_logical_range[1].saturating_sub(source_logical_range[0]),
+    )
 }
 
 fn append_serialized_text_show(
@@ -5018,27 +10389,11 @@ fn removed_source_advance_tj(
     if selected.is_empty() {
         return Ok(0.0);
     }
-    if !token.font_size.is_finite()
-        || !token.character_spacing.is_finite()
-        || !token.word_spacing.is_finite()
-        || !token.horizontal_scaling.is_finite()
-    {
-        return Err(WellfriendError::UnsupportedFeature(
-            "advanced_editing cannot preserve source advance from a non-finite text state"
-                .to_string(),
-        ));
-    }
-    let codes = split_codes(selected, resolver.code_size());
-    if codes.is_empty() {
-        return Ok(0.0);
-    }
+    let displacement = inline_text::source_displacement(token, resolver, selected)?;
+    let advance = displacement[usize::from(resolver.is_vertical())];
     let font_size = token.font_size;
     if font_size.abs() <= EPSILON {
-        let spacing_moves = codes.iter().any(|code| {
-            token.character_spacing.abs() > EPSILON
-                || (resolver.is_space_code(*code) && token.word_spacing.abs() > EPSILON)
-        });
-        if spacing_moves {
+        if advance.abs() > EPSILON {
             return Err(WellfriendError::UnsupportedFeature(
                 "advanced_editing cannot express nonzero character spacing as TJ displacement when the source font size is zero"
                     .to_string(),
@@ -5046,37 +10401,6 @@ fn removed_source_advance_tj(
         }
         return Ok(0.0);
     }
-    let advance = if resolver.is_vertical() {
-        codes
-            .iter()
-            .map(|code| {
-                let (w1y, _, _) = resolver.vertical_metrics(*code);
-                let base = w1y / 1000.0 * font_size;
-                let spacing = token.character_spacing
-                    + if resolver.is_space_code(*code) {
-                        token.word_spacing
-                    } else {
-                        0.0
-                    };
-                base + spacing * if base < 0.0 { -1.0 } else { 1.0 }
-            })
-            .sum::<f64>()
-    } else {
-        let horizontal_scale = token.horizontal_scaling / 100.0;
-        codes
-            .iter()
-            .map(|code| {
-                (resolver.glyph_width(*code) / 1000.0 * font_size
-                    + token.character_spacing
-                    + if resolver.is_space_code(*code) {
-                        token.word_spacing
-                    } else {
-                        0.0
-                    })
-                    * horizontal_scale
-            })
-            .sum::<f64>()
-    };
     let denominator = if resolver.is_vertical() {
         font_size
     } else {
@@ -5084,11 +10408,22 @@ fn removed_source_advance_tj(
     };
     if denominator.abs() <= EPSILON || !advance.is_finite() {
         return Err(WellfriendError::UnsupportedFeature(
-            "advanced_editing cannot derive a finite source-advance compensation"
-                .to_string(),
+            "advanced_editing cannot derive a finite source-advance compensation".to_string(),
         ));
     }
     Ok(canonical_number(-advance / denominator * 1000.0))
+}
+
+#[derive(Clone, Copy)]
+enum SourceOrderCarrierGlyph<'a> {
+    SourceEncoded(&'a [u8]),
+    Generated { font_resource: &'a str, cid: u16 },
+}
+
+#[derive(Clone, Copy)]
+struct SourceOrderActualTextCarrier<'a> {
+    logical_text: &'a str,
+    glyph: SourceOrderCarrierGlyph<'a>,
 }
 
 fn append_destructive_text_show_body(
@@ -5098,22 +10433,95 @@ fn append_destructive_text_show_body(
     selected: &[u8],
     suffix: &[u8],
     resolver: &FontResolver,
+    retain_empty_carrier: bool,
+    logical_actual_text: Option<SourceOrderActualTextCarrier<'_>>,
 ) -> Result<()> {
     let compensation = removed_source_advance_tj(token, resolver, selected)?;
-    output.extend_from_slice(b"[");
     if !prefix.is_empty() {
+        output.extend_from_slice(b"[");
         output.extend_from_slice(&serialize_pdf_string(prefix, token.representation));
-        output.push(b' ');
+        output.extend_from_slice(b"] TJ\n");
     }
-    if compensation.abs() > EPSILON {
-        output.extend_from_slice(fmt_num(compensation).as_bytes());
-        output.push(b' ');
+
+    if let Some(carrier) = logical_actual_text {
+        output.extend_from_slice(
+            format!(
+                "/Span << /ActualText <{}> >> BDC\n3 Tr\n",
+                utf16be_hex_with_bom(carrier.logical_text),
+            )
+            .as_bytes(),
+        );
+        match carrier.glyph {
+            SourceOrderCarrierGlyph::SourceEncoded(encoded) => {
+                let replacement_displacement =
+                    inline_text::source_displacement(token, resolver, encoded)?;
+                let replacement_advance =
+                    replacement_displacement[usize::from(resolver.is_vertical())];
+                let denominator = if resolver.is_vertical() {
+                    token.font_size
+                } else {
+                    token.font_size * (token.horizontal_scaling / 100.0)
+                };
+                if denominator.abs() <= EPSILON || !replacement_advance.is_finite() {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "advanced_editing cannot derive source-order carrier compensation"
+                            .to_string(),
+                    ));
+                }
+                let compensation =
+                    canonical_number(compensation + replacement_advance / denominator * 1000.0);
+                output.extend_from_slice(b"[");
+                output.extend_from_slice(&serialize_pdf_string(encoded, token.representation));
+                output.push(b' ');
+                if compensation.abs() > EPSILON {
+                    output.extend_from_slice(fmt_num(compensation).as_bytes());
+                    output.push(b' ');
+                }
+                output.extend_from_slice(b"] TJ\n");
+            }
+            SourceOrderCarrierGlyph::Generated { font_resource, cid } => {
+                output.extend_from_slice(
+                    format!(
+                        "0 Tc\n0 Tw\n100 Tz\n0 Ts\n/{} 0 Tf\n<{cid:04X}> Tj\n/{} {} Tf\n{} Tc\n{} Tw\n{} Tz\n{} Ts\n[",
+                        serialized_name_body(font_resource),
+                        serialized_name_body(&token.font_name),
+                        fmt_num(token.font_size),
+                        fmt_num(token.character_spacing),
+                        fmt_num(token.word_spacing),
+                        fmt_num(token.horizontal_scaling),
+                        fmt_num(token.text_rise),
+                    )
+                    .as_bytes(),
+                );
+                if compensation.abs() > EPSILON {
+                    output.extend_from_slice(fmt_num(compensation).as_bytes());
+                    output.push(b' ');
+                }
+                output.extend_from_slice(b"] TJ\n");
+            }
+        }
+        output.extend_from_slice(format!("{} Tr\nEMC\n", token.text_render_mode).as_bytes());
+    } else {
+        output.extend_from_slice(b"[");
+        // A freshly authored typed cell must remain addressable when its value
+        // is cleared. Preserve exactly one empty string operand inside the
+        // existing owned scope; ordinary deletion keeps its no-carrier behavior.
+        if retain_empty_carrier && prefix.is_empty() && suffix.is_empty() {
+            output.extend_from_slice(&serialize_pdf_string(&[], token.representation));
+            output.push(b' ');
+        }
+        if compensation.abs() > EPSILON {
+            output.extend_from_slice(fmt_num(compensation).as_bytes());
+            output.push(b' ');
+        }
+        output.extend_from_slice(b"] TJ\n");
     }
+
     if !suffix.is_empty() {
+        output.extend_from_slice(b"[");
         output.extend_from_slice(&serialize_pdf_string(suffix, token.representation));
-        output.push(b' ');
+        output.extend_from_slice(b"] TJ\n");
     }
-    output.extend_from_slice(b"] TJ\n");
     Ok(())
 }
 
@@ -5127,9 +10535,20 @@ fn rewrite_source_text_destructively(
     prefix: &[u8],
     selected: &[u8],
     suffix: &[u8],
+    retain_empty_carrier: bool,
+    logical_actual_text: Option<SourceOrderActualTextCarrier<'_>>,
 ) -> Result<(usize, usize, Vec<u8>)> {
     let mut body = Vec::new();
-    append_destructive_text_show_body(&mut body, token, prefix, selected, suffix, resolver)?;
+    append_destructive_text_show_body(
+        &mut body,
+        token,
+        prefix,
+        selected,
+        suffix,
+        resolver,
+        retain_empty_carrier,
+        logical_actual_text,
+    )?;
     match token.operator.as_str() {
         "Tj" => Ok((token.operation_start, token.operation_end, body)),
         "'" => {
@@ -5224,135 +10643,36 @@ fn rewrite_source_text_inline(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rewrite_source_text_inline_generated(
     token: &ContentStringToken,
+    paint: &ContentStringToken,
     resolver: &FontResolver,
     prefix: &[u8],
     selected: &[u8],
     replacement_text: &str,
     glyphs: &[GeneratedGlyph],
     generated_font_resource: &str,
+    generated_vertical: bool,
+    paint_vertical: bool,
     suffix: &[u8],
 ) -> Result<(usize, usize, Vec<u8>)> {
-    let vertical = resolver.is_vertical();
-    if vertical
-        && glyphs.iter().any(|glyph| {
-            glyph.orientation == VerticalGlyphOrientation::RotateClockwise
-                || glyph.offset_x.abs() > EPSILON
-                || glyph.offset_y.abs() > EPSILON
-        })
-    {
-        return Err(WellfriendError::UnsupportedFeature(
-            "advanced_editing vertical inline semantic replacement requires upright zero-offset glyphs"
-                .to_string(),
-        ));
-    }
-    let old_advance_tj = removed_source_advance_tj(token, resolver, selected)?;
-    // Express the generated font's own displacement in the source `TJ`
-    // coordinate convention. Horizontal glyph advance is equivalent to a
-    // negative TJ number; Identity-V's default -1000 displacement is
-    // equivalent to a positive 1000 TJ number. The trailing adjustment is the
-    // exact difference between the removed source displacement and the newly
-    // painted displacement.
-    let generated_advance_tj = if vertical {
-        glyphs.len() as f64 * 1000.0
-    } else {
-        -glyphs
-            .iter()
-            .map(|glyph| glyph.advance.abs())
-            .sum::<f64>()
-    };
-    let compensation = canonical_number(old_advance_tj - generated_advance_tj);
-    let mut body = Vec::new();
-    if !prefix.is_empty() {
-        append_serialized_text_show(&mut body, prefix, token.representation);
-    }
-    body.extend_from_slice(
-        format!(
-            "/Span << /ActualText <{}> >> BDC\n0 Tc\n0 Tw\n/{} {} Tf\n",
-            utf16be_hex_with_bom(replacement_text),
-            generated_font_resource,
-            fmt_num(token.font_size)
-        )
-        .as_bytes(),
-    );
-    for glyph in glyphs {
-        if vertical {
-            body.extend_from_slice(format!("<{:04X}> Tj\n", glyph.cid).as_bytes());
-            continue;
-        }
-        if glyph.offset_y.abs() > EPSILON {
-            body.extend_from_slice(
-                format!(
-                    "{} Ts\n",
-                    fmt_num(token.text_rise + glyph.offset_y / 1000.0 * token.font_size)
-                )
-                .as_bytes(),
-            );
-        }
-        body.extend_from_slice(b"[");
-        if glyph.offset_x.abs() > EPSILON {
-            body.extend_from_slice(fmt_num(-glyph.offset_x).as_bytes());
-            body.push(b' ');
-        }
-        body.extend_from_slice(format!("<{:04X}>", glyph.cid).as_bytes());
-        if glyph.offset_x.abs() > EPSILON {
-            body.push(b' ');
-            body.extend_from_slice(fmt_num(glyph.offset_x).as_bytes());
-        }
-        body.extend_from_slice(b"] TJ\n");
-        if glyph.offset_y.abs() > EPSILON {
-            body.extend_from_slice(format!("{} Ts\n", fmt_num(token.text_rise)).as_bytes());
-        }
-    }
-    body.extend_from_slice(
-        format!(
-            "/{} {} Tf\n{} Tc\n{} Tw\nEMC\n",
-            token.font_name,
-            fmt_num(token.font_size),
-            fmt_num(token.character_spacing),
-            fmt_num(token.word_spacing)
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(b"[");
-    if compensation.abs() > EPSILON {
-        body.extend_from_slice(fmt_num(compensation).as_bytes());
-        body.push(b' ');
-    }
-    if !suffix.is_empty() {
-        body.extend_from_slice(&serialize_pdf_string(suffix, token.representation));
-        body.push(b' ');
-    }
-    body.extend_from_slice(b"] TJ\n");
-
-    match token.operator.as_str() {
-        "Tj" => Ok((token.operation_start, token.operation_end, body)),
-        "'" => {
-            let mut rewritten = b"T*\n".to_vec();
-            rewritten.extend_from_slice(&body);
-            Ok((token.operation_start, token.operation_end, rewritten))
-        }
-        "\"" => {
-            let mut rewritten = format!(
-                "{} Tw\n{} Tc\nT*\n",
-                fmt_num(token.word_spacing),
-                fmt_num(token.character_spacing)
-            )
-            .into_bytes();
-            rewritten.extend_from_slice(&body);
-            Ok((token.operation_start, token.operation_end, rewritten))
-        }
-        "TJ" => {
-            let mut rewritten = b"] TJ\n".to_vec();
-            rewritten.extend_from_slice(&body);
-            rewritten.extend_from_slice(b"[\n");
-            Ok((token.token_start, token.token_end, rewritten))
-        }
-        other => Err(WellfriendError::UnsupportedFeature(format!(
-            "advanced_editing generated inline clipping replacement does not support text operator {other}"
-        ))),
-    }
+    resolver
+        .validate_source_encoding()
+        .map_err(WellfriendError::UnsupportedFeature)?;
+    inline_text::rewrite_positioned(
+        token,
+        paint,
+        resolver,
+        prefix,
+        selected,
+        replacement_text,
+        glyphs,
+        generated_font_resource,
+        generated_vertical,
+        paint_vertical,
+        suffix,
+    )
 }
 
 /// Rewrite one source text-showing operand without changing the text matrix.
@@ -5417,9 +10737,7 @@ fn rewrite_source_insertion_anchor_with_actual_text(
 }
 
 fn wrap_generated_visual_as_artifact(content: String) -> String {
-    format!(
-        "/Artifact << /ActualText <FEFF> >> BDC\n{content}\nEMC\n"
-    )
+    format!("/Artifact << /ActualText <FEFF> >> BDC\n{content}\nEMC\n")
 }
 
 fn wrap_generated_visual_with_actual_text(content: String, logical_text: &str) -> String {
@@ -5429,11 +10747,13 @@ fn wrap_generated_visual_with_actual_text(content: String, logical_text: &str) -
     )
 }
 
+#[cfg(test)]
 fn scan_text_string_tokens(data: &[u8]) -> Result<Vec<ContentStringToken>> {
     let mut state = ScannedTextTokenState::default();
     scan_text_string_tokens_with_state(data, &mut state)
 }
 
+#[cfg(test)]
 fn scan_text_string_tokens_with_state(
     data: &[u8],
     state: &mut ScannedTextTokenState,
@@ -5441,12 +10761,91 @@ fn scan_text_string_tokens_with_state(
     scan_text_string_tokens_with_state_and_owner(data, state, None)
 }
 
+#[cfg(test)]
 fn scan_text_string_tokens_with_state_and_owner(
     data: &[u8],
     state: &mut ScannedTextTokenState,
     owner: Option<(u32, u16)>,
 ) -> Result<Vec<ContentStringToken>> {
+    scan_text_string_tokens_with_metrics(data, state, owner, None)
+}
+
+fn scan_text_string_tokens_with_metrics(
+    data: &[u8],
+    state: &mut ScannedTextTokenState,
+    owner: Option<(u32, u16)>,
+    metrics: Option<&mut inline_text::Metrics<'_>>,
+) -> Result<Vec<ContentStringToken>> {
+    scan_text_program(data, state, owner, metrics, None)
+}
+
+#[derive(Clone, Debug)]
+struct TextFormInvocationState {
+    name: String,
+    start: usize,
+    end: usize,
+    state: ScannedTextTokenState,
+}
+
+fn active_authored_typed_owner(
+    stack: &[Option<(String, String)>],
+) -> Result<Option<(String, String)>> {
+    let mut active = None;
+    for owner in stack.iter().flatten() {
+        if active.as_ref().is_some_and(|current| current != owner) {
+            return Err(WellfriendError::MalformedPdf(
+                "nested authored typed table/cell ownership conflicts".into(),
+            ));
+        }
+        active = Some(owner.clone());
+    }
+    Ok(active)
+}
+
+fn active_authored_typed_region(stack: &[Option<[f64; 4]>]) -> Result<Option<[f64; 4]>> {
+    let mut active = None;
+    for region in stack.iter().flatten() {
+        if active.is_some_and(|current| current != *region) {
+            return Err(WellfriendError::MalformedPdf(
+                "nested authored typed-cell regions conflict".into(),
+            ));
+        }
+        active = Some(*region);
+    }
+    Ok(active)
+}
+
+fn scan_text_program(
+    data: &[u8],
+    state: &mut ScannedTextTokenState,
+    owner: Option<(u32, u16)>,
+    metrics: Option<&mut inline_text::Metrics<'_>>,
+    invocations: Option<&mut Vec<TextFormInvocationState>>,
+) -> Result<Vec<ContentStringToken>> {
     let tokens = lex_content(data)?;
+    scan_text_program_tokens(data, tokens, state, owner, None, metrics, invocations)
+}
+
+fn page_segment_for_range(
+    segments: &[PageContentSegment],
+    start: usize,
+    end: usize,
+) -> Option<&PageContentSegment> {
+    segments
+        .iter()
+        .find(|segment| start >= segment.global_start && end <= segment.global_end)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_text_program_tokens(
+    data: &[u8],
+    tokens: Vec<LexicalToken>,
+    state: &mut ScannedTextTokenState,
+    owner: Option<(u32, u16)>,
+    page_segments: Option<&[PageContentSegment]>,
+    mut metrics: Option<&mut inline_text::Metrics<'_>>,
+    mut invocations: Option<&mut Vec<TextFormInvocationState>>,
+) -> Result<Vec<ContentStringToken>> {
     let mut output = Vec::new();
     let mut operands = Vec::<LexicalToken>::new();
     let ScannedTextTokenState {
@@ -5464,10 +10863,14 @@ fn scan_text_string_tokens_with_state_and_owner(
         mut unsupported_fill_paint_state,
         mut unsupported_stroke_paint_state,
         mut marked_depth,
+        mut authored_typed_owner_stack,
+        mut authored_typed_region_stack,
         mut actual_text_stack,
         mut named_property_stack,
         mut actual_text_conflict_stack,
+        mut flow_scope_stack,
         mut graphics_stack,
+        mut position,
     } = std::mem::take(state);
     for (token_index, token) in tokens.into_iter().enumerate() {
         if token_index % 256 == 0 {
@@ -5477,6 +10880,7 @@ fn scan_text_string_tokens_with_state_and_owner(
             operands.push(token);
             continue;
         };
+        let first_output = output.len();
         match operator.as_str() {
             "q" => graphics_stack.push(ScannedTextGraphicsState {
                 font_name: font_name.clone(),
@@ -5530,6 +10934,23 @@ fn scan_text_string_tokens_with_state_and_owner(
                     })
                 {
                     font_size = size;
+                }
+            }
+            "gs" => {
+                match metrics
+                    .as_ref()
+                    .ok_or(())
+                    .and_then(|m| m.ext_font(&operands))
+                {
+                    Ok(Some((name, size))) => {
+                        font_name = name;
+                        font_size = size;
+                    }
+                    Ok(None) => {}
+                    Err(()) => {
+                        font_name.clear();
+                        font_size = 0.0;
+                    }
                 }
             }
             "Tc" => {
@@ -5625,16 +11046,15 @@ fn scan_text_string_tokens_with_state_and_owner(
                     .first()
                     .map(|operand| operand.start)
                     .unwrap_or(token.start);
-                fill_color_space_command = String::from_utf8_lossy(
-                    data.get(start..token.end).ok_or_else(|| {
+                fill_color_space_command =
+                    String::from_utf8_lossy(data.get(start..token.end).ok_or_else(|| {
                         WellfriendError::MalformedPdf(
                             "advanced_editing fill paint command is outside its source stream"
                                 .to_string(),
                         )
-                    })?,
-                )
-                .trim()
-                .to_string();
+                    })?)
+                    .trim()
+                    .to_string();
                 fill_color_command = fill_color_space_command.clone();
                 unsupported_fill_paint_state = fill_color_command.is_empty();
             }
@@ -5643,16 +11063,15 @@ fn scan_text_string_tokens_with_state_and_owner(
                     .first()
                     .map(|operand| operand.start)
                     .unwrap_or(token.start);
-                let value_command = String::from_utf8_lossy(
-                    data.get(start..token.end).ok_or_else(|| {
+                let value_command =
+                    String::from_utf8_lossy(data.get(start..token.end).ok_or_else(|| {
                         WellfriendError::MalformedPdf(
                             "advanced_editing fill paint command is outside its source stream"
                                 .to_string(),
                         )
-                    })?,
-                )
-                .trim()
-                .to_string();
+                    })?)
+                    .trim()
+                    .to_string();
                 fill_color_command = if fill_color_space_command.is_empty() {
                     value_command
                 } else {
@@ -5665,16 +11084,15 @@ fn scan_text_string_tokens_with_state_and_owner(
                     .first()
                     .map(|operand| operand.start)
                     .unwrap_or(token.start);
-                stroke_color_space_command = String::from_utf8_lossy(
-                    data.get(start..token.end).ok_or_else(|| {
+                stroke_color_space_command =
+                    String::from_utf8_lossy(data.get(start..token.end).ok_or_else(|| {
                         WellfriendError::MalformedPdf(
                             "advanced_editing stroke paint command is outside its source stream"
                                 .to_string(),
                         )
-                    })?,
-                )
-                .trim()
-                .to_string();
+                    })?)
+                    .trim()
+                    .to_string();
                 stroke_color_command = stroke_color_space_command.clone();
                 unsupported_stroke_paint_state = stroke_color_command.is_empty();
             }
@@ -5683,16 +11101,15 @@ fn scan_text_string_tokens_with_state_and_owner(
                     .first()
                     .map(|operand| operand.start)
                     .unwrap_or(token.start);
-                let value_command = String::from_utf8_lossy(
-                    data.get(start..token.end).ok_or_else(|| {
+                let value_command =
+                    String::from_utf8_lossy(data.get(start..token.end).ok_or_else(|| {
                         WellfriendError::MalformedPdf(
                             "advanced_editing stroke paint command is outside its source stream"
                                 .to_string(),
                         )
-                    })?,
-                )
-                .trim()
-                .to_string();
+                    })?)
+                    .trim()
+                    .to_string();
                 stroke_color_command = if stroke_color_space_command.is_empty() {
                     value_command
                 } else {
@@ -5712,45 +11129,142 @@ fn scan_text_string_tokens_with_state_and_owner(
                         "advanced_editing marked-content depth exceeds {MAX_MARKED_CONTENT_DEPTH}"
                     )));
                 }
+                let authored_typed_owner = if operator == "BDC" {
+                    let table = marked_property(&operands, "WFTableID")?;
+                    let cell = marked_property(&operands, "WFCellID")?;
+                    match (table, cell) {
+                        (None, None) => None,
+                        (
+                            Some(LexicalToken {
+                                kind: LexicalKind::String(_, table),
+                                ..
+                            }),
+                            Some(LexicalToken {
+                                kind: LexicalKind::String(_, cell),
+                                ..
+                            }),
+                        ) => {
+                            let table = crate::info::decode_pdf_text_string(table);
+                            let cell = crate::info::decode_pdf_text_string(cell);
+                            if table.is_empty()
+                                || table.len() > 16 * 1024
+                                || table.contains('\0')
+                                || cell.is_empty()
+                                || cell.len() > 16 * 1024
+                                || cell.contains('\0')
+                            {
+                                return Err(WellfriendError::MalformedPdf(
+                                    "invalid authored typed table/cell owner".into(),
+                                ));
+                            }
+                            Some((table, cell))
+                        }
+                        _ => {
+                            return Err(WellfriendError::MalformedPdf(
+                                "authored typed table/cell owners must be paired direct strings"
+                                    .into(),
+                            ));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let authored_typed_region = if operator == "BDC" {
+                    let values = ["WFLeft", "WFBottom", "WFRight", "WFTop"]
+                        .map(|key| marked_property(&operands, key))
+                        .into_iter()
+                        .collect::<Result<Vec<_>>>()?;
+                    if values.iter().all(Option::is_none) {
+                        None
+                    } else if values.iter().all(Option::is_some) {
+                        let mut region = [0.0; 4];
+                        for (index, value) in values.into_iter().enumerate() {
+                            region[index] = match value.map(|value| &value.kind) {
+                                Some(LexicalKind::Number(value)) if value.is_finite() => *value,
+                                _ => {
+                                    return Err(WellfriendError::MalformedPdf(
+                                        "authored typed-cell region must contain four direct numbers"
+                                            .into(),
+                                    ));
+                                }
+                            };
+                        }
+                        if region[0] >= region[2] || region[1] >= region[3] {
+                            return Err(WellfriendError::MalformedPdf(
+                                "authored typed-cell region is empty or reversed".into(),
+                            ));
+                        }
+                        Some(region)
+                    } else {
+                        return Err(WellfriendError::MalformedPdf(
+                            "authored typed-cell region properties must be complete".into(),
+                        ));
+                    }
+                } else {
+                    None
+                };
+                if authored_typed_region.is_some() && authored_typed_owner.is_none() {
+                    return Err(WellfriendError::MalformedPdf(
+                        "authored typed-cell region has no paired source owner".into(),
+                    ));
+                }
+                authored_typed_owner_stack.push(authored_typed_owner);
+                authored_typed_region_stack.push(authored_typed_region);
+                let actual_text_value = if operator == "BDC" {
+                    marked_property(&operands, "ActualText")?
+                } else {
+                    None
+                };
                 let actual_text_source = if operator == "BDC" {
-                    owner.and_then(|(owner_object, owner_generation)| {
-                        operands.windows(2).find_map(|pair| match (&pair[0].kind, &pair[1].kind) {
-                            (LexicalKind::Name(name), LexicalKind::String(_, bytes))
-                                if name == "ActualText" => Some(ActualTextSource {
-                                    owner_object,
-                                    owner_generation,
-                                    value_start: pair[1].start,
-                                    value_end: pair[1].end,
-                                    logical_text: Arc::<str>::from(
-                                        crate::info::decode_pdf_text_string(bytes),
-                                    ),
-                                }),
-                            _ => None,
-                        })
+                    actual_text_value.and_then(|value| match &value.kind {
+                        LexicalKind::String(_, bytes) => {
+                            let (owner_object, owner_generation, value_start, value_end) =
+                                if let Some(segments) = page_segments {
+                                    let segment =
+                                        page_segment_for_range(segments, value.start, value.end)?;
+                                    (
+                                        segment.object,
+                                        segment.generation,
+                                        value.start - segment.global_start,
+                                        value.end - segment.global_start,
+                                    )
+                                } else {
+                                    let (owner_object, owner_generation) = owner?;
+                                    (owner_object, owner_generation, value.start, value.end)
+                                };
+                            Some(ActualTextSource {
+                                owner_object,
+                                owner_generation,
+                                value_start,
+                                value_end,
+                                logical_text: Arc::<str>::from(
+                                    crate::info::decode_pdf_text_string(bytes),
+                                ),
+                            })
+                        }
+                        _ => None,
                     })
                 } else {
                     None
                 };
-                let has_actual_text_key = operator == "BDC"
-                    && operands.iter().any(|operand| {
-                        matches!(&operand.kind, LexicalKind::Name(name) if name == "ActualText")
-                    });
+                let has_actual_text_key = actual_text_value.is_some();
+                flow_scope_stack.push(operator == "BDC" && has_actual_text_key
+                    && marked_property(&operands, "MCID")?.is_none()
+                    && matches!(operands.first().map(|t| &t.kind), Some(LexicalKind::Name(tag)) if tag == "Span"));
                 // In a PDF dictionary, an entry whose value is the null object
                 // is semantically equivalent to an absent entry. The canonical
                 // editor deliberately rewrites stale direct /ActualText values
                 // to `null`; a later mutation in the same batch must therefore
                 // treat that value as cleared, not as an unresolved carrier.
-                let actual_text_is_explicit_null = operator == "BDC"
-                    && operands.windows(2).any(|pair| {
-                        matches!(&pair[0].kind, LexicalKind::Name(name) if name == "ActualText")
-                            && matches!(&pair[1].kind, LexicalKind::Word(value) if value == "null")
-                    });
-                actual_text_conflict_stack
-                    .push(
-                        has_actual_text_key
-                            && actual_text_source.is_none()
-                            && !actual_text_is_explicit_null,
-                    );
+                let actual_text_is_explicit_null = matches!(
+                    actual_text_value.map(|value| &value.kind),
+                    Some(LexicalKind::Null)
+                );
+                actual_text_conflict_stack.push(
+                    has_actual_text_key
+                        && actual_text_source.is_none()
+                        && !actual_text_is_explicit_null,
+                );
                 actual_text_stack.push(actual_text_source);
                 let named_property = if operator == "BDC" {
                     operands.get(1).and_then(|operand| match &operand.kind {
@@ -5764,9 +11278,12 @@ fn scan_text_string_tokens_with_state_and_owner(
             }
             "EMC" => {
                 marked_depth = marked_depth.saturating_sub(1);
+                let _ = authored_typed_owner_stack.pop();
+                let _ = authored_typed_region_stack.pop();
                 let _ = actual_text_stack.pop();
                 let _ = named_property_stack.pop();
                 let _ = actual_text_conflict_stack.pop();
+                let _ = flow_scope_stack.pop();
             }
             "Tj" | "'" | "\"" => {
                 let valid_operands = if operator == "\"" {
@@ -5775,8 +11292,7 @@ fn scan_text_string_tokens_with_state_and_owner(
                         && matches!(&operands[1].kind, LexicalKind::Number(_))
                         && matches!(&operands[2].kind, LexicalKind::String(_, _))
                 } else {
-                    operands.len() == 1
-                        && matches!(&operands[0].kind, LexicalKind::String(_, _))
+                    operands.len() == 1 && matches!(&operands[0].kind, LexicalKind::String(_, _))
                 };
                 if !valid_operands {
                     return Err(WellfriendError::MalformedPdf(format!(
@@ -5807,6 +11323,10 @@ fn scan_text_string_tokens_with_state_and_owner(
                             _ => None,
                         })
                 {
+                    let authored_typed_owner =
+                        active_authored_typed_owner(&authored_typed_owner_stack)?;
+                    let authored_typed_region =
+                        active_authored_typed_region(&authored_typed_region_stack)?;
                     output.push(ContentStringToken {
                         operation_start: operands
                             .first()
@@ -5829,8 +11349,12 @@ fn scan_text_string_tokens_with_state_and_owner(
                         unsupported_stroke_paint_state,
                         operator: operator.clone(),
                         element: None,
+                        source_position: None,
+                        generated_basis: inline_text::SourceBasis::Absent,
                         text_render_mode: render_mode,
                         marked_depth,
+                        authored_typed_owner,
+                        authored_typed_region,
                         actual_text_sources: actual_text_stack
                             .iter()
                             .filter_map(Clone::clone)
@@ -5839,14 +11363,23 @@ fn scan_text_string_tokens_with_state_and_owner(
                             .iter()
                             .filter_map(Clone::clone)
                             .collect(),
-                        unresolved_actual_text: actual_text_conflict_stack.iter().any(|value| *value),
+                        unresolved_actual_text: actual_text_conflict_stack
+                            .iter()
+                            .any(|value| *value),
+                        flow_relocatable: flow_scope_stack.iter().all(|value| *value),
                     });
                 }
             }
             "TJ" => {
                 let valid_array = operands.len() >= 2
-                    && matches!(operands.first().map(|item| &item.kind), Some(LexicalKind::ArrayStart))
-                    && matches!(operands.last().map(|item| &item.kind), Some(LexicalKind::ArrayEnd))
+                    && matches!(
+                        operands.first().map(|item| &item.kind),
+                        Some(LexicalKind::ArrayStart)
+                    )
+                    && matches!(
+                        operands.last().map(|item| &item.kind),
+                        Some(LexicalKind::ArrayEnd)
+                    )
                     && operands[1..operands.len() - 1].iter().all(|operand| {
                         matches!(
                             &operand.kind,
@@ -5855,13 +11388,16 @@ fn scan_text_string_tokens_with_state_and_owner(
                     });
                 if !valid_array {
                     return Err(WellfriendError::MalformedPdf(
-                        "advanced_editing TJ operator has a non-canonical text array"
-                            .to_string(),
+                        "advanced_editing TJ operator has a non-canonical text array".to_string(),
                     ));
                 }
                 let mut element = 0usize;
                 for operand in &operands {
                     if let LexicalKind::String(representation, decoded) = &operand.kind {
+                        let authored_typed_owner =
+                            active_authored_typed_owner(&authored_typed_owner_stack)?;
+                        let authored_typed_region =
+                            active_authored_typed_region(&authored_typed_region_stack)?;
                         output.push(ContentStringToken {
                             operation_start: operands
                                 .first()
@@ -5884,8 +11420,12 @@ fn scan_text_string_tokens_with_state_and_owner(
                             unsupported_stroke_paint_state,
                             operator: operator.clone(),
                             element: Some(element),
+                            source_position: None,
+                            generated_basis: inline_text::SourceBasis::Absent,
                             text_render_mode: render_mode,
                             marked_depth,
+                            authored_typed_owner,
+                            authored_typed_region,
                             actual_text_sources: actual_text_stack
                                 .iter()
                                 .filter_map(Clone::clone)
@@ -5894,13 +11434,80 @@ fn scan_text_string_tokens_with_state_and_owner(
                                 .iter()
                                 .filter_map(Clone::clone)
                                 .collect(),
-                            unresolved_actual_text: actual_text_conflict_stack.iter().any(|value| *value),
+                            unresolved_actual_text: actual_text_conflict_stack
+                                .iter()
+                                .any(|value| *value),
+                            flow_relocatable: flow_scope_stack.iter().all(|value| *value),
                         });
                         element += 1;
                     }
                 }
             }
             _ => {}
+        }
+        position.observe(
+            operator,
+            &operands,
+            &mut output[first_output..],
+            inline_text::Parameters {
+                font_name: &font_name,
+                font_size,
+                horizontal_scaling,
+            },
+            metrics.as_deref_mut(),
+        )?;
+        if operator == "Do" {
+            if let Some(invocations) = invocations.as_deref_mut() {
+                let [LexicalToken {
+                    kind: LexicalKind::Name(name),
+                    start,
+                    ..
+                }] = operands.as_slice()
+                else {
+                    return Err(WellfriendError::MalformedPdf(
+                        "Form invocation needs one resource name".into(),
+                    ));
+                };
+                if invocations.len() >= MAX_ADVANCED_EDITING_BIDI_RUNS {
+                    return Err(WellfriendError::ResourceLimit(
+                        "Form invocation scan budget exceeded".into(),
+                    ));
+                }
+                invocations.push(TextFormInvocationState {
+                    name: name.clone(),
+                    start: *start,
+                    end: token.end,
+                    state: ScannedTextTokenState {
+                        font_name: font_name.clone(),
+                        font_size,
+                        render_mode,
+                        character_spacing,
+                        word_spacing,
+                        horizontal_scaling,
+                        text_rise,
+                        fill_color_command: fill_color_command.clone(),
+                        stroke_color_command: stroke_color_command.clone(),
+                        fill_color_space_command: fill_color_space_command.clone(),
+                        stroke_color_space_command: stroke_color_space_command.clone(),
+                        unsupported_fill_paint_state,
+                        unsupported_stroke_paint_state,
+                        marked_depth,
+                        authored_typed_owner_stack: authored_typed_owner_stack.clone(),
+                        authored_typed_region_stack: authored_typed_region_stack.clone(),
+                        actual_text_stack: actual_text_stack.clone(),
+                        named_property_stack: named_property_stack.clone(),
+                        actual_text_conflict_stack: actual_text_conflict_stack.clone(),
+                        flow_scope_stack: flow_scope_stack.clone(),
+                        graphics_stack: Vec::new(), // implicit Form save/restore boundary
+                        position: position.clone(),
+                    },
+                });
+            }
+        }
+        // Invocation discovery needs the updated cursor/state, not a retained
+        // copy of every text operand preceding a Form call.
+        if invocations.is_some() {
+            output.clear();
         }
         operands.clear();
     }
@@ -5919,12 +11526,159 @@ fn scan_text_string_tokens_with_state_and_owner(
         unsupported_fill_paint_state,
         unsupported_stroke_paint_state,
         marked_depth,
+        authored_typed_owner_stack,
+        authored_typed_region_stack,
         actual_text_stack,
         named_property_stack,
         actual_text_conflict_stack,
+        flow_scope_stack,
         graphics_stack,
+        position,
     };
     Ok(output)
+}
+
+/// Page `/Contents` arrays are one logical content sequence. Producers are
+/// allowed to split that sequence inside arrays, dictionaries, strings, and
+/// marked-content operands, so tokenizing each member independently rejects
+/// valid PDFs. Decode all transparent members, tokenize the logical sequence
+/// once, then map every editable string back to its exact physical owner.
+fn scan_page_text_string_tokens_with_metrics(
+    reader: &crate::PdfReader,
+    contents: &[(u32, u16)],
+    initial_state: ScannedTextTokenState,
+    metrics: &mut inline_text::Metrics<'_>,
+) -> Result<Vec<PageContentStringToken>> {
+    let mut decoded_members = Vec::with_capacity(contents.len());
+    let mut all_complete = true;
+    let mut combined_bytes = 0usize;
+    for (stream_index, (object, generation)) in contents.iter().copied().enumerate() {
+        let source = reader.get_object(object, generation)?;
+        let decoded = decode_stream_lossless_with_limits(
+            &source,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_ADVANCED_EDITING_PATCH_STREAM_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )?;
+        all_complete &= decoded.status == StreamDecodeStatus::Complete;
+        combined_bytes = combined_bytes
+            .checked_add(decoded.data.len())
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| {
+                WellfriendError::ResourceLimit(
+                    "page content sequence byte length overflowed".to_string(),
+                )
+            })?;
+        decoded_members.push((stream_index, object, generation, decoded));
+    }
+
+    if !all_complete {
+        let mut output = Vec::new();
+        let mut state = initial_state;
+        for (stream_index, object, generation, decoded) in decoded_members {
+            if decoded.status != StreamDecodeStatus::Complete {
+                state = ScannedTextTokenState::default();
+                continue;
+            }
+            output.extend(
+                scan_text_string_tokens_with_metrics(
+                    &decoded.data,
+                    &mut state,
+                    Some((object, generation)),
+                    Some(metrics),
+                )?
+                .into_iter()
+                .map(|token| PageContentStringToken {
+                    stream_index,
+                    object,
+                    generation,
+                    token,
+                }),
+            );
+        }
+        return Ok(output);
+    }
+
+    const MAX_PAGE_CONTENT_SEQUENCE_BYTES: usize = 512 * 1024 * 1024;
+    if combined_bytes > MAX_PAGE_CONTENT_SEQUENCE_BYTES {
+        return Err(WellfriendError::ResourceLimit(
+            "page content sequence exceeds 512 MiB".to_string(),
+        ));
+    }
+    let mut data = Vec::with_capacity(combined_bytes);
+    let mut segments = Vec::with_capacity(decoded_members.len());
+    for (stream_index, object, generation, decoded) in decoded_members {
+        let global_start = data.len();
+        data.extend_from_slice(&decoded.data);
+        let global_end = data.len();
+        segments.push(PageContentSegment {
+            stream_index,
+            object,
+            generation,
+            global_start,
+            global_end,
+        });
+        // The PDF content-array semantics include a token boundary between
+        // members; a line feed is a safe canonical separator for tokenization.
+        data.push(b'\n');
+    }
+
+    let tokens = lex_content(&data)?;
+    let mut state = initial_state;
+    let scanned = scan_text_program_tokens(
+        &data,
+        tokens,
+        &mut state,
+        None,
+        Some(&segments),
+        Some(metrics),
+        None,
+    )?;
+    scanned
+        .into_iter()
+        .map(|mut token| {
+            let segment = page_segment_for_range(&segments, token.token_start, token.token_end)
+                .ok_or_else(|| {
+                    WellfriendError::UnsupportedFeature(
+                        "editable PDF string crosses a physical /Contents stream boundary"
+                            .to_string(),
+                    )
+                })?;
+            let operation_segment =
+                page_segment_for_range(&segments, token.operation_start, token.operation_end);
+            let operation_is_local = operation_segment
+                .is_some_and(|operation| operation.stream_index == segment.stream_index);
+            if !operation_is_local {
+                // A /Contents array is one logical content stream.  In valid
+                // PDFs a TJ array may start in one physical member and finish
+                // in another.  TJ rewrites in this module patch the selected
+                // string operand, not the enclosing array/operator, so a
+                // string wholly owned by one member remains exactly editable.
+                // Other text-showing operators are replaced as a whole and
+                // must therefore remain physically local.
+                if token.operator != "TJ" {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "editable PDF text-showing operation crosses a physical /Contents stream boundary"
+                            .to_string(),
+                    ));
+                }
+                token.operation_start = token.token_start;
+                token.operation_end = token.token_end;
+            }
+            token.token_start -= segment.global_start;
+            token.token_end -= segment.global_start;
+            token.operation_start -= segment.global_start;
+            token.operation_end -= segment.global_start;
+            Ok(PageContentStringToken {
+                stream_index: segment.stream_index,
+                object: segment.object,
+                generation: segment.generation,
+                token,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -6004,19 +11758,26 @@ fn is_grapheme_boundary(text: &str, byte_offset: usize) -> bool {
 fn preserved_run_advance(
     resolver: &FontResolver,
     encoded: &[u8],
-    text: &str,
+    _text: &str,
     style: &PreservedTextStyle,
-) -> f64 {
-    let width = split_codes(encoded, resolver.code_size())
-        .into_iter()
-        .map(|code| resolver.glyph_width(code))
+) -> Result<f64> {
+    let codes = split_codes(resolver, encoded)?;
+    let width = codes
+        .iter()
+        .copied()
+        .map(|code| resolver.width_for_code(code))
         .sum::<f64>()
         / 1000.0
         * style.font_size;
-    let character_count = text.chars().count().saturating_sub(1) as f64;
-    let word_count = text.chars().filter(|ch| *ch == ' ').count() as f64;
-    (width + character_count * style.character_spacing + word_count * style.word_spacing)
-        * (style.horizontal_scaling / 100.0)
+    // Tj advances after every encoded character, including its last. These
+    // runs are concatenated without resetting Tm; omitting the last Tc per
+    // run makes the measured line narrower than its emitted endpoint.
+    let character_count = codes.len() as f64;
+    let word_count = codes.iter().filter(|code| code.is_word_space()).count() as f64;
+    Ok(
+        (width + character_count * style.character_spacing + word_count * style.word_spacing)
+            * (style.horizontal_scaling / 100.0),
+    )
 }
 
 fn preserved_style_line_x(
@@ -6050,10 +11811,10 @@ fn preserved_style_line_x(
     })
 }
 
-fn generated_style_for_offset<'a>(
-    spans: &'a [PreservedStyleSpan],
+fn generated_style_for_offset(
+    spans: &[PreservedStyleSpan],
     byte_offset: usize,
-) -> Result<&'a PreservedTextStyle> {
+) -> Result<&PreservedTextStyle> {
     spans
         .iter()
         .find(|span| span.byte_start <= byte_offset && byte_offset < span.byte_end)
@@ -6099,64 +11860,27 @@ fn serialize_generated_preserved_styles(
     font_resource: &str,
     options: &AdvancedTextEditOptions,
     vertical: bool,
-    logical_actual_text: &str,
+    logical_actual_text: Option<&str>,
 ) -> Result<(String, Vec<GeneratedLineAdjustment>)> {
     let mut content = String::from("q\n");
-    content.push_str(&format!(
-        "/Span << /ActualText <{}> >> BDC\nBT\n",
-        utf16be_hex_with_bom(logical_actual_text)
-    ));
+    if let Some(logical_actual_text) = logical_actual_text {
+        content.push_str(&format!(
+            "/Span << /ActualText <{}> >> BDC\nBT\n",
+            utf16be_hex_with_bom(logical_actual_text)
+        ));
+    } else {
+        content.push_str("/Artifact BMC\nBT\n");
+    }
     let mut adjustments = Vec::with_capacity(layout.len());
     if vertical {
-        if options.alignment == GeneratedTextAlignment::Justify {
-            return Err(WellfriendError::UnsupportedFeature(
-                "advanced_editing generated mixed-style vertical justification has no unique inter-glyph policy"
-                    .to_string(),
-            ));
-        }
-        let column_advance = style_spans
-            .iter()
-            .map(|span| span.style.font_size)
-            .fold(options.font_size, f64::max)
-            * options.line_spacing;
-        for (column, glyphs) in layout.iter().enumerate() {
-            let x = options.region[2] - column_advance - column as f64 * column_advance;
-            let mut y = options.region[3];
-            for glyph in glyphs {
-                let style = generated_style_for_offset(style_spans, glyph.logical_byte_start)?;
-                let scale = style.font_size / 1000.0;
-                y -= style.font_size;
-                append_generated_preserved_style(&mut content, font_resource, style);
-                let glyph_x = x + glyph.offset_x * scale;
-                let glyph_y = y + glyph.offset_y * scale;
-                match glyph.orientation {
-                    VerticalGlyphOrientation::RotateClockwise => content.push_str(&format!(
-                        "0 -1 1 0 {} {} Tm <{:04X}> Tj\n",
-                        fmt_num(glyph_x),
-                        fmt_num(glyph_y),
-                        glyph.cid
-                    )),
-                    _ => content.push_str(&format!(
-                        "1 0 0 1 {} {} Tm <{:04X}> Tj\n",
-                        fmt_num(glyph_x),
-                        fmt_num(glyph_y),
-                        glyph.cid
-                    )),
-                }
-            }
-            adjustments.push(GeneratedLineAdjustment {
-                line_index: column,
-                natural_width: options.region[3] - y,
-                target_width: options.region[3] - options.region[1],
-                residual: (y - options.region[1]).max(0.0),
-                word_spacing: 0.0,
-                character_spacing: 0.0,
-                alignment: options.alignment,
-                last_line: column + 1 == layout.len(),
-                applied: true,
-                refusal_reason: None,
-            });
-        }
+        adjustments = vertical_text::serialize(
+            &mut content,
+            layout,
+            font_resource,
+            options,
+            None,
+            Some(style_spans),
+        )?;
     } else {
         let default_line_advance = style_spans
             .iter()
@@ -6166,7 +11890,12 @@ fn serialize_generated_preserved_styles(
         for (line_index, glyphs) in layout.iter().enumerate() {
             let styled = glyphs
                 .iter()
-                .map(|glyph| Ok((glyph, generated_style_for_offset(style_spans, glyph.logical_byte_start)?)))
+                .map(|glyph| {
+                    Ok((
+                        glyph,
+                        generated_style_for_offset(style_spans, glyph.logical_byte_start)?,
+                    ))
+                })
                 .collect::<Result<Vec<_>>>()?;
             let advances = styled
                 .iter()
@@ -6178,7 +11907,8 @@ fn serialize_generated_preserved_styles(
                             style.word_spacing
                         } else {
                             0.0
-                        }) * horizontal_scale
+                        })
+                        * horizontal_scale
                 })
                 .collect::<Vec<_>>();
             let natural_width = advances.iter().sum::<f64>();
@@ -6191,7 +11921,8 @@ fn serialize_generated_preserved_styles(
             }
             let last_line = line_index + 1 == layout.len();
             let should_justify = options.alignment == GeneratedTextAlignment::Justify
-                && (options.justify_last_line || !last_line);
+                && (options.justify_last_line || !last_line)
+                && !styled.is_empty();
             let mut residual = target_width - natural_width;
             let word_count = styled
                 .iter()
@@ -6206,8 +11937,8 @@ fn serialize_generated_preserved_styles(
                     .filter(|(glyph, _)| glyph.visual_unicode == " ")
                     .map(|(_, style)| style.font_size)
                     .fold(f64::INFINITY, f64::min);
-                word_extra = (residual / word_count as f64)
-                    .min(options.max_word_spacing * smallest_word_em);
+                word_extra =
+                    (residual / word_count as f64).min(options.max_word_spacing * smallest_word_em);
                 residual -= word_extra * word_count as f64;
             }
             if should_justify && residual > EPSILON && character_count > 0 {
@@ -6231,7 +11962,8 @@ fn serialize_generated_preserved_styles(
                     .chars()
                     .any(|ch| matches!(ch as u32, 0x0590..=0x08FF | 0xFB1D..=0xFEFF))
             });
-            let painted_width = natural_width + word_extra * word_count as f64
+            let painted_width = natural_width
+                + word_extra * word_count as f64
                 + character_extra * character_count as f64;
             let mut x = match options.alignment {
                 GeneratedTextAlignment::Left => options.region[0],
@@ -6240,10 +11972,18 @@ fn serialize_generated_preserved_styles(
                     options.region[0] + (target_width - painted_width) / 2.0
                 }
                 GeneratedTextAlignment::Start | GeneratedTextAlignment::Justify => {
-                    if rtl { options.region[2] - painted_width } else { options.region[0] }
+                    if rtl {
+                        options.region[2] - painted_width
+                    } else {
+                        options.region[0]
+                    }
                 }
                 GeneratedTextAlignment::End => {
-                    if rtl { options.region[0] } else { options.region[2] - painted_width }
+                    if rtl {
+                        options.region[0]
+                    } else {
+                        options.region[2] - painted_width
+                    }
                 }
             };
             let y = options.region[3]
@@ -6306,6 +12046,11 @@ fn serialize_preserved_styled_runs(
     }
     let mut content = String::from("q\n");
     content.push_str("BT\n");
+    if logical_lines.len() > horizontal_line_capacity(options)? {
+        return Err(WellfriendError::UnsupportedFeature(
+            "preserved-style text exceeds frame capacity; use linked-story flow".into(),
+        ));
+    }
     let mut adjustments = Vec::with_capacity(logical_lines.len());
     let mut run_index = 0usize;
     let line_advance = options.font_size * options.line_spacing;
@@ -6318,7 +12063,7 @@ fn serialize_preserved_styled_runs(
         }
         let visual_scalars = line
             .logical_text
-            .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}'])
+            .trim_end_matches(crate::fonts::hard_break::is_hard_break)
             .chars()
             .count();
         let logical_scalars = line.logical_text.chars().count();
@@ -6351,7 +12096,7 @@ fn serialize_preserved_styled_runs(
             let group = &visible_runs[visible_index..group_end];
             content.push_str(&format!(
                 "/{} {} Tf\n",
-                style.font_resource,
+                serialized_name_body(&style.font_resource),
                 fmt_num(style.font_size)
             ));
             if style.character_spacing.abs() > EPSILON {
@@ -6424,190 +12169,167 @@ fn serialize_preserved_styled_runs(
     Ok((content, adjustments))
 }
 
-fn lex_content(data: &[u8]) -> Result<Vec<LexicalToken>> {
+pub(crate) fn lex_content(data: &[u8]) -> Result<Vec<LexicalToken>> {
+    use crate::content::tokenizer::{ContentToken, ContentTokenizer};
+
     let mut tokens = Vec::new();
-    let mut index = 0usize;
-    while index < data.len() {
-        while index < data.len() && data[index].is_ascii_whitespace() {
-            index += 1;
+    let mut containers = Vec::new();
+    let mut tokenizer = ContentTokenizer::new(data);
+    while let Some(token) = tokenizer.next_spanned()? {
+        if tokens.len() % 256 == 0 {
+            crate::cancel::check_current_cancel("editing canonical tokenization")?;
         }
-        if index >= data.len() {
-            break;
-        }
-        if data[index] == b'%' {
-            while index < data.len() && !matches!(data[index], b'\n' | b'\r') {
-                index += 1;
+        let kind = match token.token {
+            ContentToken::Null => LexicalKind::Null,
+            ContentToken::Boolean(_) => LexicalKind::Boolean,
+            ContentToken::InlineImageData(_) => LexicalKind::InlineImageData,
+            ContentToken::LiteralString(bytes) => {
+                LexicalKind::String(PatchStringRepresentation::Literal, bytes)
             }
-            continue;
-        }
-        let start = index;
-        let kind = match data[index] {
-            b'(' => {
-                let (decoded, _content_start, _content_end, end) =
-                    parse_literal_string(data, index)?;
-                index = end;
-                LexicalKind::String(PatchStringRepresentation::Literal, decoded)
+            ContentToken::HexString(bytes) => {
+                LexicalKind::String(PatchStringRepresentation::Hexadecimal, bytes)
             }
-            b'<' if data.get(index + 1) != Some(&b'<') => {
-                let (decoded, _content_start, _content_end, end) = parse_hex_string(data, index)?;
-                index = end;
-                LexicalKind::String(PatchStringRepresentation::Hexadecimal, decoded)
-            }
-            b'<' if data.get(index + 1) == Some(&b'<') => {
-                index += 2;
-                LexicalKind::DictionaryStart
-            }
-            b'>' if data.get(index + 1) == Some(&b'>') => {
-                index += 2;
-                LexicalKind::DictionaryEnd
-            }
-            b'/' => {
-                index += 1;
-                let name_start = index;
-                while index < data.len() && !is_pdf_delimiter(data[index]) {
-                    index += 1;
-                }
-                LexicalKind::Name(String::from_utf8_lossy(&data[name_start..index]).into_owned())
-            }
-            b'[' => {
-                index += 1;
+            ContentToken::Name(name) => LexicalKind::Name(name),
+            ContentToken::Integer(value) => LexicalKind::Number(value as f64),
+            ContentToken::Real(value) => LexicalKind::Number(value),
+            ContentToken::ArrayStart => {
+                containers.push(false);
                 LexicalKind::ArrayStart
             }
-            b']' => {
-                index += 1;
+            ContentToken::ArrayEnd => {
+                if containers.pop() != Some(false) {
+                    return Err(WellfriendError::MalformedPdf(
+                        "unbalanced content array".into(),
+                    ));
+                }
                 LexicalKind::ArrayEnd
             }
-            _ => {
-                while index < data.len() && !is_pdf_delimiter(data[index]) {
-                    index += 1;
-                }
-                if index == start {
-                    // Dictionary delimiters are irrelevant to text operators;
-                    // consume one byte so malformed input cannot loop forever.
-                    index += 1;
-                }
-                let word = String::from_utf8_lossy(&data[start..index]).into_owned();
-                match word.parse::<f64>() {
-                    Ok(number) if number.is_finite() => LexicalKind::Number(number),
-                    _ => LexicalKind::Word(word),
-                }
+            ContentToken::DictStart => {
+                containers.push(true);
+                LexicalKind::DictionaryStart
             }
+            ContentToken::DictEnd => {
+                if containers.pop() != Some(true) {
+                    return Err(WellfriendError::MalformedPdf(
+                        "unbalanced content dictionary".into(),
+                    ));
+                }
+                LexicalKind::DictionaryEnd
+            }
+            ContentToken::Operator(operator) if !containers.is_empty() => {
+                if operator != "R" {
+                    return Err(WellfriendError::MalformedPdf(
+                        "executable operator inside a content object".into(),
+                    ));
+                }
+                LexicalKind::ReferenceMarker
+            }
+            ContentToken::Operator(operator) => LexicalKind::Word(operator),
         };
+        if containers.len() > 256 {
+            return Err(WellfriendError::ResourceLimit(
+                "content object nesting exceeds 256".into(),
+            ));
+        }
+        if tokens.len() >= 2_000_000 {
+            return Err(WellfriendError::ResourceLimit(
+                "editing content-token budget exceeds 2000000".into(),
+            ));
+        }
         tokens.push(LexicalToken {
-            start,
-            end: index,
+            start: token.start,
+            end: token.end,
             kind,
         });
+    }
+    if !containers.is_empty() {
+        return Err(WellfriendError::MalformedPdf(
+            "unterminated content object".into(),
+        ));
     }
     Ok(tokens)
 }
 
-fn parse_literal_string(data: &[u8], start: usize) -> Result<(Vec<u8>, usize, usize, usize)> {
-    let mut decoded = Vec::new();
-    let mut index = start + 1;
-    let mut depth = 1usize;
-    while index < data.len() {
-        match data[index] {
-            b'(' => {
-                depth += 1;
-                decoded.push(b'(');
-                index += 1;
-            }
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok((decoded, start + 1, index, index + 1));
-                }
-                decoded.push(b')');
-                index += 1;
-            }
-            b'\\' => {
-                index += 1;
-                if index >= data.len() {
-                    break;
-                }
-                match data[index] {
-                    b'n' => decoded.push(b'\n'),
-                    b'r' => decoded.push(b'\r'),
-                    b't' => decoded.push(b'\t'),
-                    b'b' => decoded.push(0x08),
-                    b'f' => decoded.push(0x0c),
-                    b'\n' => {}
-                    b'\r' => {
-                        if data.get(index + 1) == Some(&b'\n') {
-                            index += 1;
-                        }
-                    }
-                    digit @ b'0'..=b'7' => {
-                        let mut value = digit - b'0';
-                        for _ in 0..2 {
-                            if let Some(next @ b'0'..=b'7') = data.get(index + 1).copied() {
-                                index += 1;
-                                value = value.saturating_mul(8).saturating_add(next - b'0');
-                            } else {
-                                break;
-                            }
-                        }
-                        decoded.push(value);
-                    }
-                    other => decoded.push(other),
-                }
-                index += 1;
-            }
-            byte => {
-                decoded.push(byte);
-                index += 1;
-            }
-        }
-    }
-    Err(WellfriendError::MalformedPdf(format!(
-        "advanced_editing unterminated literal string at decoded stream byte {start}"
-    )))
+fn serialized_name_body(name: &str) -> String {
+    let mut bytes = Vec::new();
+    crate::writer::serialize_object(&PdfObject::Name(name.to_string()), &mut bytes);
+    String::from_utf8_lossy(&bytes[1..]).into_owned()
 }
 
-fn parse_hex_string(data: &[u8], start: usize) -> Result<(Vec<u8>, usize, usize, usize)> {
-    let mut nibbles = Vec::new();
-    let mut index = start + 1;
-    while index < data.len() && data[index] != b'>' {
-        if !data[index].is_ascii_whitespace() {
-            nibbles.push(hex_nibble(data[index]).ok_or_else(|| {
-                WellfriendError::MalformedPdf(format!(
-                    "advanced_editing invalid hex string digit at decoded stream byte {index}"
-                ))
-            })?);
+/// Locate only a direct member of the BDC property dictionary. Nested keys and
+/// names used as values are not properties of the enclosing marked-content span.
+pub(crate) fn marked_property<'a>(
+    operands: &'a [LexicalToken],
+    key: &str,
+) -> Result<Option<&'a LexicalToken>> {
+    if !matches!(
+        operands.get(1).map(|t| &t.kind),
+        Some(LexicalKind::DictionaryStart)
+    ) {
+        return Ok(None);
+    }
+    let mut index = 2;
+    let mut found = None;
+    while index < operands.len() {
+        if matches!(operands[index].kind, LexicalKind::DictionaryEnd) {
+            if index + 1 != operands.len() {
+                return Err(WellfriendError::MalformedPdf(
+                    "extra BDC dictionary operands".into(),
+                ));
+            }
+            return Ok(found);
         }
+        let LexicalKind::Name(name) = &operands[index].kind else {
+            return Err(WellfriendError::MalformedPdf(
+                "BDC property key is not a name".into(),
+            ));
+        };
         index += 1;
+        let value = operands
+            .get(index)
+            .ok_or_else(|| WellfriendError::MalformedPdf("missing BDC property value".into()))?;
+        if name == key {
+            if found.is_some() {
+                return Err(WellfriendError::MalformedPdf(
+                    "duplicate BDC property key".into(),
+                ));
+            }
+            found = Some(value);
+        }
+        let mut depth = 0usize;
+        loop {
+            match operands.get(index).map(|t| &t.kind) {
+                Some(LexicalKind::DictionaryStart | LexicalKind::ArrayStart) => depth += 1,
+                Some(LexicalKind::DictionaryEnd | LexicalKind::ArrayEnd) if depth > 0 => depth -= 1,
+                Some(LexicalKind::DictionaryEnd | LexicalKind::ArrayEnd) | None => {
+                    return Err(WellfriendError::MalformedPdf(
+                        "missing BDC property value".into(),
+                    ))
+                }
+                _ => {}
+            }
+            index += 1;
+            if depth == 0 {
+                break;
+            }
+        }
+        // Object references are one value, not three dictionary members.
+        if matches!(value.kind, LexicalKind::Number(_))
+            && matches!(
+                operands.get(index).map(|t| &t.kind),
+                Some(LexicalKind::Number(_))
+            )
+            && matches!(
+                operands.get(index + 1).map(|t| &t.kind),
+                Some(LexicalKind::ReferenceMarker)
+            )
+        {
+            index += 2;
+        }
     }
-    if index >= data.len() {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "advanced_editing unterminated hex string at decoded stream byte {start}"
-        )));
-    }
-    if nibbles.len() % 2 != 0 {
-        nibbles.push(0);
-    }
-    let decoded = nibbles
-        .chunks_exact(2)
-        .map(|pair| pair[0] << 4 | pair[1])
-        .collect();
-    Ok((decoded, start + 1, index, index + 1))
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn is_pdf_delimiter(byte: u8) -> bool {
-    byte.is_ascii_whitespace()
-        || matches!(
-            byte,
-            b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
-        )
+    Err(WellfriendError::MalformedPdf(
+        "unterminated BDC properties".into(),
+    ))
 }
 
 fn contains_rtl_or_bidi_controls(text: &str) -> bool {
@@ -6784,7 +12506,7 @@ pub struct VectorProvenance {
     pub wellfriendpdf_groups: Vec<VectorGroupProvenance>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VectorFormInvocation {
     pub resource_name: String,
     pub owner_stream_object: u32,
@@ -7030,6 +12752,7 @@ pub fn list_vector_objects(input: &[u8], page_number: usize) -> Result<VectorObj
         collect_form_vector_objects(
             reader,
             &page.resources,
+            &page.resources,
             &decoded.data,
             page_number,
             stream_index,
@@ -7070,7 +12793,7 @@ pub fn list_vector_objects(input: &[u8], page_number: usize) -> Result<VectorObj
         deterministic: true,
         exact_limits: vec![
             "objects are reconstructed from actual path and paint operator ranges; unrelated paths are never fused into inferred semantic shapes".to_string(),
-            "reachable Form XObject paths are inventoried to depth 8; clone-edit-one is bounded to a top-level page invocation while nested Form edits require explicit edit-all".to_string(),
+            "reachable Form XObject paths are inventoried to depth 8; clone-edit-one isolates supported page Contents occurrences and their nested Form invocation chains; stream-owned tag migration remains explicit".to_string(),
             "indirect annotation appearance paths are inventoried and editable by operation range; appearance streams shared by multiple annotations are diagnosed and rejected until explicitly cloned".to_string(),
             "patterns, shadings, and ExtGState names are retained as references; their internal programs are not converted into fake solid colors".to_string(),
         ],
@@ -7090,6 +12813,7 @@ struct ReachableFormUse {
 #[allow(clippy::too_many_arguments)]
 fn collect_form_vector_objects(
     reader: &crate::reader::PdfReader,
+    page_resources: &crate::PdfDictionary,
     resources: &crate::PdfDictionary,
     owner_data: &[u8],
     page: usize,
@@ -7179,10 +12903,11 @@ fn collect_form_vector_objects(
         }
         output.extend(form_objects);
         let nested_resources = resolve_advanced_editing_dict(dict.get("Resources"), reader)
-            .unwrap_or_else(|| resources.clone());
+            .unwrap_or_else(|| page_resources.clone());
         active_forms.push((form_use.object_number, form_use.generation));
         collect_form_vector_objects(
             reader,
+            page_resources,
             &nested_resources,
             &decoded.data,
             page,
@@ -7375,6 +13100,7 @@ pub fn edit_vector_object(
         );
     }
     let mut after = before.clone();
+    let mut report_replacement_offset = 0usize;
     let replacement = match &operation {
         VectorEditOperation::Delete => Vec::new(),
         VectorEditOperation::Duplicate { dx, dy } => {
@@ -7402,6 +13128,7 @@ pub fn edit_vector_object(
             };
             let mut bytes = serialize_vector_object(&serializable_before);
             bytes.extend_from_slice(b"\n");
+            report_replacement_offset = bytes.len();
             bytes.extend_from_slice(&serialize_vector_object(&serializable_after));
             bytes
         }
@@ -7461,6 +13188,28 @@ pub fn edit_vector_object(
     let mut changed = Vec::new();
     let mut cloned_form = None;
     let mut clone_graph = Vec::new();
+    if options.shared_form_policy == SharedFormEditPolicy::CloneEditOneInstance
+        && (form_invocation.is_some()
+            || before.edit_safety == "shared_annotation_appearance_requires_clone")
+    {
+        let mut sources = BTreeSet::from([(
+            before.provenance.object_number,
+            before.provenance.generation,
+        )]);
+        sources.extend(
+            before
+                .provenance
+                .form_invocation_path
+                .iter()
+                .map(|invocation| {
+                    (
+                        invocation.owner_stream_object,
+                        invocation.owner_stream_generation,
+                    )
+                }),
+        );
+        vector_occurrence::check_clone_ownership(reader, &sources)?;
+    }
     if before.edit_safety == "shared_annotation_appearance_requires_clone"
         && options.shared_form_policy == SharedFormEditPolicy::CloneEditOneInstance
     {
@@ -7526,10 +13275,8 @@ pub fn edit_vector_object(
                     "advanced_editing_closeout annotation AP dictionary is malformed".to_string(),
                 )
             })?;
-        let clone_number = next_advanced_object_number(
-            reader,
-            "advanced_editing annotation appearance clone",
-        )?;
+        let clone_number =
+            next_advanced_object_number(reader, "advanced_editing annotation appearance clone")?;
         let parts = appearance_name.split('/').collect::<Vec<_>>();
         if parts.len() == 1 {
             ap.insert(
@@ -7584,15 +13331,22 @@ pub fn edit_vector_object(
         });
         let output = write_incremental_update(reader, changed)?;
         ContentEngine::open_bytes(output.clone())?;
-        after.provenance.object_number = clone_number;
-        after.provenance.generation = 0;
-        after.provenance.resource_owner =
-            format!("annotation-{annotation_index}-appearance-{appearance_name}-{clone_number}-0");
-        after.stable_id = vector_stable_id_for_object(&after);
-        let report_after = (!matches!(operation, VectorEditOperation::Delete)).then_some(after);
+        let report_after = if matches!(operation, VectorEditOperation::Delete) {
+            None
+        } else {
+            Some(vector_occurrence::rebound(
+                &output,
+                &before,
+                (clone_number, 0),
+                range.start + report_replacement_offset,
+                replacement.len() - report_replacement_offset,
+            )?)
+        };
         return Ok((output.clone(), VectorEditReport { schema_version:ADVANCED_EDITING_SCHEMA_VERSION.to_string(), stable_id:stable_id.to_string(), operation, before, after:report_after, source_range:[range.start,range.end], replacement_bytes:replacement.len(), unrelated_decoded_prefix_preserved:prefix_preserved, unrelated_decoded_suffix_preserved:suffix_preserved, original_pdf_prefix_preserved:output.starts_with(input), output_reopened:true, output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:options.deterministic, shared_form_policy:options.shared_form_policy, cloned_form:Some([clone_number,0]), clone_graph:vec![format!("annotation:{annotation_index} AP/{appearance_name} -> {clone_number} 0 R; shared source {source_appearance_object} {source_appearance_generation} R retained")], cache_invalidation:advanced_editing_cache_invalidation(input,&output,false,true,true), exact_limits:vec!["clone-one updates only the selected annotation AP category/state and preserves /AS plus sibling N/R/D state entries".to_string(),"nested Form resources inside an appearance use the Form invocation clone-one path; malformed or ambiguous state dictionaries fail closed".to_string()] }));
     }
-    if options.shared_form_policy == SharedFormEditPolicy::CloneEditOneInstance {
+    if options.shared_form_policy == SharedFormEditPolicy::CloneEditOneInstance
+        && form_invocation.is_some()
+    {
         if let Some(annotation_stack) = before
             .provenance
             .form_stack
@@ -7767,8 +13521,7 @@ pub fn edit_vector_object(
                     .and_then(|index| index.checked_add(1))
                     .ok_or_else(|| {
                         WellfriendError::ResourceLimit(
-                            "advanced_editing annotation clone path index overflowed"
-                                .to_string(),
+                            "advanced_editing annotation clone path index overflowed".to_string(),
                         )
                     })?;
                 let clone_number = allocation_base + clone_offset;
@@ -7846,14 +13599,22 @@ pub fn edit_vector_object(
             });
             let output = write_incremental_update(reader, changed)?;
             ContentEngine::open_bytes(output.clone())?;
-            after.provenance.object_number = leaf_number;
-            after.provenance.generation = 0;
-            after.provenance.resource_owner = format!("form-{leaf_number}-0");
-            after.stable_id = vector_stable_id_for_object(&after);
-            let report_after = (!matches!(operation, VectorEditOperation::Delete)).then_some(after);
+            let report_after = if matches!(operation, VectorEditOperation::Delete) {
+                None
+            } else {
+                Some(vector_occurrence::rebound(
+                    &output,
+                    &before,
+                    (leaf_number, 0),
+                    range.start + report_replacement_offset,
+                    replacement.len() - report_replacement_offset,
+                )?)
+            };
             return Ok((output.clone(), VectorEditReport { schema_version:ADVANCED_EDITING_SCHEMA_VERSION.to_string(), stable_id:stable_id.to_string(), operation, before, after:report_after, source_range:[range.start,range.end], replacement_bytes:replacement.len(), unrelated_decoded_prefix_preserved:prefix_preserved, unrelated_decoded_suffix_preserved:suffix_preserved, original_pdf_prefix_preserved:output.starts_with(input), output_reopened:true, output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:options.deterministic, shared_form_policy:options.shared_form_policy, cloned_form:Some([leaf_number,0]), clone_graph, cache_invalidation:advanced_editing_cache_invalidation(input,&output,false,true,true), exact_limits:vec!["clone-one for nested annotation appearance Forms clones the edited leaf, each selected appearance Form owner, and only the target annotation AP entry".to_string(),"sibling N/R/D state entries and /AS are preserved; malformed or ambiguous appearance-state dictionaries fail closed".to_string()] }));
         }
         let invocation_path = before.provenance.form_invocation_path.clone();
+        let page = engine.document().get_page(page_number)?;
+        let invocation_resources = vector_occurrence::invocation_resources(reader, &page, &before)?;
         if invocation_path.len() > 1 {
             let page = engine.document().get_page(page_number)?;
             let clone_count = u32::try_from(invocation_path.len())
@@ -7920,16 +13681,10 @@ pub fn edit_vector_object(
                             .to_string(),
                     ));
                 }
-                let is_page_owner = page.contents.contains(&(
-                    invocation.owner_stream_object,
-                    invocation.owner_stream_generation,
-                ));
+                let path_index = invocation_path.len() - 1 - clone_index;
+                let is_page_owner = path_index == 0;
                 let mut owner_data = decoded_owner.data;
-                let resource_owner = if is_page_owner {
-                    page.resources.clone()
-                } else {
-                    resolve_advanced_editing_dict(owner_dict.get("Resources"), reader).ok_or_else(|| WellfriendError::UnsupportedFeature("advanced_editing_closeout nested Form clone-one requires a direct or indirect parent Form Resources dictionary".to_string()))?
-                };
+                let resource_owner = invocation_resources[path_index].clone();
                 let mut xobjects =
                     resolve_advanced_editing_dict(resource_owner.get("XObject"), reader)
                         .unwrap_or_else(crate::PdfDictionary::empty);
@@ -8027,13 +13782,27 @@ pub fn edit_vector_object(
                 generation: page.generation_number,
                 object: PdfObject::Dictionary(page_dict),
             });
+            let source = page.contents[before.provenance.content_stream_index];
+            let isolated = vector_occurrence::stage(
+                reader,
+                &page,
+                before.provenance.content_stream_index,
+                &mut changed,
+            )?;
+            clone_graph.push(vector_occurrence::receipt(&before, source, isolated));
             let output = write_incremental_update(reader, changed)?;
             ContentEngine::open_bytes(output.clone())?;
-            after.provenance.object_number = leaf_number;
-            after.provenance.generation = 0;
-            after.provenance.resource_owner = format!("form-{leaf_number}-0");
-            after.stable_id = vector_stable_id_for_object(&after);
-            let report_after = (!matches!(operation, VectorEditOperation::Delete)).then_some(after);
+            let report_after = if matches!(operation, VectorEditOperation::Delete) {
+                None
+            } else {
+                Some(vector_occurrence::rebound(
+                    &output,
+                    &before,
+                    (leaf_number, 0),
+                    range.start + report_replacement_offset,
+                    replacement.len() - report_replacement_offset,
+                )?)
+            };
             return Ok((output.clone(), VectorEditReport { schema_version:ADVANCED_EDITING_SCHEMA_VERSION.to_string(), stable_id:stable_id.to_string(), operation, before, after:report_after, source_range:[range.start,range.end], replacement_bytes:replacement.len(), unrelated_decoded_prefix_preserved:prefix_preserved, unrelated_decoded_suffix_preserved:suffix_preserved, original_pdf_prefix_preserved:output.starts_with(input), output_reopened:true, output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:options.deterministic, shared_form_policy:options.shared_form_policy, cloned_form:Some([leaf_number,0]), clone_graph, cache_invalidation:advanced_editing_cache_invalidation(input,&output,false,true,false), exact_limits:vec!["clone-one recursively clones the leaf and each selected parent Form invocation path; unrelated source Forms are retained".to_string(),"nested Form clone-one requires losslessly decodable streams and direct or indirect Resources dictionaries; cyclic/malformed graphs fail closed".to_string()] }));
         }
         let invocation = form_invocation.as_ref().ok_or_else(|| {
@@ -8049,10 +13818,8 @@ pub fn edit_vector_object(
             )));
         }
         let page = engine.document().get_page(page_number)?;
-        let new_number = next_advanced_object_number(
-            reader,
-            "advanced_editing top-level Form clone",
-        )?;
+        let new_number =
+            next_advanced_object_number(reader, "advanced_editing top-level Form clone")?;
         let mut resources = page.resources.clone();
         let mut xobjects = resolve_advanced_editing_dict(resources.get("XObject"), reader)
             .unwrap_or_else(crate::PdfDictionary::empty);
@@ -8061,8 +13828,7 @@ pub fn edit_vector_object(
         while xobjects.contains_key(&resource_name) {
             suffix_index = suffix_index.checked_add(1).ok_or_else(|| {
                 WellfriendError::ResourceLimit(
-                    "advanced_editing exhausted top-level Form clone resource names"
-                        .to_string(),
+                    "advanced_editing exhausted top-level Form clone resource names".to_string(),
                 )
             })?;
             resource_name = format!("OxV{new_number}_{suffix_index}");
@@ -8182,10 +13948,44 @@ pub fn edit_vector_object(
             },
         });
     }
+    let page = engine.document().get_page(page_number)?;
+    let is_page_vector = form_invocation.is_none()
+        && page
+            .contents
+            .get(before.provenance.content_stream_index)
+            .copied()
+            == Some((
+                before.provenance.object_number,
+                before.provenance.generation,
+            ));
+    if is_page_vector || cloned_form.is_some() {
+        let source = page.contents[before.provenance.content_stream_index];
+        let isolated = vector_occurrence::stage(
+            reader,
+            &page,
+            before.provenance.content_stream_index,
+            &mut changed,
+        )?;
+        clone_graph.push(vector_occurrence::receipt(&before, source, isolated));
+        if is_page_vector {
+            after.provenance.object_number = isolated.0;
+            after.provenance.generation = isolated.1;
+        }
+    }
     let output = write_incremental_update(reader, changed)?;
     ContentEngine::open_bytes(output.clone())?;
     let output_sha256 = format!("{:x}", Sha256::digest(&output));
-    let report_after = (!matches!(operation, VectorEditOperation::Delete)).then_some(after);
+    let report_after = if matches!(operation, VectorEditOperation::Delete) {
+        None
+    } else {
+        Some(vector_occurrence::rebound(
+            &output,
+            &before,
+            (after.provenance.object_number, after.provenance.generation),
+            range.start + report_replacement_offset,
+            replacement.len() - report_replacement_offset,
+        )?)
+    };
     Ok((
         output.clone(),
         VectorEditReport {
@@ -8211,7 +14011,7 @@ pub fn edit_vector_object(
             exact_limits: vec![
                 "only the reconstructed paint operation range is rewritten; surrounding operators and the original PDF prefix are preserved".to_string(),
                 "semantic shape names such as ellipse are not inferred from arbitrary cubic paths".to_string(),
-                "shared Form edits require explicit edit-all or clone-one policy; clone-one is bounded to top-level page invocations and never mutates the source Form".to_string(),
+                "shared Form edits require explicit edit-all or clone-one policy; page clone-one isolates the selected Contents slot and Form chain, retaining source objects".to_string(),
             ],
         },
     ))
@@ -8248,6 +14048,7 @@ fn edit_vector_z_order(
             object.provenance.form_invocation.is_none()
                 && object.provenance.object_number == before.provenance.object_number
                 && object.provenance.generation == before.provenance.generation
+                && object.provenance.content_stream_index == before.provenance.content_stream_index
                 && object.provenance.marked_content_depth == 0
                 && object.provenance.ocg_context.is_none()
                 && !object.clipping_path
@@ -8330,7 +14131,7 @@ fn edit_vector_z_order(
     let mut replacement_object = before.clone();
     // The object moves outside its original graphics-state location, so the
     // self-contained replacement carries the effective page transform.
-    let replacement = serialize_vector_object(&replacement_object);
+    let serialized_replacement = serialize_vector_object(&replacement_object);
     let removed_len = range.end - range.start;
     let mut decoded = decoded_result.data;
     decoded.drain(range.clone());
@@ -8339,6 +14140,17 @@ fn edit_vector_z_order(
     } else {
         insertion_original
     };
+    // Operation ranges end at the operator token, before trailing whitespace.
+    // Moving a program to such a boundary without delimiters can concatenate
+    // `S` and `q` into one unknown operator and merge the two paths.
+    let mut replacement = Vec::with_capacity(serialized_replacement.len() + 2);
+    if insertion > 0 && !decoded[insertion - 1].is_ascii_whitespace() {
+        replacement.push(b'\n');
+    }
+    replacement.extend_from_slice(&serialized_replacement);
+    if insertion < decoded.len() && !decoded[insertion].is_ascii_whitespace() {
+        replacement.push(b'\n');
+    }
     decoded.splice(insertion..insertion, replacement.clone());
     let prefix_preserved = decoded.starts_with(&original_prefix);
     let suffix_preserved = decoded.ends_with(&original_suffix);
@@ -8346,19 +14158,40 @@ fn edit_vector_z_order(
     dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
     dict.remove("DecodeParms");
     dict.insert("Length", PdfObject::Integer(compressed.len() as i64));
-    let output = write_incremental_update(
+    let mut changed = vec![IncrementalObject {
+        number: before.provenance.object_number,
+        generation: before.provenance.generation,
+        object: PdfObject::Stream {
+            dict,
+            raw: compressed,
+        },
+    }];
+    let page = engine.document().get_page(before.provenance.page)?;
+    let source = (
+        before.provenance.object_number,
+        before.provenance.generation,
+    );
+    if page
+        .contents
+        .get(before.provenance.content_stream_index)
+        .copied()
+        != Some(source)
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "vector z-order requires a page Contents occurrence".into(),
+        ));
+    }
+    let isolated = vector_occurrence::stage(
         reader,
-        vec![IncrementalObject {
-            number: before.provenance.object_number,
-            generation: before.provenance.generation,
-            object: PdfObject::Stream {
-                dict,
-                raw: compressed,
-            },
-        }],
+        &page,
+        before.provenance.content_stream_index,
+        &mut changed,
     )?;
+    let clone_graph = vec![vector_occurrence::receipt(&before, source, isolated)];
+    let output = write_incremental_update(reader, changed)?;
     ContentEngine::open_bytes(output.clone())?;
-    replacement_object.stable_id = vector_stable_id_for_object(&replacement_object);
+    replacement_object =
+        vector_occurrence::rebound(&output, &before, isolated, insertion, replacement.len())?;
     let output_sha256 = format!("{:x}", Sha256::digest(&output));
     Ok((
         output.clone(),
@@ -8380,7 +14213,7 @@ fn edit_vector_z_order(
             deterministic: options.deterministic,
             shared_form_policy: options.shared_form_policy,
             cloned_form: None,
-            clone_graph: Vec::new(),
+            clone_graph,
             cache_invalidation: advanced_editing_cache_invalidation(input, &output, false, true, false),
             exact_limits: vec![
                 "z-order movement is bounded to page-owned path objects outside clipping, marked-content, and OCG contexts".to_string(),
@@ -8438,10 +14271,17 @@ fn edit_vector_group_structure(
             object.provenance.form_invocation.is_none()
                 && object.provenance.object_number == before.provenance.object_number
                 && object.provenance.generation == before.provenance.generation
+                && object.provenance.content_stream_index == before.provenance.content_stream_index
         })
         .cloned()
         .collect::<Vec<_>>();
     siblings.sort_by_key(|object| object.provenance.operation_byte_start);
+    let selected_ordinal = siblings
+        .iter()
+        .position(|object| object.stable_id == before.stable_id)
+        .ok_or_else(|| {
+            WellfriendError::invalid_input("group target is not in its source occurrence")
+        })?;
     let (range, replacement) = match &operation {
         VectorEditOperation::GroupWith { stable_ids } => {
             let mut selected_ids = stable_ids.clone();
@@ -8526,23 +14366,63 @@ fn edit_vector_group_structure(
     dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
     dict.remove("DecodeParms");
     dict.insert("Length", PdfObject::Integer(compressed.len() as i64));
-    let output = write_incremental_update(
+    let mut changed = vec![IncrementalObject {
+        number: before.provenance.object_number,
+        generation: before.provenance.generation,
+        object: PdfObject::Stream {
+            dict,
+            raw: compressed,
+        },
+    }];
+    let page = engine.document().get_page(before.provenance.page)?;
+    let source = (
+        before.provenance.object_number,
+        before.provenance.generation,
+    );
+    if page
+        .contents
+        .get(before.provenance.content_stream_index)
+        .copied()
+        != Some(source)
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "vector grouping requires a page Contents occurrence".into(),
+        ));
+    }
+    let isolated = vector_occurrence::stage(
         reader,
-        vec![IncrementalObject {
-            number: before.provenance.object_number,
-            generation: before.provenance.generation,
-            object: PdfObject::Stream {
-                dict,
-                raw: compressed,
-            },
-        }],
+        &page,
+        before.provenance.content_stream_index,
+        &mut changed,
     )?;
+    let clone_graph = vec![vector_occurrence::receipt(&before, source, isolated)];
+    let output = write_incremental_update(reader, changed)?;
     ContentEngine::open_bytes(output.clone())?;
     let reopened_inventory = list_vector_objects(&output, before.provenance.page)?;
-    let after = reopened_inventory.objects.into_iter().find(|object| {
-        object.provenance.object_number == before.provenance.object_number
-            && object.bbox == before.bbox
-    });
+    let mut saved_siblings = reopened_inventory
+        .objects
+        .into_iter()
+        .filter(|object| {
+            (
+                object.provenance.object_number,
+                object.provenance.generation,
+            ) == isolated
+                && object.provenance.content_stream_index == before.provenance.content_stream_index
+                && object.provenance.form_invocation.is_none()
+        })
+        .collect::<Vec<_>>();
+    saved_siblings.sort_by_key(|object| object.provenance.operation_byte_start);
+    if saved_siblings.len() != siblings.len() {
+        return Err(WellfriendError::invalid_input(
+            "group rewrite changed the number of source vectors",
+        ));
+    }
+    let after = Some(
+        saved_siblings
+            .into_iter()
+            .nth(selected_ordinal)
+            .ok_or_else(|| WellfriendError::invalid_input("saved group target was not found"))?,
+    );
     let output_sha256 = format!("{:x}", Sha256::digest(&output));
     Ok((
         output.clone(),
@@ -8564,7 +14444,7 @@ fn edit_vector_group_structure(
             deterministic: options.deterministic,
             shared_form_policy: options.shared_form_policy,
             cloned_form: None,
-            clone_graph: Vec::new(),
+            clone_graph,
             cache_invalidation: advanced_editing_cache_invalidation(input, &output, false, true, false),
             exact_limits: vec![
                 "group/ungroup uses inert Wellfriend marked-content ownership around contiguous page-owned vector ranges; painting order and graphics are preserved".to_string(),
@@ -8906,6 +14786,7 @@ fn vector_stable_id(
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(provenance.page.to_le_bytes());
+    hasher.update(provenance.content_stream_index.to_le_bytes());
     hasher.update(provenance.object_number.to_le_bytes());
     hasher.update(provenance.generation.to_le_bytes());
     hasher.update(provenance.operation_byte_start.to_le_bytes());
@@ -9914,10 +15795,7 @@ pub fn fit_annotation_ink_pdf(
         "WellfriendInkFitPolicy",
         PdfObject::Name(format!("{:?}", options.policy)),
     );
-    let appearance_number = next_advanced_object_number(
-        reader,
-        "advanced_editing ink appearance",
-    )?;
+    let appearance_number = next_advanced_object_number(reader, "advanced_editing ink appearance")?;
     let opacity = annotation
         .get("CA")
         .and_then(PdfObject::as_number)
@@ -10830,7 +16708,7 @@ fn ink_digest(segments: &[CubicBezier]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn canonical_number(value: f64) -> f64 {
+pub(crate) fn canonical_number(value: f64) -> f64 {
     if value.abs() < 0.000_000_5 {
         0.0
     } else {
@@ -10858,7 +16736,8 @@ pub fn advanced_editing_report(engine: &ContentEngine) -> Result<serde_json::Val
             "existing_pdf_glyph_streams_reshaped": false,
             "new_unicode_shaping": "rustybuzz_with_cluster_provenance",
             "rtl": "page_logical_multi_run_shaped_type0_with_actualtext_and_per_glyph_offsets",
-            "vertical": "page_logical_multi_run_shaped_type0_identity_v_with_per_grapheme_style_ownership",
+            "vertical": "unicode17_mixed_orientation_opentype_ttb_shaping_identity_v_w2_logical_column_breaking_and_bounded_positioned_emission",
+            "vertical_orientation_unicode_version": crate::fonts::vertical::UNICODE_VERSION,
             "missing_glyph_policy": "approved_font_substitution_then_fail_closed_if_asset_has_no_outline"
         },
         "same_width_patch": {
@@ -10958,14 +16837,17 @@ pub(crate) fn advanced_editing_closeout_feature_report_value(
         "status": "implemented_with_limits",
         "coverage": {
             "multi_run_selection": "page_logical_partial_token_cross_contents_provenance_with_atomic_stream_commit",
+            "generated_paint_order": "exact_BT_ET_source_slot_inventory_fail_closed_block_anchor_or_revision_bound_hamilton_proposed_and_explicitly_approved_scalar_region_partitions_with_descending_same_stream_commit_and_unsplit_shaping_equivalence",
             "rtl_logical_visual_mapping": "bidi_run_provenance",
-            "vertical_range": "generated_cluster_layout_with_explicit_limits",
+            "vertical_range": "unicode17_vertical_shaping_and_cluster_safe_column_layout_with_explicit_limits",
             "multi_operator_serialization": "Tj_TJ_quote_double_quote_token_sequences_with_boundary_residual_reencoding",
             "preserve_per_segment": "grapheme_safe_source_style_ownership_exact_cmap_or_shaped_type0_with_raw_paint_replay",
             "source_token_removal": "selected_codes_absent_from_current_reachable_revision_with_exact_TJ_advance_compensation",
-            "clipping_text": "horizontal_bidi_and_upright_zero_offset_vertical_replacements_injected_inside_original_BT_ET_scope",
+            "clipping_text": "source_positioned_horizontal_bidi_and_rotated_offset_vertical_replacements_inside_original_BT_ET_scope",
+            "inline_position_preservation": "source_text_and_line_matrices_with_font_resolved_TJ_and_cross_contents_state_no_inverse_matrix",
             "tagged_text": "partial_and_nested_marked_content_rewritten_inline_without_mcid_relocation_or_parenttree_identity_change",
             "form_inline_font_resources": "collision_checked_generated_type0_font_installed_in_every_rewritten_form_owner",
+            "generated_font_resource_retirement": "private_v1_type0_marker_plus_bounded_page_form_pattern_type3_and_appearance_reachability",
             "opentype_embedding": "glyf_gid_preserving_subset_or_full_cff1_FontFile3_OpenType_with_license_gate",
             "nested_form_clone_one": "recursive_leaf_to_page_invocation_path",
             "annotation_appearance_clone_one": "target_annotation_N_R_D_or_state_owner",
@@ -10977,6 +16859,7 @@ pub(crate) fn advanced_editing_closeout_feature_report_value(
         "failure": {"blocked":0, "unclassified":0, "security":0},
         "exact_limits": [
             "Form-owned logical text is occurrence-addressed separately because shared Form edits require clone-one or edit-all ownership",
+            "unreviewed physical-region inference and preservation of several unrelated source font-family programs inside one contextual replacement remain explicit limits; replacement ranges have a revision-bound deterministic proposal, inherited grapheme-owned size, spacing, scale, rise, render mode and paint commands are retained, and boundaries that cannot reproduce the unsplit OpenType result are rejected",
             "nested clone-one requires lossless streams and direct or indirect resource dictionaries",
             "arbitrary Type3 CharProc authoring remains separate; text insertion substitutes an approved embeddable Type0 font, and exact page resource paint commands are replayed",
             "structural signature policy does not claim cryptographic validity"
@@ -11148,6 +17031,34 @@ impl AdvancedEditingMutationSession {
         let (output, report) = edit_multi_run_text_range(&self.current, request, font_bytes)?;
         self.commit(
             "multi_run_text_range",
+            output,
+            advanced_editing_report_json_value(report)?,
+        )
+    }
+
+    pub fn propose_generated_paint_partitions(
+        &self,
+        request: &MultiRunTextRangeRequest,
+    ) -> Result<GeneratedPaintPartitionProposal> {
+        propose_generated_paint_partitions(&self.current, request)
+    }
+
+    pub fn apply_generated_paint_partition_proposal(
+        &mut self,
+        request: &MultiRunTextRangeRequest,
+        proposal: &GeneratedPaintPartitionProposal,
+        approval: &GeneratedPaintPartitionApproval,
+        font_bytes: Option<&[u8]>,
+    ) -> Result<&AdvancedEditingMutationPatch> {
+        let (output, report) = apply_generated_paint_partition_proposal(
+            &self.current,
+            request,
+            proposal,
+            approval,
+            font_bytes,
+        )?;
+        self.commit(
+            "generated_paint_partition_proposal",
             output,
             advanced_editing_report_json_value(report)?,
         )
@@ -11422,6 +17333,585 @@ mod tests {
     use crate::writer::{OutputObject, PdfWriter};
 
     #[test]
+    fn canonical_editing_tokens_keep_dictionary_literals_and_direct_ownership() {
+        let bytes = b"BT /#46#31 12 Tf /Span << /ActualText (ABC) /Reviewed true /Other false /Nested << /ActualText (WRONG) >> >> BDC (ABC) Tj EMC ET";
+        let mut state = ScannedTextTokenState::default();
+        let tokens =
+            scan_text_string_tokens_with_state_and_owner(bytes, &mut state, Some((4, 0))).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].font_name, "F1");
+        assert_eq!(tokens[0].actual_text_sources.len(), 1);
+        assert_eq!(
+            tokens[0].actual_text_sources[0].logical_text.as_ref(),
+            "ABC"
+        );
+        assert!(!tokens[0].unresolved_actual_text);
+        assert!(tokens[0].flow_relocatable);
+        let mut state = ScannedTextTokenState::default();
+        let cleared = scan_text_string_tokens_with_state_and_owner(
+            b"/Span << /ActualText null /Reviewed true >> BDC BT /F1 12 Tf (DEF) Tj ET EMC",
+            &mut state,
+            Some((4, 0)),
+        )
+        .unwrap();
+        assert!(cleared[0].actual_text_sources.is_empty());
+        assert!(!cleared[0].unresolved_actual_text);
+        assert!(cleared[0].flow_relocatable);
+        let tokens =
+            lex_content(b"/Span << /Value /ActualText /Nested << /ActualText (NO) >> >>").unwrap();
+        assert!(marked_property(&tokens, "ActualText").unwrap().is_none());
+    }
+
+    #[test]
+    fn canonical_editing_tokens_never_expose_inline_image_payload_as_text() {
+        let bytes = b"BI /W 24 /H 1 /BPC 8 /CS /G ID BT /F9 40 Tf (FAKE) Tj ET EI BT /F1 12 Tf (REAL) Tj ET";
+        let tokens = scan_text_string_tokens(bytes).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].decoded, b"REAL");
+        assert_eq!(tokens[0].font_name, "F1");
+    }
+
+    #[test]
+    fn mixed_bidi_uses_level_at_each_visual_run_byte_start() {
+        let text = "English שלום 123 العربية";
+        let font = get_fallback_font("Symbol").unwrap();
+        let report = analyze_advanced_text_reflow(
+            text,
+            AdvancedTextMode::ParagraphReflowHorizontal,
+            Some(font),
+            TextReflowLimits::default(),
+        )
+        .unwrap();
+        let bidi = BidiInfo::new(text, Some(Level::ltr()));
+        for p in &bidi.paragraphs {
+            let (levels, ranges) = bidi.visual_runs(p, p.range.clone());
+            for range in ranges {
+                let run = report
+                    .bidi_runs
+                    .iter()
+                    .find(|r| r.logical_byte_start == range.start)
+                    .unwrap();
+                assert_eq!(run.embedding_level, levels[range.start].number());
+            }
+        }
+        let glyphs =
+            generated_glyph_plan(text, AdvancedTextMode::ParagraphReflowHorizontal, font).unwrap();
+        assert!(glyphs
+            .iter()
+            .all(|g| text.is_char_boundary(g.logical_byte_start)));
+    }
+
+    #[test]
+    fn reflow_stays_before_later_artwork_and_preserves_following_source_advance() {
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"q 2 0 0 2 0 0 cm BT /F1 12 Tf 10 60 Td (ABC) Tj (DEF) Tj ET Q 0 g 0 0 200 200 re f",
+        );
+        let options = AdvancedTextEditOptions {
+            region: [10.0, 20.0, 180.0, 150.0],
+            ..Default::default()
+        };
+        let (output, _) = edit_advanced_text_pdf(
+            &input,
+            1,
+            "ABC",
+            "XYZ",
+            AdvancedTextMode::ParagraphReflowHorizontal,
+            &options,
+            None,
+        )
+        .unwrap();
+        let engine = ContentEngine::open_bytes(output).unwrap();
+        let content = engine.document().get_page_content_bytes(1).unwrap();
+        let decoded = String::from_utf8_lossy(&content);
+        assert!(!decoded.contains("(ABC)"));
+        assert!(decoded.contains("(DEF)"));
+        let operations = lex_content(&content).unwrap();
+        let first_show = operations
+            .iter()
+            .find(|t| matches!(&t.kind, LexicalKind::Word(op) if op == "TJ"))
+            .unwrap();
+        assert!(String::from_utf8_lossy(&content[..first_show.start]).contains('-'));
+        let generated = decoded.find("FEFF00580059005A").unwrap();
+        assert!(generated < decoded.rfind("re f").unwrap());
+        assert!(decoded.contains("0.5 0 0 0.5 0 0 cm"));
+    }
+
+    #[test]
+    fn multi_text_object_reflow_requires_an_explicit_paint_order_decision() {
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"BT /F1 12 Tf 10 150 Td (A) Tj ET 0 0 20 20 re f BT /F1 12 Tf 30 150 Td (B) Tj ET",
+        );
+        let request = |paint_order_policy| MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 2,
+            replacement_text: "XYZ".into(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::ExplicitSupplied,
+            options: AdvancedTextEditOptions {
+                region: [10.0, 20.0, 180.0, 150.0],
+                paint_order_policy,
+                ..Default::default()
+            },
+            final_lines: None,
+        };
+
+        let error = edit_multi_run_text_range(
+            &input,
+            &request(GeneratedPaintOrderPolicy::RequireSingleSourceTextObject),
+            None,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("ambiguous_generated_paint_order"));
+
+        let mut proposal_request =
+            request(GeneratedPaintOrderPolicy::RequireSingleSourceTextObject);
+        proposal_request.replacement_text = "123".into();
+        let proposal = propose_generated_paint_partitions(&input, &proposal_request).unwrap();
+        assert_eq!(proposal.candidates.len(), 2);
+        assert_eq!(
+            proposal
+                .candidates
+                .iter()
+                .map(|candidate| candidate.replacement_scalar_range)
+                .collect::<Vec<_>>(),
+            vec![[0, 2], [2, 3]]
+        );
+        assert!(proposal
+            .candidates
+            .iter()
+            .all(|candidate| candidate.suggested_region.is_none()));
+        let approval = GeneratedPaintPartitionApproval {
+            proposal_id: proposal.proposal_id.clone(),
+            font_sha256: None,
+            partitions: vec![
+                GeneratedPaintPartitionApprovalEntry {
+                    source_text_object: 0,
+                    region: [10.0, 100.0, 80.0, 140.0],
+                    final_lines: None,
+                },
+                GeneratedPaintPartitionApprovalEntry {
+                    source_text_object: 1,
+                    region: [100.0, 100.0, 180.0, 140.0],
+                    final_lines: None,
+                },
+            ],
+        };
+        let (_, proposed_report) = apply_generated_paint_partition_proposal(
+            &input,
+            &proposal_request,
+            &proposal,
+            &approval,
+            None,
+        )
+        .unwrap();
+        assert_eq!(proposed_report.generated_paint_partitions.len(), 2);
+        let mut wrong_font_approval = approval.clone();
+        wrong_font_approval.font_sha256 = Some("00".repeat(32));
+        assert!(apply_generated_paint_partition_proposal(
+            &input,
+            &proposal_request,
+            &proposal,
+            &wrong_font_approval,
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("font_sha256"));
+        let mut stale = proposal.clone();
+        stale.proposal_id.push('0');
+        assert!(apply_generated_paint_partition_proposal(
+            &input,
+            &proposal_request,
+            &stale,
+            &approval,
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("stale"));
+
+        for (policy, generated_before_artwork) in [
+            (
+                GeneratedPaintOrderPolicy::AnchorAfterFirstSourceTextObject,
+                true,
+            ),
+            (
+                GeneratedPaintOrderPolicy::AnchorAfterLastSourceTextObject,
+                false,
+            ),
+        ] {
+            let (output, report) =
+                edit_multi_run_text_range(&input, &request(policy), None).unwrap();
+            assert_eq!(
+                report
+                    .selected_source_spans
+                    .iter()
+                    .map(|span| span.source_text_object)
+                    .collect::<Vec<_>>(),
+                vec![0, 1]
+            );
+            let decision = report.generated_paint_order.unwrap();
+            assert_eq!(decision.policy, policy);
+            assert_eq!(decision.source_text_objects, 2);
+            let engine = ContentEngine::open_bytes(output).unwrap();
+            let content = engine.document().get_page_content_bytes(1).unwrap();
+            let decoded = String::from_utf8_lossy(&content);
+            let generated = scan_text_string_tokens(&content)
+                .unwrap()
+                .into_iter()
+                .find(|token| token.text_render_mode != 3 && token.font_name != "F1")
+                .unwrap()
+                .operation_start;
+            let artwork = decoded.find("re f").unwrap();
+            assert_eq!(generated < artwork, generated_before_artwork);
+            assert!(!decoded.contains("(A)"));
+            assert!(!decoded.contains("(B)"));
+        }
+
+        let partitioned = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 2,
+            replacement_text: "X Y".into(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::ExplicitSupplied,
+            options: AdvancedTextEditOptions {
+                region: [10.0, 20.0, 180.0, 150.0],
+                paint_partitions: vec![
+                    GeneratedPaintPartition {
+                        source_text_object: 0,
+                        replacement_scalar_range: [0, 2],
+                        region: [10.0, 100.0, 80.0, 140.0],
+                        final_lines: None,
+                    },
+                    GeneratedPaintPartition {
+                        source_text_object: 1,
+                        replacement_scalar_range: [2, 3],
+                        region: [100.0, 100.0, 180.0, 140.0],
+                        final_lines: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            final_lines: None,
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &partitioned, None).unwrap();
+        assert_eq!(
+            report.operation,
+            "replace_partitioned_by_source_paint_order"
+        );
+        assert!(report.generated_paint_order.is_none());
+        assert_eq!(report.generated_paint_partitions.len(), 2);
+        assert!(report
+            .generated_paint_partitions
+            .iter()
+            .all(|receipt| receipt.generated));
+        let engine = ContentEngine::open_bytes(output).unwrap();
+        assert_eq!(
+            engine
+                .get_page_text(1)
+                .unwrap()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            "X Y"
+        );
+        let content = engine.document().get_page_content_bytes(1).unwrap();
+        let decoded = String::from_utf8_lossy(&content);
+        let leading = decoded.find("FEFF00580020").unwrap();
+        let artwork = decoded.find("re f").unwrap();
+        let trailing = decoded.rfind("FEFF0059").unwrap();
+        assert!(leading < artwork && artwork < trailing);
+        assert!(!decoded.contains("(A)"));
+        assert!(!decoded.contains("(B)"));
+
+        let mut contextual_partition = partitioned.clone();
+        contextual_partition.replacement_text = "123".into();
+        contextual_partition.options.paint_partitions[0].replacement_scalar_range = [0, 1];
+        contextual_partition.options.paint_partitions[1].replacement_scalar_range = [1, 3];
+        let (_, report) = edit_multi_run_text_range(&input, &contextual_partition, None).unwrap();
+        assert_eq!(report.generated_paint_partitions.len(), 2);
+
+        let mut inherited_partition = partitioned.clone();
+        inherited_partition.replacement_text = "12".into();
+        inherited_partition.style_policy = MultiRunStylePolicy::PreservePerSegment;
+        inherited_partition.options.paint_partitions[0].replacement_scalar_range = [0, 1];
+        inherited_partition.options.paint_partitions[1].replacement_scalar_range = [1, 2];
+        let (_, report) = edit_multi_run_text_range(&input, &inherited_partition, None).unwrap();
+        assert_eq!(
+            report.operation,
+            "replace_partitioned_preserving_source_styles"
+        );
+        assert_eq!(report.generated_paint_partitions.len(), 2);
+
+        // DejaVu Sans normally composes the `ffi` sequence. A split inside the
+        // sequence must not silently emit the independently shaped halves.
+        let mut unsafe_ligature = partitioned;
+        unsafe_ligature.replacement_text = "office".into();
+        unsafe_ligature.options.paint_partitions[0].replacement_scalar_range = [0, 2];
+        unsafe_ligature.options.paint_partitions[1].replacement_scalar_range = [2, 6];
+        let error = edit_multi_run_text_range(&input, &unsafe_ligature, None).unwrap_err();
+        assert!(error.to_string().contains("OpenType ligature"));
+    }
+
+    #[test]
+    fn leading_and_trailing_inheritance_choose_different_source_typography() {
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g (ONE) Tj /F2 18 Tf 1 0 0 rg (TWO) Tj ET",
+        );
+        for (policy, font, size) in [
+            (MultiRunStylePolicy::InheritLeading, "F1", 10.0),
+            (MultiRunStylePolicy::InheritTrailing, "F2", 18.0),
+        ] {
+            let request = MultiRunTextRangeRequest {
+                page: 1,
+                logical_start: 0,
+                logical_end: 6,
+                replacement_text: "X".into(),
+                mode: AdvancedTextMode::ParagraphReflowHorizontal,
+                style_policy: policy,
+                options: AdvancedTextEditOptions {
+                    region: [0.0, 0.0, 200.0, 200.0],
+                    ..Default::default()
+                },
+                final_lines: None,
+            };
+            let (output, _) = edit_multi_run_text_range(&input, &request, None).unwrap();
+            let engine = ContentEngine::open_bytes(output).unwrap();
+            let content = engine.document().get_page_content_bytes(1).unwrap();
+            let tokens = scan_text_string_tokens(&content).unwrap();
+            let replacement = tokens
+                .iter()
+                .find(|t| t.decoded == b"X" && t.text_render_mode != 3)
+                .unwrap();
+            assert_eq!(replacement.font_name, font);
+            assert_eq!(replacement.font_size, size);
+        }
+    }
+
+    #[test]
+    fn zero_width_inheritance_uses_the_correct_adjacent_source_run() {
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g (ONE) Tj /F2 18 Tf 1 0 0 rg (TWO) Tj ET",
+        );
+        for (policy, operation, size, colour) in [
+            (
+                MultiRunStylePolicy::InheritLeading,
+                "insert_inline_inheriting_leading_source_style",
+                18.0,
+                "1 0 0 rg",
+            ),
+            (
+                MultiRunStylePolicy::InheritTrailing,
+                "insert_inline_inheriting_trailing_source_style",
+                10.0,
+                "0 g",
+            ),
+        ] {
+            let request = MultiRunTextRangeRequest {
+                page: 1,
+                logical_start: 3,
+                logical_end: 3,
+                replacement_text: "X".into(),
+                mode: AdvancedTextMode::ParagraphReflowHorizontal,
+                style_policy: policy,
+                options: AdvancedTextEditOptions {
+                    region: [0.0, 0.0, 200.0, 200.0],
+                    ..Default::default()
+                },
+                final_lines: None,
+            };
+            let (output, report) = edit_multi_run_text_range(&input, &request, None).unwrap();
+            assert_eq!(report.operation, operation);
+            assert_eq!(report.selected_source_spans.len(), 1);
+            let engine = ContentEngine::open_bytes(output).unwrap();
+            assert!(engine.get_page_text(1).unwrap().contains("ONEXTWO"));
+            let content = engine.document().get_page_content_bytes(1).unwrap();
+            let generated = scan_text_string_tokens(&content)
+                .unwrap()
+                .into_iter()
+                .find(|token| token.font_name.starts_with("OxP20F"))
+                .unwrap();
+            assert_eq!(generated.font_size, size);
+            assert_eq!(generated.fill_color_command, colour);
+        }
+    }
+
+    #[test]
+    fn zero_width_inheritance_keeps_clipping_union_inside_original_text_object() {
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 4 Tr 0 0 Td (ONE) Tj ET 0 0 100 100 re f",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 3,
+            logical_end: 3,
+            replacement_text: "X".into(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritTrailing,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &request, None).unwrap();
+        assert_eq!(
+            report.operation,
+            "insert_inline_inheriting_trailing_source_style"
+        );
+        let engine = ContentEngine::open_bytes(output).unwrap();
+        assert!(engine.get_page_text(1).unwrap().contains("ONEX"));
+        let content = engine.document().get_page_content_bytes(1).unwrap();
+        let decoded = String::from_utf8_lossy(&content);
+        let generated_font = decoded.find("/OxP20F").unwrap();
+        let original_text_end = decoded.find("ET").unwrap();
+        assert!(generated_font < original_text_end);
+        let generated = scan_text_string_tokens(&content)
+            .unwrap()
+            .into_iter()
+            .find(|token| token.font_name.starts_with("OxP20F"))
+            .unwrap();
+        assert_eq!(generated.text_render_mode, 4);
+    }
+
+    #[test]
+    fn zero_width_insertion_can_target_a_grapheme_boundary_inside_one_operand() {
+        let input =
+            advanced_editing_fixture_with_content(false, b"BT /F1 10 Tf 0 g 0 0 Td (ONE) Tj ET");
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 1,
+            logical_end: 1,
+            replacement_text: "X".into(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritTrailing,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &request, None).unwrap();
+        assert_eq!(
+            report.operation,
+            "insert_inline_inheriting_trailing_source_style"
+        );
+        assert_eq!(report.selected_source_spans[0].text, "ONE");
+        assert!(ContentEngine::open_bytes(output)
+            .unwrap()
+            .get_page_text(1)
+            .unwrap()
+            .contains("OXNE"));
+    }
+
+    #[test]
+    fn zero_width_inheritance_preserves_a_transformed_source_basis() {
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g 0 1 -1 0 100 100 Tm (ONE) Tj ET",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 1,
+            logical_end: 1,
+            replacement_text: "X".into(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritTrailing,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &request, None).unwrap();
+        assert_eq!(
+            report.operation,
+            "insert_inline_inheriting_trailing_source_style"
+        );
+        let model = analyze_multi_run_text_range(&output, 1).unwrap();
+        let engine = ContentEngine::open_bytes(output).unwrap();
+        let extracted = engine.get_page_text(1).unwrap();
+        assert!(
+            ['O', 'X', 'N', 'E']
+                .iter()
+                .all(|character| extracted.contains(*character)),
+            "extracted={extracted:?}"
+        );
+        assert_eq!(model.logical_text, "OXNE");
+        let content = engine.document().get_page_content_bytes(1).unwrap();
+        let decoded = String::from_utf8_lossy(&content);
+        assert!(decoded.contains("/WFTextBasisV1"));
+        assert!(decoded.find("/OxP20F").unwrap() < decoded.find("ET").unwrap());
+    }
+
+    #[test]
+    fn zero_width_insertion_splices_an_existing_isomorphic_actual_text_owner() {
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"/Span << /ActualText (ONE) >> BDC BT /F1 10 Tf 0 g (ONE) Tj ET EMC",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 1,
+            logical_end: 1,
+            replacement_text: "X".into(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritTrailing,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let (output, _) = edit_multi_run_text_range(&input, &request, None).unwrap();
+        let engine = ContentEngine::open_bytes(output).unwrap();
+        assert!(engine.get_page_text(1).unwrap().contains("OXNE"));
+        let content = engine.document().get_page_content_bytes(1).unwrap();
+        let decoded = String::from_utf8_lossy(&content);
+        assert!(decoded.contains(&format!("/ActualText <{}>", utf16be_hex_with_bom("OXNE"))));
+    }
+
+    #[test]
+    fn generated_font_retirement_keeps_only_reachable_editor_resources() {
+        let input =
+            advanced_editing_fixture_with_content(false, b"BT /OxP20FUsed 10 Tf 0 g (ONE) Tj ET");
+        let engine = ContentEngine::open_bytes(input).unwrap();
+        let page = engine.document().get_page(1).unwrap();
+        let reader = engine.document().reader();
+        let mut resources = page.resources.clone();
+        let mut fonts =
+            resolve_advanced_editing_dict(resources.get("Font"), reader).unwrap_or_default();
+        for name in ["OxP20FUsed", "OxP20FStale"] {
+            let mut font = crate::PdfDictionary::empty();
+            font.insert("Type", PdfObject::Name("Font".into()));
+            font.insert("Subtype", PdfObject::Name("Type0".into()));
+            font.insert(
+                "WFAdvancedEditingGeneratedFont",
+                PdfObject::Name("V1".into()),
+            );
+            fonts.insert(name, PdfObject::Dictionary(font));
+        }
+        resources.insert("Font", PdfObject::Dictionary(fonts));
+        let roots = page
+            .contents
+            .iter()
+            .map(|&(number, generation)| PdfObject::Reference { number, generation })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retire_unreferenced_generated_fonts(
+                reader,
+                &roots,
+                &mut resources,
+                None,
+                &[],
+                &BTreeSet::new(),
+            )
+            .unwrap(),
+            1
+        );
+        let fonts = resolve_advanced_editing_dict(resources.get("Font"), reader).unwrap();
+        assert!(fonts.contains_key("OxP20FUsed"));
+        assert!(!fonts.contains_key("OxP20FStale"));
+    }
+
+    #[test]
     fn scanner_carries_text_and_marked_content_state_across_contents_members() {
         let mut state = ScannedTextTokenState::default();
         let first = scan_text_string_tokens_with_state(
@@ -11431,8 +17921,8 @@ mod tests {
         .unwrap();
         assert!(first.is_empty());
 
-        let second = scan_text_string_tokens_with_state(b"(cross stream) Tj EMC Q", &mut state)
-            .unwrap();
+        let second =
+            scan_text_string_tokens_with_state(b"(cross stream) Tj EMC Q", &mut state).unwrap();
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].font_name, "F9");
         assert_eq!(second[0].font_size, 13.0);
@@ -11449,7 +17939,10 @@ mod tests {
         )
     }
 
-    fn advanced_editing_fixture_with_content(include_ink: bool, source_content: &[u8]) -> Vec<u8> {
+    pub(super) fn advanced_editing_fixture_with_content(
+        include_ink: bool,
+        source_content: &[u8],
+    ) -> Vec<u8> {
         let mut catalog = crate::PdfDictionary::empty();
         catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
         catalog.insert(
@@ -11673,7 +18166,7 @@ mod tests {
         .expect("link fixture incremental update")
     }
 
-    fn shared_form_fixture() -> Vec<u8> {
+    pub(super) fn shared_form_fixture() -> Vec<u8> {
         let mut catalog = crate::PdfDictionary::empty();
         catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
         catalog.insert(
@@ -11785,7 +18278,7 @@ mod tests {
         .expect("shared Form fixture PDF")
     }
 
-    fn nested_shared_form_fixture() -> Vec<u8> {
+    pub(super) fn nested_shared_form_fixture() -> Vec<u8> {
         let mut catalog = crate::PdfDictionary::empty();
         catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
         catalog.insert(
@@ -12705,7 +19198,7 @@ mod tests {
             .to_string()
     }
 
-    fn bare_vector_fixture(content: &[u8]) -> Vec<u8> {
+    pub(super) fn bare_vector_fixture(content: &[u8]) -> Vec<u8> {
         let mut catalog = crate::PdfDictionary::empty();
         catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
         catalog.insert(
@@ -13090,6 +19583,7 @@ mod tests {
                 logical_text: "redSUN".to_string(),
                 visual_text: "redSUN".to_string(),
                 inserted_visual_hyphen: false,
+                bidi: None,
             }]),
         };
         let (output, report) =
@@ -13142,6 +19636,7 @@ mod tests {
                 logical_text: "summerDAY".to_string(),
                 visual_text: "summerDAY".to_string(),
                 inserted_visual_hyphen: false,
+                bidi: None,
             }]),
         };
         let (output, report) = edit_multi_run_text_range(&input, &request, None)
@@ -13417,8 +19912,8 @@ mod tests {
             options: AdvancedTextEditOptions::default(),
             final_lines: None,
         };
-        let (_output, report) = edit_multi_run_text_range(&input, &request, None)
-            .expect("clipping source replacement");
+        let (_output, report) =
+            edit_multi_run_text_range(&input, &request, None).expect("clipping source replacement");
         assert_eq!(report.operation, "replace_clipping_text_in_source");
         assert!(report.reachable_source_tokens_removed);
     }
@@ -13578,7 +20073,7 @@ mod tests {
         assert!(clone_output.starts_with(&input));
         let cloned = clone_report.cloned_form.expect("cloned Form object");
         assert_ne!(cloned[0], 5);
-        assert_eq!(clone_report.clone_graph.len(), 1);
+        assert_eq!(clone_report.clone_graph.len(), 2);
         let clone_inventory = list_vector_objects(&clone_output, 1).expect("clone inventory");
         let owners = clone_inventory
             .objects
@@ -14089,6 +20584,9 @@ mod tests {
             offset_x: 0.0,
             offset_y: 0.0,
             orientation: VerticalGlyphOrientation::Upright,
+            cross_advance: 0.0,
+            font_width: 2_000.0,
+            bounds: None,
         };
         let layout = vec![vec![
             glyph(1, 0, "\u{05D0}"),
@@ -14115,6 +20613,53 @@ mod tests {
         assert!(
             first_glyph.starts_with("1 0 0 1 0 10 Tm"),
             "RTL justified line must start at the left edge after expanding to full width: {first_glyph}"
+        );
+    }
+
+    #[test]
+    fn explicit_continuation_keeps_parent_bidi_levels() {
+        let paragraph = "start \u{2067}אבג 123 / next\u{2069} end";
+        let start = paragraph.find("123").unwrap();
+        let visual = "123 /";
+        let bidi = crate::fonts::shaper::resolve_line_bidi(
+            paragraph,
+            start..start + visual.len(),
+            ShapeOptions {
+                direction: Some(TextDirection::LeftToRight),
+            },
+        )
+        .unwrap();
+        let font = crate::render::get_fallback_font("Symbol").unwrap();
+        let expected =
+            TextShaper::shape_resolved(font, visual, &bidi, &Default::default()).unwrap();
+        let line = ExplicitLayoutLine {
+            logical_text: visual.into(),
+            visual_text: visual.into(),
+            inserted_visual_hyphen: false,
+            bidi: Some(bidi),
+        };
+        let options = AdvancedTextEditOptions {
+            region: [0.0, 0.0, 1000.0, 1000.0],
+            ..Default::default()
+        };
+        let output = layout_generated_explicit_lines(
+            &[line],
+            AdvancedTextMode::ParagraphReflowHorizontal,
+            font,
+            &options,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            output[0]
+                .iter()
+                .map(|g| g.logical_byte_start)
+                .collect::<Vec<_>>(),
+            expected
+                .glyphs
+                .iter()
+                .map(|g| g.cluster as usize)
+                .collect::<Vec<_>>()
         );
     }
 

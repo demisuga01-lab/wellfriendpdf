@@ -3,7 +3,7 @@
 Human-readable view of `target/binding_surface-binding-core/binding-gap-matrix.json`. Regenerate both with `python scripts/gen_binding_gap_matrix.py`.
 
 **Features:** 180  
-**Headline tally (best of rust/python/c_abi per feature):** cli_only=1, implemented_internal=29, implemented_public=112, missing=1, partial_public=37
+**Headline tally (best of rust/python/c_abi per feature):** cli_only=1, implemented_internal=20, implemented_public=124, missing=1, partial_public=34
 
 Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_only`, `unsupported_reported`, `missing`, `deferred`, `blocked`.
 
@@ -53,18 +53,18 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | --- | --- | --- | --- | --- | --- |
 | page raster rendering (`render.raster`) | implemented_public | implemented_public | implemented_public | implemented_public | render_page_png_fast/jpeg. py Document/Page.render; capi render_page_png/jpeg. |
 | display-list extraction (`render.display_list`) | implemented_internal | missing | missing | partial_public | render::DisplayList at Rust root. Action: display-list JSON export deferred (large/unstable). |
-| render options (`render.options`) | partial_public | partial_public | partial_public | implemented_public | DPI/format exposed; full RenderQuality/RenderMode subset. Action: extended render options deferred. |
+| render options (`render.options`) | implemented_public | implemented_public | implemented_public | implemented_public | Canonical schema-v1 RenderContract is public through Rust, Python and the C ABI; it covers surface, clip, transform, annotations/forms/OCG, smoothing, colour, exactness, determinism and resource budgets. |
 | DPI and scale handling (`render.dpi_scale`) | implemented_public | implemented_public | implemented_public | implemented_public | dpi param on all render entry points. |
-| tile rendering (`render.tile`) | implemented_internal | missing | missing | implemented_internal | render::RenderTile at Rust root. Action: deferred to a render-binding roadmap task. |
-| band rendering (`render.band`) | implemented_internal | missing | missing | implemented_internal | renderer band path Rust-only. Action: deferred. |
-| progressive rendering state (`render.progressive`) | implemented_internal | missing | missing | implemented_internal | Rust-only. Action: deferred. |
-| render cancellation (`render.cancellation`) | implemented_internal | unsupported_reported | unsupported_reported | partial_public | CancelToken exists in engine; not a binding param yet. Action: deferred. |
+| tile rendering (`render.tile`) | implemented_public | implemented_public | implemented_public | implemented_public | ProgressiveRenderJob viewport hints, dirty regions, tile publication receipts and render-contract clips are public through the shared SDK and native bindings. |
+| band rendering (`render.band`) | implemented_public | implemented_public | implemented_public | implemented_public | A bounded band is represented by the canonical contract clip/row stride and the progressive tile lifecycle; no binding-specific renderer is used. |
+| progressive rendering state (`render.progressive`) | implemented_public | implemented_public | implemented_public | implemented_public | ProgressiveRenderJob start/step/pause/resume/cancel/finish, live contract revision and viewer queue reports are public through Python and the C ABI. |
+| render cancellation (`render.cancellation`) | implemented_public | implemented_public | implemented_public | implemented_public | Caller-owned cancellation handles/tokens are wired into contract rendering, progressive rendering and viewer-queue execution. |
 | annotation appearance rendering (`render.annot_appearance`) | partial_public | partial_public | partial_public | implemented_public | annotation_report appearance status; render includes annots. sdk::annotation_report_json. |
-| optional-content visibility reporting (`render.optional_content`) | implemented_internal | missing | missing | partial_public | OCG handling in renderer Rust-only. Action: OCG report deferred. |
-| render diagnostics (`render.diagnostics`) | partial_public | partial_public | partial_public | partial_public | UnsupportedRenderOp/DisplayListStats at Rust root. Action: render diagnostics JSON deferred. |
-| visual hash reporting (`render.visual_hash`) | implemented_internal | missing | missing | partial_public | versioning simhash / render compare Rust-only. Action: deferred. |
-| render memory budget (`render.memory_budget`) | implemented_public | partial_public | partial_public | implemented_public | max_render_pixels/DEFAULT_MAX_RENDER_PIXELS. Action: per-call render budget param deferred for bindings. |
-| color-managed render options (`render.color_managed`) | implemented_internal | missing | missing | partial_public | color-managed render Rust-only; color_report exposes color state. Action: deferred. |
+| optional-content visibility reporting (`render.optional_content`) | implemented_public | implemented_public | implemented_public | implemented_public | RenderContract optional-content state and render telemetry are public through the shared SDK and native bindings. |
+| render diagnostics (`render.diagnostics`) | implemented_public | implemented_public | implemented_public | implemented_public | Contract rendering exposes font-substitution and render-telemetry reports, typed exact refusals and progressive publication diagnostics. |
+| visual hash reporting (`render.visual_hash`) | implemented_public | implemented_public | implemented_public | implemented_public | Universal render qualification publishes deterministic pixel hashes and optional independent-reference comparison metrics. |
+| render memory budget (`render.memory_budget`) | implemented_public | implemented_public | implemented_public | implemented_public | RenderContract resource_budget is a per-call public limit and is enforced before canonical working-surface allocation and downstream decode. |
+| color-managed render options (`render.color_managed`) | implemented_public | implemented_public | implemented_public | implemented_public | RenderContract publishes colour scheme, print profile, rendering intent, colour-management and overprint policies through every native facade. |
 | image output encoding (`render.image_output_encoding`) | implemented_public | implemented_public | implemented_public | implemented_public | png/jpeg output selection on render entry points. |
 
 ## Fonts, glyphs, text shaping
@@ -176,9 +176,9 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | CLI | Note / action |
 | --- | --- | --- | --- | --- | --- |
-| editable model export (`edit.model_export`) | partial_public | partial_public | partial_public | implemented_public | build_editable_document (Rust root) + CLI. document_model exposed via py/capi. Action: full editable model binding method deferred. |
-| paragraph reflow edit (`edit.paragraph_reflow`) | implemented_internal | missing | missing | implemented_public | edit_paragraph_reflow_pdf (Rust root) + CLI. Action: binding edit method deferred. |
-| insert and delete text (`edit.insert_delete_text`) | implemented_internal | missing | missing | implemented_public | replace_text_pdf (Rust root) + CLI. Action: binding edit method deferred. |
+| editable model export (`edit.model_export`) | implemented_public | implemented_public | implemented_public | implemented_public | Universal Editing v2 analyze/inspect and the closeout text-range analyzer expose the revision-bound source model through Rust, Python, C and CLI surfaces. |
+| paragraph reflow edit (`edit.paragraph_reflow`) | implemented_public | implemented_public | implemented_public | implemented_public | Universal Editing v2 and advanced closeout text-range requests expose horizontal/RTL/vertical reflow, preview, approval and apply through one canonical writer. |
+| insert and delete text (`edit.insert_delete_text`) | implemented_public | implemented_public | implemented_public | implemented_public | Advanced closeout text-range edit and Universal Editing v2 perform source-bound insertion/deletion through Rust, Python, C and CLI surfaces. |
 | page-faithful DOCX export (`conv.docx_faithful`) | partial_public | partial_public | partial_public | implemented_public | pdf_to_docx (layout). py/capi to_docx. Action: layout=page-faithful option not yet a binding param. |
 | flowing DOCX export (`conv.docx_flow`) | implemented_public | implemented_public | implemented_public | implemented_public | pdf_to_docx flowing. py pdf_to_docx; capi to_docx. |
 | PPTX export (`conv.pptx`) | implemented_public | implemented_public | implemented_public | implemented_public | pdf_to_pptx. py/capi to_pptx. |

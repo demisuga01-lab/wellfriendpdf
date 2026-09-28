@@ -49,7 +49,18 @@ WASM_PUBLIC = {
     "decode.bomb",
     "decode.unsupported_filter",
     "render.raster",
+    "render.options",
     "render.dpi_scale",
+    "render.tile",
+    "render.band",
+    "render.progressive",
+    "render.cancellation",
+    "render.annot_appearance",
+    "render.optional_content",
+    "render.diagnostics",
+    "render.visual_hash",
+    "render.memory_budget",
+    "render.color_managed",
     "render.image_output_encoding",
     "fonts.inventory",
     "fonts.embedding_status",
@@ -90,6 +101,9 @@ WASM_PUBLIC = {
     "sanitize.safe_output_proof",
     "sanitize.rescan",
     "security.risk_class",
+    "edit.model_export",
+    "edit.paragraph_reflow",
+    "edit.insert_delete_text",
     "sec.report",
     "sec.permissions",
     "sig.byterange",
@@ -123,6 +137,20 @@ NATIVE_PUBLIC = {
     "parser.encryption_status",
     "parser.malformed_recovery",
     "parser.arlington",
+    "render.raster",
+    "render.options",
+    "render.dpi_scale",
+    "render.tile",
+    "render.band",
+    "render.progressive",
+    "render.cancellation",
+    "render.annot_appearance",
+    "render.optional_content",
+    "render.diagnostics",
+    "render.visual_hash",
+    "render.memory_budget",
+    "render.color_managed",
+    "render.image_output_encoding",
     "color.icc_inventory",
     "color.output_intent",
     "color.device_cmyk",
@@ -153,6 +181,9 @@ NATIVE_PUBLIC = {
     "sanitize.safe_output_proof",
     "sanitize.rescan",
     "security.risk_class",
+    "edit.model_export",
+    "edit.paragraph_reflow",
+    "edit.insert_delete_text",
     "conv.docx_faithful",
     "conv.docx_flow",
     "conv.pptx",
@@ -187,7 +218,6 @@ UNSUPPORTED_IDS = {
     "diag.progress",
     "diag.cancellation",
     "decode.cancellation",
-    "render.cancellation",
 }
 
 EXTRA_ROWS = [
@@ -409,7 +439,7 @@ def classify_native(row: dict) -> str:
     if cat in {"parser", "decode", "render", "fonts", "text", "color", "semantic", "forms", "security", "standards", "diagnostics"}:
         return PART
     if cat == "editing":
-        if fid in {"conv.html", "conv.markdown", "edit.paragraph_reflow", "edit.insert_delete_text", "writer.incremental"}:
+        if fid in {"conv.html", "conv.markdown", "writer.incremental"}:
             return MISS
         return PART
     if cat == "release":

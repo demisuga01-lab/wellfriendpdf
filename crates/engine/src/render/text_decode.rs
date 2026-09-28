@@ -2,10 +2,8 @@
 //!
 //! Turns a content-stream text string into a sequence of [`DecodedGlyph`]s
 //! (code, unicode, advance width, is-gid, is-space), exactly as the raster
-//! renderer does, so the SVG renderer shows the same glyphs with the same
-//! advances. The raster renderer keeps its own equivalent code paths untouched
-//! (to guarantee no raster regression); this module is the version the vector
-//! renderer uses.
+//! renderer does, so raster and vector consumers resolve the same character
+//! codes, native CIDs, glyph indexes and advances through the cached resolver.
 
 use crate::engine::PageResources;
 use crate::fonts::cid::{cid_font_has_embedded_program, cid_to_gid};
@@ -31,7 +29,8 @@ pub struct DecodedGlyph {
     pub unicode: char,
     /// PDF simple-font glyph name resolved from Encoding/Differences.
     pub glyph_name: Option<String>,
-    /// Whether this is a space code (affects word spacing).
+    /// Whether this is encoded single-byte 0x20 (PDF Tw applies). Unicode
+    /// whitespace alone does not enable word spacing, notably for Type0 fonts.
     pub is_space: bool,
     /// Explicit advance width in 1/1000 text units, when known from the PDF.
     pub width: Option<f64>,
@@ -64,7 +63,7 @@ pub fn decode_text_bytes(
 }
 
 /// Decode a visual text string under `font_name`'s font, refusing malformed
-/// fixed-width character-code sequences instead of synthesizing padded glyphs.
+/// length-aware character-code sequences instead of synthesizing padded glyphs.
 pub fn try_decode_text_bytes(
     bytes: &[u8],
     font_name: &str,
@@ -106,19 +105,22 @@ pub fn try_decode_text_bytes_with_resolver(
         return decode_type0_text_with_resolver(bytes, font_dict, resolver, reader);
     }
 
-    let has_pdf_widths =
-        font_dict.get_array("Widths").is_some() || resolver.has_standard14_metrics();
+    // /Widths may be an indirect array. validate_visual_font_metrics has
+    // already resolved and validated it, and FontResolver::build resolved the
+    // values into its width table. Testing only get_array() here incorrectly
+    // discarded valid metrics from many Type1/TrueType fonts.
+    let has_pdf_widths = font_dict.get("Widths").is_some() || resolver.has_standard14_metrics();
     let mut glyphs = Vec::new();
-    let code_size = resolver.code_size().max(1);
-    let mut idx = 0usize;
-    while idx < bytes.len() {
-        let code = next_visual_text_code(bytes, &mut idx, code_size, "visual text")?;
-        let text = resolver.decode_char(code);
+    for decoded in resolver.codes(bytes) {
+        let char_code = decoded?.code;
+        let code = u16::try_from(char_code.value())
+            .map_err(|_| "simple font character code exceeds 16 bits")?;
+        let text = resolver.decode_code(char_code);
         let ch = text.chars().next().unwrap_or('\u{FFFD}');
         let glyph_name = resolver.glyph_name(code).map(str::to_string);
         let width = if has_pdf_widths {
-            let width = resolver.glyph_width(code).max(0.0);
-            (width > 0.0).then_some(width)
+            let width = resolver.width_for_code(char_code).max(0.0);
+            Some(width)
         } else {
             None
         };
@@ -126,7 +128,7 @@ pub fn try_decode_text_bytes_with_resolver(
             code,
             unicode: ch,
             glyph_name,
-            is_space: resolver.is_space_code(code) || ch == ' ',
+            is_space: char_code.is_word_space(),
             width,
             is_gid: false,
             is_vertical: false,
@@ -143,29 +145,50 @@ fn decode_type0_text_with_resolver(
     resolver: &FontResolver,
     reader: &PdfReader,
 ) -> std::result::Result<Vec<DecodedGlyph>, String> {
+    resolver.validate_encoding()?;
     let descendant_font = get_descendant_font(font_dict, reader);
     let render_as_gid = cid_font_has_embedded_program(descendant_font.as_ref(), reader);
     let mut glyphs = Vec::new();
-    let mut idx = 0usize;
-    let code_size = resolver.code_size().max(1);
+    for decoded in resolver.codes(bytes) {
+        let char_code = match decoded {
+            Ok(decoded) => decoded.code,
+            Err(reason) if reason.starts_with("truncated PDF character code") => {
+                // A few widely consumed PDFs end a composite-font string with
+                // an incomplete final code. Preserve and paint the completely
+                // decoded prefix, then ignore only the impossible suffix. This
+                // matches the recovery posture of mature viewers without
+                // padding the byte into a different CID or weakening the
+                // strict CodeSpace API used by editing and validation.
+                log::warn!(
+                    "visual Type0 text ignored an incomplete trailing character code: {reason}"
+                );
+                break;
+            }
+            Err(reason) => return Err(reason),
+        };
+        let cid = resolver.cid_for_character(char_code)?;
 
-    while idx < bytes.len() {
-        let cid = next_visual_text_code(bytes, &mut idx, code_size, "Type0 visual text")?;
-
-        let text = resolver.decode_char(cid);
+        let text = resolver.decode_code(char_code);
         let unicode = text.chars().next().unwrap_or('\u{FFFD}');
-        let width = if render_as_gid {
-            Some(resolver.glyph_width(cid)).filter(|width| *width > 0.0)
+        // Text advance is defined by the PDF descendant font metrics whether
+        // glyph outlines come from the embedded program or a visual fallback.
+        // A present descendant has /DW=1000 by specification even when /DW is
+        // omitted, so this remains an exact PDF metric rather than a guess.
+        let width = if descendant_font.is_some() {
+            Some(resolver.width_for_code(char_code)).filter(|width| *width >= 0.0)
         } else {
             None
         };
         let code = if render_as_gid {
-            cid_to_gid(cid, descendant_font.as_ref(), reader)
+            match resolver.sfnt_cff_gid(cid)? {
+                Some(gid) => gid,
+                None => cid_to_gid(cid, descendant_font.as_ref(), reader),
+            }
         } else {
             u16::try_from(unicode as u32).unwrap_or(cid)
         };
         let (vertical_advance, vertical_origin) = if resolver.is_vertical() {
-            let (w1y, vx, vy) = resolver.vertical_metrics(cid);
+            let (w1y, vx, vy) = resolver.vertical_metrics_for_code(char_code);
             (Some(w1y), Some((vx, vy)))
         } else {
             (None, None)
@@ -175,7 +198,7 @@ fn decode_type0_text_with_resolver(
             code,
             unicode,
             glyph_name: None,
-            is_space: resolver.is_space_code(cid) || unicode == ' ',
+            is_space: char_code.is_word_space(),
             width,
             is_gid: render_as_gid,
             is_vertical: resolver.is_vertical(),
@@ -184,31 +207,6 @@ fn decode_type0_text_with_resolver(
         });
     }
     Ok(glyphs)
-}
-
-fn next_visual_text_code(
-    bytes: &[u8],
-    idx: &mut usize,
-    code_size: u8,
-    label: &str,
-) -> std::result::Result<u16, String> {
-    if code_size == 2 {
-        let offset = *idx;
-        let Some(low) = bytes.get(offset + 1).copied() else {
-            return Err(format!(
-                "malformed {label} string: incomplete 2-byte character code at byte {offset} of {}",
-                bytes.len()
-            ));
-        };
-        let high = bytes[offset];
-        *idx = offset.saturating_add(2);
-        Ok((u16::from(high) << 8) | u16::from(low))
-    } else {
-        let offset = *idx;
-        let code = u16::from(bytes[offset]);
-        *idx = offset.saturating_add(1);
-        Ok(code)
-    }
 }
 
 /// Resolve the embedded (or fallback) font program bytes for a font name.
@@ -359,15 +357,16 @@ mod tests {
     }
 
     #[test]
-    fn type0_visual_text_rejects_odd_trailing_byte_instead_of_padding() {
+    fn type0_visual_text_keeps_complete_prefix_without_padding_odd_suffix() {
         let reader = PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf()).unwrap();
         let font = type0_identity_font();
         let resolver = FontResolver::new_from_dict_only(&font);
-        let err =
+        let glyphs =
             try_decode_text_bytes_with_resolver(&[0x00, 0x48, 0x56], &font, &resolver, &reader)
-                .expect_err("odd Type0 byte sequence must not synthesize CID 0x5600");
+                .expect("the complete code must render while the trailing byte is ignored");
 
-        assert!(err.contains("incomplete 2-byte character code"));
-        assert!(err.contains("byte 2 of 3"));
+        assert_eq!(glyphs.len(), 1);
+        assert_eq!(glyphs[0].unicode, 'H');
+        assert_eq!(glyphs[0].code, u16::from(b'H'));
     }
 }

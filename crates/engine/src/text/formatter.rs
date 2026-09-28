@@ -109,6 +109,19 @@ impl TextFormatter {
 
         for line in lines {
             if line.is_blank() {
+                // Explicit source separators (including ActualText/ToUnicode
+                // whitespace carriers) are not empty geometry. Keep them once,
+                // without inventing another formatting line ending or padding.
+                let is_explicit_tab_carrier =
+                    !line.text.is_empty() && line.text.chars().all(|ch| ch == '\t');
+                if is_explicit_tab_carrier
+                    || line
+                        .text
+                        .chars()
+                        .any(crate::fonts::hard_break::is_hard_break)
+                {
+                    out.push_str(&line.text);
+                }
                 continue;
             }
 
@@ -136,7 +149,14 @@ impl TextFormatter {
             }
 
             out.push_str(&line.text);
-            out.push_str(le);
+            // `line_ending` governs separators inferred from geometry; explicit
+            // source CRLF/LS/PS/etc. retain their original scalar sequence.
+            if !line
+                .text
+                .ends_with(|ch| ch == '\t' || crate::fonts::hard_break::is_hard_break(ch))
+            {
+                out.push_str(le);
+            }
 
             if options.heading_breaks && is_heading {
                 out.push_str(le);
@@ -318,6 +338,55 @@ mod tests {
         let lines = vec![tline("Line", 700.0, 12.0, false)];
         let result = f.format_page(&lines, 0, &opts);
         assert!(result.contains("\r\n"), "should use CRLF line endings");
+    }
+
+    #[test]
+    fn explicit_blank_separators_are_not_dropped_or_duplicated() {
+        let options = TextFormatOptions {
+            include_page_markers: false,
+            paragraph_breaks: false,
+            heading_breaks: false,
+            ..Default::default()
+        };
+        for separator in [
+            "\t", "\r", "\n", "\r\n", "\u{000b}", "\u{000c}", "\u{0085}", "\u{2028}", "\u{2029}",
+        ] {
+            let lines = [
+                tline(separator, 720.0, 12.0, false),
+                tline(&format!("A{separator}"), 700.0, 12.0, false),
+                tline(separator, 680.0, 12.0, false),
+                tline("B", 660.0, 12.0, false),
+            ];
+            assert_eq!(
+                TextFormatter::new().format_page(&lines, 1, &options),
+                format!("{separator}A{separator}{separator}B\n")
+            );
+        }
+    }
+
+    #[test]
+    fn configured_line_endings_only_affect_inferred_geometry_boundaries() {
+        let options = TextFormatOptions {
+            include_page_markers: false,
+            paragraph_breaks: false,
+            heading_breaks: false,
+            line_ending: LineEnding::Windows,
+            ..Default::default()
+        };
+        let lines = [
+            tline("A\n", 700.0, 12.0, false),
+            tline("\r\n", 680.0, 12.0, false),
+            tline("B", 660.0, 12.0, false),
+        ];
+        assert_eq!(
+            TextFormatter::new().format_page(&lines, 1, &options),
+            "A\n\r\nB\r\n"
+        );
+        let blanks = [
+            tline(" \t ", 700.0, 12.0, false),
+            tline("", 680.0, 12.0, false),
+        ];
+        assert_eq!(TextFormatter::new().format_page(&blanks, 1, &options), "");
     }
 
     /// A custom TextLine builder that sets an explicit glyph extent (x_min/x_max)

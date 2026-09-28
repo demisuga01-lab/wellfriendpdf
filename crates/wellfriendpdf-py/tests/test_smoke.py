@@ -101,7 +101,7 @@ def test_editing_transactions_surfaces(sample_pdf):
             return value
         return json.loads(value)
 
-    request = '{"requested_mode":"operator_preserving","page":1,"source_text":"Hello","replacement_text":"World"}'
+    request = '{"requested_mode":"operator_preserving","page":1,"source_text":"Hello","replacement_text":"Hallo"}'
     assert isinstance(parse_json(call_json(["editing_transactions_report", "editing_transactions_report_json"])), dict)
     assert isinstance(parse_json(call_json(["editing_transactions_scene_report", "editing_transactions_scene_report_json"])), dict)
     assert isinstance(parse_json(call_json(["editing_transactions_scene_select", "editing_transactions_scene_select_json"], '{"page":1,"point":[20,100]}')), dict)

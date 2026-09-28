@@ -407,10 +407,7 @@ pub fn inspect_office_package(
         }
 
         let decompression_ratio_ok = compressed > 0
-            && uncompressed
-                <= compressed
-                    .checked_mul(limits.max_decompression_ratio)
-                    .unwrap_or(u64::MAX);
+            && uncompressed <= compressed.saturating_mul(limits.max_decompression_ratio);
         let safe_to_decompress = uncompressed <= limits.max_part_bytes
             && (!is_xml_part(&name) || uncompressed <= limits.max_xml_part_bytes)
             && (!is_media_part(&name) || uncompressed <= limits.max_media_part_bytes)
@@ -2601,15 +2598,53 @@ fn pptx_slides_to_pdf(slides: &[PptxInputSlide]) -> Result<Vec<u8>> {
         for item in &slide.items {
             match item {
                 PptxInputItem::Text { text, bbox } => {
-                    let style = TextStyle::unicode(14.0);
+                    let width = (bbox[2] - bbox[0]).max(36.0);
+                    let height = (bbox[3] - bbox[1]).max(12.0);
+                    let page = builder.pages_mut().last_mut().expect("slide page");
+                    // A slide-local text box cannot own a physical PDF page
+                    // transition. Preserve form-feed as a mandatory visual
+                    // line boundary inside the box; all other hard separators
+                    // retain their exact logical scalars through authoring.
+                    let drawable_text = if text.chars().any(crate::fonts::hard_break::is_form_feed)
+                    {
+                        text.chars()
+                            .map(|ch| if ch == '\u{000c}' { '\u{2028}' } else { ch })
+                            .collect::<String>()
+                    } else {
+                        text.clone()
+                    };
+                    // Presentation shapes commonly enable auto-fit. Preserve
+                    // every scalar without inventing breaks inside protected
+                    // sequences by fitting the source line geometry before
+                    // invoking the strict paragraph breaker.
+                    let nominal = TextStyle::unicode(14.0);
+                    let hard_lines = crate::fonts::hard_break::logical_lines(&drawable_text)
+                        .collect::<Result<Vec<_>>>()?;
+                    let widest = hard_lines
+                        .iter()
+                        .filter_map(|line| drawable_text.get(line.visible.clone()))
+                        .filter(|line| !line.is_empty())
+                        .map(|line| page.text_width(line, &nominal))
+                        .collect::<Result<Vec<_>>>()?
+                        .into_iter()
+                        .fold(0.0_f64, f64::max);
+                    let line_count = hard_lines
+                        .iter()
+                        .filter_map(|line| drawable_text.get(line.visible.clone()))
+                        .filter(|line| !line.is_empty())
+                        .count()
+                        .max(1) as f64;
+                    let width_scale = if widest > 0.0 {
+                        (width / widest).min(1.0)
+                    } else {
+                        1.0
+                    };
+                    let height_scale = (height / (14.0 * 1.15 * line_count)).min(1.0);
+                    let fitted_size = (14.0 * width_scale.min(height_scale) * 0.995).max(1.0);
+                    let style = TextStyle::unicode(fitted_size);
                     let paragraph = ParagraphStyle::new().line_height(1.15);
                     let y = slide.size.height - bbox[1] - style.size;
-                    let width = (bbox[2] - bbox[0]).max(36.0);
-                    builder
-                        .pages_mut()
-                        .last_mut()
-                        .expect("slide page")
-                        .draw_paragraph(text, bbox[0], y, width, &style, &paragraph)?;
+                    page.draw_paragraph(&drawable_text, bbox[0], y, width, &style, &paragraph)?;
                 }
                 PptxInputItem::Table { rows, bbox } => {
                     if let Some(table) =
@@ -3363,7 +3398,12 @@ mod tests {
 
     #[test]
     fn native_office_to_pdf_outputs_openable_pdfs() {
-        let engine = ContentEngine::open_path(fixture("tracemonkey.pdf")).expect("open fixture");
+        // This is a format-surface/openability contract, not a corpus or
+        // throughput benchmark.  Keeping the fixture to one minimal page
+        // exercises every native Office writer and importer without making a
+        // workspace test render and repackage a multi-page reference document
+        // three separate times.
+        let engine = ContentEngine::open_path(fixture("minimal.pdf")).expect("open fixture");
         let docx = pdf_to_docx(&engine, &DocxOptions::default()).expect("docx");
         let xlsx = pdf_to_xlsx(&engine, &XlsxOptions::default()).expect("xlsx");
         let pptx = pdf_to_pptx(&engine, &PptxOptions::default()).expect("pptx");

@@ -2647,8 +2647,9 @@ impl<'a> DisplayListBuilder<'a> {
         match operator {
             "g" | "rg" | "k" | "sc" | "scn" => self.fill_color_explicit = true,
             "G" | "RG" | "K" | "SC" | "SCN" => self.stroke_color_explicit = true,
-            "cs" => self.fill_color_explicit = false,
-            "CS" => self.stroke_color_explicit = false,
+            // Selecting a space also explicitly selects its initial colour.
+            "cs" => self.fill_color_explicit = true,
+            "CS" => self.stroke_color_explicit = true,
             _ => {}
         }
     }
@@ -2830,13 +2831,8 @@ impl<'a> DisplayListBuilder<'a> {
                     });
                     return false;
                 }
-                None => {
-                    self.unsupported.push(UnsupportedRenderOp {
-                        operator: operator.to_string(),
-                        reason: "pattern fill requires an active pattern name".to_string(),
-                    });
-                    return false;
-                }
+                // The initial colour of a Pattern space paints nothing.
+                None => {}
             }
         }
         if pattern_phase_paints_stroke(phase) && self.stroke_pattern_paint_active() {
@@ -2849,13 +2845,7 @@ impl<'a> DisplayListBuilder<'a> {
                     });
                     return false;
                 }
-                None => {
-                    self.unsupported.push(UnsupportedRenderOp {
-                        operator: operator.to_string(),
-                        reason: "pattern stroke requires an active pattern name".to_string(),
-                    });
-                    return false;
-                }
+                None => {}
             }
         }
         true
@@ -2945,7 +2935,10 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     fn uses_pattern_or_named_space(&self) -> bool {
-        matches!(self.gs.fill_color.space, ColorSpace::Named(_))
+        // Do not bake uncalibrated device pixels into a normalized path when
+        // runtime scope-bound default spaces can change the paint colour.
+        crate::render::default_colorspace::has_defaults(self.resources)
+            || matches!(self.gs.fill_color.space, ColorSpace::Named(_))
             || matches!(self.gs.stroke_color.space, ColorSpace::Named(_))
             || self.gs.fill_pattern_name.is_some()
             || self.gs.stroke_pattern_name.is_some()

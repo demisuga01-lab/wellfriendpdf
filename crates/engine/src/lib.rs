@@ -12,6 +12,29 @@
 //! dependencies and do not shell out to external PDF tools.
 #![forbid(unsafe_code)]
 #![recursion_limit = "256"]
+// Transaction and layout entry points intentionally keep their typed inputs at
+// the call boundary, and serialized request enums intentionally remain inline
+// to preserve the public JSON ABI. These size/arity lints are architectural
+// preferences rather than correctness failures for this SDK.
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::large_enum_variant,
+    clippy::needless_range_loop,
+    clippy::nonminimal_bool,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+// Fixtures intentionally keep owned one-element inputs and malformed ranges
+// visible; rewriting them for stylistic lints obscures the scenario under test.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::cloned_ref_to_slice_refs,
+        clippy::reversed_empty_ranges,
+        clippy::single_range_in_vec_init,
+        clippy::unnecessary_get_then_check
+    )
+)]
 //!
 //! # Getting started
 //!
@@ -74,7 +97,11 @@ pub mod advanced_editing;
 pub mod advanced_rag;
 pub mod analysis;
 pub mod analyzer;
+pub(crate) mod annotation_appearance;
+pub(crate) mod annotation_identity;
 pub mod annotation_media_redaction;
+pub(crate) mod annotation_promotion;
+pub(crate) mod annotation_relationships;
 pub mod arlington;
 pub mod attachments;
 pub mod authoring;
@@ -95,12 +122,15 @@ pub mod docmodel;
 pub mod document;
 pub mod document_security;
 pub mod document_subsystems;
+pub mod ecbes_universal;
+pub mod edit_contracts;
 pub mod editable;
 pub mod editing;
 pub mod editing_transactions;
 pub mod engine;
 pub mod error;
 pub mod eval;
+mod ext_gstate_fonts;
 pub mod extract;
 pub mod filters;
 pub mod fonts;
@@ -110,9 +140,11 @@ pub mod form_exchange;
 #[cfg(feature = "fuzzing")]
 pub mod fuzz;
 pub mod html;
+pub mod image_fragments;
 pub mod images;
 pub mod info;
 pub mod interactive;
+pub mod linked_stories;
 pub mod object;
 pub mod ocr;
 pub mod office;
@@ -125,7 +157,9 @@ pub mod prepress;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
+pub mod research_edit_synthesis;
 pub mod runtime;
+pub mod scan_review;
 pub mod sdk;
 pub mod secure_mutation;
 pub mod security;
@@ -137,12 +171,19 @@ pub mod signature_evidence;
 pub mod source_editing;
 pub mod standards;
 pub mod standards_engine;
+pub mod story_anchors;
+pub mod story_merge;
+pub mod story_session_protocol;
+pub mod story_structure_merge;
+pub mod story_text_history;
 pub mod structural;
 pub mod table_intelligence;
+pub mod tagged_structure;
 pub mod text;
 pub mod text_reflow;
-pub mod utilities;
+pub mod typed_tables;
 pub mod universal_editing;
+pub mod utilities;
 pub mod versioning;
 pub mod writer;
 pub mod writer_history;
@@ -153,29 +194,35 @@ pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use advanced_editing::{
     advanced_editing_report, analyze_advanced_text_reflow, analyze_multi_run_text_range,
-    analyze_same_width_patch, apply_same_width_patch, edit_advanced_text_pdf,
-    edit_advanced_text_pdf_with_layout, edit_advanced_text_pdf_with_positioned_visual_layout,
+    analyze_same_width_patch, apply_generated_paint_partition_proposal, apply_same_width_patch,
+    edit_advanced_text_pdf, edit_advanced_text_pdf_with_layout,
+    edit_advanced_text_pdf_with_positioned_visual_layout,
     edit_advanced_text_pdf_with_visual_layout, edit_multi_run_text_range, edit_vector_object,
     fit_annotation_ink_pdf, fit_ink_stroke, fit_ink_strokes, list_vector_objects,
-    move_link_annotation_rect_pdf, AdvancedEditingMutationCheckpoint, AdvancedEditingMutationPatch,
+    move_link_annotation_rect_pdf, propose_generated_paint_partitions,
+    AdvancedEditingMutationCheckpoint, AdvancedEditingMutationPatch,
     AdvancedEditingMutationSession, AdvancedEditingSupportStatus, AdvancedTextEditOptions,
     AdvancedTextEditReport, AdvancedTextMode, AnnotationInkFitReport, BidiRunProvenance,
     CacheInvalidationReport, CubicBezier, EditableVectorObject, ExplicitLayoutLine,
-    GeneratedLineAdjustment, GeneratedTextAlignment, InkFitOptions, InkFitPolicy, InkFitReport,
-    InkFitResult, InkPoint, InkStrokeSetResult, LinkAnnotationMoveReport, MultiRunRangeModel,
-    MultiRunSourceSpan, MultiRunStylePolicy, MultiRunTextEditReport, MultiRunTextRangeRequest,
-    PatchStringRepresentation, PositionedExplicitLayoutLine, SameWidthMode,
-    SameWidthPatchApplyReport, SameWidthPatchEligibility, SameWidthPatchEligibilityReport,
-    SameWidthPatchOptions, SharedFormEditPolicy, TextGlyphProvenance, TextOverflowPolicy,
-    TextReflowAnalysis, TextReflowLimits, VectorColor, VectorEditOperation, VectorEditOptions,
-    VectorEditReport, VectorFillRule, VectorFormInvocation, VectorGroupProvenance, VectorMatrix,
-    VectorObjectInventory, VectorPaintMode, VectorPathSegment, VectorProvenance, VectorStrokeStyle,
-    VerticalGlyphOrientation, ADVANCED_EDITING_SCHEMA_VERSION,
+    GeneratedLineAdjustment, GeneratedPaintOrderDecision, GeneratedPaintOrderPolicy,
+    GeneratedPaintPartition, GeneratedPaintPartitionApproval, GeneratedPaintPartitionApprovalEntry,
+    GeneratedPaintPartitionCandidate, GeneratedPaintPartitionProposal,
+    GeneratedPaintPartitionReceipt, GeneratedTextAlignment, InkFitOptions, InkFitPolicy,
+    InkFitReport, InkFitResult, InkPoint, InkStrokeSetResult, LinkAnnotationMoveReport,
+    MultiRunRangeModel, MultiRunSourceSpan, MultiRunStylePolicy, MultiRunTextEditReport,
+    MultiRunTextRangeRequest, PatchStringRepresentation, PositionedExplicitLayoutLine,
+    SameWidthMode, SameWidthPatchApplyReport, SameWidthPatchEligibility,
+    SameWidthPatchEligibilityReport, SameWidthPatchOptions, SharedFormEditPolicy,
+    TextGlyphProvenance, TextOverflowPolicy, TextReflowAnalysis, TextReflowLimits, VectorColor,
+    VectorEditOperation, VectorEditOptions, VectorEditReport, VectorFillRule, VectorFormInvocation,
+    VectorGroupProvenance, VectorMatrix, VectorObjectInventory, VectorPaintMode, VectorPathSegment,
+    VectorProvenance, VectorStrokeStyle, VerticalGlyphOrientation, ADVANCED_EDITING_SCHEMA_VERSION,
 };
 pub use advanced_rag::{
     advanced_chunk_document, AdvancedChunkContext, AdvancedChunkMode, AdvancedChunkOptions,
     AdvancedRagChunk, AdvancedRagChunkSet, ChunkSecurityPosture, RagCitation, RagCjkToken,
-    RagSourceSpan, RagTableFragment, TableChunkSerialization, ADVANCED_RAG_CHUNK_SCHEMA_VERSION,
+    RagMarkedContentId, RagSourceSpan, RagTableFragment, TableChunkSerialization,
+    ADVANCED_RAG_CHUNK_SCHEMA_VERSION,
 };
 pub use analysis::graphics::{
     collect_graphics, collect_graphics_with_images, DrawnGraphics, ImagePlacement, Rect, Segment,
@@ -203,35 +250,29 @@ pub use attachments::{
     Attachment, AttachmentSource,
 };
 pub use authoring::{
-    CustomFontId, FlowDocument, FontFace, GraphicsStyle, ImageHandle, Margins,
-    PageSize as AuthorPageSize, ParagraphStyle, PathBuilder, PdfBuilder, PdfMetadata,
-    PdfPageBuilder, StandardFont, TableBuilder, TableCell, TableColumn, TableRow, TableStyle,
-    TextAlign, TextStyle,
-};
-pub use universal_editing::{
-    analyze_universal_document_v2, apply_universal_edit_v2,
-    apply_universal_edit_v2_with_output_security,
-    create_universal_approval_token_v2, inspect_universal_object_v2, plan_universal_edit_v2,
-    preserve_universal_no_change_transport_v2, qualify_universal_render_v2,
-    universal_capability_registry_v2,
-    universal_image_occurrences_v2,
-    UniversalAmbiguityPolicyV2,
-    UniversalAnalyzeOptionsV2, UniversalApprovalDecisionV2, UniversalApprovalTokenV2,
-    UniversalCapabilityStatusV2, UniversalCapabilityV2, UniversalConformanceProfileV2,
-    UniversalDocumentModelV2,
-    UniversalEditOperationV2, UniversalEditOutcomeV2, UniversalEditPlanV2,
-    UniversalEditPolicyV2, UniversalEditRequestV2, UniversalEditResultV2,
-    UniversalImageColorSpaceV2, UniversalImageEditRequestV2, UniversalImageEncodingV2,
-    UniversalImageMatrixV2, UniversalImageOccurrenceV2, UniversalImageReplacementV2,
-    UniversalImageSoftMaskV2,
-    UniversalMutationModeV2, UniversalOutputSecurityCredentialsV2,
-    UniversalOutputSecurityPolicyV2, UniversalPlanStateV2,
-    UniversalRenderQualificationOptionsV2,
-    UniversalObjectGraphEditRequestV2, UniversalObjectMutationV2, UniversalObjectTargetV2,
-    UniversalPdfFunctionV2, UniversalPdfValueV2, UniversalReferenceRasterV2,
-    UniversalSharedResourcePolicyV2, UniversalStructureCorrectionRequestV2,
-    UniversalStandardEncryptionAlgorithmV2, UniversalVectorEditRequestV2,
-    UNIVERSAL_EDITING_SCHEMA_VERSION,
+    inspect_authored_typed_table_grid_paint, inspect_authored_typed_table_sources,
+    load_authored_typed_tables, mutate_authored_typed_table, AuthoredRetainedFont,
+    AuthoredTypedCellAlignment, AuthoredTypedCellLayout, AuthoredTypedCellModel,
+    AuthoredTypedCellPaint, AuthoredTypedCellRole, AuthoredTypedCellSourceBinding,
+    AuthoredTypedCellSourceFragment, AuthoredTypedColor, AuthoredTypedGridPaintFragment,
+    AuthoredTypedHeaderCellModel, AuthoredTypedHeaderModel, AuthoredTypedHeaderScope,
+    AuthoredTypedTableGridPaintReport, AuthoredTypedTableModel, AuthoredTypedTableMutationReport,
+    AuthoredTypedTableMutationRequest, AuthoredTypedTablePagination,
+    AuthoredTypedTableRetainedContinuation, AuthoredTypedTableSourceReport, BodyAnchorInfo,
+    BodyField, BodyFieldFormat, BodyFieldInfo, BodyFieldPart, CustomFontId, DocumentIndexReport,
+    DocumentIndexRow, DocumentIndexSort, DocumentIndexStyle, EndnoteItemInfo, EndnoteReport,
+    FieldParagraphReport, FlowDocument, FlowEndnote, FlowFootnote, FlowPageBreak, FlowSection,
+    FontFace, FontStackId, FontStackLinePreview, FontStackRunPreview, FootnoteFragmentInfo,
+    FootnoteNumbering, FootnotedParagraphReport, FrontMatterReport,
+    FrontMatterTableOfContentsReport, GraphicsStyle, ImageHandle, InsertedFootnoteMarkerInfo,
+    Margins, NoteNumberScope, NoteNumberStyle, NumberedFootnote, NumberedFootnotedParagraphReport,
+    PageNumberField, PageNumberStyle, PageSize as AuthorPageSize, ParagraphStyle, PathBuilder,
+    PdfBuilder, PdfIndexEntry, PdfMetadata, PdfOutlineEntry, PdfPageBuilder, RunningText,
+    RunningTextPart, SectionPageMaster, StandardFont, TableBuilder, TableCell,
+    TableCellFragmentInfo, TableColumn, TableFlowReport, TableFragmentInfo,
+    TableOfContentsLeaderStyle, TableOfContentsLevelStyle, TableOfContentsPageSide,
+    TableOfContentsReport, TableOfContentsRow, TableOfContentsStyle, TableRow,
+    TableRowPageBreakInfo, TableRowSplitPolicy, TableStyle, TextAlign, TextStyle,
 };
 pub use cancel::CancelToken;
 pub use chunk::{chunk, estimate_tokens, Chunk, ChunkOptions, ChunkSet, CHUNK_SCHEMA_VERSION};
@@ -319,9 +360,14 @@ pub use document_subsystems::{
     analyze_document_subsystems, apply_document_subsystems, document_subsystems_feature_matrix,
     plan_document_subsystems, undo_document_subsystems, DocumentSubsystemsAction,
     DocumentSubsystemsAnalysisReport, DocumentSubsystemsOperationReport, DocumentSubsystemsRequest,
-    DocumentSubsystemsSubsystem, EditableTableGraph, OcrSearchableWord,
-    OcrVisibleReplacement,
+    DocumentSubsystemsSubsystem, EditableTableGraph, OcrSearchableWord, OcrVisibleReplacement,
     DOCUMENT_SUBSYSTEMS_SCHEMA_VERSION,
+};
+pub use ecbes_universal::{
+    execute_ecbes_universal_edit, preserve_ecbes_no_change_transport,
+    EcbesAutomaticCandidateRequest, EcbesMeasuredCostHints, EcbesPublicationReceipt,
+    EcbesUniversalCandidateReport, EcbesUniversalCandidateRequest, EcbesUniversalEditPolicy,
+    EcbesUniversalEditReport, EcbesUniversalEditRequest, ECBES_UNIVERSAL_SCHEMA_VERSION,
 };
 pub use editable::{
     build_editable_document, build_editable_document_with_parse_options, EditCheckpoint,
@@ -344,11 +390,11 @@ pub use editing_transactions::{
     build_scene_graph, clone_on_write_report, dirty_region_report,
     editing_transactions_feature_matrix, editing_transactions_report, embedding_permission_report,
     font_subset_plan, plan_scene_text_transaction, scene_select, substitution_report,
-    substitution_report_with_source_font,
-    text_identity_report, undo_restoration_report, DocumentSnapshot, EditTransactionReport,
-    EditableSceneGraph, EditingTransactionsEvidenceKind, EditingTransactionsStatus,
-    ApprovedFontAsset, FontIdentityReport, GraphemeClusterRecord, SceneNode, SceneNodeKind, SceneSelectionReport,
-    SceneSelectionRequest, SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
+    substitution_report_with_source_font, text_identity_report, undo_restoration_report,
+    ApprovedFontAsset, DocumentSnapshot, EditTransactionReport, EditableSceneGraph,
+    EditingTransactionsEvidenceKind, EditingTransactionsStatus, FontIdentityReport,
+    GraphemeClusterRecord, SceneNode, SceneNodeKind, SceneSelectionReport, SceneSelectionRequest,
+    SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
     EDITING_TRANSACTIONS_SCHEMA_VERSION,
 };
 pub use engine::{
@@ -587,13 +633,15 @@ pub use text::{
     CjkDictionaryLoadReport, CjkDictionaryMetadata, CjkDictionaryPackManifest,
     CjkDictionaryPackStatus, CjkDictionaryProvider, CjkDictionaryProviderLimits,
     CjkDictionaryToken, CjkRagTokenChunk, CjkSegmentationMode, CjkTokenSearchMatch, LineEnding,
-    MarkedTextChunk, ReadingOrderReconstructor, SemanticTextDirection, TextChunk, TextCollector,
-    TextDiagnostic, TextExtractOptions, TextExtractionCounters, TextExtractionMode, TextExtractor,
-    TextFormatOptions, TextFormatter, TextLayoutStrategy, TextLine, TextMappingSource,
-    TextProvenanceFlag, TextProvenanceSummary, TextQuad, TextRole, TextRoleSource, TextSearchMatch,
-    TextSearchOptions, TextSemanticBlock, TextSemanticChar, TextSemanticDocument, TextSemanticLine,
-    TextSemanticOptions, TextSemanticPage, TextSemanticParagraph, TextSemanticSpan,
-    TextSemanticWord, TextStructureContext, TextStructureEntry, TextStructurePageSummary,
+    MarkedContentId, MarkedTextChunk, ReadingOrderReconstructor, ScopedTextChunk,
+    SemanticTextDirection, TextAppearanceInvocation, TextChunk, TextCollector, TextDiagnostic,
+    TextExtractOptions, TextExtractionCounters, TextExtractionMode, TextExtractor,
+    TextFormInvocation, TextFormatOptions, TextFormatter, TextLayoutStrategy, TextLine,
+    TextMappingSource, TextProvenanceFlag, TextProvenanceSummary, TextQuad, TextRole,
+    TextRoleSource, TextSearchMatch, TextSearchOptions, TextSemanticBlock, TextSemanticChar,
+    TextSemanticDocument, TextSemanticLine, TextSemanticOptions, TextSemanticPage,
+    TextSemanticParagraph, TextSemanticSpan, TextSemanticWord, TextStructureContext,
+    TextStructureEntry, TextStructurePageSummary, TextTraversalLimits,
 };
 pub use text_reflow::{
     analyze_geometric_region, analyze_semantic_layout, apply_reflow_document, apply_reflow_region,
@@ -607,6 +655,26 @@ pub use text_reflow::{
     ReflowConfidencePolicy, ReflowMutationSession, ReflowTransactionReport, ReflowUndoReport,
     SemanticLayoutReport, SemanticRegionEdge, SemanticRegionNode, TextReflowEvidenceKind,
     TextReflowStatus, TEXT_REFLOW_SCHEMA_VERSION,
+};
+pub use universal_editing::{
+    analyze_universal_document_v2, apply_universal_edit_v2,
+    apply_universal_edit_v2_with_output_security, create_universal_approval_token_v2,
+    inspect_universal_object_v2, plan_universal_edit_v2, preserve_universal_no_change_transport_v2,
+    qualify_universal_render_v2, universal_capability_registry_v2, universal_image_occurrences_v2,
+    UniversalAmbiguityPolicyV2, UniversalAnalyzeOptionsV2, UniversalApprovalDecisionV2,
+    UniversalApprovalTokenV2, UniversalCapabilityStatusV2, UniversalCapabilityV2,
+    UniversalConformanceProfileV2, UniversalDocumentModelV2, UniversalEditOperationV2,
+    UniversalEditOutcomeV2, UniversalEditPlanV2, UniversalEditPolicyV2, UniversalEditRequestV2,
+    UniversalEditResultV2, UniversalImageColorSpaceV2, UniversalImageEditRequestV2,
+    UniversalImageEncodingV2, UniversalImageMatrixV2, UniversalImageOccurrenceV2,
+    UniversalImageReplacementV2, UniversalImageSoftMaskV2, UniversalMutationModeV2,
+    UniversalObjectGraphEditRequestV2, UniversalObjectLensActionV2, UniversalObjectMutationV2,
+    UniversalObjectPathSegmentV2, UniversalObjectTargetV2, UniversalOutputSecurityCredentialsV2,
+    UniversalOutputSecurityPolicyV2, UniversalPdfFunctionV2, UniversalPdfValueV2,
+    UniversalPlanStateV2, UniversalReferenceRasterProducerV2, UniversalReferenceRasterV2,
+    UniversalRenderQualificationOptionsV2, UniversalSharedResourcePolicyV2,
+    UniversalStandardEncryptionAlgorithmV2, UniversalStructureCorrectionRequestV2,
+    UniversalVectorEditRequestV2, UNIVERSAL_EDITING_SCHEMA_VERSION,
 };
 pub use utilities::{
     add_page_numbers_pdf, attachments_json, crop_pdf, crop_pdf_pages, decrypt_pdf, encrypt_pdf,
@@ -693,10 +761,16 @@ pub mod prelude {
         RichMediaPolicyMode,
     };
     pub use crate::authoring::{
-        CustomFontId, FlowDocument, FontFace, GraphicsStyle, ImageHandle, Margins,
-        PageSize as AuthorPageSize, ParagraphStyle, PathBuilder, PdfBuilder, PdfMetadata,
-        PdfPageBuilder, StandardFont, TableBuilder, TableCell, TableColumn, TableRow, TableStyle,
-        TextAlign, TextStyle,
+        BodyAnchorInfo, BodyField, BodyFieldFormat, BodyFieldInfo, BodyFieldPart, CustomFontId,
+        EndnoteItemInfo, EndnoteReport, FieldParagraphReport, FlowDocument, FlowEndnote,
+        FlowFootnote, FlowPageBreak, FlowSection, FontFace, FontStackId, FontStackLinePreview,
+        FontStackRunPreview, FootnoteFragmentInfo, FootnoteNumbering, FootnotedParagraphReport,
+        GraphicsStyle, ImageHandle, InsertedFootnoteMarkerInfo, Margins, NoteNumberScope,
+        NoteNumberStyle, NumberedFootnote, NumberedFootnotedParagraphReport, PageNumberField,
+        PageNumberStyle, PageSize as AuthorPageSize, ParagraphStyle, PathBuilder, PdfBuilder,
+        PdfMetadata, PdfPageBuilder, RunningText, RunningTextPart, SectionPageMaster, StandardFont,
+        TableBuilder, TableCell, TableColumn, TableFlowReport, TableFragmentInfo, TableRow,
+        TableRowPageBreakInfo, TableRowSplitPolicy, TableStyle, TextAlign, TextStyle,
     };
     pub use crate::chunk::{chunk, Chunk, ChunkOptions, ChunkSet, CHUNK_SCHEMA_VERSION};
     pub use crate::compliance::{

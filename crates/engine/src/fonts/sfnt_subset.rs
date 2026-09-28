@@ -141,6 +141,53 @@ pub(crate) fn subset_glyf_preserving_gids(
     })
 }
 
+/// Test-only controlled cmap fixture, retaining original outlines and layout
+/// tables. Uses the production sfnt serializer/checksum path, not byte offsets.
+#[cfg(test)]
+pub(crate) fn with_test_cmap(font: &[u8], characters: &[char]) -> Result<Vec<u8>, SfntSubsetError> {
+    let sfnt = parse_sfnt(font)?;
+    let face = ttf_parser::Face::parse(font, 0)
+        .map_err(|_| SfntSubsetError::Malformed("test cmap font".into()))?;
+    let mappings = characters
+        .iter()
+        .map(|ch| {
+            face.glyph_index(*ch)
+                .map(|gid| (*ch as u32, gid.0))
+                .ok_or_else(|| SfntSubsetError::Malformed("test cmap character missing".into()))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let mut cmap = Vec::new();
+    write_u16(&mut cmap, 0);
+    write_u16(&mut cmap, 1);
+    write_u16(&mut cmap, 3);
+    write_u16(&mut cmap, 10);
+    write_u32(&mut cmap, 12);
+    write_u16(&mut cmap, 12);
+    write_u16(&mut cmap, 0);
+    write_u32(&mut cmap, 16 + mappings.len() as u32 * 12);
+    write_u32(&mut cmap, 0);
+    write_u32(&mut cmap, mappings.len() as u32);
+    for (ch, gid) in mappings {
+        write_u32(&mut cmap, ch);
+        write_u32(&mut cmap, ch);
+        write_u32(&mut cmap, u32::from(gid));
+    }
+    let mut tables = sfnt
+        .tables
+        .iter()
+        .filter(|(tag, _)| *tag != TAG_DSIG)
+        .map(|(tag, bytes)| (*tag, bytes.to_vec()))
+        .collect::<BTreeMap<_, _>>();
+    tables.insert(*b"cmap", cmap);
+    tables
+        .get_mut(TAG_HEAD)
+        .ok_or_else(|| SfntSubsetError::Malformed("test cmap head".into()))?
+        .get_mut(8..12)
+        .ok_or_else(|| SfntSubsetError::Malformed("test cmap head length".into()))?
+        .fill(0);
+    build_sfnt(sfnt.version, tables)
+}
+
 fn parse_sfnt(bytes: &[u8]) -> Result<SfntTables<'_>, SfntSubsetError> {
     if bytes.len() < 12 {
         return Err(SfntSubsetError::Malformed(
@@ -450,10 +497,24 @@ fn patch_head(head: &[u8], loca_format: i16) -> Result<Vec<u8>, SfntSubsetError>
     Ok(out)
 }
 
-fn build_sfnt(
+pub(crate) fn build_sfnt(
     version: [u8; 4],
-    tables: BTreeMap<[u8; 4], Vec<u8>>,
+    mut tables: BTreeMap<[u8; 4], Vec<u8>>,
 ) -> Result<Vec<u8>, SfntSubsetError> {
+    if tables.is_empty() || tables.len() > 256 {
+        return Err(SfntSubsetError::ResourceLimit(
+            "sfnt requires 1..=256 tables",
+        ));
+    }
+    let head = tables
+        .get_mut(TAG_HEAD)
+        .ok_or_else(|| SfntSubsetError::Malformed("rebuilt sfnt is missing head table".into()))?;
+    if head.len() < 54 {
+        return Err(SfntSubsetError::Malformed("head table is too short".into()));
+    }
+    // Directory head checksum must use a zero adjustment even when input was
+    // extracted from a collection (where the old adjustment is meaningless).
+    head[8..12].fill(0);
     let num_tables = u16::try_from(tables.len())
         .map_err(|_| SfntSubsetError::ResourceLimit("too many sfnt tables"))?;
     let mut out = Vec::new();

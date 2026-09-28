@@ -2,30 +2,63 @@
 
 Human-readable view of `target/binding_parity-binding-parity/binding-gap-matrix.json`.
 
-Transparency Rendering addendum: the shared feature-report surface now exposes
-`transparency_rendering_transparency_compositing` through Rust, CLI `feature-report`, Python,
-C ABI, WASM, .NET, and Java without changing the report envelope version. The
-section reports transparency group, blend mode, soft-mask, knockout/isolation,
-multi-reference audit, memory cap, and known-limit posture. Binding smokes assert
-that the section is visible through the package surfaces.
-
 **Rows:** 205
 
 ## Surface Counts
 
 | Surface | implemented_public | partial_public | unsupported_reported | missing | deferred | implemented_internal | cli_only | blocked |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| rust | 111 | 36 | 0 | 1 | 25 | 31 | 1 | 0 |
-| python | 109 | 40 | 7 | 24 | 25 | 0 | 0 | 0 |
-| c_abi | 106 | 44 | 7 | 24 | 23 | 1 | 0 | 0 |
-| wasm | 86 | 67 | 14 | 0 | 38 | 0 | 0 | 0 |
-| dotnet | 77 | 84 | 8 | 2 | 34 | 0 | 0 | 0 |
-| java | 81 | 84 | 8 | 2 | 30 | 0 | 0 | 0 |
-| cli | 138 | 35 | 0 | 1 | 25 | 6 | 0 | 0 |
+| rust | 123 | 33 | 0 | 1 | 25 | 22 | 1 | 0 |
+| python | 122 | 36 | 6 | 16 | 25 | 0 | 0 | 0 |
+| c_abi | 119 | 40 | 6 | 16 | 23 | 1 | 0 | 0 |
+| wasm | 100 | 60 | 13 | 0 | 32 | 0 | 0 | 0 |
+| dotnet | 94 | 76 | 7 | 2 | 26 | 0 | 0 | 0 |
+| java | 98 | 76 | 7 | 2 | 22 | 0 | 0 | 0 |
+| cli | 146 | 30 | 0 | 1 | 25 | 3 | 0 | 0 |
 | docs | 44 | 161 | 0 | 0 | 0 | 0 | 0 | 0 |
 | packaging | 24 | 181 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_only`, `unsupported_reported`, `missing`, `deferred`, `blocked`.
+
+## binding_parity-diagnostics
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| cross-binding JSON envelope parity (`diag.cross_binding_envelope`) | deferred | deferred | deferred | implemented_public | implemented_public | implemented_public | deferred | implemented_public | implemented_public | All Binding Parity wrappers call shared facade or C ABI report functions. |
+| progress callback posture (`diag.progress_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | No progress callbacks are exposed until engine calls can observe them. |
+| cancellation token posture (`diag.cancel_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Engine render internals can observe CancelToken, but Binding Parity WASM/.NET/Java report/output bindings expose no cancellable render or token-aware facade operation. |
+| panic and exception boundary (`diag.panic_boundary`) | deferred | deferred | deferred | implemented_public | implemented_public | implemented_public | deferred | implemented_public | implemented_public | WASM maps errors to JsValue; .NET/Java preserve C ABI status and messages. |
+
+## binding_parity-dotnet
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| .NET native binary loading (`dotnet.native.loading`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | Resolver checks WELLFRIENDPDF_NATIVE_LIBRARY and RID runtime/native locations. |
+| .NET NuGet metadata and pack smoke (`dotnet.nuget`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendPdf.csproj includes package metadata/readme/license/tags. |
+| .NET output buffer ownership (`dotnet.binary.output`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendBinaryResult copies bytes to managed memory and frees native buffers. |
+
+## binding_parity-java
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Java native binary loading (`java.native.loading`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | FFM loader checks WELLFRIENDPDF_NATIVE_LIBRARY and RID runtime/native locations. |
+| Java Maven package metadata (`java.maven`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | pom.xml records Maven metadata and binds WellfriendPdfSmokeTest into mvn test; Java Packaging package smoke runs mvn test/package. |
+| Java output buffer ownership (`java.binary.output`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | BinaryResult copies native buffers into byte[] before freeing them. |
+
+## binding_parity-release
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Binding Parity binding smoke tests (`test.binding_parity_smokes`) | deferred | deferred | deferred | partial_public | implemented_public | implemented_public | deferred | implemented_public | implemented_public | cargo wasm build, .NET tests, and Java smoke cover report/output paths; browser glue regeneration requires wasm-pack/wasm-bindgen. |
+
+## binding_parity-wasm
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| WASM open from bytes and lifecycle (`wasm.input.bytes`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | WellfriendPdf constructor, openWithPassword, close/isClosed, and use-after-close guard. |
+| WASM open from host file path (`wasm.input.path`) | deferred | deferred | deferred | unsupported_reported | deferred | deferred | deferred | implemented_public | implemented_public | Browser/WebWorker cannot read host paths; callers pass bytes from File/API/Node fs. |
+| TypeScript declarations (`wasm.typescript`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | crates/wellfriendpdf-wasm/wellfriendpdf.d.ts declares reports and output ownership. |
+| WASM package metadata (`wasm.package`) | deferred | deferred | deferred | partial_public | deferred | deferred | deferred | implemented_public | partial_public | package.json and docs added; wasm-pack is required to regenerate publishable pkg glue. |
 
 ## color
 
@@ -91,9 +124,9 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| editable model export (`edit.model_export`) | partial_public | partial_public | partial_public | partial_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| paragraph reflow edit (`edit.paragraph_reflow`) | implemented_internal | missing | missing | partial_public | deferred | deferred | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| insert and delete text (`edit.insert_delete_text`) | implemented_internal | missing | missing | partial_public | deferred | deferred | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
+| editable model export (`edit.model_export`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| paragraph reflow edit (`edit.paragraph_reflow`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| insert and delete text (`edit.insert_delete_text`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
 | page-faithful DOCX export (`conv.docx_faithful`) | partial_public | partial_public | partial_public | unsupported_reported | implemented_public | implemented_public | implemented_public | partial_public | partial_public | Unsupported status is intentional and documented; do not expose a fake wrapper. |
 | flowing DOCX export (`conv.docx_flow`) | implemented_public | implemented_public | implemented_public | unsupported_reported | implemented_public | implemented_public | implemented_public | partial_public | partial_public | Unsupported status is intentional and documented; do not expose a fake wrapper. |
 | PPTX export (`conv.pptx`) | implemented_public | implemented_public | implemented_public | unsupported_reported | implemented_public | implemented_public | implemented_public | partial_public | partial_public | Unsupported status is intentional and documented; do not expose a fake wrapper. |
@@ -140,6 +173,26 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | rich media policy reporting (`annot.rich_media`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
 | annotation flattening (`annot.flatten`) | implemented_internal | missing | missing | deferred | deferred | deferred | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
 
+## gradle_packaging-closure
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Java Gradle build/package/JAR smoke (`gradle_packaging.java.gradle_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/gradle_packaging_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/wellfriendpdf-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts. |
+
+## java_packaging-closure
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| C ABI open with optional password (`java_packaging.cabi.password_open`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | wellfriendpdf_document_open_from_bytes_with_password uses UTF-8 pointer+length and preserves existing open ABI. |
+| .NET password-open parity (`java_packaging.dotnet.password_open`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendDocument.Open(path/bytes, string? password) routes through the password-aware C ABI. |
+| Java password-open parity (`java_packaging.java.password_open`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | WellfriendPdf.Document.open(Path/byte[], String password) routes UTF-8 bytes through the password-aware C ABI. |
+| Java Maven package smoke (`java_packaging.java.maven_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/java_packaging_java_package_smoke.ps1 runs Maven version/test/package with a target-local Maven fallback. |
+| Java Gradle package support (`java_packaging.java.gradle_policy`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Gradle Packaging adds build.gradle/settings.gradle plus a target-local Gradle 9.6.1 bootstrap that runs clean test, jar, build, JAR inspection, runtime smoke, and Maven/Gradle equivalence. |
+| Java JAR package verification (`java_packaging.java.jar_verification`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Package smoke inspects the JAR as a ZIP, rejects test/native/build-junk entries, and runs from the packaged artifact. |
+| Java Packaging progress closure (`java_packaging.progress_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Shared feature report records progress_not_supported; no binding exposes no-op callbacks. |
+| Java Packaging cancellation closure (`java_packaging.cancellation_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Shared feature report records binding cancellation unsupported while naming render internals that already observe CancelToken. |
+| Java Packaging memory/leak evidence (`java_packaging.memory_evidence`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | C ABI/.NET/Java repeated open/report/dispose stress tests plus existing Linux sanitizer CI gate; local Valgrind/LLVM cov unavailable on Windows host. |
+
 ## parser
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
@@ -159,66 +212,6 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | malformed object recovery (`parser.malformed_recovery`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
 | Arlington validation hooks (`parser.arlington`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
 | parser memory-limit reporting (`parser.memory_limits`) | partial_public | partial_public | partial_public | partial_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-
-## binding_parity-diagnostics
-
-| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| cross-binding JSON envelope parity (`diag.cross_binding_envelope`) | deferred | deferred | deferred | implemented_public | implemented_public | implemented_public | deferred | implemented_public | implemented_public | All Binding Parity wrappers call shared facade or C ABI report functions. |
-| progress callback posture (`diag.progress_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | No progress callbacks are exposed until engine calls can observe them. |
-| cancellation token posture (`diag.cancel_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Engine render internals can observe CancelToken, but Binding Parity WASM/.NET/Java report/output bindings expose no cancellable render or token-aware facade operation. |
-| panic and exception boundary (`diag.panic_boundary`) | deferred | deferred | deferred | implemented_public | implemented_public | implemented_public | deferred | implemented_public | implemented_public | WASM maps errors to JsValue; .NET/Java preserve C ABI status and messages. |
-
-## binding_parity-dotnet
-
-| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| .NET native binary loading (`dotnet.native.loading`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | Resolver checks WELLFRIENDPDF_NATIVE_LIBRARY and RID runtime/native locations. |
-| .NET NuGet metadata and pack smoke (`dotnet.nuget`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendPdf.csproj includes package metadata/readme/license/tags. |
-| .NET output buffer ownership (`dotnet.binary.output`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendBinaryResult copies bytes to managed memory and frees native buffers. |
-
-## binding_parity-java
-
-| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Java native binary loading (`java.native.loading`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | FFM loader checks WELLFRIENDPDF_NATIVE_LIBRARY and RID runtime/native locations. |
-| Java Maven package metadata (`java.maven`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | pom.xml records Maven metadata and binds WellfriendPdfSmokeTest into mvn test; Java Packaging package smoke runs mvn test/package. |
-| Java output buffer ownership (`java.binary.output`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | BinaryResult copies native buffers into byte[] before freeing them. |
-
-## binding_parity-release
-
-| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Binding Parity binding smoke tests (`test.binding_parity_smokes`) | deferred | deferred | deferred | partial_public | implemented_public | implemented_public | deferred | implemented_public | implemented_public | cargo wasm build, .NET tests, and Java smoke cover report/output paths; browser glue regeneration requires wasm-pack/wasm-bindgen. |
-
-## binding_parity-wasm
-
-| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| WASM open from bytes and lifecycle (`wasm.input.bytes`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | WellfriendPdf constructor, openWithPassword, close/isClosed, and use-after-close guard. |
-| WASM open from host file path (`wasm.input.path`) | deferred | deferred | deferred | unsupported_reported | deferred | deferred | deferred | implemented_public | implemented_public | Browser/WebWorker cannot read host paths; callers pass bytes from File/API/Node fs. |
-| TypeScript declarations (`wasm.typescript`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | crates/wellfriendpdf-wasm/wellfriendpdf.d.ts declares reports and output ownership. |
-| WASM package metadata (`wasm.package`) | deferred | deferred | deferred | partial_public | deferred | deferred | deferred | implemented_public | partial_public | package.json and docs added; wasm-pack is required to regenerate publishable pkg glue. |
-
-## java_packaging-closure
-
-| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| C ABI open with optional password (`java_packaging.cabi.password_open`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | wellfriendpdf_document_open_from_bytes_with_password uses UTF-8 pointer+length and preserves existing open ABI. |
-| .NET password-open parity (`java_packaging.dotnet.password_open`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendDocument.Open(path/bytes, string? password) routes through the password-aware C ABI. |
-| Java password-open parity (`java_packaging.java.password_open`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | WellfriendPdf.Document.open(Path/byte[], String password) routes UTF-8 bytes through the password-aware C ABI. |
-| Java Maven package smoke (`java_packaging.java.maven_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/java_packaging_java_package_smoke.ps1 runs Maven version/test/package with a target-local Maven fallback. |
-| Java Gradle package support (`java_packaging.java.gradle_policy`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Gradle Packaging adds build.gradle/settings.gradle plus a target-local Gradle 9.6.1 bootstrap that runs clean test, jar, build, JAR inspection, runtime smoke, and Maven/Gradle equivalence. |
-| Java JAR package verification (`java_packaging.java.jar_verification`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Package smoke inspects the JAR as a ZIP, rejects test/native/build-junk entries, and runs from the packaged artifact. |
-| Java Packaging progress closure (`java_packaging.progress_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Shared feature report records progress_not_supported; no binding exposes no-op callbacks. |
-| Java Packaging cancellation closure (`java_packaging.cancellation_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Shared feature report records binding cancellation unsupported while naming render internals that already observe CancelToken. |
-| Java Packaging memory/leak evidence (`java_packaging.memory_evidence`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | C ABI/.NET/Java repeated open/report/dispose stress tests plus existing Linux sanitizer CI gate; local Valgrind/LLVM cov unavailable on Windows host. |
-
-## gradle_packaging-closure
-
-| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Java Gradle build/package/JAR smoke (`gradle_packaging.java.gradle_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/gradle_packaging_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/wellfriendpdf-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts. |
 
 ## release
 
@@ -244,21 +237,21 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| page raster rendering (`render.raster`) | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
+| page raster rendering (`render.raster`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
 | display-list extraction (`render.display_list`) | implemented_internal | missing | missing | deferred | deferred | deferred | partial_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| render options (`render.options`) | partial_public | partial_public | partial_public | partial_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| DPI and scale handling (`render.dpi_scale`) | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| tile rendering (`render.tile`) | implemented_internal | missing | missing | deferred | deferred | deferred | implemented_internal | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| band rendering (`render.band`) | implemented_internal | missing | missing | deferred | deferred | deferred | implemented_internal | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| progressive rendering state (`render.progressive`) | implemented_internal | missing | missing | deferred | deferred | deferred | implemented_internal | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| render cancellation (`render.cancellation`) | implemented_internal | unsupported_reported | unsupported_reported | unsupported_reported | unsupported_reported | unsupported_reported | partial_public | implemented_public | partial_public | Unsupported status is intentional and documented; do not expose a fake wrapper. |
-| annotation appearance rendering (`render.annot_appearance`) | partial_public | partial_public | partial_public | partial_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| optional-content visibility reporting (`render.optional_content`) | implemented_internal | missing | missing | deferred | deferred | deferred | partial_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| render diagnostics (`render.diagnostics`) | partial_public | partial_public | partial_public | partial_public | partial_public | partial_public | partial_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| visual hash reporting (`render.visual_hash`) | implemented_internal | missing | missing | deferred | deferred | deferred | partial_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| render memory budget (`render.memory_budget`) | implemented_public | partial_public | partial_public | partial_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| color-managed render options (`render.color_managed`) | implemented_internal | missing | missing | deferred | deferred | deferred | partial_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
-| image output encoding (`render.image_output_encoding`) | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
+| render options (`render.options`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| DPI and scale handling (`render.dpi_scale`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| tile rendering (`render.tile`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| band rendering (`render.band`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| progressive rendering state (`render.progressive`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| render cancellation (`render.cancellation`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| annotation appearance rendering (`render.annot_appearance`) | partial_public | partial_public | partial_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| optional-content visibility reporting (`render.optional_content`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| render diagnostics (`render.diagnostics`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| visual hash reporting (`render.visual_hash`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| render memory budget (`render.memory_budget`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| color-managed render options (`render.color_managed`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
+| image output encoding (`render.image_output_encoding`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Binding Parity action; public or report-backed on WASM/.NET/Java. |
 
 ## security
 

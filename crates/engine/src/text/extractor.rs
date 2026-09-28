@@ -1,6 +1,5 @@
 use rayon::prelude::*;
 
-use super::collector::TextCollector;
 use super::formatter::{TextFormatOptions, TextFormatter};
 use super::reading_order::{ReadingOrderReconstructor, TextLine};
 use crate::engine::ContentEngine;
@@ -45,51 +44,66 @@ impl TextExtractor {
     /// thread reads the same parsed document — no per-page reparse). Page
     /// output is reassembled in the original page order regardless of the order
     /// threads finish, so the result is byte-identical to serial extraction. A
-    /// page that fails to extract logs a warning and contributes no text,
-    /// exactly as in the serial path.
+    /// page that fails to extract returns an error in both paths. Incomplete
+    /// output must not satisfy an editing postcondition as a successful result.
     pub fn extract(&self, engine: &ContentEngine, options: &TextExtractOptions) -> Result<String> {
         let total_pages = engine.page_count()?;
-        let page_list: Vec<usize> = match &options.pages {
+        let requested_pages: Vec<usize> = match &options.pages {
             Some(list) => list.clone(),
             None => (1..=total_pages).collect(),
         };
+        // Explicit selections treat an out-of-range page as an empty
+        // selection, not as evidence that the PDF is malformed. Filter those
+        // requests before dispatch while still propagating every extraction
+        // failure on a valid page. This preserves the public probing contract
+        // without allowing partial valid-page output to satisfy edit
+        // postconditions.
+        let page_list: Vec<usize> = requested_pages
+            .into_iter()
+            .filter(|&page_num| {
+                let in_range = page_num > 0 && page_num <= total_pages;
+                if !in_range {
+                    log::warn!("TextExtractor: page {} out of range, skipping", page_num);
+                }
+                in_range
+            })
+            .collect();
 
         let formatter = TextFormatter::new();
 
-        // Format a single page's text, or None for an out-of-range/failed page
-        // (warning already logged). Shared by both the serial and parallel
-        // paths so their output is identical by construction.
-        let format_one = |page_num: usize| -> Option<String> {
-            if page_num == 0 || page_num > total_pages {
-                log::warn!("TextExtractor: page {} out of range, skipping", page_num);
-                return None;
-            }
-            match self.extract_page(engine, page_num, options) {
-                Ok((page_n, lines)) => Some(formatter.format_page(&lines, page_n, &options.format)),
-                Err(e) => {
-                    log::warn!("TextExtractor: page {} failed: {}", page_num, e);
-                    None
-                }
-            }
+        let cancel = crate::cancel::current_cancel_token();
+        // Rayon workers need an explicit scope: thread-local cancellation is
+        // otherwise lost at the parallel boundary.
+        let format_one = |page_num: usize| -> Result<String> {
+            cancel.scope(|| {
+                cancel.check("document text extraction")?;
+                let (page_n, lines) = self.extract_page(engine, page_num, options)?;
+                Ok(formatter.format_page(&lines, page_n, &options.format))
+            })
         };
 
         let parallel_window = bounded_text_parallel_window(page_list.len());
-        let page_strings: Vec<Option<String>> = if parallel_window >= PARALLEL_PAGE_THRESHOLD {
+        let page_strings: Vec<String> = if parallel_window >= PARALLEL_PAGE_THRESHOLD {
             let mut out = Vec::with_capacity(page_list.len());
             for chunk in page_list.chunks(parallel_window) {
                 // Each chunk is bounded by a conservative memory budget. Rayon
                 // preserves input order for `collect()`, and chunks are appended
                 // sequentially, so aggregate output remains byte-identical to
                 // serial extraction.
-                out.extend(chunk.par_iter().map(|&p| format_one(p)).collect::<Vec<_>>());
+                for page in chunk.par_iter().map(|&p| format_one(p)).collect::<Vec<_>>() {
+                    out.push(page?);
+                }
             }
             out
         } else {
-            page_list.iter().map(|&p| format_one(p)).collect()
+            page_list
+                .iter()
+                .map(|&p| format_one(p))
+                .collect::<Result<Vec<_>>>()?
         };
 
         let mut all_text = String::new();
-        for page_str in page_strings.into_iter().flatten() {
+        for page_str in page_strings {
             all_text.push_str(&page_str);
         }
 
@@ -103,11 +117,7 @@ impl TextExtractor {
         page_number: usize,
         options: &TextExtractOptions,
     ) -> Result<(usize, Vec<TextLine>)> {
-        let ops = engine.get_page_content(page_number)?;
-        let resources = engine.get_page_resources(page_number)?;
-
-        let mut collector = TextCollector::new(resources, engine.document().reader());
-        let chunks = collector.collect(&ops);
+        let chunks = engine.collect_page_text_chunks(page_number)?;
 
         let lines = options.reading_order.reconstruct(chunks);
 

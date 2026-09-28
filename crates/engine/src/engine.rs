@@ -764,6 +764,7 @@ pub struct RenderContractTelemetryReport {
     pub scaled_image_cache: RenderArtifactCacheStats,
     pub smask_group_cache: RenderArtifactCacheStats,
     pub shading_mesh_cache: RenderArtifactCacheStats,
+    pub function_cache: crate::render::function::FunctionCacheMetrics,
     pub form_xobject_program_cache: RenderArtifactCacheStats,
     pub tiling_pattern_program_cache: RenderArtifactCacheStats,
     pub annotation_appearance_program_cache: RenderArtifactCacheStats,
@@ -803,6 +804,7 @@ impl RenderContractTelemetryReport {
             scaled_image_cache: cache.scaled_image_cache_stats(),
             smask_group_cache: cache.smask_group_cache_stats(),
             shading_mesh_cache: cache.shading_mesh_cache_stats(),
+            function_cache: cache.function_cache_metrics(),
             form_xobject_program_cache: cache.form_xobject_program_cache_stats(),
             tiling_pattern_program_cache: cache.tiling_pattern_program_cache_stats(),
             annotation_appearance_program_cache: cache.annotation_appearance_program_cache_stats(),
@@ -1006,33 +1008,34 @@ fn resolve_subdict(
     }
 }
 
-fn normalize_ext_gstate_font_resource(
-    dict: &mut PdfDictionary,
-    font_references: &HashMap<String, (u32, u16)>,
-) {
-    let Some(PdfObject::Array(items)) = dict.get_mut("Font") else {
-        return;
-    };
-    if items.len() != 2 {
-        return;
-    }
-    let Some(reference) = items[0].as_reference() else {
-        return;
-    };
-    if let Some(name) = font_references
-        .iter()
-        .find_map(|(name, font_ref)| (*font_ref == reference).then_some(name.clone()))
-    {
-        items[0] = PdfObject::Name(name);
-    }
-}
-
 impl PageResources {
+    /// Resolve the resource dictionary explicitly owned by a content program.
+    /// `None` means absent (including PDF null), not an empty dictionary. The
+    /// caller chooses the specified legacy fallback; dictionaries never merge.
+    /// Malformed explicit scopes must not turn into successful page fallbacks.
+    pub(crate) fn from_content_owner(
+        owner: &PdfDictionary,
+        reader: &PdfReader,
+    ) -> Result<Option<Self>> {
+        let Some(value) = owner.get("Resources") else {
+            return Ok(None);
+        };
+        match reader.resolve(value.clone())? {
+            PdfObject::Null => Ok(None),
+            PdfObject::Dictionary(dict) => Ok(Some(Self::from_dict(&dict, reader))),
+            _ => Err(WellfriendError::MalformedPdf(
+                "content /Resources must resolve to a dictionary or null".into(),
+            )),
+        }
+    }
+
     pub fn from_dict(resources: &PdfDictionary, reader: &PdfReader) -> Self {
         let mut page_resources = PageResources::default();
+        let mut reserved_fonts = std::collections::BTreeSet::new();
 
         if let Some(font_dict) = resolve_subdict(resources, "Font", reader) {
             for (name, value) in font_dict.entries() {
+                reserved_fonts.insert(name.clone());
                 if let Some(reference) = value.as_reference() {
                     page_resources
                         .font_references
@@ -1120,9 +1123,12 @@ impl PageResources {
                 }
                 match reader.resolve(value.clone()) {
                     Ok(PdfObject::Dictionary(mut dict)) => {
-                        normalize_ext_gstate_font_resource(
+                        crate::ext_gstate_fonts::normalize(
                             &mut dict,
-                            &page_resources.font_references,
+                            &mut page_resources.fonts,
+                            &mut page_resources.font_references,
+                            &mut reserved_fonts,
+                            reader,
                         );
                         page_resources.ext_g_states.insert(name.clone(), dict);
                     }
@@ -1195,26 +1201,6 @@ fn numeric_array_6(dict: &PdfDictionary, key: &str) -> Option<[f64; 6]> {
         arr[4].as_number()?,
         arr[5].as_number()?,
     ])
-}
-
-/// Parse a `/Resources` object (a direct dictionary or an indirect reference)
-/// into a [`PageResources`]. Used when rendering Form XObjects that carry their
-/// own resource dictionary.
-///
-/// Returns an empty [`PageResources`] when the object does not resolve to a
-/// dictionary. Never panics on malformed input.
-pub(crate) fn parse_resources_from_obj(res_obj: &PdfObject, reader: &PdfReader) -> PageResources {
-    let dict = match res_obj {
-        PdfObject::Dictionary(d) => d.clone(),
-        PdfObject::Reference { number, generation } => {
-            match reader.get_and_resolve(*number, *generation) {
-                Ok(PdfObject::Dictionary(d)) => d,
-                _ => return PageResources::default(),
-            }
-        }
-        _ => return PageResources::default(),
-    };
-    PageResources::from_dict(&dict, reader)
 }
 
 #[derive(Clone)]
@@ -1298,6 +1284,18 @@ impl ContentEngine {
                 "registered font name and bytes must be non-empty".to_string(),
             ))
         }
+    }
+
+    /// Explicitly select a collection face for deterministic replacement fonts.
+    /// Returned evidence identifies the exact normalized program used by caches.
+    pub fn register_font_face_bytes(
+        &mut self,
+        name: impl Into<String>,
+        source: &[u8],
+        selection: &crate::fonts::font_asset::FontFaceSelection,
+    ) -> Result<crate::fonts::font_asset::FontPreparationReport> {
+        self.registered_fonts
+            .register_font_face_bytes(name, source, selection)
     }
 
     /// Builder-style variant of [`Self::register_font_bytes`].
@@ -2088,7 +2086,13 @@ impl ContentEngine {
 
     pub fn get_page_content(&self, page_number: usize) -> Result<Vec<ContentOperation>> {
         let limits = DecodeLimits::default();
-        self.get_page_content_with_limits_inner(page_number, &limits, &CancelToken::none(), false)
+        self.get_page_content_with_limits_inner(
+            page_number,
+            &limits,
+            &CancelToken::none(),
+            false,
+            false,
+        )
     }
 
     pub(crate) fn get_page_content_with_decode_limits(
@@ -2097,7 +2101,7 @@ impl ContentEngine {
         limits: &DecodeLimits,
         cancel: &CancelToken,
     ) -> Result<Vec<ContentOperation>> {
-        self.get_page_content_with_limits_inner(page_number, limits, cancel, true)
+        self.get_page_content_with_limits_inner(page_number, limits, cancel, true, false)
     }
 
     fn get_page_content_with_limits_inner(
@@ -2106,6 +2110,7 @@ impl ContentEngine {
         limits: &DecodeLimits,
         cancel: &CancelToken,
         map_decode_budget_errors: bool,
+        strict_parse: bool,
     ) -> Result<Vec<ContentOperation>> {
         self.validate_page(page_number)?;
         let scheduler = DecodeSchedulerContext::new(limits);
@@ -2149,6 +2154,11 @@ impl ContentEngine {
                     limits,
                 )?;
                 if let StreamDecodeStatus::StoppedAtImageFilter(filter) = &status {
+                    if strict_parse {
+                        return Err(WellfriendError::MalformedPdf(format!(
+                            "page text content stopped at image filter {filter}"
+                        )));
+                    }
                     log::warn!("page content stream stopped at image filter {filter}");
                 }
                 if stream_index > 0 {
@@ -2157,6 +2167,9 @@ impl ContentEngine {
                 readers.push(Box::new(Cursor::new(bytes)) as Box<dyn Read>);
             }
             let tokens = StreamingContentTokenizer::new(JoinedContentStreams::new(readers));
+            if strict_parse {
+                return ContentParser::parse_tokens_strict_cancellable(tokens, cancel);
+            }
             return ContentParser::parse_tokens_propagating_io_cancellable(tokens, cancel);
         }
         let page = self.doc.get_page(page_number)?;
@@ -2262,10 +2275,43 @@ impl ContentEngine {
         &self,
         page_number: usize,
     ) -> Result<Vec<crate::text::TextChunk>> {
-        let ops = self.get_page_content(page_number)?;
+        Ok(self
+            .collect_page_scoped_text_chunks(page_number)?
+            .into_iter()
+            .map(|item| item.chunk)
+            .collect())
+    }
+
+    /// Whole-page text including repeated/nested Form occurrences. Retains
+    /// stream-owned MCIDs instead of conflating them with page-local IDs.
+    pub fn collect_page_scoped_text_chunks(
+        &self,
+        page_number: usize,
+    ) -> Result<Vec<crate::text::ScopedTextChunk>> {
+        self.collect_page_scoped_text_chunks_with_limits(
+            page_number,
+            &crate::text::TextTraversalLimits::default(),
+            &crate::cancel::current_cancel_token(),
+        )
+    }
+
+    pub fn collect_page_scoped_text_chunks_with_limits(
+        &self,
+        page_number: usize,
+        limits: &crate::text::TextTraversalLimits,
+        cancel: &CancelToken,
+    ) -> Result<Vec<crate::text::ScopedTextChunk>> {
+        cancel.check("page text extraction")?;
+        let ops = self.get_page_content_with_limits_inner(
+            page_number,
+            &limits.decode,
+            cancel,
+            true,
+            true,
+        )?;
         let resources = self.get_page_resources(page_number)?;
         let mut collector = crate::text::TextCollector::new(resources, self.doc.reader());
-        Ok(collector.collect(&ops))
+        collector.collect_scoped(&ops, limits, cancel)
     }
 
     /// Collect positioned text runs with active marked-content IDs. This is used
@@ -2275,10 +2321,70 @@ impl ContentEngine {
         &self,
         page_number: usize,
     ) -> Result<Vec<crate::text::MarkedTextChunk>> {
-        let ops = self.get_page_content(page_number)?;
-        let resources = self.get_page_resources(page_number)?;
-        let mut collector = crate::text::TextCollector::new(resources, self.doc.reader());
-        Ok(collector.collect_marked(&ops))
+        Ok(self
+            .collect_page_scoped_text_chunks(page_number)?
+            .into_iter()
+            .map(crate::text::ScopedTextChunk::into_marked)
+            .collect())
+    }
+
+    /// Stream-owner-aware bridge for logical structure extraction. Kept separate
+    /// from legacy page-only search/redaction selectors, which cannot target an
+    /// annotation appearance occurrence.
+    pub fn collect_page_marked_text_chunks_including_appearances(
+        &self,
+        page_number: usize,
+    ) -> Result<Vec<crate::text::MarkedTextChunk>> {
+        Ok(self
+            .collect_page_scoped_text_chunks_including_appearances(
+                page_number,
+                &crate::text::TextTraversalLimits::default(),
+                &crate::cancel::current_cancel_token(),
+            )?
+            .into_iter()
+            .map(crate::text::ScopedTextChunk::into_marked)
+            .collect())
+    }
+
+    /// Source-logical text, including selected normal annotation appearances.
+    /// Does not filter hidden/optional content or invent missing appearances.
+    /// Plain page-content extraction remains available through collect_page_scoped_text_chunks.
+    pub fn collect_page_scoped_text_chunks_including_appearances(
+        &self,
+        page_number: usize,
+        limits: &crate::text::TextTraversalLimits,
+        cancel: &CancelToken,
+    ) -> Result<Vec<crate::text::ScopedTextChunk>> {
+        cancel.check("page/appearance text extraction")?;
+        let page = self.get_page(page_number)?;
+        let reader = self.doc.reader();
+        let page_object = reader.get_object(page.object_number, page.generation_number)?;
+        let dict = page_object
+            .as_dict()
+            .ok_or_else(|| WellfriendError::MalformedPdf("page is not a dictionary".into()))?;
+        let annotations = match dict
+            .get("Annots")
+            .map(|value| reader.resolve(value.clone()))
+            .transpose()?
+        {
+            None | Some(PdfObject::Null) => Vec::new(),
+            Some(PdfObject::Array(items)) => items,
+            _ => {
+                return Err(WellfriendError::MalformedPdf(
+                    "page Annots is not an array".into(),
+                ))
+            }
+        };
+        let ops = self.get_page_content_with_limits_inner(
+            page_number,
+            &limits.decode,
+            cancel,
+            true,
+            true,
+        )?;
+        let mut collector =
+            crate::text::TextCollector::new(self.get_page_resources(page_number)?, reader);
+        collector.collect_scoped_with_appearances(&ops, &annotations, limits, cancel)
     }
 
     /// Structured (layout-aware) text for a page: the page's text in
@@ -2474,9 +2580,7 @@ impl ContentEngine {
         }
 
         let ops = self.get_page_content(page_number)?;
-        let resources = self.get_page_resources(page_number)?;
-        let mut collector = crate::text::TextCollector::new(resources, self.doc.reader());
-        let chunks = collector.collect(&ops);
+        let chunks = self.collect_page_text_chunks(page_number)?;
         let graphics = crate::analysis::graphics::collect_graphics(&ops);
         // Filter to tables worth *reporting*: ruled/semantic always qualify;
         // borderless (alignment-only) candidates must be regular dense grids,
@@ -4956,6 +5060,8 @@ mod tests {
         assert!(json["clip_dag"]["pruning_passes"].is_number());
         assert!(json["display_list_raster_cache"]["bytes"].is_number());
         assert!(json["aggregate_resource_cache_bytes"].is_number());
+        assert!(json["function_cache"]["available"].is_boolean());
+        assert!(json["function_cache"]["bytes"].is_number());
     }
 
     #[test]
@@ -5270,7 +5376,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_contract_refuses_visible_image_requiring_unavailable_region_decode() {
+    fn exact_contract_uses_bounded_full_decode_when_region_decode_is_unavailable() {
         let content = "q 200 0 0 200 0 0 cm /Im1 Do Q\n";
         let raw_image = RawImage {
             width: 2,
@@ -5329,14 +5435,19 @@ mod tests {
             contract.exactness,
             crate::render::ExactnessPolicy::HighQualityExact
         );
-        let error = engine
+        let rendered = engine
             .render_page_with_contract(&contract, &CancelToken::none())
-            .expect_err("exact contract must refuse unavailable region decode");
-        let message = error.to_string();
-        assert_eq!(error.code(), "unsupported_feature");
-        assert!(message.contains("HighQualityExact"));
-        assert!(message.contains("source-region"));
-        assert!(message.contains("full-decode-only"));
+            .expect(
+                "full-image decode is an exact bounded fallback for a codec without region decode",
+            );
+        assert_eq!((rendered.width, rendered.height), (100, 100));
+        assert!(
+            [(25, 25), (75, 25), (25, 75), (75, 75)]
+                .into_iter()
+                .map(|(x, y)| rendered.get_pixel(x, y))
+                .any(|pixel| pixel[..3] != [255, 255, 255]),
+            "the exact fallback must paint the decoded image, not silently omit it"
+        );
     }
 
     #[test]

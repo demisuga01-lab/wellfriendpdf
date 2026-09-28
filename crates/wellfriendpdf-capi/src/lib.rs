@@ -18,9 +18,11 @@ use wellfriendpdf_engine::{
 };
 
 pub mod ocr_backend;
+pub mod story_session;
 pub use ocr_backend::{
     CAbiOcrEngine, WellfriendOcrBackend, WellfriendOcrEmitWordFn, WellfriendOcrRecognizeFn,
 };
+pub use story_session::*;
 
 pub const WELLFRIENDPDF_STATUS_OK: c_int = 0;
 pub const WELLFRIENDPDF_STATUS_NULL: c_int = 1;
@@ -5147,32 +5149,6 @@ unsafe fn report_json_impl(
     })
 }
 
-/// Run a facade output-producing closure and write both the produced bytes and
-/// the JSON report. Shared implementation for sanitize/canonicalize/redact.
-unsafe fn report_output_impl(
-    document: *const WellfriendDocument,
-    out_buffer: *mut WellfriendBuffer,
-    out_json: *mut *mut c_char,
-    error_out: *mut *mut c_char,
-    f: impl FnOnce(&[u8]) -> WellfriendResult<(Vec<u8>, String)>,
-) -> c_int {
-    ffi_status(error_out, || {
-        let doc = checked_doc(document)?;
-        if out_buffer.is_null() {
-            return Err("out_buffer pointer is null".into());
-        }
-        if out_json.is_null() {
-            return Err("out_json pointer is null".into());
-        }
-        let (bytes, json) = wellfriendpdf(f(&doc_bytes(doc)))?;
-        unsafe {
-            *out_buffer = into_buffer(bytes);
-            *out_json = into_c_string(json);
-        }
-        Ok(())
-    })
-}
-
 /// Universal v2 reparses the immutable source so plan revision identities and
 /// apply identities are byte-for-byte identical. Reuse only the input-opening
 /// credential for that reparse; output encryption always has a separate,
@@ -5317,10 +5293,7 @@ pub unsafe extern "C" fn wellfriendpdf_universal_editing_approval_v2_json(
         }
         let plan = plan.map_err(|error| error.to_string())?;
         let decision = decision.map_err(|error| error.to_string())?;
-        let json = wellfriendpdf(sdk::universal_editing_approval_v2_json(
-            &plan,
-            &decision,
-        ))?;
+        let json = wellfriendpdf(sdk::universal_editing_approval_v2_json(&plan, &decision))?;
         unsafe {
             *out_json = into_c_string(json);
         }
@@ -5362,8 +5335,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_security_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::security_report_json(b, None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::security_report_json(b, password)
         })
     }
 }
@@ -5379,8 +5352,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_views_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::document_views_report_json(b, None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::document_views_report_json(b, password)
         })
     }
 }
@@ -5408,12 +5381,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_backend_plan_arena_report_json(
         }
         let mode_name =
             unsafe { optional_c_string(render_mode) }?.unwrap_or_else(|| "compat".to_string());
+        let password = doc.input_password.as_ref().map(|value| value.as_slice());
         let json = wellfriendpdf(sdk::backend_plan_arena_report_json(
             &doc_bytes(doc),
             page,
             dpi,
             Some(&mode_name),
-            None,
+            password,
         ))?;
         unsafe {
             *out_json = into_c_string(json);
@@ -5441,10 +5415,11 @@ pub unsafe extern "C" fn wellfriendpdf_document_backend_plan_arena_report_for_co
             return Err("out_json pointer is null".into());
         }
         let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let password = doc.input_password.as_ref().map(|value| value.as_slice());
         let json = wellfriendpdf(sdk::backend_plan_arena_report_for_contract_json(
             &doc_bytes(doc),
             &contract_json,
-            None,
+            password,
         ))?;
         unsafe {
             *out_json = into_c_string(json);
@@ -5476,11 +5451,12 @@ pub unsafe extern "C" fn wellfriendpdf_document_prepress_plate_report_json(
         if out_json.is_null() {
             return Err("out_json pointer is null".into());
         }
+        let password = doc.input_password.as_ref().map(|value| value.as_slice());
         let json = wellfriendpdf(sdk::prepress_plate_report_json(
             &doc_bytes(doc),
             page,
             dpi,
-            None,
+            password,
         ))?;
         unsafe {
             *out_json = into_c_string(json);
@@ -5504,8 +5480,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_image_decode_capability_report_j
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::image_decode_capability_report_json(b, None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::image_decode_capability_report_json(b, password)
         })
     }
 }
@@ -5529,10 +5505,10 @@ pub unsafe extern "C" fn wellfriendpdf_document_progressive_image_decode_lifecyc
 ) -> c_int {
     let request_json = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let request_json =
                 request_json.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::progressive_image_decode_lifecycle_report_json(b, &request_json, None)
+            sdk::progressive_image_decode_lifecycle_report_json(b, &request_json, password)
         })
     }
 }
@@ -5551,9 +5527,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_parser_report_json(
 ) -> c_int {
     let mode = unsafe { optional_c_string(mode) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let mode = mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::parser_report_json(b, mode.as_deref(), None)
+            sdk::parser_report_json(b, mode.as_deref(), password)
         })
     }
 }
@@ -5572,9 +5548,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_color_report_json(
 ) -> c_int {
     let profile = unsafe { optional_c_string(profile) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let profile = profile.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::color_report_json(b, profile.as_deref())
+            sdk::color_report_json_with_password(b, profile.as_deref(), password)
         })
     }
 }
@@ -5593,9 +5569,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_validate_json(
 ) -> c_int {
     let profile = unsafe { optional_c_string(profile) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let profile = profile.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::standards_profile_json(b, profile.as_deref(), None)
+            sdk::standards_profile_json(b, profile.as_deref(), password)
         })
     }
 }
@@ -5611,8 +5587,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_forms_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::forms_report_json(b, None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::forms_report_json(b, password)
         })
     }
 }
@@ -5631,9 +5607,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_pdfa_standards_json(
 ) -> c_int {
     let target = unsafe { optional_c_string(target) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let target = target.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::pdfa_standards_json(b, target.as_deref(), None)
+            sdk::pdfa_standards_json(b, target.as_deref(), password)
         })
     }
 }
@@ -5652,9 +5628,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_pdfua_standards_json(
 ) -> c_int {
     let target = unsafe { optional_c_string(target) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let target = target.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::pdfua_standards_json(b, target.as_deref(), None)
+            sdk::pdfua_standards_json(b, target.as_deref(), password)
         })
     }
 }
@@ -5673,9 +5649,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_pdfx_standards_json(
 ) -> c_int {
     let target = unsafe { optional_c_string(target) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let target = target.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::pdfx_standards_json(b, target.as_deref(), None)
+            sdk::pdfx_standards_json(b, target.as_deref(), password)
         })
     }
 }
@@ -5695,9 +5671,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_standards_all_json(
 ) -> c_int {
     let target = unsafe { optional_c_string(target) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let target = target.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::standards_all_json(b, target.as_deref(), None)
+            sdk::standards_all_json(b, target.as_deref(), password)
         })
     }
 }
@@ -5853,8 +5829,8 @@ macro_rules! xfa_document_report {
             error_out: *mut *mut c_char,
         ) -> c_int {
             unsafe {
-                report_json_impl(document, out_json, error_out, |bytes| {
-                    sdk::$sdk_fn(bytes, None)
+                universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+                    sdk::$sdk_fn(bytes, password)
                 })
             }
         }
@@ -5887,9 +5863,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_xfa_runtime_report_json(
 ) -> c_int {
     let policy = unsafe { optional_c_string(script_policy) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             let policy = policy.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::xfa_runtime_report_json(bytes, policy.as_deref(), execute_events != 0, None)
+            sdk::xfa_runtime_report_json(bytes, policy.as_deref(), execute_events != 0, password)
         })
     }
 }
@@ -5905,8 +5881,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_annotations_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::annotation_report_json(b, None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::annotation_report_json(b, password)
         })
     }
 }
@@ -6014,9 +5990,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_pdf_mac_create_pdf(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::pdf_mac_create_json(bytes, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            sdk::pdf_mac_create_json,
+        )
     }
 }
 
@@ -6056,9 +6036,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_writer_history_raster_vector_rep
 ) -> c_int {
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             let options = options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::writer_history_raster_vector_report_json(bytes, page, options.as_deref(), None)
+            sdk::writer_history_raster_vector_report_json(bytes, page, options.as_deref(), password)
         })
     }
 }
@@ -6096,9 +6076,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_writer_history_pack_object_strea
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::writer_history_pack_object_streams_json(bytes, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            sdk::writer_history_pack_object_streams_json,
+        )
     }
 }
 
@@ -6117,12 +6101,18 @@ pub unsafe extern "C" fn wellfriendpdf_document_compression_office_optimize_pdf(
 ) -> c_int {
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let options = options
-                .clone()
-                .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::compression_office_optimize_pdf_json(bytes, options.as_deref(), None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let options = options
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::compression_office_optimize_pdf_json(bytes, options.as_deref(), password)
+            },
+        )
     }
 }
 
@@ -6201,9 +6191,253 @@ pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_closeout_text_r
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::advanced_editing_closeout_text_range_analyze_json(bytes, page, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::advanced_editing_closeout_text_range_analyze_json(bytes, page, password)
         })
+    }
+}
+
+/// Propose an exact-revision mapping from a multi-run replacement to its
+/// original page paint slots. The returned proposal is descriptive only: the
+/// caller must review physical regions/final lines and submit a separate
+/// approval before any PDF bytes are mutated.
+///
+/// # Safety
+/// `request_json` must be a NUL-terminated UTF-8 string. `document` must be a
+/// live handle and `out_json` writable; release the returned string with
+/// `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_closeout_paint_partition_propose_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::advanced_editing_closeout_paint_partition_propose_json(
+                bytes,
+                &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                password,
+            )
+        })
+    }
+}
+
+/// Render bounded before/candidate PNGs for an exact paint-partition approval.
+/// No candidate PDF bytes are returned. A zero `font_len` selects the
+/// retained/source-font route; `options_json` may be null.
+///
+/// # Safety
+/// Required JSON pointers are NUL-terminated UTF-8. Nonzero `font_len`
+/// requires `font_data` to reference that many readable bytes. Standard live
+/// document and writable owned-string output-pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_closeout_paint_partition_preview_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    proposal_json: *const c_char,
+    approval_json: *const c_char,
+    font_data: *const u8,
+    font_len: usize,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    let proposal = unsafe { required_c_string(proposal_json, "proposal_json") };
+    let approval = unsafe { required_c_string(approval_json, "approval_json") };
+    let font = unsafe { read_input_bytes(font_data, font_len, "font_data") };
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            let font = font.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            sdk::advanced_editing_closeout_paint_partition_preview_json(
+                bytes,
+                &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                &proposal.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                &approval.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                (!font.is_empty()).then_some(font),
+                options
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                password,
+            )
+        })
+    }
+}
+
+/// Authenticate one canonical paint-partition publication receipt with a
+/// caller-held HMAC-SHA-256 key. The key is borrowed only for this call and is
+/// never serialized.
+///
+/// # Safety
+/// String pointers must reference NUL-terminated UTF-8. `hmac_key` must point
+/// to `hmac_key_len` readable bytes. The returned string is caller-owned.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_advanced_editing_closeout_paint_partition_authenticate_receipt_json(
+    publication_receipt_json: *const c_char,
+    key_id: *const c_char,
+    audience: *const c_char,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    hmac_key: *const u8,
+    hmac_key_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let receipt =
+        unsafe { required_c_string(publication_receipt_json, "publication_receipt_json") };
+    let key_id = unsafe { required_c_string(key_id, "key_id") };
+    let audience = unsafe { required_c_string(audience, "audience") };
+    let hmac_key = unsafe { read_input_bytes(hmac_key, hmac_key_len, "hmac_key") };
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".to_string());
+        }
+        let json = wellfriendpdf(
+            sdk::advanced_editing_closeout_paint_partition_authenticate_receipt_json(
+                &receipt.map_err(|error| error.to_string())?,
+                &key_id.map_err(|error| error.to_string())?,
+                &audience.map_err(|error| error.to_string())?,
+                issued_at_unix,
+                expires_at_unix,
+                hmac_key.map_err(|error| error.to_string())?,
+            ),
+        )?;
+        unsafe { *out_json = into_c_string(json) };
+        Ok(())
+    })
+}
+
+/// Verify one host-authenticated paint-partition receipt and return its nested
+/// content-bound publication receipt.
+///
+/// # Safety
+/// Pointer and ownership rules match the authenticate function above.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json(
+    authenticated_receipt_json: *const c_char,
+    expected_key_id: *const c_char,
+    expected_audience: *const c_char,
+    now_unix: u64,
+    allowed_future_skew_secs: u64,
+    hmac_key: *const u8,
+    hmac_key_len: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let receipt =
+        unsafe { required_c_string(authenticated_receipt_json, "authenticated_receipt_json") };
+    let key_id = unsafe { required_c_string(expected_key_id, "expected_key_id") };
+    let audience = unsafe { required_c_string(expected_audience, "expected_audience") };
+    let hmac_key = unsafe { read_input_bytes(hmac_key, hmac_key_len, "hmac_key") };
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".to_string());
+        }
+        let json = wellfriendpdf(
+            sdk::advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json(
+                &receipt.map_err(|error| error.to_string())?,
+                &key_id.map_err(|error| error.to_string())?,
+                &audience.map_err(|error| error.to_string())?,
+                now_unix,
+                allowed_future_skew_secs,
+                hmac_key.map_err(|error| error.to_string())?,
+            ),
+        )?;
+        unsafe { *out_json = into_c_string(json) };
+        Ok(())
+    })
+}
+
+/// Inspect exact post-reopen carriers for freshly authored typed table cells.
+///
+/// # Safety
+/// `document` must be live and output pointers writable; the returned string
+/// is owned by the caller and released with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_authored_typed_table_sources_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::authored_typed_table_sources_json(bytes, password)
+        })
+    }
+}
+
+/// Apply a revision-bound authored typed-table value/formula mutation.
+///
+/// # Safety
+/// `request_json` must be a NUL-terminated UTF-8 string; output pointers use
+/// the standard owned-buffer and owned-string free functions.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_authored_typed_table_mutate_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::authored_typed_table_mutate_json(
+                    bytes,
+                    &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    None,
+                    password,
+                )
+            },
+        )
+    }
+}
+
+/// Apply a revision-bound authored typed-table mutation with an optional
+/// approved shaping font. A zero `font_len` selects the retained/source font
+/// path and permits `font_data` to be null.
+///
+/// # Safety
+/// `request_json` must be NUL-terminated UTF-8. Nonzero `font_len` requires
+/// `font_data` to reference that many readable bytes; output pointers use the
+/// standard owned-buffer and owned-string free functions.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_authored_typed_table_mutate_with_font_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    font_data: *const u8,
+    font_len: usize,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    let font = unsafe { read_input_bytes(font_data, font_len, "font_data") };
+    unsafe {
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let font = font.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::authored_typed_table_mutate_json(
+                    bytes,
+                    &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    (!font.is_empty()).then_some(font),
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6222,13 +6456,151 @@ pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_closeout_text_r
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::advanced_editing_closeout_text_range_edit_json(
-                bytes,
-                &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::advanced_editing_closeout_text_range_edit_json(
+                    bytes,
+                    &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
+    }
+}
+
+/// Apply a reviewed paint-partition proposal to its exact input revision.
+/// The engine recomputes the canonical proposal and rejects stale or altered
+/// proposal/request/approval identities before returning any output bytes.
+///
+/// # Safety
+/// All JSON pointers must be NUL-terminated UTF-8 strings. Output pointers use
+/// the standard owned-buffer and owned-string free functions.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    proposal_json: *const c_char,
+    approval_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    let proposal = unsafe { required_c_string(proposal_json, "proposal_json") };
+    let approval = unsafe { required_c_string(approval_json, "approval_json") };
+    unsafe {
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::advanced_editing_closeout_paint_partition_apply_json(
+                    bytes,
+                    &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &proposal.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &approval.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
+    }
+}
+
+/// Apply a reviewed paint-partition proposal with one caller-approved shaping
+/// font. A zero `font_len` selects the retained/source-font route and permits
+/// `font_data` to be null.
+///
+/// # Safety
+/// All JSON pointers must be NUL-terminated UTF-8 strings. Nonzero `font_len`
+/// requires `font_data` to reference that many readable bytes. Output pointers
+/// use the standard owned-buffer and owned-string free functions.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_with_font_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    proposal_json: *const c_char,
+    approval_json: *const c_char,
+    font_data: *const u8,
+    font_len: usize,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    let proposal = unsafe { required_c_string(proposal_json, "proposal_json") };
+    let approval = unsafe { required_c_string(approval_json, "approval_json") };
+    let font = unsafe { read_input_bytes(font_data, font_len, "font_data") };
+    unsafe {
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let font = font.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::advanced_editing_closeout_paint_partition_apply_with_font_json(
+                    bytes,
+                    &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &proposal.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &approval.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    (!font.is_empty()).then_some(font),
+                    password,
+                )
+            },
+        )
+    }
+}
+
+/// Apply only the exact candidate covered by a canonical preview publication
+/// receipt. A zero `font_len` selects the retained/source-font route.
+///
+/// # Safety
+/// All JSON pointers must be NUL-terminated UTF-8 strings. Nonzero `font_len`
+/// requires `font_data` to reference that many readable bytes. Output pointers
+/// use the standard owned-buffer and owned-string free functions.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_reviewed_with_font_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    proposal_json: *const c_char,
+    approval_json: *const c_char,
+    publication_receipt_json: *const c_char,
+    font_data: *const u8,
+    font_len: usize,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    let proposal = unsafe { required_c_string(proposal_json, "proposal_json") };
+    let approval = unsafe { required_c_string(approval_json, "approval_json") };
+    let receipt =
+        unsafe { required_c_string(publication_receipt_json, "publication_receipt_json") };
+    let font = unsafe { read_input_bytes(font_data, font_len, "font_data") };
+    unsafe {
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let font = font.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::advanced_editing_closeout_paint_partition_apply_reviewed_with_font_json(
+                    bytes,
+                    &request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &proposal.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &approval.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &receipt.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    (!font.is_empty()).then_some(font),
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6245,8 +6617,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_vector_list_jso
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::advanced_editing_vector_list_json(bytes, page, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::advanced_editing_vector_list_json(bytes, page, password)
         })
     }
 }
@@ -6274,19 +6646,25 @@ pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_text_edit_json(
     let mode = unsafe { required_c_string(mode, "mode") };
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::advanced_editing_text_edit_json(
-                bytes,
-                page,
-                &old_text.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                &new_text.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                &mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                options
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                    .as_deref(),
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::advanced_editing_text_edit_json(
+                    bytes,
+                    page,
+                    &old_text.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &new_text.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    options
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                        .as_deref(),
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6310,18 +6688,24 @@ pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_vector_edit_jso
     let operation = unsafe { required_c_string(operation_json, "operation_json") };
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::advanced_editing_vector_edit_json(
-                bytes,
-                page,
-                &stable_id.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                &operation.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                options
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                    .as_deref(),
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::advanced_editing_vector_edit_json(
+                    bytes,
+                    page,
+                    &stable_id.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &operation.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    options
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                        .as_deref(),
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6343,18 +6727,24 @@ pub unsafe extern "C" fn wellfriendpdf_document_advanced_editing_ink_fit_json(
 ) -> c_int {
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::advanced_editing_ink_fit_json(
-                bytes,
-                page,
-                annotation_index,
-                options
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                    .as_deref(),
-                signature_policy_override != 0,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::advanced_editing_ink_fit_json(
+                    bytes,
+                    page,
+                    annotation_index,
+                    options
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                        .as_deref(),
+                    signature_policy_override != 0,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6370,8 +6760,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_source_editing_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::source_editing_report_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::source_editing_report_json(bytes, password)
         })
     }
 }
@@ -6392,7 +6782,7 @@ pub unsafe extern "C" fn wellfriendpdf_document_source_editing_provenance_json(
     let source = unsafe { required_c_string(source_text, "source_text") };
     let replacement = unsafe { required_c_string(replacement_text, "replacement_text") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::source_editing_provenance_json(
                 bytes,
                 page,
@@ -6402,7 +6792,7 @@ pub unsafe extern "C" fn wellfriendpdf_document_source_editing_provenance_json(
                 &replacement
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -6422,13 +6812,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_source_editing_edit_eligibility_
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::source_editing_edit_eligibility_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -6449,15 +6839,21 @@ pub unsafe extern "C" fn wellfriendpdf_document_source_editing_operator_text_edi
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::source_editing_operator_text_edit_json(
-                bytes,
-                &request
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::source_editing_operator_text_edit_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6473,8 +6869,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_source_editing_path_provenance_j
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::source_editing_path_provenance_json(bytes, page, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::source_editing_path_provenance_json(bytes, page, password)
         })
     }
 }
@@ -6498,23 +6894,29 @@ pub unsafe extern "C" fn wellfriendpdf_document_source_editing_path_edit_json(
     let operation = unsafe { required_c_string(operation_json, "operation_json") };
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::source_editing_path_edit_json(
-                bytes,
-                page,
-                &stable_id
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                &operation
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                options
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                    .as_deref(),
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::source_editing_path_edit_json(
+                    bytes,
+                    page,
+                    &stable_id
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &operation
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    options
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                        .as_deref(),
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6529,8 +6931,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_report_json
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::editing_transactions_report_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::editing_transactions_report_json(bytes, password)
         })
     }
 }
@@ -6549,14 +6951,14 @@ pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_scene_repor
 ) -> c_int {
     let pages = unsafe { optional_c_string(pages_json) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::editing_transactions_scene_report_json(
                 bytes,
                 pages
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
                     .as_deref(),
-                None,
+                password,
             )
         })
     }
@@ -6575,13 +6977,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_scene_selec
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::editing_transactions_scene_select_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -6600,13 +7002,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_transaction
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::editing_transactions_transaction_plan_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -6627,15 +7029,21 @@ pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_transaction
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::editing_transactions_transaction_apply_json(
-                bytes,
-                &request
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::editing_transactions_transaction_apply_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6659,19 +7067,25 @@ pub unsafe extern "C" fn wellfriendpdf_document_editing_transactions_transaction
     let request = unsafe { required_c_string(request_json, "request_json") };
     let options = unsafe { optional_c_string(render_invalidation_options_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::editing_transactions_transaction_apply_with_render_invalidation_json(
-                bytes,
-                &request
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                options
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                    .as_deref(),
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::editing_transactions_transaction_apply_with_render_invalidation_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    options
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                        .as_deref(),
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6779,6 +7193,102 @@ pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_plan_v2_json(
     }
 }
 
+/// Preview an exact cross-story Figure transfer. The request is the serialized
+/// `StoryFigureTransferRequest`; no PDF bytes are published.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8 and output pointers are writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_story_figure_transfer_preview_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::story_figure_transfer_preview_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                password,
+            )
+        })
+    }
+}
+
+/// Apply the exact plan hash returned by the Figure-transfer preview.
+///
+/// # Safety
+/// String inputs are NUL-terminated UTF-8 and output pointers are writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_story_figure_transfer_apply_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    approved_plan_sha256: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    let approval = unsafe { required_c_string(approved_plan_sha256, "approved_plan_sha256") };
+    unsafe {
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::story_figure_transfer_apply_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &approval
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
+    }
+}
+
+/// Render bounded before/candidate PNGs for a scoped-text plan. No PDF bytes
+/// are published. Free the returned JSON with `wellfriendpdf_string_free`.
+///
+/// # Safety
+/// `plan_json` is NUL-terminated UTF-8; `options_json` may be NULL. Standard
+/// document and writable owned-string output-pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_scoped_preview_v2_json(
+    document: *const WellfriendDocument,
+    plan_json: *const c_char,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let plan = unsafe { required_c_string(plan_json, "plan_json") };
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::universal_editing_scoped_preview_v2_json(
+                bytes,
+                &plan
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                options
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                password,
+            )
+        })
+    }
+}
+
 /// Apply a revision-bound universal editing v2 plan. `approval_json` may be
 /// NULL only when the plan state is not `approval_required`.
 ///
@@ -6796,19 +7306,25 @@ pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_apply_v2_json(
     let plan = unsafe { required_c_string(plan_json, "plan_json") };
     let approval = unsafe { optional_c_string(approval_json) };
     unsafe {
-        universal_report_output_impl(document, out_buffer, out_json, error_out, |bytes, password| {
-            sdk::universal_editing_apply_v2_json(
-                bytes,
-                &plan
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                approval
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                    .as_deref(),
-                password,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::universal_editing_apply_v2_json(
+                    bytes,
+                    &plan
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    approval
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                        .as_deref(),
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -6833,32 +7349,38 @@ pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_apply_v2_with_
     let user = unsafe { optional_c_string(output_user_password) };
     let owner = unsafe { optional_c_string(output_owner_password) };
     unsafe {
-        universal_report_output_impl(document, out_buffer, out_json, error_out, |bytes, password| {
-            let user = wellfriendpdf_engine::SecretBytes::new(
-                user.clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                    .unwrap_or_default()
-                    .into_bytes(),
-            );
-            let owner = owner
-                .clone()
-                .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                .map(|value| wellfriendpdf_engine::SecretBytes::new(value.into_bytes()))
-                .unwrap_or_else(|| user.clone());
-            sdk::universal_editing_apply_v2_with_output_credentials_json(
-                bytes,
-                &plan
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                approval
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let user = wellfriendpdf_engine::SecretBytes::new(
+                    user.clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                        .unwrap_or_default()
+                        .into_bytes(),
+                );
+                let owner = owner
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
-                    .as_deref(),
-                password,
-                user.as_slice(),
-                owner.as_slice(),
-            )
-        })
+                    .map(|value| wellfriendpdf_engine::SecretBytes::new(value.into_bytes()))
+                    .unwrap_or_else(|| user.clone());
+                sdk::universal_editing_apply_v2_with_output_credentials_json(
+                    bytes,
+                    &plan
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    approval
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                        .as_deref(),
+                    password,
+                    user.as_slice(),
+                    owner.as_slice(),
+                )
+            },
+        )
     }
 }
 
@@ -6904,22 +7426,122 @@ pub unsafe extern "C" fn wellfriendpdf_document_universal_editing_apply_v2_with_
         )
     };
     unsafe {
-        universal_report_output_impl(document, out_buffer, out_json, error_out, |bytes, password| {
-            let plan = plan.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let approval = approval
-                .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let user = user.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let owner = owner.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let owner = if owner_supplied { owner } else { user };
-            sdk::universal_editing_apply_v2_with_output_credentials_json(
-                bytes,
-                &plan,
-                approval.as_deref(),
-                password,
-                user,
-                owner,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let plan = plan.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let approval =
+                    approval.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let user = user.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let owner = owner.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let owner = if owner_supplied { owner } else { user };
+                sdk::universal_editing_apply_v2_with_output_credentials_json(
+                    bytes,
+                    &plan,
+                    approval.as_deref(),
+                    password,
+                    user,
+                    owner,
+                )
+            },
+        )
+    }
+}
+
+/// Execute a complete ECBES synthesis transaction over multiple canonical
+/// universal-editing candidates and return only the selected PDF bytes.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8. Standard document, buffer, owned
+/// string, and error-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_ecbes_universal_edit_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::ecbes_universal_edit_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
+    }
+}
+
+/// ECBES synthesis with binary-safe apply-only Standard-handler output
+/// credentials. NULL owner plus zero length reuses the user password; non-NULL
+/// owner plus zero length selects an explicitly empty owner password.
+///
+/// # Safety
+/// Password pointers must reference their declared readable lengths and may be
+/// NULL only for zero length. Standard document/output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_ecbes_universal_edit_with_output_credential_bytes_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    output_user_password: *const u8,
+    output_user_password_len: usize,
+    output_owner_password: *const u8,
+    output_owner_password_len: usize,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    let user = unsafe {
+        read_input_bytes(
+            output_user_password,
+            output_user_password_len,
+            "output_user_password",
+        )
+    };
+    let owner_supplied = !output_owner_password.is_null();
+    let owner = unsafe {
+        read_input_bytes(
+            output_owner_password,
+            output_owner_password_len,
+            "output_owner_password",
+        )
+    };
+    unsafe {
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let request = request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let user = user
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let owner = owner
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let owner = if owner_supplied { owner } else { user };
+                sdk::ecbes_universal_edit_with_output_credentials_json(
+                    bytes, &request, password, user, owner,
+                )
+            },
+        )
     }
 }
 
@@ -7061,8 +7683,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::text_reflow_report_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::text_reflow_report_json(bytes, password)
         })
     }
 }
@@ -7080,13 +7702,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_layout_analyze_json(
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::text_reflow_layout_analyze_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7103,8 +7725,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_semantic_layout_json
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::text_reflow_semantic_layout_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::text_reflow_semantic_layout_json(bytes, password)
         })
     }
 }
@@ -7120,8 +7742,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_reading_order_report
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::text_reflow_reading_order_report_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::text_reflow_reading_order_report_json(bytes, password)
         })
     }
 }
@@ -7137,8 +7759,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_flow_graph_report_js
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::text_reflow_flow_graph_report_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::text_reflow_flow_graph_report_json(bytes, password)
         })
     }
 }
@@ -7156,13 +7778,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_reflow_preview_json(
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::text_reflow_reflow_preview_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7181,13 +7803,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_overflow_report_json
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::text_reflow_overflow_report_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7206,13 +7828,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_constraints_report_j
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::text_reflow_constraints_report_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7231,13 +7853,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_confidence_report_js
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::text_reflow_confidence_report_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7262,10 +7884,10 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_validate_reflow_outp
     let output = unsafe { read_input_bytes(output_pdf, output_pdf_len, "output_pdf") };
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             let output = output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
             let request = request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::text_reflow_validate_reflow_output_json(bytes, output, &request, None)
+            sdk::text_reflow_validate_reflow_output_json(bytes, output, &request, password)
         })
     }
 }
@@ -7284,15 +7906,21 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_reflow_region_json(
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::text_reflow_reflow_region_json(
-                bytes,
-                &request
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::text_reflow_reflow_region_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -7310,15 +7938,21 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_reflow_document_json
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::text_reflow_reflow_document_json(
-                bytes,
-                &request
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::text_reflow_reflow_document_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -7341,11 +7975,19 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_undo_reflow_json(
     let output = unsafe { read_input_bytes(output_pdf, output_pdf_len, "output_pdf") };
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let output = output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let request = request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::text_reflow_undo_reflow_json(bytes, output, &request, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let output =
+                    output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let request =
+                    request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::text_reflow_undo_reflow_json(bytes, output, &request, password)
+            },
+        )
     }
 }
 
@@ -7361,8 +8003,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_subsystems_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::document_subsystems_report_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::document_subsystems_report_json(bytes, password)
         })
     }
 }
@@ -7378,8 +8020,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_subsystems_analyze_json
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::document_subsystems_analyze_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::document_subsystems_analyze_json(bytes, password)
         })
     }
 }
@@ -7397,13 +8039,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_subsystems_plan_json(
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::document_subsystems_plan_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7424,15 +8066,21 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_subsystems_apply_json(
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::document_subsystems_apply_json(
-                bytes,
-                &request
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::document_subsystems_apply_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -7455,11 +8103,19 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_subsystems_undo_json(
     let output = unsafe { read_input_bytes(output_pdf, output_pdf_len, "output_pdf") };
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let output = output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let request = request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::document_subsystems_undo_json(bytes, output, &request, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let output =
+                    output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let request =
+                    request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::document_subsystems_undo_json(bytes, output, &request, password)
+            },
+        )
     }
 }
 
@@ -7474,8 +8130,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_security_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::document_security_report_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::document_security_report_json(bytes, password)
         })
     }
 }
@@ -7491,8 +8147,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_security_analyze_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
-            sdk::document_security_analyze_json(bytes, None)
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
+            sdk::document_security_analyze_json(bytes, password)
         })
     }
 }
@@ -7510,13 +8166,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_security_plan_json(
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::document_security_plan_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7536,15 +8192,21 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_security_apply_json(
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::document_security_apply_json(
-                bytes,
-                &request
-                    .clone()
-                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::document_security_apply_json(
+                    bytes,
+                    &request
+                        .clone()
+                        .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -7566,11 +8228,19 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_security_undo_json(
     let output = unsafe { read_input_bytes(output_pdf, output_pdf_len, "output_pdf") };
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let output = output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let request = request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::document_security_undo_json(bytes, output, &request, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let output =
+                    output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let request =
+                    request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::document_security_undo_json(bytes, output, &request, password)
+            },
+        )
     }
 }
 
@@ -7587,13 +8257,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_document_security_verify_residua
 ) -> c_int {
     let terms = unsafe { required_c_string(terms_json, "terms_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::document_security_verify_residual_json(
                 bytes,
                 &terms
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7612,13 +8282,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_reflow_approve_struc
 ) -> c_int {
     let correction = unsafe { required_c_string(correction_json, "correction_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::text_reflow_reflow_approve_structure_json(
                 bytes,
                 &correction
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7637,13 +8307,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_text_reflow_reflow_operation_rep
 ) -> c_int {
     let request = unsafe { required_c_string(request_json, "request_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::text_reflow_reflow_operation_report_json(
                 bytes,
                 &request
                     .clone()
                     .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -7672,10 +8342,10 @@ pub unsafe extern "C" fn wellfriendpdf_document_edit_policy_report_json(
 ) -> c_int {
     let operation = unsafe { required_c_string(operation, "operation") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             let operation =
                 operation.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::edit_policy_report_json(bytes, &operation, None)
+            sdk::edit_policy_report_json(bytes, &operation, password)
         })
     }
 }
@@ -7694,9 +8364,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_annotation_appearance_report_jso
 ) -> c_int {
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             let options = options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::annotation_appearance_report_json(bytes, options.as_deref(), None)
+            sdk::annotation_appearance_report_json(bytes, options.as_deref(), password)
         })
     }
 }
@@ -7715,9 +8385,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_nonaxis_redaction_plan_json(
 ) -> c_int {
     let options = unsafe { required_c_string(options_json, "options_json") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             let options = options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::nonaxis_redaction_plan_json(bytes, &options, None)
+            sdk::nonaxis_redaction_plan_json(bytes, &options, password)
         })
     }
 }
@@ -7733,8 +8403,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_pages_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::page_operations_report_json(b, None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::page_operations_report_json(b, password)
         })
     }
 }
@@ -7750,8 +8420,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_interactive_report_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::interactive_report_json(b, None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::interactive_report_json(b, password)
         })
     }
 }
@@ -7767,8 +8437,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_chunks_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::chunk_report_json(b, None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::chunk_report_json(b, password)
         })
     }
 }
@@ -7784,8 +8454,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_advanced_chunks_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::advanced_chunk_report_json(b, &[], None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::advanced_chunk_report_json(b, &[], password)
         })
     }
 }
@@ -7801,8 +8471,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_semantic_bundle_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
-            sdk::semantic_binding_report_json(b, &[], None)
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
+            sdk::semantic_binding_report_json(b, &[], password)
         })
     }
 }
@@ -7821,9 +8491,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_semantic_search_json(
 ) -> c_int {
     let query = unsafe { required_c_string(query, "query") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |b| {
+        universal_report_json_impl(document, out_json, error_out, |b, password| {
             let query = query.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::semantic_search_report_json(b, &[], &query, None)
+            sdk::semantic_search_report_json(b, &[], &query, password)
         })
     }
 }
@@ -7844,10 +8514,23 @@ pub unsafe extern "C" fn wellfriendpdf_document_xfa_render_json(
 ) -> c_int {
     let policy = unsafe { optional_c_string(script_policy) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let policy = policy.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::xfa_render_preview_json(bytes, policy.as_deref(), execute_events != 0, dpi, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let policy =
+                    policy.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::xfa_render_preview_json(
+                    bytes,
+                    policy.as_deref(),
+                    execute_events != 0,
+                    dpi,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -7865,10 +8548,16 @@ pub unsafe extern "C" fn wellfriendpdf_document_xfa_flatten_json(
 ) -> c_int {
     let mode = unsafe { optional_c_string(mode) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let mode = mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::xfa_flatten_json(bytes, mode.as_deref(), None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let mode = mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::xfa_flatten_json(bytes, mode.as_deref(), password)
+            },
+        )
     }
 }
 
@@ -7886,10 +8575,16 @@ pub unsafe extern "C" fn wellfriendpdf_document_xfa_sanitize_json(
 ) -> c_int {
     let mode = unsafe { optional_c_string(mode) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let mode = mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::xfa_sanitize_json(bytes, mode.as_deref(), None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let mode = mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::xfa_sanitize_json(bytes, mode.as_deref(), password)
+            },
+        )
     }
 }
 
@@ -7905,9 +8600,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_annotation_xfdf_export_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::annotation_xfdf_export_json(bytes, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            sdk::annotation_xfdf_export_json,
+        )
     }
 }
 
@@ -7935,11 +8634,18 @@ pub unsafe extern "C" fn wellfriendpdf_document_annotation_xfdf_import_json(
         Ok(unsafe { slice::from_raw_parts(xfdf, xfdf_len) }.to_vec())
     };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let options = options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let xfdf = xfdf.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::annotation_xfdf_import_json(bytes, &xfdf, options.as_deref(), None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let options =
+                    options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let xfdf = xfdf.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::annotation_xfdf_import_json(bytes, &xfdf, options.as_deref(), password)
+            },
+        )
     }
 }
 
@@ -7958,10 +8664,17 @@ pub unsafe extern "C" fn wellfriendpdf_document_annotation_appearance_generate_j
 ) -> c_int {
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let options = options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::annotation_appearance_generate_json(bytes, options.as_deref(), None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let options =
+                    options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::annotation_appearance_generate_json(bytes, options.as_deref(), password)
+            },
+        )
     }
 }
 
@@ -7982,11 +8695,18 @@ pub unsafe extern "C" fn wellfriendpdf_document_rich_media_sanitize_json(
     let mode = unsafe { optional_c_string(mode) };
     let custom = unsafe { optional_c_string(custom_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let mode = mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let custom = custom.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::rich_media_sanitize_json(bytes, mode.as_deref(), custom.as_deref(), None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let mode = mode.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let custom =
+                    custom.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::rich_media_sanitize_json(bytes, mode.as_deref(), custom.as_deref(), password)
+            },
+        )
     }
 }
 
@@ -8002,9 +8722,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_rich_media_flatten_poster_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::rich_media_flatten_poster_json(bytes, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            sdk::rich_media_flatten_poster_json,
+        )
     }
 }
 
@@ -8023,10 +8747,17 @@ pub unsafe extern "C" fn wellfriendpdf_document_nonaxis_redaction_apply_json(
 ) -> c_int {
     let options = unsafe { required_c_string(options_json, "options_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let options = options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::nonaxis_redaction_apply_json(bytes, &options, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let options =
+                    options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::nonaxis_redaction_apply_json(bytes, &options, password)
+            },
+        )
     }
 }
 
@@ -8048,11 +8779,17 @@ macro_rules! secure_mutation_redaction_output {
         ) -> c_int {
             let options = unsafe { required_c_string(options_json, "options_json") };
             unsafe {
-                report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-                    let options =
-                        options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-                    sdk::$sdk_fn(bytes, &options, None)
-                })
+                universal_report_output_impl(
+                    document,
+                    out_buffer,
+                    out_json,
+                    error_out,
+                    |bytes, password| {
+                        let options = options
+                            .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                        sdk::$sdk_fn(bytes, &options, password)
+                    },
+                )
             }
         }
     };
@@ -8081,11 +8818,17 @@ macro_rules! form_action_policy_policy_output {
         ) -> c_int {
             let options = unsafe { optional_c_string(options_json) };
             unsafe {
-                report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-                    let options =
-                        options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-                    sdk::$sdk_fn(bytes, options.as_deref(), None)
-                })
+                universal_report_output_impl(
+                    document,
+                    out_buffer,
+                    out_json,
+                    error_out,
+                    |bytes, password| {
+                        let options = options
+                            .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                        sdk::$sdk_fn(bytes, options.as_deref(), password)
+                    },
+                )
             }
         }
     };
@@ -8114,9 +8857,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_word_pagination_audit_json(
 ) -> c_int {
     let layout = unsafe { required_c_string(layout, "layout") };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             let layout = layout.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::word_pagination_audit_json(bytes, &layout, None)
+            sdk::word_pagination_audit_json(bytes, &layout, password)
         })
     }
 }
@@ -8150,11 +8893,19 @@ pub unsafe extern "C" fn wellfriendpdf_document_associated_files_add_json(
         Ok(unsafe { slice::from_raw_parts(payload, payload_len) }.to_vec())
     };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let options = options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let payload = payload.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::associated_files_add_json(bytes, &payload, &options, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let options =
+                    options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let payload =
+                    payload.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::associated_files_add_json(bytes, &payload, &options, password)
+            },
+        )
     }
 }
 
@@ -8182,14 +8933,20 @@ pub unsafe extern "C" fn wellfriendpdf_document_associated_files_update_owner_js
         Ok(unsafe { slice::from_raw_parts(payload, payload_len) }.to_vec())
     };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::associated_files_update_owner_json(
-                bytes,
-                &payload.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                &options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::associated_files_update_owner_json(
+                    bytes,
+                    &payload.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -8208,13 +8965,19 @@ pub unsafe extern "C" fn wellfriendpdf_document_associated_files_remove_owner_js
 ) -> c_int {
     let options = unsafe { required_c_string(options_json, "options_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::associated_files_remove_owner_json(
-                bytes,
-                &options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::associated_files_remove_owner_json(
+                    bytes,
+                    &options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -8236,15 +8999,21 @@ pub unsafe extern "C" fn wellfriendpdf_document_incremental_form_edit_json(
     let field_name = unsafe { required_c_string(field_name, "field_name") };
     let value = unsafe { required_c_string(value, "value") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::incremental_form_edit_json(
-                bytes,
-                &field_name.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                &value.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                signature_policy_override,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::incremental_form_edit_json(
+                    bytes,
+                    &field_name.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &value.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    signature_policy_override,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -8270,13 +9039,13 @@ pub unsafe extern "C" fn wellfriendpdf_document_signature_preserving_form_plan_j
         unsafe { required_c_string(options_json, "options_json") }
     };
     unsafe {
-        report_json_impl(document, out_json, error_out, |bytes| {
+        universal_report_json_impl(document, out_json, error_out, |bytes, password| {
             sdk::signature_preserving_form_plan_json(
                 bytes,
                 &field_name.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
                 &value.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
                 &options_json.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                None,
+                password,
             )
         })
     }
@@ -8306,16 +9075,22 @@ pub unsafe extern "C" fn wellfriendpdf_document_signature_preserving_form_edit_j
         unsafe { required_c_string(options_json, "options_json") }
     };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            sdk::signature_preserving_form_edit_json(
-                bytes,
-                &field_name.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                &value.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                &options_json.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                explicit_invalidation_override,
-                None,
-            )
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                sdk::signature_preserving_form_edit_json(
+                    bytes,
+                    &field_name.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &value.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    &options_json.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                    explicit_invalidation_override,
+                    password,
+                )
+            },
+        )
     }
 }
 
@@ -8337,14 +9112,21 @@ macro_rules! secure_mutation_closeout_policy_output {
         ) -> c_int {
             let options = unsafe { required_c_string(options_json, "options_json") };
             unsafe {
-                report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-                    sdk::$sdk_fn(
-                        bytes,
-                        &options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
-                        signature_policy_override,
-                        None,
-                    )
-                })
+                universal_report_output_impl(
+                    document,
+                    out_buffer,
+                    out_json,
+                    error_out,
+                    |bytes, password| {
+                        sdk::$sdk_fn(
+                            bytes,
+                            &options
+                                .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                            signature_policy_override,
+                            password,
+                        )
+                    },
+                )
             }
         }
     };
@@ -8374,11 +9156,17 @@ pub unsafe extern "C" fn wellfriendpdf_document_associated_files_extract_json(
 ) -> c_int {
     let stable_id = unsafe { required_c_string(stable_id, "stable_id") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let stable_id =
-                stable_id.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::associated_files_extract_json(bytes, &stable_id, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let stable_id =
+                    stable_id.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::associated_files_extract_json(bytes, &stable_id, password)
+            },
+        )
     }
 }
 
@@ -8397,14 +9185,21 @@ pub unsafe extern "C" fn wellfriendpdf_document_associated_files_remove_json(
 ) -> c_int {
     let stable_ids = unsafe { required_c_string(stable_ids_json, "stable_ids_json") };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let stable_ids =
-                stable_ids.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            let stable_ids: Vec<String> = serde_json::from_str(&stable_ids).map_err(|error| {
-                wellfriendpdf_engine::WellfriendError::invalid_input(error.to_string())
-            })?;
-            sdk::associated_files_remove_json(bytes, &stable_ids, None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let stable_ids =
+                    stable_ids.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                let stable_ids: Vec<String> =
+                    serde_json::from_str(&stable_ids).map_err(|error| {
+                        wellfriendpdf_engine::WellfriendError::invalid_input(error.to_string())
+                    })?;
+                sdk::associated_files_remove_json(bytes, &stable_ids, password)
+            },
+        )
     }
 }
 
@@ -8424,10 +9219,17 @@ pub unsafe extern "C" fn wellfriendpdf_document_associated_files_sanitize_json(
 ) -> c_int {
     let options = unsafe { optional_c_string(options_json) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
-            let options = options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::associated_files_sanitize_json(bytes, options.as_deref(), None)
-        })
+        universal_report_output_impl(
+            document,
+            out_buffer,
+            out_json,
+            error_out,
+            |bytes, password| {
+                let options =
+                    options.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+                sdk::associated_files_sanitize_json(bytes, options.as_deref(), password)
+            },
+        )
     }
 }
 
@@ -8448,9 +9250,9 @@ pub unsafe extern "C" fn wellfriendpdf_document_sanitize_json(
 ) -> c_int {
     let policy = unsafe { optional_c_string(policy) };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |b| {
+        universal_report_output_impl(document, out_buffer, out_json, error_out, |b, password| {
             let policy = policy.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::sanitize_json(b, policy.as_deref(), None)
+            sdk::sanitize_json(b, policy.as_deref(), password)
         })
     }
 }
@@ -8476,8 +9278,8 @@ pub unsafe extern "C" fn wellfriendpdf_document_canonicalize_json(
         None
     };
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |b| {
-            sdk::canonicalize_json(b, epoch, None)
+        universal_report_output_impl(document, out_buffer, out_json, error_out, |b, password| {
+            sdk::canonicalize_json(b, epoch, password)
         })
     }
 }
@@ -8501,10 +9303,10 @@ pub unsafe extern "C" fn wellfriendpdf_document_redact_terms_json(
     error_out: *mut *mut c_char,
 ) -> c_int {
     unsafe {
-        report_output_impl(document, out_buffer, out_json, error_out, |b| {
+        universal_report_output_impl(document, out_buffer, out_json, error_out, |b, password| {
             let terms = read_c_string_array(terms, terms_len)
                 .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
-            sdk::redact_terms_json(b, &terms, strict != 0, None)
+            sdk::redact_terms_json(b, &terms, strict != 0, password)
         })
     }
 }
@@ -11978,6 +12780,76 @@ mod tests {
             }"#,
         )
         .unwrap();
+
+        let mut proposal_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_advanced_editing_closeout_paint_partition_propose_json(
+                doc,
+                request.as_ptr(),
+                &mut proposal_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let proposal_text = unsafe { CStr::from_ptr(proposal_json) }
+            .to_string_lossy()
+            .into_owned();
+        let proposal_value: serde_json::Value = serde_json::from_str(&proposal_text).unwrap();
+        assert_eq!(
+            proposal_value["kind"],
+            "advanced_editing_closeout_paint_partition_proposal"
+        );
+        let proposal_id = proposal_value["report"]["proposal_id"].as_str().unwrap();
+        let source_text_object = proposal_value["report"]["candidates"][0]["source_text_object"]
+            .as_u64()
+            .unwrap();
+        let approval = CString::new(
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "partitions": [{
+                    "source_text_object": source_text_object,
+                    "region": [20.0, 80.0, 180.0, 140.0],
+                    "final_lines": null
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let proposal = CString::new(proposal_text).unwrap();
+        let mut proposed_output = WellfriendBuffer::empty();
+        let mut proposed_report = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_json(
+                doc,
+                request.as_ptr(),
+                proposal.as_ptr(),
+                approval.as_ptr(),
+                &mut proposed_output,
+                &mut proposed_report,
+                &mut error,
+            )
+        };
+        let error_text = if error.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK, "{error_text}");
+        assert!(
+            unsafe { slice::from_raw_parts(proposed_output.data, proposed_output.len) }
+                .starts_with(b"%PDF-")
+        );
+        assert!(unsafe { CStr::from_ptr(proposed_report) }
+            .to_string_lossy()
+            .contains("advanced_editing_closeout_multi_run_text_edit_report"));
+        unsafe {
+            wellfriendpdf_string_free(proposal_json);
+            wellfriendpdf_buffer_free(proposed_output);
+            wellfriendpdf_string_free(proposed_report);
+        }
+
         let mut output = WellfriendBuffer::empty();
         let mut edit_json = std::ptr::null_mut();
         let status = unsafe {

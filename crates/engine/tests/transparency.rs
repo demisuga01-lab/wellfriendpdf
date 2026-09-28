@@ -299,13 +299,13 @@ fn image_xobject_smask_makes_pixels_transparent() {
 
 #[test]
 fn image_mask_xobject_paints_current_fill_color() {
-    // ImageMask true is a stencil. A set bit should paint the current
-    // nonstroking color, not the mask's grayscale sample.
+    // ImageMask true is a stencil. With the default Decode [0 1], a zero bit
+    // paints the current nonstroking color, not the mask's grayscale sample.
     let content = b"1 0 0 rg q 100 0 0 100 0 0 cm /Im1 Do Q\n";
     let page_extra = "/Resources << /XObject << /Im1 5 0 R >> >>";
     let image = "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 \
         /ImageMask true /Filter /ASCIIHexDecode /Length 3 >>\n\
-        stream\n80>\nendstream";
+        stream\n00>\nendstream";
     let extra = [(image,)];
     let pdf = page_pdf(content, &extra, page_extra);
 

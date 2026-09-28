@@ -7,8 +7,8 @@
 //! policy denial, and input that cannot be recovered safely.
 
 use crate::advanced_editing::{
-    analyze_multi_run_text_range, edit_vector_object, list_vector_objects,
-    SharedFormEditPolicy, VectorEditOperation, VectorEditOptions, VectorFormInvocation,
+    analyze_multi_run_text_range, edit_vector_object, list_vector_objects, SharedFormEditPolicy,
+    VectorEditOperation, VectorEditOptions, VectorFormInvocation,
 };
 use crate::content::{ContentToken, ContentTokenizer, SpannedContentToken};
 use crate::editing_transactions::{
@@ -17,8 +17,7 @@ use crate::editing_transactions::{
     SceneTextEditRequest,
 };
 use crate::filters::{
-    decode_stream_lossless_with_limits, flate_encode_cancellable, DecodeLimits,
-    StreamDecodeStatus,
+    decode_stream_lossless_with_limits, flate_encode_cancellable, DecodeLimits, StreamDecodeStatus,
 };
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::locator::{ImageLocator, ImageReference};
@@ -27,6 +26,7 @@ use crate::secure_mutation::{
     analyze_edit_policy, EditOperation as SignatureEditOperation, EditPolicyDecision,
     EditPolicyReport,
 };
+use crate::source_editing::TrueEditingMode;
 use crate::writer::{write_incremental_update, IncrementalObject};
 use crate::{ContentEngine, PdfDictionary, Result, WellfriendError};
 use serde::{Deserialize, Serialize};
@@ -34,8 +34,13 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const UNIVERSAL_EDITING_SCHEMA_VERSION: &str =
-    "universal_editing.document-transaction.v2";
+#[path = "universal_scoped_text.rs"]
+pub mod scoped_text;
+
+#[path = "universal_scoped_preview.rs"]
+pub mod scoped_preview;
+
+pub const UNIVERSAL_EDITING_SCHEMA_VERSION: &str = "universal_editing.document-transaction.v2";
 const MAX_ANALYSIS_PAGES: usize = 200_000;
 const MAX_TEXT_CANDIDATES: usize = 1_000_000;
 const MAX_IMAGE_OCCURRENCES: usize = 1_000_000;
@@ -79,33 +84,27 @@ pub enum UniversalEditOutcomeV2 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum UniversalMutationModeV2 {
+    #[default]
     PreserveSignatures,
     AuthorizedRewrite,
 }
 
-impl Default for UniversalMutationModeV2 {
-    fn default() -> Self {
-        Self::PreserveSignatures
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum UniversalAmbiguityPolicyV2 {
+    #[default]
     PreviewAndConfirm,
     AutomaticExactOnly,
 }
 
-impl Default for UniversalAmbiguityPolicyV2 {
-    fn default() -> Self {
-        Self::PreviewAndConfirm
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum UniversalSharedResourcePolicyV2 {
+    #[default]
     CloneOne,
     EditAll,
 }
@@ -135,7 +134,9 @@ pub enum UniversalStandardEncryptionAlgorithmV2 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum UniversalOutputSecurityPolicyV2 {
+    #[default]
     Unencrypted,
     Standard {
         algorithm: UniversalStandardEncryptionAlgorithmV2,
@@ -144,12 +145,6 @@ pub enum UniversalOutputSecurityPolicyV2 {
         #[serde(default = "default_true")]
         encrypt_metadata: bool,
     },
-}
-
-impl Default for UniversalOutputSecurityPolicyV2 {
-    fn default() -> Self {
-        Self::Unencrypted
-    }
 }
 
 fn default_all_permissions() -> i32 {
@@ -177,12 +172,6 @@ impl UniversalConformanceProfileV2 {
             Self::PdfX3_2003 => "PDF/X-3:2003",
             Self::PdfX4 => "PDF/X-4",
         }
-    }
-}
-
-impl Default for UniversalSharedResourcePolicyV2 {
-    fn default() -> Self {
-        Self::CloneOne
     }
 }
 
@@ -225,6 +214,12 @@ pub struct UniversalAnalyzeOptionsV2 {
     pub max_pages: usize,
     #[serde(default)]
     pub include_capabilities: bool,
+    /// Full structure/content ownership inspection, separate from lazy pages.
+    #[serde(default)]
+    pub include_story_tag_sources: bool,
+    /// Source-local Form/AP occurrences for the same selected page window.
+    #[serde(default)]
+    pub include_scoped_text_sources: bool,
 }
 
 impl Default for UniversalAnalyzeOptionsV2 {
@@ -233,6 +228,8 @@ impl Default for UniversalAnalyzeOptionsV2 {
             pages: Vec::new(),
             max_pages: default_analysis_page_limit(),
             include_capabilities: true,
+            include_story_tag_sources: false,
+            include_scoped_text_sources: false,
         }
     }
 }
@@ -254,6 +251,10 @@ pub struct UniversalDocumentModelV2 {
     pub capabilities: Vec<UniversalCapabilityV2>,
     pub input_contract: Value,
     pub lazy_analysis: Value,
+    pub saved_linked_stories: Value,
+    pub story_tag_sources: Value,
+    pub saved_typed_tables: Value,
+    pub scoped_text_sources: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,6 +304,22 @@ pub struct UniversalReferenceRasterV2 {
     pub min_ssim: f64,
     #[serde(default)]
     pub max_channel_error: u8,
+    /// Optional provenance for an externally produced reference. ECBES accepts
+    /// this as independent-renderer evidence only when every selected page has
+    /// matching, independently declared producer metadata and the declared
+    /// artifact digest equals the exact supplied RGBA bytes.
+    #[serde(default)]
+    pub producer: Option<UniversalReferenceRasterProducerV2>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UniversalReferenceRasterProducerV2 {
+    pub name: String,
+    pub version: String,
+    pub artifact_sha256: String,
+    #[serde(default)]
+    pub independent: bool,
 }
 
 fn default_reference_min_ssim() -> f64 {
@@ -368,10 +385,36 @@ pub fn qualify_universal_render_v2(
             "universal render qualification reference_rasters contains duplicate pages",
         ));
     }
-    if reference_pages
-        .iter()
-        .any(|page| !pages.contains(page))
-    {
+    for reference in &options.reference_rasters {
+        if let Some(producer) = &reference.producer {
+            let valid_id = |value: &str| {
+                !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+            };
+            let valid_digest = |value: &str| {
+                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            };
+            if !valid_id(&producer.name)
+                || !valid_id(&producer.version)
+                || !valid_digest(&producer.artifact_sha256)
+            {
+                return Err(WellfriendError::invalid_input(format!(
+                    "reference raster producer metadata for page {} is invalid",
+                    reference.page
+                )));
+            }
+            let actual_artifact = digest_hex(&reference.rgba);
+            if !producer
+                .artifact_sha256
+                .eq_ignore_ascii_case(&actual_artifact)
+            {
+                return Err(WellfriendError::invalid_input(format!(
+                    "reference raster producer digest for page {} does not match supplied RGBA bytes",
+                    reference.page
+                )));
+            }
+        }
+    }
+    if reference_pages.iter().any(|page| !pages.contains(page)) {
         return Err(WellfriendError::invalid_input(
             "universal render qualification reference page is outside the selected page set",
         ));
@@ -456,21 +499,15 @@ pub fn qualify_universal_render_v2(
         }
         total_pixels = planned_total;
         let rgba = pixels.rgba_bytes();
-        let pixel_sha256 = digest_hex_cancellable(
-            rgba,
-            "universal render qualification native raster digest",
-        )?;
+        let pixel_sha256 =
+            digest_hex_cancellable(rgba, "universal render qualification native raster digest")?;
         let reference_comparison = if let Some(reference) = options
             .reference_rasters
             .iter()
             .find(|reference| reference.page == page)
         {
-            let comparison = compare_reference_raster_v2(
-                pixels.width,
-                pixels.height,
-                rgba,
-                reference,
-            )?;
+            let comparison =
+                compare_reference_raster_v2(pixels.width, pixels.height, rgba, reference)?;
             all_reference_comparisons_passed &= comparison["passed"] == Value::Bool(true);
             comparison
         } else {
@@ -564,12 +601,14 @@ fn compare_reference_raster_v2(
     }
     let expected_len = usize::try_from(width)
         .ok()
-        .and_then(|width| usize::try_from(height).ok().and_then(|height| width.checked_mul(height)))
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or_else(|| {
-            WellfriendError::ResourceLimit(
-                "reference raster byte length overflow".to_string(),
-            )
+            WellfriendError::ResourceLimit("reference raster byte length overflow".to_string())
         })?;
     if actual.len() != expected_len || reference.rgba.len() != expected_len {
         return Err(WellfriendError::invalid_input(format!(
@@ -628,9 +667,7 @@ fn compare_reference_raster_v2(
         .enumerate()
     {
         if pixel_index % 65_536 == 0 {
-            crate::cancel::check_current_cancel(
-                "universal render qualification SSIM statistics",
-            )?;
+            crate::cancel::check_current_cancel("universal render qualification SSIM statistics")?;
         }
         let actual_delta = rgba_luma(actual_pixel) - mean_actual;
         let reference_delta = rgba_luma(reference_pixel) - mean_reference;
@@ -648,8 +685,7 @@ fn compare_reference_raster_v2(
         / (((mean_actual * mean_actual) + (mean_reference * mean_reference) + c1)
             * (variance_actual + variance_reference + c2)))
         .clamp(0.0, 1.0);
-    let windowed_ssim =
-        windowed_luminance_ssim_v2(width, height, actual, &reference.rgba)?;
+    let windowed_ssim = windowed_luminance_ssim_v2(width, height, actual, &reference.rgba)?;
     let passed = mean_absolute_error <= reference.max_mean_absolute_error
         && maximum <= reference.max_channel_error
         && windowed_ssim >= reference.min_ssim;
@@ -669,6 +705,7 @@ fn compare_reference_raster_v2(
         "windowed_luminance_ssim": windowed_ssim,
         "global_luminance_ssim": global_ssim,
         "comparison_color_policy": "RGB composited over white plus independent alpha; hidden RGB at alpha=0 is ignored",
+        "producer": &reference.producer,
         "thresholds": {
             "max_mean_absolute_error": reference.max_mean_absolute_error,
             "max_channel_error": reference.max_channel_error,
@@ -683,7 +720,12 @@ fn rgba_visual_channels(pixel: &[u8]) -> [u8; 4] {
         let numerator = u32::from(channel) * alpha + 255 * (255 - alpha) + 127;
         (numerator / 255) as u8
     };
-    [composite(pixel[0]), composite(pixel[1]), composite(pixel[2]), pixel[3]]
+    [
+        composite(pixel[0]),
+        composite(pixel[1]),
+        composite(pixel[2]),
+        pixel[3],
+    ]
 }
 
 /// Local 8x8 box-window SSIM. Non-overlapping windows keep qualification O(N)
@@ -704,9 +746,7 @@ fn windowed_luminance_ssim_v2(
     let mut weighted_ssim = 0.0;
     let mut total_weight = 0usize;
     for y0 in (0..height).step_by(WINDOW) {
-        crate::cancel::check_current_cancel(
-            "universal render qualification windowed SSIM row",
-        )?;
+        crate::cancel::check_current_cancel("universal render qualification windowed SSIM row")?;
         for x0 in (0..width).step_by(WINDOW) {
             let y1 = (y0 + WINDOW).min(height);
             let x1 = (x0 + WINDOW).min(width);
@@ -735,14 +775,11 @@ fn windowed_luminance_ssim_v2(
             let divisor = count.saturating_sub(1).max(1) as f64;
             let variance_actual =
                 ((sum_actual_squared - count_f64 * mean_actual * mean_actual) / divisor).max(0.0);
-            let variance_reference = ((sum_reference_squared
-                - count_f64 * mean_reference * mean_reference)
-                / divisor)
-                .max(0.0);
-            let covariance =
-                (sum_cross - count_f64 * mean_actual * mean_reference) / divisor;
-            let ssim = (((2.0 * mean_actual * mean_reference) + c1)
-                * ((2.0 * covariance) + c2)
+            let variance_reference =
+                ((sum_reference_squared - count_f64 * mean_reference * mean_reference) / divisor)
+                    .max(0.0);
+            let covariance = (sum_cross - count_f64 * mean_actual * mean_reference) / divisor;
+            let ssim = (((2.0 * mean_actual * mean_reference) + c1) * ((2.0 * covariance) + c2)
                 / (((mean_actual * mean_actual) + (mean_reference * mean_reference) + c1)
                     * (variance_actual + variance_reference + c2)))
                 .clamp(0.0, 1.0);
@@ -873,21 +910,41 @@ pub enum UniversalPdfFunctionV2 {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UniversalPdfValueV2 {
     Null,
-    Boolean { value: bool },
-    Integer { value: i64 },
-    Real { value: f64 },
-    Name { value: String },
-    String { value: Vec<u8> },
-    Array { items: Vec<UniversalPdfValueV2> },
-    Dictionary { entries: BTreeMap<String, UniversalPdfValueV2> },
+    Boolean {
+        value: bool,
+    },
+    Integer {
+        value: i64,
+    },
+    Real {
+        value: f64,
+    },
+    Name {
+        value: String,
+    },
+    String {
+        value: Vec<u8>,
+    },
+    Array {
+        items: Vec<UniversalPdfValueV2>,
+    },
+    Dictionary {
+        entries: BTreeMap<String, UniversalPdfValueV2>,
+    },
     Stream {
         entries: BTreeMap<String, UniversalPdfValueV2>,
         data: Vec<u8>,
         #[serde(default)]
         flate_encode: bool,
     },
-    Reference { number: u32, #[serde(default)] generation: u16 },
-    LocalReference { local_id: String },
+    Reference {
+        number: u32,
+        #[serde(default)]
+        generation: u16,
+    },
+    LocalReference {
+        local_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -900,13 +957,74 @@ pub enum UniversalObjectTargetV2 {
         /// SHA-256 of the deterministic debug projection returned by analysis.
         expected_fingerprint: String,
     },
-    New { local_id: String },
+    New {
+        local_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniversalObjectMutationV2 {
     pub target: UniversalObjectTargetV2,
+    /// Empty replaces the complete indirect object. A nonempty path mutates
+    /// one existing dictionary/stream-dictionary value or array item while
+    /// preserving every non-encoding sibling value and raw stream byte.
+    /// Fingerprint-bound dereference segments can transfer ownership to a
+    /// referenced indirect object. The canonical writer owns exact direct
+    /// `/Length` normalization.
+    #[serde(default)]
+    pub path: Vec<UniversalObjectPathSegmentV2>,
+    #[serde(default)]
+    pub lens_action: UniversalObjectLensActionV2,
+    /// Optional atomic stream-data/encoding rewrite. The selected value must
+    /// be an existing stream and `value` must be the null placeholder. This
+    /// route preserves every dictionary entry except the writer-owned Length
+    /// and the explicitly coordinated Filter/DecodeParms/DL controls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_encoding: Option<UniversalStreamEncodingUpdateV2>,
     pub value: UniversalPdfValueV2,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UniversalObjectLensActionV2 {
+    #[default]
+    Replace,
+    Insert,
+    Remove,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UniversalStreamEncodingUpdateV2 {
+    /// Caller supplies bytes already encoded by the exact direct filter graph.
+    Raw {
+        data: Vec<u8>,
+        #[serde(default)]
+        filter: Option<UniversalPdfValueV2>,
+        #[serde(default)]
+        decode_parms: Option<UniversalPdfValueV2>,
+    },
+    /// Caller supplies decoded bytes and removes Filter/DecodeParms.
+    Unfiltered { data: Vec<u8> },
+    /// Caller supplies decoded bytes; the SDK emits deterministic level-6
+    /// Flate bytes and a direct /FlateDecode filter.
+    Flate { data: Vec<u8> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UniversalObjectPathSegmentV2 {
+    Key {
+        key: String,
+    },
+    Index {
+        index: usize,
+    },
+    /// Follow the reference selected by preceding direct segments only when
+    /// the referenced object's exact planning fingerprint still matches.
+    Dereference {
+        expected_fingerprint: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1069,11 +1187,29 @@ pub struct UniversalStructureCorrectionRequestV2 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UniversalEditOperationV2 {
+    /// Native source-local Form or selected annotation appearance text, with
+    /// an exact staged candidate and pinned generated-font approval.
+    ScopedText {
+        request: scoped_text::ScopedTextEditRequest,
+    },
+    LinkedStory {
+        request: crate::linked_stories::LinkedStoryRequest,
+    },
+    /// Atomic-publication transfer of one exact saved untagged Figure owner
+    /// between two already-saved linked stories.
+    StoryFigureTransfer {
+        request: crate::linked_stories::figures::StoryFigureTransferRequest,
+    },
     Text {
         request: SceneTextEditRequest,
     },
     Image {
         request: UniversalImageEditRequestV2,
+    },
+    /// Explicitly approved native image relocation, including source-state
+    /// capture and current-revision removal of exactly one paint occurrence.
+    ImageFragment {
+        request: crate::image_fragments::ImageFragmentMove,
     },
     Vector {
         request: UniversalVectorEditRequestV2,
@@ -1092,9 +1228,10 @@ pub enum UniversalEditOperationV2 {
     DocumentSecurity {
         request: crate::document_security::DocumentSecurityRequest,
     },
-    /// Exact indirect-object graph replacement for PDF constructs that have no
-    /// safe author-level inverse (patterns, shadings, appearance programs,
-    /// masks, optional content, and custom structure extensions).
+    /// Exact indirect-object graph replacement/lenses for PDF constructs that
+    /// have no safe author-level inverse (patterns, shadings, appearance
+    /// programs, masks, optional content, custom structure extensions and
+    /// explicitly coordinated stream encoding rewrites).
     ObjectGraph {
         request: UniversalObjectGraphEditRequestV2,
     },
@@ -1102,6 +1239,10 @@ pub enum UniversalEditOperationV2 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniversalEditPolicyV2 {
+    /// Revision-bound preservation conditions checked on actual output before
+    /// publication. Included in the canonical plan and approval digest.
+    #[serde(default)]
+    pub edit_contract: Option<crate::edit_contracts::EditContract>,
     #[serde(default)]
     pub mutation_mode: UniversalMutationModeV2,
     #[serde(default)]
@@ -1126,6 +1267,7 @@ impl Default for UniversalEditPolicyV2 {
     fn default() -> Self {
         Self {
             mutation_mode: UniversalMutationModeV2::PreserveSignatures,
+            edit_contract: None,
             ambiguity: UniversalAmbiguityPolicyV2::PreviewAndConfirm,
             allow_font_substitution: true,
             allow_deterministic_repair: true,
@@ -1221,15 +1363,30 @@ pub struct UniversalEditResultV2 {
 
 pub fn universal_capability_registry_v2() -> Vec<UniversalCapabilityV2> {
     vec![
-        capability("source_text", UniversalCapabilityStatusV2::ApprovalRequired, "SourceEditing/AdvancedEditing", "operator, page-logical partial-token and cross-/Contents multi-run, geometric, and semantic routes remove selected current-revision codes, preserve source advance, shape approved Type0 substitutions, replay per-grapheme paint/text state, and keep clipping or tagged replacements source-inline; direct isomorphic /ActualText carriers and complete selected non-isomorphic /ActualText scopes are neutralized in the same atomic stream transaction so search/copy cannot retain the old value, while legacy single-token writers fail closed on logical-text ownership", &["ambiguous source ownership", "font or layout substitution", "partial non-isomorphic or shared named /ActualText semantic ownership"], &["shared Form-owned text still requires an occurrence-level clone-one/edit-all decision", "vertical inline replacement accepts upright zero-offset glyphs; rotated or GPOS-offset vertical glyphs require an explicit text-matrix snapshot"]),
+        capability("coordinated_widget_text", UniversalCapabilityStatusV2::ApprovalRequired, "AdvancedEditing/FieldOwnership/UniversalEditing", "all source widgets of a terminal text field and its Unicode value update in one published revision; native source edits retain exact widget identities, source defaults or explicit DA/DR rebinding, reset-value policy and approved structural ActualText mappings", &["every widget display and field value mapping", "default appearance/reset/rich-text/read-only and retained-action decisions"], &["normal source appearances; stateful, comb, password, file-selection, choice/button/signature and hybrid XFA semantics require further transactions", "NeedAppearances document-wide regeneration is not silently disabled", "source-only; build, binding, browser and corpus qualification pending"]),
+        capability("scoped_candidate_preview", UniversalCapabilityStatusV2::Unverified, "UniversalEditing/NativeRenderer/SDK/Browser", "recompute the exact native scoped-text candidate and return bounded before/candidate PNGs, pixel-difference bounds, hashes, font and render-contract diagnostics without publishing candidate PDF bytes; browser apply requires an exact completed preview in the current worker epoch", &["explicit source occurrence, font and metadata decisions remain required at apply"], &["default preview covers the selected page only and discloses unpreviewed affected pages", "native candidate precedes final output gates; not independent-render or visual-fidelity certification", "source-only; current build, binding, browser and corpus execution pending"]),
+        capability("scoped_source_text", UniversalCapabilityStatusV2::ApprovalRequired, "UniversalEditing/AdvancedEditing/TaggedStructure", "revision-bound Form and selected normal appearance edits stage the native source writer privately; canonical apply recomputes the candidate, binds its output hash and pinned generated-font bytes, validates exact occurrence/metadata/tag choices and publishes those same staged bytes after approval", &["source-local text/style and shared-resource decisions", "generated font definitions require exact pinned-font approval", "annotation metadata and tagged clone/ActualText policies"], &["reuse native source coverage boundaries; no pixel-fidelity certification", "edit-all and tagged edits conservatively invalidate document pages", "native output targets require rediscovery after normalization or encryption", "source-only; current build, binding and corpus execution pending"]),
+        capability("linked_story_figures", UniversalCapabilityStatusV2::ApprovalRequired, "LinkedStories/ImageFragments/WASM", "explicit image/caption blocks reserve native layout space, stay together and travel through one original-revision detachment batch, story reflow and final placement; untagged and tagged page/nested-Form native image/OCR groups retain selected invisible operands with original fonts, matrices and complete direct ActualText, rebase disjoint paragraph source ranges, neutralize obsolete source MCIDs inside search Forms and consume initial selections on save; exact OCR spans may remain Figure-owned or be partitioned across explicitly selected content-only sibling P/Span owners on a page or Form, with source-bound reused-Form splitting preserving ordered residual Figure/OCR leaves; an explicitly approved bounded semantic-only descendant tree remains under its Figure without flattening while the root's source-content slot becomes the generated page MCR, provided descendants are contentless; valid explicit descendant page bindings follow the Figure destination; separate one-shot approval removes the complete validated contentless subtree only when no surviving relationship targets any member; reused-Form splitting can copy-on-write clone a separately approved contentless subtree with rebuilt parent links, rewritten internal Figure/subtree /Ref links and clone IDs/page bindings removed; external subtree relationships use the same explicit outbound move/retain/copy and incoming follow/retarget/reference-both policies as the root through bounded nested direct/indirect array graphs, preserving topology and cloning affected indirect containers; references between multiple simultaneously split Figure trees use one coordinated selected/residual clone map; saved owners support repeat checkpoints, group deletion, exact in-place untagged ownership release, revision-bound later attachment, plan-hash-gated two-story atomic publication, and Figure/MCID migration with separate caption owners", &["source occurrence and caption association", "exact OCR operands, exact per-span separate-owner assignments or explicit unrelated-text decision", "dimensions, alignment and foreground/background order", "explicit saved-figure deletion/detachment/transfer and affected ownership, including complete-subtree deletion approval", "Figure reuse/create ownership, optional semantic-subtree preservation/cloning, relationship split authority and new alternate descriptions"], &["content-bearing/shared reused-Form Figure subtrees, cyclic/excessive/non-reference relationship containers and mixed-object table cells remain incomplete", "whole caption must fit a permitted frame; no automatic association inference; the atomic-publication helper requires two saved untagged stories and retains its private intermediate PDF revision; tagged transfer requires structure-owner migration", "deletion removes current visual/search invocation and approved semantic owner, not historical bytes or shared resources; detachment preserves paint in place; neither is redaction", "source-only Rust transfer route; managed bindings, compiler, browser, rendering, PDF/UA and corpus qualification remain pending"]),
+        capability("native_image_relocation", UniversalCapabilityStatusV2::ApprovalRequired, "ImageFragments/UniversalEditing/WASM", "revision-bound occurrence removal and native source-state capsule movement preserve image sample/mask/resource definitions; optional explicitly selected invisible OCR operands travel in a shared native group with original fonts/matrices and complete direct ActualText scopes; occurrence-specific nested Form paths use bounded parallel visual/search clone chains; exact native owners support save/reopen and repeat movement", &["destination geometry", "explicit foreground/background order and changed backdrop", "exact invisible OCR span identities and source Unicode where selected", "exact Form text target for a nested occurrence"], &["standalone primitive, not automatic recognition; saved story source pages use the coordinated linked-story OCR range-rebinding transaction", "text-derived clipping, optional-content OCR, ambiguous shared Form paths and page transparency groups need additional migration; tagged Figures use the coordinated story route", "no runtime or pixel qualification; incremental history and unused resources remain retained"]),
+        capability("linked_story", UniversalCapabilityStatusV2::ApprovalRequired, "LinkedStories/AdvancedEditing/CanonicalWriter", "revision-bound occupied-frame flow, backward compaction, batched continuation pages, opt-in empty owned continuation pruning with dependency/vacancy checks, preserved surviving labels and projected output numbering, reusable paragraph indexes, contextual multi-font assignment, persistent fonts and approved paragraph-leaf tag ownership across save/reopen; uniform horizontal/vertical-RL/vertical-LR flow shares final shaping, physical bounds, supported table/figure geometry and changed-owner WritingMode attributes", &["frame ownership, writing mode and reading order", "font substitutions", "continuation creation and exact previewed removals", "source tag owners and paragraph reuse/create decisions"], &["original/unmarked pages, uncertain paint, surviving references and unresolved numeric page dependencies are not automatically removed", "arbitrary nested tag, table and image migration is not implemented", "uncovered contextual units, mixed orthogonal stories, ruby/tate-chu-yoko/kinsoku and exotic typography remain bounded; tagged vertical-LR requires PDF 2.0", "source-only implementation; qualification pending"]),
+        capability("edit_contracts", UniversalCapabilityStatusV2::ApprovalRequired, "EditContracts/UniversalEditing", "optional revision-bound text counts, page text, exact PDF values and opaque stream slices are checked against actual output before publication; named/versioned caller-supplied external text hashes bind both the input baseline and reopened output; bounded canonical rooted-object-graph digests follow shared/cyclic references and survive deterministic indirect-object renumbering, with separate exact-raw and fully-losslessly-decoded stream modes; an exact existing-object allowlist plus bounded new/removal policy can reject undeclared indirect-object deltas; bounded exact native-raster comparison rejects pixel changes outside declared device-space edit regions; supplied independent reference rasters can also be required", &["caller-declared preservation scope"], &["not a proof of undeclared semantics", "external text-oracle provenance is caller-asserted until the qualification harness records the external execution", "outside-region preservation is same-engine evidence unless independent references are also supplied", "decoded graph equivalence ignores only Length/Filter/DecodeParms/DL and refuses external-file streams plus incomplete or terminal-codec decoding; visual/resource equivalence remains separate", "encrypted transport is outside the plaintext contract scope"]),
+        capability("logical_story_merge", UniversalCapabilityStatusV2::ApprovalRequired, "StoryMerge/StoryStructureMerge/LinkedStories", "Rust and WASM helpers merge revision-bound text patches or conservative paragraph/style/order/frame-geometry snapshots, expose conflicts, and feed the same preview and approval transaction", &["text overlaps", "competing insertion gaps or structure", "delete/edit conflicts"], &["not a byte merge or general CRDT", "source ownership and mutation authority cannot be merged", "redaction and arbitrary object merges remain unsupported"]),
+        capability("story_annotation_anchors", UniversalCapabilityStatusV2::ApprovalRequired, "StoryAnchors/LinkedStories/CanonicalWriter", "explicit annotation geometry and approved complete popup/reply groups follow a paragraph, with persisted object identities independent of page-local NM names, disclosed opt-in destination-name collision repair, batch dictionary/page Annots changes, preserved appearances/actions/fields and OBJR/MCR page ownership migration", &["paragraph association and target geometry", "complete popup/reply membership and topology receipt", "rename_conflicting_names only for approved members; exact changes appear in preview"], &["matching page rotation and UserUnit; translated rectangles inside target crop", "extended geometry, shared tagged appearances and duplicate persisted identities require separate migration", "renamed NM references in scripts/external FDF are not inferred", "no automatic anchor inference; source-only qualification pending"]),
+        capability("browser_story_session", UniversalCapabilityStatusV2::ApprovalRequired, "WASM/StoryEditSession/StoryWorkerClient", "retained sessions, native layout preview receipts, source-range frame linking, checkpoint, exact bounded undo/redo, worker termination cancellation and native output download are connected in source; the shared native command protocol is also exported", &["exact layout and font substitutions"], &["no generated WASM or browser qualification for this source change", "DOM text is not a glyph-fidelity preview", "production app integration remains separate"]),
+        capability("native_story_session", UniversalCapabilityStatusV2::ApprovalRequired, "StorySessionProtocol/C/Java/DotNet/Python/WASM", "caller-owned sessions expose bounded JSON source discovery, preview, exact receipt-bound checkpoint, typed-table draft synchronization, conservative merges, byte export, undo/redo and explicit canonical rendering; Standard-handler owner-password open materializes an explicitly reported unencrypted working revision without retaining the credential while user/open passwords fail closed; native calls use cooperative cancellation and wrapper-specific lifetime ownership", &["exact layout and font substitutions", "host-authenticated approval of the returned preview", "explicit output-encryption policy when an encrypted result is required"], &["engine/C/Python/WASM compile, .NET/Java package build, declaration parity and one engine password-open regression have completed; managed native loading, browser execution and corpus qualification remain pending", "32 MiB command and 256 MiB input caps", "Java session ABI is 64-bit and thread-confined; C access must be serialized; .NET serializes calls and disposal; Python detaches native work and rejects concurrent session use as busy", "public-key encrypted retained-session open, encryption-envelope preservation, native editor UI and runtime parity qualification remain incomplete"]),
+        capability("typed_table_values", UniversalCapabilityStatusV2::ApprovalRequired, "TypedTables/LinkedStories/DocumentSubsystems", "exact decimal/formula evaluation plus approved topology, styled/tagged paragraph blocks, rowspan fragmentation, repeated headers, owned PDF grids, row-group/shared-ancestor ownership and per-owner class materialization", &["cell structure, block order and formulas", "source grid keep/remove decisions", "row breaks and continuation pages", "paragraph paths, shared-owner reviews, group reuse/removal, header relationships and alternate descriptions"], &["legacy fixed-cell route uses at most 64 stories; paginated route uses one story, up to 4096 cells and 16384 paragraphs", "row keep chains remain atomic; nested tables, mixed-object cells and arbitrary object/relationship migration remain incomplete", "typed values own one paragraph; mixed styled blocks are never flattened; implicit numeric rounding is refused; runtime qualification pending"]),
+        capability("scan_review", UniversalCapabilityStatusV2::ApprovalRequired, "ScanReview/DocumentSubsystems", "optional alternative-reading sets, provider-bound held-out score thresholds and word/replacement/geometry-bound review receipts gate visible reconstruction", &["uncalibrated or ambiguous recognition", "approximate background reconstruction"], &["calibration validity and exchangeability are not established by the SDK", "no pixel recovery, typography or per-document probability guarantee"]),
+        capability("source_text", UniversalCapabilityStatusV2::ApprovalRequired, "SourceEditing/AdvancedEditing", "operator, page-logical partial-token and cross-/Contents multi-run, geometric, and semantic routes remove selected current-revision codes, preserve source advance, shape approved Type0 substitutions, replay per-grapheme paint/text state, and keep clipping or tagged replacements source-inline; direct isomorphic /ActualText carriers and complete selected non-isomorphic /ActualText scopes are neutralized in the same atomic stream transaction so search/copy cannot retain the old value, while legacy single-token writers fail closed on logical-text ownership; generated multi-run replacements bind all selected strings to exact BT/ET paint slots, require explicit first/last anchoring for consolidation, or consume an exact source-slot/scalar-range/region partition plan that keeps intervening paint between generated segments while preserving horizontal/RTL/vertical paragraph shaping context, rejecting glyph-position-changing splits and retaining grapheme-owned inherited source text/paint state; a revision-bound proposal apportions complete graphemes by selected source coverage and requires explicit region/final-layout approval before recomputed apply", &["ambiguous source ownership", "font or layout substitution", "partial non-isomorphic or shared named /ActualText semantic ownership", "first-versus-last block anchor or approved per-source-slot partition when a generated replacement crosses text objects"], &["shared Form-owned text still requires an occurrence-level clone-one/edit-all decision", "vertical inline replacement accepts upright zero-offset glyphs; rotated or GPOS-offset vertical glyphs require an explicit text-matrix snapshot", "unreviewed physical-region inference and preservation of several unrelated source font-family programs inside one contextual replacement remain explicit limits"]),
         capability("image_occurrence", UniversalCapabilityStatusV2::ApprovalRequired, "UniversalEditing/CanonicalWriter", "image definitions can be replaced atomically with Device, calibrated, ICCBased, Indexed, Separation, or DeviceN sample graphs, typed per-component Decode arrays, explicit one-bit stencil semantics, and an explicit same-size DeviceGray soft mask; page image occurrence transforms carry graphics state across ordered /Contents members, inline occurrences can be promoted, nested Forms can be cloned, and decoded RGBA/JPX alpha is never reinterpreted as CMYK", &["shared XObject", "mask resampling", "inline-image promotion"], &["dimension-changing soft-mask resampling requires caller-supplied replacement objects"]),
+        capability("source_object_lens", UniversalCapabilityStatusV2::ApprovalRequired, "UniversalObjectGraph/CanonicalWriter", "revision-bound dictionary/stream-dictionary and array paths replace, insert or remove one leaf inside an exactly fingerprinted indirect object while preserving non-encoding sibling values and raw stream bytes; explicit dereference segments bind every traversed indirect owner and transfer the write to the referenced object, with cycle, duplicate-target and traversal-owner conflict refusal; insert refuses existing keys or out-of-range indexes, remove requires an explicit null placeholder, exact parsed-model put-get and inverse-preservation laws execute before serialization, canonical direct Length normalization is explicit, every mutated object and every preserved traversal owner are fingerprint-checked after reopen, and the action/path/value are plan/approval-bound", &["shared-resource impact and affected pages"], &["stream Length/Filter/DecodeParms require complete stream replacement so raw bytes cannot be silently reinterpreted", "independently re-encoded equivalence, semantic ownership inference and higher-level semantic lens qualification remain separate"]),
+        capability("evidence_constrained_edit_synthesis", UniversalCapabilityStatusV2::Unverified, "ResearchEditSynthesis/EcbesUniversal/UniversalEditing/Renderer", "versioned deterministic kernel plus universal-edit transaction adapter materializes explicit candidates and automatically enumerates canonical text fidelity routes from one immutable revision, enforces minimum fidelity labels, revision-bound approvals, output budgets, strict page/object reopen, producer/output-bound external evidence and secured output, computes a plan-derived intent/request/affected-owner/affected-page influence cone, rejects missing obligations, selects an integer-cost Pareto result and binds publication to a SHA-256 receipt", &["candidate requests must provide exact edit intent and any route-specific approval", "semantic or appearance reconstruction requires explicit synthesis-policy authority", "source-native routes without an internally reported lens-law check require bound external lens evidence", "outside-cone pixel passes require a whole-document raster-preservation contract or exact output-bound external evidence", "reconstruction requires external evidence bound to the exact output; independent-renderer passes require hash-matching reference rasters from one independently declared named/versioned producer", "appearance reconstruction additionally requires inside-intent evidence"], &["the integrated cone is only as complete as canonical plan/apply affected-owner and affected-page reporting; finer operator, state and spatial provenance remains research work", "producer independence is declared and artifact-bound but still depends on operational trust outside the SDK", "novelty, empirical benefit, cross-renderer corpus breadth and production qualification remain unestablished", "appearance reconstruction remains disclosed reconstruction, never native source recovery"]),
         capability("vector_graphics", UniversalCapabilityStatusV2::ApprovalRequired, "AdvancedEditing/UniversalObjectGraph", "source-range vector mutation plus governed pattern, shading, appearance, transparency, and optional-content object-graph replacement", &["shared Form occurrence", "global resource impact"], &[]),
         capability("document_reflow", UniversalCapabilityStatusV2::ApprovalRequired, "TextReflow/CanonicalWriter", "constraint-based geometric and semantic reflow can paginate an arbitrarily long bounded replacement across repeated continuation-page chunks at any ordered page boundary while validating every line against the target region, preserving stable page references, and shifting page-label indexes", &["inferred structure", "cross-region movement", "font substitution"], &[]),
         capability("semantic_structure", UniversalCapabilityStatusV2::ApprovalRequired, "TextReflow/DocumentSecurity/UniversalObjectGraph", "revision-bound semantic correction can execute ParentTree repair; exact custom StructTreeRoot and tag-tree objects use the governed object-graph route", &["inferred reading order or relationship"], &[]),
         capability("interactive_content", UniversalCapabilityStatusV2::ApprovalRequired, "DocumentSubsystems/DocumentSecurity/UniversalObjectGraph", "forms, annotations, links, destinations, outlines, labels, XFA, searchable OCR, and visible scanned-word reconstruction are reachable through typed or exact revision-bound operations; visible reconstruction clone-writes one image occurrence after bounded harmonic inpainting, deletes any intersecting pre-existing invisible OCR carrier through its exact page-logical range, and adds shaped embedded Unicode text", &["document action or shared structure ownership changes", "OCR rectangle, exact searchable-layer range when present, and replacement approval"], &["OCR recognition remains provider-owned and inpainting is deterministic reconstruction, not recovery of unknowable original pixels"]),
         capability("signatures", UniversalCapabilityStatusV2::PolicyLimited, "SecureMutation/CanonicalWriter", "preserve-signature and authorized-rewrite modes are distinct", &["authorized rewrite invalidates earlier signatures"], &["credentials and DocMDP permissions remain mandatory"]),
         capability("output_security", UniversalCapabilityStatusV2::PolicyLimited, "CryptoWriter/CanonicalWriter", "authorized full rewrites can emit credentialed AES-256 Standard-handler output through apply-only byte credentials and credentialed reopen", &["security-envelope rotation", "encryption conflicts with PDF/A and PDF/X"], &["output passwords above the ISO 127-byte effective limit are refused instead of silently truncated", "legacy RC4/AES-128 output and PubSec recipient rotation remain separate, explicitly limited routes"]),
-        capability("renderer", UniversalCapabilityStatusV2::Unverified, "NativeRenderer", "qualification executes native RGBA rendering, hashes every selected page, discloses unsupported operations, and can compare caller-supplied independent reference rasters with MAE/RMSE/max-error/SSIM gates", &[], &["VPS corpus breadth and independent reference generation remain pending"]),
+        capability("renderer", UniversalCapabilityStatusV2::Unverified, "NativeRenderer", "qualification executes native RGBA rendering, hashes every selected page, discloses unsupported operations, and can compare caller-supplied reference rasters with MAE/RMSE/max-error/SSIM gates; optional named/versioned producer metadata is accepted only when its artifact SHA-256 matches the exact supplied RGBA bytes", &[], &["producer independence remains an externally governed declaration", "VPS corpus breadth and independent reference generation remain pending"]),
         capability("request_cancellation", UniversalCapabilityStatusV2::PolicyLimited, "Server/Engine/Filters", "universal HTTP blocking workers install their request token into a panic-safe synchronous scope; analysis, planning, source scans, stream filters, reconstruction, compression, rendering, raster comparison, apply, reopen, and validation poll it cooperatively so timed-out work can release its semaphore permit", &[], &["third-party codec calls that do not expose an interruption callback can stop only at the nearest governed call boundary"]),
         capability("standards", UniversalCapabilityStatusV2::Unverified, "Compliance/StandardsEngine", "requested PDF/A, PDF/UA, and PDF/X profiles are validated against final in-memory bytes and failed/inconclusive output is withheld", &["meaning-dependent accessibility decisions"], &["external accredited certification remains pending"]),
         capability("input_recovery", UniversalCapabilityStatusV2::PolicyLimited, "Parser/CanonicalWriter", "valid PDFs, password-opened Standard-handler encrypted PDFs, and deterministic repair candidates are accepted", &["repair changes object reachability"], &["hostile or irrecoverable byte streams are outside contract", "PubSec universal mutation still requires an explicit retained recipient-provider integration rather than a password credential"]),
@@ -1259,13 +1416,45 @@ pub fn analyze_universal_document_v2(
         revision_id: snapshot.revision_id,
         snapshot_id: snapshot.snapshot_id,
         page_count,
-        analyzed_pages,
+        analyzed_pages: analyzed_pages.clone(),
         graph,
         image_occurrences,
         capabilities: options
             .include_capabilities
             .then(universal_capability_registry_v2)
             .unwrap_or_default(),
+        saved_linked_stories: match crate::linked_stories::load_linked_stories(input) {
+            Ok(stories) => json!({"status": "bound", "stories": stories}),
+            Err(error) => {
+                crate::cancel::check_current_cancel("story metadata analysis")?;
+                json!({"status": "stale_or_unsupported", "error": error.to_string()})
+            }
+        },
+        story_tag_sources: if options.include_story_tag_sources {
+            match crate::tagged_structure::story::sources(input) {
+                Ok(sources) => {
+                    json!({"status":"bound", "source_sha256":digest_hex(input), "sources":sources})
+                }
+                Err(error) => {
+                    crate::cancel::check_current_cancel("story tag source analysis")?;
+                    json!({"status":"repair_or_explicit_migration_required","error":error.to_string()})
+                }
+            }
+        } else {
+            json!({"status":"not_requested", "option":"include_story_tag_sources"})
+        },
+        saved_typed_tables: match crate::typed_tables::load_typed_tables(input) {
+            Ok(tables) => json!({"status": "bound", "tables": tables}),
+            Err(error) => {
+                crate::cancel::check_current_cancel("typed table metadata analysis")?;
+                json!({"status": "stale_or_unsupported", "error": error.to_string()})
+            }
+        },
+        scoped_text_sources: if options.include_scoped_text_sources {
+            scoped_text::discover(input, &analyzed_pages)?
+        } else {
+            json!({"status":"not_requested", "option":"include_scoped_text_sources"})
+        },
         input_contract: json!({
             "accepted": ["iso_valid_pdf", "deterministically_recoverable_pdf"],
             "observed": universal_input_recovery_state(input),
@@ -1286,7 +1475,17 @@ pub fn plan_universal_edit_v2(
     input: &[u8],
     request: &UniversalEditRequestV2,
 ) -> Result<UniversalEditPlanV2> {
+    Ok(plan_universal_edit_v2_staged(input, request)?.0)
+}
+
+fn plan_universal_edit_v2_staged(
+    input: &[u8],
+    request: &UniversalEditRequestV2,
+) -> Result<(UniversalEditPlanV2, Option<scoped_text::StagedScopedText>)> {
     crate::cancel::check_current_cancel("universal edit planning snapshot")?;
+    if let Some(contract) = &request.policy.edit_contract {
+        crate::edit_contracts::validate_contract_input(input, contract)?;
+    }
     let snapshot = build_document_snapshot(input, None)?;
     let policy_engine = ContentEngine::open_bytes(input.to_vec())?;
     let secure_policy = analyze_edit_policy(&policy_engine, SignatureEditOperation::ContentEdit)?;
@@ -1305,13 +1504,244 @@ pub fn plan_universal_edit_v2(
     });
     let mut conformance_impact = json!({"requires_revalidation": true});
     let mut implementation_report;
+    let mut staged_scoped_text = None;
 
     crate::cancel::check_current_cancel("universal edit operation planning")?;
     match &requested_operation {
+        UniversalEditOperationV2::ScopedText { request: scoped } => {
+            let route = scoped_text::plan(input, scoped, &request.policy)?;
+            promote_plan_state(&mut state, route.state);
+            if let Some(candidate) = route.candidate {
+                selected_candidate_ids.push(candidate.candidate_id.clone());
+                candidates.push(candidate);
+            }
+            approval_reasons.extend(route.reasons);
+            read_set.extend(route.read_set);
+            write_set.extend(route.write_set);
+            preview = route.preview;
+            implementation_report = route.implementation;
+            staged_scoped_text = route.staged;
+            execution_operation = UniversalEditOperationV2::ScopedText {
+                request: route.execution,
+            };
+        }
+        UniversalEditOperationV2::ImageFragment { request: movement } => {
+            let mut execution = movement.clone();
+            execution.signature_policy_override =
+                request.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite;
+            let fragment = crate::image_fragments::preview_image_fragment_move(input, &execution)?;
+            let candidate_id = stable_id(
+                "image-fragment-v1",
+                &[
+                    snapshot.revision_id.as_bytes(),
+                    fragment.plan_sha256.as_bytes(),
+                ],
+            );
+            candidates.push(UniversalCandidateV2 {
+                candidate_id: candidate_id.clone(), page: fragment.source_page,
+                kind: "source_owned_image_fragment".into(),
+                source_identity: serde_json::to_value(&execution.source).map_err(json_error)?,
+                confidence: 1.0, exact: true, shared_resource: false,
+                approval_reason: Some("approve image removal, destination geometry and explicit foreground/background order".into()),
+            });
+            selected_candidate_ids.push(candidate_id);
+            promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
+            approval_reasons.push("approve source image relocation and changed compositing backdrop; native source definitions and history remain retained".into());
+            read_set.push("image_fragment.revision_bound_occurrence_and_paint_state".into());
+            write_set.push("image_fragment.private_source_stream_and_destination_capsule".into());
+            if fragment.ocr_spans > 0 {
+                approval_reasons.push("approve the selected invisible OCR carrier ownership and its joint movement with the image; no text recognition or implicit word matching".into());
+                read_set.push("image_fragment.exact_ocr_operands_and_logical_owners".into());
+                write_set.push("image_fragment.ocr_source_removal_and_native_search_group".into());
+            }
+            implementation_report = json!({"route":"image_fragment", "qualification":fragment.qualification,"exact_limits":fragment.exact_limits});
+            preview = serde_json::to_value(&fragment).map_err(json_error)?;
+            execution_operation = UniversalEditOperationV2::ImageFragment { request: execution };
+        }
+        UniversalEditOperationV2::StoryFigureTransfer { request: transfer } => {
+            let mut execution = transfer.clone();
+            execution.signature_policy_override =
+                request.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite;
+            let transfer_preview =
+                crate::linked_stories::figures::preview_story_figure_transfer(input, &execution)?;
+            let changed_pages = transfer_preview
+                .source
+                .changed_pages
+                .iter()
+                .chain(&transfer_preview.target.changed_pages)
+                .copied()
+                .collect::<BTreeSet<_>>();
+            signature_impact = json!({
+                "mode": request.policy.mutation_mode,
+                "canonical_rewrite_for_page_creation": transfer_preview.source.generated_pages > 0 || transfer_preview.target.generated_pages > 0,
+                "page_tree_removals": transfer_preview.source.page_pruning.removed_pages.iter().chain(&transfer_preview.target.page_pruning.removed_pages).copied().collect::<BTreeSet<_>>(),
+                "original_prefix_preserved": false,
+                "private_intermediate_revision_retained": true,
+                "cryptographic_validity_claimed": false,
+            });
+            let candidate_id = stable_id(
+                "linked-story-figure-transfer-v1",
+                &[
+                    snapshot.revision_id.as_bytes(),
+                    transfer_preview.plan_sha256.as_bytes(),
+                ],
+            );
+            candidates.push(UniversalCandidateV2 {
+                candidate_id: candidate_id.clone(),
+                page: changed_pages.iter().next().copied().unwrap_or(1),
+                kind: "saved_story_figure_transfer".into(),
+                source_identity: json!({
+                    "source_story_id": execution.source_story_id,
+                    "source_figure_id": execution.source_figure_id,
+                    "source_binding": execution.source_binding,
+                    "target_story_id": execution.target_story_id,
+                    "target_figure_id": execution.target_figure_id,
+                    "target_caption_paragraph": execution.target_caption_paragraph,
+                    "intermediate_sha256": transfer_preview.intermediate_sha256,
+                }),
+                confidence: 1.0,
+                exact: true,
+                shared_resource: false,
+                approval_reason: Some("approve exact source-story ownership release, target-story attachment, final placement and retained intermediate revision".into()),
+            });
+            selected_candidate_ids.push(candidate_id);
+            promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
+            approval_reasons.push("approve moving the exact native Figure owner between two saved untagged stories; publication requires both metadata postconditions and one remaining physical owner".into());
+            read_set.extend([
+                "linked_story_transfer.source_and_target_saved_models".into(),
+                "linked_story_transfer.exact_native_figure_owner".into(),
+            ]);
+            write_set.extend([
+                "linked_story_transfer.source_ownership_release".into(),
+                "linked_story_transfer.target_ownership_and_native_placement".into(),
+            ]);
+            implementation_report = json!({
+                "route": "linked_story_figure_transfer",
+                "qualification": transfer_preview.qualification,
+                "exact_limits": transfer_preview.exact_limits,
+                "changed_pages": changed_pages,
+            });
+            preview = serde_json::to_value(&transfer_preview).map_err(json_error)?;
+            execution_operation =
+                UniversalEditOperationV2::StoryFigureTransfer { request: execution };
+        }
+        UniversalEditOperationV2::LinkedStory { request: story } => {
+            let mut execution = story.clone();
+            execution.signature_policy_override =
+                request.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite;
+            execution.allow_font_substitution &= request.policy.allow_font_substitution;
+            let story_preview = crate::linked_stories::preview_linked_story(input, &execution)?;
+            signature_impact = json!({"mode": request.policy.mutation_mode,
+                "canonical_rewrite_for_page_creation": story_preview.generated_pages > 0,
+                "page_tree_removals": story_preview.page_pruning.removed_pages,
+                "original_prefix_preserved": story_preview.generated_pages == 0 && story_preview.page_pruning.removed_pages.is_empty(),
+                "cryptographic_validity_claimed": false});
+            let candidate_id = stable_id(
+                "linked-story-v2",
+                &[
+                    snapshot.revision_id.as_bytes(),
+                    serde_json::to_vec(&execution)
+                        .map_err(json_error)?
+                        .as_slice(),
+                ],
+            );
+            candidates.push(UniversalCandidateV2 {
+                candidate_id: candidate_id.clone(), page: execution.frames[0].page,
+                kind: "approved_linked_story".into(), source_identity: json!({
+                    "story_id": execution.story_id, "revision_id": snapshot.revision_id, "writing_mode": execution.writing_mode,
+                    "frames": execution.frames, "source_tags": execution.source_tags, "table_layout": execution.table_layout, "figures": execution.figures, "figure_removals": execution.figure_removals, "figure_detachments": execution.figure_detachments,
+                }), confidence: 1.0, exact: true, shared_resource: false,
+                approval_reason: Some("approve linked frame ownership, font choices and pagination".into()),
+            });
+            selected_candidate_ids.push(candidate_id);
+            promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
+            approval_reasons.push(
+                "approve linked-story source ranges, font substitutions and affected pages".into(),
+            );
+            read_set.push("linked_story.revision_bound_frames_and_fonts".into());
+            write_set.push("linked_story.source_streams_fonts_page_tree".into());
+            if execution.writing_mode.is_vertical() {
+                approval_reasons.push("approve top-to-bottom text, column progression, physical frame bounds and disclosed orientation/font choices; supported tables and caption footprints use logical flow axes while images and annotation offsets remain physical".into());
+                read_set.push(
+                    "linked_story.writing_mode_vertical_font_coverage_and_physical_geometry".into(),
+                );
+                write_set.push(
+                    "linked_story.vertical_type0_metrics_positioned_glyphs_and_saved_flow_mode"
+                        .into(),
+                );
+            }
+            if !story_preview.page_pruning.removed_pages.is_empty() {
+                approval_reasons.push("approve removal of exactly the previewed empty owned continuation pages; retained pages and original pages are not deleted".into());
+                read_set
+                    .push("linked_story.continuation_owners_live_references_and_vacancy".into());
+                write_set.push(
+                    "linked_story.pruned_page_tree_surviving_labels_and_frame_metadata".into(),
+                );
+            }
+            if execution
+                .figures
+                .iter()
+                .any(|f| f.ocr.is_some() || f.ocr_unrelated)
+            {
+                approval_reasons.push("approve exact invisible source operands grouped with images, or explicit unrelated-OCR decisions; paragraph ranges are rebound without word matching".into());
+                read_set.push("linked_story.ocr_original_source_operands_and_scalar_ranges".into());
+                write_set
+                    .push("linked_story.native_search_groups_and_rebound_paragraph_ranges".into());
+            }
+            if crate::tagged_structure::story::active(&execution) {
+                approval_reasons.push("approve logical paragraph/table structure, explicit owner reuse/create decisions and meaning-dependent descriptions".into());
+                read_set.push("linked_story.selected_structure_owners_and_marked_content".into());
+                write_set.push(
+                    "linked_story.mcid_mcr_parenttree_idtree_and_logical_structure_ownership"
+                        .into(),
+                );
+            }
+            if execution.table_layout.is_some() {
+                approval_reasons.push("approve table topology, exact typed values, merged cells, row fragments, repeated headers and source-grid keep/remove decisions".into());
+                read_set
+                    .push("linked_story.table_topology_values_and_source_path_identities".into());
+                write_set.push("linked_story.owned_cell_text_grid_and_table_continuations".into());
+            }
+            if !execution.figures.is_empty()
+                || !execution.figure_removals.is_empty()
+                || !execution.figure_detachments.is_empty()
+            {
+                approval_reasons.push("approve native source-image removal, caption association, image dimensions and explicit compositing order across story pages".into());
+                read_set.push(
+                    "linked_story.figure_occurrences_resources_and_source_paint_state".into(),
+                );
+                write_set
+                    .push("linked_story.native_figure_capsules_ownership_and_page_content".into());
+            }
+            if execution
+                .source_tags
+                .as_ref()
+                .is_some_and(|tags| !tags.figures.is_empty())
+            {
+                approval_reasons.push("approve distinct Figure/caption logical owners, reviewed new descriptions and Figure geometry/MCID migration; this is not PDF/UA certification".into());
+                read_set.push(
+                    "linked_story.figure_leaf_paint_ownership_and_semantic_relationships".into(),
+                );
+                write_set
+                    .push("linked_story.figure_mcr_alt_layout_attributes_and_logical_order".into());
+            }
+            if !execution.figure_removals.is_empty() {
+                approval_reasons.push("approve explicit deletion of the listed saved figure occurrences from the current revision; this does not sanitize historical bytes or shared image resources".into());
+            }
+            if !execution.figure_detachments.is_empty() {
+                approval_reasons.push("approve releasing the listed exact saved figure owners while leaving their current paint unchanged; a later cross-story attachment is a separate revision-bound transaction".into());
+                read_set.push("linked_story.exact_saved_figure_detachment_owners".into());
+                write_set.push("linked_story.figure_metadata_ownership_release".into());
+            }
+            preview = serde_json::to_value(&story_preview).map_err(json_error)?;
+            implementation_report = json!({"route": "linked_story", "writing_mode": execution.writing_mode, "qualification": story_preview.qualification,
+                "exact_limits": story_preview.exact_limits});
+            execution_operation = UniversalEditOperationV2::LinkedStory { request: execution };
+        }
         UniversalEditOperationV2::Text { request: text } => {
             let mut execution = text.clone();
-            execution.signature_policy_override = request.policy.mutation_mode
-                == UniversalMutationModeV2::AuthorizedRewrite;
+            execution.signature_policy_override =
+                request.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite;
             let mut planning_request = execution.clone();
             // Candidate validity is resolved below against the full logical
             // inventory. Route analysis must not throw early merely because a
@@ -1329,11 +1759,16 @@ pub fn plan_universal_edit_v2(
                         &text.source_text,
                         &text.replacement_text,
                     ) {
-                        for identity in provenance.source_instructions.into_iter().filter(|identity| {
-                            text.source_instruction_id
-                                .as_deref()
-                                .is_none_or(|selected| identity.instruction_id == selected)
-                        }) {
+                        for identity in
+                            provenance
+                                .source_instructions
+                                .into_iter()
+                                .filter(|identity| {
+                                    text.source_instruction_id
+                                        .as_deref()
+                                        .is_none_or(|selected| identity.instruction_id == selected)
+                                })
+                        {
                             let id = identity.instruction_id.clone();
                             candidates.push(UniversalCandidateV2 {
                                 candidate_id: id.clone(),
@@ -1350,12 +1785,8 @@ pub fn plan_universal_edit_v2(
                     }
                     if report.refusal.is_some() {
                         promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
-                        approval_reasons.push("operator-preserving route cannot satisfy the requested font/layout constraints; approve semantic reconstruction".to_string());
-                        execution.requested_mode = if execution.region.is_some() {
-                            crate::source_editing::TrueEditingMode::GeometricBlock
-                        } else {
-                            crate::source_editing::TrueEditingMode::SemanticDocument
-                        };
+                        approval_reasons.push("operator-preserving route cannot satisfy the requested font/layout constraints; approve bounded layout reconstruction".to_string());
+                        execution.requested_mode = text_reconstruction_mode(&execution);
                         execution.approve_low_confidence_structure = true;
                         if request.policy.allow_font_substitution {
                             execution.font_policy = "allow_substitute".to_string();
@@ -1366,25 +1797,17 @@ pub fn plan_universal_edit_v2(
                 Err(error) if matches!(error, WellfriendError::UnsupportedFeature(_)) => {
                     promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
                     approval_reasons.push(error.to_string());
-                    execution.requested_mode = if execution.region.is_some() {
-                        crate::source_editing::TrueEditingMode::GeometricBlock
-                    } else {
-                        crate::source_editing::TrueEditingMode::SemanticDocument
-                    };
+                    execution.requested_mode = text_reconstruction_mode(&execution);
                     execution.approve_low_confidence_structure = true;
                     if request.policy.allow_font_substitution {
                         execution.font_policy = "allow_substitute".to_string();
                     }
-                    implementation_report = json!({"route": "semantic_reconstruction", "source_error": error.to_string()});
+                    implementation_report = json!({"route": "bounded_layout_reconstruction", "source_error": error.to_string()});
                 }
                 Err(error) => return Err(error),
             }
-            let logical_candidates = logical_text_range_candidates_v2(
-                input,
-                text,
-                &snapshot.revision_id,
-                &candidates,
-            )?;
+            let logical_candidates =
+                logical_text_range_candidates_v2(input, text, &snapshot.revision_id, &candidates)?;
             for candidate in logical_candidates {
                 if candidate.exact {
                     selected_candidate_ids.push(candidate.candidate_id.clone());
@@ -1428,9 +1851,44 @@ pub fn plan_universal_edit_v2(
             }) {
                 bind_text_candidate_to_request(&mut execution, selected)?;
             }
+            // A multi-operand range using one source font does not need font
+            // substitution when the replacement is a same-length permutation
+            // of characters already encoded by that range. Preserve the
+            // original per-run font/paint state so logical order stays at the
+            // source location instead of escalating to appended reconstruction.
+            let source_characters = text.source_text.chars().collect::<BTreeSet<_>>();
+            let exact_candidates = candidates
+                .iter()
+                .filter(|candidate| candidate.exact)
+                .collect::<Vec<_>>();
+            let preserve_original_per_run = !exact_candidates.is_empty()
+                && text.source_text.chars().count() == text.replacement_text.chars().count()
+                && text
+                    .replacement_text
+                    .chars()
+                    .all(|character| source_characters.contains(&character))
+                && exact_candidates.iter().all(|candidate| {
+                    if candidate.kind != "multi_run_text_range" {
+                        return false;
+                    }
+                    let Some(spans) = candidate.source_identity["source_spans"].as_array() else {
+                        return false;
+                    };
+                    let mut fonts = spans
+                        .iter()
+                        .filter_map(|span| span["font_resource"].as_str().map(str::to_string));
+                    let Some(first) = fonts.next() else {
+                        return false;
+                    };
+                    fonts.all(|font| font == first)
+                });
+            if preserve_original_per_run {
+                execution.font_policy = "preserve_original_per_run".to_string();
+            }
             if execution.font_policy == "allow_substitute" {
                 promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
-                approval_reasons.push("font substitution may change metrics or pagination".to_string());
+                approval_reasons
+                    .push("font substitution may change metrics or pagination".to_string());
                 let mut by_candidate = serde_json::Map::new();
                 let mut any_approved_candidate = false;
                 for candidate in candidates.iter().filter(|candidate| candidate.exact) {
@@ -1481,15 +1939,11 @@ pub fn plan_universal_edit_v2(
             let occurrences = universal_image_occurrences_v2(input, &[image.page])?;
             for occurrence in occurrences.into_iter().filter(|candidate| {
                 candidate.page == image.page
-                    &&
-                image
-                    .occurrence_id
-                    .as_deref()
-                    .is_none_or(|id| candidate.occurrence_id == id)
-                    &&
-                image
-                    .object_number
-                    .is_none_or(|number| {
+                    && image
+                        .occurrence_id
+                        .as_deref()
+                        .is_none_or(|id| candidate.occurrence_id == id)
+                    && image.object_number.is_none_or(|number| {
                         candidate.object_number == Some(number)
                             && candidate.generation == Some(image.generation)
                     })
@@ -1503,16 +1957,23 @@ pub fn plan_universal_edit_v2(
                 candidates.push(UniversalCandidateV2 {
                     candidate_id: id.clone(),
                     page: image.page,
-                    kind: if occurrence.inline { "inline_image" } else { "image_xobject" }.to_string(),
+                    kind: if occurrence.inline {
+                        "inline_image"
+                    } else {
+                        "image_xobject"
+                    }
+                    .to_string(),
                     source_identity: serde_json::to_value(&occurrence).map_err(json_error)?,
                     confidence: 1.0,
                     exact: true,
                     shared_resource: shared,
                     approval_reason: (occurrence.inline || shared).then(|| {
                         if occurrence.inline {
-                            "inline image will be promoted to an occurrence-owned XObject".to_string()
+                            "inline image will be promoted to an occurrence-owned XObject"
+                                .to_string()
                         } else {
-                            "shared image definition requires explicit clone-one or edit-all policy".to_string()
+                            "shared image definition requires explicit clone-one or edit-all policy"
+                                .to_string()
                         }
                     }),
                 });
@@ -1569,9 +2030,7 @@ pub fn plan_universal_edit_v2(
                         .or_else(|| candidate.source_identity["owner_stream_object"].as_u64())?;
                     let generation = candidate.source_identity["generation"]
                         .as_u64()
-                        .or_else(|| {
-                            candidate.source_identity["owner_stream_generation"].as_u64()
-                        })
+                        .or_else(|| candidate.source_identity["owner_stream_generation"].as_u64())
                         .unwrap_or(0);
                     Some(format!("object-{number}-{generation}"))
                 })
@@ -1624,7 +2083,9 @@ pub fn plan_universal_edit_v2(
                     confidence: 1.0,
                     exact: true,
                     shared_resource: shared,
-                    approval_reason: shared.then(|| "shared Form occurrence requires clone-one or edit-all approval".to_string()),
+                    approval_reason: shared.then(|| {
+                        "shared Form occurrence requires clone-one or edit-all approval".to_string()
+                    }),
                 });
                 selected_candidate_ids.push(id);
                 read_set.push(vector.stable_id.clone());
@@ -1634,16 +2095,22 @@ pub fn plan_universal_edit_v2(
                 ));
                 if shared {
                     promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
-                    approval_reasons.push("shared Form resource policy must be acknowledged".to_string());
+                    approval_reasons
+                        .push("shared Form resource policy must be acknowledged".to_string());
                 }
             } else {
                 promote_plan_state(&mut state, UniversalPlanStateV2::TargetNotFound);
-                approval_reasons.push("the selected vector identity is not present in the current revision".to_string());
+                approval_reasons.push(
+                    "the selected vector identity is not present in the current revision"
+                        .to_string(),
+                );
             }
             implementation_report = json!({"route": "advanced_editing_vector_source_range"});
             preview = json!({"page": vector.page, "stable_id": vector.stable_id, "operation": vector.operation});
         }
-        UniversalEditOperationV2::StructureCorrection { request: correction } => {
+        UniversalEditOperationV2::StructureCorrection {
+            request: correction,
+        } => {
             let correction_json = serde_json::to_string(&json!({
                 "semantic_node_id": correction.semantic_node_id,
                 "accepted_relationships": correction.accepted_relationships,
@@ -1659,16 +2126,19 @@ pub fn plan_universal_edit_v2(
                 ));
             }
             promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
-            approval_reasons.push("semantic structure corrections require explicit relationship approval".to_string());
+            approval_reasons.push(
+                "semantic structure corrections require explicit relationship approval".to_string(),
+            );
             let mut execution = correction.clone();
             execution.text_edit.requested_mode =
                 crate::source_editing::TrueEditingMode::SemanticDocument;
             execution.text_edit.approve_low_confidence_structure = true;
-            execution.text_edit.signature_policy_override = request.policy.mutation_mode
-                == UniversalMutationModeV2::AuthorizedRewrite;
+            execution.text_edit.signature_policy_override =
+                request.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite;
             let mut semantic_planning_request = execution.text_edit.clone();
             semantic_planning_request.source_instruction_id = None;
-            let semantic_plan = match plan_scene_text_transaction(input, &semantic_planning_request) {
+            let semantic_plan = match plan_scene_text_transaction(input, &semantic_planning_request)
+            {
                 Ok(report) => {
                     read_set = report.read_set.clone();
                     write_set = report.write_set.clone();
@@ -1689,13 +2159,17 @@ pub fn plan_universal_edit_v2(
                 &correction.text_edit.source_text,
                 &correction.text_edit.replacement_text,
             ) {
-                for identity in provenance.source_instructions.into_iter().filter(|identity| {
-                    correction
-                        .text_edit
-                        .source_instruction_id
-                        .as_deref()
-                        .is_none_or(|selected| identity.instruction_id == selected)
-                }) {
+                for identity in provenance
+                    .source_instructions
+                    .into_iter()
+                    .filter(|identity| {
+                        correction
+                            .text_edit
+                            .source_instruction_id
+                            .as_deref()
+                            .is_none_or(|selected| identity.instruction_id == selected)
+                    })
+                {
                     let id = identity.instruction_id.clone();
                     candidates.push(UniversalCandidateV2 {
                         candidate_id: id.clone(),
@@ -1800,9 +2274,8 @@ pub fn plan_universal_edit_v2(
             } else {
                 None
             };
-            execution_operation = UniversalEditOperationV2::StructureCorrection {
-                request: execution,
-            };
+            execution_operation =
+                UniversalEditOperationV2::StructureCorrection { request: execution };
             if correction.repair_tagged_structure {
                 write_set.push("catalog.StructTreeRoot.ParentTree".to_string());
                 write_set.push("pages.StructParents".to_string());
@@ -1824,15 +2297,27 @@ pub fn plan_universal_edit_v2(
         UniversalEditOperationV2::DocumentSubsystem { request: subsystem } => {
             let mut execution = subsystem.clone();
             execution.approved = true;
-            let subsystem_plan = crate::document_subsystems::plan_document_subsystems(
-                input,
-                &execution,
-            )?;
+            if let Some(
+                crate::document_subsystems::DocumentSubsystemsAction::TableApplyTypedValues {
+                    table,
+                },
+            ) = execution.action.as_mut()
+            {
+                for cell in &mut table.cells {
+                    cell.binding.signature_policy_override =
+                        request.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite;
+                    cell.binding.allow_font_substitution &= request.policy.allow_font_substitution;
+                }
+            }
+            let subsystem_plan =
+                crate::document_subsystems::plan_document_subsystems(input, &execution)?;
             let candidate_id = stable_id(
                 "document-subsystem-v2",
                 &[
                     snapshot.revision_id.as_bytes(),
-                    serde_json::to_vec(subsystem).map_err(json_error)?.as_slice(),
+                    serde_json::to_vec(subsystem)
+                        .map_err(json_error)?
+                        .as_slice(),
                 ],
             );
             candidates.push(UniversalCandidateV2 {
@@ -1865,9 +2350,8 @@ pub fn plan_universal_edit_v2(
             );
             read_set.push("document_subsystems.analysis".to_string());
             write_set.push("document_subsystems.typed_source_graph".to_string());
-            execution_operation = UniversalEditOperationV2::DocumentSubsystem {
-                request: execution,
-            };
+            execution_operation =
+                UniversalEditOperationV2::DocumentSubsystem { request: execution };
             implementation_report = json!({
                 "route": "document_subsystems_typed_transaction",
                 "plan": subsystem_plan,
@@ -1885,10 +2369,8 @@ pub fn plan_universal_edit_v2(
             if request.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite {
                 execution.full_rewrite_acknowledged = true;
             }
-            let security_plan = crate::document_security::plan_document_security(
-                input,
-                &execution,
-            )?;
+            let security_plan =
+                crate::document_security::plan_document_security(input, &execution)?;
             let candidate_id = stable_id(
                 "document-security-v2",
                 &[
@@ -1921,9 +2403,7 @@ pub fn plan_universal_edit_v2(
             );
             read_set.extend(security_plan.read_set.clone());
             write_set.extend(security_plan.write_set.clone());
-            execution_operation = UniversalEditOperationV2::DocumentSecurity {
-                request: execution,
-            };
+            execution_operation = UniversalEditOperationV2::DocumentSecurity { request: execution };
             implementation_report = json!({
                 "route": "document_security_typed_transaction",
                 "plan": security_plan,
@@ -1935,7 +2415,9 @@ pub fn plan_universal_edit_v2(
                 "action": security.action,
             });
         }
-        UniversalEditOperationV2::ObjectGraph { request: object_graph } => {
+        UniversalEditOperationV2::ObjectGraph {
+            request: object_graph,
+        } => {
             let planned = plan_object_graph_edit_v2(input, object_graph, &snapshot.revision_id)?;
             candidates = planned.candidates;
             selected_candidate_ids = candidates
@@ -1946,7 +2428,7 @@ pub fn plan_universal_edit_v2(
             write_set = planned.write_set;
             promote_plan_state(&mut state, UniversalPlanStateV2::ApprovalRequired);
             approval_reasons.push(
-                "approve exact indirect-object graph replacement and its declared render-invalidation scope"
+                "approve exact indirect-object graph mutation and its declared render-invalidation scope"
                     .to_string(),
             );
             implementation_report = planned.report;
@@ -2028,8 +2510,7 @@ pub fn plan_universal_edit_v2(
             }
         }
     }
-    let required_conformance_profiles =
-        required_conformance_profiles_v2(input, &request.policy)?;
+    let required_conformance_profiles = required_conformance_profiles_v2(input, &request.policy)?;
     if request.policy.require_conformance_preservation
         || !request.policy.required_conformance_profiles.is_empty()
     {
@@ -2111,8 +2592,13 @@ pub fn plan_universal_edit_v2(
             }
         });
     }
+    let disclosed_writing_mode = implementation_report
+        .get("writing_mode")
+        .cloned()
+        .unwrap_or(Value::Null);
     implementation_report = json!({
         "operation": implementation_report,
+        "writing_mode": disclosed_writing_mode,
         "input_recovery": input_recovery,
         "repair_commit_order": "source mutation in memory, deterministic normalization, strict reopen, then return output",
     });
@@ -2124,26 +2610,29 @@ pub fn plan_universal_edit_v2(
         &execution_operation,
         &request.policy,
     )?;
-    Ok(UniversalEditPlanV2 {
-        schema_version: UNIVERSAL_EDITING_SCHEMA_VERSION.to_string(),
-        plan_id,
-        document_id: snapshot.document_id,
-        revision_id: snapshot.revision_id,
-        snapshot_id: snapshot.snapshot_id,
-        state,
-        requested_operation,
-        execution_operation,
-        policy: request.policy.clone(),
-        candidates,
-        selected_candidate_ids,
-        approval_reasons,
-        read_set,
-        write_set,
-        preview,
-        signature_impact,
-        conformance_impact,
-        implementation_report,
-    })
+    Ok((
+        UniversalEditPlanV2 {
+            schema_version: UNIVERSAL_EDITING_SCHEMA_VERSION.to_string(),
+            plan_id,
+            document_id: snapshot.document_id,
+            revision_id: snapshot.revision_id,
+            snapshot_id: snapshot.snapshot_id,
+            state,
+            requested_operation,
+            execution_operation,
+            policy: request.policy.clone(),
+            candidates,
+            selected_candidate_ids,
+            approval_reasons,
+            read_set,
+            write_set,
+            preview,
+            signature_impact,
+            conformance_impact,
+            implementation_report,
+        },
+        staged_scoped_text,
+    ))
 }
 
 pub fn create_universal_approval_token_v2(
@@ -2172,6 +2661,12 @@ pub fn create_universal_approval_token_v2(
             "universal editing approval must explicitly accept the planned visual or structural change",
         ));
     }
+    if matches!(
+        &plan.requested_operation,
+        UniversalEditOperationV2::ScopedText { .. }
+    ) {
+        scoped_text::approve(plan, &decision)?;
+    }
     let known = plan
         .candidates
         .iter()
@@ -2196,11 +2691,15 @@ pub fn create_universal_approval_token_v2(
             "approval selected a non-exact candidate that cannot be applied",
         ));
     }
-    if matches!(&plan.requested_operation, UniversalEditOperationV2::Image { .. })
-        && decision.selected_candidate_ids.len() != 1
+    if matches!(
+        &plan.requested_operation,
+        UniversalEditOperationV2::Image { .. }
+            | UniversalEditOperationV2::ImageFragment { .. }
+            | UniversalEditOperationV2::StoryFigureTransfer { .. }
+    ) && decision.selected_candidate_ids.len() != 1
     {
         return Err(WellfriendError::invalid_input(
-            "universal image approval must select exactly one occurrence candidate",
+            "universal image or Figure-transfer approval must select exactly one candidate",
         ));
     }
     let text_candidates = plan
@@ -2228,20 +2727,20 @@ pub fn create_universal_approval_token_v2(
                 })
         })
         .count();
-    if selected_text_candidates > 1
-        || (text_candidates > 1 && selected_text_candidates != 1)
-    {
+    if selected_text_candidates > 1 || (text_candidates > 1 && selected_text_candidates != 1) {
         return Err(WellfriendError::invalid_input(
             "universal approval must select exactly one source instruction when a text selection is ambiguous",
         ));
     }
-    if matches!(&plan.requested_operation, UniversalEditOperationV2::ObjectGraph { .. })
-        && decision
-            .selected_candidate_ids
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>()
-            != known
+    if matches!(
+        &plan.requested_operation,
+        UniversalEditOperationV2::ObjectGraph { .. }
+    ) && decision
+        .selected_candidate_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != known
     {
         return Err(WellfriendError::invalid_input(
             "universal object-graph approval must select every revision-bound mutation candidate",
@@ -2339,9 +2838,8 @@ pub fn universal_image_occurrences_v2(
         crate::cancel::check_current_cancel("universal image occurrence page scan")?;
         let page = engine.document().get_page(page_number)?;
         let mut page_occurrences = Vec::new();
-        let mut page_graphics_state = ImageOccurrenceGraphicsStateV2::new(
-            UniversalImageMatrixV2::IDENTITY,
-        );
+        let mut page_graphics_state =
+            ImageOccurrenceGraphicsStateV2::new(UniversalImageMatrixV2::IDENTITY);
         for (stream_index, (number, generation)) in page.contents.iter().copied().enumerate() {
             crate::cancel::check_current_cancel("universal image occurrence stream decode")?;
             let object = reader.get_object(number, generation)?;
@@ -2475,10 +2973,8 @@ fn collect_image_occurrences_in_stream(
     let mut token_count = 0usize;
     while let Some(spanned) = tokenizer.next_spanned()? {
         token_count += 1;
-        if token_count % 256 == 0 {
-            crate::cancel::check_current_cancel(
-                "universal image occurrence content-token scan",
-            )?;
+        if token_count.is_multiple_of(256) {
+            crate::cancel::check_current_cancel("universal image occurrence content-token scan")?;
         }
         if let Some(builder) = inline.as_mut() {
             match &spanned.token {
@@ -2486,8 +2982,7 @@ fn collect_image_occurrences_in_stream(
                 ContentToken::Operator(operator) if operator == "EI" => {
                     let builder = inline.take().ok_or_else(|| {
                         WellfriendError::MalformedPdf(
-                            "universal image analysis lost inline-image parser state"
-                                .to_string(),
+                            "universal image analysis lost inline-image parser state".to_string(),
                         )
                     })?;
                     let (width, height, bits, color_space, filters) =
@@ -2502,30 +2997,33 @@ fn collect_image_occurrences_in_stream(
                         None,
                         invocation_path,
                     );
-                    push_image_occurrence(output, UniversalImageOccurrenceV2 {
-                        occurrence_id,
-                        page,
-                        content_stream_index: stream_index,
-                        owner_stream_object: owner_number,
-                        owner_stream_generation: owner_generation,
-                        operation_byte_start: builder.start,
-                        operation_byte_end: spanned.end,
-                        resource_name: None,
-                        object_number: None,
-                        generation: None,
-                        inline: true,
-                        transform: builder.matrix,
-                        bbox: image_bbox(builder.matrix),
-                        width,
-                        height,
-                        bits_per_component: bits,
-                        color_space,
-                        filters,
-                        invocation_path: invocation_path.to_vec(),
-                        shared_definition_uses: 1,
-                        clone_one_eligible: builder.data_len > 0,
-                        edit_all_eligible: false,
-                    })?;
+                    push_image_occurrence(
+                        output,
+                        UniversalImageOccurrenceV2 {
+                            occurrence_id,
+                            page,
+                            content_stream_index: stream_index,
+                            owner_stream_object: owner_number,
+                            owner_stream_generation: owner_generation,
+                            operation_byte_start: builder.start,
+                            operation_byte_end: spanned.end,
+                            resource_name: None,
+                            object_number: None,
+                            generation: None,
+                            inline: true,
+                            transform: builder.matrix,
+                            bbox: image_bbox(builder.matrix),
+                            width,
+                            height,
+                            bits_per_component: bits,
+                            color_space,
+                            filters,
+                            invocation_path: invocation_path.to_vec(),
+                            shared_definition_uses: 1,
+                            clone_one_eligible: builder.data_len > 0,
+                            edit_all_eligible: false,
+                        },
+                    )?;
                 }
                 _ => builder.parameters.push(spanned),
             }
@@ -2581,14 +3079,15 @@ fn collect_image_occurrences_in_stream(
                                     .to_string(),
                             ));
                         }
-                        graphics_state.matrix = graphics_state.matrix.multiply(UniversalImageMatrixV2 {
-                            a: values[0],
-                            b: values[1],
-                            c: values[2],
-                            d: values[3],
-                            e: values[4],
-                            f: values[5],
-                        });
+                        graphics_state.matrix =
+                            graphics_state.matrix.multiply(UniversalImageMatrixV2 {
+                                a: values[0],
+                                b: values[1],
+                                c: values[2],
+                                d: values[3],
+                                e: values[4],
+                                f: values[5],
+                            });
                     }
                     "Do" => {
                         let [operand] = operands.as_slice() else {
@@ -2627,30 +3126,42 @@ fn collect_image_occurrences_in_stream(
                                     Some(&name),
                                     invocation_path,
                                 );
-                                push_image_occurrence(output, UniversalImageOccurrenceV2 {
-                                    occurrence_id,
-                                    page,
-                                    content_stream_index: stream_index,
-                                    owner_stream_object: owner_number,
-                                    owner_stream_generation: owner_generation,
-                                    operation_byte_start: operation_start,
-                                    operation_byte_end: spanned.end,
-                                    resource_name: Some(name),
-                                    object_number: Some(number),
-                                    generation: Some(generation),
-                                    inline: false,
-                                    transform: graphics_state.matrix,
-                                    bbox: image_bbox(graphics_state.matrix),
-                                    width: pdf_u32(dict.get_integer("Width").or_else(|| dict.get_integer("W"))),
-                                    height: pdf_u32(dict.get_integer("Height").or_else(|| dict.get_integer("H"))),
-                                    bits_per_component: pdf_u8(dict.get_integer("BitsPerComponent").or_else(|| dict.get_integer("BPC"))),
-                                    color_space: image_color_space(dict),
-                                    filters: image_filter_names(dict),
-                                    invocation_path: invocation_path.to_vec(),
-                                    shared_definition_uses: 1,
-                                    clone_one_eligible: true,
-                                    edit_all_eligible: true,
-                                })?;
+                                push_image_occurrence(
+                                    output,
+                                    UniversalImageOccurrenceV2 {
+                                        occurrence_id,
+                                        page,
+                                        content_stream_index: stream_index,
+                                        owner_stream_object: owner_number,
+                                        owner_stream_generation: owner_generation,
+                                        operation_byte_start: operation_start,
+                                        operation_byte_end: spanned.end,
+                                        resource_name: Some(name),
+                                        object_number: Some(number),
+                                        generation: Some(generation),
+                                        inline: false,
+                                        transform: graphics_state.matrix,
+                                        bbox: image_bbox(graphics_state.matrix),
+                                        width: pdf_u32(
+                                            dict.get_integer("Width")
+                                                .or_else(|| dict.get_integer("W")),
+                                        ),
+                                        height: pdf_u32(
+                                            dict.get_integer("Height")
+                                                .or_else(|| dict.get_integer("H")),
+                                        ),
+                                        bits_per_component: pdf_u8(
+                                            dict.get_integer("BitsPerComponent")
+                                                .or_else(|| dict.get_integer("BPC")),
+                                        ),
+                                        color_space: image_color_space(dict),
+                                        filters: image_filter_names(dict),
+                                        invocation_path: invocation_path.to_vec(),
+                                        shared_definition_uses: 1,
+                                        clone_one_eligible: true,
+                                        edit_all_eligible: true,
+                                    },
+                                )?;
                             }
                             Some("Form") => {
                                 if active_forms.contains(&(number, generation)) {
@@ -2673,11 +3184,9 @@ fn collect_image_occurrences_in_stream(
                                 }
                                 let form_matrix = image_matrix_from_object(dict.get("Matrix"))
                                     .unwrap_or(UniversalImageMatrixV2::IDENTITY);
-                                let nested_resources = resolve_universal_dict(
-                                    dict.get("Resources"),
-                                    reader,
-                                )
-                                .unwrap_or_else(|| resources.clone());
+                                let nested_resources =
+                                    resolve_universal_dict(dict.get("Resources"), reader)
+                                        .unwrap_or_else(|| resources.clone());
                                 let mut nested_path = invocation_path.to_vec();
                                 nested_path.push(VectorFormInvocation {
                                     resource_name: name,
@@ -2757,7 +3266,7 @@ fn content_numbers(operands: &[SpannedContentToken]) -> Vec<f64> {
 }
 
 fn image_occurrence_id(
-    revision: &str,
+    _revision: &str,
     page: usize,
     owner_number: u32,
     owner_generation: u16,
@@ -2770,7 +3279,12 @@ fn image_occurrence_id(
     stable_id(
         "image-occurrence-v2",
         &[
-            revision.as_bytes(),
+            // The request itself is revision-bound by input_sha256.  Keeping
+            // the whole-file revision in the occurrence identity made an
+            // otherwise unchanged image impossible to rebind after an
+            // unrelated metadata, tag-tree, or trailer repair.  The exact
+            // paint locator below is stable while still distinguishing page,
+            // owner stream, operation, resource and nested invocation path.
             &page.to_le_bytes(),
             &owner_number.to_le_bytes(),
             &owner_generation.to_le_bytes(),
@@ -2854,7 +3368,13 @@ fn image_color_space(dict: &PdfDictionary) -> Option<String> {
 
 fn inline_image_metadata(
     parameters: &[SpannedContentToken],
-) -> (Option<u32>, Option<u32>, Option<u8>, Option<String>, Vec<String>) {
+) -> (
+    Option<u32>,
+    Option<u32>,
+    Option<u8>,
+    Option<String>,
+    Vec<String>,
+) {
     let mut width = None;
     let mut height = None;
     let mut bits = None;
@@ -2914,11 +3434,7 @@ struct UniversalObjectGraphPlanInternalV2 {
     report: Value,
 }
 
-pub fn inspect_universal_object_v2(
-    input: &[u8],
-    number: u32,
-    generation: u16,
-) -> Result<Value> {
+pub fn inspect_universal_object_v2(input: &[u8], number: u32, generation: u16) -> Result<Value> {
     crate::cancel::check_current_cancel("universal object inspection")?;
     let engine = ContentEngine::open_bytes(input.to_vec())?;
     let object = engine.document().reader().get_object(number, generation)?;
@@ -3002,6 +3518,807 @@ fn pdf_object_to_universal_value_v2(
     })
 }
 
+fn object_lens_dictionary_v2<'a>(object: &'a PdfObject, key: &str) -> Result<&'a PdfObject> {
+    match object {
+        PdfObject::Dictionary(dictionary) => dictionary.get(key),
+        PdfObject::Stream { dict, .. } => {
+            if matches!(key, "Length" | "Filter" | "DecodeParms") {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "ordinary object-lens paths cannot mutate stream encoding controls; use the atomic stream_encoding operation"
+                        .to_string(),
+                ));
+            }
+            dict.get(key)
+        }
+        PdfObject::Reference { .. } => {
+            return Err(WellfriendError::UnsupportedFeature(
+                "universal object lens does not cross an indirect reference; target that object explicitly"
+                    .to_string(),
+            ));
+        }
+        _ => None,
+    }
+    .ok_or_else(|| {
+        WellfriendError::invalid_input(format!(
+            "universal object lens dictionary key '{key}' is absent"
+        ))
+    })
+}
+
+fn resolve_object_lens_path_v2<'a>(
+    object: &'a PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+) -> Result<&'a PdfObject> {
+    if path.len() > 128 {
+        return Err(WellfriendError::ResourceLimit(
+            "universal object lens exceeds 128 path segments".to_string(),
+        ));
+    }
+    let mut current = object;
+    let mut path_bytes = 0usize;
+    for segment in path {
+        current = match segment {
+            UniversalObjectPathSegmentV2::Key { key } => {
+                validate_pdf_name_v2(key, "universal object lens key")?;
+                path_bytes = path_bytes.checked_add(key.len()).ok_or_else(|| {
+                    WellfriendError::ResourceLimit(
+                        "universal object lens path length overflow".to_string(),
+                    )
+                })?;
+                if path_bytes > 64 * 1024 {
+                    return Err(WellfriendError::ResourceLimit(
+                        "universal object lens path exceeds 64 KiB".to_string(),
+                    ));
+                }
+                object_lens_dictionary_v2(current, key)?
+            }
+            UniversalObjectPathSegmentV2::Index { index } => match current {
+                PdfObject::Array(items) => items.get(*index).ok_or_else(|| {
+                    WellfriendError::invalid_input(
+                        "universal object lens array index is outside the source value",
+                    )
+                })?,
+                PdfObject::Reference { .. } => {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "universal object lens does not cross an indirect reference; target that object explicitly"
+                            .to_string(),
+                    ));
+                }
+                _ => {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens array segment targets a non-array value",
+                    ));
+                }
+            },
+            UniversalObjectPathSegmentV2::Dereference { .. } => {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "universal object lens dereference must be resolved by the indirect-owner traversal"
+                        .to_string(),
+                ));
+            }
+        };
+    }
+    Ok(current)
+}
+
+fn validate_object_lens_path_v2(
+    object: &PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+) -> Result<()> {
+    resolve_object_lens_path_v2(object, path).map(|_| ())
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedObjectLensTraversalV2 {
+    number: u32,
+    generation: u16,
+    fingerprint: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedObjectLensOwnerV2 {
+    number: u32,
+    generation: u16,
+    object: PdfObject,
+    local_path: Vec<UniversalObjectPathSegmentV2>,
+    traversed: Vec<ResolvedObjectLensTraversalV2>,
+}
+
+fn validate_object_lens_fingerprint_v2(value: &str) -> Result<()> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(WellfriendError::invalid_input(
+            "universal object lens fingerprint must be a 64-character SHA-256 hex digest",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_object_lens_owner_v2(
+    reader: &crate::reader::PdfReader,
+    root_number: u32,
+    root_generation: u16,
+    root: PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+    action: UniversalObjectLensActionV2,
+) -> Result<ResolvedObjectLensOwnerV2> {
+    if path.len() > 128 {
+        return Err(WellfriendError::ResourceLimit(
+            "universal object lens exceeds 128 path segments".to_string(),
+        ));
+    }
+    let mut path_bytes = 0usize;
+    let mut owner_number = root_number;
+    let mut owner_generation = root_generation;
+    let mut owner_object = root;
+    let mut local_path = Vec::new();
+    let mut traversed = Vec::new();
+    let mut visited = BTreeSet::from([(root_number, root_generation)]);
+
+    for segment in path {
+        match segment {
+            UniversalObjectPathSegmentV2::Key { key } => {
+                validate_pdf_name_v2(key, "universal object lens key")?;
+                path_bytes = path_bytes.checked_add(key.len()).ok_or_else(|| {
+                    WellfriendError::ResourceLimit(
+                        "universal object lens path length overflow".to_string(),
+                    )
+                })?;
+                if path_bytes > 64 * 1024 {
+                    return Err(WellfriendError::ResourceLimit(
+                        "universal object lens path exceeds 64 KiB".to_string(),
+                    ));
+                }
+                local_path.push(segment.clone());
+            }
+            UniversalObjectPathSegmentV2::Index { .. } => {
+                local_path.push(segment.clone());
+            }
+            UniversalObjectPathSegmentV2::Dereference {
+                expected_fingerprint,
+            } => {
+                validate_object_lens_fingerprint_v2(expected_fingerprint)?;
+                let selected = resolve_object_lens_path_v2(&owner_object, &local_path)?;
+                let PdfObject::Reference { number, generation } = selected else {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens dereference targets a non-reference value",
+                    ));
+                };
+                if !visited.insert((*number, *generation)) {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens dereference contains a cycle or repeated indirect owner",
+                    ));
+                }
+                let target = reader.get_object(*number, *generation)?;
+                let observed_fingerprint = universal_object_fingerprint_v2(&target);
+                if !observed_fingerprint.eq_ignore_ascii_case(expected_fingerprint) {
+                    return Err(WellfriendError::invalid_input(format!(
+                        "universal object lens dereference fingerprint mismatch for {number} {generation} R"
+                    )));
+                }
+                traversed.push(ResolvedObjectLensTraversalV2 {
+                    number: *number,
+                    generation: *generation,
+                    fingerprint: observed_fingerprint,
+                });
+                owner_number = *number;
+                owner_generation = *generation;
+                owner_object = target;
+                local_path.clear();
+            }
+        }
+    }
+
+    validate_object_lens_mutation_v2(&owner_object, &local_path, action)?;
+    Ok(ResolvedObjectLensOwnerV2 {
+        number: owner_number,
+        generation: owner_generation,
+        object: owner_object,
+        local_path,
+        traversed,
+    })
+}
+
+fn replace_object_lens_value_v2(
+    object: &mut PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+    replacement: PdfObject,
+) -> Result<()> {
+    let Some((head, tail)) = path.split_first() else {
+        *object = replacement;
+        return Ok(());
+    };
+    match head {
+        UniversalObjectPathSegmentV2::Key { key } => {
+            let dictionary = match object {
+                PdfObject::Dictionary(dictionary) => dictionary,
+                PdfObject::Stream { dict, .. } => {
+                    if matches!(key.as_str(), "Length" | "Filter" | "DecodeParms") {
+                        return Err(WellfriendError::UnsupportedFeature(
+                    "ordinary object-lens paths cannot mutate stream encoding controls; use the atomic stream_encoding operation"
+                                .to_string(),
+                        ));
+                    }
+                    dict
+                }
+                PdfObject::Reference { .. } => {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "universal object lens does not cross an indirect reference; target that object explicitly"
+                            .to_string(),
+                    ));
+                }
+                _ => {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens key segment targets a non-dictionary value",
+                    ));
+                }
+            };
+            if tail.is_empty() {
+                if !dictionary.contains_key(key) {
+                    return Err(WellfriendError::invalid_input(format!(
+                        "universal object lens dictionary key '{key}' is absent"
+                    )));
+                }
+                dictionary.insert(key.clone(), replacement);
+                Ok(())
+            } else {
+                let child = dictionary.get_mut(key).ok_or_else(|| {
+                    WellfriendError::invalid_input(format!(
+                        "universal object lens dictionary key '{key}' is absent"
+                    ))
+                })?;
+                replace_object_lens_value_v2(child, tail, replacement)
+            }
+        }
+        UniversalObjectPathSegmentV2::Index { index } => {
+            let PdfObject::Array(items) = object else {
+                return Err(WellfriendError::invalid_input(
+                    "universal object lens array segment targets a non-array value",
+                ));
+            };
+            let child = items.get_mut(*index).ok_or_else(|| {
+                WellfriendError::invalid_input(
+                    "universal object lens array index is outside the source value",
+                )
+            })?;
+            if tail.is_empty() {
+                *child = replacement;
+                Ok(())
+            } else {
+                replace_object_lens_value_v2(child, tail, replacement)
+            }
+        }
+        UniversalObjectPathSegmentV2::Dereference { .. } => {
+            Err(WellfriendError::UnsupportedFeature(
+                "universal object lens dereference must be resolved before direct replacement"
+                    .to_string(),
+            ))
+        }
+    }
+}
+
+fn resolve_object_lens_path_mut_v2<'a>(
+    object: &'a mut PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+) -> Result<&'a mut PdfObject> {
+    let Some((head, tail)) = path.split_first() else {
+        return Ok(object);
+    };
+    let child = match head {
+        UniversalObjectPathSegmentV2::Key { key } => match object {
+            PdfObject::Dictionary(dictionary) => dictionary.get_mut(key),
+            PdfObject::Stream { dict, .. } => {
+                if matches!(key.as_str(), "Length" | "Filter" | "DecodeParms") {
+                    return Err(WellfriendError::UnsupportedFeature(
+                    "ordinary object-lens paths cannot mutate stream encoding controls; use the atomic stream_encoding operation"
+                            .to_string(),
+                    ));
+                }
+                dict.get_mut(key)
+            }
+            PdfObject::Reference { .. } => {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "universal object lens does not cross an indirect reference; target that object explicitly"
+                        .to_string(),
+                ));
+            }
+            _ => None,
+        }
+        .ok_or_else(|| {
+            WellfriendError::invalid_input(format!(
+                "universal object lens dictionary key '{key}' is absent"
+            ))
+        })?,
+        UniversalObjectPathSegmentV2::Index { index } => match object {
+            PdfObject::Array(items) => items.get_mut(*index).ok_or_else(|| {
+                WellfriendError::invalid_input(
+                    "universal object lens array index is outside the source value",
+                )
+            })?,
+            PdfObject::Reference { .. } => {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "universal object lens does not cross an indirect reference; target that object explicitly"
+                        .to_string(),
+                ));
+            }
+            _ => {
+                return Err(WellfriendError::invalid_input(
+                    "universal object lens array segment targets a non-array value",
+                ));
+            }
+        },
+        UniversalObjectPathSegmentV2::Dereference { .. } => {
+            return Err(WellfriendError::UnsupportedFeature(
+                "universal object lens dereference must be resolved before direct mutation"
+                    .to_string(),
+            ));
+        }
+    };
+    resolve_object_lens_path_mut_v2(child, tail)
+}
+
+fn validate_object_lens_mutation_v2(
+    object: &PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+    action: UniversalObjectLensActionV2,
+) -> Result<()> {
+    if path.len() > 128 {
+        return Err(WellfriendError::ResourceLimit(
+            "universal object lens exceeds 128 path segments".to_string(),
+        ));
+    }
+    let mut path_bytes = 0usize;
+    for segment in path {
+        if let UniversalObjectPathSegmentV2::Key { key } = segment {
+            validate_pdf_name_v2(key, "universal object lens key")?;
+            path_bytes = path_bytes.checked_add(key.len()).ok_or_else(|| {
+                WellfriendError::ResourceLimit(
+                    "universal object lens path length overflow".to_string(),
+                )
+            })?;
+        }
+    }
+    if path_bytes > 64 * 1024 {
+        return Err(WellfriendError::ResourceLimit(
+            "universal object lens path exceeds 64 KiB".to_string(),
+        ));
+    }
+    if path.is_empty() {
+        return if action == UniversalObjectLensActionV2::Replace {
+            Ok(())
+        } else {
+            Err(WellfriendError::invalid_input(
+                "universal object lens insert/remove requires a nonempty path",
+            ))
+        };
+    }
+    if action != UniversalObjectLensActionV2::Insert {
+        return validate_object_lens_path_v2(object, path);
+    }
+    let (last, parent_path) = path
+        .split_last()
+        .ok_or_else(|| WellfriendError::invalid_input("universal object lens path is empty"))?;
+    let parent = resolve_object_lens_path_v2(object, parent_path)?;
+    match last {
+        UniversalObjectPathSegmentV2::Key { key } => {
+            validate_pdf_name_v2(key, "universal object lens key")?;
+            let dictionary = match parent {
+                PdfObject::Dictionary(dictionary) => dictionary,
+                PdfObject::Stream { dict, .. } => {
+                    if matches!(key.as_str(), "Length" | "Filter" | "DecodeParms") {
+                        return Err(WellfriendError::UnsupportedFeature(
+                            "ordinary object-lens paths cannot insert stream encoding controls; use the atomic stream_encoding operation"
+                                .to_string(),
+                        ));
+                    }
+                    dict
+                }
+                _ => {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens insert key targets a non-dictionary value",
+                    ));
+                }
+            };
+            if dictionary.contains_key(key) {
+                return Err(WellfriendError::invalid_input(
+                    "universal object lens insert key already exists; use replace",
+                ));
+            }
+        }
+        UniversalObjectPathSegmentV2::Index { index } => {
+            let PdfObject::Array(items) = parent else {
+                return Err(WellfriendError::invalid_input(
+                    "universal object lens insert index targets a non-array value",
+                ));
+            };
+            if *index > items.len() {
+                return Err(WellfriendError::invalid_input(
+                    "universal object lens insertion index exceeds array length",
+                ));
+            }
+        }
+        UniversalObjectPathSegmentV2::Dereference { .. } => {
+            return Err(WellfriendError::invalid_input(
+                "universal object lens insert cannot end with a dereference segment",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn insert_object_lens_value_v2(
+    object: &mut PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+    value: PdfObject,
+) -> Result<()> {
+    let (last, parent_path) = path
+        .split_last()
+        .ok_or_else(|| WellfriendError::invalid_input("universal object lens path is empty"))?;
+    let parent = resolve_object_lens_path_mut_v2(object, parent_path)?;
+    match last {
+        UniversalObjectPathSegmentV2::Key { key } => {
+            let dictionary = match parent {
+                PdfObject::Dictionary(dictionary) => dictionary,
+                PdfObject::Stream { dict, .. } => {
+                    if matches!(key.as_str(), "Length" | "Filter" | "DecodeParms") {
+                        return Err(WellfriendError::UnsupportedFeature(
+                            "ordinary object-lens paths cannot insert stream encoding controls; use the atomic stream_encoding operation"
+                                .to_string(),
+                        ));
+                    }
+                    dict
+                }
+                _ => {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens insert key targets a non-dictionary value",
+                    ));
+                }
+            };
+            if dictionary.insert(key.clone(), value).is_some() {
+                return Err(WellfriendError::MalformedPdf(
+                    "universal object lens insert unexpectedly replaced an existing key"
+                        .to_string(),
+                ));
+            }
+        }
+        UniversalObjectPathSegmentV2::Index { index } => {
+            let PdfObject::Array(items) = parent else {
+                return Err(WellfriendError::invalid_input(
+                    "universal object lens insert index targets a non-array value",
+                ));
+            };
+            if *index > items.len() {
+                return Err(WellfriendError::invalid_input(
+                    "universal object lens insertion index exceeds array length",
+                ));
+            }
+            items.insert(*index, value);
+        }
+        UniversalObjectPathSegmentV2::Dereference { .. } => {
+            return Err(WellfriendError::invalid_input(
+                "universal object lens insert cannot end with a dereference segment",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn remove_object_lens_value_v2(
+    object: &mut PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+) -> Result<()> {
+    let (last, parent_path) = path
+        .split_last()
+        .ok_or_else(|| WellfriendError::invalid_input("universal object lens path is empty"))?;
+    let parent = resolve_object_lens_path_mut_v2(object, parent_path)?;
+    match last {
+        UniversalObjectPathSegmentV2::Key { key } => {
+            let dictionary = match parent {
+                PdfObject::Dictionary(dictionary) => dictionary,
+                PdfObject::Stream { dict, .. } => {
+                    if matches!(key.as_str(), "Length" | "Filter" | "DecodeParms") {
+                        return Err(WellfriendError::UnsupportedFeature(
+                            "ordinary object-lens paths cannot remove stream encoding controls; use the atomic stream_encoding operation"
+                                .to_string(),
+                        ));
+                    }
+                    dict
+                }
+                _ => {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens remove key targets a non-dictionary value",
+                    ));
+                }
+            };
+            dictionary.remove(key).ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "universal object lens remove key disappeared after validation".to_string(),
+                )
+            })?;
+        }
+        UniversalObjectPathSegmentV2::Index { index } => {
+            let PdfObject::Array(items) = parent else {
+                return Err(WellfriendError::invalid_input(
+                    "universal object lens remove index targets a non-array value",
+                ));
+            };
+            if *index >= items.len() {
+                return Err(WellfriendError::MalformedPdf(
+                    "universal object lens remove index disappeared after validation".to_string(),
+                ));
+            }
+            items.remove(*index);
+        }
+        UniversalObjectPathSegmentV2::Dereference { .. } => {
+            return Err(WellfriendError::invalid_input(
+                "universal object lens remove cannot end with a dereference segment",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_object_lens_laws_v2(
+    before: &PdfObject,
+    after: &PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+    action: UniversalObjectLensActionV2,
+    replacement: &PdfObject,
+) -> Result<()> {
+    let mut restored = after.clone();
+    match action {
+        UniversalObjectLensActionV2::Replace => {
+            if resolve_object_lens_path_v2(after, path)? != replacement {
+                return Err(WellfriendError::MalformedPdf(
+                    "universal object lens put-get law failed after replacement".to_string(),
+                ));
+            }
+            let original = resolve_object_lens_path_v2(before, path)?.clone();
+            replace_object_lens_value_v2(&mut restored, path, original)?;
+        }
+        UniversalObjectLensActionV2::Insert => {
+            if resolve_object_lens_path_v2(after, path)? != replacement {
+                return Err(WellfriendError::MalformedPdf(
+                    "universal object lens put-get law failed after insertion".to_string(),
+                ));
+            }
+            remove_object_lens_value_v2(&mut restored, path)?;
+        }
+        UniversalObjectLensActionV2::Remove => {
+            let original = resolve_object_lens_path_v2(before, path)?.clone();
+            insert_object_lens_value_v2(&mut restored, path, original)?;
+        }
+    }
+    if restored != *before {
+        return Err(WellfriendError::MalformedPdf(
+            "universal object lens inverse preservation law failed".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn stream_encoding_filter_count_v2(value: &UniversalPdfValueV2) -> Result<usize> {
+    let names = match value {
+        UniversalPdfValueV2::Name { value } => vec![value.as_str()],
+        UniversalPdfValueV2::Array { items } if !items.is_empty() && items.len() <= 64 => items
+            .iter()
+            .map(|item| match item {
+                UniversalPdfValueV2::Name { value } => Ok(value.as_str()),
+                _ => Err(WellfriendError::invalid_input(
+                    "universal stream Filter array must contain only direct names",
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?,
+        _ => {
+            return Err(WellfriendError::invalid_input(
+                "universal stream Filter must be one direct name or 1..=64 direct names",
+            ));
+        }
+    };
+    for name in &names {
+        validate_pdf_name_v2(name, "universal stream filter name")?;
+        if *name == "Crypt" {
+            return Err(WellfriendError::UnsupportedFeature(
+                "universal stream encoding lens cannot author /Crypt; use the document security writer"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(names.len())
+}
+
+fn validate_stream_encoding_target_v2(value: &PdfObject) -> Result<()> {
+    let PdfObject::Stream { dict, .. } = value else {
+        return Err(WellfriendError::invalid_input(
+            "universal stream encoding lens must select an existing stream",
+        ));
+    };
+    if ["F", "FFilter", "FDecodeParms"]
+        .iter()
+        .any(|key| dict.get(key).is_some())
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "universal stream encoding lens does not rewrite external-file streams".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stream_decode_parms_v2(value: &UniversalPdfValueV2, filter_count: usize) -> Result<()> {
+    let scalar = matches!(
+        value,
+        UniversalPdfValueV2::Null | UniversalPdfValueV2::Dictionary { .. }
+    );
+    let valid = if filter_count == 1 && scalar {
+        true
+    } else if let UniversalPdfValueV2::Array { items } = value {
+        items.len() == filter_count
+            && items.iter().all(|item| {
+                matches!(
+                    item,
+                    UniversalPdfValueV2::Null | UniversalPdfValueV2::Dictionary { .. }
+                )
+            })
+    } else {
+        false
+    };
+    if !valid {
+        return Err(WellfriendError::invalid_input(
+            "universal stream DecodeParms must be null/a dictionary for one filter or a matching null/dictionary array",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stream_encoding_update_v2(
+    update: &UniversalStreamEncodingUpdateV2,
+    reader: &crate::reader::PdfReader,
+    total_payload_bytes: &mut u64,
+) -> Result<()> {
+    let data = match update {
+        UniversalStreamEncodingUpdateV2::Raw {
+            data,
+            filter,
+            decode_parms,
+        } => {
+            let filter_count = match filter {
+                Some(filter) => {
+                    validate_universal_pdf_value_v2(filter, reader, total_payload_bytes, 0)?;
+                    stream_encoding_filter_count_v2(filter)?
+                }
+                None => 0,
+            };
+            if let Some(decode_parms) = decode_parms {
+                if filter_count == 0 {
+                    return Err(WellfriendError::invalid_input(
+                        "universal stream DecodeParms requires an explicit Filter",
+                    ));
+                }
+                validate_universal_pdf_value_v2(decode_parms, reader, total_payload_bytes, 0)?;
+                validate_stream_decode_parms_v2(decode_parms, filter_count)?;
+            }
+            data
+        }
+        UniversalStreamEncodingUpdateV2::Unfiltered { data }
+        | UniversalStreamEncodingUpdateV2::Flate { data } => data,
+    };
+    *total_payload_bytes = total_payload_bytes
+        .checked_add(data.len() as u64)
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit(
+                "universal object graph payload length overflow".to_string(),
+            )
+        })?;
+    Ok(())
+}
+
+fn validate_stream_encoding_local_references_v2(
+    update: &UniversalStreamEncodingUpdateV2,
+    local_ids: &BTreeSet<String>,
+) -> Result<()> {
+    if let UniversalStreamEncodingUpdateV2::Raw {
+        filter,
+        decode_parms,
+        ..
+    } = update
+    {
+        if let Some(value) = filter {
+            validate_local_references_v2(value, local_ids, 0)?;
+        }
+        if let Some(value) = decode_parms {
+            validate_local_references_v2(value, local_ids, 0)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_stream_encoding_update_v2(
+    object: &mut PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+    update: &UniversalStreamEncodingUpdateV2,
+    local_references: &BTreeMap<String, u32>,
+) -> Result<()> {
+    let selected = resolve_object_lens_path_mut_v2(object, path)?;
+    validate_stream_encoding_target_v2(selected)?;
+    let PdfObject::Stream { dict, raw } = selected else {
+        return Err(WellfriendError::MalformedPdf(
+            "universal stream encoding target changed kind after validation".to_string(),
+        ));
+    };
+    dict.remove("Filter");
+    dict.remove("DecodeParms");
+    dict.remove("DL");
+    match update {
+        UniversalStreamEncodingUpdateV2::Raw {
+            data,
+            filter,
+            decode_parms,
+        } => {
+            *raw = data.clone();
+            if let Some(filter) = filter {
+                dict.insert(
+                    "Filter",
+                    universal_pdf_value_to_object_v2(filter, local_references, 0)?,
+                );
+            }
+            if let Some(decode_parms) = decode_parms {
+                dict.insert(
+                    "DecodeParms",
+                    universal_pdf_value_to_object_v2(decode_parms, local_references, 0)?,
+                );
+            }
+        }
+        UniversalStreamEncodingUpdateV2::Unfiltered { data } => *raw = data.clone(),
+        UniversalStreamEncodingUpdateV2::Flate { data } => {
+            *raw = flate_encode_cancellable(data, 6)?;
+            dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+        }
+    }
+    dict.insert(
+        "Length",
+        PdfObject::Integer(i64::try_from(raw.len()).map_err(|_| {
+            WellfriendError::ResourceLimit(
+                "universal object graph stream length exceeds i64".to_string(),
+            )
+        })?),
+    );
+    Ok(())
+}
+
+fn verify_stream_encoding_laws_v2(
+    before: &PdfObject,
+    after: &PdfObject,
+    path: &[UniversalObjectPathSegmentV2],
+) -> Result<()> {
+    let original = resolve_object_lens_path_v2(before, path)?.clone();
+    let updated = resolve_object_lens_path_v2(after, path)?;
+    let (PdfObject::Stream { dict: old, .. }, PdfObject::Stream { dict: new, .. }) =
+        (&original, updated)
+    else {
+        return Err(WellfriendError::MalformedPdf(
+            "universal stream encoding lens lost its stream target".to_string(),
+        ));
+    };
+    let mut old_non_encoding = old.clone();
+    let mut new_non_encoding = new.clone();
+    for key in ["Length", "Filter", "DecodeParms", "DL"] {
+        old_non_encoding.remove(key);
+        new_non_encoding.remove(key);
+    }
+    if old_non_encoding != new_non_encoding {
+        return Err(WellfriendError::MalformedPdf(
+            "universal stream encoding lens changed a non-encoding dictionary sibling".to_string(),
+        ));
+    }
+    let mut restored = after.clone();
+    replace_object_lens_value_v2(&mut restored, path, original)?;
+    if restored != *before {
+        return Err(WellfriendError::MalformedPdf(
+            "universal stream encoding lens inverse preservation law failed".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn plan_object_graph_edit_v2(
     input: &[u8],
     request: &UniversalObjectGraphEditRequestV2,
@@ -3031,8 +4348,18 @@ fn plan_object_graph_edit_v2(
     }
     let mut local_ids = BTreeSet::new();
     let mut existing_targets = BTreeSet::new();
+    let mut resolved_write_targets = BTreeMap::new();
+    let mut resolved_existing = Vec::with_capacity(request.mutations.len());
     let mut total_payload_bytes = 0u64;
-    for mutation in &request.mutations {
+    for (mutation_index, mutation) in request.mutations.iter().enumerate() {
+        if mutation.stream_encoding.is_some()
+            && (mutation.lens_action != UniversalObjectLensActionV2::Replace
+                || !matches!(&mutation.value, UniversalPdfValueV2::Null))
+        {
+            return Err(WellfriendError::invalid_input(
+                "universal stream encoding lens requires replace plus a null value placeholder",
+            ));
+        }
         match &mutation.target {
             UniversalObjectTargetV2::Existing {
                 number,
@@ -3045,29 +4372,97 @@ fn plan_object_graph_edit_v2(
                     ));
                 }
                 let object = reader.get_object(*number, *generation)?;
-                if expected_fingerprint.len() != 64
-                    || universal_object_fingerprint_v2(&object) != *expected_fingerprint
+                validate_object_lens_fingerprint_v2(expected_fingerprint)?;
+                if !universal_object_fingerprint_v2(&object)
+                    .eq_ignore_ascii_case(expected_fingerprint)
                 {
                     return Err(WellfriendError::invalid_input(format!(
                         "universal object graph fingerprint mismatch for {number} {generation} R"
                     )));
                 }
+                let resolved = resolve_object_lens_owner_v2(
+                    reader,
+                    *number,
+                    *generation,
+                    object,
+                    &mutation.path,
+                    mutation.lens_action,
+                )?;
+                if mutation.stream_encoding.is_some() {
+                    validate_stream_encoding_target_v2(resolve_object_lens_path_v2(
+                        &resolved.object,
+                        &resolved.local_path,
+                    )?)?;
+                }
+                if resolved_write_targets
+                    .insert((resolved.number, resolved.generation), mutation_index)
+                    .is_some()
+                {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object graph mutations resolve to the same indirect-object write target",
+                    ));
+                }
+                if mutation.lens_action == UniversalObjectLensActionV2::Remove
+                    && !matches!(&mutation.value, UniversalPdfValueV2::Null)
+                {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens remove requires a null placeholder value",
+                    ));
+                }
+                resolved_existing.push(Some(resolved));
             }
             UniversalObjectTargetV2::New { local_id } => {
                 validate_local_object_id_v2(local_id)?;
+                if mutation.stream_encoding.is_some()
+                    || !mutation.path.is_empty()
+                    || mutation.lens_action != UniversalObjectLensActionV2::Replace
+                {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens insert/remove/path operations require an existing indirect-object target",
+                    ));
+                }
                 if !local_ids.insert(local_id.clone()) {
                     return Err(WellfriendError::invalid_input(
                         "universal object graph contains a duplicate local object id",
                     ));
                 }
+                resolved_existing.push(None);
             }
         }
-        validate_universal_pdf_value_v2(
-            &mutation.value,
-            reader,
-            &mut total_payload_bytes,
-            0,
-        )?;
+        validate_universal_pdf_value_v2(&mutation.value, reader, &mut total_payload_bytes, 0)?;
+        if let Some(update) = &mutation.stream_encoding {
+            validate_stream_encoding_update_v2(update, reader, &mut total_payload_bytes)?;
+        }
+    }
+    for (mutation_index, resolved) in resolved_existing.iter().enumerate() {
+        let Some(resolved) = resolved else {
+            continue;
+        };
+        let UniversalObjectTargetV2::Existing {
+            number, generation, ..
+        } = &request.mutations[mutation_index].target
+        else {
+            continue;
+        };
+        let root = (*number, *generation);
+        let intermediate_count = resolved.traversed.len().saturating_sub(1);
+        for dependency in std::iter::once(root).chain(
+            resolved
+                .traversed
+                .iter()
+                .take(intermediate_count)
+                .map(|step| (step.number, step.generation)),
+        ) {
+            if dependency != (resolved.number, resolved.generation)
+                && resolved_write_targets
+                    .get(&dependency)
+                    .is_some_and(|owner| *owner != mutation_index)
+            {
+                return Err(WellfriendError::invalid_input(
+                    "universal object graph cannot mutate an indirect owner used by another mutation's dereference path",
+                ));
+            }
+        }
     }
     if total_payload_bytes > 2 * 1024 * 1024 * 1024 {
         return Err(WellfriendError::ResourceLimit(
@@ -3076,6 +4471,9 @@ fn plan_object_graph_edit_v2(
     }
     for mutation in &request.mutations {
         validate_local_references_v2(&mutation.value, &local_ids, 0)?;
+        if let Some(update) = &mutation.stream_encoding {
+            validate_stream_encoding_local_references_v2(update, &local_ids)?;
+        }
     }
     let mut candidates = Vec::with_capacity(request.mutations.len());
     let mut read_set = Vec::new();
@@ -3084,7 +4482,11 @@ fn plan_object_graph_edit_v2(
         let serialized = serde_json::to_vec(mutation).map_err(json_error)?;
         let candidate_id = stable_id(
             "object-graph-mutation-v2",
-            &[revision.as_bytes(), &index.to_le_bytes(), serialized.as_slice()],
+            &[
+                revision.as_bytes(),
+                &index.to_le_bytes(),
+                serialized.as_slice(),
+            ],
         );
         let (source_identity, shared_resource) = match &mutation.target {
             UniversalObjectTargetV2::Existing {
@@ -3092,14 +4494,53 @@ fn plan_object_graph_edit_v2(
                 generation,
                 expected_fingerprint,
             } => {
-                read_set.push(format!("object-{number}-{generation}:{expected_fingerprint}"));
-                write_set.push(format!("object-{number}-{generation}"));
+                let resolved = resolved_existing[index].as_ref().ok_or_else(|| {
+                    WellfriendError::MalformedPdf(
+                        "universal object graph lost an existing-object lens resolution"
+                            .to_string(),
+                    )
+                })?;
+                read_set.push(format!(
+                    "object-{number}-{generation}:{expected_fingerprint}"
+                ));
+                for step in &resolved.traversed {
+                    read_set.push(format!(
+                        "object-{}-{}:{}",
+                        step.number, step.generation, step.fingerprint
+                    ));
+                }
+                write_set.push(format!(
+                    "object-{}-{}",
+                    resolved.number, resolved.generation
+                ));
+                let dereference_chain = resolved
+                    .traversed
+                    .iter()
+                    .map(|step| {
+                        json!({
+                            "number": step.number,
+                            "generation": step.generation,
+                            "fingerprint": step.fingerprint,
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 (
                     json!({
                         "kind": "existing",
                         "number": number,
                         "generation": generation,
                         "fingerprint": expected_fingerprint,
+                        "root": {
+                            "number": number,
+                            "generation": generation,
+                            "fingerprint": expected_fingerprint,
+                        },
+                        "resolved_write_target": {
+                            "number": resolved.number,
+                            "generation": resolved.generation,
+                            "fingerprint": universal_object_fingerprint_v2(&resolved.object),
+                        },
+                        "dereference_chain": dereference_chain,
                     }),
                     true,
                 )
@@ -3112,7 +4553,13 @@ fn plan_object_graph_edit_v2(
         candidates.push(UniversalCandidateV2 {
             candidate_id,
             page: request.affected_pages.first().copied().unwrap_or(1),
-            kind: "indirect_object_mutation".to_string(),
+            kind: if mutation.stream_encoding.is_some() {
+                "stream_encoding_lens_mutation".to_string()
+            } else if mutation.path.is_empty() {
+                "indirect_object_mutation".to_string()
+            } else {
+                "indirect_object_lens_mutation".to_string()
+            },
             source_identity,
             confidence: 1.0,
             exact: true,
@@ -3131,12 +4578,60 @@ fn plan_object_graph_edit_v2(
             "mutation_count": request.mutations.len(),
             "new_object_count": local_ids.len(),
             "existing_object_count": existing_targets.len(),
+            "lens_mutation_count": request.mutations.iter().filter(|mutation| !mutation.path.is_empty()).count(),
+            "cross_reference_lens_count": request.mutations.iter().filter(|mutation| mutation.path.iter().any(|segment| matches!(segment, UniversalObjectPathSegmentV2::Dereference { .. }))).count(),
+            "stream_encoding_lens_count": request.mutations.iter().filter(|mutation| mutation.stream_encoding.is_some()).count(),
+            "stream_encoding_modes": {
+                "raw": request.mutations.iter().filter(|mutation| matches!(mutation.stream_encoding.as_ref(), Some(UniversalStreamEncodingUpdateV2::Raw { .. }))).count(),
+                "unfiltered": request.mutations.iter().filter(|mutation| matches!(mutation.stream_encoding.as_ref(), Some(UniversalStreamEncodingUpdateV2::Unfiltered { .. }))).count(),
+                "flate": request.mutations.iter().filter(|mutation| matches!(mutation.stream_encoding.as_ref(), Some(UniversalStreamEncodingUpdateV2::Flate { .. }))).count(),
+            },
+            "lens_actions": {
+                "replace": request.mutations.iter().filter(|mutation| !mutation.path.is_empty() && mutation.lens_action == UniversalObjectLensActionV2::Replace).count(),
+                "insert": request.mutations.iter().filter(|mutation| mutation.lens_action == UniversalObjectLensActionV2::Insert).count(),
+                "remove": request.mutations.iter().filter(|mutation| mutation.lens_action == UniversalObjectLensActionV2::Remove).count(),
+            },
             "payload_bytes": total_payload_bytes,
             "affected_pages": request.affected_pages,
             "global_resource_impact_acknowledged": request.acknowledge_global_resource_impact,
-            "supports": ["patterns", "shadings", "annotation_appearances", "soft_masks", "optional_content", "custom_structure_trees", "vendor_extensions"],
+            "supports": ["patterns", "shadings", "annotation_appearances", "soft_masks", "optional_content", "custom_structure_trees", "vendor_extensions", "direct_preservation_lenses", "fingerprint_bound_indirect_dereference", "atomic_stream_encoding_lenses"],
         }),
     })
+}
+
+fn normalize_object_stream_lengths_v2(object: &mut PdfObject, depth: usize) -> Result<()> {
+    if depth > 128 {
+        return Err(WellfriendError::ResourceLimit(
+            "universal object graph stream normalization exceeds nesting depth 128".to_string(),
+        ));
+    }
+    match object {
+        PdfObject::Array(items) => {
+            for item in items {
+                normalize_object_stream_lengths_v2(item, depth + 1)?;
+            }
+        }
+        PdfObject::Dictionary(dictionary) => {
+            for (_, value) in dictionary.entries_mut() {
+                normalize_object_stream_lengths_v2(value, depth + 1)?;
+            }
+        }
+        PdfObject::Stream { dict, raw } => {
+            for (key, value) in dict.entries_mut() {
+                if key != "Length" {
+                    normalize_object_stream_lengths_v2(value, depth + 1)?;
+                }
+            }
+            let length = i64::try_from(raw.len()).map_err(|_| {
+                WellfriendError::ResourceLimit(
+                    "universal object graph stream length exceeds i64".to_string(),
+                )
+            })?;
+            dict.insert("Length", PdfObject::Integer(length));
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn apply_object_graph_edit_v2(
@@ -3165,38 +4660,187 @@ fn apply_object_graph_edit_v2(
         );
     }
     let mut changed = Vec::with_capacity(request.mutations.len());
+    let mut expected_after = Vec::with_capacity(request.mutations.len());
+    let mut changed_targets = BTreeSet::new();
+    let mut preserved_traversal_objects = BTreeMap::new();
+    let mut lens_law_checks = 0usize;
+    let mut stream_encoding_law_checks = 0usize;
+    let mut stream_decoded_postconditions = Vec::new();
     for mutation in &request.mutations {
-        let (number, generation) = match &mutation.target {
+        let replacement = universal_pdf_value_to_object_v2(&mutation.value, &local_references, 0)?;
+        let (number, generation, object) = match &mutation.target {
             UniversalObjectTargetV2::Existing {
                 number,
                 generation,
                 expected_fingerprint,
             } => {
+                validate_object_lens_fingerprint_v2(expected_fingerprint)?;
                 let current = reader.get_object(*number, *generation)?;
-                if universal_object_fingerprint_v2(&current) != *expected_fingerprint {
+                let root_fingerprint = universal_object_fingerprint_v2(&current);
+                if !root_fingerprint.eq_ignore_ascii_case(expected_fingerprint) {
                     return Err(WellfriendError::invalid_input(format!(
                         "universal object graph target {number} {generation} R changed after planning"
                     )));
                 }
-                (*number, *generation)
+                if let Some(update) = &mutation.stream_encoding {
+                    if mutation.lens_action != UniversalObjectLensActionV2::Replace
+                        || !matches!(&mutation.value, UniversalPdfValueV2::Null)
+                    {
+                        return Err(WellfriendError::invalid_input(
+                            "universal stream encoding lens requires replace plus a null value placeholder",
+                        ));
+                    }
+                    let resolved = resolve_object_lens_owner_v2(
+                        reader,
+                        *number,
+                        *generation,
+                        current,
+                        &mutation.path,
+                        mutation.lens_action,
+                    )?;
+                    let resolved_target = (resolved.number, resolved.generation);
+                    if (*number, *generation) != resolved_target {
+                        preserved_traversal_objects
+                            .insert((*number, *generation), root_fingerprint);
+                    }
+                    for step in resolved
+                        .traversed
+                        .iter()
+                        .take(resolved.traversed.len().saturating_sub(1))
+                    {
+                        preserved_traversal_objects
+                            .insert((step.number, step.generation), step.fingerprint.clone());
+                    }
+                    let mut current = resolved.object;
+                    let before = current.clone();
+                    apply_stream_encoding_update_v2(
+                        &mut current,
+                        &resolved.local_path,
+                        update,
+                        &local_references,
+                    )?;
+                    verify_stream_encoding_laws_v2(&before, &current, &resolved.local_path)?;
+                    if let UniversalStreamEncodingUpdateV2::Unfiltered { data }
+                    | UniversalStreamEncodingUpdateV2::Flate { data } = update
+                    {
+                        stream_decoded_postconditions.push((
+                            resolved.number,
+                            resolved.generation,
+                            resolved.local_path.clone(),
+                            data.len(),
+                            digest_hex(data),
+                        ));
+                    }
+                    stream_encoding_law_checks =
+                        stream_encoding_law_checks.checked_add(1).ok_or_else(|| {
+                            WellfriendError::ResourceLimit(
+                                "universal stream encoding law-check count overflow".to_string(),
+                            )
+                        })?;
+                    (resolved.number, resolved.generation, current)
+                } else if mutation.path.is_empty() {
+                    if mutation.lens_action != UniversalObjectLensActionV2::Replace {
+                        return Err(WellfriendError::invalid_input(
+                            "universal object lens insert/remove requires a nonempty path",
+                        ));
+                    }
+                    (*number, *generation, replacement)
+                } else {
+                    let resolved = resolve_object_lens_owner_v2(
+                        reader,
+                        *number,
+                        *generation,
+                        current,
+                        &mutation.path,
+                        mutation.lens_action,
+                    )?;
+                    let resolved_target = (resolved.number, resolved.generation);
+                    if (*number, *generation) != resolved_target {
+                        preserved_traversal_objects
+                            .insert((*number, *generation), root_fingerprint);
+                    }
+                    for step in resolved
+                        .traversed
+                        .iter()
+                        .take(resolved.traversed.len().saturating_sub(1))
+                    {
+                        preserved_traversal_objects
+                            .insert((step.number, step.generation), step.fingerprint.clone());
+                    }
+                    let mut current = resolved.object;
+                    let before = current.clone();
+                    let replacement_for_law = replacement.clone();
+                    match mutation.lens_action {
+                        UniversalObjectLensActionV2::Replace => {
+                            replace_object_lens_value_v2(
+                                &mut current,
+                                &resolved.local_path,
+                                replacement,
+                            )?;
+                        }
+                        UniversalObjectLensActionV2::Insert => {
+                            insert_object_lens_value_v2(
+                                &mut current,
+                                &resolved.local_path,
+                                replacement,
+                            )?;
+                        }
+                        UniversalObjectLensActionV2::Remove => {
+                            if !matches!(&mutation.value, UniversalPdfValueV2::Null) {
+                                return Err(WellfriendError::invalid_input(
+                                    "universal object lens remove requires a null placeholder value",
+                                ));
+                            }
+                            remove_object_lens_value_v2(&mut current, &resolved.local_path)?;
+                        }
+                    }
+                    verify_object_lens_laws_v2(
+                        &before,
+                        &current,
+                        &resolved.local_path,
+                        mutation.lens_action,
+                        &replacement_for_law,
+                    )?;
+                    lens_law_checks = lens_law_checks.checked_add(1).ok_or_else(|| {
+                        WellfriendError::ResourceLimit(
+                            "universal object lens law-check count overflow".to_string(),
+                        )
+                    })?;
+                    (resolved.number, resolved.generation, current)
+                }
             }
-            UniversalObjectTargetV2::New { local_id } => (
-                *local_references.get(local_id).ok_or_else(|| {
-                    WellfriendError::MalformedPdf(
-                        "universal object graph lost a local object assignment".to_string(),
-                    )
-                })?,
-                0,
-            ),
+            UniversalObjectTargetV2::New { local_id } => {
+                if mutation.stream_encoding.is_some()
+                    || !mutation.path.is_empty()
+                    || mutation.lens_action != UniversalObjectLensActionV2::Replace
+                {
+                    return Err(WellfriendError::invalid_input(
+                        "universal object lens insert/remove/path operations require an existing indirect-object target",
+                    ));
+                }
+                (
+                    *local_references.get(local_id).ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "universal object graph lost a local object assignment".to_string(),
+                        )
+                    })?,
+                    0,
+                    replacement,
+                )
+            }
         };
+        if !changed_targets.insert((number, generation)) {
+            return Err(WellfriendError::invalid_input(
+                "universal object graph mutations resolve to the same indirect-object write target",
+            ));
+        }
+        let mut object = object;
+        normalize_object_stream_lengths_v2(&mut object, 0)?;
+        expected_after.push((number, generation, universal_object_fingerprint_v2(&object)));
         changed.push(IncrementalObject {
             number,
             generation,
-            object: universal_pdf_value_to_object_v2(
-                &mutation.value,
-                &local_references,
-                0,
-            )?,
+            object,
         });
     }
     let affected_objects = changed
@@ -3204,7 +4848,63 @@ fn apply_object_graph_edit_v2(
         .map(|object| format!("object-{}-{}", object.number, object.generation))
         .collect::<Vec<_>>();
     let output = write_incremental_update(reader, changed)?;
-    ContentEngine::open_bytes(output.clone())?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    for (number, generation, expected_fingerprint) in expected_after {
+        let observed = reopened
+            .document()
+            .reader()
+            .get_object(number, generation)?;
+        if universal_object_fingerprint_v2(&observed) != expected_fingerprint {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "universal object graph postcondition failed for {number} {generation} R"
+            )));
+        }
+    }
+    for ((number, generation), expected_fingerprint) in &preserved_traversal_objects {
+        let observed = reopened
+            .document()
+            .reader()
+            .get_object(*number, *generation)?;
+        if universal_object_fingerprint_v2(&observed) != *expected_fingerprint {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "universal object lens preservation postcondition failed for traversal owner {number} {generation} R"
+            )));
+        }
+    }
+    for (number, generation, path, expected_len, expected_sha256) in &stream_decoded_postconditions
+    {
+        let owner = reopened
+            .document()
+            .reader()
+            .get_object(*number, *generation)?;
+        let stream = resolve_object_lens_path_v2(&owner, path)?;
+        let budget = u64::try_from(*expected_len)
+            .map_err(|_| {
+                WellfriendError::ResourceLimit(
+                    "universal stream decoded postcondition length exceeds u64".to_string(),
+                )
+            })?
+            .max(1);
+        let decoded = decode_stream_lossless_with_limits(
+            stream,
+            reopened.document().reader(),
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: budget,
+                max_decoded_bytes_per_document: budget,
+                max_decompression_ratio: u64::MAX,
+                scheduler_memory_budget_bytes: budget.saturating_add(1024 * 1024),
+                ..DecodeLimits::default()
+            },
+        )?;
+        if decoded.status != StreamDecodeStatus::Complete
+            || decoded.data.len() != *expected_len
+            || digest_hex(&decoded.data) != *expected_sha256
+        {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "universal stream encoding decoded-byte postcondition failed for {number} {generation} R"
+            )));
+        }
+    }
     let affected_pages = if request.affected_pages.is_empty() {
         (1..=engine.page_count()?).collect::<Vec<_>>()
     } else {
@@ -3216,9 +4916,26 @@ fn apply_object_graph_edit_v2(
     Ok((
         output,
         json!({
-            "operation": "replace_indirect_object_graph",
+            "operation": if request.mutations.iter().any(|mutation| mutation.stream_encoding.is_some()) { "patch_stream_encoding_graph" } else if request.mutations.iter().any(|mutation| !mutation.path.is_empty()) { "patch_indirect_object_graph" } else { "replace_indirect_object_graph" },
             "mutation_mode": mode,
             "mutation_count": request.mutations.len(),
+            "lens_mutation_count": request.mutations.iter().filter(|mutation| !mutation.path.is_empty()).count(),
+            "cross_reference_lens_count": request.mutations.iter().filter(|mutation| mutation.path.iter().any(|segment| matches!(segment, UniversalObjectPathSegmentV2::Dereference { .. }))).count(),
+            "stream_encoding_lens_count": request.mutations.iter().filter(|mutation| mutation.stream_encoding.is_some()).count(),
+            "stream_encoding_modes": {
+                "raw": request.mutations.iter().filter(|mutation| matches!(mutation.stream_encoding.as_ref(), Some(UniversalStreamEncodingUpdateV2::Raw { .. }))).count(),
+                "unfiltered": request.mutations.iter().filter(|mutation| matches!(mutation.stream_encoding.as_ref(), Some(UniversalStreamEncodingUpdateV2::Unfiltered { .. }))).count(),
+                "flate": request.mutations.iter().filter(|mutation| matches!(mutation.stream_encoding.as_ref(), Some(UniversalStreamEncodingUpdateV2::Flate { .. }))).count(),
+            },
+            "preserved_traversal_objects_verified": preserved_traversal_objects.len(),
+            "exact_parsed_model_lens_law_checks": lens_law_checks,
+            "stream_encoding_inverse_law_checks": stream_encoding_law_checks,
+            "decoded_stream_postconditions_verified": stream_decoded_postconditions.len(),
+            "lens_actions": {
+                "replace": request.mutations.iter().filter(|mutation| !mutation.path.is_empty() && mutation.lens_action == UniversalObjectLensActionV2::Replace).count(),
+                "insert": request.mutations.iter().filter(|mutation| mutation.lens_action == UniversalObjectLensActionV2::Insert).count(),
+                "remove": request.mutations.iter().filter(|mutation| mutation.lens_action == UniversalObjectLensActionV2::Remove).count(),
+            },
             "local_object_assignments": local_references,
             "affected_pages": affected_pages,
             "output_reopened": true,
@@ -3400,7 +5117,9 @@ fn universal_pdf_value_to_object_v2(
         } => {
             let mut dictionary = PdfDictionary::empty();
             for (key, item) in entries {
-                if key == "Length" || (*use_flate && matches!(key.as_str(), "Filter" | "DecodeParms")) {
+                if key == "Length"
+                    || (*use_flate && matches!(key.as_str(), "Filter" | "DecodeParms"))
+                {
                     continue;
                 }
                 validate_pdf_name_v2(key, "PDF stream dictionary key")?;
@@ -3544,26 +5263,13 @@ pub fn apply_universal_edit_v2_with_output_security(
         credentials.user_password.as_slice(),
     )?;
     let required_profiles = required_conformance_profiles_v2(input, &plan.policy)?;
-    if required_profiles
-        .iter()
-        .any(|profile| *profile == UniversalConformanceProfileV2::PdfUa1)
-    {
+    if required_profiles.contains(&UniversalConformanceProfileV2::PdfUa1) {
         let pdfua = crate::compliance::validate_pdfua(reopened.document())?;
         if !pdfua.compliant {
-            let current_snapshot = build_document_snapshot(input, None)?;
-            let mut no_change = no_change_result(plan, &current_snapshot.revision_id);
-            no_change.outcome = UniversalEditOutcomeV2::PolicyDenied;
-            no_change.issues.push(json!({
-                "code": "encrypted_output_pdfua_gate_failed",
-                "message": "encrypted edited bytes failed the required PDF/UA validation; original bytes returned unchanged",
-                "no_change_proof": true,
-            }));
-            no_change.conformance_impact = json!({
-                "decision": "encrypted_edited_bytes_withheld",
-                "pdfua": pdfua,
-                "external_certification_claimed": false,
-            });
-            return Ok((input.to_vec(), no_change));
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "universal editing no_change: encrypted output failed required PDF/UA validation: {}",
+                serde_json::to_string(&pdfua).map_err(json_error)?
+            )));
         }
     }
     let plaintext_revision = result.output_revision_id.clone();
@@ -3603,8 +5309,6 @@ fn apply_universal_edit_v2_inner(
 ) -> Result<(Vec<u8>, UniversalEditResultV2)> {
     crate::cancel::check_current_cancel("universal editing apply snapshot")?;
     let current_snapshot = build_document_snapshot(input, None)?;
-    let policy_engine = ContentEngine::open_bytes(input.to_vec())?;
-    let secure_policy = analyze_edit_policy(&policy_engine, SignatureEditOperation::ContentEdit)?;
     if current_snapshot.revision_id != plan.revision_id {
         return Err(WellfriendError::invalid_input(
             "universal editing stale_plan: input revision differs from the planned revision",
@@ -3622,21 +5326,33 @@ fn apply_universal_edit_v2_inner(
         ));
     }
     crate::cancel::check_current_cancel("universal editing canonical plan recomputation")?;
-    let canonical_plan = plan_universal_edit_v2(
+    let (canonical_plan, mut staged_scoped_text) = plan_universal_edit_v2_staged(
         input,
         &UniversalEditRequestV2 {
             operation: plan.requested_operation.clone(),
             policy: plan.policy.clone(),
         },
     )?;
-    let supplied_plan = serde_json::to_value(plan).map_err(json_error)?;
-    let canonical_plan_value = serde_json::to_value(&canonical_plan).map_err(json_error)?;
-    if supplied_plan != canonical_plan_value {
+    // Authenticate every field that can authorize or steer mutation. The
+    // preview is part of the reviewed decision surface: accepting a supplied
+    // plan whose preview differs from the canonical recomputation would allow
+    // a host to display evidence for different bytes than apply publishes.
+    // serde_json's value representation is deterministic here, so compare the
+    // complete canonical preview together with candidate and impact state.
+    let supplied_authority = universal_plan_authority_projection(plan)?;
+    let canonical_authority = universal_plan_authority_projection(&canonical_plan)?;
+    if supplied_authority != canonical_authority {
         return Err(WellfriendError::AuthenticationFailure(
-            "universal editing supplied plan differs from the canonical plan recomputed for this revision"
+            "universal editing supplied authoritative plan fields differ from the canonical plan recomputed for this revision"
                 .to_string(),
         ));
     }
+    // Canonical planning must be a pure function of the supplied bytes and
+    // request.  Run policy enforcement only after the byte-for-byte plan
+    // authentication check so mutable policy-analysis caches cannot perturb
+    // candidate discovery within this apply call.
+    let policy_engine = ContentEngine::open_bytes(input.to_vec())?;
+    let secure_policy = analyze_edit_policy(&policy_engine, SignatureEditOperation::ContentEdit)?;
     let validated_approval = if plan.state == UniversalPlanStateV2::ApprovalRequired {
         let token = approval.ok_or_else(|| {
             WellfriendError::invalid_input(
@@ -3654,19 +5370,113 @@ fn apply_universal_edit_v2_inner(
             | UniversalPlanStateV2::TargetNotFound
             | UniversalPlanStateV2::IrrecoverableInput
     ) {
-        return Ok((
-            input.to_vec(),
-            no_change_result(plan, &current_snapshot.revision_id),
-        ));
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "universal editing no_change: plan state {:?} is not applicable",
+            plan.state
+        )));
     }
     enforce_universal_signature_policy(&secure_policy, plan.policy.mutation_mode)?;
 
     crate::cancel::check_current_cancel("universal editing operation dispatch")?;
     let applied = match &plan.execution_operation {
+        UniversalEditOperationV2::ScopedText { request } => {
+            let staged = staged_scoped_text.take().ok_or_else(|| {
+                WellfriendError::invalid_input(
+                    "scoped text apply has no canonical staged candidate",
+                )
+            })?;
+            let candidate_sha256 = digest_hex(&staged.bytes);
+            if request.planned_output_sha256.as_deref() != Some(candidate_sha256.as_str()) {
+                return Err(WellfriendError::AuthenticationFailure(
+                    "scoped text candidate differs from the approved output receipt".into(),
+                ));
+            }
+            Ok((
+                staged.bytes,
+                staged.report,
+                staged.pages,
+                staged.objects,
+                staged.cloned_resources,
+            ))
+        }
+        UniversalEditOperationV2::ImageFragment { request } => {
+            let receipt = plan
+                .preview
+                .get("plan_sha256")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    WellfriendError::invalid_input(
+                        "image fragment plan has no canonical preview receipt",
+                    )
+                })?;
+            crate::image_fragments::apply_image_fragment_move(input, request, receipt).map(
+                |(bytes, report)| {
+                    let pages = report.preview.changed_pages.clone();
+                    (
+                        bytes,
+                        serde_json::to_value(report).unwrap_or(Value::Null),
+                        pages,
+                        plan.write_set.clone(),
+                        Vec::new(),
+                    )
+                },
+            )
+        }
+        UniversalEditOperationV2::LinkedStory { request } => {
+            crate::linked_stories::apply_linked_story(input, request).map(|(bytes, report)| {
+                let pages = report.changed_pages.clone();
+                (
+                    bytes,
+                    serde_json::to_value(report).unwrap_or(Value::Null),
+                    pages,
+                    plan.write_set.clone(),
+                    Vec::new(),
+                )
+            })
+        }
+        UniversalEditOperationV2::StoryFigureTransfer { request } => {
+            let receipt = plan
+                .preview
+                .get("plan_sha256")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    WellfriendError::invalid_input(
+                        "story Figure transfer plan has no canonical preview receipt",
+                    )
+                })?;
+            crate::linked_stories::figures::apply_story_figure_transfer(input, request, receipt)
+                .map(|(bytes, report)| {
+                    let page_tree_changed = report.preview.source.generated_pages > 0
+                        || report.preview.target.generated_pages > 0
+                        || !report.preview.source.page_pruning.removed_pages.is_empty()
+                        || !report.preview.target.page_pruning.removed_pages.is_empty();
+                    let pages = if page_tree_changed {
+                        (1..=report.output_page_count).collect()
+                    } else {
+                        report
+                            .preview
+                            .source
+                            .changed_pages
+                            .iter()
+                            .chain(&report.preview.target.changed_pages)
+                            .copied()
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect()
+                    };
+                    (
+                        bytes,
+                        serde_json::to_value(report).unwrap_or(Value::Null),
+                        pages,
+                        plan.write_set.clone(),
+                        Vec::new(),
+                    )
+                })
+        }
         UniversalEditOperationV2::Text { request } => {
             let mut effective_request = request.clone();
-            effective_request.signature_policy_override = plan.policy.mutation_mode
-                == UniversalMutationModeV2::AuthorizedRewrite;
+            effective_request.signature_policy_override =
+                plan.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite;
             let selected_candidate_id = validated_approval
                 .and_then(|token| token.decision.selected_candidate_ids.first())
                 .map(String::as_str)
@@ -3752,8 +5562,8 @@ fn apply_universal_edit_v2_inner(
         }),
         UniversalEditOperationV2::StructureCorrection { request } => {
             let mut effective_request = request.text_edit.clone();
-            effective_request.signature_policy_override = plan.policy.mutation_mode
-                == UniversalMutationModeV2::AuthorizedRewrite;
+            effective_request.signature_policy_override =
+                plan.policy.mutation_mode == UniversalMutationModeV2::AuthorizedRewrite;
             let selected_candidate_id = validated_approval
                 .and_then(|token| token.decision.selected_candidate_ids.first())
                 .map(String::as_str)
@@ -3783,8 +5593,7 @@ fn apply_universal_edit_v2_inner(
                     })?;
                 effective_request.font_policy = format!("approved_substitute:{approved_font}");
             }
-            let (text_output, report) =
-                apply_scene_text_transaction(input, &effective_request)?;
+            let (text_output, report) = apply_scene_text_transaction(input, &effective_request)?;
             let mut affected_pages = report.affected_pages.clone();
             let mut affected_objects = report.affected_objects.clone();
             let cloned_resources = report.cloned_resources.clone();
@@ -3794,8 +5603,7 @@ fn apply_universal_edit_v2_inner(
                         crate::document_security::DocumentSecuritySubsystem::AccessibilityRepair,
                     action: Some(
                         crate::document_security::DocumentSecurityAction::RepairAfterMutation {
-                            mutation:
-                                crate::document_security::AccessibilityMutationKind::TextEdit,
+                            mutation: crate::document_security::AccessibilityMutationKind::TextEdit,
                             lang: request.structure_language.clone(),
                         },
                     ),
@@ -3804,11 +5612,10 @@ fn apply_universal_edit_v2_inner(
                     full_rewrite_acknowledged: plan.policy.mutation_mode
                         == UniversalMutationModeV2::AuthorizedRewrite,
                 };
-                let (repaired, structure) =
-                    crate::document_security::apply_document_security(
-                        &text_output,
-                        &security_request,
-                    )?;
+                let (repaired, structure) = crate::document_security::apply_document_security(
+                    &text_output,
+                    &security_request,
+                )?;
                 affected_pages.extend(structure.changed_pages.iter().copied());
                 affected_objects.extend(structure.write_set.iter().cloned());
                 (
@@ -3878,19 +5685,15 @@ fn apply_universal_edit_v2_inner(
     let (mut output, mut operation_report, affected_pages, affected_objects, cloned_resources) =
         match applied {
             Ok(value) => value,
-            Err(error) if matches!(error, WellfriendError::UnsupportedFeature(_)) => {
-                let mut result = no_change_result(plan, &current_snapshot.revision_id);
-                result.outcome = UniversalEditOutcomeV2::ApprovalRequired;
-                result.issues.push(json!({
-                    "code": "additional_reconstruction_decision_required",
-                    "message": error.to_string(),
-                    "no_change_proof": true,
-                }));
-                return Ok((input.to_vec(), result));
-            }
             Err(error) => return Err(error),
         };
     crate::cancel::check_current_cancel("universal editing post-mutation")?;
+    if output == input {
+        return Err(WellfriendError::UnsupportedFeature(
+            "universal editing no_change: approved operation produced byte-identical output"
+                .to_string(),
+        ));
+    }
     if universal_input_recovery_state(input)["strict_open"] == Value::Bool(false) {
         if !plan.policy.allow_deterministic_repair
             || plan.policy.mutation_mode != UniversalMutationModeV2::AuthorizedRewrite
@@ -3920,26 +5723,15 @@ fn apply_universal_edit_v2_inner(
     }
     crate::cancel::check_current_cancel("universal editing output reopen")?;
     ContentEngine::open_bytes(output.clone())?;
-    let required_conformance_profiles =
-        required_conformance_profiles_v2(input, &plan.policy)?;
+    let required_conformance_profiles = required_conformance_profiles_v2(input, &plan.policy)?;
     crate::cancel::check_current_cancel("universal editing conformance validation")?;
     let (conformance_passed, conformance_validation) =
         validate_universal_output_conformance_v2(&output, &required_conformance_profiles)?;
     if !conformance_passed {
-        let mut result = no_change_result(plan, &current_snapshot.revision_id);
-        result.outcome = UniversalEditOutcomeV2::PolicyDenied;
-        result.conformance_impact = json!({
-            "requested_guarantee": "preserve_declared_conformance",
-            "decision": "edited_bytes_withheld",
-            "validation": conformance_validation,
-            "external_certification_claimed": false,
-        });
-        result.issues.push(json!({
-            "code": "post_edit_conformance_gate_failed",
-            "message": "edited bytes failed or could not conclusively pass a required standards profile; original bytes returned unchanged",
-            "no_change_proof": true,
-        }));
-        return Ok((input.to_vec(), result));
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "universal editing no_change: edited bytes failed required conformance validation: {}",
+            serde_json::to_string(&conformance_validation).map_err(json_error)?
+        )));
     }
     if !required_conformance_profiles.is_empty() {
         operation_report = json!({
@@ -3957,6 +5749,10 @@ fn apply_universal_edit_v2_inner(
             "external_certification_claimed": false,
         })
     };
+    if let Some(contract) = &plan.policy.edit_contract {
+        let validation = crate::edit_contracts::verify_edit_contract(input, &output, contract)?;
+        operation_report = json!({"operation": operation_report, "edit_contract": validation});
+    }
     let output_revision = revision_id(&output);
     let transaction_id = stable_id(
         "transaction-v2",
@@ -3978,7 +5774,9 @@ fn apply_universal_edit_v2_inner(
             cloned_resources,
             operation_report,
             render_invalidation: json!({
-                "policy": "exact_source_dependencies_then_dirty_regions",
+                "policy": if matches!(&plan.execution_operation, UniversalEditOperationV2::ScopedText { .. }) {
+                    plan.preview.get("invalidation").and_then(Value::as_str).unwrap_or("conservative_document_wide")
+                } else { "exact_source_dependencies_then_dirty_regions" },
                 "read_set": plan.read_set,
                 "write_set": plan.write_set,
             }),
@@ -3995,6 +5793,48 @@ fn apply_universal_edit_v2_inner(
     ))
 }
 
+fn universal_plan_authority_projection(plan: &UniversalEditPlanV2) -> Result<Value> {
+    let mut signature_impact = plan.signature_impact.clone();
+    remove_volatile_validation_time(&mut signature_impact);
+    serde_json::to_value(json!({
+        "schema_version": plan.schema_version,
+        "plan_id": plan.plan_id,
+        "document_id": plan.document_id,
+        "revision_id": plan.revision_id,
+        "snapshot_id": plan.snapshot_id,
+        "state": plan.state,
+        "requested_operation": plan.requested_operation,
+        "execution_operation": plan.execution_operation,
+        "policy": plan.policy,
+        "candidates": plan.candidates,
+        "selected_candidate_ids": plan.selected_candidate_ids,
+        "approval_reasons": plan.approval_reasons,
+        "read_set": plan.read_set,
+        "write_set": plan.write_set,
+        "preview": plan.preview,
+        "signature_impact": signature_impact,
+        "conformance_impact": plan.conformance_impact,
+    }))
+    .map_err(json_error)
+}
+
+fn remove_volatile_validation_time(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("validation_time_unix");
+            for child in object.values_mut() {
+                remove_volatile_validation_time(child);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                remove_volatile_validation_time(child);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn apply_image_edit(
     input: &[u8],
     request: &UniversalImageEditRequestV2,
@@ -4005,13 +5845,14 @@ pub(crate) fn apply_image_edit(
     let mut matches = universal_image_occurrences_v2(input, &[request.page])?
         .into_iter()
         .filter(|candidate| {
-            request.occurrence_id.as_deref().is_none_or(|id| candidate.occurrence_id == id)
-                && request
-                    .object_number
-                    .is_none_or(|number| {
-                        candidate.object_number == Some(number)
-                            && candidate.generation == Some(request.generation)
-                    })
+            request
+                .occurrence_id
+                .as_deref()
+                .is_none_or(|id| candidate.occurrence_id == id)
+                && request.object_number.is_none_or(|number| {
+                    candidate.object_number == Some(number)
+                        && candidate.generation == Some(request.generation)
+                })
                 && request
                     .resource_name
                     .as_deref()
@@ -4043,7 +5884,9 @@ pub(crate) fn apply_image_edit(
     }
     let reader = engine.document().reader();
     let object_number = selected.object_number.ok_or_else(|| {
-        WellfriendError::MalformedPdf("selected image definition has no object identity".to_string())
+        WellfriendError::MalformedPdf(
+            "selected image definition has no object identity".to_string(),
+        )
     })?;
     let generation = selected.generation.ok_or_else(|| {
         WellfriendError::MalformedPdf("selected image definition has no generation".to_string())
@@ -4101,10 +5944,7 @@ pub(crate) fn apply_image_edit(
             "cryptographic_signature_validity_claimed": false,
         }),
         affected_pages,
-        vec![format!(
-            "object-{}-{}",
-            object_number, generation
-        )],
+        vec![format!("object-{}-{}", object_number, generation)],
         Vec::new(),
     ))
 }
@@ -4132,84 +5972,85 @@ pub(crate) fn decode_image_occurrence_v2(
                 "universal image decode cannot resolve the selected occurrence".to_string(),
             )
         })?;
-    let (
-        mut reference,
-        inline_decode_params,
-        inline_color_space_object,
-        inline_image_dictionary,
-    ) = if occurrence.inline {
-        let owner = engine.document().reader().get_object(
-            occurrence.owner_stream_object,
-            occurrence.owner_stream_generation,
-        )?;
-        let decoded = decode_stream_lossless_with_limits(
-            &owner,
-            engine.document().reader(),
-            &DecodeLimits {
-                max_decoded_bytes_per_stream: 512 * 1024 * 1024,
-                ..DecodeLimits::default()
-            },
-        )?;
-        if decoded.status != StreamDecodeStatus::Complete {
-            return Err(WellfriendError::UnsupportedFeature(
-                "universal inline image owner is not losslessly decodable".to_string(),
-            ));
-        }
-        let source = decoded
-            .data
-            .get(occurrence.operation_byte_start..occurrence.operation_byte_end)
-            .ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "universal inline image occurrence range is outside its owner stream"
-                        .to_string(),
-                )
-            })?;
-        let details = ImageLocator::inline_decode_details_from_source(page, source)?;
-        (
-            details.reference,
-            details.decode_params,
-            details.color_space_object,
-            details.image_dictionary,
-        )
-    } else {
-        (ImageReference {
-            page_number: page,
-            xobject_name: occurrence
-                .resource_name
-                .clone()
-                .unwrap_or_else(|| "occurrence_image".to_string()),
-            object_number: occurrence.object_number.ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "universal image occurrence has no object number".to_string(),
-                )
-            })?,
-            generation_number: occurrence.generation.ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "universal image occurrence has no generation".to_string(),
-                )
-            })?,
-            width: occurrence.width.ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "universal image occurrence has no decoded width".to_string(),
-                )
-            })?,
-            height: occurrence.height.ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "universal image occurrence has no decoded height".to_string(),
-                )
-            })?,
-            bits_per_component: occurrence.bits_per_component.unwrap_or(8),
-            color_space: occurrence
-                .color_space
-                .clone()
-                .unwrap_or_else(|| "DeviceRGB".to_string()),
-            filter: occurrence.filters.clone(),
-            is_inline: false,
-            is_mask: false,
-            is_smask: false,
-            inline_data: None,
-        }, Vec::new(), None, PdfDictionary::empty())
-    };
+    let (mut reference, inline_decode_params, inline_color_space_object, inline_image_dictionary) =
+        if occurrence.inline {
+            let owner = engine.document().reader().get_object(
+                occurrence.owner_stream_object,
+                occurrence.owner_stream_generation,
+            )?;
+            let decoded = decode_stream_lossless_with_limits(
+                &owner,
+                engine.document().reader(),
+                &DecodeLimits {
+                    max_decoded_bytes_per_stream: 512 * 1024 * 1024,
+                    ..DecodeLimits::default()
+                },
+            )?;
+            if decoded.status != StreamDecodeStatus::Complete {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "universal inline image owner is not losslessly decodable".to_string(),
+                ));
+            }
+            let source = decoded
+                .data
+                .get(occurrence.operation_byte_start..occurrence.operation_byte_end)
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf(
+                        "universal inline image occurrence range is outside its owner stream"
+                            .to_string(),
+                    )
+                })?;
+            let details = ImageLocator::inline_decode_details_from_source(page, source)?;
+            (
+                details.reference,
+                details.decode_params,
+                details.color_space_object,
+                details.image_dictionary,
+            )
+        } else {
+            (
+                ImageReference {
+                    page_number: page,
+                    xobject_name: occurrence
+                        .resource_name
+                        .clone()
+                        .unwrap_or_else(|| "occurrence_image".to_string()),
+                    object_number: occurrence.object_number.ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "universal image occurrence has no object number".to_string(),
+                        )
+                    })?,
+                    generation_number: occurrence.generation.ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "universal image occurrence has no generation".to_string(),
+                        )
+                    })?,
+                    width: occurrence.width.ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "universal image occurrence has no decoded width".to_string(),
+                        )
+                    })?,
+                    height: occurrence.height.ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "universal image occurrence has no decoded height".to_string(),
+                        )
+                    })?,
+                    bits_per_component: occurrence.bits_per_component.unwrap_or(8),
+                    color_space: occurrence
+                        .color_space
+                        .clone()
+                        .unwrap_or_else(|| "DeviceRGB".to_string()),
+                    filter: occurrence.filters.clone(),
+                    is_inline: false,
+                    is_mask: false,
+                    is_smask: false,
+                    inline_data: None,
+                },
+                Vec::new(),
+                None,
+                PdfDictionary::empty(),
+            )
+        };
     let raw = if reference.is_inline {
         let resources = image_occurrence_resources_v2(&engine, page, &occurrence)?;
         let resolved_color_space = resolve_inline_color_space_v2(
@@ -4225,7 +6066,11 @@ pub(crate) fn decode_image_occurrence_v2(
                 "universal inline image occurrence has no captured payload".to_string(),
             )
         })?;
-        let filters = inline.filters.iter().map(String::as_str).collect::<Vec<_>>();
+        let filters = inline
+            .filters
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         ImageDecoder::decode_inline_with_resolved_image_dictionary_and_param_array(
             &inline.bytes,
             reference.width,
@@ -4313,14 +6158,11 @@ fn resolve_inline_color_space_v2(
     };
     let name = match &resolved {
         PdfObject::Name(name) => name.as_str(),
-        PdfObject::Array(items) => items
-            .first()
-            .and_then(PdfObject::as_name)
-            .ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "universal inline image color-space array has no family name".to_string(),
-                )
-            })?,
+        PdfObject::Array(items) => items.first().and_then(PdfObject::as_name).ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "universal inline image color-space array has no family name".to_string(),
+            )
+        })?,
         _ => {
             return Err(WellfriendError::MalformedPdf(
                 "universal inline image color-space resource is not a name or array".to_string(),
@@ -4366,25 +6208,28 @@ fn apply_image_occurrence_clone(
             )
         })?;
     }
-    changed.insert(0, IncrementalObject {
-        number: image_number,
-        generation: 0,
-        object: image_object,
-    });
-    let resource_sets = effective_resource_chain(reader, &page.resources, &selected.invocation_path)?;
+    changed.insert(
+        0,
+        IncrementalObject {
+            number: image_number,
+            generation: 0,
+            object: image_object,
+        },
+    );
+    let resource_sets =
+        effective_resource_chain(reader, &page.resources, &selected.invocation_path)?;
     let mut clone_graph = Vec::new();
 
     let child_number = if selected.invocation_path.is_empty() {
         image_number
     } else {
-        let leaf_resources = resource_sets.last().cloned().unwrap_or_else(|| page.resources.clone());
+        let leaf_resources = resource_sets
+            .last()
+            .cloned()
+            .unwrap_or_else(|| page.resources.clone());
         let leaf_name = unique_xobject_name(reader, &leaf_resources, image_number, "UxI")?;
-        let leaf_resources = resources_with_xobject(
-            reader,
-            &leaf_resources,
-            &leaf_name,
-            image_number,
-        )?;
+        let leaf_resources =
+            resources_with_xobject(reader, &leaf_resources, &leaf_name, image_number)?;
         let leaf_number = allocate_universal_object_number(&mut next_number)?;
         changed.push(IncrementalObject {
             number: leaf_number,
@@ -4407,24 +6252,14 @@ fn apply_image_occurrence_clone(
             selected.owner_stream_generation
         ));
         let mut child_number = leaf_number;
-        for (index, invocation) in selected
-            .invocation_path
-            .iter()
-            .enumerate()
-            .skip(1)
-            .rev()
-        {
+        for (index, invocation) in selected.invocation_path.iter().enumerate().skip(1).rev() {
             let owner_resources = resource_sets
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| page.resources.clone());
             let child_name = unique_xobject_name(reader, &owner_resources, child_number, "UxF")?;
-            let owner_resources = resources_with_xobject(
-                reader,
-                &owner_resources,
-                &child_name,
-                child_number,
-            )?;
+            let owner_resources =
+                resources_with_xobject(reader, &owner_resources, &child_name, child_number)?;
             let parent_number = allocate_universal_object_number(&mut next_number)?;
             changed.push(IncrementalObject {
                 number: parent_number,
@@ -4467,12 +6302,8 @@ fn apply_image_occurrence_clone(
             selected.owner_stream_generation,
         ));
     let outer_name = unique_xobject_name(reader, &page.resources, child_number, "UxP")?;
-    let page_resources = resources_with_xobject(
-        reader,
-        &page.resources,
-        &outer_name,
-        child_number,
-    )?;
+    let page_resources =
+        resources_with_xobject(reader, &page.resources, &outer_name, child_number)?;
     let page_stream_number = next_number;
     let page_stream_object = cloned_stream_with_patch(
         reader,
@@ -4519,6 +6350,7 @@ fn apply_image_occurrence_clone(
         .collect::<Vec<_>>();
     let output = write_incremental_update(reader, changed)?;
     ContentEngine::open_bytes(output.clone())?;
+    let original_pdf_prefix_preserved = output.starts_with(input);
     Ok((
         output,
         json!({
@@ -4530,7 +6362,7 @@ fn apply_image_occurrence_clone(
             "page_content_clone": [page_stream_number, 0],
             "form_clone_count": clone_graph.len().saturating_sub(1),
             "mutation_mode": mode,
-            "original_pdf_prefix_preserved": output.starts_with(input),
+            "original_pdf_prefix_preserved": original_pdf_prefix_preserved,
             "source_definitions_retained": true,
             "output_reopened": true,
             "cryptographic_signature_validity_claimed": false,
@@ -4581,7 +6413,9 @@ fn unique_xobject_name(
             return Ok(name);
         }
         index = index.checked_add(1).ok_or_else(|| {
-            WellfriendError::ResourceLimit("universal image resource-name space exhausted".to_string())
+            WellfriendError::ResourceLimit(
+                "universal image resource-name space exhausted".to_string(),
+            )
         })?;
     }
 }
@@ -4593,8 +6427,8 @@ fn resources_with_xobject(
     object_number: u32,
 ) -> Result<PdfDictionary> {
     let mut output = resources.clone();
-    let mut xobjects = resolve_universal_dict(output.get("XObject"), reader)
-        .unwrap_or_else(PdfDictionary::empty);
+    let mut xobjects =
+        resolve_universal_dict(output.get("XObject"), reader).unwrap_or_else(PdfDictionary::empty);
     if xobjects.contains_key(name) {
         return Err(WellfriendError::MalformedPdf(format!(
             "universal image resource collision for /{name}"
@@ -4686,7 +6520,8 @@ fn replace_page_content_reference(
             })?;
             if target.as_reference() != Some((expected_number, expected_generation)) {
                 return Err(WellfriendError::MalformedPdf(
-                    "universal image /Contents identity differs from occurrence provenance".to_string(),
+                    "universal image /Contents identity differs from occurrence provenance"
+                        .to_string(),
                 ));
             }
             *target = replacement;
@@ -4757,9 +6592,7 @@ fn replacement_image_object(
 }
 
 fn rescale_color_key_mask_v2(mask: &[PdfObject], old_bits: u8, new_bits: u8) -> Result<PdfObject> {
-    if !matches!(old_bits, 1 | 2 | 4 | 8 | 16)
-        || !matches!(new_bits, 1 | 2 | 4 | 8 | 16)
-    {
+    if !matches!(old_bits, 1 | 2 | 4 | 8 | 16) || !matches!(new_bits, 1 | 2 | 4 | 8 | 16) {
         return Err(WellfriendError::invalid_input(
             "color-key mask bit depth must be 1, 2, 4, 8, or 16",
         ));
@@ -4806,8 +6639,20 @@ fn replacement_image_object_from_dict(
 ) -> Result<(PdfObject, Vec<IncrementalObject>)> {
     let mut output_dict = dict.clone();
     for key in [
-        "W", "H", "BPC", "CS", "Filter", "F", "DecodeParms", "DP", "Decode", "D",
-        "SMaskInData", "ImageMask", "IM", "Length",
+        "W",
+        "H",
+        "BPC",
+        "CS",
+        "Filter",
+        "F",
+        "DecodeParms",
+        "DP",
+        "Decode",
+        "D",
+        "SMaskInData",
+        "ImageMask",
+        "IM",
+        "Length",
     ] {
         output_dict.remove(key);
     }
@@ -4910,7 +6755,9 @@ fn validate_image_replacement(replacement: &UniversalImageReplacementV2) -> Resu
     }
     let pixels = u64::from(replacement.width)
         .checked_mul(u64::from(replacement.height))
-        .ok_or_else(|| WellfriendError::ResourceLimit("replacement image dimensions overflow".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit("replacement image dimensions overflow".to_string())
+        })?;
     if pixels > MAX_IMAGE_PIXELS {
         return Err(WellfriendError::ResourceLimit(format!(
             "replacement image has {pixels} pixels; maximum is {MAX_IMAGE_PIXELS}"
@@ -4969,8 +6816,7 @@ fn validate_image_replacement(replacement: &UniversalImageReplacementV2) -> Resu
             )));
         }
         if replacement.image_mask
-            && !((decode[0] == 0.0 && decode[1] == 1.0)
-                || (decode[0] == 1.0 && decode[1] == 0.0))
+            && !((decode[0] == 0.0 && decode[1] == 1.0) || (decode[0] == 1.0 && decode[1] == 0.0))
         {
             return Err(WellfriendError::invalid_input(
                 "replacement stencil image-mask Decode must be [0 1] or [1 0]",
@@ -5103,9 +6949,7 @@ fn image_color_descriptor_channels_v2(
             .ok()
             .filter(|count| (1..=32).contains(count))
             .ok_or_else(|| {
-                WellfriendError::invalid_input(
-                    "DeviceN replacement requires 1..=32 colorant names",
-                )
+                WellfriendError::invalid_input("DeviceN replacement requires 1..=32 colorant names")
             }),
     }
 }
@@ -5123,15 +6967,9 @@ fn build_image_color_space_v2(
     }
     validate_finite_color_space_v2(descriptor)?;
     match descriptor {
-        UniversalImageColorSpaceV2::DeviceGray => {
-            Ok(PdfObject::Name("DeviceGray".to_string()))
-        }
-        UniversalImageColorSpaceV2::DeviceRgb => {
-            Ok(PdfObject::Name("DeviceRGB".to_string()))
-        }
-        UniversalImageColorSpaceV2::DeviceCmyk => {
-            Ok(PdfObject::Name("DeviceCMYK".to_string()))
-        }
+        UniversalImageColorSpaceV2::DeviceGray => Ok(PdfObject::Name("DeviceGray".to_string())),
+        UniversalImageColorSpaceV2::DeviceRgb => Ok(PdfObject::Name("DeviceRGB".to_string())),
+        UniversalImageColorSpaceV2::DeviceCmyk => Ok(PdfObject::Name("DeviceCMYK".to_string())),
         UniversalImageColorSpaceV2::CalGray {
             white_point,
             black_point,
@@ -5289,12 +7127,7 @@ fn build_image_color_space_v2(
             }
             Ok(PdfObject::Array(vec![
                 PdfObject::Name("Indexed".to_string()),
-                build_image_color_space_v2(
-                    base,
-                    next_object_number,
-                    auxiliary_objects,
-                    depth + 1,
-                )?,
+                build_image_color_space_v2(base, next_object_number, auxiliary_objects, depth + 1)?,
                 PdfObject::Integer(i64::from(*high_value)),
                 PdfObject::String(lookup.clone()),
             ]))
@@ -5356,13 +7189,7 @@ fn build_image_color_space_v2(
             let alternate_channels = image_color_descriptor_channels_v2(alternate, depth + 1)?;
             let mut result = vec![
                 PdfObject::Name("DeviceN".to_string()),
-                PdfObject::Array(
-                    colorants
-                        .iter()
-                        .cloned()
-                        .map(PdfObject::Name)
-                        .collect(),
-                ),
+                PdfObject::Array(colorants.iter().cloned().map(PdfObject::Name).collect()),
                 build_image_color_space_v2(
                     alternate,
                     next_object_number,
@@ -5431,7 +7258,11 @@ fn build_pdf_function_v2(
             if input_channels != 1
                 || c0.len() != usize::from(output_channels)
                 || c1.len() != usize::from(output_channels)
-                || !domain.iter().chain(c0).chain(c1).all(|value| value.is_finite())
+                || !domain
+                    .iter()
+                    .chain(c0)
+                    .chain(c1)
+                    .all(|value| value.is_finite())
                 || domain[0] >= domain[1]
                 || !exponent.is_finite()
                 || *exponent <= 0.0
@@ -5460,9 +7291,14 @@ fn build_pdf_function_v2(
             if domain.len() != usize::from(input_channels) * 2
                 || range.len() != usize::from(output_channels) * 2
                 || size.len() != usize::from(input_channels)
-                || size.iter().any(|size| *size == 0)
+                || size.contains(&0)
                 || !matches!(bits_per_sample, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32)
-                || !domain.iter().chain(range).chain(encode).chain(decode).all(|v| v.is_finite())
+                || !domain
+                    .iter()
+                    .chain(range)
+                    .chain(encode)
+                    .chain(decode)
+                    .all(|v| v.is_finite())
                 || (!encode.is_empty() && encode.len() != usize::from(input_channels) * 2)
                 || (!decode.is_empty() && decode.len() != usize::from(output_channels) * 2)
                 || domain.chunks_exact(2).any(|pair| pair[0] >= pair[1])
@@ -5472,18 +7308,27 @@ fn build_pdf_function_v2(
                     "sampled tint transform dimensions, ranges, or BitsPerSample are invalid",
                 ));
             }
-            let sample_values = size.iter().try_fold(1u64, |total, value| {
-                total.checked_mul(u64::from(*value))
-            }).and_then(|total| total.checked_mul(u64::from(output_channels))).ok_or_else(|| {
-                WellfriendError::ResourceLimit("sampled tint transform size overflow".to_string())
-            })?;
+            let sample_values = size
+                .iter()
+                .try_fold(1u64, |total, value| total.checked_mul(u64::from(*value)))
+                .and_then(|total| total.checked_mul(u64::from(output_channels)))
+                .ok_or_else(|| {
+                    WellfriendError::ResourceLimit(
+                        "sampled tint transform size overflow".to_string(),
+                    )
+                })?;
             let expected = sample_values
                 .checked_mul(u64::from(*bits_per_sample))
                 .map(|bits| bits.div_ceil(8))
-                .ok_or_else(|| WellfriendError::ResourceLimit("sampled tint transform byte size overflow".to_string()))?;
+                .ok_or_else(|| {
+                    WellfriendError::ResourceLimit(
+                        "sampled tint transform byte size overflow".to_string(),
+                    )
+                })?;
             if expected != samples.len() as u64 || samples.len() > 128 * 1024 * 1024 {
                 return Err(WellfriendError::invalid_input(format!(
-                    "sampled tint transform contains {} bytes; expected {expected}", samples.len()
+                    "sampled tint transform contains {} bytes; expected {expected}",
+                    samples.len()
                 )));
             }
             let mut dictionary = PdfDictionary::empty();
@@ -5492,9 +7337,16 @@ fn build_pdf_function_v2(
             dictionary.insert("Range", numbers(range));
             dictionary.insert(
                 "Size",
-                PdfObject::Array(size.iter().map(|v| PdfObject::Integer(i64::from(*v))).collect()),
+                PdfObject::Array(
+                    size.iter()
+                        .map(|v| PdfObject::Integer(i64::from(*v)))
+                        .collect(),
+                ),
             );
-            dictionary.insert("BitsPerSample", PdfObject::Integer(i64::from(*bits_per_sample)));
+            dictionary.insert(
+                "BitsPerSample",
+                PdfObject::Integer(i64::from(*bits_per_sample)),
+            );
             if !encode.is_empty() {
                 dictionary.insert("Encode", numbers(encode));
             }
@@ -5508,9 +7360,15 @@ fn build_pdf_function_v2(
             auxiliary_objects.push(IncrementalObject {
                 number,
                 generation: 0,
-                object: PdfObject::Stream { dict: dictionary, raw },
+                object: PdfObject::Stream {
+                    dict: dictionary,
+                    raw,
+                },
             });
-            Ok(PdfObject::Reference { number, generation: 0 })
+            Ok(PdfObject::Reference {
+                number,
+                generation: 0,
+            })
         }
         UniversalPdfFunctionV2::Stitching {
             domain,
@@ -5520,14 +7378,21 @@ fn build_pdf_function_v2(
             encode,
         } => {
             if input_channels != 1
-                || !domain.iter().chain(range).chain(bounds).chain(encode).all(|v| v.is_finite())
+                || !domain
+                    .iter()
+                    .chain(range)
+                    .chain(bounds)
+                    .chain(encode)
+                    .all(|v| v.is_finite())
                 || domain[0] >= domain[1]
                 || functions.is_empty()
                 || functions.len() > 4_096
                 || bounds.len() + 1 != functions.len()
                 || encode.len() != functions.len() * 2
                 || (!range.is_empty() && range.len() != usize::from(output_channels) * 2)
-                || bounds.iter().any(|bound| *bound <= domain[0] || *bound >= domain[1])
+                || bounds
+                    .iter()
+                    .any(|bound| *bound <= domain[0] || *bound >= domain[1])
                 || bounds.windows(2).any(|pair| pair[0] >= pair[1])
             {
                 return Err(WellfriendError::invalid_input(
@@ -5588,7 +7453,10 @@ fn build_pdf_function_v2(
                     raw: program.clone(),
                 },
             });
-            Ok(PdfObject::Reference { number, generation: 0 })
+            Ok(PdfObject::Reference {
+                number,
+                generation: 0,
+            })
         }
     }
 }
@@ -5622,15 +7490,35 @@ fn next_universal_object_number(reader: &crate::reader::PdfReader) -> Result<u32
 
 fn validate_finite_color_space_v2(descriptor: &UniversalImageColorSpaceV2) -> Result<()> {
     let finite = match descriptor {
-        UniversalImageColorSpaceV2::CalGray { white_point, black_point, gamma } => {
-            white_point.iter().chain(black_point.iter().flatten()).chain(gamma).all(|v| v.is_finite())
-        }
-        UniversalImageColorSpaceV2::CalRgb { white_point, black_point, gamma, matrix } => {
-            white_point.iter().chain(black_point.iter().flatten()).chain(gamma.iter().flatten()).chain(matrix.iter().flatten()).all(|v| v.is_finite())
-        }
-        UniversalImageColorSpaceV2::Lab { white_point, black_point, range } => {
-            white_point.iter().chain(black_point.iter().flatten()).chain(range.iter().flatten()).all(|v| v.is_finite())
-        }
+        UniversalImageColorSpaceV2::CalGray {
+            white_point,
+            black_point,
+            gamma,
+        } => white_point
+            .iter()
+            .chain(black_point.iter().flatten())
+            .chain(gamma)
+            .all(|v| v.is_finite()),
+        UniversalImageColorSpaceV2::CalRgb {
+            white_point,
+            black_point,
+            gamma,
+            matrix,
+        } => white_point
+            .iter()
+            .chain(black_point.iter().flatten())
+            .chain(gamma.iter().flatten())
+            .chain(matrix.iter().flatten())
+            .all(|v| v.is_finite()),
+        UniversalImageColorSpaceV2::Lab {
+            white_point,
+            black_point,
+            range,
+        } => white_point
+            .iter()
+            .chain(black_point.iter().flatten())
+            .chain(range.iter().flatten())
+            .all(|v| v.is_finite()),
         UniversalImageColorSpaceV2::IccBased { range, .. } => range.iter().all(|v| v.is_finite()),
         _ => true,
     };
@@ -5677,12 +7565,12 @@ fn validate_finite_color_space_v2(descriptor: &UniversalImageColorSpaceV2) -> Re
                 ));
             }
         }
-        UniversalImageColorSpaceV2::IccBased { range, .. } => {
-            if range.chunks_exact(2).any(|pair| pair[0] >= pair[1]) {
-                return Err(WellfriendError::invalid_input(
-                    "ICCBased Range minima must be lower than their maxima",
-                ));
-            }
+        UniversalImageColorSpaceV2::IccBased { range, .. }
+            if range.chunks_exact(2).any(|pair| pair[0] >= pair[1]) =>
+        {
+            return Err(WellfriendError::invalid_input(
+                "ICCBased Range minima must be lower than their maxima",
+            ));
         }
         _ => {}
     }
@@ -5745,7 +7633,9 @@ fn icc_profile_components_v2(profile: &[u8]) -> Result<u8> {
 fn validate_pdf_name_v2(name: &str, label: &str) -> Result<()> {
     if name.is_empty()
         || name.len() > 127
-        || name.bytes().any(|byte| byte <= 0x20 || b"()<>[]{}/%#".contains(&byte))
+        || name
+            .bytes()
+            .any(|byte| byte <= 0x20 || b"()<>[]{}/%#".contains(&byte))
     {
         return Err(WellfriendError::invalid_input(format!(
             "{label} is not a bounded literal PDF name"
@@ -5796,9 +7686,7 @@ fn universal_conformance_profile_from_label_v2(
         "PDF/A-3B" => Some(UniversalConformanceProfileV2::PdfA3B),
         "PDF/A-3A" => Some(UniversalConformanceProfileV2::PdfA3A),
         "PDF/UA-1" => Some(UniversalConformanceProfileV2::PdfUa1),
-        "PDF/X-1A" | "PDF/X-1A:2001" => {
-            Some(UniversalConformanceProfileV2::PdfX1A2001)
-        }
+        "PDF/X-1A" | "PDF/X-1A:2001" => Some(UniversalConformanceProfileV2::PdfX1A2001),
         "PDF/X-3" | "PDF/X-3:2003" => Some(UniversalConformanceProfileV2::PdfX3_2003),
         "PDF/X-4" => Some(UniversalConformanceProfileV2::PdfX4),
         _ => None,
@@ -5810,11 +7698,14 @@ fn validate_universal_output_conformance_v2(
     profiles: &[UniversalConformanceProfileV2],
 ) -> Result<(bool, Value)> {
     if profiles.is_empty() {
-        return Ok((true, json!({
-            "status": "not_requested_or_no_declared_profile_detected",
-            "profiles": [],
-            "external_certification_claimed": false,
-        })));
+        return Ok((
+            true,
+            json!({
+                "status": "not_requested_or_no_declared_profile_detected",
+                "profiles": [],
+                "external_certification_claimed": false,
+            }),
+        ));
     }
     let engine = ContentEngine::open_bytes(output.to_vec())?;
     let mut all_passed = true;
@@ -5827,21 +7718,11 @@ fn validate_universal_output_conformance_v2(
             | UniversalConformanceProfileV2::PdfA3B
             | UniversalConformanceProfileV2::PdfA3A => {
                 let pdfa_profile = match profile {
-                    UniversalConformanceProfileV2::PdfA1B => {
-                        crate::compliance::PdfAProfile::PdfA1B
-                    }
-                    UniversalConformanceProfileV2::PdfA2B => {
-                        crate::compliance::PdfAProfile::PdfA2B
-                    }
-                    UniversalConformanceProfileV2::PdfA2A => {
-                        crate::compliance::PdfAProfile::PdfA2A
-                    }
-                    UniversalConformanceProfileV2::PdfA3B => {
-                        crate::compliance::PdfAProfile::PdfA3B
-                    }
-                    UniversalConformanceProfileV2::PdfA3A => {
-                        crate::compliance::PdfAProfile::PdfA3A
-                    }
+                    UniversalConformanceProfileV2::PdfA1B => crate::compliance::PdfAProfile::PdfA1B,
+                    UniversalConformanceProfileV2::PdfA2B => crate::compliance::PdfAProfile::PdfA2B,
+                    UniversalConformanceProfileV2::PdfA2A => crate::compliance::PdfAProfile::PdfA2A,
+                    UniversalConformanceProfileV2::PdfA3B => crate::compliance::PdfAProfile::PdfA3B,
+                    UniversalConformanceProfileV2::PdfA3A => crate::compliance::PdfAProfile::PdfA3A,
                     _ => unreachable!(),
                 };
                 let report = crate::compliance::validate_pdfa(engine.document(), pdfa_profile)?;
@@ -5882,12 +7763,15 @@ fn validate_universal_output_conformance_v2(
             "report": report,
         }));
     }
-    Ok((all_passed, json!({
-        "status": if all_passed { "passed" } else { "failed_or_inconclusive" },
-        "profiles": reports,
-        "all_required_profiles_passed": all_passed,
-        "external_certification_claimed": false,
-    })))
+    Ok((
+        all_passed,
+        json!({
+            "status": if all_passed { "passed" } else { "failed_or_inconclusive" },
+            "profiles": reports,
+            "all_required_profiles_passed": all_passed,
+            "external_certification_claimed": false,
+        }),
+    ))
 }
 
 fn expected_image_sample_bytes(replacement: &UniversalImageReplacementV2) -> Result<u64> {
@@ -5895,11 +7779,15 @@ fn expected_image_sample_bytes(replacement: &UniversalImageReplacementV2) -> Res
     let row_bits = u64::from(replacement.width)
         .checked_mul(channels)
         .and_then(|value| value.checked_mul(u64::from(replacement.bits_per_component)))
-        .ok_or_else(|| WellfriendError::ResourceLimit("replacement row size overflow".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit("replacement row size overflow".to_string())
+        })?;
     row_bits
         .div_ceil(8)
         .checked_mul(u64::from(replacement.height))
-        .ok_or_else(|| WellfriendError::ResourceLimit("replacement sample size overflow".to_string()))
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit("replacement sample size overflow".to_string())
+        })
 }
 
 fn validate_encoded_image_metadata(
@@ -5962,7 +7850,8 @@ fn jp2_header_metadata(data: &[u8]) -> Option<(u32, u32, u8, Option<u8>)> {
             let short = u32::from_be_bytes(data.get(cursor..cursor + 4)?.try_into().ok()?);
             let kind = data.get(cursor + 4..cursor + 8)?;
             let (header, length) = if short == 1 {
-                let length = u64::from_be_bytes(data.get(cursor + 8..cursor + 16)?.try_into().ok()?);
+                let length =
+                    u64::from_be_bytes(data.get(cursor + 8..cursor + 16)?.try_into().ok()?);
                 (16usize, usize::try_from(length).ok()?)
             } else if short == 0 {
                 (8usize, data.len().saturating_sub(cursor))
@@ -5978,12 +7867,7 @@ fn jp2_header_metadata(data: &[u8]) -> Option<(u32, u32, u8, Option<u8>)> {
                 let width = u32::from_be_bytes(payload[4..8].try_into().ok()?);
                 let channels = u16::from_be_bytes(payload[8..10].try_into().ok()?);
                 let encoded_bits = payload[10];
-                image_header = Some((
-                    width,
-                    height,
-                    u8::try_from(channels).ok()?,
-                    encoded_bits,
-                ));
+                image_header = Some((width, height, u8::try_from(channels).ok()?, encoded_bits));
             }
             if kind == b"bpcc" && !payload.is_empty() {
                 let first = (payload[0] & 0x7f) + 1;
@@ -6031,7 +7915,8 @@ fn j2k_codestream_metadata(data: &[u8]) -> Option<(u32, u32, u8, Option<u8>)> {
     let yosiz = u32::from_be_bytes(data.get(marker + 18..marker + 22)?.try_into().ok()?);
     let channels = u16::from_be_bytes(data.get(marker + 38..marker + 40)?.try_into().ok()?);
     let channels_usize = usize::from(channels);
-    let components_end = marker.checked_add(40usize.checked_add(3usize.checked_mul(channels_usize)?)?)?;
+    let components_end =
+        marker.checked_add(40usize.checked_add(3usize.checked_mul(channels_usize)?)?)?;
     if components_end > marker.checked_add(2 + length)? {
         return None;
     }
@@ -6085,8 +7970,14 @@ fn capability(
         status,
         owner: owner.to_string(),
         behavior: behavior.to_string(),
-        approval_triggers: approval_triggers.iter().map(|value| (*value).to_string()).collect(),
-        policy_limits: policy_limits.iter().map(|value| (*value).to_string()).collect(),
+        approval_triggers: approval_triggers
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        policy_limits: policy_limits
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
         source_implementation: "present_in_current_source_tree".to_string(),
         qualification_status: "not_executed_in_this_implementation_change; vps_corpus_gate_pending"
             .to_string(),
@@ -6126,8 +8017,7 @@ fn logical_text_range_candidates_v2(
         for (byte_start, matched) in model.logical_text.match_indices(&request.source_text) {
             if ranges.len() >= MAX_TEXT_CANDIDATES {
                 return Err(WellfriendError::ResourceLimit(
-                    "universal text candidate count exceeds the governed limit 1000000"
-                        .to_string(),
+                    "universal text candidate count exceeds the governed limit 1000000".to_string(),
                 ));
             }
             let byte_end = byte_start.saturating_add(matched.len());
@@ -6153,9 +8043,10 @@ fn logical_text_range_candidates_v2(
             .cloned()
             .collect::<Vec<_>>();
         let provenance_covered = if start == end {
-            model.source_spans.iter().any(|span| {
-                span.logical_range[0] == start || span.logical_range[1] == start
-            })
+            model
+                .source_spans
+                .iter()
+                .any(|span| span.logical_range[0] == start || span.logical_range[1] == start)
         } else {
             let mut covered_until = start;
             for span in &spans {
@@ -6170,16 +8061,19 @@ fn logical_text_range_candidates_v2(
         };
         let exact = provenance_covered;
 
+        // A source-instruction candidate can be provenance-exact yet be marked
+        // non-executable because its current font/CMap cannot encode the
+        // replacement.  Do not let that route-level refusal erase the exact
+        // logical-range candidate: bounded reconstruction needs the latter to
+        // bind removal geometry and approve a substitute font.  Only collapse
+        // the duplicate when the existing instruction is itself executable.
         if spans.len() == 1
-            && existing.iter().any(|candidate| {
-                candidate.kind == "text_source_instruction"
-                    && candidate.source_identity["stream_object"].as_u64()
-                        == Some(u64::from(spans[0].stream_object))
-                    && candidate.source_identity["stream_generation"].as_u64()
-                        == Some(u64::from(spans[0].stream_generation))
-                    && candidate.source_identity["decoded_byte_range"]
-                        == json!(spans[0].byte_range)
-            })
+            && has_executable_instruction_candidate(
+                existing,
+                spans[0].stream_object,
+                spans[0].stream_generation,
+                spans[0].byte_range,
+            )
         {
             continue;
         }
@@ -6231,6 +8125,22 @@ fn logical_text_range_candidates_v2(
     Ok(output)
 }
 
+fn has_executable_instruction_candidate(
+    existing: &[UniversalCandidateV2],
+    stream_object: u32,
+    stream_generation: u16,
+    decoded_byte_range: [usize; 2],
+) -> bool {
+    existing.iter().any(|candidate| {
+        candidate.kind == "text_source_instruction"
+            && candidate.exact
+            && candidate.source_identity["stream_object"].as_u64() == Some(u64::from(stream_object))
+            && candidate.source_identity["stream_generation"].as_u64()
+                == Some(u64::from(stream_generation))
+            && candidate.source_identity["decoded_byte_range"] == json!(decoded_byte_range)
+    })
+}
+
 fn bind_text_candidate_to_request(
     request: &mut SceneTextEditRequest,
     candidate: &UniversalCandidateV2,
@@ -6273,6 +8183,50 @@ fn bind_text_candidate_to_request(
     Ok(())
 }
 
+fn text_reconstruction_mode(request: &SceneTextEditRequest) -> TrueEditingMode {
+    if request.requested_mode == TrueEditingMode::SemanticDocument
+        || request.next_region.is_some()
+        || request.next_column.is_some()
+        || request.allow_page_creation
+    {
+        TrueEditingMode::SemanticDocument
+    } else {
+        // An exact local source selection does not need document-wide semantic
+        // reconstruction merely because its original font cannot encode the
+        // replacement. GeometricBlock retains the selected source occurrence,
+        // inferred local bounds, paint order, and no-flow contract.
+        TrueEditingMode::GeometricBlock
+    }
+}
+
+#[cfg(test)]
+mod text_reconstruction_routing_tests {
+    use super::*;
+
+    #[test]
+    fn local_font_reconstruction_stays_geometric_until_flow_is_explicit() {
+        let local = SceneTextEditRequest::default();
+        assert_eq!(
+            text_reconstruction_mode(&local),
+            TrueEditingMode::GeometricBlock
+        );
+
+        let mut page_flow = local.clone();
+        page_flow.allow_page_creation = true;
+        assert_eq!(
+            text_reconstruction_mode(&page_flow),
+            TrueEditingMode::SemanticDocument
+        );
+
+        let mut explicit_semantic = local;
+        explicit_semantic.requested_mode = TrueEditingMode::SemanticDocument;
+        assert_eq!(
+            text_reconstruction_mode(&explicit_semantic),
+            TrueEditingMode::SemanticDocument
+        );
+    }
+}
+
 fn selected_source_text_span(
     input: &[u8],
     request: &SceneTextEditRequest,
@@ -6287,18 +8241,21 @@ fn selected_source_text_span(
             }
         });
     }
-    let selected_identity = request.source_instruction_id.as_deref().and_then(|selected| {
-        crate::source_editing::operator_text_provenance(
-            input,
-            request.page,
-            &request.source_text,
-            &request.replacement_text,
-        )
-        .ok()?
-        .source_instructions
-        .into_iter()
-        .find(|identity| identity.instruction_id == selected)
-    });
+    let selected_identity = request
+        .source_instruction_id
+        .as_deref()
+        .and_then(|selected| {
+            crate::source_editing::operator_text_provenance(
+                input,
+                request.page,
+                &request.source_text,
+                &request.replacement_text,
+            )
+            .ok()?
+            .source_instructions
+            .into_iter()
+            .find(|identity| identity.instruction_id == selected)
+        });
     model.source_spans.into_iter().find(|span| {
         selected_identity.as_ref().map_or_else(
             || request.source_text.is_empty() || request.source_text.contains(span.text.as_str()),
@@ -6327,39 +8284,19 @@ fn source_font_program(input: &[u8], request: &SceneTextEditRequest) -> Option<V
     let source = selected_source_text_span(input, request)?;
     let engine = ContentEngine::open_bytes(input.to_vec()).ok()?;
     let resources = engine.get_page_resources(request.page).ok()?;
-    let reader = engine.document().reader();
-    let mut font = PdfObject::Dictionary(resources.fonts.get(&source.font_resource)?.clone());
-    if font
-        .as_dict()
-        .and_then(|dict| dict.get("Subtype"))
-        .and_then(PdfObject::as_name)
-        == Some("Type0")
-    {
-        let descendant = font
-            .as_dict()?
-            .get("DescendantFonts")?
-            .as_array()?
-            .first()?
-            .clone();
-        font = reader.resolve(descendant).ok()?;
-    }
-    let descriptor = font.as_dict()?.get("FontDescriptor")?.clone();
-    let descriptor = reader.resolve(descriptor).ok()?;
-    let descriptor = descriptor.as_dict()?;
-    let program = ["FontFile2", "FontFile3", "FontFile"]
-        .iter()
-        .find_map(|key| descriptor.get(key).cloned())?;
-    let program = reader.resolve(program).ok()?;
-    let decoded = decode_stream_lossless_with_limits(
-        &program,
-        reader,
-        &DecodeLimits {
-            max_decoded_bytes_per_stream: 128 * 1024 * 1024,
-        },
+    crate::fonts::provider::embedded_program(
+        engine.document().reader(),
+        resources.fonts.get(&source.font_resource)?,
     )
-    .ok()?;
-    (decoded.status == StreamDecodeStatus::Complete).then_some(decoded.data)
 }
+
+#[cfg(test)]
+#[path = "universal_font_coverage_tests.rs"]
+mod font_coverage_tests;
+
+#[cfg(test)]
+#[path = "universal_object_lens_tests.rs"]
+mod object_lens_tests;
 
 fn universal_substitution_report_v2(
     requested_family: &str,
@@ -6368,12 +8305,8 @@ fn universal_substitution_report_v2(
     source_font_bytes: Option<&[u8]>,
     approved_asset: Option<&crate::editing_transactions::ApprovedFontAsset>,
 ) -> Value {
-    let mut report = substitution_report_with_source_font(
-        requested_family,
-        text,
-        policy,
-        source_font_bytes,
-    );
+    let mut report =
+        substitution_report_with_source_font(requested_family, text, policy, source_font_bytes);
     let Some(asset) = approved_asset else {
         return report;
     };
@@ -6382,18 +8315,23 @@ fn universal_substitution_report_v2(
     let parsed = bounded
         .then(|| ttf_parser::Face::parse(&asset.bytes, 0).ok())
         .flatten();
-    let missing_scalars = parsed
+    let coverage = parsed
         .as_ref()
-        .map(|face| {
-            text.chars()
-                .filter(|character| !character.is_control() && face.glyph_index(*character).is_none())
-                .map(|character| format!("U+{:04X}", character as u32))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
+        .map(|_| crate::fonts::coverage::analyze_text(&asset.bytes, text));
+    let covered = coverage.as_ref().and_then(|result| result.as_ref().ok());
+    let missing_scalars = covered
+        .map(|coverage| {
+            coverage
+                .missing_scalars
+                .iter()
+                .map(|character| format!("U+{:04X}", *character as u32))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let eligible = valid_name && bounded && parsed.is_some() && missing_scalars.is_empty();
+    let editable = bounded && crate::fonts::fallback::editable_font(&asset.bytes);
+    let eligible = valid_name
+        && editable
+        && covered.is_some_and(|coverage| coverage.missing_clusters.is_empty());
     let candidate = json!({
         "family_name": asset.lookup_name,
         "lookup_name": asset.lookup_name,
@@ -6401,6 +8339,10 @@ fn universal_substitution_report_v2(
         "font_sha256": digest_hex(&asset.bytes),
         "byte_length": asset.bytes.len(),
         "missing_scalars": missing_scalars,
+        "missing_glyph_clusters": covered.map(|coverage| &coverage.missing_clusters),
+        "coverage_error": coverage.as_ref().and_then(|result| result.as_ref().err()).map(ToString::to_string),
+        "coverage_basis": "default-feature horizontal shaped outlines; final line/mode revalidated by writer",
+        "editable_embedding": editable,
         "eligible_for_approval": eligible,
         "embedding_policy": "caller_governed_asset_explicitly_bound_to_plan",
     });
@@ -6408,8 +8350,15 @@ fn universal_substitution_report_v2(
         .get_mut("ranked_candidates")
         .and_then(Value::as_array_mut)
     {
+        candidates
+            .retain(|value| value["lookup_name"].as_str() != Some(asset.lookup_name.as_str()));
         candidates.insert(0, candidate);
     }
+    // The request binds exact caller bytes, not an interchangeable family name.
+    // A bundled same-name candidate must not authorize a rejected caller asset.
+    report["approval_scope"] = Value::String("exact_supplied_font_asset".into());
+    report["approved_candidates"] = json!([]);
+    report["chosen_substitute"] = Value::Null;
     if eligible {
         if let Some(approved) = report
             .get_mut("approved_candidates")
@@ -6421,6 +8370,7 @@ fn universal_substitution_report_v2(
         report["status"] = Value::String("caller_font_asset_eligible_for_approval".to_string());
         report["chosen_substitute"] = Value::String(asset.lookup_name.clone());
     } else {
+        report["status"] = Value::String("caller_font_asset_ineligible".into());
         report["caller_font_asset_error"] = Value::String(
             if !valid_name {
                 "lookup name is empty or exceeds 255 bytes"
@@ -6428,8 +8378,10 @@ fn universal_substitution_report_v2(
                 "font program is empty or exceeds 256 MiB"
             } else if parsed.is_none() {
                 "font program is not a supported sfnt/OpenType face"
+            } else if !editable {
+                "font program does not permit supported editable outline embedding"
             } else {
-                "font program does not cover every requested Unicode scalar"
+                "font program does not cover the final shaped clusters or shaping failed"
             }
             .to_string(),
         );
@@ -6523,36 +8475,6 @@ fn enforce_universal_signature_policy(
         ));
     }
     Ok(())
-}
-
-fn no_change_result(plan: &UniversalEditPlanV2, revision_id: &str) -> UniversalEditResultV2 {
-    UniversalEditResultV2 {
-        schema_version: UNIVERSAL_EDITING_SCHEMA_VERSION.to_string(),
-        plan_id: plan.plan_id.clone(),
-        transaction_id: String::new(),
-        outcome: match plan.state {
-            UniversalPlanStateV2::PolicyDenied => UniversalEditOutcomeV2::PolicyDenied,
-            UniversalPlanStateV2::TargetNotFound => UniversalEditOutcomeV2::TargetNotFound,
-            UniversalPlanStateV2::IrrecoverableInput => UniversalEditOutcomeV2::IrrecoverableInput,
-            _ => UniversalEditOutcomeV2::ApprovalRequired,
-        },
-        changed: false,
-        input_revision_id: revision_id.to_string(),
-        output_revision_id: revision_id.to_string(),
-        affected_pages: Vec::new(),
-        affected_objects: Vec::new(),
-        cloned_resources: Vec::new(),
-        operation_report: Value::Null,
-        render_invalidation: json!({"required": false, "reason": "no_change"}),
-        signature_impact: plan.signature_impact.clone(),
-        conformance_impact: plan.conformance_impact.clone(),
-        inverse: json!({"required": false, "reason": "no_change"}),
-        issues: plan
-            .approval_reasons
-            .iter()
-            .map(|message| json!({"message": message, "no_change_proof": true}))
-            .collect(),
-    }
 }
 
 fn stable_id(kind: &str, values: &[&[u8]]) -> String {

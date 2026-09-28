@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)] // Python signatures mirror the stable SDK surface.
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,12 +14,13 @@ use wellfriendpdf_engine::render::apply_render_invalidation_plan_json_to_cache;
 use wellfriendpdf_engine::{
     sdk, CancelToken, ContentEngine, DocType, DocumentInfo, EvidenceBundle, ExtractOptions,
     ExtractionProfile, ImageLocateOptions, ImageOutputFormat, IntermediateStore, NetworkBudget,
-    OcrPolicy, PageRegion, ParseOptions, RenderDocumentCache, RetrievalPolicy, SerializeOptions,
-    SecretBytes, SignatureRevocationMode, TrustStore, VerifyOptions,
+    OcrPolicy, PageRegion, ParseOptions, RenderDocumentCache, RetrievalPolicy, SecretBytes,
+    SerializeOptions, SignatureRevocationMode, TrustStore, VerifyOptions,
 };
 
 mod ocr_backend;
 use ocr_backend::PyOcrEngine;
+mod story_session;
 
 create_exception!(wellfriendpdf, WellfriendError, PyException);
 
@@ -932,8 +935,7 @@ impl PyDocument {
         };
         Ok(Self {
             engine: Arc::new(engine),
-            input_password: password
-                .map(|value| SecretBytes::new(value.as_bytes().to_vec())),
+            input_password: password.map(|value| SecretBytes::new(value.as_bytes().to_vec())),
         })
     }
 
@@ -971,8 +973,7 @@ impl PyDocument {
         };
         Ok(Self {
             engine: Arc::new(engine),
-            input_password: password
-                .map(|value| SecretBytes::new(value.as_bytes().to_vec())),
+            input_password: password.map(|value| SecretBytes::new(value.as_bytes().to_vec())),
         })
     }
 
@@ -1502,24 +1503,22 @@ impl PyDocument {
 
     /// Security report: encryption, signatures, risky active content, findings.
     fn security_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::security_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::security_report_json)
     }
 
     /// Risky active-content inventory (JavaScript, launch/URI actions, etc.).
     fn risky_content_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::risky_content_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::risky_content_report_json)
     }
 
     /// Per-image decoder capability report for region/reduction/progressive support.
     fn image_decode_capability_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::image_decode_capability_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::image_decode_capability_report_json)
     }
 
     /// Canonical source identity plus lazy render/edit/semantic/validation view boundaries.
     fn document_views_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::document_views_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::document_views_report_json)
     }
 
     /// Per-page render-view backend packed-plan arena report.
@@ -1532,8 +1531,8 @@ impl PyDocument {
         mode: &str,
     ) -> PyResult<Py<PyAny>> {
         let mode = mode.to_string();
-        self.report_json(py, |bytes| {
-            sdk::backend_plan_arena_report_json(bytes, page, dpi, Some(&mode), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::backend_plan_arena_report_json(bytes, page, dpi, Some(&mode), password)
         })
     }
 
@@ -1544,8 +1543,8 @@ impl PyDocument {
         contract_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let contract_json = contract_json.to_string();
-        self.report_json(py, |bytes| {
-            sdk::backend_plan_arena_report_for_contract_json(bytes, &contract_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::backend_plan_arena_report_for_contract_json(bytes, &contract_json, password)
         })
     }
 
@@ -1557,8 +1556,8 @@ impl PyDocument {
         page: usize,
         dpi: u32,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::prepress_plate_report_json(bytes, page, dpi, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::prepress_plate_report_json(bytes, page, dpi, password)
         })
     }
 
@@ -1571,8 +1570,8 @@ impl PyDocument {
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let request_json = request_json.to_string();
-        self.report_json(py, |bytes| {
-            sdk::progressive_image_decode_lifecycle_report_json(bytes, &request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::progressive_image_decode_lifecycle_report_json(bytes, &request_json, password)
         })
     }
 
@@ -1581,8 +1580,8 @@ impl PyDocument {
     #[pyo3(signature = (mode="repair"))]
     fn parser_report<'py>(&self, py: Python<'py>, mode: &str) -> PyResult<Py<PyAny>> {
         let mode = mode.to_string();
-        self.report_json(py, |bytes| {
-            sdk::parser_report_json(bytes, Some(&mode), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::parser_report_json(bytes, Some(&mode), password)
         })
     }
 
@@ -1590,21 +1589,23 @@ impl PyDocument {
     #[pyo3(signature = (profile="generic"))]
     fn color_report<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
         let profile = profile.to_string();
-        self.report_json(py, |bytes| sdk::color_report_json(bytes, Some(&profile)))
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::color_report_json_with_password(bytes, Some(&profile), password)
+        })
     }
 
     /// PDF/A validation report. `profile` in pdfa1b/pdfa2b/pdfa2a/pdfa3b/pdfa3a.
     #[pyo3(signature = (profile="pdfa2b"))]
     fn validate_pdfa<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
         let profile = profile.to_string();
-        self.report_json(py, |bytes| {
-            sdk::pdfa_validation_json(bytes, Some(&profile), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::pdfa_validation_json(bytes, Some(&profile), password)
         })
     }
 
     /// PDF/UA (accessibility) validation report.
     fn validate_pdfua<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::pdfua_validation_json(bytes, None))
+        self.report_json_with_password(py, sdk::pdfua_validation_json)
     }
 
     /// Incremental Signing Standards clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
@@ -1615,8 +1616,8 @@ impl PyDocument {
         target: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let target = target.map(str::to_string);
-        self.report_json(py, |bytes| {
-            sdk::pdfa_standards_json(bytes, target.as_deref(), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::pdfa_standards_json(bytes, target.as_deref(), password)
         })
     }
 
@@ -1628,8 +1629,8 @@ impl PyDocument {
         target: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let target = target.map(str::to_string);
-        self.report_json(py, |bytes| {
-            sdk::pdfua_standards_json(bytes, target.as_deref(), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::pdfua_standards_json(bytes, target.as_deref(), password)
         })
     }
 
@@ -1641,8 +1642,8 @@ impl PyDocument {
         target: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let target = target.map(str::to_string);
-        self.report_json(py, |bytes| {
-            sdk::pdfx_standards_json(bytes, target.as_deref(), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::pdfx_standards_json(bytes, target.as_deref(), password)
         })
     }
 
@@ -1655,8 +1656,8 @@ impl PyDocument {
         target: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let target = target.map(str::to_string);
-        self.report_json(py, |bytes| {
-            sdk::standards_all_json(bytes, target.as_deref(), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::standards_all_json(bytes, target.as_deref(), password)
         })
     }
 
@@ -1664,39 +1665,39 @@ impl PyDocument {
     #[pyo3(signature = (profile="all"))]
     fn validate<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
         let profile = profile.to_string();
-        self.report_json(py, |bytes| {
-            sdk::standards_profile_json(bytes, Some(&profile), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::standards_profile_json(bytes, Some(&profile), password)
         })
     }
 
     /// Combined interactive report (forms + annotations + page operations).
     fn interactive_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::interactive_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::interactive_report_json)
     }
 
     /// AcroForm field inventory (trees, inheritance, widgets, XFA status).
     fn forms_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::forms_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::forms_report_json)
     }
 
     /// XFA Runtime bounded XFA packet inventory and XML-safety report.
     fn xfa_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::xfa_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::xfa_report_json)
     }
 
     /// XFA Runtime static XFA fields/datasets/layout/provenance extraction.
     fn xfa_extract<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::xfa_extract_json(bytes, None))
+        self.report_json_with_password(py, sdk::xfa_extract_json)
     }
 
     /// XFA Runtime script/event inventory and fail-closed default policy.
     fn xfa_script_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::xfa_script_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::xfa_script_report_json)
     }
 
     /// XFA Runtime XFA-specific security/signature/redaction posture.
     fn xfa_security_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::xfa_security_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::xfa_security_report_json)
     }
 
     /// Bounded minimal dynamic XFA runtime report.
@@ -1708,20 +1709,20 @@ impl PyDocument {
         execute_events: bool,
     ) -> PyResult<Py<PyAny>> {
         let script_policy = script_policy.to_string();
-        self.report_json(py, |bytes| {
-            sdk::xfa_runtime_report_json(bytes, Some(&script_policy), execute_events, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::xfa_runtime_report_json(bytes, Some(&script_policy), execute_events, password)
         })
     }
 
     /// Annotation inventory (kinds, quads, appearance status, unsafe actions).
     fn annotations_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::annotation_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::annotation_report_json)
     }
 
     /// annotation/media redaction rich-media inventory. No player, network, filesystem, or media
     /// codec is invoked.
     fn rich_media_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::rich_media_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::rich_media_report_json)
     }
 
     /// annotation/media redaction annotation appearance generation report.
@@ -1732,8 +1733,8 @@ impl PyDocument {
         options_json: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let options = options_json.map(str::to_string);
-        self.report_json(py, |bytes| {
-            sdk::annotation_appearance_report_json(bytes, options.as_deref(), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::annotation_appearance_report_json(bytes, options.as_deref(), password)
         })
     }
 
@@ -1744,67 +1745,66 @@ impl PyDocument {
         options_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let options = options_json.to_string();
-        self.report_json(py, |bytes| {
-            sdk::nonaxis_redaction_plan_json(bytes, &options, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::nonaxis_redaction_plan_json(bytes, &options, password)
         })
     }
 
     /// Combined annotation/media redaction report.
     fn annotation_media_redaction_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::annotation_media_redaction_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::annotation_media_redaction_report_json)
     }
 
     /// Combined secure mutation secure-mutation report.
     fn secure_mutation_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::secure_mutation_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::secure_mutation_report_json)
     }
 
     fn secure_mutation_closeout_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::secure_mutation_closeout_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::secure_mutation_closeout_report_json)
     }
 
     fn form_js_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::form_js_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::form_js_report_json)
     }
 
     fn form_action_graph<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::form_action_graph_json(bytes, None))
+        self.report_json_with_password(py, sdk::form_action_graph_json)
     }
 
     fn interactive_data_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::interactive_data_closeout_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::interactive_data_closeout_report_json)
     }
 
     #[pyo3(signature = (layout="page-faithful"))]
     fn word_pagination_audit<'py>(&self, py: Python<'py>, layout: &str) -> PyResult<Py<PyAny>> {
         let layout = layout.to_string();
-        self.report_json(py, |bytes| {
-            sdk::word_pagination_audit_json(bytes, &layout, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::word_pagination_audit_json(bytes, &layout, password)
         })
     }
 
     fn form_action_policy_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::form_action_policy_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::form_action_policy_report_json)
     }
 
     fn advanced_editing_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::advanced_editing_report_json(bytes, None))
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::advanced_editing_report_json(bytes, password)
+        })
     }
 
     fn advanced_editing_closeout_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::advanced_editing_closeout_report_json(bytes, None)
+            sdk::advanced_editing_closeout_report_json(bytes, password)
         })
     }
 
     fn source_editing_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::source_editing_report_json(bytes, None))
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| sdk::source_editing_report_json(bytes, password))
     }
 
     #[pyo3(signature = (page, source_text, replacement_text))]
@@ -1817,8 +1817,15 @@ impl PyDocument {
     ) -> PyResult<Py<PyAny>> {
         let source_text = source_text.to_string();
         let replacement_text = replacement_text.to_string();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::source_editing_provenance_json(bytes, page, &source_text, &replacement_text, None)
+            sdk::source_editing_provenance_json(
+                bytes,
+                page,
+                &source_text,
+                &replacement_text,
+                password,
+            )
         })
     }
 
@@ -1829,8 +1836,9 @@ impl PyDocument {
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let request_json = request_json.to_string();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::source_editing_edit_eligibility_json(bytes, &request_json, None)
+            sdk::source_editing_edit_eligibility_json(bytes, &request_json, password)
         })
     }
 
@@ -1842,8 +1850,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::source_editing_operator_text_edit_json(&bytes, request_json, None)
+            sdk::source_editing_operator_text_edit_json(&bytes, request_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -1853,7 +1862,7 @@ impl PyDocument {
     }
 
     fn writer_history_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::writer_history_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::writer_history_report_json)
     }
 
     #[pyo3(signature = (page=1, options_json=None))]
@@ -1864,8 +1873,8 @@ impl PyDocument {
         options_json: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let options = options_json.map(str::to_string);
-        self.report_json(py, |bytes| {
-            sdk::writer_history_raster_vector_report_json(bytes, page, options.as_deref(), None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::writer_history_raster_vector_report_json(bytes, page, options.as_deref(), password)
         })
     }
 
@@ -1873,15 +1882,11 @@ impl PyDocument {
         &self,
         py: Python<'py>,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::writer_history_font_reconstruction_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::writer_history_font_reconstruction_report_json)
     }
 
     fn writer_history_object_stream_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::writer_history_object_stream_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::writer_history_object_stream_report_json)
     }
 
     #[pyo3(signature = (output=None))]
@@ -1891,8 +1896,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) =
-            run_wellfriendpdf(|| sdk::writer_history_pack_object_streams_json(&bytes, None))?;
+            run_wellfriendpdf(|| sdk::writer_history_pack_object_streams_json(&bytes, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1901,39 +1907,39 @@ impl PyDocument {
     }
 
     fn compression_office_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::compression_office_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::compression_office_report_json)
     }
 
     fn crypto_writer_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::crypto_writer_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::crypto_writer_report_json)
     }
 
     fn writer_determinism_audit<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::writer_determinism_audit_json(bytes, None))
+        self.report_json_with_password(py, sdk::writer_determinism_audit_json)
     }
 
     fn writer_external_diff<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::writer_external_diff_json(bytes, None))
+        self.report_json_with_password(py, sdk::writer_external_diff_json)
     }
 
     fn writer_closeout_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::writer_closeout_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::writer_closeout_report_json)
     }
 
     fn pubsec_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::pubsec_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::pubsec_report_json)
     }
 
     fn aes_gcm_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::aes_gcm_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::aes_gcm_report_json)
     }
 
     fn pdf_mac_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::pdf_mac_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::pdf_mac_report_json)
     }
 
     fn pdf_mac_verify<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::pdf_mac_verify_json(bytes, None))
+        self.report_json_with_password(py, sdk::pdf_mac_verify_json)
     }
 
     #[pyo3(signature = (output=None))]
@@ -1943,7 +1949,8 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) = run_wellfriendpdf(|| sdk::pdf_mac_create_json(&bytes, None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| sdk::pdf_mac_create_json(&bytes, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1960,8 +1967,9 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let options = options_json.map(str::to_string);
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::compression_office_optimize_pdf_json(&bytes, options.as_deref(), None)
+            sdk::compression_office_optimize_pdf_json(&bytes, options.as_deref(), password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -1976,9 +1984,139 @@ impl PyDocument {
         py: Python<'py>,
         page: usize,
     ) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::advanced_editing_closeout_text_range_analyze_json(bytes, page, None)
+            sdk::advanced_editing_closeout_text_range_analyze_json(bytes, page, password)
         })
+    }
+
+    /// Propose exact-revision replacement partitions for source paint slots.
+    /// The returned object is non-mutating and must be paired with an explicit
+    /// reviewed approval before apply.
+    fn propose_text_range_paint_partitions<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::advanced_editing_closeout_paint_partition_propose_json(
+                bytes,
+                request_json,
+                password,
+            )
+        })
+    }
+
+    /// Render bounded before/candidate PNG byte arrays for the exact reviewed
+    /// paint partition. Candidate PDF bytes are never returned.
+    #[pyo3(signature = (request_json, proposal_json, approval_json, font_bytes=None, options_json=None))]
+    fn preview_text_range_paint_partitions<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        proposal_json: &str,
+        approval_json: &str,
+        font_bytes: Option<Vec<u8>>,
+        options_json: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::advanced_editing_closeout_paint_partition_preview_json(
+                bytes,
+                request_json,
+                proposal_json,
+                approval_json,
+                font_bytes.as_deref(),
+                options_json,
+                password,
+            )
+        })
+    }
+
+    /// Authenticate a canonical publication receipt with a caller-held
+    /// HMAC-SHA-256 key. Remote clients should not receive the server key.
+    #[staticmethod]
+    fn authenticate_text_range_paint_partition_receipt<'py>(
+        py: Python<'py>,
+        publication_receipt_json: &str,
+        key_id: &str,
+        audience: &str,
+        issued_at_unix: u64,
+        expires_at_unix: u64,
+        hmac_key: Vec<u8>,
+    ) -> PyResult<Py<PyAny>> {
+        let hmac_key = SecretBytes::new(hmac_key);
+        let report = run_wellfriendpdf(|| {
+            sdk::advanced_editing_closeout_paint_partition_authenticate_receipt_json(
+                publication_receipt_json,
+                key_id,
+                audience,
+                issued_at_unix,
+                expires_at_unix,
+                hmac_key.as_slice(),
+            )
+        })?;
+        parse_json_str(py, &report)
+    }
+
+    /// Verify a host-authenticated receipt and return the nested ordinary
+    /// publication receipt envelope.
+    #[staticmethod]
+    #[pyo3(signature = (authenticated_receipt_json, expected_key_id, expected_audience, now_unix, hmac_key, allowed_future_skew_secs=30))]
+    fn verify_authenticated_text_range_paint_partition_receipt<'py>(
+        py: Python<'py>,
+        authenticated_receipt_json: &str,
+        expected_key_id: &str,
+        expected_audience: &str,
+        now_unix: u64,
+        hmac_key: Vec<u8>,
+        allowed_future_skew_secs: u64,
+    ) -> PyResult<Py<PyAny>> {
+        let hmac_key = SecretBytes::new(hmac_key);
+        let report = run_wellfriendpdf(|| {
+            sdk::advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json(
+                authenticated_receipt_json,
+                expected_key_id,
+                expected_audience,
+                now_unix,
+                allowed_future_skew_secs,
+                hmac_key.as_slice(),
+            )
+        })?;
+        parse_json_str(py, &report)
+    }
+
+    fn authored_typed_table_sources<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::authored_typed_table_sources_json(bytes, password)
+        })
+    }
+
+    #[pyo3(signature = (request_json, font_bytes=None, output=None))]
+    fn mutate_authored_typed_table<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        font_bytes: Option<Vec<u8>>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::authored_typed_table_mutate_json(
+                &bytes,
+                request_json,
+                font_bytes.as_deref(),
+                password,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
     }
 
     #[pyo3(signature = (request_json, output=None))]
@@ -1989,8 +2127,73 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::advanced_editing_closeout_text_range_edit_json(&bytes, request_json, None)
+            sdk::advanced_editing_closeout_text_range_edit_json(&bytes, request_json, password)
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Apply an exact proposal plus reviewed physical-region/final-line
+    /// approval. Stale or altered request/proposal identities are rejected.
+    #[pyo3(signature = (request_json, proposal_json, approval_json, font_bytes=None, output=None))]
+    fn apply_text_range_paint_partitions<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        proposal_json: &str,
+        approval_json: &str,
+        font_bytes: Option<Vec<u8>>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::advanced_editing_closeout_paint_partition_apply_with_font_json(
+                &bytes,
+                request_json,
+                proposal_json,
+                approval_json,
+                font_bytes.as_deref(),
+                password,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Apply only the candidate covered by the canonical preview publication
+    /// receipt. Output is withheld on any receipt or candidate mismatch.
+    #[pyo3(signature = (request_json, proposal_json, approval_json, publication_receipt_json, font_bytes=None, output=None))]
+    fn apply_reviewed_text_range_paint_partitions<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        proposal_json: &str,
+        approval_json: &str,
+        publication_receipt_json: &str,
+        font_bytes: Option<Vec<u8>>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::advanced_editing_closeout_paint_partition_apply_reviewed_with_font_json(
+                &bytes,
+                request_json,
+                proposal_json,
+                approval_json,
+                publication_receipt_json,
+                font_bytes.as_deref(),
+                password,
+            )
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -2005,8 +2208,9 @@ impl PyDocument {
         py: Python<'py>,
         page: usize,
     ) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::advanced_editing_vector_list_json(bytes, page, None)
+            sdk::advanced_editing_vector_list_json(bytes, page, password)
         })
     }
 
@@ -2016,8 +2220,9 @@ impl PyDocument {
         py: Python<'py>,
         page: usize,
     ) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::source_editing_path_provenance_json(bytes, page, None)
+            sdk::source_editing_path_provenance_json(bytes, page, password)
         })
     }
 
@@ -2032,6 +2237,7 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
             sdk::source_editing_path_edit_json(
                 &bytes,
@@ -2039,7 +2245,7 @@ impl PyDocument {
                 stable_id,
                 operation_json,
                 options_json,
-                None,
+                password,
             )
         })?;
         write_optional(&output, &out)?;
@@ -2057,9 +2263,10 @@ impl PyDocument {
         occurrence: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let occurrence = occurrence.map(str::to_string);
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
             let _ = occurrence.as_deref();
-            sdk::source_editing_image_eligibility_json(bytes, page, None)
+            sdk::source_editing_image_eligibility_json(bytes, page, password)
         })
     }
 
@@ -2105,6 +2312,68 @@ impl PyDocument {
         })
     }
 
+    /// Preview a plan-hash-gated transfer of one saved native Figure between
+    /// two saved stories. The request JSON uses StoryFigureTransferRequest.
+    fn story_figure_transfer_preview<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let request = request_json.to_string();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::story_figure_transfer_preview_json(bytes, &request, password)
+        })
+    }
+
+    /// Apply the exact plan_sha256 returned by story_figure_transfer_preview.
+    #[pyo3(signature = (request_json, approved_plan_sha256, output=None))]
+    fn story_figure_transfer_apply<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        approved_plan_sha256: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::story_figure_transfer_apply_json(
+                &bytes,
+                request_json,
+                approved_plan_sha256,
+                password,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Render a private scoped-text candidate alongside the source page.
+    /// Returns JSON-decoded PNG byte arrays, never candidate PDF bytes.
+    #[pyo3(signature = (plan_json, options_json=None))]
+    fn universal_editing_scoped_preview_v2<'py>(
+        &self,
+        py: Python<'py>,
+        plan_json: &str,
+        options_json: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let plan = plan_json.to_string();
+        let options = options_json.map(str::to_string);
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        self.report_json(py, |bytes| {
+            sdk::universal_editing_scoped_preview_v2_json(
+                bytes,
+                &plan,
+                options.as_deref(),
+                password,
+            )
+        })
+    }
+
     /// Inspect one indirect object and return its revision-bound mutation value
     /// and fingerprint.
     #[pyo3(signature = (number, generation=0))]
@@ -2116,12 +2385,7 @@ impl PyDocument {
     ) -> PyResult<Py<PyAny>> {
         let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::universal_editing_inspect_object_v2_json(
-                bytes,
-                number,
-                generation,
-                password,
-            )
+            sdk::universal_editing_inspect_object_v2_json(bytes, number, generation, password)
         })
     }
 
@@ -2147,27 +2411,69 @@ impl PyDocument {
             .as_ref()
             .map(|value| value.as_slice())
             .or(retained_password);
-        let (out, report) = run_wellfriendpdf(|| match output_user_password
+        let (out, report) = run_wellfriendpdf(|| {
+            match output_user_password.as_ref().map(|value| value.as_slice()) {
+                Some(user) => sdk::universal_editing_apply_v2_with_output_credentials_json(
+                    &bytes,
+                    plan_json,
+                    approval_json,
+                    input_password,
+                    user,
+                    output_owner_password
+                        .as_ref()
+                        .map(|value| value.as_slice())
+                        .unwrap_or(user),
+                ),
+                None => sdk::universal_editing_apply_v2_json(
+                    &bytes,
+                    plan_json,
+                    approval_json,
+                    input_password,
+                ),
+            }
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Execute ECBES over multiple canonical universal-edit candidates and
+    /// return only the evidence-qualified selected PDF bytes.
+    #[pyo3(signature = (request_json, output=None, input_password=None, output_user_password=None, output_owner_password=None))]
+    fn ecbes_universal_edit<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        output: Option<PathBuf>,
+        input_password: Option<Vec<u8>>,
+        output_user_password: Option<Vec<u8>>,
+        output_owner_password: Option<Vec<u8>>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let input_password = input_password.map(SecretBytes::new);
+        let output_user_password = output_user_password.map(SecretBytes::new);
+        let output_owner_password = output_owner_password.map(SecretBytes::new);
+        let retained_password = self.input_password.as_ref().map(|value| value.as_slice());
+        let input_password = input_password
             .as_ref()
             .map(|value| value.as_slice())
-        {
-            Some(user) => sdk::universal_editing_apply_v2_with_output_credentials_json(
-                &bytes,
-                plan_json,
-                approval_json,
-                input_password,
-                user,
-                output_owner_password
-                    .as_ref()
-                    .map(|value| value.as_slice())
-                    .unwrap_or(user),
-            ),
-            None => sdk::universal_editing_apply_v2_json(
-                &bytes,
-                plan_json,
-                approval_json,
-                input_password,
-            ),
+            .or(retained_password);
+        let (out, report) = run_wellfriendpdf(|| {
+            match output_user_password.as_ref().map(|value| value.as_slice()) {
+                Some(user) => sdk::ecbes_universal_edit_with_output_credentials_json(
+                    &bytes,
+                    request_json,
+                    input_password,
+                    user,
+                    output_owner_password
+                        .as_ref()
+                        .map(|value| value.as_slice())
+                        .unwrap_or(user),
+                ),
+                None => sdk::ecbes_universal_edit_json(&bytes, request_json, input_password),
+            }
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -2177,8 +2483,9 @@ impl PyDocument {
     }
 
     fn editing_transactions_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::editing_transactions_report_json(bytes, None)
+            sdk::editing_transactions_report_json(bytes, password)
         })
     }
 
@@ -2189,8 +2496,9 @@ impl PyDocument {
         pages_json: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let pages = pages_json.map(str::to_string);
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::editing_transactions_scene_report_json(bytes, pages.as_deref(), None)
+            sdk::editing_transactions_scene_report_json(bytes, pages.as_deref(), password)
         })
     }
 
@@ -2200,8 +2508,9 @@ impl PyDocument {
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let request_json = request_json.to_string();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::editing_transactions_scene_select_json(bytes, &request_json, None)
+            sdk::editing_transactions_scene_select_json(bytes, &request_json, password)
         })
     }
 
@@ -2211,8 +2520,9 @@ impl PyDocument {
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let request_json = request_json.to_string();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         self.report_json(py, |bytes| {
-            sdk::editing_transactions_transaction_plan_json(bytes, &request_json, None)
+            sdk::editing_transactions_transaction_plan_json(bytes, &request_json, password)
         })
     }
 
@@ -2224,8 +2534,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::editing_transactions_transaction_apply_json(&bytes, request_json, None)
+            sdk::editing_transactions_transaction_apply_json(&bytes, request_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -2244,12 +2555,13 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let options = render_invalidation_options_json.map(str::to_string);
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
             sdk::editing_transactions_transaction_apply_with_render_invalidation_json(
                 &bytes,
                 request_json,
                 options.as_deref(),
-                None,
+                password,
             )
         })?;
         write_optional(&output, &out)?;
@@ -2307,7 +2619,7 @@ impl PyDocument {
     }
 
     fn text_reflow_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::text_reflow_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::text_reflow_report_json)
     }
 
     fn text_reflow_layout_analyze<'py>(
@@ -2315,27 +2627,21 @@ impl PyDocument {
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_layout_analyze_json(bytes, request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::text_reflow_layout_analyze_json(bytes, request_json, password)
         })
     }
 
     fn text_reflow_semantic_layout<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_semantic_layout_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::text_reflow_semantic_layout_json)
     }
 
     fn text_reflow_reading_order_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_reading_order_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::text_reflow_reading_order_report_json)
     }
 
     fn text_reflow_flow_graph_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_flow_graph_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::text_reflow_flow_graph_report_json)
     }
 
     fn text_reflow_reflow_preview<'py>(
@@ -2343,8 +2649,8 @@ impl PyDocument {
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_reflow_preview_json(bytes, request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::text_reflow_reflow_preview_json(bytes, request_json, password)
         })
     }
 
@@ -2353,8 +2659,8 @@ impl PyDocument {
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_overflow_report_json(bytes, request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::text_reflow_overflow_report_json(bytes, request_json, password)
         })
     }
 
@@ -2363,8 +2669,8 @@ impl PyDocument {
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_constraints_report_json(bytes, request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::text_reflow_constraints_report_json(bytes, request_json, password)
         })
     }
 
@@ -2373,8 +2679,8 @@ impl PyDocument {
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_confidence_report_json(bytes, request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::text_reflow_confidence_report_json(bytes, request_json, password)
         })
     }
 
@@ -2388,8 +2694,9 @@ impl PyDocument {
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let json = run_wellfriendpdf(|| {
-            sdk::text_reflow_validate_reflow_output_json(&bytes, output_pdf, request_json, None)
+            sdk::text_reflow_validate_reflow_output_json(&bytes, output_pdf, request_json, password)
         })?;
         parse_json_str(py, &json)
     }
@@ -2402,8 +2709,10 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) =
-            run_wellfriendpdf(|| sdk::text_reflow_reflow_region_json(&bytes, request_json, None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::text_reflow_reflow_region_json(&bytes, request_json, password)
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -2419,8 +2728,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::text_reflow_reflow_document_json(&bytes, request_json, None)
+            sdk::text_reflow_reflow_document_json(&bytes, request_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -2438,8 +2748,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (restored, report) = run_wellfriendpdf(|| {
-            sdk::text_reflow_undo_reflow_json(&bytes, output_pdf, request_json, None)
+            sdk::text_reflow_undo_reflow_json(&bytes, output_pdf, request_json, password)
         })?;
         write_optional(&output, &restored)?;
         Ok((
@@ -2453,8 +2764,8 @@ impl PyDocument {
         py: Python<'py>,
         correction_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_reflow_approve_structure_json(bytes, correction_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::text_reflow_reflow_approve_structure_json(bytes, correction_json, password)
         })
     }
 
@@ -2463,23 +2774,19 @@ impl PyDocument {
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::text_reflow_reflow_operation_report_json(bytes, request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::text_reflow_reflow_operation_report_json(bytes, request_json, password)
         })
     }
 
     /// document subsystems feature report.  Operations use the shared JSON request
     /// contract so Python cannot diverge from the Rust/C/WASM engines.
     fn document_subsystems_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::document_subsystems_report_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::document_subsystems_report_json)
     }
 
     fn document_subsystems_analyze<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::document_subsystems_analyze_json(bytes, None)
-        })
+        self.report_json_with_password(py, sdk::document_subsystems_analyze_json)
     }
 
     fn document_subsystems_plan<'py>(
@@ -2487,8 +2794,8 @@ impl PyDocument {
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::document_subsystems_plan_json(bytes, request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::document_subsystems_plan_json(bytes, request_json, password)
         })
     }
 
@@ -2500,8 +2807,10 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) =
-            run_wellfriendpdf(|| sdk::document_subsystems_apply_json(&bytes, request_json, None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::document_subsystems_apply_json(&bytes, request_json, password)
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -2518,8 +2827,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (restored, report) = run_wellfriendpdf(|| {
-            sdk::document_subsystems_undo_json(&bytes, output_pdf, request_json, None)
+            sdk::document_subsystems_undo_json(&bytes, output_pdf, request_json, password)
         })?;
         write_optional(&output, &restored)?;
         Ok((
@@ -2530,11 +2840,11 @@ impl PyDocument {
 
     /// document security accessibility/redaction/sanitization report and operations.
     fn document_security_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::document_security_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::document_security_report_json)
     }
 
     fn document_security_analyze<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::document_security_analyze_json(bytes, None))
+        self.report_json_with_password(py, sdk::document_security_analyze_json)
     }
 
     fn document_security_plan<'py>(
@@ -2542,8 +2852,8 @@ impl PyDocument {
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::document_security_plan_json(bytes, request_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::document_security_plan_json(bytes, request_json, password)
         })
     }
 
@@ -2555,8 +2865,10 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) =
-            run_wellfriendpdf(|| sdk::document_security_apply_json(&bytes, request_json, None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::document_security_apply_json(&bytes, request_json, password)
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -2573,8 +2885,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (restored, report) = run_wellfriendpdf(|| {
-            sdk::document_security_undo_json(&bytes, output_pdf, request_json, None)
+            sdk::document_security_undo_json(&bytes, output_pdf, request_json, password)
         })?;
         write_optional(&output, &restored)?;
         Ok((
@@ -2588,34 +2901,34 @@ impl PyDocument {
         py: Python<'py>,
         terms_json: &str,
     ) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| {
-            sdk::document_security_verify_residual_json(bytes, terms_json, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::document_security_verify_residual_json(bytes, terms_json, password)
         })
     }
 
     fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::associated_files_report_json)
     }
 
     fn mask_redaction_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::mask_redaction_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::mask_redaction_report_json)
     }
 
     fn edit_policy_report<'py>(&self, py: Python<'py>, operation: &str) -> PyResult<Py<PyAny>> {
         let operation = operation.to_string();
-        self.report_json(py, |bytes| {
-            sdk::edit_policy_report_json(bytes, &operation, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::edit_policy_report_json(bytes, &operation, password)
         })
     }
 
     /// Page-operations report (boxes, labels, destinations, preservation risk).
     fn pages_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::page_operations_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::page_operations_report_json)
     }
 
     /// Signature report (validity, trust, coverage, LTV, certificate).
     fn signature_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::signature_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::signature_report_json)
     }
 
     /// Signature Validation signature report with explicit trust/evidence options JSON.
@@ -2625,8 +2938,8 @@ impl PyDocument {
         options_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let options = options_json.to_string();
-        self.report_json(py, |bytes| {
-            sdk::signature_report_with_options_json(bytes, &options, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::signature_report_with_options_json(bytes, &options, password)
         })
     }
 
@@ -2639,8 +2952,8 @@ impl PyDocument {
         options_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let options = options_json.to_string();
-        self.report_json(py, |bytes| {
-            sdk::signature_validation_with_evidence_json(bytes, &options, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::signature_validation_with_evidence_json(bytes, &options, password)
         })
     }
 
@@ -2684,14 +2997,14 @@ impl PyDocument {
         let field_name = field_name.to_string();
         let value = value.to_string();
         let options = options_json.to_string();
-        self.report_json(py, |bytes| {
-            sdk::signature_preserving_form_plan_json(bytes, &field_name, &value, &options, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::signature_preserving_form_plan_json(bytes, &field_name, &value, &options, password)
         })
     }
 
     /// Font inventory (name, type, embedding status, subsetting, encoding).
     fn font_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::font_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::font_report_json)
     }
 
     /// Text semantic model: pages → blocks → paragraphs → lines → words/spans
@@ -2704,12 +3017,14 @@ impl PyDocument {
         pages: Option<Vec<usize>>,
     ) -> PyResult<Py<PyAny>> {
         let pages = pages.unwrap_or_default();
-        self.report_json(py, |bytes| sdk::text_semantic_json(bytes, &pages, None))
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::text_semantic_json(bytes, &pages, password)
+        })
     }
 
     /// RAG-ready semantic chunk set (canonical model → chunks).
     fn chunks<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::chunk_report_json(bytes, None))
+        self.report_json_with_password(py, sdk::chunk_report_json)
     }
 
     /// Semantic Closeout provenance-aware RAG chunks with stable hashes, table/cell,
@@ -2721,8 +3036,8 @@ impl PyDocument {
         pages: Option<Vec<usize>>,
     ) -> PyResult<Py<PyAny>> {
         let pages = pages.unwrap_or_default();
-        self.report_json(py, |bytes| {
-            sdk::advanced_chunk_report_json(bytes, &pages, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::advanced_chunk_report_json(bytes, &pages, password)
         })
     }
 
@@ -2734,8 +3049,8 @@ impl PyDocument {
         pages: Option<Vec<usize>>,
     ) -> PyResult<Py<PyAny>> {
         let pages = pages.unwrap_or_default();
-        self.report_json(py, |bytes| {
-            sdk::semantic_binding_report_json(bytes, &pages, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::semantic_binding_report_json(bytes, &pages, password)
         })
     }
 
@@ -2749,8 +3064,8 @@ impl PyDocument {
     ) -> PyResult<Py<PyAny>> {
         let pages = pages.unwrap_or_default();
         let query = query.to_string();
-        self.report_json(py, |bytes| {
-            sdk::semantic_search_report_json(bytes, &pages, &query, None)
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::semantic_search_report_json(bytes, &pages, &query, password)
         })
     }
 
@@ -2768,7 +3083,9 @@ impl PyDocument {
         pages: Option<Vec<usize>>,
     ) -> PyResult<Py<PyAny>> {
         let pages = pages.unwrap_or_default();
-        self.report_json(py, |bytes| sdk::semantic_document_json(bytes, &pages, None))
+        self.report_json_with_password(py, |bytes, password| {
+            sdk::semantic_document_json(bytes, &pages, password)
+        })
     }
 
     // ── Output-producing operations (return (bytes, report) tuples) ──────────
@@ -2815,6 +3132,7 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
             sdk::advanced_editing_text_edit_json(
                 &bytes,
@@ -2823,7 +3141,7 @@ impl PyDocument {
                 new_text,
                 mode,
                 options_json,
-                None,
+                password,
             )
         })?;
         write_optional(&output, &out)?;
@@ -2844,6 +3162,7 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
             sdk::advanced_editing_vector_edit_json(
                 &bytes,
@@ -2851,7 +3170,7 @@ impl PyDocument {
                 stable_id,
                 operation_json,
                 options_json,
-                None,
+                password,
             )
         })?;
         write_optional(&output, &out)?;
@@ -2872,6 +3191,7 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
             sdk::advanced_editing_ink_fit_json(
                 &bytes,
@@ -2879,7 +3199,7 @@ impl PyDocument {
                 annotation_index,
                 options_json,
                 signature_policy_override,
-                None,
+                password,
             )
         })?;
         write_optional(&output, &out)?;
@@ -2901,8 +3221,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::xfa_render_preview_json(&bytes, Some(script_policy), execute_events, dpi, None)
+            sdk::xfa_render_preview_json(&bytes, Some(script_policy), execute_events, dpi, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -2920,7 +3241,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) = run_wellfriendpdf(|| sdk::xfa_flatten_json(&bytes, Some(mode), None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::xfa_flatten_json(&bytes, Some(mode), password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -2937,7 +3260,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) = run_wellfriendpdf(|| sdk::xfa_sanitize_json(&bytes, Some(mode), None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::xfa_sanitize_json(&bytes, Some(mode), password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -2953,7 +3278,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) = run_wellfriendpdf(|| sdk::annotation_xfdf_export_json(&bytes, None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::annotation_xfdf_export_json(&bytes, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -2971,8 +3298,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::annotation_xfdf_import_json(&bytes, xfdf, options_json, None)
+            sdk::annotation_xfdf_import_json(&bytes, xfdf, options_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -2990,8 +3318,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::annotation_appearance_generate_json(&bytes, options_json, None)
+            sdk::annotation_appearance_generate_json(&bytes, options_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -3010,8 +3339,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::rich_media_sanitize_json(&bytes, Some(mode), custom_json, None)
+            sdk::rich_media_sanitize_json(&bytes, Some(mode), custom_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -3028,8 +3358,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) =
-            run_wellfriendpdf(|| sdk::rich_media_flatten_poster_json(&bytes, None))?;
+            run_wellfriendpdf(|| sdk::rich_media_flatten_poster_json(&bytes, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3046,8 +3377,10 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) =
-            run_wellfriendpdf(|| sdk::nonaxis_redaction_apply_json(&bytes, options_json, None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::nonaxis_redaction_apply_json(&bytes, options_json, password)
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3063,8 +3396,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) =
-            run_wellfriendpdf(|| sdk::redact_image_mask_json(&bytes, options_json, None))?;
+            run_wellfriendpdf(|| sdk::redact_image_mask_json(&bytes, options_json, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3080,8 +3414,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) =
-            run_wellfriendpdf(|| sdk::redact_inline_image_json(&bytes, options_json, None))?;
+            run_wellfriendpdf(|| sdk::redact_inline_image_json(&bytes, options_json, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3095,8 +3430,9 @@ impl PyDocument {
         stable_id: &str,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (payload, report) =
-            run_wellfriendpdf(|| sdk::associated_files_extract_json(&bytes, stable_id, None))?;
+            run_wellfriendpdf(|| sdk::associated_files_extract_json(&bytes, stable_id, password))?;
         Ok((
             PyBytes::new(py, &payload).unbind(),
             parse_json_str(py, &report)?,
@@ -3112,8 +3448,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::associated_files_add_json(&bytes, payload, options_json, None)
+            sdk::associated_files_add_json(&bytes, payload, options_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -3131,8 +3468,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::associated_files_update_owner_json(&bytes, payload, options_json, None)
+            sdk::associated_files_update_owner_json(&bytes, payload, options_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -3149,8 +3487,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::associated_files_remove_owner_json(&bytes, options_json, None)
+            sdk::associated_files_remove_owner_json(&bytes, options_json, password)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -3169,13 +3508,14 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
             sdk::incremental_form_edit_json(
                 &bytes,
                 field_name,
                 value,
                 signature_policy_override,
-                None,
+                password,
             )
         })?;
         write_optional(&output, &out)?;
@@ -3194,12 +3534,13 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
             sdk::incremental_annotation_edit_json(
                 &bytes,
                 options_json,
                 signature_policy_override,
-                None,
+                password,
             )
         })?;
         write_optional(&output, &out)?;
@@ -3218,12 +3559,13 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) = run_wellfriendpdf(|| {
             sdk::incremental_page_property_edit_json(
                 &bytes,
                 options_json,
                 signature_policy_override,
-                None,
+                password,
             )
         })?;
         write_optional(&output, &out)?;
@@ -3241,8 +3583,10 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) =
-            run_wellfriendpdf(|| sdk::associated_files_sanitize_json(&bytes, options_json, None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::associated_files_sanitize_json(&bytes, options_json, password)
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3258,8 +3602,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) =
-            run_wellfriendpdf(|| sdk::form_js_sanitize_json(&bytes, options_json, None))?;
+            run_wellfriendpdf(|| sdk::form_js_sanitize_json(&bytes, options_json, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3275,8 +3620,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) =
-            run_wellfriendpdf(|| sdk::form_js_flatten_values_json(&bytes, options_json, None))?;
+            run_wellfriendpdf(|| sdk::form_js_flatten_values_json(&bytes, options_json, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3292,8 +3638,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) =
-            run_wellfriendpdf(|| sdk::associated_files_remove_json(&bytes, &stable_ids, None))?;
+            run_wellfriendpdf(|| sdk::associated_files_remove_json(&bytes, &stable_ids, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3312,7 +3659,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) = run_wellfriendpdf(|| sdk::sanitize_json(&bytes, Some(policy), None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::sanitize_json(&bytes, Some(policy), password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3330,7 +3679,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) = run_wellfriendpdf(|| sdk::canonicalize_json(&bytes, date_epoch, None))?;
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::canonicalize_json(&bytes, date_epoch, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3350,8 +3701,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
         let (out, report) =
-            run_wellfriendpdf(|| sdk::redact_terms_json(&bytes, &terms, strict, None))?;
+            run_wellfriendpdf(|| sdk::redact_terms_json(&bytes, &terms, strict, password))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -3373,6 +3725,16 @@ impl PyDocument {
     {
         let bytes = self.file_bytes();
         let json = run_wellfriendpdf(|| f(&bytes))?;
+        parse_json_str(py, &json)
+    }
+
+    fn report_json_with_password<'py, F>(&self, py: Python<'py>, f: F) -> PyResult<Py<PyAny>>
+    where
+        F: FnOnce(&[u8], Option<&[u8]>) -> wellfriendpdf_engine::Result<String>,
+    {
+        let bytes = self.file_bytes();
+        let password = self.input_password.as_ref().map(|value| value.as_slice());
+        let json = run_wellfriendpdf(|| f(&bytes, password))?;
         parse_json_str(py, &json)
     }
 }
@@ -3528,6 +3890,60 @@ fn timestamp_token_validation<'py>(
         sdk::timestamp_token_validation_json(token, signature_value, options_json)
     })?;
     parse_json_str(py, &json)
+}
+
+/// Authenticate a canonical paint-partition publication receipt with a
+/// caller-held HMAC-SHA-256 key. Never expose a server-held key to an
+/// untrusted client.
+#[pyfunction]
+fn authenticate_text_range_paint_partition_receipt<'py>(
+    py: Python<'py>,
+    publication_receipt_json: &str,
+    key_id: &str,
+    audience: &str,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    hmac_key: Vec<u8>,
+) -> PyResult<Py<PyAny>> {
+    let hmac_key = SecretBytes::new(hmac_key);
+    let report = run_wellfriendpdf(|| {
+        sdk::advanced_editing_closeout_paint_partition_authenticate_receipt_json(
+            publication_receipt_json,
+            key_id,
+            audience,
+            issued_at_unix,
+            expires_at_unix,
+            hmac_key.as_slice(),
+        )
+    })?;
+    parse_json_str(py, &report)
+}
+
+/// Verify a host-authenticated receipt and return its nested ordinary
+/// content-bound publication receipt envelope.
+#[pyfunction]
+#[pyo3(signature = (authenticated_receipt_json, expected_key_id, expected_audience, now_unix, hmac_key, allowed_future_skew_secs=30))]
+fn verify_authenticated_text_range_paint_partition_receipt<'py>(
+    py: Python<'py>,
+    authenticated_receipt_json: &str,
+    expected_key_id: &str,
+    expected_audience: &str,
+    now_unix: u64,
+    hmac_key: Vec<u8>,
+    allowed_future_skew_secs: u64,
+) -> PyResult<Py<PyAny>> {
+    let hmac_key = SecretBytes::new(hmac_key);
+    let report = run_wellfriendpdf(|| {
+        sdk::advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json(
+            authenticated_receipt_json,
+            expected_key_id,
+            expected_audience,
+            now_unix,
+            allowed_future_skew_secs,
+            hmac_key.as_slice(),
+        )
+    })?;
+    parse_json_str(py, &report)
 }
 
 #[pyfunction]
@@ -4196,9 +4612,8 @@ fn universal_editing_approval_v2<'py>(
     plan_json: &str,
     decision_json: &str,
 ) -> PyResult<Py<PyAny>> {
-    let json = run_wellfriendpdf(|| {
-        sdk::universal_editing_approval_v2_json(plan_json, decision_json)
-    })?;
+    let json =
+        run_wellfriendpdf(|| sdk::universal_editing_approval_v2_json(plan_json, decision_json))?;
     parse_json_str(py, &json)
 }
 
@@ -4618,6 +5033,7 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRenderContract>()?;
     module.add_class::<PyRenderCache>()?;
     module.add_class::<PyRenderCancellation>()?;
+    module.add_class::<story_session::PyStoryEditSession>()?;
     module.add_class::<PySignatureTrustStore>()?;
     module.add_class::<PySignatureIntermediateStore>()?;
     module.add_class::<PySignatureEvidenceStore>()?;
@@ -4628,6 +5044,14 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRegionPage>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
     module.add_function(wrap_pyfunction!(timestamp_token_validation, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        authenticate_text_range_paint_partition_receipt,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        verify_authenticated_text_range_paint_partition_receipt,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(merge_pdfs, module)?)?;
     module.add_function(wrap_pyfunction!(extract_pages, module)?)?;
     module.add_function(wrap_pyfunction!(rotate_pdf, module)?)?;
@@ -4688,8 +5112,7 @@ fn open_impl(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyDo
         };
         return Ok(PyDocument {
             engine: Arc::new(engine),
-            input_password: password
-                .map(|value| SecretBytes::new(value.as_bytes().to_vec())),
+            input_password: password.map(|value| SecretBytes::new(value.as_bytes().to_vec())),
         });
     }
 

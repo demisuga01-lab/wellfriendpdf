@@ -10,8 +10,7 @@ use crate::advanced_editing::{
     analyze_multi_run_text_range, list_vector_objects, SharedFormEditPolicy,
 };
 use crate::fonts::{
-    BundledFontProvider, FontMatchRequest, FontProvider, ShapeOptions, TextDirection,
-    TextShaper,
+    BundledFontProvider, FontMatchRequest, FontProvider, ShapeOptions, TextDirection, TextShaper,
 };
 use crate::render::font_rasterizer::get_fallback_font;
 use crate::source_editing::{
@@ -176,6 +175,74 @@ pub struct ApprovedFontAsset {
     pub bytes: Vec<u8>,
 }
 
+impl ApprovedFontAsset {
+    /// Freeze an explicitly selected variable TrueType or CFF2 instance before binding
+    /// the exact resulting program into an edit plan or persistent story.
+    pub fn from_font_instance(
+        lookup_name: impl Into<String>,
+        source: &[u8],
+        request: &crate::fonts::font_instance::FontInstanceRequest,
+    ) -> Result<(Self, crate::fonts::font_instance::FontInstanceReport)> {
+        Self::from_font_instance_bounded(lookup_name, source, request, 256 * 1024 * 1024)
+    }
+
+    pub(crate) fn from_font_instance_bounded(
+        lookup_name: impl Into<String>,
+        source: &[u8],
+        request: &crate::fonts::font_instance::FontInstanceRequest,
+        output_limit: usize,
+    ) -> Result<(Self, crate::fonts::font_instance::FontInstanceReport)> {
+        let lookup_name = lookup_name.into();
+        if lookup_name.trim().is_empty() || lookup_name.len() > 512 || lookup_name.contains('\0') {
+            return Err(WellfriendError::invalid_input(
+                "font lookup name must be 1..=512 bytes without NUL",
+            ));
+        }
+        let prepared = crate::fonts::font_instance::prepare_bounded(source, request, output_limit)?;
+        Ok((
+            Self {
+                lookup_name,
+                bytes: prepared.bytes,
+            },
+            prepared.report,
+        ))
+    }
+
+    /// Normalize an explicitly selected collection face before planning edits.
+    /// The returned bytes, not the collection or a system-font name, are bound
+    /// into the existing revision/approval and story-persistence mechanisms.
+    pub fn from_font_face(
+        lookup_name: impl Into<String>,
+        source: &[u8],
+        selection: &crate::fonts::font_asset::FontFaceSelection,
+    ) -> Result<(Self, crate::fonts::font_asset::FontPreparationReport)> {
+        Self::from_font_face_bounded(lookup_name, source, selection, 256 * 1024 * 1024)
+    }
+
+    pub(crate) fn from_font_face_bounded(
+        lookup_name: impl Into<String>,
+        source: &[u8],
+        selection: &crate::fonts::font_asset::FontFaceSelection,
+        output_limit: usize,
+    ) -> Result<(Self, crate::fonts::font_asset::FontPreparationReport)> {
+        let lookup_name = lookup_name.into();
+        if lookup_name.trim().is_empty() || lookup_name.len() > 512 || lookup_name.contains('\0') {
+            return Err(WellfriendError::invalid_input(
+                "font lookup name must be 1..=512 bytes without NUL",
+            ));
+        }
+        let prepared =
+            crate::fonts::font_asset::prepare_font_asset_bounded(source, selection, output_limit)?;
+        Ok((
+            Self {
+                lookup_name,
+                bytes: prepared.bytes,
+            },
+            prepared.report,
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneTextEditRequest {
     #[serde(default = "default_operator_preserving")]
@@ -292,6 +359,10 @@ pub struct EditTransactionReport {
     pub signature_impact: Value,
     pub conformance_impact: Value,
     pub validation_plan: Vec<String>,
+    /// Machine-verifiable evidence produced by the canonical mutation route.
+    /// This is kept separate from the plan so callers can distinguish intended
+    /// checks from post-save/reopen observations.
+    pub validation_evidence: Value,
     pub inverse_operations: Vec<Value>,
     pub commit_policy: String,
     pub operation_log_hash: String,
@@ -431,7 +502,9 @@ fn scene_text_reflow_request(
         target_logical_scalar_range: request.target_logical_scalar_range,
         target_stream_object: selected.as_ref().map(|identity| identity.stream_object),
         target_stream_generation: selected.as_ref().map(|identity| identity.stream_generation),
-        target_decoded_byte_range: selected.as_ref().map(|identity| identity.decoded_byte_range),
+        target_decoded_byte_range: selected
+            .as_ref()
+            .map(|identity| identity.decoded_byte_range),
         region: request.region,
         allowed_expansion_region: request.allowed_expansion_region,
         next_region: request.next_region,
@@ -676,6 +749,7 @@ fn text_reflow_transaction_report(
             "preserve_text_reflow_validation_evidence".to_string(),
             "drive_render_invalidation_from_source_refs_pages_and_dirty_regions".to_string(),
         ],
+        validation_evidence: report.validation_evidence.clone(),
         inverse_operations: report
             .inverse_operation
             .as_ref()
@@ -1072,9 +1146,7 @@ fn build_scene_graph_with_options(
             let definition_identity = occurrence
                 .object_number
                 .zip(occurrence.generation)
-                .map(|(number, generation)| {
-                    format!("image-{number}-{generation}-{revision}")
-                });
+                .map(|(number, generation)| format!("image-{number}-{generation}-{revision}"));
             let instruction_id = stable_id(
                 "instruction-image-do",
                 &[
@@ -1505,6 +1577,7 @@ pub fn substitution_report_with_source_font(
             .ok()
             .map(|_| measured_font_metrics(bytes, text))
     });
+    let has_source_metrics = parsed_source_metrics.is_some();
     let target_metrics = parsed_source_metrics
         .or_else(|| {
             primary
@@ -1512,7 +1585,7 @@ pub fn substitution_report_with_source_font(
                 .map(|matched| measured_font_metrics(matched.bytes.as_ref(), text))
         })
         .unwrap_or_default();
-    let target_metric_source = if parsed_source_metrics.is_some() {
+    let target_metric_source = if has_source_metrics {
         "embedded_source_font_program"
     } else {
         "deterministic_family_class_proxy_source_font_unavailable"
@@ -1539,10 +1612,8 @@ pub fn substitution_report_with_source_font(
             continue;
         }
         let metrics = measured_font_metrics(candidate.bytes.as_ref(), text);
-        let width_similarity = ratio_similarity(
-            target_metrics.mean_advance_em,
-            metrics.mean_advance_em,
-        );
+        let width_similarity =
+            ratio_similarity(target_metrics.mean_advance_em, metrics.mean_advance_em);
         let vertical_similarity = 0.5
             * ratio_similarity(target_metrics.ascender_em, metrics.ascender_em)
             + 0.5 * ratio_similarity(target_metrics.x_height_em, metrics.x_height_em);
@@ -1578,6 +1649,9 @@ pub fn substitution_report_with_source_font(
                     "ascender_em": metrics.ascender_em,
                     "descender_em": metrics.descender_em,
                     "x_height_em": metrics.x_height_em,
+                    "shaped_coverage_complete": metrics.shaped_coverage_complete,
+                    "missing_glyph_clusters": metrics.missing_clusters,
+                    "coverage_error": metrics.coverage_error,
                 },
                 "score_components": {
                     "coverage": metrics.coverage_ratio,
@@ -1587,7 +1661,8 @@ pub fn substitution_report_with_source_font(
                     "style_similarity": style_similarity,
                 },
                 "weighted_score": score,
-                "eligible_for_approval": metrics.coverage_ratio == 1.0,
+                "eligible_for_approval": metrics.shaped_coverage_complete
+                    && crate::fonts::fallback::editable_font(candidate.bytes.as_ref()),
                 "embedding_policy": "bundled_enterprise_approved",
             }),
         ));
@@ -1618,9 +1693,10 @@ pub fn substitution_report_with_source_font(
         "chosen_substitute": chosen,
         "ranked_candidates": candidates,
         "approved_candidates": approved_candidates,
-        "approval_eligibility": "complete Unicode scalar coverage of the replacement text is mandatory",
-        "score_formula": "0.40*unicode_coverage + 0.25*exp(-3*abs(ln(advance_ratio))) + 0.15*vertical_metrics + 0.12*family_class + 0.08*style",
-        "metric_source": "parsed OpenType cmap/hmtx/OS2/hhea metrics from exact candidate bytes",
+        "approval_eligibility": "complete default-feature horizontal shaped-cluster outline coverage and editable font embedding; final writer rechecks its actual line/mode",
+        "score_formula": "0.40*shaped_visible_scalar_coverage + 0.25*exp(-3*abs(ln(advance_ratio))) + 0.15*vertical_metrics + 0.12*family_class + 0.08*style",
+        "metric_source": "final OpenType glyph advances and outline coverage plus OS2/hhea metrics from exact candidate bytes",
+        "target_coverage_error": target_metrics.coverage_error,
         "target_metric_source": target_metric_source,
         "target_font_sha256": source_font_bytes.map(digest_hex),
         "tie_break": "lexicographic_lookup_name_after_total_order_score",
@@ -1630,7 +1706,7 @@ pub fn substitution_report_with_source_font(
     })
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct MeasuredFontMetrics {
     coverage_ratio: f64,
     covered_scalars: usize,
@@ -1639,31 +1715,35 @@ struct MeasuredFontMetrics {
     ascender_em: f64,
     descender_em: f64,
     x_height_em: f64,
+    shaped_coverage_complete: bool,
+    missing_clusters: Vec<u32>,
+    coverage_error: Option<String>,
 }
 
 fn measured_font_metrics(font_bytes: &[u8], text: &str) -> MeasuredFontMetrics {
     let Ok(face) = ttf_parser::Face::parse(font_bytes, 0) else {
         return MeasuredFontMetrics::default();
     };
-    let required = text
-        .chars()
-        .filter(|character| !character.is_control() && !character.is_whitespace())
-        .collect::<BTreeSet<_>>();
-    let mut covered = 0usize;
-    let mut advances = Vec::new();
     let units = f64::from(face.units_per_em().max(1));
-    for character in &required {
-        let Some(glyph) = face.glyph_index(*character) else {
-            continue;
+    let coverage = crate::fonts::coverage::analyze_text(font_bytes, text);
+    let (covered, required_count, advance, complete, missing_clusters, coverage_error) =
+        match coverage {
+            Ok(coverage) => (
+                coverage.covered_scalars,
+                coverage.required_scalars,
+                coverage.advance_1000 / 1000.0 / text.chars().count().max(1) as f64,
+                coverage.missing_clusters.is_empty(),
+                coverage.missing_clusters,
+                None,
+            ),
+            Err(error) => (0, 0, 0.0, false, Vec::new(), Some(error.to_string())),
         };
-        covered += 1;
-        if let Some(advance) = face.glyph_hor_advance(glyph) {
-            advances.push(f64::from(advance) / units);
-        }
-    }
-    let required_count = required.len();
     let coverage_ratio = if required_count == 0 {
-        1.0
+        if complete {
+            1.0
+        } else {
+            0.0
+        }
     } else {
         covered as f64 / required_count as f64
     };
@@ -1671,26 +1751,24 @@ fn measured_font_metrics(font_bytes: &[u8], text: &str) -> MeasuredFontMetrics {
         coverage_ratio,
         covered_scalars: covered,
         required_scalars: required_count,
-        mean_advance_em: if advances.is_empty() {
-            0.0
-        } else {
-            advances.iter().sum::<f64>() / advances.len() as f64
-        },
+        mean_advance_em: advance,
         ascender_em: f64::from(face.ascender()) / units,
         descender_em: f64::from(face.descender()) / units,
         x_height_em: face
             .x_height()
             .map(|value| f64::from(value) / units)
             .unwrap_or(0.0),
+        shaped_coverage_complete: complete,
+        missing_clusters,
+        coverage_error,
     }
 }
 
 fn font_match_request(name: &str) -> FontMatchRequest {
     let normalized = name.to_ascii_lowercase();
     let mut request = FontMatchRequest::new(name);
-    request.bold = normalized.contains("bold")
-        || normalized.contains("black")
-        || normalized.contains("heavy");
+    request.bold =
+        normalized.contains("bold") || normalized.contains("black") || normalized.contains("heavy");
     request.italic = normalized.contains("italic")
         || normalized.contains("oblique")
         || normalized.contains("slant");
@@ -1727,7 +1805,10 @@ fn font_family_class(name: &str) -> &'static str {
 fn family_class_similarity(requested: &str, candidate: &str) -> f64 {
     if requested == candidate {
         1.0
-    } else if matches!((requested, candidate), ("serif", "sans_serif") | ("sans_serif", "serif")) {
+    } else if matches!(
+        (requested, candidate),
+        ("serif", "sans_serif") | ("sans_serif", "serif")
+    ) {
         0.55
     } else if requested == "symbolic" || candidate == "symbolic" {
         0.10
@@ -1864,6 +1945,13 @@ pub fn plan_scene_text_transaction(
             "verify_overlay_not_used".to_string(),
             "record_signature_conformance_impact".to_string(),
         ],
+        validation_evidence: json!({
+            "status": if refusal.is_some() {
+                "not_applicable_refusal"
+            } else {
+                "pending_apply"
+            },
+        }),
         inverse_operations: if refusal.is_some() {
             Vec::new()
         } else {
@@ -1934,6 +2022,11 @@ pub fn apply_scene_text_transaction(
     report.write_set = source_editing.changed_objects.clone();
     report.affected_objects = source_editing.changed_objects.clone();
     report.affected_pages = source_editing.changed_pages.clone();
+    report.validation_evidence = json!({
+        "status": "validated_after_save_reopen",
+        "unaffected_content_proof": source_editing.unaffected_content_proof.clone(),
+        "source_operation_validation": source_editing.validation.clone(),
+    });
     report.source_editing_operation = Some(source_editing);
     report.inverse_operations.push(json!({
         "kind": "exact_preimage_restore",
@@ -2222,7 +2315,11 @@ mod tests {
         assert!(!text.node_id.is_empty());
         assert_eq!(
             text.supported_edit_modes,
-            vec![TrueEditingMode::OperatorPreserving]
+            vec![
+                TrueEditingMode::OperatorPreserving,
+                TrueEditingMode::GeometricBlock,
+                TrueEditingMode::SemanticDocument,
+            ]
         );
         assert!(graph.definition_occurrence_distinction);
     }
@@ -2253,6 +2350,14 @@ mod tests {
         assert_eq!(report.write_set, source_editing.changed_objects);
         assert_eq!(report.affected_objects, source_editing.changed_objects);
         assert_eq!(report.affected_pages, source_editing.changed_pages);
+        assert_eq!(
+            report.validation_evidence["status"],
+            "validated_after_save_reopen"
+        );
+        assert_eq!(
+            report.validation_evidence["unaffected_content_proof"]["overlay_used"],
+            false
+        );
         let undo = undo_restoration_report(&input, &output, &report);
         assert_eq!(undo["byte_exact_restoration"], true);
     }
@@ -2298,6 +2403,10 @@ mod tests {
         assert!(!report.affected_pages.is_empty());
         assert!(!report.dirty_regions.is_empty());
         assert!(report.source_editing_operation.is_none());
+        assert_eq!(
+            report.validation_evidence["unaffected_content_proof"]["status"],
+            "pass_with_documented_layout_whitespace_policy"
+        );
     }
 
     #[test]

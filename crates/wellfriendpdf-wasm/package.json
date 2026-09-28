@@ -10,6 +10,25 @@
   },
   "files": [
     "pkg",
+    "browser/story-client.js",
+    "browser/story-worker.js",
+    "browser/story-capabilities.js",
+    "browser/story-editor.js",
+    "browser/font-picker.js",
+    "browser/font-picker.d.ts",
+    "browser/scoped-text-editor.js",
+    "browser/scoped-text-editor.d.ts",
+    "browser/paint-partition-editor.js",
+    "browser/paint-partition-editor.d.ts",
+    "browser/authenticated-paint-partition-client.js",
+    "browser/authenticated-paint-partition-client.d.ts",
+    "browser/story-history-editor.js",
+    "browser/story-history-editor.d.ts",
+    "browser/story-structure-editor.js",
+    "browser/story-structure-editor.d.ts",
+    "browser/story-client.d.ts",
+    "browser/story-editor.d.ts",
+    "browser/README.md",
     "wellfriendpdf.d.ts",
     "README.md"
   ],
@@ -17,9 +36,17 @@
     ".": {
       "types": "./wellfriendpdf.d.ts",
       "default": "./pkg/wellfriendpdf_wasm.js"
-    }
+    },
+    "./story-client": { "types": "./browser/story-client.d.ts", "default": "./browser/story-client.js" },
+    "./story-editor": { "types": "./browser/story-editor.d.ts", "default": "./browser/story-editor.js" },
+    "./font-picker": { "types": "./browser/font-picker.d.ts", "default": "./browser/font-picker.js" },
+    "./scoped-text-editor": { "types": "./browser/scoped-text-editor.d.ts", "default": "./browser/scoped-text-editor.js" },
+    "./paint-partition-editor": { "types": "./browser/paint-partition-editor.d.ts", "default": "./browser/paint-partition-editor.js" },
+    "./authenticated-paint-partition-client": { "types": "./browser/authenticated-paint-partition-client.d.ts", "default": "./browser/authenticated-paint-partition-client.js" },
+    "./story-history-editor": { "types": "./browser/story-history-editor.d.ts", "default": "./browser/story-history-editor.js" },
+    "./story-structure-editor": { "types": "./browser/story-structure-editor.d.ts", "default": "./browser/story-structure-editor.js" }
   },
-  "sideEffects": false,
+  "sideEffects": ["./browser/story-editor.js", "./browser/font-picker.js", "./browser/scoped-text-editor.js", "./browser/paint-partition-editor.js", "./browser/story-history-editor.js", "./browser/story-structure-editor.js"],
   "scripts": {
     "build:web": "wasm-pack build . --target web --out-dir pkg",
     "build:node": "wasm-pack build . --target nodejs --out-dir pkg-node",
@@ -27,6 +54,6 @@
   },
   "devDependencies": {
     "typescript": "^5.5.0",
-    "wasm-pack": "^0.13.0"
+    "wasm-pack": "^0.15.0"
   }
 }

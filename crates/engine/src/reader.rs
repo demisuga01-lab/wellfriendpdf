@@ -6,7 +6,7 @@ use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::crypto::{
     aes256_gcm_decrypt_pdf_object, compute_encryption_key, decrypt_string,
@@ -67,6 +67,23 @@ pub struct EncryptionContext {
     /// Mirrors `/EncryptMetadata`; when false, `/Type /Metadata` streams are
     /// left as plaintext.
     pub encrypt_metadata: bool,
+    /// True only when the Standard security handler accepted the owner
+    /// password. Public-key recipients are governed by their recovered
+    /// permission mask and therefore leave this false.
+    pub authenticated_as_owner: bool,
+    /// Permission bits recovered from `/P` or a public-key recipient envelope.
+    /// Writers must not discard this authority merely because objects have
+    /// been materialized into an unencrypted working revision.
+    pub permissions: i32,
+}
+
+impl EncryptionContext {
+    /// PDF permission bit 4 authorizes changing document contents. Owner
+    /// authentication bypasses the user permission mask as defined by the
+    /// Standard security handler.
+    pub fn permits_content_modification(&self) -> bool {
+        self.authenticated_as_owner || (self.permissions & (1 << 3)) != 0
+    }
 }
 
 type ParsedObjectStream = HashMap<u32, (u32, PdfObject)>;
@@ -314,6 +331,9 @@ pub struct PdfReader {
     /// thread. Reads dominate; the lock is only taken for writing the first time
     /// a given object stream is decoded.
     object_stream_cache: RwLock<BoundedObjectStreamCache>,
+    /// Prepared functions are scoped to this reader's immutable object/revision
+    /// namespace. No document-byte hashing or process-global object IDs.
+    pub(crate) function_cache: Arc<Mutex<crate::render::function::FunctionCache>>,
     encryption: Option<EncryptionContext>,
     startxref: usize,
     diagnostics: Vec<ParserDiagnostic>,
@@ -392,6 +412,7 @@ impl PdfReader {
             object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
                 DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
             )),
+            function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             encryption,
             startxref,
             diagnostics,
@@ -486,6 +507,7 @@ impl PdfReader {
             object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
                 DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
             )),
+            function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             encryption,
             startxref,
             diagnostics,
@@ -579,6 +601,7 @@ impl PdfReader {
             object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
                 DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
             )),
+            function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             encryption,
             startxref,
             diagnostics,
@@ -610,6 +633,7 @@ impl PdfReader {
             object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
                 DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
             )),
+            function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             encryption,
             startxref,
             diagnostics,
@@ -635,6 +659,25 @@ impl PdfReader {
     /// Reported by the `info` tool.
     pub fn file_size(&self) -> usize {
         self.source.len()
+    }
+
+    /// Standalone evaluator cache only. Caller-owned renderer caches expose
+    /// their own counters and are not included in this snapshot.
+    pub fn function_cache_metrics(&self) -> crate::render::function::FunctionCacheMetrics {
+        self.function_cache
+            .lock()
+            .map(|cache| cache.metrics())
+            .unwrap_or_default()
+    }
+
+    /// Configure this reader's standalone function cache without changing any
+    /// caller-owned render cache. Zero disables retention, not evaluation.
+    pub fn set_function_cache_byte_limit(&self, bytes: usize) -> Result<()> {
+        let mut cache = self.function_cache.lock().map_err(|_| {
+            WellfriendError::ParseError("standalone function cache lock poisoned".into())
+        })?;
+        cache.set_byte_limit(bytes);
+        Ok(())
     }
 
     /// Structured diagnostics collected during parser open/repair.
@@ -742,6 +785,54 @@ impl PdfReader {
             .collect();
         ids.sort_unstable();
         ids
+    }
+
+    /// Definitions written by an append-only plaintext transaction. This is a
+    /// physical write set, not a claim that every rewritten value differs.
+    /// Compressed objects also change when their containing ObjStm changes.
+    pub(crate) fn incremental_definition_ids_since(
+        &self,
+        previous: &Self,
+    ) -> Result<Vec<(u32, u16)>> {
+        if self.is_encrypted()
+            || previous.is_encrypted()
+            || !self.file_bytes().starts_with(previous.file_bytes())
+        {
+            return Err(WellfriendError::invalid_input(
+                "incremental definition comparison requires an unchanged plaintext prefix",
+            ));
+        }
+        for (id, entry) in &previous.xref {
+            crate::cancel::check_current_cancel("incremental source identity comparison")?;
+            if !matches!(entry, XrefEntry::Free)
+                && self
+                    .xref
+                    .get(id)
+                    .is_none_or(|entry| matches!(entry, XrefEntry::Free))
+            {
+                return Err(WellfriendError::invalid_input(
+                    "incremental source definition was removed",
+                ));
+            }
+        }
+        let mut changed = Vec::new();
+        for (id, entry) in &self.xref {
+            crate::cancel::check_current_cancel("incremental output definition comparison")?;
+            if matches!(entry, XrefEntry::Free) {
+                continue;
+            }
+            let container_changed = match entry {
+                XrefEntry::Compressed { stream_obj, .. } => {
+                    self.xref.get(&(*stream_obj, 0)) != previous.xref.get(&(*stream_obj, 0))
+                }
+                _ => false,
+            };
+            if previous.xref.get(id) != Some(entry) || container_changed {
+                changed.push(*id);
+            }
+        }
+        changed.sort_unstable();
+        Ok(changed)
     }
 
     pub fn get_object(&self, number: u32, generation: u16) -> Result<PdfObject> {
@@ -1097,15 +1188,7 @@ fn setup_encryption(
 
     let file_id = extract_file_id(trailer);
 
-    // Try the supplied password first, then the empty password (permission-only
-    // encryption, the common case).
-    let candidates: Vec<&[u8]> = if password.is_empty() {
-        vec![b""]
-    } else {
-        vec![password, b""]
-    };
-
-    let make_ctx = |file_key: SecretBytes| EncryptionContext {
+    let make_ctx = |file_key: SecretBytes, authenticated_as_owner: bool| EncryptionContext {
         file_key,
         is_aes: info.is_aes(),
         is_v5: false,
@@ -1114,23 +1197,32 @@ fn setup_encryption(
         embedded_file_method: info.embedded_file_method.clone(),
         crypt_filters: info.crypt_filters.clone(),
         encrypt_metadata: info.encrypt_metadata,
+        authenticated_as_owner,
+        permissions: info.p,
     };
 
-    for pwd in &candidates {
-        if verify_user_password(pwd, &info, &file_id) {
-            let file_key = compute_encryption_key(pwd, &info, &file_id);
-            return Ok(Some(make_ctx(file_key)));
-        }
-    }
-
-    // Try the supplied password as an OWNER password: recover the user-password
-    // equivalent from /O (Algorithm 3 reverse), then derive the file key from it.
+    // Authenticate the explicitly supplied credential as owner and then user
+    // before trying the empty-user fallback. Otherwise a document with an
+    // empty user password can silently downgrade a valid non-empty owner
+    // password to restricted user authority. If one credential verifies as
+    // both, retaining owner authority is the non-lossy interpretation.
     if !password.is_empty() {
         let recovered = crate::crypto::recover_user_password_from_owner(password, &info);
         if verify_user_password(&recovered, &info, &file_id) {
             let file_key = compute_encryption_key(&recovered, &info, &file_id);
-            return Ok(Some(make_ctx(file_key)));
+            return Ok(Some(make_ctx(file_key, true)));
         }
+        if verify_user_password(password, &info, &file_id) {
+            let file_key = compute_encryption_key(password, &info, &file_id);
+            return Ok(Some(make_ctx(file_key, false)));
+        }
+    }
+
+    // Empty-user-password fallback is intentionally user authority. Treating
+    // it as owner authority would escalate an ambiguous empty credential.
+    if verify_user_password(b"", &info, &file_id) {
+        let file_key = compute_encryption_key(b"", &info, &file_id);
+        return Ok(Some(make_ctx(file_key, false)));
     }
 
     if info.stream_method == CryptMethod::None && info.string_method == CryptMethod::None {
@@ -1175,6 +1267,8 @@ fn setup_encryption_pubsec(
         embedded_file_method: info.embedded_file_method,
         crypt_filters: info.crypt_filters,
         encrypt_metadata: info.encrypt_metadata,
+        authenticated_as_owner: false,
+        permissions: recovered.permissions.unwrap_or(u32::MAX) as i32,
     }))
 }
 
@@ -1186,7 +1280,8 @@ fn setup_encryption_v5(
     password: &[u8],
     info: &EncryptionInfo,
 ) -> Result<Option<EncryptionContext>> {
-    // Build candidate list: supplied pwd first (user then owner), then empty pwd fallback.
+    // Build candidate list: supplied owner then user, followed by the
+    // deliberately non-escalating empty-user fallback.
     struct Candidate<'a> {
         pwd: &'a [u8],
         is_owner: bool,
@@ -1196,21 +1291,18 @@ fn setup_encryption_v5(
     if !password.is_empty() {
         candidates.push(Candidate {
             pwd: password,
-            is_owner: false,
+            is_owner: true,
         });
         candidates.push(Candidate {
             pwd: password,
-            is_owner: true,
+            is_owner: false,
         });
     }
-    // Always try empty password as fallback (permission-only encryption).
+    // Always try an empty user password as fallback (permission-only
+    // encryption). Do not interpret an empty credential as owner authority.
     candidates.push(Candidate {
         pwd: b"",
         is_owner: false,
-    });
-    candidates.push(Candidate {
-        pwd: b"",
-        is_owner: true,
     });
 
     for c in &candidates {
@@ -1252,6 +1344,8 @@ fn setup_encryption_v5(
             embedded_file_method: info.embedded_file_method.clone(),
             crypt_filters: info.crypt_filters.clone(),
             encrypt_metadata: info.encrypt_metadata,
+            authenticated_as_owner: c.is_owner,
+            permissions: info.p,
         }));
     }
 
@@ -2351,6 +2445,90 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use super::*;
+
+    #[test]
+    fn retained_tint_lookup_does_not_materialize_file_backed_pdf() {
+        use crate::render::parameter_dictionary::tests::{bytes_with_objects, numbers, reference};
+        let function = PdfObject::Dictionary(dict(&[
+            ("FunctionType", PdfObject::Integer(2)),
+            ("Domain", numbers(&[0.0, 1.0])),
+            ("C0", numbers(&[0.0])),
+            ("C1", numbers(&[1.0])),
+            ("N", PdfObject::Integer(1)),
+        ]));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("retained-tint.pdf");
+        fs::write(&path, bytes_with_objects(&[function])).unwrap();
+        let reader = PdfReader::from_path(&path).unwrap();
+        let PdfSource::File(source) = &reader.source else {
+            panic!("expected range-backed reader")
+        };
+        assert!(source.raw_cache.get().is_none());
+        let space = PdfObject::Array(vec![
+            PdfObject::Name("Separation".into()),
+            PdfObject::Name("Ink".into()),
+            PdfObject::Name("DeviceGray".into()),
+            reference(4),
+        ]);
+        for input in [0.25, 0.75, 0.25] {
+            assert!(matches!(
+                crate::render::colorspace::resolve_named_color(&space, &[input], 1.0, &reader),
+                crate::render::colorspace::NamedColor::Color(_)
+            ));
+        }
+        assert!(source.raw_cache.get().is_none());
+    }
+
+    #[test]
+    fn incremental_definition_inventory_tracks_rewritten_object_stream_containers() {
+        // Unit-level xref comparison, not an executed compressed-PDF corpus.
+        let mut before = PdfReader::from_bytes(tiny_pdf()).unwrap();
+        let mut after = PdfReader::from_bytes(tiny_pdf()).unwrap();
+        for reader in [&mut before, &mut after] {
+            reader
+                .xref
+                .insert((9, 0), XrefEntry::Uncompressed { offset: 10 });
+            reader.xref.insert(
+                (13, 0),
+                XrefEntry::Compressed {
+                    stream_obj: 9,
+                    index: 0,
+                },
+            );
+        }
+        after
+            .xref
+            .insert((9, 0), XrefEntry::Uncompressed { offset: 20 });
+        assert_eq!(
+            after.incremental_definition_ids_since(&before).unwrap(),
+            vec![(9, 0), (13, 0)]
+        );
+    }
+
+    #[test]
+    fn incremental_definition_inventory_rejects_changed_prefix_and_removed_ids() {
+        let input = tiny_pdf();
+        let before = PdfReader::from_bytes(input.clone()).unwrap();
+        let mut changed = input;
+        changed[7] = b'6';
+        let after = PdfReader::from_bytes(changed).unwrap();
+        assert!(after.incremental_definition_ids_since(&before).is_err());
+        let mut after = PdfReader::from_bytes(tiny_pdf()).unwrap();
+        after.xref.insert((1, 0), XrefEntry::Free);
+        assert!(after.incremental_definition_ids_since(&before).is_err());
+    }
+
+    #[test]
+    fn incremental_definition_inventory_observes_cancellation() {
+        let before = PdfReader::from_bytes(tiny_pdf()).unwrap();
+        let after = PdfReader::from_bytes(tiny_pdf()).unwrap();
+        let token = crate::cancel::CancelToken::new();
+        token.cancel();
+        assert!(matches!(
+            token.scope(|| after.incremental_definition_ids_since(&before)),
+            Err(WellfriendError::Cancelled(_))
+        ));
+    }
 
     fn dict(entries: &[(&str, PdfObject)]) -> PdfDictionary {
         PdfDictionary::new(

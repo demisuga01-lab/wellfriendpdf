@@ -36,7 +36,7 @@ use crate::engine::ContentEngine;
 use crate::error::Result;
 use crate::object::PdfObject;
 use crate::semantic::{SemanticDocument, SemanticElement};
-use crate::text::{TextChunk, TextCollector};
+use crate::text::TextChunk;
 
 // ── thresholds (document-relative or scale-free) ────────────────────────────
 const SIZE_BUCKET: f64 = 0.5; // pt histogram granularity
@@ -1866,9 +1866,7 @@ fn build_geometric(engine: &ContentEngine, page_list: &[usize]) -> Result<Docume
 
     for &page in page_list {
         let ops = engine.get_page_content(page)?;
-        let resources = engine.get_page_resources(page)?;
-        let mut collector = TextCollector::new(resources, engine.document().reader());
-        let mut chunks = collector.collect(&ops);
+        let mut chunks = engine.collect_page_text_chunks(page)?;
         let image_names = page_image_names(engine, page)?;
         let mut graphics = collect_graphics_with_images(&ops, &image_names);
         let (raw_w, raw_h) = engine.page_dimensions(page)?;

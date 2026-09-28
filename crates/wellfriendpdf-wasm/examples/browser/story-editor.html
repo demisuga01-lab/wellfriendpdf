@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wellfriend PDF native story editor — source candidate</title>
+<style>body{margin:20px;font:15px system-ui;background:#f4f5f7;color:#202124}h1{font-size:22px}p{max-width:85ch}wellfriend-story-editor{min-height:80vh}</style>
+<h1>PDF-native linked story editor</h1>
+<p>Unqualified source candidate. Files stay in this browser. Dashed preview boxes show layout, not final glyph pixels. Approve a preview to apply actual PDF source edits.</p>
+<wellfriend-story-editor></wellfriend-story-editor>
+<script type="module">
+  import { StoryWorkerClient } from '../../browser/story-client.js';
+  import '../../browser/story-editor.js';
+  const client = new StoryWorkerClient({
+    wasmModuleUrl: new URL('../../pkg/wellfriendpdf_wasm.js', location.href),
+    wasmBinaryUrl: new URL('../../pkg/wellfriendpdf_wasm_bg.wasm', location.href)
+  });
+  document.querySelector('wellfriend-story-editor').client = client;
+  addEventListener('pagehide', () => client.close());
+</script>
+</html>

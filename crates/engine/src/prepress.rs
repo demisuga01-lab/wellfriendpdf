@@ -1095,6 +1095,31 @@ pub(crate) fn plate_contributions_for_color_space_with_overprint(
     page_number: Option<usize>,
     overprint: &OverprintStateModel,
 ) -> Vec<PlateContribution> {
+    plate_contributions_for_color_space_with_overprint_and_resources(
+        space_obj,
+        components,
+        alpha,
+        reader,
+        object,
+        operation,
+        page_number,
+        overprint,
+        crate::render::function::FunctionResources::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plate_contributions_for_color_space_with_overprint_and_resources(
+    space_obj: &PdfObject,
+    components: &[f64],
+    alpha: f32,
+    reader: &PdfReader,
+    object: Option<String>,
+    operation: &str,
+    page_number: Option<usize>,
+    overprint: &OverprintStateModel,
+    function_resources: crate::render::function::FunctionResources<'_>,
+) -> Vec<PlateContribution> {
     let resolved = match space_obj {
         PdfObject::Reference { .. } => reader
             .resolve(space_obj.clone())
@@ -1107,7 +1132,8 @@ pub(crate) fn plate_contributions_for_color_space_with_overprint(
     let Some(family) = arr.first().and_then(PdfObject::as_name) else {
         return Vec::new();
     };
-    let preview = preview_rgb(&resolved, components, alpha, reader);
+    let preview =
+        preview_rgb_with_resources(&resolved, components, alpha, reader, function_resources);
     match family {
         "Separation" => {
             let name = arr.get(1).and_then(PdfObject::as_name).unwrap_or("Unknown");
@@ -1271,13 +1297,22 @@ pub(crate) fn cache_fingerprint_for_prepress_resources<'a, 'b>(
     )
 }
 
-fn preview_rgb(
+fn preview_rgb_with_resources(
     space_obj: &PdfObject,
     components: &[f64],
     alpha: f32,
     reader: &PdfReader,
+    function_resources: crate::render::function::FunctionResources<'_>,
 ) -> Option<[u8; 3]> {
-    match colorspace::resolve_named_color(space_obj, components, alpha, reader) {
+    match colorspace::resolve_named_color_with_resources(
+        space_obj,
+        None,
+        components,
+        alpha,
+        reader,
+        crate::render::cmm::ColorTransformOptions::default(),
+        function_resources,
+    ) {
         colorspace::NamedColor::Color(color) => {
             let px = color.to_pixel_color();
             Some([px[0], px[1], px[2]])

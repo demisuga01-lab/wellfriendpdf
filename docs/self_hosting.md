@@ -137,6 +137,7 @@ curl -sS http://localhost:8080/readiness   # -> {"status":"ready",...}
 | POST | `/api/v1/analyze` | Text-layer / scanned detection |
 | POST | `/api/v1/pdf2img` | Render pages to a ZIP of images |
 | POST | `/api/v1/extract-images` | Extract embedded images (ZIP) |
+| POST | `/api/v2/universal-editing/ecbes` | Evidence-gated multi-candidate PDF edit; multipart PDF plus JSON request |
 | POST | `/api/v1/jobs/pdf2img`, `/api/v1/jobs/extract-images` | Async variants for large inputs |
 | GET | `/api/v1/jobs/{id}`, `/api/v1/jobs/{id}/result` | Poll / download job result |
 | GET | `/api/v1/version`, `/health`, `/readiness` | Versions / probes |
@@ -144,6 +145,12 @@ curl -sS http://localhost:8080/readiness   # -> {"status":"ready",...}
 All `multipart/form-data`; the PDF is the `file` field. The parser endpoints
 also accept `pages`, `password`, and op-specific fields (`format`, `doc_type`,
 `target_tokens`, `overlap`, `keep_furniture`).
+
+The ECBES endpoint accepts `file`, `request_json`, optional binary `password`, and
+optional binary `output_user_password` / `output_owner_password` fields. Its
+multipart response contains the selected PDF (or exact input transport when no
+candidate qualifies) and the versioned JSON decision/publication receipt. See the
+[ECBES specification](research/evidence_constrained_bidirectional_edit_synthesis.md).
 
 > **Large documents.** Parse/chunk/extract-fields/info run **synchronously**,
 > bounded by `WELLFRIENDPDF_REQUEST_TIMEOUT_SECS`, `WELLFRIENDPDF_MAX_FILE_SIZE`, and
@@ -189,6 +196,11 @@ is the canonical config reference. Highlights:
 | --- | --- | --- |
 | `WELLFRIENDPDF_API_KEYS` | *(empty → fail-closed)* | Comma-separated valid API keys |
 | `WELLFRIENDPDF_ALLOW_UNAUTHENTICATED` | `false` | Dev-only: run with NO auth |
+| `WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX` | *(unset)* | Dedicated 32..=256-byte hex key for authenticated edit-review receipts |
+| `WELLFRIENDPDF_RECEIPT_HMAC_KEY_ID` | `primary` | Public receipt key-rotation identifier |
+| `WELLFRIENDPDF_RECEIPT_HMAC_PREVIOUS_KEYS` | *(empty)* | Up to 8 comma-separated `old-id=hex` verification-only grace keys |
+| `WELLFRIENDPDF_RECEIPT_HMAC_AUDIENCE` | `wellfriendpdf-server` | Receipt audience binding |
+| `WELLFRIENDPDF_RECEIPT_HMAC_TTL_SECS` | `900` | Authenticated review lifetime, 1..=604800 seconds |
 | `WELLFRIENDPDF_CORS_ALLOWED_ORIGINS` | *(empty → none)* | Browser cross-origin allowlist |
 | `WELLFRIENDPDF_RATE_LIMIT_PER_MIN` | `60` | Per-key requests/min (0 = off) |
 | `WELLFRIENDPDF_MAX_FILE_SIZE` | `52428800` (50 MiB) | Max upload size |
@@ -199,9 +211,11 @@ is the canonical config reference. Highlights:
 | `WELLFRIENDPDF_JOB_*` | *(various)* | Async job queue sizing/retention |
 
 Deploy checklist (also in `.env.example` and `docs/security.md`): set strong
-`WELLFRIENDPDF_API_KEYS`; set `WELLFRIENDPDF_CORS_ALLOWED_ORIGINS` to your frontend; size the
-timeouts/limits to your workload; **terminate TLS in front** (Wellfriend speaks plain
-HTTP behind a reverse proxy / load balancer).
+`WELLFRIENDPDF_API_KEYS`; set a separate random
+`WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX` when the authenticated editing endpoints
+are used; set `WELLFRIENDPDF_CORS_ALLOWED_ORIGINS` to your frontend; size the
+timeouts/limits to your workload; **terminate TLS in front** (Wellfriend speaks
+plain HTTP behind a reverse proxy / load balancer).
 
 ---
 

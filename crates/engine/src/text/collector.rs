@@ -1,10 +1,17 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::content::{ContentOperation, GraphicsState, Operand};
 use crate::engine::PageResources;
 use crate::fonts::{FontDecodeSource, FontResolver};
 use crate::info::decode_pdf_text_string;
 use crate::reader::PdfReader;
+
+#[path = "scoped_collector.rs"]
+mod scoped;
+pub use scoped::{
+    ScopedTextChunk, TextAppearanceInvocation, TextFormInvocation, TextTraversalLimits,
+};
 
 #[derive(Debug, Clone)]
 pub struct TextChunk {
@@ -25,6 +32,33 @@ pub struct TextChunk {
 pub struct MarkedTextChunk {
     pub chunk: TextChunk,
     pub mcid: Option<i64>,
+    /// Stream containing the marked sequence; None means page content. This
+    /// is independent of where an inherited page marker's glyphs were painted.
+    pub mcid_owner: Option<(u32, u16)>,
+    pub mcid_stream_owner: Option<(u32, u16)>,
+}
+
+/// MCID namespace within one page's extraction. Never compare a Form's MCID
+/// with a page MCID using the integer alone.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct MarkedContentId {
+    pub mcid: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<(u32, u16)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_owner: Option<(u32, u16)>,
+}
+
+impl MarkedTextChunk {
+    pub fn marked_content_id(&self) -> Option<MarkedContentId> {
+        self.mcid.map(|mcid| MarkedContentId {
+            mcid,
+            stream: self.mcid_owner,
+            stream_owner: self.mcid_stream_owner,
+        })
+    }
 }
 
 impl TextChunk {
@@ -79,8 +113,12 @@ pub(crate) fn is_rtl_dominant(s: &str) -> bool {
 
 pub struct TextCollector<'a> {
     gs: GraphicsState,
-    font_resolvers: HashMap<String, FontResolver>,
-    resources: PageResources,
+    font_resolvers: HashMap<String, Arc<FontResolver>>,
+    // A selected font is an object, not a resource name to resolve again when
+    // entering a Form with a different resource dictionary.
+    selected_font: Option<Arc<FontResolver>>,
+    selected_font_stack: Vec<Option<Arc<FontResolver>>>,
+    resources: Arc<PageResources>,
     reader: Option<&'a PdfReader>,
 }
 
@@ -90,12 +128,20 @@ struct ActualTextFrame {
     emitted: bool,
 }
 
+struct TextEmissionBudget<'a> {
+    remaining_bytes: usize,
+    remaining_chunks: usize,
+    cancel: &'a crate::cancel::CancelToken,
+}
+
 impl<'a> TextCollector<'a> {
     pub fn new(resources: PageResources, reader: &'a PdfReader) -> Self {
         Self {
             gs: GraphicsState::new(),
             font_resolvers: HashMap::new(),
-            resources,
+            selected_font: None,
+            selected_font_stack: Vec::new(),
+            resources: Arc::new(resources),
             reader: Some(reader),
         }
     }
@@ -106,14 +152,21 @@ impl<'a> TextCollector<'a> {
     ) -> TextCollector<'static> {
         TextCollector {
             gs: GraphicsState::new(),
-            font_resolvers: resolvers,
-            resources,
+            font_resolvers: resolvers
+                .into_iter()
+                .map(|(name, font)| (name, Arc::new(font)))
+                .collect(),
+            selected_font: None,
+            selected_font_stack: Vec::new(),
+            resources: Arc::new(resources),
             reader: None,
         }
     }
 
     pub fn collect(&mut self, operations: &[ContentOperation]) -> Vec<TextChunk> {
         self.gs = GraphicsState::new();
+        self.selected_font = None;
+        self.selected_font_stack.clear();
         if self.reader.is_some() {
             self.font_resolvers.clear();
         }
@@ -157,6 +210,8 @@ impl<'a> TextCollector<'a> {
     /// this side-channel is used by tagged-PDF semantic extraction.
     pub fn collect_marked(&mut self, operations: &[ContentOperation]) -> Vec<MarkedTextChunk> {
         self.gs = GraphicsState::new();
+        self.selected_font = None;
+        self.selected_font_stack.clear();
         if self.reader.is_some() {
             self.font_resolvers.clear();
         }
@@ -198,6 +253,8 @@ impl<'a> TextCollector<'a> {
                         marked.push(MarkedTextChunk {
                             chunk,
                             mcid: active_mcid,
+                            mcid_owner: None,
+                            mcid_stream_owner: None,
                         });
                     }
                 }
@@ -208,11 +265,34 @@ impl<'a> TextCollector<'a> {
     }
 
     fn process_op(&mut self, op: &ContentOperation, chunks: &mut Vec<TextChunk>) {
+        // Compatibility single-program API has no error channel. The scoped
+        // page API supplies a budget and propagates the fallible path instead.
+        if let Err(error) = self.process_op_checked(op, chunks, None) {
+            log::warn!("TextCollector: {error}");
+        }
+    }
+
+    fn process_op_checked(
+        &mut self,
+        op: &ContentOperation,
+        chunks: &mut Vec<TextChunk>,
+        budget: Option<&mut TextEmissionBudget<'_>>,
+    ) -> crate::Result<()> {
         match op.operator.as_str() {
-            "Tj" => self.show_bytes(op.string_bytes(0).unwrap_or(&[]).to_vec(), chunks),
+            "q" => {
+                self.selected_font_stack.push(self.selected_font.clone());
+                self.gs.process(op);
+            }
+            "Q" => {
+                if self.gs.stack_depth() > 0 {
+                    self.selected_font = self.selected_font_stack.pop().flatten();
+                }
+                self.gs.process(op);
+            }
+            "Tj" => self.show_bytes(op.string_bytes(0).unwrap_or(&[]), chunks, budget)?,
             "'" => {
                 self.gs.process(&ContentOperation::new("T*", vec![]));
-                self.show_bytes(op.string_bytes(0).unwrap_or(&[]).to_vec(), chunks);
+                self.show_bytes(op.string_bytes(0).unwrap_or(&[]), chunks, budget)?;
             }
             "\"" => {
                 if let Some(aw) = op.number(0) {
@@ -222,21 +302,29 @@ impl<'a> TextCollector<'a> {
                     self.gs.text.char_spacing = ac;
                 }
                 self.gs.process(&ContentOperation::new("T*", vec![]));
-                self.show_bytes(op.string_bytes(2).unwrap_or(&[]).to_vec(), chunks);
+                self.show_bytes(op.string_bytes(2).unwrap_or(&[]), chunks, budget)?;
             }
-            "TJ" => self.show_tj(op, chunks),
+            "TJ" => self.show_tj(op, chunks, budget)?,
             "Tf" => {
                 self.gs.process(op);
                 if let Some(name) = op.name(0) {
                     self.ensure_font_loaded(name);
+                    self.selected_font = self.font_resolvers.get(name).cloned();
                 }
             }
             "gs" => {
                 if let Some(name) = op.name(0) {
                     if let Some(ext_dict) = self.resources.ext_g_states.get(name).cloned() {
                         let label = format!("ExtGState /{name}");
-                        if let Err(err) = self.gs.try_apply_ext_g_state(&ext_dict, &label) {
+                        if let Err(err) = self.gs.try_apply_ext_g_state_for_text(&ext_dict, &label)
+                        {
                             log::warn!("TextCollector: {err}");
+                        } else if ext_dict.get("Font").is_some() {
+                            let font_name = self.gs.text.font_name.clone();
+                            if !font_name.is_empty() {
+                                self.ensure_font_loaded(&font_name);
+                            }
+                            self.selected_font = self.font_resolvers.get(&font_name).cloned();
                         }
                     } else {
                         log::warn!("TextCollector: ExtGState '{}' not found in resources", name);
@@ -245,6 +333,7 @@ impl<'a> TextCollector<'a> {
             }
             _ => self.gs.process(op),
         }
+        Ok(())
     }
 
     fn ensure_font_loaded(&mut self, font_name: &str) {
@@ -265,13 +354,28 @@ impl<'a> TextCollector<'a> {
             );
             return;
         };
-        self.font_resolvers
-            .insert(font_name.to_string(), FontResolver::new(&font_dict, reader));
+        self.font_resolvers.insert(
+            font_name.to_string(),
+            Arc::new(FontResolver::new(&font_dict, reader)),
+        );
     }
 
-    fn show_bytes(&mut self, bytes: Vec<u8>, chunks: &mut Vec<TextChunk>) {
+    fn show_bytes(
+        &mut self,
+        bytes: &[u8],
+        chunks: &mut Vec<TextChunk>,
+        mut budget: Option<&mut TextEmissionBudget<'_>>,
+    ) -> crate::Result<()> {
         if bytes.is_empty() {
-            return;
+            return Ok(());
+        }
+        if budget
+            .as_ref()
+            .is_some_and(|budget| budget.remaining_chunks == 0)
+        {
+            return Err(crate::WellfriendError::ResourceLimit(
+                "text extraction chunk budget exceeded".into(),
+            ));
         }
 
         let font_name = self.gs.text.font_name.clone();
@@ -280,54 +384,81 @@ impl<'a> TextCollector<'a> {
         let word_spacing = self.gs.text.word_spacing;
         let h_scale = self.gs.text.horizontal_scaling / 100.0;
         let rise = self.gs.text.rise;
-        let x_start = self.gs.text.tm[4];
-        let y_start = self.gs.text.tm[5] + rise;
-        let font_size_eff = font_size * self.gs.effective_font_size();
+        let text_to_page = crate::content::state::concat_matrix(&self.gs.text.tm, &self.gs.ctm);
+        let (x_start, y_start) = crate::content::state::transform_point(&text_to_page, 0.0, rise);
+        let font_size_eff = font_size.abs() * text_to_page[2].hypot(text_to_page[3]);
 
-        let resolver = self.font_resolvers.get(&font_name);
-        let code_size = resolver.map(FontResolver::code_size).unwrap_or(1);
+        let resolver = self.selected_font.as_deref();
         // Writing mode comes from the font's encoding CMap (WMode), never from the
         // text matrix: a rotated text matrix is still horizontal writing, and
         // upright vertical CJK uses an unrotated matrix. See PDF 32000-1 §9.7.4.3.
         let is_vertical = resolver.map(FontResolver::is_vertical).unwrap_or(false);
-        let codes = extract_char_codes(&bytes, code_size);
         let mut decoded_text = String::new();
         let mut mapping_sources = Vec::new();
         let mut total_advance = 0.0_f64;
 
-        for code in &codes {
+        let mut index = 0;
+        let mut offset = 0;
+        while offset < bytes.len() {
+            if index % 64 == 0 {
+                if let Some(budget) = budget.as_ref() {
+                    budget.cancel.check("text glyph decoding")?;
+                }
+            }
+            let code = match resolver {
+                Some(resolver) => resolver.next_code(bytes, &mut offset),
+                None => {
+                    let byte = bytes[offset];
+                    offset += 1;
+                    crate::fonts::character_code::CharacterCode::from_bytes(&[byte])
+                }
+            }
+            .map_err(crate::WellfriendError::MalformedPdf)?;
+            index += 1;
             let (ch_text, source) = match resolver {
-                Some(resolver) => resolver.decode_char_with_source(*code),
-                None if (0x20..=0x7E).contains(code) => (
-                    char::from(*code as u8).to_string(),
+                Some(resolver) => resolver.decode_code_with_source(code),
+                None if (0x20..=0x7E).contains(&code.value()) => (
+                    char::from(code.value() as u8).to_string(),
                     FontDecodeSource::NativePdfText,
                 ),
                 None => ("\u{FFFD}".to_string(), FontDecodeSource::Unknown),
             };
+            if let Some(budget) = budget.as_mut() {
+                budget.remaining_bytes = budget
+                    .remaining_bytes
+                    .checked_sub(ch_text.len())
+                    .ok_or_else(|| {
+                        crate::WellfriendError::ResourceLimit(
+                            "text extraction decoded-text budget exceeded".into(),
+                        )
+                    })?;
+            }
             let source_count = ch_text.chars().count().max(1);
             decoded_text.push_str(&ch_text);
             mapping_sources.extend(std::iter::repeat_n(source, source_count));
 
-            let is_space = resolver
-                .map(|resolver| resolver.is_space_code(*code))
-                .unwrap_or(*code == 0x20);
+            let is_space = code.is_word_space();
 
             if is_vertical {
                 // Vertical writing mode: glyphs advance downward by the font's
                 // W2 vertical displacement (w1y, normally negative). Horizontal
                 // scaling (Th) does not apply to the vertical advance.
                 let (w1y, _vx, _vy) = resolver
-                    .map(|resolver| resolver.vertical_metrics(*code))
+                    .map(|resolver| resolver.vertical_metrics_for_code(code))
                     .unwrap_or((-1000.0, 500.0, 880.0));
-                let ty = w1y / 1000.0 * font_size
-                    + char_spacing
-                    + if is_space { word_spacing } else { 0.0 };
+                let ty = crate::fonts::resolver::vertical_text_advance(
+                    w1y,
+                    font_size,
+                    char_spacing,
+                    word_spacing,
+                    is_space,
+                );
                 self.gs.text.tm[4] += self.gs.text.tm[2] * ty;
                 self.gs.text.tm[5] += self.gs.text.tm[3] * ty;
                 total_advance += ty;
             } else {
                 let glyph_units = resolver
-                    .map(|resolver| resolver.glyph_width(*code))
+                    .map(|resolver| resolver.width_for_code(code))
                     .unwrap_or(500.0);
                 let tx = (glyph_units / 1000.0 * font_size
                     + char_spacing
@@ -344,9 +475,9 @@ impl<'a> TextCollector<'a> {
             // text it spans rightward; for vertical text it spans downward (the
             // reading-order pass interprets `width` per writing mode).
             let (axis_a, axis_b) = if is_vertical {
-                (self.gs.text.tm[2], self.gs.text.tm[3])
+                (text_to_page[2], text_to_page[3])
             } else {
-                (self.gs.text.tm[0], self.gs.text.tm[1])
+                (text_to_page[0], text_to_page[1])
             };
             let width_x = axis_a * total_advance;
             let width_y = axis_b * total_advance;
@@ -371,54 +502,63 @@ impl<'a> TextCollector<'a> {
                 is_actual_text: false,
                 mapping_sources,
             });
+            if let Some(budget) = budget.as_mut() {
+                budget.remaining_chunks -= 1;
+            }
         }
+        Ok(())
     }
 
-    fn show_tj(&mut self, op: &ContentOperation, chunks: &mut Vec<TextChunk>) {
-        let Some(array) = op
-            .operand(0)
-            .and_then(Operand::as_array)
-            .map(<[Operand]>::to_vec)
-        else {
+    fn show_tj(
+        &mut self,
+        op: &ContentOperation,
+        chunks: &mut Vec<TextChunk>,
+        mut budget: Option<&mut TextEmissionBudget<'_>>,
+    ) -> crate::Result<()> {
+        let Some(array) = op.operand(0).and_then(Operand::as_array) else {
             log::warn!("TextCollector: TJ operand is not an array");
-            return;
+            return Ok(());
         };
         let font_size = self.gs.text.font_size;
         let h_scale = self.gs.text.horizontal_scaling / 100.0;
         let is_vertical = self
-            .font_resolvers
-            .get(&self.gs.text.font_name)
+            .selected_font
+            .as_deref()
             .map(FontResolver::is_vertical)
             .unwrap_or(false);
 
-        for elem in array {
+        for (index, elem) in array.iter().enumerate() {
+            if index % 64 == 0 {
+                if let Some(budget) = budget.as_ref() {
+                    budget.cancel.check("text TJ traversal")?;
+                }
+            }
             match elem {
-                Operand::String(bytes) => self.show_bytes(bytes, chunks),
+                Operand::String(bytes) => self.show_bytes(bytes, chunks, budget.as_deref_mut())?,
                 Operand::Integer(value) => {
-                    self.apply_tj_adjust(value as f64, font_size, h_scale, is_vertical)
+                    self.apply_tj_adjust(*value as f64, font_size, h_scale, is_vertical)
                 }
                 Operand::Real(value) => {
-                    self.apply_tj_adjust(value, font_size, h_scale, is_vertical)
+                    self.apply_tj_adjust(*value, font_size, h_scale, is_vertical)
                 }
                 _ => {}
             }
         }
+        Ok(())
     }
 
-    /// Apply a TJ numeric position adjustment. The number is in thousandths of a
-    /// text-space unit; it moves the next glyph backward along the writing axis
-    /// (left for horizontal, up for vertical). Horizontal scaling only affects
-    /// the horizontal axis.
+    /// Apply a TJ adjustment in thousandths of a text-space unit. A positive
+    /// operand reduces the active-axis coordinate: left in ordinary horizontal
+    /// text, downward in ordinary vertical text. Th affects only the x axis.
     fn apply_tj_adjust(&mut self, value: f64, font_size: f64, h_scale: f64, is_vertical: bool) {
-        if is_vertical {
-            let ty = -value / 1000.0 * font_size;
-            self.gs.text.tm[4] += self.gs.text.tm[2] * ty;
-            self.gs.text.tm[5] += self.gs.text.tm[3] * ty;
-        } else {
-            let tx = -value / 1000.0 * font_size * h_scale;
-            self.gs.text.tm[4] += self.gs.text.tm[0] * tx;
-            self.gs.text.tm[5] += self.gs.text.tm[1] * tx;
-        }
+        let [tx, ty] = crate::fonts::resolver::text_position_adjustment(
+            -value,
+            font_size,
+            h_scale * 100.0,
+            is_vertical,
+        );
+        self.gs.text.tm[4] += self.gs.text.tm[0] * tx + self.gs.text.tm[2] * ty;
+        self.gs.text.tm[5] += self.gs.text.tm[1] * tx + self.gs.text.tm[3] * ty;
     }
 }
 
@@ -514,21 +654,6 @@ fn operand_mcid(operand: &Operand) -> Option<i64> {
             }
         }),
         _ => None,
-    }
-}
-
-pub(crate) fn extract_char_codes(bytes: &[u8], code_size: u8) -> Vec<u16> {
-    if code_size == 2 {
-        bytes
-            .chunks(2)
-            .map(|chunk| {
-                let high = u16::from(chunk[0]);
-                let low = chunk.get(1).copied().map(u16::from).unwrap_or(0);
-                (high << 8) | low
-            })
-            .collect()
-    } else {
-        bytes.iter().map(|byte| u16::from(*byte)).collect()
     }
 }
 
@@ -690,12 +815,19 @@ mod tests {
     }
 
     #[test]
-    fn char_code_extraction_pads_odd_two_byte_input() {
+    fn char_code_extraction_rejects_odd_two_byte_input_without_padding() {
+        let space = crate::fonts::character_code::CodeSpace::fixed(2).unwrap();
+        let mut offset = 0;
         assert_eq!(
-            extract_char_codes(&[0x12, 0x34, 0x56], 2),
-            vec![0x1234, 0x5600]
+            space
+                .next(&[0x12, 0x34, 0x56], &mut offset)
+                .unwrap()
+                .value(),
+            0x1234
         );
-        assert_eq!(extract_char_codes(&[0x41, 0x42], 1), vec![0x41, 0x42]);
+        assert_eq!(offset, 2);
+        assert!(space.next(&[0x12, 0x34, 0x56], &mut offset).is_err());
+        assert_eq!(offset, 2);
     }
 
     #[test]

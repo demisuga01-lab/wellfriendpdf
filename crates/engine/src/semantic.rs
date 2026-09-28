@@ -2,7 +2,7 @@
 //!
 //! Tagged PDFs expose an authored logical structure tree (`/StructTreeRoot`)
 //! whose `/StructElem` nodes point to page marked-content ranges by MCID. This
-//! module walks that tree in authored order, resolves `(page, MCID)` text from
+//! module walks that tree in authored order, resolves `(page, stream, MCID)` text from
 //! the content streams, and emits a semantic JSON-ready tree. When no structure
 //! tree is present it falls back to the geometric layout analyzer.
 
@@ -18,12 +18,25 @@ use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::text::{
-    text_role_from_tag, MarkedTextChunk, ReadingOrderReconstructor, TextChunk, TextCollector,
+    text_role_from_tag, MarkedContentId, MarkedTextChunk, ReadingOrderReconstructor, TextChunk,
     TextDiagnostic, TextDiagnosticSeverity, TextRoleSource, TextStructureContext,
     TextStructureEntry,
 };
 
 const MAX_STRUCT_DEPTH: usize = 128;
+const MIN_STRUCT_NODES: usize = 250_000;
+const STRUCT_NODES_PER_PAGE: usize = 10_000;
+const MAX_STRUCT_NODES: usize = 2_000_000;
+
+fn semantic_structure_node_limit(page_count: usize) -> usize {
+    page_count
+        .saturating_mul(STRUCT_NODES_PER_PAGE)
+        .clamp(MIN_STRUCT_NODES, MAX_STRUCT_NODES)
+}
+
+#[cfg(test)]
+#[path = "semantic_scope_tests.rs"]
+mod scope_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,6 +88,10 @@ pub struct SemanticElement {
     pub bbox: Option<[f64; 4]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<SemanticMcid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_evidence: Option<crate::semantic_intelligence::SemanticEvidenceKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_confidence: Option<f32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<SemanticElement>,
 }
@@ -103,10 +120,27 @@ impl SemanticElement {
 pub struct SemanticMcid {
     pub page: usize,
     pub mcid: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<(u32, u16)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_owner: Option<(u32, u16)>,
+}
+
+impl SemanticMcid {
+    fn key(&self) -> McidKey {
+        (
+            self.page,
+            MarkedContentId {
+                mcid: self.mcid,
+                stream: self.stream,
+                stream_owner: self.stream_owner,
+            },
+        )
+    }
 }
 
 type PageRef = (u32, u16);
-type McidKey = (usize, i64);
+type McidKey = (usize, MarkedContentId);
 type McidTextMap = HashMap<McidKey, Vec<TextChunk>>;
 
 pub fn extract_semantic_document(
@@ -142,12 +176,32 @@ pub fn extract_semantic_document(
         return geometric_fallback(engine, &page_list);
     };
 
+    let mut stream_owners: HashMap<(usize, PageRef), BTreeSet<Option<PageRef>>> = HashMap::new();
+    for &(page, id) in marked_text.keys() {
+        if let Some(stream) = id.stream {
+            stream_owners
+                .entry((page, stream))
+                .or_default()
+                .insert(id.stream_owner);
+        }
+    }
     let mut parser = StructParser {
         reader,
+        page_refs: page_by_ref.iter().map(|(id, page)| (*page, *id)).collect(),
         page_by_ref,
         marked_text,
+        stream_owners,
+        appearance_owners: crate::annotation_appearance::AppearanceOwnerIndex::default(),
         visited: HashSet::new(),
         role_map: parse_role_map(root_dict),
+        page_streams: engine
+            .document()
+            .get_pages()?
+            .into_iter()
+            .map(|page| (page.page_number, page.contents))
+            .collect(),
+        nodes: 0,
+        node_limit: semantic_structure_node_limit(total),
     };
     let mut elements = Vec::new();
     if let Some(kids) = root_dict.get("K") {
@@ -237,10 +291,20 @@ fn flatten_structure_element(
         .original_type
         .clone()
         .unwrap_or_else(|| element.element_type.clone());
-    let role_source = if element.original_type.is_some() {
+    let authored_role_source = if element.original_type.is_some() {
         TextRoleSource::RoleMap
     } else {
         TextRoleSource::Tagged
+    };
+    use crate::semantic_intelligence::SemanticEvidenceKind;
+    let role_source = match element.recovery_evidence {
+        None | Some(SemanticEvidenceKind::SpecDerivedStructure) => authored_role_source,
+        Some(
+            SemanticEvidenceKind::RepairedStructure
+            | SemanticEvidenceKind::InferredStructure
+            | SemanticEvidenceKind::ModelProposed,
+        ) => TextRoleSource::Heuristic,
+        _ => TextRoleSource::Unknown,
     };
     for mcid in &element.mcids {
         if context.entries.len() >= max_mcids {
@@ -253,12 +317,15 @@ fn flatten_structure_element(
             });
             return;
         }
-        if !seen.insert((mcid.page, mcid.mcid)) {
+        if !seen.insert(mcid.key()) {
             context.diagnostics.push(TextDiagnostic {
                 code: "text.structure.duplicate_mcid".to_string(),
                 severity: TextDiagnosticSeverity::Warning,
                 page: Some(mcid.page),
-                message: format!("duplicate StructTree mapping for MCID {}", mcid.mcid),
+                message: format!(
+                    "duplicate StructTree mapping for MCID {} in stream {:?}",
+                    mcid.mcid, mcid.stream
+                ),
             });
         }
         if element.text.trim().is_empty()
@@ -275,15 +342,19 @@ fn flatten_structure_element(
         context.entries.push(TextStructureEntry {
             page: mcid.page,
             mcid: mcid.mcid,
+            stream: mcid.stream,
+            stream_owner: mcid.stream_owner,
             role: text_role_from_tag(&element.element_type),
             normalized_role: element.element_type.clone(),
             original_role: original_role.clone(),
             role_source,
-            confidence: if role_source == TextRoleSource::Tagged {
-                0.94
-            } else {
-                0.82
-            },
+            confidence: element.recovery_confidence.unwrap_or(
+                if role_source == TextRoleSource::Tagged {
+                    0.94
+                } else {
+                    0.82
+                },
+            ),
             artifact: element.element_type.eq_ignore_ascii_case("Artifact"),
             actual_text: element.actual_text.clone(),
             alt_text: element.alt_text.clone(),
@@ -325,6 +396,8 @@ fn geometric_fallback(engine: &ContentEngine, pages: &[usize]) -> Result<Semanti
             page: None,
             bbox: None,
             mcids: Vec::new(),
+            recovery_evidence: None,
+            recovery_confidence: None,
             children,
         }],
     })
@@ -341,6 +414,8 @@ fn block_to_element(page: usize, block: LayoutBlock) -> SemanticElement {
         page: Some(page),
         bbox: Some([block.bbox.x0, block.bbox.y0, block.bbox.x1, block.bbox.y1]),
         mcids: Vec::new(),
+        recovery_evidence: None,
+        recovery_confidence: None,
         children: Vec::new(),
     }
 }
@@ -348,12 +423,30 @@ fn block_to_element(page: usize, block: LayoutBlock) -> SemanticElement {
 struct StructParser<'a> {
     reader: &'a PdfReader,
     page_by_ref: HashMap<PageRef, usize>,
+    page_refs: HashMap<usize, PageRef>,
     marked_text: McidTextMap,
+    stream_owners: HashMap<(usize, PageRef), BTreeSet<Option<PageRef>>>,
+    appearance_owners: crate::annotation_appearance::AppearanceOwnerIndex,
     visited: HashSet<PageRef>,
     role_map: HashMap<String, String>,
+    page_streams: HashMap<usize, Vec<PageRef>>,
+    nodes: usize,
+    node_limit: usize,
 }
 
 impl<'a> StructParser<'a> {
+    fn visit(&mut self, depth: usize) -> Result<()> {
+        crate::cancel::check_current_cancel("semantic structure traversal")?;
+        self.nodes = self.nodes.checked_add(1).ok_or_else(|| {
+            WellfriendError::ResourceLimit("structure node counter overflow".into())
+        })?;
+        if depth > MAX_STRUCT_DEPTH || self.nodes > self.node_limit {
+            return Err(WellfriendError::ResourceLimit(
+                "semantic structure traversal limit exceeded".into(),
+            ));
+        }
+        Ok(())
+    }
     fn parse_kids(
         &mut self,
         object: &PdfObject,
@@ -361,6 +454,19 @@ impl<'a> StructParser<'a> {
         out: &mut Vec<SemanticElement>,
         depth: usize,
     ) -> Result<()> {
+        // Count only traversable structure containers.  MCID integers and
+        // other scalar leaf values are handled by their owning StructElem and
+        // must not consume the graph-node budget independently.  Large valid
+        // tagged forms routinely contain hundreds of thousands of scalar /K
+        // leaves even though their object graph remains bounded.
+        if matches!(
+            object,
+            PdfObject::Array(_) | PdfObject::Reference { .. } | PdfObject::Dictionary(_)
+        ) {
+            self.visit(depth)?;
+        } else {
+            return Ok(());
+        }
         if depth > MAX_STRUCT_DEPTH {
             return Err(WellfriendError::MalformedPdf(
                 "structure tree exceeded depth limit".to_string(),
@@ -375,8 +481,9 @@ impl<'a> StructParser<'a> {
             PdfObject::Reference { number, generation } => {
                 let id = (*number, *generation);
                 if !self.visited.insert(id) {
-                    log::warn!("skipping cyclic structure reference {number} {generation}");
-                    return Ok(());
+                    return Err(WellfriendError::MalformedPdf(format!(
+                        "cyclic structure reference {number} {generation}"
+                    )));
                 }
                 let resolved = self.reader.get_and_resolve(*number, *generation)?;
                 self.parse_kids(&resolved, inherited_page, out, depth + 1)?;
@@ -399,6 +506,7 @@ impl<'a> StructParser<'a> {
         inherited_page: Option<usize>,
         depth: usize,
     ) -> Result<SemanticElement> {
+        self.visit(depth)?;
         if depth > MAX_STRUCT_DEPTH {
             return Err(WellfriendError::MalformedPdf(
                 "structure tree exceeded depth limit".to_string(),
@@ -411,10 +519,7 @@ impl<'a> StructParser<'a> {
             .cloned()
             .unwrap_or_else(|| original_type.clone());
         let original_type_field = (original_type != element_type).then_some(original_type);
-        let page = dict
-            .get("Pg")
-            .and_then(|obj| page_from_object(obj, &self.page_by_ref))
-            .or(inherited_page);
+        let page = self.element_page(dict, inherited_page)?;
         let alt_text = dict.get("Alt").and_then(pdf_text_value);
         let actual_text = dict.get("ActualText").and_then(pdf_text_value);
         let lang = dict.get("Lang").and_then(pdf_text_value);
@@ -430,6 +535,16 @@ impl<'a> StructParser<'a> {
             None => text_for_mcids(&mcids, &self.marked_text),
         };
         let bbox = bbox_for_mcids(&mcids, &self.marked_text);
+        let resolved_pages = mcids
+            .iter()
+            .filter(|id| self.marked_text.contains_key(&id.key()))
+            .map(|id| id.page)
+            .collect::<BTreeSet<_>>();
+        let page = match resolved_pages.len() {
+            0 => page,
+            1 => resolved_pages.first().copied(),
+            _ => None,
+        };
 
         Ok(SemanticElement {
             element_type,
@@ -441,6 +556,8 @@ impl<'a> StructParser<'a> {
             page,
             bbox,
             mcids,
+            recovery_evidence: None,
+            recovery_confidence: None,
             children,
         })
     }
@@ -453,6 +570,7 @@ impl<'a> StructParser<'a> {
         children: &mut Vec<SemanticElement>,
         depth: usize,
     ) -> Result<()> {
+        self.visit(depth)?;
         if depth > MAX_STRUCT_DEPTH {
             return Err(WellfriendError::MalformedPdf(
                 "structure tree exceeded depth limit".to_string(),
@@ -461,7 +579,17 @@ impl<'a> StructParser<'a> {
         match object {
             PdfObject::Integer(mcid) => {
                 if let Some(page) = inherited_page {
-                    mcids.push(SemanticMcid { page, mcid: *mcid });
+                    if *mcid < 0 {
+                        return Err(WellfriendError::MalformedPdf(
+                            "negative structure MCID".into(),
+                        ));
+                    }
+                    mcids.push(SemanticMcid {
+                        page,
+                        mcid: *mcid,
+                        stream: None,
+                        stream_owner: None,
+                    });
                 }
             }
             PdfObject::Array(items) => {
@@ -472,8 +600,9 @@ impl<'a> StructParser<'a> {
             PdfObject::Reference { number, generation } => {
                 let id = (*number, *generation);
                 if !self.visited.insert(id) {
-                    log::warn!("skipping cyclic structure kid {number} {generation}");
-                    return Ok(());
+                    return Err(WellfriendError::MalformedPdf(format!(
+                        "cyclic structure kid {number} {generation}"
+                    )));
                 }
                 let resolved = self.reader.get_and_resolve(*number, *generation)?;
                 self.parse_element_kids(&resolved, inherited_page, mcids, children, depth + 1)?;
@@ -484,19 +613,117 @@ impl<'a> StructParser<'a> {
                     || matches!(dict.get_name("Type"), Some("StructElem"))
                 {
                     children.push(self.parse_element(dict, inherited_page, depth + 1)?);
-                } else if let Some(mcid) = dict.get_integer("MCID") {
-                    let page = dict
-                        .get("Pg")
-                        .and_then(|obj| page_from_object(obj, &self.page_by_ref))
-                        .or(inherited_page);
+                } else if dict.get_name("Type") == Some("MCR") || dict.get("MCID").is_some() {
+                    let value = dict
+                        .get("MCID")
+                        .ok_or_else(|| WellfriendError::MalformedPdf("MCR has no MCID".into()))?;
+                    let mcid = self
+                        .reader
+                        .resolve(value.clone())?
+                        .as_integer()
+                        .ok_or_else(|| {
+                            WellfriendError::MalformedPdf("MCR MCID is not an integer".into())
+                        })?;
+                    let page = self.element_page(dict, inherited_page)?;
                     if let Some(page) = page {
-                        mcids.push(SemanticMcid { page, mcid });
+                        if mcid < 0 {
+                            return Err(WellfriendError::MalformedPdf(
+                                "negative structure MCID".into(),
+                            ));
+                        }
+                        let (stream, stream_owner) = self.mcr_stream(dict, page)?;
+                        mcids.push(SemanticMcid {
+                            page,
+                            mcid,
+                            stream,
+                            stream_owner,
+                        });
+                    } else {
+                        return Err(WellfriendError::MalformedPdf(
+                            "MCR has no page context".into(),
+                        ));
                     }
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn mcr_stream(
+        &mut self,
+        dict: &PdfDictionary,
+        page: usize,
+    ) -> Result<(Option<PageRef>, Option<PageRef>)> {
+        let Some(value) = dict.get("Stm").filter(|value| !value.is_null()) else {
+            if dict.get("StmOwn").is_some_and(|value| !value.is_null()) {
+                return Err(WellfriendError::MalformedPdf(
+                    "MCR StmOwn has no Stm".into(),
+                ));
+            }
+            return Ok((None, None));
+        };
+        let reference = value.as_reference().ok_or_else(|| {
+            WellfriendError::MalformedPdf("MCR Stm must be an indirect stream reference".into())
+        })?;
+        let object = self.reader.get_object(reference.0, reference.1)?;
+        if object.as_stream().is_none() {
+            return Err(WellfriendError::MalformedPdf(
+                "MCR Stm does not reference a stream".into(),
+            ));
+        }
+        if let Some(value) = dict.get("StmOwn").filter(|value| !value.is_null()) {
+            let owner = value.as_reference().ok_or_else(|| {
+                WellfriendError::MalformedPdf("MCR StmOwn must be indirect".into())
+            })?;
+            let page_ref =
+                self.page_refs.get(&page).copied().ok_or_else(|| {
+                    WellfriendError::MalformedPdf("MCR page is not reachable".into())
+                })?;
+            self.appearance_owners
+                .validate(self.reader, page_ref, owner, reference)?;
+            return Ok((Some(reference), Some(owner)));
+        }
+        // A page Contents array is one marked-content namespace. Explicitly
+        // naming one of its streams does not invent a second namespace.
+        if self
+            .page_streams
+            .get(&page)
+            .is_some_and(|streams| streams.contains(&reference))
+        {
+            return Ok((None, None));
+        }
+        // An omitted optional StmOwn is safe to infer only when this page's
+        // extracted content has exactly one owning namespace for the stream.
+        let owners = self.stream_owners.get(&(page, reference));
+        if owners.is_some_and(|owners| owners.len() > 1) {
+            return Err(WellfriendError::UnsupportedFeature(
+                "MCR without StmOwn has multiple appearance/content owners".into(),
+            ));
+        }
+        Ok((
+            Some(reference),
+            owners
+                .and_then(|owners| owners.iter().next().copied())
+                .flatten(),
+        ))
+    }
+
+    fn element_page(
+        &self,
+        dict: &PdfDictionary,
+        inherited: Option<usize>,
+    ) -> Result<Option<usize>> {
+        match dict.get("Pg") {
+            None | Some(PdfObject::Null) => Ok(inherited),
+            Some(value) => page_from_object(value, &self.page_by_ref)
+                .map(Some)
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf(
+                        "structure Pg does not identify a reachable page".into(),
+                    )
+                }),
+        }
     }
 }
 
@@ -540,11 +767,8 @@ fn parse_role_map(root: &PdfDictionary) -> HashMap<String, String> {
 
 fn collect_marked_text(engine: &ContentEngine, pages: &[usize]) -> Result<McidTextMap> {
     let mut out: McidTextMap = HashMap::new();
-    for &page in pages {
-        let ops = engine.get_page_content(page)?;
-        let resources = engine.get_page_resources(page)?;
-        let mut collector = TextCollector::new(resources, engine.document().reader());
-        for marked in collector.collect_marked(&ops) {
+    for page in pages.iter().copied().collect::<BTreeSet<_>>() {
+        for marked in engine.collect_page_marked_text_chunks_including_appearances(page)? {
             push_marked_chunk(page, marked, &mut out);
         }
     }
@@ -552,19 +776,28 @@ fn collect_marked_text(engine: &ContentEngine, pages: &[usize]) -> Result<McidTe
 }
 
 fn push_marked_chunk(page: usize, marked: MarkedTextChunk, out: &mut McidTextMap) {
-    if let Some(mcid) = marked.mcid {
-        out.entry((page, mcid)).or_default().push(marked.chunk);
+    if let Some(id) = marked.marked_content_id() {
+        out.entry((page, id)).or_default().push(marked.chunk);
     }
 }
 
 fn text_for_mcids(mcids: &[SemanticMcid], text_map: &McidTextMap) -> String {
     let mut chunks = Vec::new();
+    let mut parts = Vec::new();
+    let mut current_page = None;
     for id in mcids {
-        if let Some(found) = text_map.get(&(id.page, id.mcid)) {
+        if let Some(found) = text_map.get(&id.key()) {
+            if current_page.is_some_and(|page| page != id.page) && !chunks.is_empty() {
+                parts.push(chunks_to_text(std::mem::take(&mut chunks)));
+            }
+            current_page = Some(id.page);
             chunks.extend(found.iter().cloned());
         }
     }
-    chunks_to_text(chunks)
+    if !chunks.is_empty() {
+        parts.push(chunks_to_text(chunks));
+    }
+    parts.join("\n")
 }
 
 /// Union of the text-chunk boxes for an element's MCIDs, in user space (y-up).
@@ -577,10 +810,16 @@ fn bbox_for_mcids(mcids: &[SemanticMcid], text_map: &McidTextMap) -> Option<[f64
     let mut x1 = f64::NEG_INFINITY;
     let mut y1 = f64::NEG_INFINITY;
     let mut any = false;
+    let mut page = None;
     for id in mcids {
-        let Some(found) = text_map.get(&(id.page, id.mcid)) else {
+        let Some(found) = text_map.get(&id.key()) else {
             continue;
         };
+        // Coordinates on different pages do not form one geometric region.
+        if page.is_some_and(|page| page != id.page) {
+            return None;
+        }
+        page = Some(id.page);
         for c in found {
             if c.text.trim().is_empty() {
                 continue;
@@ -627,6 +866,7 @@ fn prune_for_pages(
         .into_iter()
         .filter_map(|child| prune_for_pages(child, selected))
         .collect();
+    element.mcids.retain(|id| selected.contains(&id.page));
 
     let direct_selected = element
         .page

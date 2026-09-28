@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -15,6 +16,7 @@ public final class WellfriendPdfSmokeTest {
         if (args.length == 1 && "--contract-builder-only".equals(args[0])) {
             return;
         }
+        authenticatedPaintPartitionReceiptRoundTrips();
         Path fixture = fixturePath();
         Path semantic_closeoutFixture = locateFixture("multi_stream.pdf");
         try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(fixture)) {
@@ -257,7 +259,7 @@ public final class WellfriendPdfSmokeTest {
                 String rangeModel = semantic_closeout.advanced_editing_closeoutTextRangeAnalyzeJson(1);
                 reports.put("advanced_editing_closeout_range_model", rangeModel);
                 assertTrue(rangeModel.contains("advanced_editing_closeout_multi_run_range_model"), "AdvancedEditingB range model");
-                WellfriendPdf.BinaryResult rangeEdited = semantic_closeout.editTextRange("""
+                String rangeRequest = """
                         {
                           "page": 1,
                           "logical_start": 0,
@@ -275,7 +277,15 @@ public final class WellfriendPdfSmokeTest {
                             "deterministic": true
                           }
                         }
-                        """);
+                        """;
+                String partitionProposal =
+                    semantic_closeout.proposeTextRangePaintPartitions(rangeRequest);
+                assertTrue(
+                    partitionProposal.contains(
+                        "advanced_editing_closeout_paint_partition_proposal"),
+                    "AdvancedEditingB paint partition proposal");
+                WellfriendPdf.BinaryResult rangeEdited =
+                    semantic_closeout.editTextRange(rangeRequest);
                 assertPrefix(rangeEdited.bytes(), "%PDF-", "AdvancedEditingB text range edit");
                 assertTrue(
                     rangeEdited.reportJson().contains("advanced_editing_closeout_multi_run_text_edit_report"),
@@ -691,6 +701,57 @@ public final class WellfriendPdfSmokeTest {
 
     private static void assertReport(String json, String label) {
         assertTrue(json.contains("\"schema_version\""), label);
+    }
+
+    private static void authenticatedPaintPartitionReceiptRoundTrips() {
+        String receipt = """
+            {
+              "schema_version":"advanced_editing.paint-partition-publication-receipt.v1",
+              "proposal_id":"proposal",
+              "input_sha256":"1111111111111111111111111111111111111111111111111111111111111111",
+              "request_sha256":"2222222222222222222222222222222222222222222222222222222222222222",
+              "approval_sha256":"3333333333333333333333333333333333333333333333333333333333333333",
+              "font_sha256":null,
+              "candidate_output_sha256":"5555555555555555555555555555555555555555555555555555555555555555",
+              "preview_evidence_sha256":"6666666666666666666666666666666666666666666666666666666666666666",
+              "receipt_id":"499f206e034cf8caa3258f72bbca420f1fa5e032095128cbfc26c377822eb84c"
+            }
+            """;
+        byte[] key = new byte[32];
+        Arrays.fill(key, (byte) 0x5a);
+        String authenticated = WellfriendPdf.authenticateTextRangePaintPartitionReceipt(
+            receipt, "test-key", "java-smoke", 1_000, 1_900, key);
+        assertTrue(authenticated.contains("authenticated-publication-receipt.v1"),
+            "paint-partition receipt authentication");
+        String nested = jsonReportObject(authenticated);
+        String verified = WellfriendPdf.verifyAuthenticatedTextRangePaintPartitionReceipt(
+            nested, "test-key", "java-smoke", 1_500, 0, key);
+        assertTrue(verified.contains("\"proposal_id\":\"proposal\""),
+            "paint-partition authenticated receipt verification");
+    }
+
+    private static String jsonReportObject(String envelope) {
+        String marker = "\"report\":";
+        int markerAt = envelope.indexOf(marker);
+        if (markerAt < 0) throw new IllegalArgumentException("report envelope is missing report");
+        int start = envelope.indexOf('{', markerAt + marker.length());
+        if (start < 0) throw new IllegalArgumentException("report is not a JSON object");
+        boolean inString = false;
+        boolean escaped = false;
+        int depth = 0;
+        for (int index = start; index < envelope.length(); index++) {
+            char value = envelope.charAt(index);
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (value == '\\') escaped = true;
+                else if (value == '"') inString = false;
+                continue;
+            }
+            if (value == '"') inString = true;
+            else if (value == '{') depth++;
+            else if (value == '}' && --depth == 0) return envelope.substring(start, index + 1);
+        }
+        throw new IllegalArgumentException("report JSON object is unterminated");
     }
 
     private static void renderContractBuilderRoundTripsSchemaJson() {

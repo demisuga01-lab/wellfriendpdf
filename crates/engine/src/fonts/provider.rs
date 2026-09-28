@@ -10,6 +10,46 @@ use std::collections::BTreeMap;
 
 use crate::render::font_rasterizer::get_fallback_font;
 
+/// Recover a bounded embedded program from a page font dictionary. Raw Type 1
+/// or CFF programs are returned too; consumers must verify their own supported
+/// outline format and embedding rights before choosing them for generated text.
+pub(crate) fn embedded_program(
+    reader: &crate::PdfReader,
+    dictionary: &crate::PdfDictionary,
+) -> Option<Vec<u8>> {
+    use crate::PdfObject;
+    let mut font = PdfObject::Dictionary(dictionary.clone());
+    if dictionary.get("Subtype").and_then(PdfObject::as_name) == Some("Type0") {
+        font = reader
+            .resolve(
+                dictionary
+                    .get("DescendantFonts")?
+                    .as_array()?
+                    .first()?
+                    .clone(),
+            )
+            .ok()?;
+    }
+    let descriptor = reader
+        .resolve(font.as_dict()?.get("FontDescriptor")?.clone())
+        .ok()?;
+    let descriptor = descriptor.as_dict()?;
+    let program = ["FontFile2", "FontFile3", "FontFile"]
+        .iter()
+        .find_map(|key| descriptor.get(key).cloned())?;
+    let program = reader.resolve(program).ok()?;
+    let decoded = crate::filters::decode_stream_lossless_with_limits(
+        &program,
+        reader,
+        &crate::filters::DecodeLimits {
+            max_decoded_bytes_per_stream: 128 * 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .ok()?;
+    (decoded.status == crate::filters::StreamDecodeStatus::Complete).then_some(decoded.data)
+}
+
 /// A request for a substitute or generated-output font face.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FontMatchRequest {
@@ -147,6 +187,44 @@ impl RegisteredFontProvider {
         );
         self.refresh_fingerprint();
         true
+    }
+
+    /// Checked collection-face registration. Existing unchecked byte registration
+    /// remains available for rendering-only providers; this route additionally
+    /// enforces the editable embedding contract and returns normalization evidence.
+    pub fn register_font_face_bytes(
+        &mut self,
+        name: impl Into<String>,
+        source: &[u8],
+        selection: &super::font_asset::FontFaceSelection,
+    ) -> crate::Result<super::font_asset::FontPreparationReport> {
+        let (asset, report) = crate::editing_transactions::ApprovedFontAsset::from_font_face(
+            name, source, selection,
+        )?;
+        if !self.register_font_bytes(asset.lookup_name, asset.bytes) {
+            return Err(crate::WellfriendError::invalid_input(
+                "font provider name is empty after normalization",
+            ));
+        }
+        Ok(report)
+    }
+
+    /// Register the exact complete static instance, only after preparation succeeds.
+    pub fn register_font_instance_bytes(
+        &mut self,
+        name: impl Into<String>,
+        source: &[u8],
+        request: &super::font_instance::FontInstanceRequest,
+    ) -> crate::Result<super::font_instance::FontInstanceReport> {
+        let (asset, report) = crate::editing_transactions::ApprovedFontAsset::from_font_instance(
+            name, source, request,
+        )?;
+        if !self.register_font_bytes(asset.lookup_name, asset.bytes) {
+            return Err(crate::WellfriendError::invalid_input(
+                "font provider name is empty after normalization",
+            ));
+        }
+        Ok(report)
     }
 
     /// Stable source identity for cache keys and public substitution reports.

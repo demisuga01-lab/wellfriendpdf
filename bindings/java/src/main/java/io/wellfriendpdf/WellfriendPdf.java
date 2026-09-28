@@ -9,6 +9,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
@@ -105,6 +106,94 @@ public final class WellfriendPdf {
 
     public static String timestampTokenValidationJson(byte[] tokenDer, byte[] signatureValue) {
         return timestampTokenValidationJson(tokenDer, signatureValue, "{}");
+    }
+
+    /**
+     * Authenticates a canonical paint-partition publication receipt with a
+     * caller-held HMAC-SHA-256 key. Never expose a server-held key to an
+     * untrusted client; remote deployments should use the authenticated HTTP
+     * preview/apply routes instead.
+     */
+    public static String authenticateTextRangePaintPartitionReceipt(
+        String publicationReceiptJson,
+        String keyId,
+        String audience,
+        long issuedAtUnix,
+        long expiresAtUnix,
+        byte[] hmacKey
+    ) {
+        Objects.requireNonNull(publicationReceiptJson, "publicationReceiptJson");
+        Objects.requireNonNull(keyId, "keyId");
+        Objects.requireNonNull(audience, "audience");
+        Objects.requireNonNull(hmacKey, "hmacKey");
+        if (issuedAtUnix < 0 || expiresAtUnix <= issuedAtUnix) {
+            throw new IllegalArgumentException("receipt expiry must be later than issuance");
+        }
+        if (hmacKey.length < 32 || hmacKey.length > 256)
+            throw new IllegalArgumentException("HMAC key must contain 32..=256 bytes");
+        return Native.authenticateTextRangePaintPartitionReceipt(
+            publicationReceiptJson, keyId, audience, issuedAtUnix, expiresAtUnix, hmacKey);
+    }
+
+    public static AuthenticatedPaintPartitionPublicationReceipt authenticateTextRangePaintPartitionReceipt(
+        PaintPartitionPublicationReceipt publicationReceipt,
+        String keyId,
+        String audience,
+        long issuedAtUnix,
+        long expiresAtUnix,
+        byte[] hmacKey
+    ) {
+        Objects.requireNonNull(publicationReceipt, "publicationReceipt");
+        String envelope = authenticateTextRangePaintPartitionReceipt(
+            publicationReceipt.toJson(), keyId, audience, issuedAtUnix, expiresAtUnix, hmacKey);
+        return new AuthenticatedPaintPartitionPublicationReceipt(reportFromEnvelope(
+            envelope,
+            "advanced_editing_closeout_authenticated_paint_partition_publication_receipt"));
+    }
+
+    /** Verifies a host-authenticated receipt and returns the nested ordinary
+     * content-bound publication receipt envelope. */
+    public static String verifyAuthenticatedTextRangePaintPartitionReceipt(
+        String authenticatedReceiptJson,
+        String expectedKeyId,
+        String expectedAudience,
+        long nowUnix,
+        long allowedFutureSkewSecs,
+        byte[] hmacKey
+    ) {
+        Objects.requireNonNull(authenticatedReceiptJson, "authenticatedReceiptJson");
+        Objects.requireNonNull(expectedKeyId, "expectedKeyId");
+        Objects.requireNonNull(expectedAudience, "expectedAudience");
+        Objects.requireNonNull(hmacKey, "hmacKey");
+        if (nowUnix < 0 || allowedFutureSkewSecs < 0) {
+            throw new IllegalArgumentException("verification timestamps must be non-negative");
+        }
+        if (hmacKey.length < 32 || hmacKey.length > 256)
+            throw new IllegalArgumentException("HMAC key must contain 32..=256 bytes");
+        return Native.verifyAuthenticatedTextRangePaintPartitionReceipt(
+            authenticatedReceiptJson,
+            expectedKeyId,
+            expectedAudience,
+            nowUnix,
+            allowedFutureSkewSecs,
+            hmacKey);
+    }
+
+    public static PaintPartitionPublicationReceipt verifyAuthenticatedTextRangePaintPartitionReceipt(
+        AuthenticatedPaintPartitionPublicationReceipt authenticatedReceipt,
+        String expectedKeyId,
+        String expectedAudience,
+        long nowUnix,
+        long allowedFutureSkewSecs,
+        byte[] hmacKey
+    ) {
+        Objects.requireNonNull(authenticatedReceipt, "authenticatedReceipt");
+        String envelope = verifyAuthenticatedTextRangePaintPartitionReceipt(
+            authenticatedReceipt.toJson(), expectedKeyId, expectedAudience,
+            nowUnix, allowedFutureSkewSecs, hmacKey);
+        return new PaintPartitionPublicationReceipt(reportFromEnvelope(
+            envelope,
+            "advanced_editing_closeout_verified_paint_partition_publication_receipt"));
     }
 
     public static String engineVersion() {
@@ -378,6 +467,104 @@ public final class WellfriendPdf {
         }
     }
 
+    /** Retained PDF-native editor. Session calls/close are confined to the creating
+     * thread; a supplied RenderCancellation can be signalled from another thread.
+     * This class never writes files. Checkpoint requires the exact preview receipt. */
+    public static final class StoryEditSession implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
+        private MemorySegment handle;
+
+        public StoryEditSession(byte[] bytes) { this(bytes, (RenderCancellation) null); }
+        public StoryEditSession(byte[] bytes, RenderCancellation cancellation) {
+            Objects.requireNonNull(bytes, "bytes");
+            if (bytes.length == 0 || bytes.length > 256 * 1024 * 1024)
+                throw new IllegalArgumentException("Story input must be 1..=256 MiB");
+            handle = StoryNative.open(bytes, cancellation == null ? MemorySegment.NULL : cancellation.nativeHandle());
+        }
+        public StoryEditSession(byte[] bytes, String password) { this(bytes, password, null); }
+        public StoryEditSession(
+                byte[] bytes,
+                String password,
+                RenderCancellation cancellation) {
+            Objects.requireNonNull(bytes, "bytes");
+            Objects.requireNonNull(password, "password");
+            if (bytes.length == 0 || bytes.length > 256 * 1024 * 1024)
+                throw new IllegalArgumentException("Story input must be 1..=256 MiB");
+            byte[] passwordBytes = StoryNative.utf8(password);
+            try {
+                handle = StoryNative.openWithPassword(
+                    bytes, passwordBytes,
+                    cancellation == null ? MemorySegment.NULL : cancellation.nativeHandle());
+            } finally {
+                java.util.Arrays.fill(passwordBytes, (byte) 0);
+            }
+        }
+        /** Opens encrypted input with exact permissions/owner password bytes.
+         * User/open passwords are rejected because session bytes are an
+         * unencrypted working revision. The caller retains ownership of the
+         * array; native code copies it into zeroized temporary native memory and
+         * the retained session stores no credential. */
+        public static StoryEditSession openWithPasswordBytes(byte[] bytes, byte[] password) {
+            return openWithPasswordBytes(bytes, password, null);
+        }
+        public static StoryEditSession openWithPasswordBytes(
+                byte[] bytes,
+                byte[] password,
+                RenderCancellation cancellation) {
+            Objects.requireNonNull(bytes, "bytes");
+            Objects.requireNonNull(password, "password");
+            if (bytes.length == 0 || bytes.length > 256 * 1024 * 1024)
+                throw new IllegalArgumentException("Story input must be 1..=256 MiB");
+            MemorySegment handle = StoryNative.openWithPassword(
+                bytes, password,
+                cancellation == null ? MemorySegment.NULL : cancellation.nativeHandle());
+            return new StoryEditSession(handle);
+        }
+        private StoryEditSession(MemorySegment handle) { this.handle = handle; }
+        private MemorySegment nativeHandle() {
+            requireOwnerThread(ownerThread, "StoryEditSession");
+            if (Native.isNull(handle)) throw new IllegalStateException("StoryEditSession is closed");
+            return handle;
+        }
+        public String commandJson(String command) { return commandJson(command, null); }
+        public String commandJson(String command, RenderCancellation cancellation) {
+            return new String(StoryNative.command(nativeHandle(), StoryNative.utf8(command),
+                cancellation == null ? MemorySegment.NULL : cancellation.nativeHandle()), StandardCharsets.UTF_8);
+        }
+        public String statusJson() { return commandJson("{\"op\":\"status\"}"); }
+        public String savedStoriesJson() { return commandJson("{\"op\":\"saved_stories\"}"); }
+        public String pagesJson() { return commandJson("{\"op\":\"pages\"}"); }
+        public String previewJson(String requestJson, RenderCancellation cancellation) {
+            StoryNative.checkJsonLength(requestJson);
+            return commandJson("{\"op\":\"preview\",\"request\":" + requestJson + "}", cancellation);
+        }
+        public String previewJson(String requestJson) { return previewJson(requestJson, null); }
+        public String checkpointJson(String requestJson, String receiptJson, RenderCancellation cancellation) {
+            StoryNative.checkJsonLength(requestJson);
+            StoryNative.checkJsonLength(receiptJson);
+            return commandJson("{\"op\":\"checkpoint\",\"request\":" + requestJson + ",\"receipt\":" + receiptJson + "}", cancellation);
+        }
+        public String checkpointJson(String requestJson, String receiptJson) { return checkpointJson(requestJson, receiptJson, null); }
+        public boolean undo() { return undo(null); }
+        public boolean undo(RenderCancellation cancellation) { return Boolean.parseBoolean(commandJson("{\"op\":\"undo\"}", cancellation)); }
+        public boolean redo() { return redo(null); }
+        public boolean redo(RenderCancellation cancellation) { return Boolean.parseBoolean(commandJson("{\"op\":\"redo\"}", cancellation)); }
+        public byte[] bytes() { return StoryNative.bytes(nativeHandle()); }
+        public byte[] renderPagePng(long page, int dpi, RenderCancellation cancellation) {
+            if (page < 1 || dpi < 1 || dpi > 300) throw new IllegalArgumentException("Invalid page/DPI");
+            return StoryNative.render(nativeHandle(), page, dpi,
+                cancellation == null ? MemorySegment.NULL : cancellation.nativeHandle());
+        }
+        public byte[] renderPagePng(long page, int dpi) { return renderPagePng(page, dpi, null); }
+        @Override public void close() {
+            requireOwnerThread(ownerThread, "StoryEditSession");
+            if (!Native.isNull(handle)) {
+                StoryNative.free(handle);
+                handle = MemorySegment.NULL;
+            }
+        }
+    }
+
     /** Caller-owned non-progressive render cache for contract rendering. */
     public static final class RenderCache implements AutoCloseable {
         private final Thread ownerThread = Thread.currentThread();
@@ -411,6 +598,417 @@ public final class WellfriendPdf {
             handle = MemorySegment.NULL;
             closed = true;
         }
+    }
+
+    public enum PaintPartitionTextMode {
+        SafePatch("safe_patch"),
+        ParagraphReflowHorizontal("paragraph_reflow_horizontal"),
+        ParagraphReflowRtl("paragraph_reflow_rtl"),
+        ParagraphReflowVertical("paragraph_reflow_vertical"),
+        OverlayFallback("overlay_fallback"),
+        Unsupported("unsupported");
+
+        private final String wire;
+        PaintPartitionTextMode(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public enum PaintPartitionStylePolicy {
+        InheritLeading("inherit_leading"),
+        InheritTrailing("inherit_trailing"),
+        PreservePerSegment("preserve_per_segment"),
+        ExplicitSupplied("explicit_supplied");
+
+        private final String wire;
+        PaintPartitionStylePolicy(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public enum PaintPartitionOverflowPolicy {
+        Error("error"), Clip("clip"), ExpandRegion("expand_region");
+        private final String wire;
+        PaintPartitionOverflowPolicy(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public enum PaintPartitionAlignment {
+        Left("left"), Right("right"), Center("center"), Start("start"), End("end"), Justify("justify");
+        private final String wire;
+        PaintPartitionAlignment(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public enum PaintPartitionOrderPolicy {
+        RequireSingleSourceTextObject("require_single_source_text_object"),
+        AnchorAfterFirstSourceTextObject("anchor_after_first_source_text_object"),
+        AnchorAfterLastSourceTextObject("anchor_after_last_source_text_object");
+        private final String wire;
+        PaintPartitionOrderPolicy(String wire) { this.wire = wire; }
+        String wire() { return wire; }
+    }
+
+    public record PaintPartitionExplicitLine(
+        String logicalText,
+        String visualText,
+        Map<String, Object> bidi,
+        boolean insertedVisualHyphen
+    ) {
+        public PaintPartitionExplicitLine {
+            Objects.requireNonNull(logicalText, "logicalText");
+            Objects.requireNonNull(visualText, "visualText");
+        }
+
+        Map<String, Object> toMap() {
+            LinkedHashMap<String, Object> value = new LinkedHashMap<>();
+            value.put("logical_text", logicalText);
+            value.put("visual_text", visualText);
+            if (bidi != null) value.put("bidi", bidi);
+            value.put("inserted_visual_hyphen", insertedVisualHyphen);
+            return value;
+        }
+    }
+
+    public record PaintPartitionPlacement(
+        long sourceTextObject,
+        long[] replacementScalarRange,
+        double[] region,
+        List<PaintPartitionExplicitLine> finalLines
+    ) {
+        public PaintPartitionPlacement {
+            requireNonNegative(sourceTextObject, "sourceTextObject");
+            requireRange(replacementScalarRange, "replacementScalarRange");
+            requireRegion(region, "region");
+            replacementScalarRange = replacementScalarRange.clone();
+            region = region.clone();
+            finalLines = finalLines == null ? null : List.copyOf(finalLines);
+        }
+
+        @Override public long[] replacementScalarRange() { return replacementScalarRange.clone(); }
+        @Override public double[] region() { return region.clone(); }
+
+        Map<String, Object> toMap() {
+            LinkedHashMap<String, Object> value = new LinkedHashMap<>();
+            value.put("source_text_object", sourceTextObject);
+            value.put("replacement_scalar_range", List.of(replacementScalarRange[0], replacementScalarRange[1]));
+            value.put("region", doubleList(region));
+            if (finalLines != null) value.put("final_lines", finalLines.stream().map(PaintPartitionExplicitLine::toMap).toList());
+            return value;
+        }
+    }
+
+    public record PaintPartitionTextOptions(
+        double[] region,
+        double fontSize,
+        double lineSpacing,
+        long maxLinesOrColumns,
+        PaintPartitionOverflowPolicy overflowPolicy,
+        boolean signaturePolicyOverride,
+        boolean deterministic,
+        PaintPartitionAlignment alignment,
+        boolean justifyLastLine,
+        double maxWordSpacing,
+        double maxCharacterSpacing,
+        Long targetStreamObject,
+        Integer targetStreamGeneration,
+        long[] targetDecodedByteRange,
+        PaintPartitionOrderPolicy paintOrderPolicy,
+        List<PaintPartitionPlacement> paintPartitions
+    ) {
+        public PaintPartitionTextOptions {
+            requireRegion(region, "region");
+            if (!Double.isFinite(fontSize) || fontSize <= 0) throw new IllegalArgumentException("fontSize must be finite and positive");
+            if (!Double.isFinite(lineSpacing) || lineSpacing <= 0) throw new IllegalArgumentException("lineSpacing must be finite and positive");
+            if (maxLinesOrColumns <= 0) throw new IllegalArgumentException("maxLinesOrColumns must be positive");
+            Objects.requireNonNull(overflowPolicy, "overflowPolicy");
+            Objects.requireNonNull(alignment, "alignment");
+            Objects.requireNonNull(paintOrderPolicy, "paintOrderPolicy");
+            if (!Double.isFinite(maxWordSpacing) || maxWordSpacing < 0) throw new IllegalArgumentException("maxWordSpacing must be finite and non-negative");
+            if (!Double.isFinite(maxCharacterSpacing) || maxCharacterSpacing < 0) throw new IllegalArgumentException("maxCharacterSpacing must be finite and non-negative");
+            if (targetStreamObject != null) requireNonNegative(targetStreamObject, "targetStreamObject");
+            if (targetStreamGeneration != null && (targetStreamGeneration < 0 || targetStreamGeneration > 65535)) throw new IllegalArgumentException("targetStreamGeneration must fit u16");
+            if (targetDecodedByteRange != null) requireRange(targetDecodedByteRange, "targetDecodedByteRange");
+            region = region.clone();
+            targetDecodedByteRange = targetDecodedByteRange == null ? null : targetDecodedByteRange.clone();
+            paintPartitions = paintPartitions == null ? List.of() : List.copyOf(paintPartitions);
+        }
+
+        @Override public double[] region() { return region.clone(); }
+        @Override public long[] targetDecodedByteRange() {
+            return targetDecodedByteRange == null ? null : targetDecodedByteRange.clone();
+        }
+
+        public static PaintPartitionTextOptions defaults() {
+            return new PaintPartitionTextOptions(
+                new double[] {36, 36, 576, 756}, 12, 1.2, 4096,
+                PaintPartitionOverflowPolicy.Error, false, true,
+                PaintPartitionAlignment.Left, false, 0.5, 0.05,
+                null, null, null,
+                PaintPartitionOrderPolicy.RequireSingleSourceTextObject, List.of());
+        }
+
+        Map<String, Object> toMap() {
+            LinkedHashMap<String, Object> value = new LinkedHashMap<>();
+            value.put("region", doubleList(region));
+            value.put("font_size", fontSize);
+            value.put("line_spacing", lineSpacing);
+            value.put("max_lines_or_columns", maxLinesOrColumns);
+            value.put("overflow_policy", overflowPolicy.wire());
+            value.put("signature_policy_override", signaturePolicyOverride);
+            value.put("deterministic", deterministic);
+            value.put("alignment", alignment.wire());
+            value.put("justify_last_line", justifyLastLine);
+            value.put("max_word_spacing", maxWordSpacing);
+            value.put("max_character_spacing", maxCharacterSpacing);
+            if (targetStreamObject != null) value.put("target_stream_object", targetStreamObject);
+            if (targetStreamGeneration != null) value.put("target_stream_generation", targetStreamGeneration);
+            if (targetDecodedByteRange != null) value.put("target_decoded_byte_range", List.of(targetDecodedByteRange[0], targetDecodedByteRange[1]));
+            value.put("paint_order_policy", paintOrderPolicy.wire());
+            value.put("paint_partitions", paintPartitions.stream().map(PaintPartitionPlacement::toMap).toList());
+            return value;
+        }
+    }
+
+    public record PaintPartitionTextRangeRequest(
+        long page,
+        long logicalStart,
+        long logicalEnd,
+        String replacementText,
+        PaintPartitionTextMode mode,
+        PaintPartitionStylePolicy stylePolicy,
+        PaintPartitionTextOptions options,
+        List<PaintPartitionExplicitLine> finalLines
+    ) {
+        public PaintPartitionTextRangeRequest {
+            if (page < 1) throw new IllegalArgumentException("page must be one-based");
+            if (logicalStart < 0 || logicalEnd < logicalStart) throw new IllegalArgumentException("logical range is invalid");
+            Objects.requireNonNull(replacementText, "replacementText");
+            Objects.requireNonNull(mode, "mode");
+            stylePolicy = stylePolicy == null ? PaintPartitionStylePolicy.InheritLeading : stylePolicy;
+            finalLines = finalLines == null ? null : List.copyOf(finalLines);
+        }
+
+        public String toJson() {
+            LinkedHashMap<String, Object> value = new LinkedHashMap<>();
+            value.put("page", page);
+            value.put("logical_start", logicalStart);
+            value.put("logical_end", logicalEnd);
+            value.put("replacement_text", replacementText);
+            value.put("mode", mode.wire());
+            value.put("style_policy", stylePolicy.wire());
+            if (options != null) value.put("options", options.toMap());
+            if (finalLines != null) value.put("final_lines", finalLines.stream().map(PaintPartitionExplicitLine::toMap).toList());
+            return Json.write(value);
+        }
+    }
+
+    public record PaintPartitionApprovalEntry(
+        long sourceTextObject,
+        double[] region,
+        List<PaintPartitionExplicitLine> finalLines
+    ) {
+        public PaintPartitionApprovalEntry {
+            requireNonNegative(sourceTextObject, "sourceTextObject");
+            requireRegion(region, "region");
+            region = region.clone();
+            finalLines = finalLines == null ? null : List.copyOf(finalLines);
+        }
+
+        @Override public double[] region() { return region.clone(); }
+
+        Map<String, Object> toMap() {
+            LinkedHashMap<String, Object> value = new LinkedHashMap<>();
+            value.put("source_text_object", sourceTextObject);
+            value.put("region", doubleList(region));
+            if (finalLines != null) value.put("final_lines", finalLines.stream().map(PaintPartitionExplicitLine::toMap).toList());
+            return value;
+        }
+    }
+
+    public record PaintPartitionApproval(
+        String proposalId,
+        String fontSha256,
+        List<PaintPartitionApprovalEntry> partitions
+    ) {
+        public PaintPartitionApproval {
+            if (proposalId == null || proposalId.isBlank()) throw new IllegalArgumentException("proposalId is required");
+            if (fontSha256 != null) requireDigest(fontSha256, "fontSha256");
+            partitions = List.copyOf(Objects.requireNonNull(partitions, "partitions"));
+            if (partitions.isEmpty()) throw new IllegalArgumentException("at least one approved partition is required");
+        }
+
+        public String toJson() {
+            LinkedHashMap<String, Object> value = new LinkedHashMap<>();
+            value.put("proposal_id", proposalId);
+            if (fontSha256 != null) value.put("font_sha256", fontSha256);
+            value.put("partitions", partitions.stream().map(PaintPartitionApprovalEntry::toMap).toList());
+            return Json.write(value);
+        }
+    }
+
+    public static final class PaintPartitionProposal {
+        private final LinkedHashMap<String, Object> report;
+        private PaintPartitionProposal(LinkedHashMap<String, Object> report) {
+            this.report = report;
+            if (!"advanced_editing.paint-partition-proposal.v1".equals(requireString(report, "schema_version")))
+                throw new IllegalArgumentException("unsupported paint-partition proposal schema");
+            requireDigest(requireString(report, "input_sha256"), "input_sha256");
+            requireDigest(requireString(report, "request_sha256"), "request_sha256");
+            requireDigest(requireString(report, "proposal_id"), "proposal_id");
+            requireDigest(requireString(report, "replacement_sha256"), "replacement_sha256");
+            if (requireLong(report, "page") < 1) throw new IllegalArgumentException("proposal page must be one-based");
+            requireLongPair(requireList(report, "logical_range"), "logical_range");
+            List<?> candidates = requireList(report, "candidates");
+            if (candidates.isEmpty()) throw new IllegalArgumentException("proposal candidates must not be empty");
+            for (Object candidate : candidates) {
+                LinkedHashMap<String, Object> fields = requireObject(candidate, "proposal candidate");
+                requireLongPair(requireList(fields, "replacement_scalar_range"), "replacement_scalar_range");
+            }
+        }
+        public static PaintPartitionProposal fromEnvelopeJson(String json) {
+            return new PaintPartitionProposal(reportFromEnvelope(
+                json, "advanced_editing_closeout_paint_partition_proposal"));
+        }
+        public String proposalId() { return requireString(report, "proposal_id"); }
+        public String toJson() { return Json.write(report); }
+    }
+
+    public static final class PaintPartitionPublicationReceipt {
+        private final LinkedHashMap<String, Object> value;
+        private PaintPartitionPublicationReceipt(LinkedHashMap<String, Object> value) {
+            this.value = value;
+            if (!"advanced_editing.paint-partition-publication-receipt.v1".equals(requireString(value, "schema_version")))
+                throw new IllegalArgumentException("unsupported publication receipt schema");
+            requireString(value, "proposal_id");
+            for (String field : List.of("input_sha256", "request_sha256", "approval_sha256", "candidate_output_sha256", "preview_evidence_sha256", "receipt_id"))
+                requireDigest(requireString(value, field), field);
+            Object font = value.get("font_sha256");
+            if (font != null) {
+                if (!(font instanceof String digest)) throw new IllegalArgumentException("font_sha256 must be a string or null");
+                requireDigest(digest, "font_sha256");
+            }
+        }
+        public static PaintPartitionPublicationReceipt fromJson(String json) {
+            return new PaintPartitionPublicationReceipt(requireObject(Json.parse(json), "publication receipt"));
+        }
+        public String proposalId() { return requireString(value, "proposal_id"); }
+        public String toJson() { return Json.write(value); }
+    }
+
+    public static final class AuthenticatedPaintPartitionPublicationReceipt {
+        private final LinkedHashMap<String, Object> value;
+        private AuthenticatedPaintPartitionPublicationReceipt(LinkedHashMap<String, Object> value) {
+            this.value = value;
+            if (!"advanced_editing.paint-partition-authenticated-publication-receipt.v1".equals(requireString(value, "schema_version")))
+                throw new IllegalArgumentException("unsupported authenticated receipt schema");
+            requireString(value, "key_id");
+            requireString(value, "audience");
+            long issued = requireLong(value, "issued_at_unix");
+            long expires = requireLong(value, "expires_at_unix");
+            if (issued < 0 || expires <= issued) throw new IllegalArgumentException("authenticated receipt timestamps are invalid");
+            requireDigest(requireString(value, "hmac_sha256"), "hmac_sha256");
+            new PaintPartitionPublicationReceipt(requireObject(value.get("publication_receipt"), "publication_receipt"));
+        }
+        public static AuthenticatedPaintPartitionPublicationReceipt fromJson(String json) {
+            return new AuthenticatedPaintPartitionPublicationReceipt(requireObject(Json.parse(json), "authenticated receipt"));
+        }
+        public String toJson() { return Json.write(value); }
+    }
+
+    public static final class PaintPartitionPreview {
+        private final LinkedHashMap<String, Object> report;
+        private final PaintPartitionPublicationReceipt receipt;
+        private PaintPartitionPreview(LinkedHashMap<String, Object> report) {
+            this.report = report;
+            this.receipt = new PaintPartitionPublicationReceipt(
+                requireObject(report.get("publication_receipt"), "publication_receipt"));
+        }
+        public static PaintPartitionPreview fromEnvelopeJson(String json) {
+            return new PaintPartitionPreview(reportFromEnvelope(
+                json, "advanced_editing_closeout_paint_partition_preview"));
+        }
+        public PaintPartitionPublicationReceipt publicationReceipt() { return receipt; }
+        public String reportJson() { return Json.write(report); }
+    }
+
+    private static LinkedHashMap<String, Object> reportFromEnvelope(String json, String expectedKind) {
+        LinkedHashMap<String, Object> envelope = requireObject(Json.parse(Objects.requireNonNull(json, "json")), "envelope");
+        if (requireLong(envelope, "schema_version") != 1 || !expectedKind.equals(requireString(envelope, "kind")))
+            throw new IllegalArgumentException("unexpected SDK envelope schema or kind");
+        return requireObject(envelope.get("report"), "report");
+    }
+
+    private static LinkedHashMap<String, Object> requireObject(Object value, String name) {
+        if (!(value instanceof Map<?, ?> map)) throw new IllegalArgumentException(name + " must be an object");
+        LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (!(entry.getKey() instanceof String key)) throw new IllegalArgumentException(name + " has a non-string key");
+            copy.put(key, entry.getValue());
+        }
+        return copy;
+    }
+
+    private static String requireString(Map<?, ?> value, String name) {
+        Object field = value.get(name);
+        if (!(field instanceof String text) || text.isBlank()) throw new IllegalArgumentException(name + " must be a non-empty string");
+        return text;
+    }
+
+    private static List<?> requireList(Map<?, ?> value, String name) {
+        Object field = value.get(name);
+        if (!(field instanceof List<?> list)) throw new IllegalArgumentException(name + " must be an array");
+        return list;
+    }
+
+    private static long requireLong(Map<?, ?> value, String name) {
+        Object field = value.get(name);
+        if (!(field instanceof Number number)) throw new IllegalArgumentException(name + " must be numeric");
+        try {
+            if (number instanceof BigDecimal decimal) return decimal.longValueExact();
+            if (number instanceof BigInteger integer) return integer.longValueExact();
+            return number.longValue();
+        } catch (ArithmeticException ex) {
+            throw new IllegalArgumentException(name + " must be an in-range integer", ex);
+        }
+    }
+
+    private static void requireDigest(String value, String name) {
+        if (!value.matches("[0-9a-f]{64}")) throw new IllegalArgumentException(name + " must be a lowercase SHA-256 digest");
+    }
+
+    private static void requireLongPair(List<?> value, String name) {
+        if (value.size() != 2 || !(value.get(0) instanceof Number) || !(value.get(1) instanceof Number))
+            throw new IllegalArgumentException(name + " must be a two-value numeric range");
+        long start = requireLong(Map.of("value", value.get(0)), "value");
+        long end = requireLong(Map.of("value", value.get(1)), "value");
+        if (start < 0 || end < start) throw new IllegalArgumentException(name + " is not ordered");
+    }
+
+    private static long requireNonNegative(long value, String name) {
+        if (value < 0) throw new IllegalArgumentException(name + " must be non-negative");
+        return value;
+    }
+
+    private static void requireRange(long[] value, String name) {
+        if (value == null || value.length != 2 || value[0] < 0 || value[1] < value[0])
+            throw new IllegalArgumentException(name + " must be an ordered two-value range");
+    }
+
+    private static void requireRegion(double[] value, String name) {
+        if (value == null || value.length != 4 || Arrays.stream(value).anyMatch(coordinate -> !Double.isFinite(coordinate))
+            || value[2] <= value[0] || value[3] <= value[1])
+            throw new IllegalArgumentException(name + " must be a finite non-empty [x0,y0,x1,y1] region");
+    }
+
+    private static List<Double> doubleList(double[] values) {
+        return Arrays.stream(values).boxed().toList();
+    }
+
+    private static void requireSameProposal(
+        PaintPartitionProposal proposal,
+        PaintPartitionApproval approval
+    ) {
+        if (!proposal.proposalId().equals(approval.proposalId()))
+            throw new IllegalArgumentException("approval belongs to a different proposal");
     }
 
     public record BinaryResult(byte[] bytes, String reportJson) {
@@ -754,7 +1352,18 @@ public final class WellfriendPdf {
             if (!(value instanceof Number number)) {
                 throw new IllegalArgumentException("render contract transform values must be numbers");
             }
-            double decoded = Double.longBitsToDouble(number.longValue());
+            final long bits;
+            try {
+                bits = number instanceof BigDecimal decimal
+                    ? decimal.longValueExact()
+                    : number instanceof BigInteger integer
+                        ? integer.longValueExact()
+                        : number.longValue();
+            } catch (ArithmeticException ex) {
+                throw new IllegalArgumentException(
+                    "render contract transform values must be in-range integers", ex);
+            }
+            double decoded = Double.longBitsToDouble(bits);
             if (!Double.isFinite(decoded)) {
                 throw new IllegalArgumentException("render contract transform must contain only finite values");
             }
@@ -784,6 +1393,14 @@ public final class WellfriendPdf {
             Object value = object.get(name);
             if (!(value instanceof Number number)) {
                 throw new IllegalArgumentException("render contract " + name + " must be numeric");
+            }
+            if (number instanceof BigDecimal decimal) {
+                try {
+                    return decimal.longValueExact();
+                } catch (ArithmeticException ex) {
+                    throw new IllegalArgumentException(
+                        "render contract " + name + " must be an in-range integer", ex);
+                }
             }
             return number.longValue();
         }
@@ -831,7 +1448,9 @@ public final class WellfriendPdf {
                 return value;
             }
             if (value instanceof Number number) {
-                return number instanceof BigInteger ? number : number.longValue();
+                return number instanceof BigInteger || number instanceof BigDecimal
+                    ? number
+                    : number.longValue();
             }
             if (value instanceof Map<?, ?> map) {
                 return copyObject(map);
@@ -992,10 +1611,19 @@ public final class WellfriendPdf {
                 writeString(output, text);
             } else if (value instanceof Boolean bool) {
                 output.append(bool);
-            } else if (value instanceof BigInteger || value instanceof Long || value instanceof Integer) {
+            } else if (value instanceof BigInteger || value instanceof Long || value instanceof Integer
+                || value instanceof Short || value instanceof Byte) {
                 output.append(value);
-            } else if (value instanceof Number number) {
-                output.append(number.longValue());
+            } else if (value instanceof BigDecimal decimal) {
+                output.append(decimal.stripTrailingZeros().toPlainString());
+            } else if (value instanceof Double || value instanceof Float) {
+                double decimal = ((Number) value).doubleValue();
+                if (!Double.isFinite(decimal)) {
+                    throw new IllegalArgumentException("JSON numbers must be finite");
+                }
+                output.append(BigDecimal.valueOf(decimal).stripTrailingZeros().toPlainString());
+            } else if (value instanceof Number) {
+                throw new IllegalArgumentException("unsupported JSON number type");
             } else if (value instanceof Map<?, ?> map) {
                 output.append('{');
                 boolean first = true;
@@ -1157,11 +1785,25 @@ public final class WellfriendPdf {
                         index++;
                     }
                 }
-                if (!isEof() && (input.charAt(index) == '.' || input.charAt(index) == 'e' || input.charAt(index) == 'E')) {
-                    throw new IllegalArgumentException("render contract JSON numbers must be integers");
+                boolean decimal = false;
+                if (!isEof() && input.charAt(index) == '.') {
+                    decimal = true;
+                    index++;
+                    int fractionStart = index;
+                    while (!isEof() && Character.isDigit(input.charAt(index))) index++;
+                    if (fractionStart == index) throw new IllegalArgumentException("invalid JSON fraction");
+                }
+                if (!isEof() && (input.charAt(index) == 'e' || input.charAt(index) == 'E')) {
+                    decimal = true;
+                    index++;
+                    if (!isEof() && (input.charAt(index) == '+' || input.charAt(index) == '-')) index++;
+                    int exponentStart = index;
+                    while (!isEof() && Character.isDigit(input.charAt(index))) index++;
+                    if (exponentStart == index) throw new IllegalArgumentException("invalid JSON exponent");
                 }
                 String text = input.substring(start, index);
                 try {
+                    if (decimal) return new BigDecimal(text);
                     BigInteger integer = new BigInteger(text);
                     if (integer.bitLength() < 63) {
                         return integer.longValue();
@@ -1169,7 +1811,7 @@ public final class WellfriendPdf {
                     if (integer.signum() >= 0 && integer.bitLength() <= 64) {
                         return integer;
                     }
-                    throw new IllegalArgumentException("render contract JSON integer is out of range");
+                    throw new IllegalArgumentException("JSON integer is out of range");
                 } catch (NumberFormatException ex) {
                     throw new IllegalArgumentException("invalid JSON number", ex);
                 }
@@ -2549,6 +3191,40 @@ public final class WellfriendPdf {
                 "universal_editing_plan_v2");
         }
 
+        /** Preview a revision-bound transfer of one saved native Figure between saved stories. */
+        public String storyFigureTransferPreviewJson(String requestJson) {
+            ensureOpen();
+            Objects.requireNonNull(requestJson, "requestJson");
+            return Native.documentStringReport(
+                handle, Native.STORY_FIGURE_TRANSFER_PREVIEW, requestJson,
+                "story_figure_transfer_preview");
+        }
+
+        /** Apply the exact planSha256 returned by storyFigureTransferPreviewJson. */
+        public BinaryResult storyFigureTransferApply(
+            String requestJson,
+            String approvedPlanSha256
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(requestJson, "requestJson");
+            Objects.requireNonNull(approvedPlanSha256, "approvedPlanSha256");
+            return Native.documentTwoStringOutput(
+                handle, Native.STORY_FIGURE_TRANSFER_APPLY, requestJson,
+                approvedPlanSha256, "story_figure_transfer_apply");
+        }
+
+        /** Read-only PNG byte arrays for a canonical scoped-text candidate; no PDF publication. */
+        public String universalEditingScopedPreviewV2Json(String planJson, String optionsJson) {
+            ensureOpen();
+            Objects.requireNonNull(planJson, "planJson");
+            return Native.documentTwoStringReport(handle, Native.UNIVERSAL_EDITING_SCOPED_PREVIEW_V2,
+                planJson, optionsJson, "universal_editing_scoped_preview_v2");
+        }
+
+        public String universalEditingScopedPreviewV2Json(String planJson) {
+            return universalEditingScopedPreviewV2Json(planJson, null);
+        }
+
         public BinaryResult universalEditingApplyV2(
             String planJson,
             String approvalJson
@@ -2596,6 +3272,28 @@ public final class WellfriendPdf {
             return Native.universalEditingApplyWithOutputCredentialBytes(
                 handle, planJson, approvalJson, outputUserPassword,
                 outputOwnerPassword, "universal_editing_apply_v2_with_output_credential_bytes");
+        }
+
+        /** Execute ECBES over multiple canonical universal-edit candidates. */
+        public BinaryResult ecbesUniversalEdit(String requestJson) {
+            ensureOpen();
+            Objects.requireNonNull(requestJson, "requestJson");
+            return Native.documentStringOutput(
+                handle, Native.ECBES_UNIVERSAL_EDIT, requestJson, "ecbes_universal_edit");
+        }
+
+        /** Execute ECBES with binary-safe apply-only output credentials. */
+        public BinaryResult ecbesUniversalEditWithOutputCredentialBytes(
+            String requestJson,
+            byte[] outputUserPassword,
+            byte[] outputOwnerPassword
+        ) {
+            ensureOpen();
+            Objects.requireNonNull(requestJson, "requestJson");
+            Objects.requireNonNull(outputUserPassword, "outputUserPassword");
+            return Native.ecbesUniversalEditWithOutputCredentialBytes(
+                handle, requestJson, outputUserPassword, outputOwnerPassword,
+                "ecbes_universal_edit_with_output_credential_bytes");
         }
 
         public String editing_transactionsReportJson() {
@@ -2728,9 +3426,171 @@ public final class WellfriendPdf {
             return Native.advanced_editing_closeoutTextRangeAnalyze(handle, page);
         }
 
+        /**
+         * Produces a non-mutating, exact-revision proposal that apportions a
+         * multi-run replacement across its original PDF paint slots.
+         */
+        public String proposeTextRangePaintPartitions(String requestJson) {
+            ensureOpen();
+            return Native.advanced_editing_closeoutPaintPartitionPropose(handle, requestJson);
+        }
+
+        public PaintPartitionProposal proposeTextRangePaintPartitions(
+            PaintPartitionTextRangeRequest request
+        ) {
+            Objects.requireNonNull(request, "request");
+            return PaintPartitionProposal.fromEnvelopeJson(
+                proposeTextRangePaintPartitions(request.toJson()));
+        }
+
+        /** Renders bounded before/candidate PNG byte arrays without returning
+         * or publishing the candidate PDF bytes. */
+        public String previewTextRangePaintPartitions(
+            String requestJson, String proposalJson, String approvalJson
+        ) {
+            return previewTextRangePaintPartitions(
+                requestJson, proposalJson, approvalJson, null, null);
+        }
+
+        public String previewTextRangePaintPartitions(
+            String requestJson,
+            String proposalJson,
+            String approvalJson,
+            byte[] fontBytes,
+            String optionsJson
+        ) {
+            ensureOpen();
+            return Native.advanced_editing_closeoutPaintPartitionPreview(
+                handle, requestJson, proposalJson, approvalJson, fontBytes, optionsJson);
+        }
+
+        public PaintPartitionPreview previewTextRangePaintPartitions(
+            PaintPartitionTextRangeRequest request,
+            PaintPartitionProposal proposal,
+            PaintPartitionApproval approval,
+            byte[] fontBytes,
+            String optionsJson
+        ) {
+            Objects.requireNonNull(request, "request");
+            Objects.requireNonNull(proposal, "proposal");
+            Objects.requireNonNull(approval, "approval");
+            requireSameProposal(proposal, approval);
+            return PaintPartitionPreview.fromEnvelopeJson(previewTextRangePaintPartitions(
+                request.toJson(), proposal.toJson(), approval.toJson(), fontBytes, optionsJson));
+        }
+
+        public PaintPartitionPreview previewTextRangePaintPartitions(
+            PaintPartitionTextRangeRequest request,
+            PaintPartitionProposal proposal,
+            PaintPartitionApproval approval
+        ) {
+            return previewTextRangePaintPartitions(request, proposal, approval, null, null);
+        }
+
         public BinaryResult editTextRange(String requestJson) {
             ensureOpen();
             return Native.advanced_editing_closeoutTextRangeEdit(handle, requestJson);
+        }
+
+        /** Applies reviewed regions/final lines only when request, proposal and
+         * input revision still match the proposal identity exactly. */
+        public BinaryResult applyTextRangePaintPartitions(
+            String requestJson, String proposalJson, String approvalJson
+        ) {
+            return applyTextRangePaintPartitions(
+                requestJson, proposalJson, approvalJson, null);
+        }
+
+        public BinaryResult applyTextRangePaintPartitions(
+            String requestJson,
+            String proposalJson,
+            String approvalJson,
+            byte[] fontBytes
+        ) {
+            ensureOpen();
+            return Native.advanced_editing_closeoutPaintPartitionApply(
+                handle, requestJson, proposalJson, approvalJson, fontBytes);
+        }
+
+        public BinaryResult applyTextRangePaintPartitions(
+            PaintPartitionTextRangeRequest request,
+            PaintPartitionProposal proposal,
+            PaintPartitionApproval approval,
+            byte[] fontBytes
+        ) {
+            Objects.requireNonNull(request, "request");
+            Objects.requireNonNull(proposal, "proposal");
+            Objects.requireNonNull(approval, "approval");
+            requireSameProposal(proposal, approval);
+            return applyTextRangePaintPartitions(
+                request.toJson(), proposal.toJson(), approval.toJson(), fontBytes);
+        }
+
+        public BinaryResult applyTextRangePaintPartitions(
+            PaintPartitionTextRangeRequest request,
+            PaintPartitionProposal proposal,
+            PaintPartitionApproval approval
+        ) {
+            return applyTextRangePaintPartitions(request, proposal, approval, null);
+        }
+
+        /** Applies only the candidate covered by the canonical preview's
+         * publication receipt. */
+        public BinaryResult applyReviewedTextRangePaintPartitions(
+            String requestJson,
+            String proposalJson,
+            String approvalJson,
+            String publicationReceiptJson,
+            byte[] fontBytes
+        ) {
+            ensureOpen();
+            return Native.advanced_editing_closeoutPaintPartitionApplyReviewed(
+                handle, requestJson, proposalJson, approvalJson,
+                publicationReceiptJson, fontBytes);
+        }
+
+        public BinaryResult applyReviewedTextRangePaintPartitions(
+            PaintPartitionTextRangeRequest request,
+            PaintPartitionProposal proposal,
+            PaintPartitionApproval approval,
+            PaintPartitionPublicationReceipt publicationReceipt,
+            byte[] fontBytes
+        ) {
+            Objects.requireNonNull(request, "request");
+            Objects.requireNonNull(proposal, "proposal");
+            Objects.requireNonNull(approval, "approval");
+            Objects.requireNonNull(publicationReceipt, "publicationReceipt");
+            requireSameProposal(proposal, approval);
+            if (!publicationReceipt.proposalId().equals(proposal.proposalId()))
+                throw new IllegalArgumentException("publication receipt belongs to a different proposal");
+            return applyReviewedTextRangePaintPartitions(
+                request.toJson(), proposal.toJson(), approval.toJson(),
+                publicationReceipt.toJson(), fontBytes);
+        }
+
+        public BinaryResult applyReviewedTextRangePaintPartitions(
+            PaintPartitionTextRangeRequest request,
+            PaintPartitionProposal proposal,
+            PaintPartitionApproval approval,
+            PaintPartitionPublicationReceipt publicationReceipt
+        ) {
+            return applyReviewedTextRangePaintPartitions(
+                request, proposal, approval, publicationReceipt, null);
+        }
+
+        public String authoredTypedTableSourcesJson() {
+            ensureOpen();
+            return Native.documentReport(
+                handle, Native.AUTHORED_TYPED_TABLE_SOURCES, "authored_typed_table_sources");
+        }
+
+        public BinaryResult mutateAuthoredTypedTable(String requestJson) {
+            return mutateAuthoredTypedTable(requestJson, null);
+        }
+
+        public BinaryResult mutateAuthoredTypedTable(String requestJson, byte[] fontBytes) {
+            ensureOpen();
+            return Native.authoredTypedTableMutate(handle, requestJson, fontBytes);
         }
 
         public String source_editingProvenanceJson(long page, String sourceText, String replacementText) {
@@ -3784,6 +4644,120 @@ public final class WellfriendPdf {
         }
     }
 
+    // Resolve the new session ABI only when requested, not for old document users.
+    private static final class StoryNative {
+        static {
+            if (ValueLayout.ADDRESS.byteSize() != 8)
+                throw new UnsupportedOperationException("Java story binding requires a 64-bit native ABI");
+        }
+        private static final MethodHandle OPEN = Native.downcall("wellfriendpdf_story_session_open",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        private static final MethodHandle COMMAND = Native.downcall("wellfriendpdf_story_session_command_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        private static final MethodHandle BYTES = Native.downcall("wellfriendpdf_story_session_bytes",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        private static final MethodHandle RENDER = Native.downcall("wellfriendpdf_story_session_render_page_png",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        private static final MethodHandle FREE = Native.downcall("wellfriendpdf_story_session_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+
+        private static void checkJsonLength(String json) {
+            Objects.requireNonNull(json, "json");
+            if (json.length() > 32 * 1024 * 1024) throw new IllegalArgumentException("Story JSON exceeds 32 MiB");
+        }
+        private static byte[] utf8(String json) {
+            checkJsonLength(json);
+            try {
+                ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(json));
+                if (encoded.remaining() > 32 * 1024 * 1024) throw new IllegalArgumentException("Story JSON exceeds 32 MiB UTF-8");
+                byte[] bytes = new byte[encoded.remaining()];
+                encoded.get(bytes);
+                return bytes;
+            } catch (java.nio.charset.CharacterCodingException ex) {
+                throw new IllegalArgumentException("Story JSON contains an unpaired Unicode surrogate", ex);
+            }
+        }
+        private static MemorySegment copy(Arena arena, byte[] bytes) {
+            MemorySegment data = arena.allocate(Math.max(1, bytes.length));
+            data.asSlice(0, bytes.length).copyFrom(MemorySegment.ofArray(bytes));
+            return data;
+        }
+        private static MemorySegment open(byte[] bytes, MemorySegment cancellation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = copy(arena, bytes);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment session = (MemorySegment) OPEN.invokeExact(data, (long) bytes.length, cancellation, error);
+                Native.throwError(Native.isNull(session) ? 2 : 0, error);
+                return session;
+            } catch (WellfriendPdfException ex) { throw ex; }
+            catch (Throwable ex) { throw new IllegalStateException("Story open failed", ex); }
+        }
+        private static MemorySegment openWithPassword(
+                byte[] bytes,
+                byte[] password,
+                MemorySegment cancellation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = copy(arena, bytes);
+                MemorySegment secret = copy(arena, password);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                try {
+                    MemorySegment session = (MemorySegment) EncryptedStoryNative.OPEN.invokeExact(
+                        data, (long) bytes.length, secret, (long) password.length, cancellation, error);
+                    Native.throwError(Native.isNull(session) ? 2 : 0, error);
+                    return session;
+                } finally {
+                    secret.fill((byte) 0);
+                }
+            } catch (WellfriendPdfException ex) { throw ex; }
+            catch (Throwable ex) { throw new IllegalStateException("Encrypted story open failed", ex); }
+        }
+        private static byte[] command(MemorySegment session, byte[] json, MemorySegment cancellation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = copy(arena, json);
+                MemorySegment output = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) COMMAND.invokeExact(session, data, (long) json.length, cancellation, output, error);
+                Native.throwError(status, error);
+                return Native.takeBuffer(output);
+            } catch (WellfriendPdfException ex) { throw ex; }
+            catch (Throwable ex) { throw new IllegalStateException("Story command failed", ex); }
+        }
+        private static byte[] bytes(MemorySegment session) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment output = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) BYTES.invokeExact(session, output, error);
+                Native.throwError(status, error);
+                return Native.takeBuffer(output);
+            } catch (WellfriendPdfException ex) { throw ex; }
+            catch (Throwable ex) { throw new IllegalStateException("Story byte export failed", ex); }
+        }
+        private static byte[] render(MemorySegment session, long page, int dpi, MemorySegment cancellation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment output = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) RENDER.invokeExact(session, page, dpi, cancellation, output, error);
+                Native.throwError(status, error);
+                return Native.takeBuffer(output);
+            } catch (WellfriendPdfException ex) { throw ex; }
+            catch (Throwable ex) { throw new IllegalStateException("Story rendering failed", ex); }
+        }
+        private static void free(MemorySegment session) {
+            try { FREE.invokeExact(session); }
+            catch (Throwable ex) { throw new IllegalStateException("Story close failed", ex); }
+        }
+    }
+
+    // Resolve the additive credentialed constructor only when requested so an
+    // older native library can still serve the pre-existing plaintext session
+    // surface with a deterministic missing-symbol failure limited to this API.
+    private static final class EncryptedStoryNative {
+        private static final MethodHandle OPEN = Native.downcall(
+            "wellfriendpdf_story_session_open_with_password",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    }
+
     private static final class Native {
         private static final Linker LINKER = Linker.nativeLinker();
         private static final Arena LOOKUP_ARENA = Arena.ofAuto();
@@ -4212,6 +5186,18 @@ public final class WellfriendPdf {
         );
         private static final MethodHandle UNIVERSAL_EDITING_PLAN_V2 =
             documentStringReport("wellfriendpdf_document_universal_editing_plan_v2_json");
+        private static final MethodHandle STORY_FIGURE_TRANSFER_PREVIEW =
+            documentStringReport("wellfriendpdf_document_story_figure_transfer_preview_json");
+        private static final MethodHandle STORY_FIGURE_TRANSFER_APPLY = downcall(
+            "wellfriendpdf_document_story_figure_transfer_apply_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle UNIVERSAL_EDITING_SCOPED_PREVIEW_V2 = downcall(
+            "wellfriendpdf_document_universal_editing_scoped_preview_v2_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle UNIVERSAL_EDITING_APPLY_V2 = downcall(
             "wellfriendpdf_document_universal_editing_apply_v2_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
@@ -4456,6 +5442,22 @@ public final class WellfriendPdf {
                 ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS)
         );
+        private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_AUTHENTICATE_RECEIPT =
+            downcall(
+                "wellfriendpdf_advanced_editing_closeout_paint_partition_authenticate_receipt_json",
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                    ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
+                    ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS,
+                    ValueLayout.ADDRESS)
+            );
+        private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_VERIFY_AUTHENTICATED_RECEIPT =
+            downcall(
+                "wellfriendpdf_advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json",
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                    ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
+                    ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS,
+                    ValueLayout.ADDRESS)
+            );
         private static final MethodHandle WRITER_DETERMINISM_AUDIT =
             documentReport("wellfriendpdf_document_writer_determinism_audit_json");
         private static final MethodHandle WRITER_EXTERNAL_DIFF =
@@ -4495,10 +5497,62 @@ public final class WellfriendPdf {
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_PROPOSE = downcall(
+            "wellfriendpdf_document_advanced_editing_closeout_paint_partition_propose_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_PREVIEW = downcall(
+            "wellfriendpdf_document_advanced_editing_closeout_paint_partition_preview_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
         private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_TEXT_RANGE_EDIT = downcall(
             "wellfriendpdf_document_advanced_editing_closeout_text_range_edit_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ECBES_UNIVERSAL_EDIT = downcall(
+            "wellfriendpdf_document_ecbes_universal_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ECBES_UNIVERSAL_EDIT_WITH_OUTPUT_CREDENTIAL_BYTES = downcall(
+            "wellfriendpdf_document_ecbes_universal_edit_with_output_credential_bytes_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_APPLY = downcall(
+            "wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_APPLY_WITH_FONT = downcall(
+            "wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_with_font_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_APPLY_REVIEWED_WITH_FONT = downcall(
+            "wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_reviewed_with_font_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle AUTHORED_TYPED_TABLE_SOURCES =
+            documentReport("wellfriendpdf_document_authored_typed_table_sources_json");
+        private static final MethodHandle AUTHORED_TYPED_TABLE_MUTATE = downcall(
+            "wellfriendpdf_document_authored_typed_table_mutate_with_font_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle SOURCE_EDITING_PROVENANCE = downcall(
             "wellfriendpdf_document_source_editing_provenance_json",
@@ -5047,6 +6101,88 @@ public final class WellfriendPdf {
             }
         }
 
+        private static String authenticateTextRangePaintPartitionReceipt(
+            String publicationReceiptJson,
+            String keyId,
+            String audience,
+            long issuedAtUnix,
+            long expiresAtUnix,
+            byte[] hmacKey
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment receipt = arena.allocateFrom(publicationReceiptJson);
+                MemorySegment keyIdSegment = arena.allocateFrom(keyId);
+                MemorySegment audienceSegment = arena.allocateFrom(audience);
+                MemorySegment key = hmacKey.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(hmacKey.length);
+                if (hmacKey.length != 0) {
+                    key.copyFrom(MemorySegment.ofArray(hmacKey));
+                }
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_AUTHENTICATE_RECEIPT.invokeExact(
+                    receipt,
+                    keyIdSegment,
+                    audienceSegment,
+                    issuedAtUnix,
+                    expiresAtUnix,
+                    key,
+                    (long) hmacKey.length,
+                    jsonOut,
+                    err
+                );
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(
+                    "Wellfriend paint-partition receipt authentication failed", ex);
+            }
+        }
+
+        private static String verifyAuthenticatedTextRangePaintPartitionReceipt(
+            String authenticatedReceiptJson,
+            String expectedKeyId,
+            String expectedAudience,
+            long nowUnix,
+            long allowedFutureSkewSecs,
+            byte[] hmacKey
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment receipt = arena.allocateFrom(authenticatedReceiptJson);
+                MemorySegment keyIdSegment = arena.allocateFrom(expectedKeyId);
+                MemorySegment audienceSegment = arena.allocateFrom(expectedAudience);
+                MemorySegment key = hmacKey.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(hmacKey.length);
+                if (hmacKey.length != 0) {
+                    key.copyFrom(MemorySegment.ofArray(hmacKey));
+                }
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_VERIFY_AUTHENTICATED_RECEIPT.invokeExact(
+                    receipt,
+                    keyIdSegment,
+                    audienceSegment,
+                    nowUnix,
+                    allowedFutureSkewSecs,
+                    key,
+                    (long) hmacKey.length,
+                    jsonOut,
+                    err
+                );
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(
+                    "Wellfriend authenticated paint-partition receipt verification failed", ex);
+            }
+        }
+
         private static String engineVersion() {
             try (Arena ignored = Arena.ofConfined()) {
                 MemorySegment ptr = (MemorySegment) VERSION.invokeExact();
@@ -5481,6 +6617,23 @@ public final class WellfriendPdf {
             }
         }
 
+        private static String documentTwoStringReport(MemorySegment handle, MethodHandle method,
+            String first, String second, String operation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment arg1 = first == null ? MemorySegment.NULL : arena.allocateFrom(first);
+                MemorySegment arg2 = second == null ? MemorySegment.NULL : arena.allocateFrom(second);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(handle, arg1, arg2, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
+        }
+
         private static String xfaRuntimeReport(MemorySegment handle, String scriptPolicy, boolean executeEvents) {
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment policy = scriptPolicy == null || scriptPolicy.isBlank()
@@ -5585,6 +6738,63 @@ public final class WellfriendPdf {
             } catch (Throwable ex) { throw new IllegalStateException("Wellfriend advanced_editing_closeout_text_range_analyze failed", ex); }
         }
 
+        private static String advanced_editing_closeoutPaintPartitionPropose(
+            MemorySegment handle, String requestJson
+        ) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_PROPOSE.invokeExact(
+                    handle, request, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(
+                    "Wellfriend advanced_editing_closeout_paint_partition_propose failed", ex);
+            }
+        }
+
+        private static String advanced_editing_closeoutPaintPartitionPreview(
+            MemorySegment handle,
+            String requestJson,
+            String proposalJson,
+            String approvalJson,
+            byte[] fontBytes,
+            String optionsJson
+        ) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            Objects.requireNonNull(proposalJson, "proposalJson");
+            Objects.requireNonNull(approvalJson, "approvalJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment proposal = arena.allocateFrom(proposalJson);
+                MemorySegment approval = arena.allocateFrom(approvalJson);
+                MemorySegment font = fontBytes == null || fontBytes.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(fontBytes.length);
+                if (fontBytes != null && fontBytes.length != 0) {
+                    font.copyFrom(MemorySegment.ofArray(fontBytes));
+                }
+                MemorySegment options = optionsJson == null
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(optionsJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_PREVIEW.invokeExact(
+                    handle, request, proposal, approval, font,
+                    (long) (fontBytes == null ? 0 : fontBytes.length), options, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(
+                    "Wellfriend advanced_editing_closeout_paint_partition_preview failed", ex);
+            }
+        }
+
         private static BinaryResult advanced_editing_closeoutTextRangeEdit(MemorySegment handle, String requestJson) {
             Objects.requireNonNull(requestJson, "requestJson");
             try (Arena arena = Arena.ofConfined()) {
@@ -5597,6 +6807,105 @@ public final class WellfriendPdf {
                 return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
             } catch (WellfriendPdfException ex) { throw ex;
             } catch (Throwable ex) { throw new IllegalStateException("Wellfriend advanced_editing_closeout_text_range_edit failed", ex); }
+        }
+
+        private static BinaryResult advanced_editing_closeoutPaintPartitionApply(
+            MemorySegment handle,
+            String requestJson,
+            String proposalJson,
+            String approvalJson,
+            byte[] fontBytes
+        ) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            Objects.requireNonNull(proposalJson, "proposalJson");
+            Objects.requireNonNull(approvalJson, "approvalJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment proposal = arena.allocateFrom(proposalJson);
+                MemorySegment approval = arena.allocateFrom(approvalJson);
+                MemorySegment font = fontBytes == null || fontBytes.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(fontBytes.length);
+                if (fontBytes != null && fontBytes.length != 0) {
+                    font.copyFrom(MemorySegment.ofArray(fontBytes));
+                }
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_APPLY_WITH_FONT.invokeExact(
+                    handle, request, proposal, approval, font,
+                    (long) (fontBytes == null ? 0 : fontBytes.length), buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(
+                    "Wellfriend advanced_editing_closeout_paint_partition_apply failed", ex);
+            }
+        }
+
+        private static BinaryResult advanced_editing_closeoutPaintPartitionApplyReviewed(
+            MemorySegment handle,
+            String requestJson,
+            String proposalJson,
+            String approvalJson,
+            String publicationReceiptJson,
+            byte[] fontBytes
+        ) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            Objects.requireNonNull(proposalJson, "proposalJson");
+            Objects.requireNonNull(approvalJson, "approvalJson");
+            Objects.requireNonNull(publicationReceiptJson, "publicationReceiptJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment proposal = arena.allocateFrom(proposalJson);
+                MemorySegment approval = arena.allocateFrom(approvalJson);
+                MemorySegment receipt = arena.allocateFrom(publicationReceiptJson);
+                MemorySegment font = fontBytes == null || fontBytes.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(fontBytes.length);
+                if (fontBytes != null && fontBytes.length != 0) {
+                    font.copyFrom(MemorySegment.ofArray(fontBytes));
+                }
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) ADVANCED_EDITING_CLOSEOUT_PAINT_PARTITION_APPLY_REVIEWED_WITH_FONT.invokeExact(
+                    handle, request, proposal, approval, receipt, font,
+                    (long) (fontBytes == null ? 0 : fontBytes.length), buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(
+                    "Wellfriend reviewed paint-partition apply failed", ex);
+            }
+        }
+
+        private static BinaryResult authoredTypedTableMutate(
+            MemorySegment handle, String requestJson, byte[] fontBytes
+        ) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment font = fontBytes == null || fontBytes.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(fontBytes.length);
+                if (fontBytes != null && fontBytes.length != 0) {
+                    font.copyFrom(MemorySegment.ofArray(fontBytes));
+                }
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) AUTHORED_TYPED_TABLE_MUTATE.invokeExact(
+                    handle, request, font, (long) (fontBytes == null ? 0 : fontBytes.length),
+                    buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend authored_typed_table_mutate failed", ex);
+            }
         }
 
         private static String source_editingProvenance(
@@ -6184,6 +7493,46 @@ public final class WellfriendPdf {
                 try {
                     int status = (int) UNIVERSAL_EDITING_APPLY_V2_WITH_OUTPUT_CREDENTIAL_BYTES.invokeExact(
                         handle, planArg, approvalArg, userArg, (long) userPassword.length,
+                        ownerArg, (long) (ownerPassword == null ? 0 : ownerPassword.length),
+                        buffer, jsonOut, err);
+                    throwError(status, err);
+                    return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+                } finally {
+                    userArg.fill((byte) 0);
+                    if (ownerPassword != null) ownerArg.fill((byte) 0);
+                }
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult ecbesUniversalEditWithOutputCredentialBytes(
+            MemorySegment handle,
+            String request,
+            byte[] userPassword,
+            byte[] ownerPassword,
+            String operation
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment requestArg = arena.allocateFrom(request);
+                MemorySegment userArg = arena.allocate(Math.max(1, userPassword.length));
+                MemorySegment ownerArg = ownerPassword == null
+                    ? MemorySegment.NULL
+                    : arena.allocate(Math.max(1, ownerPassword.length));
+                if (userPassword.length > 0) {
+                    userArg.asSlice(0, userPassword.length).copyFrom(MemorySegment.ofArray(userPassword));
+                }
+                if (ownerPassword != null && ownerPassword.length > 0) {
+                    ownerArg.asSlice(0, ownerPassword.length).copyFrom(MemorySegment.ofArray(ownerPassword));
+                }
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                try {
+                    int status = (int) ECBES_UNIVERSAL_EDIT_WITH_OUTPUT_CREDENTIAL_BYTES.invokeExact(
+                        handle, requestArg, userArg, (long) userPassword.length,
                         ownerArg, (long) (ownerPassword == null ? 0 : ownerPassword.length),
                         buffer, jsonOut, err);
                     throwError(status, err);

@@ -15,7 +15,7 @@ use crate::semantic::{SemanticDocument, SemanticElement};
 use crate::semantic_intelligence::{ParentTreeRecoveryReport, ParentTreeRecoveryStatus};
 use crate::text::{
     segment_cjk_dictionary_text_with_provider, CjkDictionaryMetadata, CjkDictionaryProvider,
-    TextQuad, TextSemanticDocument,
+    MarkedContentId, TextQuad, TextSemanticDocument,
 };
 
 pub const ADVANCED_RAG_CHUNK_SCHEMA_VERSION: &str = "semantic_closeout.rag_chunk.v1";
@@ -152,6 +152,8 @@ pub struct RagSourceSpan {
     pub char_range: Option<[usize; 2]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content: Vec<MarkedContentId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub structure_role: Option<String>,
     pub confidence: f32,
@@ -165,6 +167,8 @@ pub struct RagCitation {
     pub block_id: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content: Vec<MarkedContentId>,
     pub source_span_ids: Vec<String>,
 }
 
@@ -234,6 +238,9 @@ pub struct AdvancedRagChunk {
     pub structure_tree_path: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcids: Vec<i64>,
+    /// Lossless scope-qualified membership across the chunk's page range.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content: Vec<RagMarkedContentId>,
     pub parenttree_recovery_status: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parenttree_diagnostics: Vec<String>,
@@ -261,6 +268,12 @@ pub struct AdvancedRagChunkSet {
     pub security: ChunkSecurityPosture,
     pub chunks: Vec<AdvancedRagChunk>,
     pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RagMarkedContentId {
+    pub page: usize,
+    pub content: MarkedContentId,
 }
 
 #[derive(Default)]
@@ -852,6 +865,14 @@ fn build_chunk(
             .iter()
             .flat_map(|span| span.mcids.iter().copied()),
     );
+    let marked_content = sorted_unique(source_spans.iter().flat_map(|span| {
+        span.marked_content
+            .iter()
+            .map(|content| RagMarkedContentId {
+                page: span.page,
+                content: *content,
+            })
+    }));
     let quads = source_spans
         .iter()
         .filter_map(|span| span.quad)
@@ -946,6 +967,7 @@ fn build_chunk(
         heading_section_path: section_path,
         structure_tree_path,
         mcids,
+        marked_content,
         parenttree_recovery_status: parenttree_status.to_string(),
         parenttree_diagnostics,
         cjk_token_layer_enabled: context.dictionary.is_some(),
@@ -974,6 +996,7 @@ fn source_spans_for_units(
             quad: None,
             char_range: None,
             mcids: Vec::new(),
+            marked_content: Vec::new(),
             structure_role: None,
             confidence: unit.confidence,
             provenance: vec!["canonical_document_block".to_string()],
@@ -1011,6 +1034,7 @@ fn source_spans_for_units(
                         quad: Some(quad_points(span.quad)),
                         char_range: Some(span.char_range),
                         mcids: span.mcids.clone(),
+                        marked_content: span.marked_content.clone(),
                         structure_role: span.struct_role.clone(),
                         confidence: span.confidence,
                         provenance: span.provenance.iter().map(debug_name).collect(),
@@ -1037,6 +1061,11 @@ fn citations_for_spans(spans: &[RagSourceSpan]) -> Vec<RagCitation> {
             bbox: union_bbox(spans.iter().map(|span| span.bbox)).unwrap_or([0.0; 4]),
             block_id,
             mcids: sorted_unique(spans.iter().flat_map(|span| span.mcids.iter().copied())),
+            marked_content: sorted_unique(
+                spans
+                    .iter()
+                    .flat_map(|span| span.marked_content.iter().copied()),
+            ),
             source_span_ids: spans.iter().map(|span| span.span_id.clone()).collect(),
         })
         .collect()
@@ -1261,7 +1290,7 @@ fn chunk_type(units: &[ChunkUnit], mode: AdvancedChunkMode) -> String {
 }
 
 fn chunk_hash(chunk: &AdvancedRagChunk) -> String {
-    let canonical = serde_json::json!({
+    let mut canonical = serde_json::json!({
         "mode": chunk.mode,
         "pages": chunk.pages,
         "text": chunk.text,
@@ -1283,6 +1312,9 @@ fn chunk_hash(chunk: &AdvancedRagChunk) -> String {
             "removed_content_included": chunk.security.removed_content_included,
         },
     });
+    if !chunk.marked_content.is_empty() {
+        canonical["marked_content"] = serde_json::json!(chunk.marked_content);
+    }
     let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
@@ -1412,6 +1444,78 @@ mod tests {
     use super::*;
     use crate::analysis::tables::{Table, TableCell, TableSource};
     use crate::parse::{Block, DocumentMetadata, InlineText, Page, SourceInfo, SCHEMA_VERSION};
+
+    fn scoped_span(stream: Option<(u32, u16)>) -> RagSourceSpan {
+        RagSourceSpan {
+            span_id: format!("scope-{stream:?}"),
+            page: 1,
+            block_id: 2,
+            semantic_block_index: Some(0),
+            line_index: Some(0),
+            semantic_span_index: Some(0),
+            bbox: [0.0, 0.0, 10.0, 10.0],
+            quad: None,
+            char_range: Some([0, 1]),
+            mcids: vec![0],
+            marked_content: vec![MarkedContentId {
+                mcid: 0,
+                stream,
+                stream_owner: None,
+            }],
+            structure_role: Some("P".into()),
+            confidence: 0.8,
+            provenance: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn citation_membership_preserves_equal_mcids_in_different_streams() {
+        let citations = citations_for_spans(&[
+            scoped_span(None),
+            scoped_span(Some((5, 0))),
+            scoped_span(Some((6, 0))),
+        ]);
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].mcids, vec![0]);
+        assert_eq!(citations[0].marked_content.len(), 3);
+    }
+
+    #[test]
+    fn source_span_scope_roundtrips_and_legacy_json_defaults_empty() {
+        let span = scoped_span(Some((5, 0)));
+        let mut value = serde_json::to_value(&span).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RagSourceSpan>(value.clone()).unwrap(),
+            span
+        );
+        value.as_object_mut().unwrap().remove("marked_content");
+        assert!(serde_json::from_value::<RagSourceSpan>(value)
+            .unwrap()
+            .marked_content
+            .is_empty());
+    }
+
+    #[test]
+    fn chunk_hash_binds_scope_qualified_membership() {
+        let mut chunk = advanced_chunk_document(
+            &document(),
+            &AdvancedChunkOptions::default(),
+            &AdvancedChunkContext::default(),
+        )
+        .chunks
+        .remove(0);
+        chunk.marked_content = vec![RagMarkedContentId {
+            page: 1,
+            content: MarkedContentId {
+                mcid: 0,
+                stream: Some((5, 0)),
+                stream_owner: None,
+            },
+        }];
+        let before = chunk_hash(&chunk);
+        chunk.marked_content[0].content.stream = Some((6, 0));
+        assert_ne!(before, chunk_hash(&chunk));
+    }
 
     fn document() -> Document {
         let table = Table {

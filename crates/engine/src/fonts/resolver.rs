@@ -1,13 +1,57 @@
 use crate::content::operation::Operand;
 use crate::error::Result;
-use crate::filters::{decode_stream_from_dict, decode_stream_lossless};
+use crate::filters::decode_stream_lossless;
+use crate::fonts::character_code::{CharacterCode, CodeSpace};
 use crate::fonts::cmap::ToUnicodeCMap;
+#[path = "resolver_codes.rs"]
+mod codes;
 use crate::fonts::encoding::Encoding;
 use crate::fonts::glyph_list::glyph_name_to_unicode;
-use crate::fonts::predefined_cmap::{self, PredefinedCMapInfo};
+use crate::fonts::predefined_cmap;
 use crate::fonts::type1;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
+pub use codes::{CodeIterator, DecodedCode};
+
+/// PDF text-space displacement (PDF Reference 1.6, sections 5.2.1-2, 5.3.3).
+/// Tc/Tw are signed additive values, not distances along the writing direction.
+/// Positive spacing shortens an ordinary downward vertical advance. Th does
+/// not scale this axis. Callers validate their source metrics/state separately.
+pub(crate) fn vertical_text_advance(
+    w1y: f64,
+    font_size: f64,
+    char_spacing: f64,
+    word_spacing: f64,
+    applies_word_spacing: bool,
+) -> f64 {
+    w1y / 1000.0 * font_size
+        + char_spacing
+        + if applies_word_spacing {
+            word_spacing
+        } else {
+            0.0
+        }
+}
+
+/// `adjustment` is already negated from the PDF TJ array operand, matching
+/// retained renderer descriptors. No Tc/Tw applies to a numeric TJ adjustment.
+pub(crate) fn text_position_adjustment(
+    adjustment: f64,
+    font_size: f64,
+    horizontal_scaling: f64,
+    vertical: bool,
+) -> [f64; 2] {
+    let displacement = adjustment / 1000.0 * font_size;
+    if vertical {
+        [0.0, displacement]
+    } else {
+        [displacement * horizontal_scaling / 100.0, 0.0]
+    }
+}
+
+pub(crate) fn uses_vertical_writing(font: &PdfDictionary, reader: &PdfReader) -> bool {
+    font.get_name("Subtype") == Some("Type0") && detect_wmode(font, Some(reader)) == 1
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FontSubtype {
@@ -76,8 +120,12 @@ pub struct FontResolver {
     descendant_font: Option<PdfDictionary>,
     default_width: f64,
     code_size: u8,
-    predefined_cmap: Option<PredefinedCMapInfo>,
+    unicode_is_predefined: bool,
     standard14_base: Option<String>,
+    cid_encoding: std::result::Result<Option<super::cid_encoding::CidEncoding>, String>,
+    sfnt_cff_gids: std::result::Result<Option<Vec<u16>>, String>,
+    code_space: std::result::Result<std::sync::Arc<CodeSpace>, String>,
+    unicode_encoding: std::result::Result<(), String>,
     /// Writing mode of the font's encoding CMap: 0 = horizontal (glyphs advance
     /// left-to-right), 1 = vertical (glyphs advance top-to-bottom, columns
     /// arranged right-to-left). Only Type0 (composite) fonts can be vertical;
@@ -110,81 +158,76 @@ impl FontResolver {
     }
 
     pub fn decode_string(&self, bytes: &[u8]) -> String {
-        let mut result = String::new();
-        let mut idx = 0usize;
-        let code_size = self.code_size.max(1);
-        while idx < bytes.len() {
-            let code = if code_size == 2 {
-                let high = bytes[idx];
-                let low = bytes.get(idx + 1).copied().unwrap_or(0);
-                idx += 2;
-                (u16::from(high) << 8) | u16::from(low)
-            } else {
-                let code = u16::from(bytes[idx]);
-                idx += 1;
-                code
-            };
-
-            if let Some(text) = self.to_unicode.as_ref().and_then(|cmap| cmap.lookup(code)) {
-                result.push_str(text);
-                continue;
-            }
-
-            let glyph_name = self
-                .encoding_table
-                .as_ref()
-                .and_then(|table| table.get(code as usize))
-                .map(String::as_str)
-                .unwrap_or(".notdef");
-
-            if glyph_name != ".notdef" {
-                if let Some(ch) = glyph_name_to_unicode(glyph_name) {
-                    result.push_str(&expand_ligature(ch));
-                    continue;
+        let mut text = String::new();
+        for code in self.codes(bytes) {
+            match code {
+                Ok(code) => text.push_str(&self.decode_code(code.code)),
+                Err(_) => {
+                    text.push('\u{FFFD}');
+                    break;
                 }
             }
-
-            if let Some(ch) = char::from_u32(u32::from(code)) {
-                if !ch.is_control() || ch.is_whitespace() {
-                    result.push(ch);
-                    continue;
-                }
-            }
-            if let Some(text) = self
-                .predefined_cmap
-                .as_ref()
-                .and_then(|info| predefined_cmap::unicode_for_code(info.name, code))
-            {
-                result.push_str(&text);
-                continue;
-            }
-            log::warn!("font decode produced replacement character for code {code:#06X}");
-            result.push('\u{FFFD}');
         }
-        result
+        text
     }
-
     pub fn decode_char(&self, code: u16) -> String {
         self.decode_char_with_source(code).0
     }
-
     pub fn decode_char_with_source(&self, code: u16) -> (String, FontDecodeSource) {
-        let bytes = if self.code_size == 2 {
-            vec![(code >> 8) as u8, (code & 0xFF) as u8]
-        } else {
-            vec![code as u8]
-        };
-        self.decode_code_bytes_with_source(code, &bytes)
+        match CharacterCode::new(u32::from(code), self.code_size) {
+            Ok(code) => self.decode_code_with_source(code),
+            Err(_) => ("\u{FFFD}".into(), FontDecodeSource::Unknown),
+        }
+    }
+    pub fn decode_code(&self, code: CharacterCode) -> String {
+        self.decode_code_with_source(code).0
+    }
+    pub fn decode_code_with_source(&self, code: CharacterCode) -> (String, FontDecodeSource) {
+        if !self
+            .code_space
+            .as_ref()
+            .is_ok_and(|space| space.contains(code))
+        {
+            return ("\u{FFFD}".into(), FontDecodeSource::Unknown);
+        }
+        self.decode_code_bytes_with_source(code)
     }
 
-    fn decode_code_bytes_with_source(
-        &self,
-        code: u16,
-        _bytes: &[u8],
-    ) -> (String, FontDecodeSource) {
-        if let Some(text) = self.to_unicode.as_ref().and_then(|cmap| cmap.lookup(code)) {
-            return (text.to_string(), FontDecodeSource::ToUnicode);
+    fn decode_code_bytes_with_source(&self, code: CharacterCode) -> (String, FontDecodeSource) {
+        if let Some(text) = self
+            .to_unicode
+            .as_ref()
+            .and_then(|cmap| cmap.lookup_code(code))
+        {
+            return (
+                text.to_string(),
+                if self.unicode_is_predefined {
+                    FontDecodeSource::PredefinedCMap
+                } else {
+                    FontDecodeSource::ToUnicode
+                },
+            );
         }
+        // A malformed ToUnicode CMap is fatal for a composite font: without a
+        // trustworthy CMap there is no general one-byte encoding fallback and
+        // guessing a CID as Unicode would corrupt logical text. Simple fonts
+        // are different. Their Encoding/Differences table remains the
+        // authoritative code-to-glyph mapping and commonly repairs producer
+        // CMaps whose codespace incorrectly declares two-byte codes while its
+        // bfchar entries are one byte (for example <E9> in WinAnsi). Refusing
+        // that valid simple-font fallback made the renderer drop accented
+        // glyphs even though both the embedded program and /Encoding contained
+        // them.
+        if self.unicode_is_predefined
+            || (self.font_type.is_cid()
+                && self
+                    .to_unicode
+                    .as_ref()
+                    .is_some_and(|map| map.validate().is_err()))
+        {
+            return ("\u{FFFD}".into(), FontDecodeSource::Unknown);
+        }
+        let code = code.value();
 
         let glyph_name = self
             .encoding_table
@@ -204,7 +247,7 @@ impl FontResolver {
             }
         }
 
-        if let Some(ch) = char::from_u32(u32::from(code)) {
+        if let Some(ch) = char::from_u32(code) {
             if !ch.is_control() || ch.is_whitespace() {
                 let source = if self.font_type.is_cid() {
                     FontDecodeSource::IdentityCid
@@ -213,13 +256,6 @@ impl FontResolver {
                 };
                 return (ch.to_string(), source);
             }
-        }
-        if let Some(text) = self
-            .predefined_cmap
-            .as_ref()
-            .and_then(|info| predefined_cmap::unicode_for_code(info.name, code))
-        {
-            return (text, FontDecodeSource::PredefinedCMap);
         }
         log::warn!("font decode produced replacement character for code {code:#06X}");
         ("\u{FFFD}".to_string(), FontDecodeSource::Unknown)
@@ -233,15 +269,16 @@ impl FontResolver {
             .filter(|name| *name != ".notdef")
     }
 
+    /// Fixed encoded length, or zero for mixed-length code spaces. Consumers
+    /// must use codes()/next_code() rather than chunking source bytes.
     pub fn code_size(&self) -> u8 {
         self.code_size
     }
 
+    /// True when PDF Tw applies, not when the Unicode mapping is whitespace.
+    /// Only an encoded single-byte 0x20 receives word spacing (5.2.2).
     pub fn is_space_code(&self, code: u16) -> bool {
-        if self.code_size == 1 && code == 0x0020 {
-            return true;
-        }
-        self.decode_char(code) == " "
+        self.code_size == 1 && code == 0x0020
     }
 
     pub fn has_standard14_metrics(&self) -> bool {
@@ -249,21 +286,33 @@ impl FontResolver {
     }
 
     pub fn glyph_width(&self, char_code: u16) -> f64 {
+        CharacterCode::new(u32::from(char_code), self.code_size)
+            .map(|code| self.width_for_code(code))
+            .unwrap_or(self.default_width)
+    }
+    pub fn width_for_code(&self, char_code: CharacterCode) -> f64 {
         if let Some(descendant_font) = &self.descendant_font {
-            return lookup_cid_width(u32::from(char_code), descendant_font);
+            return lookup_cid_width(
+                self.cid_for_character(char_code)
+                    .map(u32::from)
+                    .unwrap_or(char_code.value()),
+                descendant_font,
+            );
         }
 
-        let index = u32::from(char_code);
+        let index = char_code.value();
+        let standard_width = u16::try_from(index)
+            .ok()
+            .and_then(|code| self.standard14_width(code));
         if index >= self.first_char && index <= self.last_char {
             let i = (index - self.first_char) as usize;
             self.widths
                 .get(i)
                 .copied()
-                .or_else(|| self.standard14_width(char_code))
+                .or(standard_width)
                 .unwrap_or(self.default_width)
         } else {
-            self.standard14_width(char_code)
-                .unwrap_or(self.default_width)
+            standard_width.unwrap_or(self.default_width)
         }
     }
 
@@ -290,12 +339,58 @@ impl FontResolver {
     /// CID has no explicit `/W2` entry. Returns the spec defaults for a font with
     /// no descendant (`v_y = 880`, `w1y = -1000`, `v_x = w0/2`).
     pub fn vertical_metrics(&self, char_code: u16) -> (f64, f64, f64) {
-        let cid = u32::from(char_code);
-        let w0 = self.glyph_width(char_code);
+        CharacterCode::new(u32::from(char_code), self.code_size)
+            .map(|code| self.vertical_metrics_for_code(code))
+            .unwrap_or((-1000.0, self.default_width / 2.0, 880.0))
+    }
+    pub fn vertical_metrics_for_code(&self, char_code: CharacterCode) -> (f64, f64, f64) {
+        let cid = self
+            .cid_for_character(char_code)
+            .map(u32::from)
+            .unwrap_or(char_code.value());
+        let w0 = self.width_for_code(char_code);
         match &self.descendant_font {
             Some(desc) => lookup_cid_vertical(cid, w0, desc),
             None => (-1000.0, w0 / 2.0, 880.0),
         }
+    }
+
+    /// Character codes and native CIDs are distinct for an embedded Encoding
+    /// CMap. ToUnicode remains keyed by the original character code.
+    pub fn cid_for_code(&self, code: u16) -> std::result::Result<u16, String> {
+        self.cid_for_character(CharacterCode::new(u32::from(code), self.code_size)?)
+    }
+    pub fn cid_for_character(&self, code: CharacterCode) -> std::result::Result<u16, String> {
+        if !self
+            .code_space
+            .as_ref()
+            .map_err(Clone::clone)?
+            .contains(code)
+        {
+            return Err("character code outside font Encoding code space".into());
+        }
+        match self.cid_encoding.as_ref().map_err(Clone::clone)? {
+            Some(map) => Ok(map.cid_code(code)),
+            None => u16::try_from(code.value())
+                .map_err(|_| "character code needs a resolved CID Encoding CMap".into()),
+        }
+    }
+
+    pub fn validate_encoding(&self) -> std::result::Result<(), String> {
+        self.cid_encoding.as_ref().map_err(Clone::clone)?;
+        self.sfnt_cff_gids.as_ref().map_err(Clone::clone)?;
+        self.code_space.as_ref().map_err(Clone::clone)?;
+        Ok(())
+    }
+
+    pub(crate) fn sfnt_cff_gid(&self, cid: u16) -> std::result::Result<Option<u16>, String> {
+        self.sfnt_cff_gids
+            .as_ref()
+            .map(|map| {
+                map.as_ref()
+                    .map(|map| map.get(usize::from(cid)).copied().unwrap_or(0))
+            })
+            .map_err(Clone::clone)
     }
 
     fn build(font_dict: &PdfDictionary, reader: Option<&PdfReader>) -> Self {
@@ -303,7 +398,8 @@ impl FontResolver {
             .get_name("Subtype")
             .map(FontType::from_name)
             .unwrap_or_else(|| FontType::Unknown("Unknown".to_string()));
-        let to_unicode = parse_to_unicode(font_dict, reader);
+        let mut to_unicode = parse_to_unicode(font_dict, reader);
+        let mut unicode_is_predefined = false;
         let encoding_table = if font_type.is_cid() {
             None
         } else {
@@ -314,6 +410,32 @@ impl FontResolver {
         } else {
             None
         };
+        let cid_encoding = if matches!(font_type, FontType::Type0) {
+            super::cid_encoding::CidEncoding::load(font_dict, reader).and_then(|map| {
+                if let Some(map) = &map {
+                    predefined_cmap::validate_font_system(map, descendant_font.as_ref(), reader)?;
+                }
+                Ok(map)
+            })
+        } else {
+            Ok(None)
+        };
+        if to_unicode.is_none() {
+            if let Ok(Some(map)) = &cid_encoding {
+                match predefined_cmap::font_unicode(map, descendant_font.as_ref(), reader) {
+                    Ok(Some(map)) => {
+                        to_unicode = Some(map);
+                        unicode_is_predefined = true;
+                    }
+                    Err(error) => {
+                        to_unicode = Some(ToUnicodeCMap::failed(error));
+                        unicode_is_predefined = true;
+                    }
+                    Ok(None) => {}
+                }
+            }
+        }
+        let sfnt_cff_gids = super::cid::sfnt_cff_gid_map(descendant_font.as_ref(), reader);
         let first_char = font_dict
             .get_integer("FirstChar")
             .filter(|value| *value >= 0)
@@ -341,7 +463,12 @@ impl FontResolver {
             widths.iter().sum::<f64>() / widths.len() as f64
         };
         let predefined_cmap = if font_type.is_cid() {
-            predefined_cmap_name(font_dict, reader).and_then(|name| predefined_cmap::lookup(&name))
+            cid_encoding
+                .as_ref()
+                .ok()
+                .and_then(|map| map.as_ref())
+                .and_then(|map| map.program.name.as_deref())
+                .and_then(predefined_cmap::lookup)
         } else {
             None
         };
@@ -349,19 +476,51 @@ impl FontResolver {
             .get_name("BaseFont")
             .and_then(standard14_base_name);
         let code_size = if font_type.is_cid() {
-            to_unicode
+            cid_encoding
                 .as_ref()
-                .map(ToUnicodeCMap::code_size)
-                .or_else(|| predefined_cmap.map(|info| info.code_size))
+                .ok()
+                .and_then(|map| map.as_ref().map(|map| map.code_size))
+                .or_else(|| {
+                    to_unicode
+                        .as_ref()
+                        .map(ToUnicodeCMap::code_size)
+                        .or_else(|| predefined_cmap.map(|info| info.code_size))
+                })
                 .unwrap_or(2)
         } else {
             1
         };
 
+        let code_space = if !font_type.is_cid() {
+            CodeSpace::fixed(1).map(std::sync::Arc::new)
+        } else {
+            match &cid_encoding {
+                Err(error) => Err(error.clone()),
+                Ok(Some(map)) => Ok(map.shared_space()),
+                Ok(None) => match to_unicode.as_ref().and_then(ToUnicodeCMap::shared_space) {
+                    Some(space) => Ok(space),
+                    None => CodeSpace::fixed(code_size.max(1)).map(std::sync::Arc::new),
+                },
+            }
+        };
+        let code_size = code_space
+            .as_ref()
+            .ok()
+            .and_then(|space| space.fixed_length())
+            .unwrap_or(0);
+        let unicode_encoding = match (&code_space, &to_unicode) {
+            (Err(error), _) => Err(error.clone()),
+            (Ok(space), Some(map)) => map.validate_codes(space),
+            (_, None) => Ok(()),
+        };
         // Writing mode: only composite (Type0) fonts can be vertical, and only
         // via their /Encoding CMap. Simple fonts are always horizontal.
         let wmode = if matches!(font_type, FontType::Type0) {
-            detect_wmode(font_dict, reader)
+            cid_encoding
+                .as_ref()
+                .ok()
+                .and_then(|map| map.as_ref().and_then(|map| map.wmode))
+                .unwrap_or(0)
         } else {
             0
         };
@@ -376,9 +535,13 @@ impl FontResolver {
             descendant_font,
             default_width,
             code_size,
-            predefined_cmap,
+            unicode_is_predefined,
             wmode,
             standard14_base,
+            cid_encoding,
+            sfnt_cff_gids,
+            code_space,
+            unicode_encoding,
         }
     }
 
@@ -663,20 +826,10 @@ pub fn predefined_cmap_name(
     let resolved = resolve_optional(encoding, reader).unwrap_or_else(|_| encoding.clone());
     match resolved {
         PdfObject::Name(name) => Some(name),
-        PdfObject::Stream { dict, raw } => {
-            if let Some(name) = dict.get_name("CMapName") {
-                return Some(name.to_string());
-            }
-            let decoded = match reader {
-                Some(reader) => {
-                    let stream = PdfObject::Stream { dict, raw };
-                    decode_stream_lossless(&stream, reader)
-                        .map(|d| d.data)
-                        .unwrap_or_default()
-                }
-                None => decode_stream_from_dict(&dict, &raw).unwrap_or_default(),
-            };
-            cmap_name_from_bytes(&decoded)
+        PdfObject::Stream { .. } => {
+            super::cmap_stream::read(&resolved, reader, super::cmap_program::Kind::Cid, 0)
+                .ok()
+                .and_then(|program| program.name)
         }
         _ => None,
     }
@@ -751,85 +904,25 @@ pub fn lookup_cid_width(cid: u32, desc_dict: &PdfDictionary) -> f64 {
     dw
 }
 
-/// Determine the writing mode (0 = horizontal, 1 = vertical) of a Type0 font
-/// from its `/Encoding`. The encoding is either a predefined CMap name (whose
-/// `-V`/`-H` suffix, or `Identity-V`/`Identity-H`, declares the mode) or an
-/// embedded CMap stream carrying a `/WMode` entry. Defaults to horizontal.
+/// Determine writing mode through the same resolved Encoding used by glyph
+/// decoding. Comments, strings and guessed name suffixes are not authoritative.
 fn detect_wmode(font_dict: &PdfDictionary, reader: Option<&PdfReader>) -> u8 {
-    let Some(encoding) = font_dict.get("Encoding") else {
-        return 0;
-    };
-    let resolved = resolve_optional(encoding, reader).unwrap_or_else(|_| encoding.clone());
-    match resolved {
-        // Predefined CMap referenced by name: the name's suffix is authoritative.
-        PdfObject::Name(name) => wmode_from_cmap_name(&name),
-        // Embedded CMap stream: read its /WMode key, falling back to the
-        // CMapName / name suffix inside the decoded program.
-        PdfObject::Stream { dict, raw } => {
-            if let Some(w) = dict.get_integer("WMode") {
-                return u8::from(w == 1);
-            }
-            let decoded = match reader {
-                Some(reader) => {
-                    let stream = PdfObject::Stream { dict, raw };
-                    decode_stream_lossless(&stream, reader)
-                        .map(|d| d.data)
-                        .unwrap_or_default()
-                }
-                None => decode_stream_from_dict(&dict, &raw).unwrap_or_default(),
-            };
-            wmode_from_cmap_bytes(&decoded)
-        }
-        _ => 0,
-    }
+    super::cid_encoding::CidEncoding::load(font_dict, reader)
+        .ok()
+        .flatten()
+        .and_then(|map| map.wmode)
+        .unwrap_or(0)
 }
-
-/// Vertical iff a predefined CMap name ends in `-V` (e.g. `Identity-V`,
-/// `UniGB-UCS2-V`, `UniJIS-UCS2-V`). All `-H` names and anything else are
-/// horizontal.
+#[cfg(test)]
 fn wmode_from_cmap_name(name: &str) -> u8 {
-    predefined_cmap::wmode_from_name(name).unwrap_or_else(|| u8::from(name.ends_with("-V")))
+    predefined_cmap::wmode_from_name(name).unwrap_or(0)
 }
-
-/// Scan a decoded CMap program for an explicit `/WMode 1` declaration or a
-/// `/CMapName` ending in `-V`. Conservative: defaults to horizontal.
+#[cfg(test)]
 fn wmode_from_cmap_bytes(bytes: &[u8]) -> u8 {
-    let text = String::from_utf8_lossy(bytes);
-    if let Some(idx) = text.find("/WMode") {
-        let rest = text[idx + "/WMode".len()..].trim_start();
-        if rest.starts_with('1') {
-            return 1;
-        }
-        if rest.starts_with('0') {
-            return 0;
-        }
-    }
-    if let Some(idx) = text.find("/CMapName") {
-        let rest = &text[idx..];
-        // Match a token like `/CMapName /Something-V def`.
-        if let Some(slash) = rest[1..].find('/') {
-            let after = &rest[1 + slash + 1..];
-            let token: String = after
-                .chars()
-                .take_while(|c| !c.is_whitespace() && *c != '/')
-                .collect();
-            return wmode_from_cmap_name(token.trim());
-        }
-    }
-    0
-}
-
-fn cmap_name_from_bytes(bytes: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(bytes);
-    let idx = text.find("/CMapName")?;
-    let rest = &text[idx..];
-    let slash = rest[1..].find('/')?;
-    let after = &rest[1 + slash + 1..];
-    let token: String = after
-        .chars()
-        .take_while(|c| !c.is_whitespace() && *c != '/')
-        .collect();
-    (!token.is_empty()).then_some(token)
+    super::cmap_program::Program::parse(bytes, super::cmap_program::Kind::Cid, None, false)
+        .ok()
+        .and_then(|program| program.wmode)
+        .unwrap_or(0)
 }
 
 /// Look up vertical metrics `(w1y, v_x, v_y)` for a CID from a CIDFont's `/W2`
@@ -889,7 +982,7 @@ pub fn lookup_cid_vertical(cid: u32, w0: f64, desc_dict: &PdfDictionary) -> (f64
                     break;
                 };
                 idx += 1;
-                if idx + 2 > w2.len() {
+                if w2.len().saturating_sub(idx) < 3 {
                     break;
                 }
                 let w1y = w2[idx].as_number().unwrap_or(def_w1y);
@@ -922,19 +1015,7 @@ fn parse_to_unicode(
     font_dict: &PdfDictionary,
     reader: Option<&PdfReader>,
 ) -> Option<ToUnicodeCMap> {
-    let object = font_dict.get("ToUnicode")?;
-    let resolved = resolve_optional(object, reader).ok()?;
-    let PdfObject::Stream { dict, raw } = resolved else {
-        return None;
-    };
-    let decoded = match reader {
-        Some(reader) => {
-            let stream = PdfObject::Stream { dict, raw };
-            decode_stream_lossless(&stream, reader).ok()?.data
-        }
-        None => decode_stream_from_dict(&dict, &raw).ok()?,
-    };
-    Some(ToUnicodeCMap::parse(&decoded))
+    Some(ToUnicodeCMap::load(font_dict.get("ToUnicode")?, reader))
 }
 
 fn build_encoding_table(
@@ -1391,7 +1472,7 @@ fn get_descendant_font_optional(
         _ => return None,
     };
 
-    match descendants.first()?.clone() {
+    let descendant = match descendants.first()?.clone() {
         PdfObject::Dictionary(dict) => Some(dict),
         PdfObject::Reference { number, generation } => {
             let reader = reader?;
@@ -1401,7 +1482,29 @@ fn get_descendant_font_optional(
             }
         }
         _ => None,
+    }?;
+
+    // Width lookup is intentionally reader-free and hot: normalize the four
+    // metric entries once while the resolver still owns a reader. Real-world
+    // producers routinely store /W and /W2 (and, less often, /DW or /DW2) as
+    // indirect objects. Validation already resolved those objects, but keeping
+    // the unresolved references here made lookup_cid_width/vertical silently
+    // fall back to the defaults. That distorted text cursors, inline-edit
+    // placement, and rendering even though the same font had passed validation.
+    let mut descendant = descendant;
+    if let Some(reader) = reader {
+        for key in ["DW", "W", "DW2", "W2"] {
+            let Some(value) = descendant.get(key).cloned() else {
+                continue;
+            };
+            if matches!(value, PdfObject::Reference { .. }) {
+                if let Ok(resolved) = reader.resolve(value) {
+                    descendant.insert(key, resolved);
+                }
+            }
+        }
     }
+    Some(descendant)
 }
 
 fn resolve_optional(object: &PdfObject, reader: Option<&PdfReader>) -> Result<PdfObject> {
@@ -1414,6 +1517,61 @@ fn resolve_optional(object: &PdfObject, reader: Option<&PdfReader>) -> Result<Pd
 #[cfg(test)]
 mod cid_font_tests {
     use super::*;
+
+    #[test]
+    fn vertical_spacing_is_signed_and_independent_of_advance_direction() {
+        assert_eq!(vertical_text_advance(-1000.0, 10.0, 2.0, 3.0, false), -8.0);
+        assert_eq!(vertical_text_advance(-1000.0, 10.0, 2.0, 3.0, true), -5.0);
+        assert_eq!(
+            vertical_text_advance(-1000.0, 10.0, -2.0, -3.0, true),
+            -15.0
+        );
+        assert_eq!(vertical_text_advance(1000.0, 10.0, 2.0, 3.0, true), 15.0);
+        assert_eq!(vertical_text_advance(-1000.0, -10.0, 2.0, 3.0, true), 15.0);
+    }
+
+    #[test]
+    fn tj_adjustment_uses_writing_axis_not_rotated_matrix_or_unicode() {
+        assert_eq!(
+            text_position_adjustment(-1600.0, 10.0, 50.0, true),
+            [0.0, -16.0]
+        );
+        assert_eq!(
+            text_position_adjustment(-1600.0, 10.0, 50.0, false),
+            [-8.0, 0.0]
+        );
+        assert_eq!(
+            text_position_adjustment(500.0, 10.0, 200.0, true),
+            [0.0, 5.0]
+        );
+    }
+
+    #[test]
+    fn word_spacing_depends_on_encoded_byte_not_unicode_space() {
+        let mut encoding = PdfDictionary::empty();
+        encoding.insert("BaseEncoding", PdfObject::Name("WinAnsiEncoding".into()));
+        encoding.insert(
+            "Differences",
+            PdfObject::Array(vec![
+                PdfObject::Integer(32),
+                PdfObject::Name("A".into()),
+                PdfObject::Integer(65),
+                PdfObject::Name("space".into()),
+            ]),
+        );
+        let mut font = PdfDictionary::empty();
+        font.insert("Subtype", PdfObject::Name("Type1".into()));
+        font.insert("Encoding", PdfObject::Dictionary(encoding));
+        let simple = FontResolver::new_from_dict_only(&font);
+        assert_eq!(simple.decode_char(65), " ");
+        assert!(!simple.is_space_code(65));
+        assert!(simple.is_space_code(32));
+        font.insert("Subtype", PdfObject::Name("Type0".into()));
+        font.insert("Encoding", PdfObject::Name("Identity-V".into()));
+        let composite = FontResolver::new_from_dict_only(&font);
+        assert_eq!(composite.code_size(), 2);
+        assert!(!composite.is_space_code(32));
+    }
 
     #[test]
     fn lookup_cid_width_returns_dw_when_w_absent() {
@@ -1517,16 +1675,30 @@ mod cid_font_tests {
         dict.insert("Encoding", PdfObject::Name("UniJIS-UTF16-H".to_string()));
 
         let resolver = FontResolver::new_from_dict_only(&dict);
-        assert_eq!(resolver.code_size(), 2);
+        assert_eq!(resolver.code_size(), 0);
         assert_eq!(resolver.decode_string(&[0x65, 0xE5]), "日");
         assert!(!resolver.is_vertical());
     }
 
     #[test]
     fn wmode_from_embedded_cmap_bytes() {
-        assert_eq!(wmode_from_cmap_bytes(b"/WMode 1 def"), 1);
-        assert_eq!(wmode_from_cmap_bytes(b"/WMode 0 def"), 0);
-        assert_eq!(wmode_from_cmap_bytes(b"/CMapName /Adobe-Japan1-V def"), 1);
+        let space = "1 begincodespacerange <0000> <ffff> endcodespacerange";
+        assert_eq!(
+            wmode_from_cmap_bytes(format!("/WMode 1 def {space}").as_bytes()),
+            1
+        );
+        assert_eq!(
+            wmode_from_cmap_bytes(format!("/WMode 0 def {space}").as_bytes()),
+            0
+        );
+        assert_eq!(
+            wmode_from_cmap_bytes(format!("/CMapName /Custom-V def {space}").as_bytes()),
+            0
+        );
+        assert_eq!(
+            wmode_from_cmap_bytes(format!("/Notice (/WMode 1 def) def {space}").as_bytes()),
+            0
+        );
         assert_eq!(wmode_from_cmap_bytes(b"no wmode here"), 0);
     }
 

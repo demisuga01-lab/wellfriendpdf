@@ -27,6 +27,7 @@ enum {
 };
 
 typedef struct WellfriendDocument WellfriendDocument;
+typedef struct WellfriendStorySession WellfriendStorySession;
 typedef struct WellfriendProgressiveRenderJob WellfriendProgressiveRenderJob;
 typedef struct WellfriendRenderContract WellfriendRenderContract;
 typedef struct WellfriendRenderCancellation WellfriendRenderCancellation;
@@ -42,6 +43,41 @@ typedef struct WellfriendBuffer {
   uint8_t *data;
   size_t len;
 } WellfriendBuffer;
+
+/* Retained linked-story editing. Callers serialize session use/free. The
+ * optional RenderCancellation is a general cooperative token and may be
+ * signalled from another thread; it must remain live during the call.
+ * Input is copied, 1..=256 MiB. The password-aware constructor unlocks a
+ * Standard-handler encrypted PDF once and exposes an unencrypted working-copy
+ * status; request hashes bind that working copy and no password is retained.
+ * JSON commands are length-delimited UTF-8 (1..=32 MiB), not C strings.
+ * Outputs use wellfriendpdf_buffer_free; errors use wellfriendpdf_error_free.
+ * Failed calls initialize out to {NULL,0}; do not pass an unfreed buffer.
+ * Output/error slots must not overlap each other, input buffers or any handle.
+ * A PANIC poisons a session: close it and reopen from a known revision.
+ * Commands: status, pages, saved_stories, source_model, image_sources,
+ * annotation_sources, tag_sources, page_geometry, synchronize_table_values,
+ * preview, checkpoint (exact request + receipt), undo, redo, merge_text,
+ * merge_structure. See docs/native_story_sessions.md for request shapes. */
+WELLFRIENDPDF_API WellfriendStorySession *wellfriendpdf_story_session_open(
+    const uint8_t *data, size_t len, const WellfriendRenderCancellation *cancellation,
+    char **error_out);
+/* Encrypted input requires the exact permissions/owner password bytes because
+ * the retained editor exposes an explicitly unencrypted working revision. */
+WELLFRIENDPDF_API WellfriendStorySession *wellfriendpdf_story_session_open_with_password(
+    const uint8_t *data, size_t len, const uint8_t *password, size_t password_len,
+    const WellfriendRenderCancellation *cancellation, char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_story_session_command_json(
+    WellfriendStorySession *session, const uint8_t *json, size_t len,
+    const WellfriendRenderCancellation *cancellation, WellfriendBuffer *out,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_story_session_bytes(
+    WellfriendStorySession *session, WellfriendBuffer *out, char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_story_session_render_page_png(
+    WellfriendStorySession *session, size_t page, uint32_t dpi,
+    const WellfriendRenderCancellation *cancellation, WellfriendBuffer *out,
+    char **error_out);
+WELLFRIENDPDF_API void wellfriendpdf_story_session_free(WellfriendStorySession *session);
 
 typedef int (*WellfriendProgressiveViewerCallback)(
     const char *event_json,
@@ -842,6 +878,15 @@ WELLFRIENDPDF_API int wellfriendpdf_document_to_docx(
     WellfriendBuffer *out_buffer,
     char **error_out);
 
+/* DOCX export with an explicit layout policy: "flowing",
+ * "page-faithful", or "hybrid". */
+WELLFRIENDPDF_API int wellfriendpdf_document_to_docx_with_layout(
+    const WellfriendDocument *document,
+    int include_images,
+    const char *layout,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
 WELLFRIENDPDF_API int wellfriendpdf_docx_to_pdf(
     const uint8_t *data,
     uintptr_t len,
@@ -867,6 +912,20 @@ WELLFRIENDPDF_API int wellfriendpdf_document_fonts_json(
 
 WELLFRIENDPDF_API int wellfriendpdf_document_signatures_json(
     const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* JSON VerifyOptions variants. Passing options_json == NULL uses the default
+ * offline validation policy. Evidence output can contain caller-supplied DER
+ * material and must be treated as sensitive. */
+WELLFRIENDPDF_API int wellfriendpdf_document_signatures_with_options_json(
+    const WellfriendDocument *document,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_signature_validation_with_evidence_json(
+    const WellfriendDocument *document,
+    const char *options_json,
     char **out_json,
     char **error_out);
 
@@ -1287,6 +1346,22 @@ WELLFRIENDPDF_API int wellfriendpdf_document_secure_mutation_closeout_report_jso
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_form_js_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_form_action_graph_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_interactive_data_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_form_action_policy_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_report_json(
     const WellfriendDocument *document,
     char **out_json,
@@ -1389,9 +1464,105 @@ WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_text_rang
     size_t page,
     char **out_json,
     char **error_out);
+
+/* Form-JavaScript policy mutations. options_json may be NULL. */
+WELLFRIENDPDF_API int wellfriendpdf_document_form_js_sanitize_json(
+    const WellfriendDocument *document,
+    const char *options_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_form_js_flatten_values_json(
+    const WellfriendDocument *document,
+    const char *options_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_paint_partition_propose_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_paint_partition_preview_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    const char *proposal_json,
+    const char *approval_json,
+    const uint8_t *font_data,
+    size_t font_len,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_advanced_editing_closeout_paint_partition_authenticate_receipt_json(
+    const char *publication_receipt_json,
+    const char *key_id,
+    const char *audience,
+    uint64_t issued_at_unix,
+    uint64_t expires_at_unix,
+    const uint8_t *hmac_key,
+    size_t hmac_key_len,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json(
+    const char *authenticated_receipt_json,
+    const char *expected_key_id,
+    const char *expected_audience,
+    uint64_t now_unix,
+    uint64_t allowed_future_skew_secs,
+    const uint8_t *hmac_key,
+    size_t hmac_key_len,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_authored_typed_table_sources_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_authored_typed_table_mutate_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_authored_typed_table_mutate_with_font_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    const uint8_t *font_data,
+    size_t font_len,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_text_range_edit_json(
     const WellfriendDocument *document,
     const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    const char *proposal_json,
+    const char *approval_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_with_font_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    const char *proposal_json,
+    const char *approval_json,
+    const uint8_t *font_data,
+    size_t font_len,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_reviewed_with_font_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    const char *proposal_json,
+    const char *approval_json,
+    const char *publication_receipt_json,
+    const uint8_t *font_data,
+    size_t font_len,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
@@ -1495,6 +1666,28 @@ WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_plan_v2_json(
     const char *request_json,
     char **out_json,
     char **error_out);
+/* Operation-specific, plan-hash-gated transfer of one saved native Figure
+ * between two saved stories. The request JSON is StoryFigureTransferRequest. */
+WELLFRIENDPDF_API int wellfriendpdf_document_story_figure_transfer_preview_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_story_figure_transfer_apply_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    const char *approved_plan_sha256,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+/* Read-only candidate preview. options_json may be NULL. PNGs are JSON byte
+ * arrays in the report; free out_json with wellfriendpdf_string_free. */
+WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_scoped_preview_v2_json(
+    const WellfriendDocument *document,
+    const char *plan_json,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_apply_v2_json(
     const WellfriendDocument *document,
     const char *plan_json,
@@ -1517,6 +1710,26 @@ WELLFRIENDPDF_API int wellfriendpdf_document_universal_editing_apply_v2_with_out
     const WellfriendDocument *document,
     const char *plan_json,
     const char *approval_json,
+    const uint8_t *output_user_password,
+    size_t output_user_password_len,
+    const uint8_t *output_owner_password,
+    size_t output_owner_password_len,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+/* Evidence-Constrained Bidirectional Edit Synthesis over multiple canonical
+ * universal-edit candidates. Only the selected candidate bytes are returned. */
+WELLFRIENDPDF_API int wellfriendpdf_document_ecbes_universal_edit_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+/* Binary-safe apply-only credentials for secured ECBES candidates. NULL owner
+ * plus zero length reuses user; non-NULL owner plus zero length is empty. */
+WELLFRIENDPDF_API int wellfriendpdf_document_ecbes_universal_edit_with_output_credential_bytes_json(
+    const WellfriendDocument *document,
+    const char *request_json,
     const uint8_t *output_user_password,
     size_t output_user_password_len,
     const uint8_t *output_owner_password,
@@ -1921,6 +2134,27 @@ WELLFRIENDPDF_API int wellfriendpdf_document_redact_terms_json(
 /* SDK feature / capability report JSON: engine version, envelope version, and
  * compiled capabilities. Free `*out_json` with wellfriendpdf_string_free. */
 WELLFRIENDPDF_API int wellfriendpdf_feature_report_json(
+    char **out_json,
+    char **error_out);
+
+/* Effective runtime configuration/capabilities. config_json may be NULL to
+ * use the default runtime configuration. */
+WELLFRIENDPDF_API int wellfriendpdf_runtime_effective_config_json(
+    const char *config_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_runtime_capabilities_json(
+    const char *config_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_ocr_provider_matrix_json(
+    char **out_json,
+    char **error_out);
+
+/* Word-pagination audit for one explicit layout policy string. */
+WELLFRIENDPDF_API int wellfriendpdf_document_word_pagination_audit_json(
+    const WellfriendDocument *document,
+    const char *layout,
     char **out_json,
     char **error_out);
 

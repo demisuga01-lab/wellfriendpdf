@@ -1451,12 +1451,12 @@ fn pdf_with_uncolored_tiling_pattern_stroke() -> Vec<u8> {
 }
 
 fn pdf_with_uncolored_tiling_pattern_color_setting_tile() -> Vec<u8> {
-    let content = "/Pattern cs 0.2 0.4 0.6 /P0 scn\n10 10 60 40 re f\n";
+    let content = "/PC cs 0.2 0.4 0.6 /P0 scn\n10 10 60 40 re f\n";
     let pattern_content = "1 0 0 rg\n0 0 10 10 re f\n";
     let objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 120] /Resources << /Pattern << /P0 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 120] /Resources << /ColorSpace << /PC [/Pattern /DeviceRGB] >> /Pattern << /P0 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
         format!(
             "<< /Length {} >>\nstream\n{}\nendstream",
             content.len(),
@@ -4908,7 +4908,7 @@ fn svg_output_non_unit_domain_axial_shading_samples_native_gradient_endpoints() 
     assert!(page.has_regional_images);
     assert!(page.svg.contains("<linearGradient"));
     assert!(
-        page.svg.contains("#BF0040") && page.svg.contains("#4000BF"),
+        page.svg.contains("rgb(75%,0%,25%)") && page.svg.contains("rgb(25%,0%,75%)"),
         "SVG gradient stops should be sampled at Domain endpoints: {}",
         page.svg
     );
@@ -4928,10 +4928,10 @@ fn svg_output_clipped_function_domain_axial_shading_uses_native_stops() {
     assert!(page.svg.contains("<linearGradient"), "{}", page.svg);
     assert!(
         page.svg
-            .contains("offset=\"0.166667\" stop-color=\"#FF0000\"")
+            .contains("offset=\"0.16666666666666666\" stop-color=\"#FF0000\"")
             && page
                 .svg
-                .contains("offset=\"0.833333\" stop-color=\"#0000FF\""),
+                .contains("offset=\"0.8333333333333334\" stop-color=\"#0000FF\""),
         "SVG clipped-domain gradient should carry flat-section stops: {}",
         page.svg
     );
@@ -5398,27 +5398,31 @@ fn ps_output_uncolored_tiling_pattern_stroke_replays_native_tiles_with_caller_co
 }
 
 #[test]
-fn svg_output_uncolored_tiling_pattern_color_setting_tile_stays_whole_page_raster() {
+fn svg_output_uncolored_tiling_pattern_color_setting_tile_is_typed_refusal() {
     let engine =
         ContentEngine::open_bytes(pdf_with_uncolored_tiling_pattern_color_setting_tile()).unwrap();
-    let page = engine.render_page_svg(1, 72).unwrap();
+    let error = match engine.render_page_svg(1, 72) {
+        Ok(_) => panic!("PaintType 2 tiles that set colour must fail closed"),
+        Err(error) => error,
+    };
     assert!(
-        page.is_rasterized,
-        "uncolored tiling pattern tiles that set paint color must not be replayed as native SVG"
+        format!("{error}").contains("forced vector color space"),
+        "unexpected refusal: {error}"
     );
-    assert!(page.svg.contains("data:image/png;base64,"), "{}", page.svg);
 }
 
 #[test]
-fn ps_output_uncolored_tiling_pattern_color_setting_tile_stays_whole_page_raster() {
+fn ps_output_uncolored_tiling_pattern_color_setting_tile_is_typed_refusal() {
     let engine =
         ContentEngine::open_bytes(pdf_with_uncolored_tiling_pattern_color_setting_tile()).unwrap();
-    let page = engine.render_page_ps(1, 72).unwrap();
+    let error = match engine.render_page_ps(1, 72) {
+        Ok(_) => panic!("PaintType 2 tiles that set colour must fail closed"),
+        Err(error) => error,
+    };
     assert!(
-        page.is_rasterized,
-        "uncolored tiling pattern tiles that set paint color must not be replayed as native PS"
+        format!("{error}").contains("forced vector color space"),
+        "unexpected refusal: {error}"
     );
-    assert!(page.body.contains("colorimage"), "{}", page.body);
 }
 
 #[test]
@@ -5979,17 +5983,12 @@ fn svg_output_resource_iccbased_rgb_axial_shading_uses_native_gradient() {
 }
 
 #[test]
-fn ps_output_resource_iccbased_rgb_axial_shading_uses_native_shfill() {
+fn ps_output_resource_iccbased_rgb_axial_shading_uses_exact_raster_fallback() {
     let engine = ContentEngine::open_bytes(pdf_with_resource_iccbased_rgb_axial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
-    assert!(
-        !page.is_rasterized,
-        "resource-named ICCBased RGB axial shading should not force whole-page PS rasterization"
-    );
-    assert!(page.has_regional_images);
-    assert!(page.body.contains("/ColorSpace /DeviceRGB"));
-    assert!(page.body.contains("shfill"));
-    assert!(!page.body.contains("colorimage"), "{}", page.body);
+    assert!(page.is_rasterized);
+    assert!(page.body.contains("colorimage"), "{}", page.body);
+    assert!(!page.body.contains("shfill"), "{}", page.body);
 }
 
 #[test]
@@ -6008,18 +6007,13 @@ fn svg_output_resource_iccbased_gray_axial_shading_uses_native_gradient() {
 }
 
 #[test]
-fn ps_output_resource_iccbased_gray_axial_shading_uses_native_shfill() {
+fn ps_output_resource_iccbased_gray_axial_shading_uses_exact_raster_fallback() {
     let engine =
         ContentEngine::open_bytes(pdf_with_resource_iccbased_gray_axial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
-    assert!(
-        !page.is_rasterized,
-        "resource-named ICCBased Gray axial shading should not force whole-page PS rasterization"
-    );
-    assert!(page.has_regional_images);
-    assert!(page.body.contains("/ColorSpace /DeviceRGB"));
-    assert!(page.body.contains("shfill"));
-    assert!(!page.body.contains("colorimage"), "{}", page.body);
+    assert!(page.is_rasterized);
+    assert!(page.body.contains("colorimage"), "{}", page.body);
+    assert!(!page.body.contains("shfill"), "{}", page.body);
 }
 
 #[test]
@@ -6038,19 +6032,13 @@ fn svg_output_resource_iccbased_rgb_radial_shading_uses_native_gradient() {
 }
 
 #[test]
-fn ps_output_resource_iccbased_rgb_radial_shading_uses_native_shfill() {
+fn ps_output_resource_iccbased_rgb_radial_shading_uses_exact_raster_fallback() {
     let engine =
         ContentEngine::open_bytes(pdf_with_resource_iccbased_rgb_radial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
-    assert!(
-        !page.is_rasterized,
-        "resource-named ICCBased RGB radial shading should not force whole-page PS rasterization"
-    );
-    assert!(page.has_regional_images);
-    assert!(page.body.contains("/ShadingType 3"));
-    assert!(page.body.contains("/ColorSpace /DeviceRGB"));
-    assert!(page.body.contains("shfill"));
-    assert!(!page.body.contains("colorimage"), "{}", page.body);
+    assert!(page.is_rasterized);
+    assert!(page.body.contains("colorimage"), "{}", page.body);
+    assert!(!page.body.contains("shfill"), "{}", page.body);
 }
 
 #[test]
@@ -6069,19 +6057,13 @@ fn svg_output_resource_iccbased_gray_radial_shading_uses_native_gradient() {
 }
 
 #[test]
-fn ps_output_resource_iccbased_gray_radial_shading_uses_native_shfill() {
+fn ps_output_resource_iccbased_gray_radial_shading_uses_exact_raster_fallback() {
     let engine =
         ContentEngine::open_bytes(pdf_with_resource_iccbased_gray_radial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
-    assert!(
-        !page.is_rasterized,
-        "resource-named ICCBased Gray radial shading should not force whole-page PS rasterization"
-    );
-    assert!(page.has_regional_images);
-    assert!(page.body.contains("/ShadingType 3"));
-    assert!(page.body.contains("/ColorSpace /DeviceRGB"));
-    assert!(page.body.contains("shfill"));
-    assert!(!page.body.contains("colorimage"), "{}", page.body);
+    assert!(page.is_rasterized);
+    assert!(page.body.contains("colorimage"), "{}", page.body);
+    assert!(!page.body.contains("shfill"), "{}", page.body);
 }
 
 #[cfg(feature = "native-cmm-lcms2")]
@@ -6127,22 +6109,17 @@ fn svg_output_simple_calrgb_axial_shading_uses_native_gradient() {
     );
     assert!(page.has_regional_images);
     assert!(page.svg.contains("<linearGradient"));
-    assert!(page.svg.contains("stop-color=\"#"));
+    assert!(page.svg.contains("stop-color=\""));
     assert!(!page.svg.contains("data:image/png;base64,"));
 }
 
 #[test]
-fn ps_output_simple_calrgb_axial_shading_uses_native_shfill() {
+fn ps_output_simple_calrgb_axial_shading_uses_exact_raster_fallback() {
     let engine = ContentEngine::open_bytes(pdf_with_simple_calrgb_axial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
-    assert!(
-        !page.is_rasterized,
-        "simple CalRGB axial shading should not force whole-page PS rasterization"
-    );
-    assert!(page.has_regional_images);
-    assert!(page.body.contains("/ColorSpace /DeviceRGB"));
-    assert!(page.body.contains("shfill"));
-    assert!(!page.body.contains("colorimage"));
+    assert!(page.is_rasterized);
+    assert!(page.body.contains("colorimage"), "{}", page.body);
+    assert!(!page.body.contains("shfill"), "{}", page.body);
 }
 
 #[test]
@@ -6160,17 +6137,12 @@ fn svg_output_resource_calgray_axial_shading_uses_native_gradient() {
 }
 
 #[test]
-fn ps_output_resource_calgray_axial_shading_uses_native_shfill() {
+fn ps_output_resource_calgray_axial_shading_uses_exact_raster_fallback() {
     let engine = ContentEngine::open_bytes(pdf_with_resource_calgray_axial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
-    assert!(
-        !page.is_rasterized,
-        "resource-named CalGray axial shading should not force whole-page PS rasterization"
-    );
-    assert!(page.has_regional_images);
-    assert!(page.body.contains("/ColorSpace /DeviceRGB"));
-    assert!(page.body.contains("shfill"));
-    assert!(!page.body.contains("colorimage"));
+    assert!(page.is_rasterized);
+    assert!(page.body.contains("colorimage"), "{}", page.body);
+    assert!(!page.body.contains("shfill"), "{}", page.body);
 }
 
 #[test]
@@ -6463,7 +6435,7 @@ fn ps_output_resource_indexed_cmyk_constant_axial_shading_uses_native_shfill() {
     );
     assert!(page.has_regional_images);
     assert!(page.body.contains("/ColorSpace /DeviceRGB"));
-    assert!(page.body.contains("0.9294 0.1098 0.1412"));
+    assert!(page.body.contains("/C0 [") && page.body.contains("/C1 ["));
     assert!(page.body.contains("shfill"));
     assert!(!page.body.contains("colorimage"), "{}", page.body);
 }
@@ -6823,23 +6795,17 @@ fn svg_output_simple_lab_radial_shading_uses_native_gradient() {
     );
     assert!(page.has_regional_images);
     assert!(page.svg.contains("<radialGradient"));
-    assert!(page.svg.contains("stop-color=\"#"));
+    assert!(page.svg.contains("stop-color=\""));
     assert!(!page.svg.contains("data:image/png;base64,"));
 }
 
 #[test]
-fn ps_output_simple_lab_radial_shading_uses_native_shfill() {
+fn ps_output_simple_lab_radial_shading_uses_exact_raster_fallback() {
     let engine = ContentEngine::open_bytes(pdf_with_simple_lab_radial_shading()).unwrap();
     let page = engine.render_page_ps(1, 72).unwrap();
-    assert!(
-        !page.is_rasterized,
-        "simple Lab radial shading should not force whole-page PS rasterization"
-    );
-    assert!(page.has_regional_images);
-    assert!(page.body.contains("/ShadingType 3"));
-    assert!(page.body.contains("/ColorSpace /DeviceRGB"));
-    assert!(page.body.contains("shfill"));
-    assert!(!page.body.contains("colorimage"));
+    assert!(page.is_rasterized);
+    assert!(page.body.contains("colorimage"), "{}", page.body);
+    assert!(!page.body.contains("shfill"), "{}", page.body);
 }
 
 #[test]

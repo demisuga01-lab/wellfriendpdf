@@ -50,6 +50,13 @@ impl ContentParser {
         Self::parse_tokens_inner(tokens, false, true, Some(cancel))
     }
 
+    pub(crate) fn parse_tokens_strict_cancellable(
+        tokens: impl IntoIterator<Item = Result<ContentToken>>,
+        cancel: &CancelToken,
+    ) -> Result<Vec<ContentOperation>> {
+        Self::parse_tokens_inner(tokens, true, true, Some(cancel))
+    }
+
     fn parse_tokens_inner(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
         propagate_all_errors: bool,
@@ -273,7 +280,7 @@ pub fn expand_inline_image_keys(dict: &mut PdfDictionary) {
     *dict = expanded;
 }
 
-fn normalize_inline_image_operands(operands: Vec<Operand>) -> Result<Vec<Operand>> {
+pub(crate) fn normalize_inline_image_operands(operands: Vec<Operand>) -> Result<Vec<Operand>> {
     let mut dict = PdfDictionary::empty();
     let mut iter = operands.into_iter().enumerate();
     while let Some((key_index, operand)) = iter.next() {
@@ -659,8 +666,8 @@ mod tests {
         assert!(entries
             .get(1)
             .and_then(Operand::as_dictionary)
-            .is_some_and(|dict| dict.iter().any(|(key, value)| {
-                key == "Predictor" && value.as_integer() == Some(15)
-            })));
+            .is_some_and(|dict| dict
+                .iter()
+                .any(|(key, value)| { key == "Predictor" && value.as_integer() == Some(15) })));
     }
 }

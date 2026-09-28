@@ -46,6 +46,7 @@ use crate::filters::DecodeLimits;
 use crate::images::decoder::ImageDecoder;
 use crate::images::locator::ImageReference;
 use crate::object::{PdfDictionary, PdfObject};
+use crate::reader::PdfReader;
 use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::glyph_outline::{font_size_scale, get_upem};
 use crate::render::line::DashState;
@@ -61,7 +62,7 @@ use crate::render::vector_fallback::{
     classify_page_for_svg_output_with_reader, classify_scoped_svg_vector_output,
     decode_inline_image_region, ensure_regional_stencil_mask, image_device_placement,
     inline_stencil_mask_to_rgba, load_vector_form_program, load_vector_shading,
-    load_vector_shading_pattern, load_vector_tiling_pattern, merged_vector_resources,
+    load_vector_shading_pattern, load_vector_tiling_pattern,
     resolved_regional_image_color_space_override, stencil_mask_paints_ones,
     vector_uncolored_tiling_paint_color, VectorFallbackDecision, VectorShading, VectorShadingStop,
     VectorTilingPatternPaintType, VectorTilingPatternProgram, MAX_VECTOR_FORM_DEPTH,
@@ -173,6 +174,7 @@ fn render_vector_page(
     let mut sink = SvgSink::new(w, h);
     let mut state = SvgRenderState {
         engine,
+        page_resources: resources.clone(),
         resources: resources.clone(),
         viewport: viewport.clone(),
         gs: GraphicsState::default(),
@@ -233,13 +235,14 @@ fn regional_image_reference(
     generation_number: u16,
     dict: &PdfDictionary,
     is_mask: bool,
+    reader: &PdfReader,
 ) -> Result<ImageReference> {
     let context = format!("regional SVG image /{name}");
     let filter = extract_image_filter_names(dict, &context)?;
     let color_space = if is_mask {
         "DeviceGray".to_string()
     } else {
-        extract_image_color_space_name(dict, &context)?
+        extract_image_color_space_name(dict, reader, &context)?
     };
     Ok(ImageReference {
         page_number: 0,
@@ -350,21 +353,32 @@ fn regional_terminal_filter_carries_sample_depth(filters: &[String]) -> bool {
     )
 }
 
-fn extract_image_color_space_name(dict: &PdfDictionary, context: &str) -> Result<String> {
-    match dict.get("ColorSpace").or_else(|| dict.get("CS")) {
-        Some(PdfObject::Name(name)) => Ok(canonical_image_color_space_name(name)),
-        Some(PdfObject::Array(items)) => items
+fn extract_image_color_space_name(
+    dict: &PdfDictionary,
+    reader: &PdfReader,
+    context: &str,
+) -> Result<String> {
+    let source = dict
+        .get("ColorSpace")
+        .or_else(|| dict.get("CS"))
+        .ok_or_else(|| WellfriendError::MalformedPdf(format!("{context} missing /ColorSpace")))?;
+    let resolved = match source {
+        PdfObject::Reference { .. } => reader.resolve(source.clone()).map_err(|err| {
+            WellfriendError::MalformedPdf(format!("{context} failed to resolve /ColorSpace: {err}"))
+        })?,
+        other => other.clone(),
+    };
+    match &resolved {
+        PdfObject::Name(name) => Ok(canonical_image_color_space_name(&name)),
+        PdfObject::Array(items) => items
             .first()
             .and_then(PdfObject::as_name)
             .map(canonical_image_color_space_name)
             .ok_or_else(|| {
                 WellfriendError::MalformedPdf(format!("{context} malformed /ColorSpace array"))
             }),
-        Some(_) => Err(WellfriendError::MalformedPdf(format!(
+        _ => Err(WellfriendError::MalformedPdf(format!(
             "{context} /ColorSpace is not a name or array"
-        ))),
-        None => Err(WellfriendError::MalformedPdf(format!(
-            "{context} missing /ColorSpace"
         ))),
     }
 }
@@ -485,7 +499,7 @@ impl SvgSink {
         self.gradient_counter += 1;
         let stops = svg_gradient_stops(stops);
         self.defs.push_str(&format!(
-            "<linearGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" \
+            "<linearGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" color-interpolation=\"sRGB\" \
              x1=\"{x0:.3}\" y1=\"{y0:.3}\" x2=\"{x1:.3}\" y2=\"{y1:.3}\">\
              {stops}\
              </linearGradient>\n"
@@ -519,7 +533,7 @@ impl SvgSink {
             String::new()
         };
         self.defs.push_str(&format!(
-            "<radialGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" \
+            "<radialGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" color-interpolation=\"sRGB\" \
              cx=\"{cx:.3}\" cy=\"{cy:.3}\" r=\"{radius:.3}\" fx=\"{fx:.3}\" fy=\"{fy:.3}\"{focal_radius_attr}{transform_attr}>\
              {stops}\
              </radialGradient>\n"
@@ -581,6 +595,7 @@ impl SvgSink {
 struct SvgRenderState<'a> {
     engine: &'a ContentEngine,
     resources: PageResources,
+    page_resources: PageResources,
     viewport: Viewport,
     gs: GraphicsState,
     path: Path,
@@ -864,7 +879,7 @@ impl SvgRenderState<'_> {
         let context = format!("regional SVG image /{name}");
         let is_mask = regional_image_bool(&dict, "ImageMask", "IM", &context)?;
         let _ = regional_image_bool(&dict, "Interpolate", "I", &context)?;
-        let image_ref = regional_image_reference(name, obj_num, gen_num, &dict, is_mask)?;
+        let image_ref = regional_image_reference(name, obj_num, gen_num, &dict, is_mask, reader)?;
         let color_space_override = (!is_mask)
             .then(|| {
                 resolved_regional_image_color_space_override(
@@ -884,6 +899,7 @@ impl SvgRenderState<'_> {
                     color_space_obj,
                     &DecodeLimits::default(),
                     crate::render::cmm::ColorTransformOptions::default(),
+                    Some(color_space_obj),
                 )
             }
             None => self.engine.decode_image(&image_ref),
@@ -1491,15 +1507,29 @@ impl SvgRenderState<'_> {
     /// scope afterward.
     fn emit_form_xobject(&mut self, name: &str) {
         if self.form_depth >= MAX_VECTOR_FORM_DEPTH {
+            self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                "SVG Form /{name} nesting depth exceeded"
+            )));
             return;
         }
         let reader = self.engine.document().reader();
-        let Some(program) = load_vector_form_program(&self.resources, reader, name, &self.gs)
-        else {
+        let Some(program) = load_vector_form_program(
+            &self.resources,
+            &self.page_resources,
+            reader,
+            name,
+            &self.gs,
+        ) else {
+            self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                "SVG Form /{name} cannot be resolved in its resource scope"
+            )));
             return;
         };
         let form_key = (program.object_number, program.generation_number);
         if self.form_object_stack.contains(&form_key) {
+            self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                "SVG Form /{name} recursion cycle"
+            )));
             return;
         }
 
@@ -1515,8 +1545,11 @@ impl SvgRenderState<'_> {
         let saved_pending_inline = self.pending_inline_params.take();
         let saved_clip_len = self.clip_stack.len();
 
-        let form_resources = merged_vector_resources(program.resources.as_ref(), &self.resources);
-        self.resources = form_resources;
+        self.resources = program.resources.clone();
+        self.gs = program.inherited_gs.clone();
+        self.path = Path::new();
+        self.pending_clip = None;
+        self.text_clip_path = None;
         let form_t = Transform2D::from(program.form_matrix);
         let current_t = Transform2D::from(saved_gs.ctm);
         self.gs.ctm = form_t.concat(&current_t).to_array();
@@ -1527,6 +1560,7 @@ impl SvgRenderState<'_> {
         let decision = classify_scoped_svg_vector_output(
             &program.ops,
             &self.resources,
+            &self.page_resources,
             self.viewport.scale,
             reader,
             self.gs.clone(),
@@ -1538,7 +1572,11 @@ impl SvgRenderState<'_> {
         }
 
         match decision {
-            VectorFallbackDecision::WholePageRaster { .. } => {}
+            VectorFallbackDecision::WholePageRaster { reason } => {
+                self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                    "SVG Form /{name} failed scoped vector validation: {reason}"
+                )));
+            }
             VectorFallbackDecision::PureVector => {
                 self.regional_image_names.clear();
                 self.regional_inline_image_count = 0;
@@ -1921,6 +1959,7 @@ impl SvgRenderState<'_> {
         let decision = classify_scoped_svg_vector_output(
             &program.ops,
             &self.resources,
+            &self.page_resources,
             self.viewport.scale,
             reader,
             self.gs.clone(),
@@ -2529,26 +2568,32 @@ impl SvgRenderState<'_> {
             ));
             return false;
         };
-        let mut advance_y = vertical_advance / 1000.0 * self.gs.text.font_size;
-        let spacing = self.gs.text.char_spacing
-            + if glyph.is_space {
-                self.gs.text.word_spacing
-            } else {
-                0.0
-            };
-        if spacing != 0.0 {
-            let sign = if advance_y < 0.0 { -1.0 } else { 1.0 };
-            advance_y += spacing * sign;
-        }
+        let advance_y = crate::fonts::resolver::vertical_text_advance(
+            vertical_advance,
+            self.gs.text.font_size,
+            self.gs.text.char_spacing,
+            self.gs.text.word_spacing,
+            glyph.is_space,
+        );
         self.translate_text_matrix(0.0, advance_y);
         true
     }
 
     fn adjust_text_position(&mut self, adjustment: f64) {
-        let tx = adjustment / 1000.0
-            * self.gs.text.font_size
-            * (self.gs.text.horizontal_scaling / 100.0);
-        self.translate_text_matrix(tx, 0.0);
+        let vertical = self
+            .resources
+            .fonts
+            .get(&self.gs.text.font_name)
+            .is_some_and(|font| {
+                crate::fonts::resolver::uses_vertical_writing(font, self.engine.document().reader())
+            });
+        let [tx, ty] = crate::fonts::resolver::text_position_adjustment(
+            adjustment,
+            self.gs.text.font_size,
+            self.gs.text.horizontal_scaling,
+            vertical,
+        );
+        self.translate_text_matrix(tx, ty);
     }
 
     fn translate_text_matrix(&mut self, tx: f64, ty: f64) {
@@ -2677,11 +2722,28 @@ fn rgb_array_hex(c: [f32; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}", to_u8(c[0]), to_u8(c[1]), to_u8(c[2]))
 }
 
+fn svg_gradient_colour(c: [f32; 3]) -> String {
+    let c = c.map(|value| value.clamp(0.0, 1.0));
+    if c.iter()
+        .all(|&value| (value * 255.0).round() / 255.0 == value)
+    {
+        rgb_array_hex(c)
+    } else {
+        // CSS/SVG percentage RGB avoids quantizing each stop to eight bits.
+        format!(
+            "rgb({}%,{}%,{}%)",
+            f64::from(c[0]) * 100.0,
+            f64::from(c[1]) * 100.0,
+            f64::from(c[2]) * 100.0
+        )
+    }
+}
+
 fn svg_gradient_stops(stops: &[VectorShadingStop]) -> String {
     let mut out = String::new();
     for stop in stops {
         let offset = svg_gradient_offset(stop.offset);
-        let color = rgb_array_hex(stop.rgb);
+        let color = svg_gradient_colour(stop.rgb);
         out.push_str(&format!(
             "<stop offset=\"{offset}\" stop-color=\"{color}\"/>"
         ));
@@ -2691,12 +2753,17 @@ fn svg_gradient_stops(stops: &[VectorShadingStop]) -> String {
 
 fn svg_gradient_offset(offset: f64) -> String {
     let offset = offset.clamp(0.0, 1.0);
-    if offset <= 1e-9 {
+    if offset == 0.0 {
         "0".to_string()
-    } else if offset >= 1.0 - 1e-9 {
+    } else if offset == 1.0 {
         "1".to_string()
     } else {
-        format!("{offset:.6}")
+        let compact = format!("{offset:.6}");
+        if compact.parse::<f64>().ok() == Some(offset) {
+            compact
+        } else {
+            offset.to_string()
+        }
     }
 }
 
@@ -2786,6 +2853,45 @@ fn base64_encode(data: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn gradient_offsets_retain_narrow_intervals() {
+        for offset in [1e-12, 2e-12, 0.5 + 1e-12, 1.0 - 1e-12] {
+            assert_eq!(svg_gradient_offset(offset).parse::<f64>().unwrap(), offset);
+        }
+        assert_ne!(svg_gradient_offset(1e-12), svg_gradient_offset(2e-12));
+        let stops = [
+            VectorShadingStop {
+                offset: 0.0,
+                rgb: [0.0; 3],
+            },
+            VectorShadingStop {
+                offset: 1e-12,
+                rgb: [0.25; 3],
+            },
+            VectorShadingStop {
+                offset: 2e-12,
+                rgb: [0.75; 3],
+            },
+            VectorShadingStop {
+                offset: 1.0,
+                rgb: [1.0; 3],
+            },
+        ];
+        let svg = svg_gradient_stops(&stops);
+        assert!(svg.contains(&format!("offset=\"{}\"", svg_gradient_offset(1e-12))));
+        assert!(svg.contains(&format!("offset=\"{}\"", svg_gradient_offset(2e-12))));
+    }
+
+    #[test]
+    fn gradient_colours_are_not_quantized_to_eight_bit_stops() {
+        assert_eq!(svg_gradient_colour([0.5; 3]), "rgb(50%,50%,50%)");
+        assert_eq!(svg_gradient_colour([1.0, 0.0, 0.0]), "#FF0000");
+        assert_ne!(
+            svg_gradient_colour([0.5; 3]),
+            svg_gradient_colour([0.50001; 3])
+        );
+    }
+
     fn minimal_pdf() -> Vec<u8> {
         let mut pdf = b"%PDF-1.4\n".to_vec();
         let mut off = [0usize; 4];
@@ -2822,6 +2928,7 @@ mod tests {
         let mut sink = SvgSink::new(10, 10);
         let mut state = SvgRenderState {
             engine: &engine,
+            page_resources: resources.clone(),
             resources,
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 72),
             gs: GraphicsState::default(),
@@ -2866,6 +2973,7 @@ mod tests {
         let mut state = SvgRenderState {
             engine: &engine,
             resources: PageResources::default(),
+            page_resources: PageResources::default(),
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 72),
             gs: GraphicsState::default(),
             path: Path::new(),
@@ -2931,6 +3039,7 @@ mod tests {
         let mut state = SvgRenderState {
             engine: &engine,
             resources: PageResources::default(),
+            page_resources: PageResources::default(),
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 72),
             gs: GraphicsState::default(),
             path: Path::new(),

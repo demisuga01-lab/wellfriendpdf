@@ -40,6 +40,33 @@ API-key authentication is enforced by default.
   `/api/v1/analyze`, `/api/v1/pdf2img` (and `/api/v1/version`) require a valid
   key when auth is enforced.
 
+### Authenticated edit-review receipts
+
+The remote paint-partition workflow has a separate host-authentication layer.
+`POST /api/v2/universal-editing/paint-partition/preview-authenticated` performs
+the canonical private preview and adds a short-lived HMAC-SHA-256 receipt.
+`POST /api/v2/universal-editing/paint-partition/apply-authenticated` verifies
+that HMAC in constant time, checks its key id, audience, issuance and expiry,
+then still runs the engine's exact input/request/proposal/approval/font/output
+binding before returning edited bytes.
+
+- Set `WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX` to 32..=256 random bytes encoded as
+  hex. The Docker Compose profile requires it.
+- `WELLFRIENDPDF_RECEIPT_HMAC_KEY_ID` is a public rotation label;
+  `WELLFRIENDPDF_RECEIPT_HMAC_PREVIOUS_KEYS` can retain up to eight
+  `old-id=hex` verification-only keys during a bounded grace period; previews
+  always sign with the active key;
+  `WELLFRIENDPDF_RECEIPT_HMAC_AUDIENCE` prevents cross-service reuse;
+  `WELLFRIENDPDF_RECEIPT_HMAC_TTL_SECS` bounds replay to at most seven days.
+- The HMAC key is redacted from debug output, never serialized, and is not an
+  API key, PDF input password, or PDF output-encryption credential.
+- Apply returns one uniform `403 invalid_edit_receipt` for an unknown or
+  retired key id, bad HMAC, wrong audience, malformed nested receipt, or
+  expired claims. It does not expose which check failed and cannot be
+  misclassified as a PDF password error.
+- The ordinary local/content-bound receipt remains available to in-process and
+  browser SDKs that already execute inside the caller's trust boundary.
+
 ## 2. CORS — restrictive by default
 
 CORS is an allowlist, not the previous permissive (any-origin) policy.
@@ -110,12 +137,14 @@ limit within a 60-second window.
    `WELLFRIENDPDF_ALLOW_UNAUTHENTICATED` unset/false.
 2. **Set `WELLFRIENDPDF_CORS_ALLOWED_ORIGINS`** to your frontend origin(s). Leave
    `WELLFRIENDPDF_CORS_ALLOW_ANY` unset/false.
-3. **Size the resource limits**: `WELLFRIENDPDF_REQUEST_TIMEOUT_SECS`,
+3. **Set `WELLFRIENDPDF_RECEIPT_HMAC_KEY_HEX`** to a separate random key when
+   authenticated edit-review publication is enabled.
+4. **Size the resource limits**: `WELLFRIENDPDF_REQUEST_TIMEOUT_SECS`,
    `WELLFRIENDPDF_MAX_FILE_SIZE`, `WELLFRIENDPDF_MAX_RENDER_PIXELS`, `WELLFRIENDPDF_MAX_OUTPUT_BYTES`,
    `WELLFRIENDPDF_MAX_IMAGE_COUNT`, `WELLFRIENDPDF_MAX_PAGES`, `WELLFRIENDPDF_MAX_DPI`.
-4. **Set a rate limit** (`WELLFRIENDPDF_RATE_LIMIT_PER_MIN`) appropriate to your
+5. **Set a rate limit** (`WELLFRIENDPDF_RATE_LIMIT_PER_MIN`) appropriate to your
    clients.
-5. **Terminate TLS in front of the server** (reverse proxy / load balancer).
+6. **Terminate TLS in front of the server** (reverse proxy / load balancer).
    Wellfriend speaks plain HTTP and is designed to sit behind one.
 
 See [`.env.example`](../.env.example) for all variables with descriptions and

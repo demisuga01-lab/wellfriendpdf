@@ -1,5 +1,13 @@
 # Universal editing v2: source implementation and VPS qualification plan
 
+Latest uncommitted source continuation on `main`:
+[browser sessions, structural merging and annotation anchors](story_workflow_continuation.md).
+Further source additions include [table pagination and explicit tagging](paginated_table_implementation.md).
+The [full roadmap](universal_editor_roadmap_tracking.md) is not complete. Latest
+checks are Rust parsing/formatting, JavaScript syntax and whitespace only; no
+compiler/build/tests/PDF workloads/rendering/benchmarks/deployment were run.
+The historical branch/phase notes below are not current build or release evidence.
+
 Date: 2026-09-16
 Schema: `universal_editing.document-transaction.v2`
 Branch: `universal-editing-v2`
@@ -187,10 +195,13 @@ and policy. Approval covers plan ID, revision, exact candidate selection, font,
 signature mode, and explicit acknowledgements. Apply recomputes the canonical
 plan from the requested operation and policy, requires the complete supplied
 plan to match it, then recomputes the decision digest; stale, forged, or altered
-input is rejected. The digest prevents accidental/tampered transport mismatch;
-it is **not** an authentication credential. A service deployment must
-authenticate and authorize the caller and may add an HMAC or server signature
-outside this document-level contract.
+input is rejected. The content digest prevents accidental/tampered transport
+mismatch; it is not itself an authentication credential. The server now adds a
+separate, short-lived HMAC-SHA-256 wrapper at the authenticated preview/apply
+endpoints. That wrapper binds the complete content receipt, public key id,
+audience, issuance and expiry; apply verifies it in constant time before
+re-running the complete document-level contract. In-process bindings retain
+the unsigned content receipt because their host is already the trust boundary.
 
 ### Signatures and recoverable input
 
@@ -212,7 +223,7 @@ resource-exhausting, and irrecoverable byte streams remain terminal non-edits.
 |---|---|---|
 | Capabilities | `universal_editing_capabilities_v2` | Machine-readable source and qualification registry |
 | Analyze | `universal_editing_analyze_v2` | Revision, scene graph, image occurrences, recovery contract |
-| Inspect object | `universal_editing_inspect_object_v2` | Reversible low-level object value plus revision-bound fingerprint for governed object-graph replacement |
+| Inspect object | `universal_editing_inspect_object_v2` | Reversible low-level object value plus revision-bound fingerprint for governed object-graph mutation and stream re-encoding |
 | Render qualify | `universal_render_qualification_v2` | Retained-plan eligibility, unsupported-op inventory, native RGBA pixels/hashes, and optional independent-reference comparison |
 | Plan | `universal_editing_plan_v2` | Immutable operation, candidates, preview requirements, read/write set |
 | Approve | `universal_editing_approval_v2` | Revision-bound decision token |
@@ -234,6 +245,42 @@ zeroizing input credential copy so analyze, inspect, plan, qualify, and apply
 can reparse the same immutable encrypted bytes. That input secret is never
 promoted to an output credential. Exact binary-password open entry points are
 available in C, .NET, Java, Python, and WASM.
+The same retained credential is now forwarded by every Python/WASM SDK-backed
+document route whose engine facade accepts an input password, including direct
+and multi-run text, vector/source, scene transactions, typed tables, reflow,
+document subsystems/security, standards, XFA, signatures, semantic reports,
+writer operations, redaction, associated files and sanitation. Every
+document-dependent C SDK facade route now also forwards it instead of reopening
+encrypted source with an implicit empty password. The four remaining users of
+the older C report helper are document-independent text mapping, shaping,
+subsetting and substitution utilities; they do not parse the handle's PDF.
+Output encryption remains an explicit separate credential path. The
+revision-bound paint-partition transaction is
+source-wired across Rust SDK, C/header, .NET, Java, Python, WASM/TypeScript and
+HTTP for propose, canonical private preview, ordinary apply and reviewed apply.
+Optional shaping font bytes require an exact SHA-256 in the approval. Preview
+returns bounded same-engine PNG evidence without candidate PDF bytes and a
+compact publication receipt; reviewed apply recomputes the candidate and
+withholds output when any bound input/request/proposal/approval/font/evidence/
+output identity differs. For remote use, the additional
+`preview-authenticated` and `apply-authenticated` HTTP routes issue and verify a
+bounded-lifetime HMAC-SHA-256 wrapper using a dedicated server-only key. The
+server always signs with one active key and can retain at most eight explicitly
+configured, verification-only grace keys during rotation. Configuration Debug
+output reports only key counts/availability and never API or HMAC key bytes.
+The same receipt authentication primitives are exposed for trusted native hosts
+through the C header, .NET P/Invoke, Java FFM, Python and static WASM/TypeScript
+surfaces; browser-delivered code is explicitly instructed not to carry the
+server key. The plain receipt remains intentionally unauthenticated, and
+the browser-safe remote client accepts only the API credential, validates the
+exact envelope/receipt relationship and parses the final multipart PDF as
+bytes. The C public header now declares every explicit Rust export and every
+native symbol imported by .NET or Java; a source-only parity guard prevents
+that ABI surface from silently drifting again. .NET and Java also expose typed paint-partition workflow models
+alongside their existing raw JSON methods; TypeScript publishes the canonical
+wire shapes.
+Neither preview mode
+is independent-renderer qualification.
 The HTTP route treats input and output password multipart bodies as bounded
 opaque bytes and zeroes its owned buffers on drop. The routes are under
 `/api/v2/universal-editing/`.
@@ -406,6 +453,243 @@ remains unexecuted pending the VPS gate.
 No claim in this section establishes syntax, type, linker, runtime, PDF output,
 pixel, performance, interoperability, or corpus correctness. Those remain the
 VPS gate below because execution was explicitly prohibited.
+
+## Follow-up source hardening and linked-story work (2026-09-16)
+
+See [the current implementation status](linked_story_implementation_status.md)
+for the new parser, bidi, font, source-anchor, linked-frame and session changes.
+That report explicitly separates implemented code from partial fixes, remaining
+code-level work and unexecuted qualification. It supersedes any implication here
+that the complete universal-editor roadmap is implemented. Source parsing and
+diff whitespace checks were performed for this follow-up; no builds, tests, PDF
+workloads or rendering qualification were performed.
+
+The subsequent continuation adds persistent frame ownership and saved-story
+rebinding, shared page-stream cloning, paragraph-context line shaping and feature
+settings, glyph-ink fit checks, subset-outline coverage checks, incremental layout
+convergence, bounded lookahead and exact undo/redo. These are also uncompiled,
+unexecuted source changes. The [next follow-up](editing_followup_implementation.md)
+adds the ten reported source fixes, contextual multi-font runs, per-edit contracts,
+logical text merge, typed fixed-grid values and uncertainty review. Automatic
+table/anchor/tag migration, full vertical/source-paint preservation and generated-page
+pruning remain code-level gaps documented in the linked status report.
+
+Story-image batching now replaces the former per-figure state-prefix walk with
+one bounded operator/state pass per selected source page. Every requested image
+range captures the same exact capsule as the single-selection algorithm, but
+Arc-backed capsules are reused by validation and staging. Complete-page balance
+validation and owned-fragment discovery are cached once per page inside the
+immutable capture transaction. Aggregate decoded-page/capsule budgets,
+cancellation polling and revision/policy binding remain fail-closed. The focused
+batch-versus-single source regression is present but unexecuted.
+
+The latest contract hardening adds an optional exact-revision indirect-object
+change policy. A caller can enumerate existing object identities permitted to
+change or disappear and place an explicit upper bound on newly allocated
+objects. Verification inventories the reopened input and output and withholds
+output on any undeclared delta. This is a bounded source-preservation contract,
+not semantic object matching across renumbering or independent visual proof;
+its focused regression remains unexecuted in the source-only phase.
+The contract can now additionally map input/output pages and declare bounded
+top-left-origin device-pixel rectangles where visual change is permitted. Both
+revisions render through fully supported exact native display lists at one DPI;
+the verifier normalizes overlapping rectangles, hashes every outside byte and
+withholds output if even one outside RGBA pixel differs. Pixel and rectangle
+budgets, one-to-one page mappings and cancellation checks bound the scan. This
+is same-renderer preservation evidence, so an independent supplied raster oracle
+is still required for cross-renderer fidelity claims. Its regression is also
+present but unexecuted.
+Object preservation can also bind a bounded rooted indirect-object graph rather
+than one literal object number. A deterministic encoder assigns first-encounter
+indices along ordered array/dictionary paths, follows shared and cyclic references,
+and incrementally hashes tagged exact scalar values, topology and raw stream
+bytes without retaining a second graph-sized canonical buffer. Equivalent
+canonical renumbering therefore retains the fingerprint while changed values or
+edges do not. Depth, object, byte and cancellation guards fail closed. This does
+not equate independently recompressed streams or attempt unconstrained graph
+isomorphism; the added renumbering/value-change regression remains unexecuted.
+A separate decoded-object-graph assertion now retains the same scalar, dictionary,
+array and reference-topology rules while fully losslessly decoding each stream and
+excluding only `Length`, `Filter`, `DecodeParms` and `DL` from its canonical form.
+It therefore accepts a raw versus Flate-reencoded stream only when decoded bytes
+and every semantic dictionary value remain exact. The graph byte budget is also
+the canonical hash byte counter and remaining per-stream decode ceiling;
+incomplete decoding fails closed, and
+external-file streams are refused rather than treating absent inline bytes as
+content. The exact-raw assertion remains available. This is not pixel
+equivalence for terminal JPEG/JPX/JBIG2 encodings or semantic equivalence
+between different resource constructions; the focused
+reencoding/changed-payload regression is present but unexecuted.
+Named/versioned caller-supplied text oracles can now bind an exact extracted-text
+hash for both the input revision and expected reopened output page. The input
+hash is checked before mutation and output disagreement withholds publication;
+multiple distinct extractors may cover the same mapping under bounded unique
+identities. Reports repeat only hashes and provenance metadata, not page text.
+The SDK deliberately labels the extractor identity as caller-asserted: only the
+future qualification harness can attest that an independent executable actually
+produced it. The focused pass/fail regression remains unexecuted.
+
+The governed indirect-object route accepts an optional bounded path of dictionary
+keys and array indexes. An explicit dereference segment can cross a selected
+indirect reference only when the target object's exact planning fingerprint is
+supplied. Planning binds every traversed owner, reports the actual referenced
+write target and refuses cycles, repeated owners, duplicate write targets or a
+batch that also mutates another lens's traversal owner. Apply rebuilds the same
+resolution from the original revision before changing the final owner. Direct
+and referenced leaves retain every non-encoding opaque sibling and raw stream
+byte before the canonical incremental write. An explicit stream-encoding lens
+is the only exception to ordinary stream-control refusal: it atomically replaces
+raw bytes together with a direct `Filter`/`DecodeParms` graph, removes those
+controls for unfiltered bytes, or deterministically emits level-6 Flate bytes.
+It clears stale `DL`, preserves every other dictionary sibling, refuses
+external-file streams and `/Crypt`, repeats fingerprint-bound traversal at
+apply, checks inverse preservation on the parsed owner and reopens the result.
+For unfiltered and SDK-Flate modes, the reopened stream must also decode
+completely to the exact requested length and SHA-256; raw caller-encoded mode
+can only assert the exact supplied encoded bytes/control graph.
+Canonical direct `/Length`
+normalization is applied up front, and every mutated indirect object must
+reproduce its expected post-mutation fingerprint after reopen; every unmodified
+root and intermediate traversal owner must also reproduce its planning
+fingerprint. Before serialization, replace/insert also execute an exact
+put-get check and every action applies its inverse to a clone to prove the
+complete parsed owner returns to its pre-edit value. These are executable laws
+over the exact parsed model, not semantic equivalence for independently
+re-encoded objects. Paths are
+approval-bound and capped by segment/key bytes. Stream `Length`, `Filter` and
+`DecodeParms` paths remain refused for ordinary replace/insert/remove because
+changing them without the coupled stream operation would reinterpret opaque
+data. Insert requires an absent dictionary
+key or an in-range array gap, while remove requires an existing leaf plus an
+explicit null placeholder so no unused replacement payload is ambiguous. Seven
+focused source regressions cover sibling preservation, ordered insertion/removal,
+state preconditions, direct-crossing and ordinary stream-control refusal, atomic
+re-encoding/sibling preservation, governed cross-reference mutation, stale
+fingerprints, cycles and competing resolved write targets; they remain
+unexecuted.
+See `object_stream_encoding_lens_implementation.md` for the request contract and
+the exact raw/unfiltered/Flate boundaries.
+
+Saved untagged story figures also have an explicit ownership-release
+transaction. The request binds the exact current native owner, preserves its
+paint occurrence in place, removes it only from the saved story model, consumes
+the one-shot command after publication and admits that owner to a different
+story on a later exact revision. The source regression covers preservation,
+command consumption, standalone admission and subsequent target-story
+validation; it is not executed here. This standalone detachment remains
+untagged-only rather than silently deleting semantic ownership.
+
+A dedicated Rust transfer route composes that release with an exact target-story
+rebind under one approval hash. It accepts two distinct already-saved untagged
+stories or two supported tagged stories and one existing target caption
+paragraph, retains the Figure's geometry/style, withholds the final byte vector
+unless the source model releases the key, the target model owns it and exactly
+one native owner remains, and records that the private intermediate revision is
+still historical PDF data. In the tagged route it first validates both exact
+source selections, moves the existing page-owned Figure leaf between the two
+approved sibling intervals, preserves its leaf dictionary, rewrites `/P` and
+story identity, recomputes both insertion positions and rebuilds ParentTree.
+The target story transaction then binds that same leaf to the relocated image
+MCID, followed by final ParentTree and source/target selection validation.
+Mixed tagged/untagged conversion, content-bearing/shared Figure subtrees and
+tagged table-cell objects are refused. An explicitly preserved bounded
+contentless subtree now moves with its root, retains descendant order/metadata
+and has valid descendant page bindings rebound by final target placement.
+The end-to-end source regression creates two saved stories, rejects a stale
+approval and checks all three postconditions; it remains unexecuted. The route
+is also a tagged universal-editing JSON operation, making it transportable by
+the existing C/Python/Java/.NET/WASM universal plan/apply surfaces. Dedicated
+operation-specific Rust SDK, C ABI, Python, Java, .NET and WASM preview/apply
+entry points use the same serialized request and exact plan hash; the TypeScript
+declaration is updated. Generated managed request classes, executed binding
+parity and product UI remain open.
+
+Story pagination no longer reparses the same approved font for every paragraph,
+candidate ranking pass, width probe and final line measurement. Ranking retains
+one borrowed `ttf_parser` face per immutable program for the request. Layout
+prepares only the actually selected fonts, retaining one borrowed face and one
+validated CFF2 outline program for horizontal and vertical shaping metrics.
+Standalone callers keep their original API and construct an ephemeral prepared
+face. Focused equivalence regressions compare standalone/prepared horizontal
+bounds and vertical shaping/metrics; they remain unexecuted, and no speed or RSS
+claim is made before VPS measurement.
+
+Standalone native image relocation now admits a bounded occurrence-specific
+nested Form path. Planning captures the selected leaf image plus the minimum
+required state for each ancestor and binds the whole chain to the exact input
+revision. Apply creates a private visual capsule with the original Form matrices
+and effective resource scopes, and separately clones the leaf-to-page source
+chain so only the selected outer invocation reaches the image-free leaf clone.
+Collision-free private XObject names prevent mutation of shared resource
+bindings; the original image, Forms and page stream remain unchanged for other
+occurrences. The source regression covers a two-level shared chain and remains
+unexecuted. Untagged linked-story batches additionally build one bounded prefix
+tree across all selected nested paths, share private clones for common prefixes,
+combine leaf removals and child redirects before serialization, and rewrite
+each affected page stream once. A two-image shared-prefix story regression is
+present but unexecuted. A tagged story may now admit a uniquely invoked nested
+Form image when one content-only Figure leaf owns exactly the image's complete
+Form-MCR set. The image stage records exact live-clone/source pairs; tag prepare
+removes only those old MCID delimiters and consumes every private marker before
+the existing final page-MCR/ParentTree rebuild. Reused Form semantics remain
+refusal-by-default; an explicit split decision now retains a residual Figure
+leaf on the shared Form MCR while the original owner follows the selected paint
+to its final page MCR. Outbound `/Ref` ownership requires and verifies an
+explicit move/retain/copy policy. Incoming `/Ref` owners similarly require
+follow/retarget/reference-both authority and are rewritten in one batch. Bounded
+nested direct/indirect array graphs retain topology and shared aliases with
+copy-on-write rewrites; cyclic, excessive, non-array-indirect or non-structure
+relationship containers and nested OCR/text owners still refuse.
+Focused tagged regressions are
+present but unexecuted. Transparency-group migration
+remains explicit follow-up work rather than being silently flattened.
+
+Within one tagged story, an existing Figure may retain an explicitly approved
+bounded descendant tree instead of being flattened to a leaf. Every descendant
+must be uniquely parented, contentless and free of OBJR; the Figure's
+first direct source-content slot is replaced by the generated page MCR while
+descendant order and metadata remain unchanged. Valid explicit descendant `/Pg`
+bindings follow the destination page. A separate one-shot removal approval
+deletes the complete validated contentless tree only when no surviving structure
+relationship or effective attribute references any member. An explicitly
+approved reused-Form split now preserves the original tree with the selected
+Figure and copy-on-write clones its contentless descendants for the residual
+Figure. Clone `/P`, `/K` and internal Figure/subtree `/Ref` links are rebuilt,
+while copied `/ID`, `/Pg` and private story keys are removed. External links on
+any member use the same explicit outbound/incoming split policies as the root;
+the complete relationship map is receipt-checked after reopen. Content-bearing
+or externally shared reused subtrees still refuse. Multiple Figure trees split
+in one request share a coordinated source-to-clone relationship map. The preservation,
+deletion, cloning and refusal regressions are source-only and remain unexecuted.
+
+## ECBES transaction integration (source complete, qualification not run)
+
+Evidence-Constrained Bidirectional Edit Synthesis is connected to the canonical
+universal planner/applier rather than a second PDF writer. The transaction accepts
+explicit candidates and deterministic automatic route generation: text intents
+expand to operator-preserving, geometric-block, and semantic-document candidates;
+other operation families receive their canonical route. Every candidate starts
+from the same immutable normalized revision, stays private through selection, and
+is subject to post-plan fidelity classification, approval binding, byte budgets,
+strict page/object reopen, logical postconditions, structural checks, and required
+proof obligations.
+
+The influence graph is derived from the revision-bound intent, canonical request
+digests, affected indirect owners, and affected pages. It no longer obtains an
+outside-pixel pass from a whole-document/vacuous cone. Such a pass requires either
+a raster-preservation edit contract that covers every input and output page or
+exact output-bound external evidence. Independent-renderer evidence additionally
+requires every supplied reference raster to carry matching named/versioned
+producer metadata, `independent: true`, and an artifact SHA-256 equal to its exact
+RGBA bytes. Planning that escalates a nominal source-native candidate to a
+reconstruction route is rejected unless the candidate's fidelity label discloses
+that escalation.
+
+The engine SDK, C ABI, .NET, Java, Python, WASM, and HTTP server expose the same
+transaction. The detailed algorithm and trust boundary are specified in
+`docs/research/evidence_constrained_bidirectional_edit_synthesis.md`. No build or
+runtime qualification is claimed for this final source increment until the user
+starts the VPS gate below.
 
 ## VPS qualification gate (not run)
 

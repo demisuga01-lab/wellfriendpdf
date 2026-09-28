@@ -172,7 +172,7 @@ pub(crate) fn resolve_request_glyph_id(
         return Some(GlyphId(code));
     }
     let mut face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
-    variations::apply_request(&mut face, variation);
+    variations::apply_request_checked(&mut face, variation).ok()?;
     crate::render::glyph_outline::resolve_glyph_id_for_simple(&face, code, ch, glyph_name)
 }
 
@@ -247,12 +247,12 @@ pub(crate) fn colr_cpal_paint_ops(
 ) -> Result<Option<Vec<ColrPaintOp>>> {
     let mut face = ttf_parser::Face::parse(font_bytes, 0)
         .map_err(|_| WellfriendError::UnsupportedFeature("malformed COLR/CPAL font".to_string()))?;
-    variations::apply_request(&mut face, variation);
+    variations::apply_request_checked(&mut face, variation)?;
     if !face.is_color_glyph(glyph_id) {
         return Ok(None);
     }
 
-    let mut collector = ColrPaintCollector::new(graphics_alpha);
+    let mut collector = ColrPaintCollector::new(graphics_alpha, face.variation_coordinates());
     let foreground = RgbaColor::new(foreground[0], foreground[1], foreground[2], foreground[3]);
     if face
         .paint_color_glyph(glyph_id, 0, foreground, &mut collector)
@@ -545,7 +545,8 @@ struct SbixPayload<'a> {
     pixels_per_em: u16,
 }
 
-struct ColrPaintCollector {
+struct ColrPaintCollector<'a> {
+    coordinates: &'a [ttf_parser::NormalizedCoordinate],
     current_glyph: Option<u16>,
     current_transform: Transform2D,
     transform_stack: Vec<Transform2D>,
@@ -558,9 +559,10 @@ struct ColrPaintCollector {
     unsupported_ops: Vec<String>,
 }
 
-impl ColrPaintCollector {
-    fn new(graphics_alpha: u8) -> Self {
+impl<'a> ColrPaintCollector<'a> {
+    fn new(graphics_alpha: u8, coordinates: &'a [ttf_parser::NormalizedCoordinate]) -> Self {
         Self {
+            coordinates,
             current_glyph: None,
             current_transform: Transform2D::identity(),
             transform_stack: Vec::new(),
@@ -588,7 +590,9 @@ impl ColrPaintCollector {
             return;
         }
         self.transform_stack.push(self.current_transform);
-        self.current_transform = self.current_transform.concat(&transform);
+        // A child paint's local transform is applied before its accumulated
+        // parent transform. Transform2D::concat applies its receiver first.
+        self.current_transform = transform.concat(&self.current_transform);
     }
 
     fn current_blend_mode(&self) -> ColrBlendMode {
@@ -615,9 +619,9 @@ impl ColrPaintCollector {
         }
     }
 
-    fn collect_stops<'a>(
+    fn collect_stops<'s>(
         &mut self,
-        stops: impl Iterator<Item = ttf_parser::colr::ColorStop> + 'a,
+        stops: impl Iterator<Item = ttf_parser::colr::ColorStop> + 's,
     ) -> Option<Vec<ColrColorStop>> {
         let mut out = Vec::new();
         for stop in stops {
@@ -648,7 +652,7 @@ impl ColrPaintCollector {
     }
 }
 
-impl<'a> Painter<'a> for ColrPaintCollector {
+impl<'a> Painter<'a> for ColrPaintCollector<'_> {
     fn outline_glyph(&mut self, glyph_id: GlyphId) {
         self.current_glyph = Some(glyph_id.0);
     }
@@ -675,7 +679,8 @@ impl<'a> Painter<'a> for ColrPaintCollector {
                     self.mark_unsupported("PaintLinearGradient non-finite coordinates");
                     return;
                 }
-                let Some(stops) = self.collect_stops(gradient.stops(0, &[])) else {
+                let coordinates = self.coordinates;
+                let Some(stops) = self.collect_stops(gradient.stops(0, coordinates)) else {
                     return;
                 };
                 self.push_paint(ColrPaint::LinearGradient {
@@ -703,7 +708,8 @@ impl<'a> Painter<'a> for ColrPaintCollector {
                     self.mark_unsupported("PaintRadialGradient invalid or non-finite geometry");
                     return;
                 }
-                let Some(stops) = self.collect_stops(gradient.stops(0, &[])) else {
+                let coordinates = self.coordinates;
+                let Some(stops) = self.collect_stops(gradient.stops(0, coordinates)) else {
                     return;
                 };
                 self.push_paint(ColrPaint::RadialGradient {
@@ -728,7 +734,8 @@ impl<'a> Painter<'a> for ColrPaintCollector {
                     self.mark_unsupported("PaintSweepGradient invalid or non-finite geometry");
                     return;
                 }
-                let Some(stops) = self.collect_stops(gradient.stops(0, &[])) else {
+                let coordinates = self.coordinates;
+                let Some(stops) = self.collect_stops(gradient.stops(0, coordinates)) else {
                     return;
                 };
                 self.push_paint(ColrPaint::SweepGradient {
@@ -805,37 +812,8 @@ impl<'a> Painter<'a> for ColrPaintCollector {
         self.blend_stack.pop();
     }
 
-    fn push_translate(&mut self, _tx: f32, _ty: f32) {
-        self.push_transform2d(
-            "PaintTranslate",
-            Transform2D::translation(f64::from(_tx), f64::from(_ty)),
-        );
-    }
-
-    fn push_scale(&mut self, _sx: f32, _sy: f32) {
-        self.push_transform2d(
-            "PaintScale",
-            Transform2D::scale(f64::from(_sx), f64::from(_sy)),
-        );
-    }
-
-    fn push_rotate(&mut self, _angle: f32) {
-        self.push_transform2d(
-            "PaintRotate",
-            Transform2D::rotation(f64::from(_angle) * std::f64::consts::PI),
-        );
-    }
-
-    fn push_skew(&mut self, _skew_x: f32, _skew_y: f32) {
-        self.push_transform2d(
-            "PaintSkew",
-            Transform2D::shear(
-                (f64::from(-_skew_x) * std::f64::consts::PI).tan(),
-                (f64::from(_skew_y) * std::f64::consts::PI).tan(),
-            ),
-        );
-    }
-
+    // ttf-parser 0.25 resolves translate/scale/rotate/skew into this common
+    // matrix callback, including the source-specified transform centers.
     fn push_transform(&mut self, _transform: Transform) {
         self.push_transform2d(
             "PaintTransform",
@@ -917,9 +895,9 @@ pub(crate) fn outline_gid_path(
     variation: &VariationRequest,
 ) -> Option<Path> {
     let mut face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
-    variations::apply_request(&mut face, variation);
+    variations::apply_request_checked(&mut face, variation).ok()?;
     let mut builder = GlyphToPath::new();
-    face.outline_glyph(GlyphId(glyph_id), &mut builder)?;
+    crate::fonts::sfnt_outline::outline(&face, GlyphId(glyph_id), &mut builder).ok()??;
     Some(builder.into_path())
 }
 
@@ -2306,6 +2284,10 @@ fn unpremultiply(value: u8, alpha: u8) -> u8 {
 fn multiply_alpha(a: u8, b: u8) -> u8 {
     ((u16::from(a) * u16::from(b) + 127) / 255) as u8
 }
+
+#[cfg(test)]
+#[path = "color_glyph_instance_tests.rs"]
+mod instance_tests;
 
 #[cfg(test)]
 mod tests {

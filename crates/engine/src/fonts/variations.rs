@@ -4,10 +4,11 @@
 //! *instance* is chosen by coordinates along design axes (`wght`, `wdth`,
 //! `slnt`, `ital`, `opsz`, or custom axes), and glyph outlines are interpolated
 //! from per-master deltas. This module decides **which instance** to render and
-//! applies it to a [`ttf_parser::Face`]; the crate then produces the
-//! interpolated outline (gvar / CFF2), avar-normalized coordinates, and
-//! variation-adjusted metrics (HVAR / MVAR) automatically — we only select
-//! coordinates and route the result to the existing rasterizer.
+//! applies it to a [`ttf_parser::Face`]. The face supplies gvar outlines,
+//! avar-normalized coordinates and supported variation-adjusted metrics. CFF2
+//! outlines use the SDK's bounded, per-glyph-dictionary decoder through
+//! `fonts::sfnt_outline`. These are rendering coordinates, not a persisted
+//! whole-font static instancing operation.
 //!
 //! # How the instance is selected
 //!
@@ -16,11 +17,11 @@
 //!
 //! 1. **Pre-instanced** — the producer flattened the variable font to a static
 //!    instance before embedding (no `fvar` table). This is overwhelmingly the
-//!    common case (the entire local corpus is pre-instanced). Such fonts are not
-//!    variable and render unchanged through the static path.
+//!    common case. Such fonts are not variable and use the static path.
 //! 2. **Default instance** — a true variable font embedded as-is. `ttf-parser`
 //!    initializes coordinates to the font's default (all normalized to 0), so
-//!    the default instance already renders correctly with no action.
+//!    no additional axis selection is needed. This does not establish complete
+//!    rendering support for every variable-font table.
 //! 3. **PDF-descriptor-selected** — the `FontDescriptor` carries `/FontWeight`
 //!    (100–900) and/or `/FontStretch` (a name like `/Condensed`). When the
 //!    embedded font is variable and exposes a matching `wght`/`wdth` axis, those
@@ -29,7 +30,7 @@
 //!    correctness win this module adds.
 //!
 //! Determinism: identical (font bytes, request) → identical coordinates →
-//! identical outline. No allocation beyond the request's small axis list; all
+//! identical outline. Validation uses bounded axis metadata; all
 //! coordinate values are clamped to each axis's `[min, max]` by `ttf-parser`.
 
 use ttf_parser::{Face, Tag};
@@ -106,23 +107,20 @@ impl VariationRequest {
     }
 
     /// Build a request from PDF `FontDescriptor` values: `/FontWeight` → `wght`,
-    /// `/FontStretch` → `wdth`. Returns an empty request when neither is present
-    /// (or both are at their normal/default values, so nothing needs pinning).
+    /// `/FontStretch` → `wdth`. Returns an empty request when neither descriptor
+    /// value is present. Normal CSS/PDF values are not
+    /// necessarily the selected font's defaults and must not be discarded.
     pub fn from_descriptor(font_weight: Option<f64>, font_stretch: Option<&str>) -> Self {
         let mut req = Self::none();
-        // `/FontWeight`: 100..900 (PDF). Only pin when it is a sane non-normal
-        // value — 400 is "normal" and equals most fonts' default, so pinning it
-        // is a harmless no-op we skip to keep the default path byte-identical.
+        // Keep explicit normal values too: a font may default to wght=700.
         if let Some(w) = font_weight {
-            if w.is_finite() && (1.0..=1000.0).contains(&w) && (w - 400.0).abs() > f64::EPSILON {
+            if w.is_finite() && (1.0..=1000.0).contains(&w) {
                 req = req.with_axis(AXIS_WGHT, w as f32);
             }
         }
         if let Some(stretch) = font_stretch {
             if let Some(pct) = font_stretch_percent(stretch) {
-                if (pct - 100.0).abs() > f32::EPSILON {
-                    req = req.with_axis(AXIS_WDTH, pct);
-                }
+                req = req.with_axis(AXIS_WDTH, pct);
             }
         }
         req
@@ -170,33 +168,82 @@ pub fn axes(font_bytes: &[u8]) -> Vec<(Tag, f32, f32, f32)> {
 
 /// Apply a [`VariationRequest`] to a mutable face. Only axes the font actually
 /// exposes are set (others are ignored). Returns `true` if at least one axis was
-/// applied (i.e. the face now renders a non-default instance).
+/// applied (which need not differ from the font's default).
 ///
 /// `set_variation` clamps each value to the axis `[min, max]` and applies `avar`
 /// normalization internally, so callers may pass raw user-space values.
 pub fn apply_request(face: &mut Face, request: &VariationRequest) -> bool {
-    if request.is_empty() || !face.is_variable() {
-        return false;
+    apply_request_checked(face, request).unwrap_or(false)
+}
+
+/// Atomic checked selection for render/instance paths. Unknown request axes
+/// remain ignorable for descriptor-based fallback fonts, but malformed tables,
+/// non-finite values and backend limits are not silently treated as defaults.
+pub fn apply_request_checked(face: &mut Face, request: &VariationRequest) -> crate::Result<bool> {
+    use crate::WellfriendError;
+    crate::cancel::check_current_cancel("font instance coordinates")?;
+    if request.axes.len() > 64 {
+        return Err(WellfriendError::ResourceLimit(
+            "font coordinate request exceeds 64 axes".into(),
+        ));
     }
-    // Which axes exist on this face.
-    let available: Vec<Tag> = face.variation_axes().into_iter().map(|a| a.tag).collect();
+    if request.axes.iter().any(|axis| !axis.value.is_finite()) {
+        return Err(WellfriendError::invalid_input(
+            "non-finite font axis coordinate",
+        ));
+    }
+    if request.is_empty() {
+        return Ok(false);
+    }
+    if super::instance_coordinates::validate(face)? == 0 {
+        return Ok(false);
+    }
+    let tags = face
+        .variation_axes()
+        .into_iter()
+        .map(|a| a.tag.0)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut selected = face.clone();
     let mut applied = false;
     for av in request.axes() {
-        if available.contains(&av.tag) && face.set_variation(av.tag, av.value).is_some() {
+        if tags.contains(&av.tag.0) {
+            if selected.set_variation(av.tag, av.value).is_none() {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "font axis count exceeds this parser's coordinate capacity".into(),
+                ));
+            }
             applied = true;
         }
     }
-    applied
+    crate::cancel::check_current_cancel("font coordinate publication")?;
+    *face = selected;
+    Ok(applied)
 }
+
+#[cfg(test)]
+#[path = "instance_coordinate_tests.rs"]
+mod coordinate_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn descriptor_normal_weight_is_noop() {
+    fn descriptor_normal_values_are_explicit_not_assumed_font_defaults() {
         let req = VariationRequest::from_descriptor(Some(400.0), Some("Normal"));
-        assert!(req.is_empty(), "weight 400 + Normal stretch => no pinning");
+        assert_eq!(
+            req.axes(),
+            &[
+                AxisValue {
+                    tag: AXIS_WGHT,
+                    value: 400.
+                },
+                AxisValue {
+                    tag: AXIS_WDTH,
+                    value: 100.
+                }
+            ]
+        );
     }
 
     #[test]

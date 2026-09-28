@@ -682,7 +682,7 @@ fn multipart_render_report_response(
     );
     payload.extend_from_slice(&body);
     payload.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
-    crate::processing::check_output_size(&config, payload.len())?;
+    crate::processing::check_output_size(config, payload.len())?;
 
     Ok((StatusCode::OK, headers, payload).into_response())
 }

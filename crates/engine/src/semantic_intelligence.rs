@@ -1,7 +1,8 @@
 //! Semantic Intelligence semantic intelligence layer.
 //!
 //! This module is additive to the deterministic semantic model. ParentTree
-//! recovery uses only PDF structure evidence and visible marked content. Layout
+//! recovery uses PDF structure evidence and marked content, including invisible
+//! searchable text. Layout
 //! backends are optional proposal sources; they never own or rewrite the core
 //! extraction model.
 
@@ -18,7 +19,8 @@ use crate::reader::PdfReader;
 use crate::semantic::{SemanticElement, SemanticMcid};
 use crate::text::{
     builtin_cjk_dictionary_metadata, cjk_dictionary_rag_token_chunks, cjk_dictionary_token_search,
-    segment_cjk_dictionary_text, CjkDictionaryProvider, CjkDictionaryProviderLimits, TextChunk,
+    segment_cjk_dictionary_text, CjkDictionaryProvider, CjkDictionaryProviderLimits,
+    MarkedContentId, TextChunk,
 };
 
 const SEMANTIC_INTELLIGENCE_SCHEMA_VERSION: &str = "semantic_intelligence.semantic_intelligence.v1";
@@ -27,8 +29,11 @@ const MAX_PARENTTREE_NODES: usize = 250_000;
 const DEFAULT_LAYOUT_CONFIDENCE_THRESHOLD: f32 = 0.78;
 
 type PageRef = (u32, u16);
-type McidKey = (usize, i64);
+type McidKey = (usize, MarkedContentId);
 type MarkedTextMap = HashMap<McidKey, Vec<TextChunk>>;
+
+#[path = "semantic_parent_scope.rs"]
+mod parent_scope;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +75,10 @@ pub struct ParentTreeRecoveredNode {
     pub id: String,
     pub page: usize,
     pub mcid: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<(u32, u16)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_owner: Option<(u32, u16)>,
     pub role: String,
     pub original_role: String,
     pub text: String,
@@ -538,6 +547,17 @@ pub fn recover_parenttree_semantics(
     let selected: BTreeSet<usize> = page_list.iter().copied().collect();
     let marked_text = collect_marked_text(engine, &page_list)?;
     let page_struct_parents = page_struct_parent_keys(engine, &page_list)?;
+    let page_scopes = engine
+        .document()
+        .get_pages()?
+        .into_iter()
+        .map(|page| {
+            (
+                page.page_number,
+                ((page.object_number, page.generation_number), page.contents),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut diagnostics = Vec::new();
     let mut nodes = Vec::new();
 
@@ -604,6 +624,7 @@ pub fn recover_parenttree_semantics(
     let mut number_tree = BTreeMap::new();
     if let Some(parent_tree_obj) = parent_tree_obj {
         let mut visited = HashSet::new();
+        let mut visited_nodes = 0usize;
         collect_parent_tree_entries(
             reader,
             parent_tree_obj,
@@ -611,12 +632,21 @@ pub fn recover_parenttree_semantics(
             &mut visited,
             &mut number_tree,
             &mut diagnostics,
+            &mut visited_nodes,
         )?;
     }
 
     let mut recovered = HashSet::new();
     let mut array_entries = 0usize;
-    for (&page, key) in &page_struct_parents {
+    let content_keys = content_struct_parent_keys(engine, &page_struct_parents, &marked_text)?;
+    let conflicted_keys = conflicting_struct_parent_keys(&content_keys);
+    let mut owner_counts: HashMap<(usize, Option<PageRef>), usize> = HashMap::new();
+    let mut appearance_owners = crate::annotation_appearance::AppearanceOwnerIndex::default();
+    for &(page, stream, _) in content_keys.keys() {
+        *owner_counts.entry((page, stream)).or_default() += 1;
+    }
+    for (&(page, stream, stream_owner), key) in &content_keys {
+        crate::cancel::check_current_cancel("ParentTree content-scope recovery")?;
         if !selected.contains(&page) {
             continue;
         }
@@ -629,12 +659,19 @@ pub fn recover_parenttree_semantics(
                 "warning",
                 Some(page),
                 None,
-                format!("page StructParents {struct_parent_key} has no ParentTree entry"),
+                format!("content scope {stream:?} StructParents {struct_parent_key} has no ParentTree entry"),
                 SemanticEvidenceKind::OrphanContent,
             ));
             continue;
         };
-        match &entry.value {
+        let ambiguous_owner = entry.conflicted || conflicted_keys.contains(&struct_parent_key);
+        if ambiguous_owner {
+            diagnostics.push(parent_diag("parenttree.ambiguous_scope", "warning", Some(page), None,
+                format!("StructParents {struct_parent_key} has competing content owners or number-tree entries"),
+                SemanticEvidenceKind::ConflictingContent));
+        }
+        let entry_value = reader.resolve(entry.value.clone())?;
+        match &entry_value {
             PdfObject::Array(items) => {
                 array_entries += items.len();
                 for (idx, item) in items.iter().enumerate() {
@@ -650,10 +687,16 @@ pub fn recover_parenttree_semantics(
                         break;
                     }
                     let mcid = idx as i64;
-                    if !marked_text.contains_key(&(page, mcid)) {
+                    let id = MarkedContentId {
+                        mcid,
+                        stream,
+                        stream_owner,
+                    };
+                    if !marked_text.contains_key(&(page, id)) {
                         continue;
                     }
-                    if !recovered.insert((page, mcid)) {
+                    let unique = recovered.insert((page, id));
+                    if !unique {
                         diagnostics.push(parent_diag(
                             "parenttree.duplicate_mcid_entry",
                             "warning",
@@ -663,14 +706,56 @@ pub fn recover_parenttree_semantics(
                             SemanticEvidenceKind::ConflictingContent,
                         ));
                     }
-                    let info =
-                        structure_info(reader, item, &role_map, page, mcid, &mut diagnostics);
+                    let mut info = if ambiguous_owner || !unique {
+                        StructureInfo::orphan()
+                    } else {
+                        structure_info(reader, item, &role_map, page, mcid, &mut diagnostics)
+                    };
+                    if matches!(
+                        info.evidence,
+                        SemanticEvidenceKind::SpecDerivedStructure
+                            | SemanticEvidenceKind::RepairedStructure
+                    ) {
+                        let (page_ref, streams) = page_scopes.get(&page).ok_or_else(|| {
+                            WellfriendError::MalformedPdf(
+                                "missing page during ParentTree binding".into(),
+                            )
+                        })?;
+                        let unambiguous_owner = owner_counts.get(&(page, stream)) == Some(&1);
+                        match parent_scope::binding(
+                            reader,
+                            item,
+                            *page_ref,
+                            streams,
+                            id,
+                            unambiguous_owner,
+                            &mut appearance_owners,
+                        )? {
+                            parent_scope::BindingEvidence::Matched => {}
+                            parent_scope::BindingEvidence::MissingKids => {
+                                info.evidence = SemanticEvidenceKind::RepairedStructure;
+                                info.confidence = info.confidence.min(0.6);
+                                info.diagnostics
+                                    .push("missing_reciprocal_content_reference".into());
+                            }
+                            parent_scope::BindingEvidence::Conflicting => {
+                                diagnostics.push(parent_diag("parenttree.scope_mismatch", "warning", Some(page), Some(mcid),
+                                    format!("ParentTree element does not own the selected MCID in stream {stream:?}"), SemanticEvidenceKind::ConflictingContent));
+                                info = StructureInfo {
+                                    source_object: info.source_object,
+                                    evidence: SemanticEvidenceKind::ConflictingContent,
+                                    diagnostics: vec!["reciprocal_content_scope_mismatch".into()],
+                                    ..StructureInfo::orphan()
+                                };
+                            }
+                        }
+                    }
                     nodes.push(recovered_node(
                         page,
-                        mcid,
+                        id,
                         info,
                         &marked_text,
-                        if recovered.contains(&(page, mcid)) {
+                        if unique && !ambiguous_owner {
                             SemanticEvidenceKind::SpecDerivedStructure
                         } else {
                             SemanticEvidenceKind::ConflictingContent
@@ -695,34 +780,34 @@ pub fn recover_parenttree_semantics(
         }
     }
 
-    for (&(page, mcid), _) in marked_text
+    for (&(page, id), _) in marked_text
         .iter()
         .filter(|((page, _), _)| selected.contains(page))
     {
         if nodes.len() >= MAX_PARENTTREE_NODES {
             break;
         }
-        if recovered.contains(&(page, mcid)) {
+        if recovered.contains(&(page, id)) {
             continue;
         }
         diagnostics.push(parent_diag(
             "parenttree.orphan_mcid",
             "info",
             Some(page),
-            Some(mcid),
+            Some(id.mcid),
             "marked content has no clean ParentTree chain; recovered as orphan content".to_string(),
             SemanticEvidenceKind::OrphanContent,
         ));
         nodes.push(recovered_node(
             page,
-            mcid,
+            id,
             StructureInfo::orphan(),
             &marked_text,
             SemanticEvidenceKind::OrphanContent,
         ));
     }
 
-    nodes.sort_by_key(|node| (node.page, node.mcid));
+    nodes.sort_by_key(|node| (node.page, node.stream, node.mcid));
     let conflict_count = diagnostics
         .iter()
         .filter(|diag| diag.evidence == SemanticEvidenceKind::ConflictingContent)
@@ -804,7 +889,11 @@ pub fn semantic_elements_from_parenttree_recovery(
             mcids: vec![SemanticMcid {
                 page: node.page,
                 mcid: node.mcid,
+                stream: node.stream,
+                stream_owner: node.stream_owner,
             }],
+            recovery_evidence: Some(node.evidence),
+            recovery_confidence: Some(node.confidence),
             children: Vec::new(),
         })
         .collect()
@@ -1272,10 +1361,10 @@ fn normalized_pages(engine: &ContentEngine, pages: &[usize]) -> Result<Vec<usize
 
 fn collect_marked_text(engine: &ContentEngine, pages: &[usize]) -> Result<MarkedTextMap> {
     let mut out = HashMap::new();
-    for &page in pages {
-        for marked in engine.collect_page_marked_text_chunks(page)? {
-            if let Some(mcid) = marked.mcid {
-                out.entry((page, mcid))
+    for page in pages.iter().copied().collect::<BTreeSet<_>>() {
+        for marked in engine.collect_page_marked_text_chunks_including_appearances(page)? {
+            if let Some(id) = marked.marked_content_id() {
+                out.entry((page, id))
                     .or_insert_with(Vec::new)
                     .push(marked.chunk);
             }
@@ -1306,9 +1395,86 @@ fn page_struct_parent_keys(
     Ok(out)
 }
 
+type ContentScopeKeys = BTreeMap<(usize, Option<PageRef>, Option<PageRef>), Option<i64>>;
+
+fn content_struct_parent_keys(
+    engine: &ContentEngine,
+    pages: &BTreeMap<usize, Option<i64>>,
+    text: &MarkedTextMap,
+) -> Result<ContentScopeKeys> {
+    let mut out: ContentScopeKeys = pages
+        .iter()
+        .map(|(page, key)| ((*page, None, None), *key))
+        .collect();
+    let reader = engine.document().reader();
+    let mut cached = HashMap::new();
+    for &(page, id) in text.keys() {
+        let Some(stream) = id.stream else {
+            continue;
+        };
+        crate::cancel::check_current_cancel("Form StructParents lookup")?;
+        let key = if let Some(key) = cached.get(&stream) {
+            *key
+        } else {
+            let object = reader.get_object(stream.0, stream.1)?;
+            let (dict, _) = object.as_stream().ok_or_else(|| {
+                WellfriendError::MalformedPdf("marked-content owner is not a stream".into())
+            })?;
+            if dict
+                .get("StructParent")
+                .is_some_and(|value| !value.is_null())
+                && dict
+                    .get("StructParents")
+                    .is_some_and(|value| !value.is_null())
+            {
+                return Err(WellfriendError::MalformedPdf(
+                    "content stream has both StructParent and StructParents".into(),
+                ));
+            }
+            let key = match dict
+                .get("StructParents")
+                .map(|value| reader.resolve(value.clone()))
+                .transpose()?
+            {
+                None | Some(PdfObject::Null) => None,
+                Some(PdfObject::Integer(value)) if value >= 0 => Some(value),
+                _ => {
+                    return Err(WellfriendError::MalformedPdf(
+                        "Form StructParents is not a nonnegative integer".into(),
+                    ))
+                }
+            };
+            cached.insert(stream, key);
+            key
+        };
+        out.insert((page, Some(stream), id.stream_owner), key);
+    }
+    Ok(out)
+}
+
+fn conflicting_struct_parent_keys(scopes: &ContentScopeKeys) -> HashSet<i64> {
+    let mut owners = HashMap::new();
+    let mut conflicts = HashSet::new();
+    for (&(page, stream, _stream_owner), key) in scopes {
+        let Some(key) = key else {
+            continue;
+        };
+        // Replaying the same Form on different pages uses the same container.
+        // A different Form or a page is a competing owner of the integer key.
+        let owner = (stream, if stream.is_none() { Some(page) } else { None });
+        if let Some(previous) = owners.insert(*key, owner) {
+            if previous != owner {
+                conflicts.insert(*key);
+            }
+        }
+    }
+    conflicts
+}
+
 #[derive(Debug, Clone)]
 struct ParentTreeEntry {
     value: PdfObject,
+    conflicted: bool,
 }
 
 fn collect_parent_tree_entries(
@@ -1318,7 +1484,17 @@ fn collect_parent_tree_entries(
     visited: &mut HashSet<PageRef>,
     out: &mut BTreeMap<i64, ParentTreeEntry>,
     diagnostics: &mut Vec<ParentTreeDiagnostic>,
+    visited_nodes: &mut usize,
 ) -> Result<()> {
+    crate::cancel::check_current_cancel("ParentTree number-tree traversal")?;
+    *visited_nodes = visited_nodes
+        .checked_add(1)
+        .ok_or_else(|| WellfriendError::ResourceLimit("ParentTree node counter overflow".into()))?;
+    if *visited_nodes > MAX_PARENTTREE_NODES {
+        return Err(WellfriendError::ResourceLimit(
+            "ParentTree node limit exceeded".into(),
+        ));
+    }
     if depth > MAX_PARENTTREE_DEPTH {
         diagnostics.push(parent_diag(
             "parenttree.depth_cap",
@@ -1373,8 +1549,21 @@ fn collect_parent_tree_entries(
             ));
         }
     }
-    if let Some(nums) = dict.get_array("Nums") {
+    let nums = dict
+        .get("Nums")
+        .map(|value| reader.resolve(value.clone()))
+        .transpose()?;
+    if let Some(nums) = nums.as_ref().and_then(PdfObject::as_array) {
         for pair in nums.chunks(2) {
+            crate::cancel::check_current_cancel("ParentTree number-tree entries")?;
+            *visited_nodes = visited_nodes.checked_add(1).ok_or_else(|| {
+                WellfriendError::ResourceLimit("ParentTree entry counter overflow".into())
+            })?;
+            if *visited_nodes > MAX_PARENTTREE_NODES {
+                return Err(WellfriendError::ResourceLimit(
+                    "ParentTree entry limit exceeded".into(),
+                ));
+            }
             if pair.len() != 2 {
                 diagnostics.push(parent_diag(
                     "parenttree.malformed_nums_pair",
@@ -1397,15 +1586,8 @@ fn collect_parent_tree_entries(
                 ));
                 continue;
             };
-            if out
-                .insert(
-                    key,
-                    ParentTreeEntry {
-                        value: pair[1].clone(),
-                    },
-                )
-                .is_some()
-            {
+            if let Some(existing) = out.get_mut(&key) {
+                existing.conflicted = true;
                 diagnostics.push(parent_diag(
                     "parenttree.duplicate_number_tree_key",
                     "warning",
@@ -1414,12 +1596,32 @@ fn collect_parent_tree_entries(
                     format!("ParentTree /Nums key {key} appears more than once"),
                     SemanticEvidenceKind::ConflictingContent,
                 ));
+            } else {
+                out.insert(
+                    key,
+                    ParentTreeEntry {
+                        value: pair[1].clone(),
+                        conflicted: false,
+                    },
+                );
             }
         }
     }
-    if let Some(kids) = dict.get_array("Kids") {
+    let kids = dict
+        .get("Kids")
+        .map(|value| reader.resolve(value.clone()))
+        .transpose()?;
+    if let Some(kids) = kids.as_ref().and_then(PdfObject::as_array) {
         for kid in kids {
-            collect_parent_tree_entries(reader, kid.clone(), depth + 1, visited, out, diagnostics)?;
+            collect_parent_tree_entries(
+                reader,
+                kid.clone(),
+                depth + 1,
+                visited,
+                out,
+                diagnostics,
+                visited_nodes,
+            )?;
         }
     }
     Ok(())
@@ -1586,12 +1788,13 @@ fn structure_info(
 
 fn recovered_node(
     page: usize,
-    mcid: i64,
+    id: MarkedContentId,
     info: StructureInfo,
     marked_text: &MarkedTextMap,
     override_evidence: SemanticEvidenceKind,
 ) -> ParentTreeRecoveredNode {
-    let key = (page, mcid);
+    let key = (page, id);
+    let mcid = id.mcid;
     let text = marked_text
         .get(&key)
         .map(|chunks| chunks_to_text(chunks))
@@ -1609,9 +1812,15 @@ fn recovered_node(
         override_evidence
     };
     ParentTreeRecoveredNode {
-        id: format!("page-{page}-mcid-{mcid}"),
+        id: match (id.stream, id.stream_owner) {
+            (None, _) => format!("page-{page}-mcid-{mcid}"),
+            (Some((number, generation)), None) => format!("page-{page}-stream-{number}-{generation}-mcid-{mcid}"),
+            (Some((number, generation)), Some((owner, owner_generation))) => format!("page-{page}-stream-{number}-{generation}-owner-{owner}-{owner_generation}-mcid-{mcid}"),
+        },
         page,
         mcid,
+        stream: id.stream,
+        stream_owner: id.stream_owner,
         role: info.role,
         original_role: info.original_role,
         text,

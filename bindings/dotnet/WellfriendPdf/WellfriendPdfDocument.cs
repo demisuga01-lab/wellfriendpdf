@@ -5,7 +5,7 @@ using System.Threading;
 
 namespace WellfriendPdf;
 
-public sealed class WellfriendDocument : IDisposable
+public sealed partial class WellfriendDocument : IDisposable
 {
     private readonly NativeMethods.DocumentHandle _handle;
     private bool _disposed;
@@ -1428,6 +1428,68 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
+    /// <summary>Preview a revision-bound transfer of one saved native Figure between saved stories.</summary>
+    public string StoryFigureTransferPreviewJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_story_figure_transfer_preview_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    /// <summary>Apply the exact plan hash returned by StoryFigureTransferPreviewJson.</summary>
+    public WellfriendBinaryResult StoryFigureTransferApply(
+        string requestJson, string approvedPlanSha256)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(approvedPlanSha256);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        var approvalPtr = NativeMethods.StringToNativeOrNull(approvedPlanSha256);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_story_figure_transfer_apply_json(
+                _handle, requestPtr, approvalPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+            if (approvalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(approvalPtr);
+        }
+    }
+
+    /// <summary>Read-only before/candidate PNG byte arrays bound to the exact scoped plan.</summary>
+    public string UniversalEditingScopedPreviewV2Json(string planJson, string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(planJson);
+        var planPtr = IntPtr.Zero;
+        var optionsPtr = IntPtr.Zero;
+        try
+        {
+            planPtr = NativeMethods.StringToNativeOrNull(planJson);
+            optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+            var status = NativeMethods.wellfriendpdf_document_universal_editing_scoped_preview_v2_json(
+                _handle, planPtr, optionsPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (planPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(planPtr);
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
     public WellfriendBinaryResult UniversalEditingApplyV2(
         string planJson, string? approvalJson = null)
     {
@@ -1511,6 +1573,67 @@ public sealed class WellfriendDocument : IDisposable
             if (ownerHandle.IsAllocated) ownerHandle.Free();
             if (planPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(planPtr);
             if (approvalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(approvalPtr);
+        }
+    }
+
+    /// <summary>
+    /// Materialize and validate multiple canonical universal-edit candidates,
+    /// then return only the candidate selected by ECBES.
+    /// </summary>
+    public WellfriendBinaryResult EcbesUniversalEdit(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_ecbes_universal_edit_json(
+                _handle, requestPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    /// <summary>ECBES synthesis with binary-safe apply-only output credentials.</summary>
+    public WellfriendBinaryResult EcbesUniversalEditWithOutputCredentialBytes(
+        string requestJson,
+        byte[] outputUserPassword,
+        byte[]? outputOwnerPassword = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        ArgumentNullException.ThrowIfNull(outputUserPassword);
+        var requestPtr = IntPtr.Zero;
+        var userStorage = outputUserPassword.Length == 0 ? new byte[1] : outputUserPassword;
+        var ownerStorage = outputOwnerPassword is { Length: 0 } ? new byte[1] : outputOwnerPassword;
+        var userHandle = default(GCHandle);
+        var ownerHandle = default(GCHandle);
+        try
+        {
+            requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+            userHandle = GCHandle.Alloc(userStorage, GCHandleType.Pinned);
+            if (ownerStorage is not null)
+            {
+                ownerHandle = GCHandle.Alloc(ownerStorage, GCHandleType.Pinned);
+            }
+            var ownerPtr = ownerStorage is null
+                ? IntPtr.Zero
+                : ownerHandle.AddrOfPinnedObject();
+            var status = NativeMethods.wellfriendpdf_document_ecbes_universal_edit_with_output_credential_bytes_json(
+                _handle, requestPtr,
+                userHandle.AddrOfPinnedObject(), checked((nuint)outputUserPassword.LongLength),
+                ownerPtr, checked((nuint)(outputOwnerPassword?.LongLength ?? 0)),
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (userHandle.IsAllocated) userHandle.Free();
+            if (ownerHandle.IsAllocated) ownerHandle.Free();
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
         }
     }
 
@@ -1730,6 +1853,140 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    /// <summary>
+    /// Produces a revision-bound proposal that apportions a multi-run
+    /// replacement across its original PDF paint slots. This call never
+    /// mutates the document; review the returned candidates before applying.
+    /// </summary>
+    public string ProposeTextRangePaintPartitions(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_advanced_editing_closeout_paint_partition_propose_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    /// <summary>
+    /// Renders bounded before/candidate PNG byte arrays for the exact reviewed
+    /// proposal without returning or publishing candidate PDF bytes.
+    /// </summary>
+    public string PreviewTextRangePaintPartitions(
+        string requestJson,
+        string proposalJson,
+        string approvalJson,
+        byte[]? fontBytes = null,
+        string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(proposalJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(approvalJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        var proposalPtr = NativeMethods.StringToNativeOrNull(proposalJson);
+        var approvalPtr = NativeMethods.StringToNativeOrNull(approvalJson);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        var effectiveFont = fontBytes ?? Array.Empty<byte>();
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_advanced_editing_closeout_paint_partition_preview_json(
+                _handle, requestPtr, proposalPtr, approvalPtr,
+                effectiveFont, (UIntPtr)effectiveFont.Length, optionsPtr,
+                out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+            if (proposalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(proposalPtr);
+            if (approvalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(approvalPtr);
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    /// <summary>
+    /// Wraps a canonical publication receipt with a caller-held HMAC-SHA-256
+    /// authorization token. Keep <paramref name="hmacKey"/> outside untrusted
+    /// clients; server deployments should use the authenticated HTTP routes.
+    /// </summary>
+    public static string AuthenticateTextRangePaintPartitionReceipt(
+        string publicationReceiptJson,
+        string keyId,
+        string audience,
+        ulong issuedAtUnix,
+        ulong expiresAtUnix,
+        byte[] hmacKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(publicationReceiptJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(audience);
+        ArgumentNullException.ThrowIfNull(hmacKey);
+        if (hmacKey.Length is < 32 or > 256)
+            throw new ArgumentOutOfRangeException(nameof(hmacKey), "HMAC key must contain 32..=256 bytes.");
+        if (expiresAtUnix <= issuedAtUnix)
+            throw new ArgumentOutOfRangeException(nameof(expiresAtUnix), "Expiry must be later than issuance.");
+        var receiptPtr = NativeMethods.StringToNativeOrNull(publicationReceiptJson);
+        var keyIdPtr = NativeMethods.StringToNativeOrNull(keyId);
+        var audiencePtr = NativeMethods.StringToNativeOrNull(audience);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_advanced_editing_closeout_paint_partition_authenticate_receipt_json(
+                receiptPtr, keyIdPtr, audiencePtr, issuedAtUnix, expiresAtUnix,
+                hmacKey, (UIntPtr)hmacKey.Length, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(receiptPtr);
+            Marshal.FreeCoTaskMem(keyIdPtr);
+            Marshal.FreeCoTaskMem(audiencePtr);
+        }
+    }
+
+    /// <summary>
+    /// Verifies a host-authenticated receipt and returns the ordinary nested
+    /// content-bound publication receipt envelope.
+    /// </summary>
+    public static string VerifyAuthenticatedTextRangePaintPartitionReceipt(
+        string authenticatedReceiptJson,
+        string expectedKeyId,
+        string expectedAudience,
+        ulong nowUnix,
+        ulong allowedFutureSkewSecs,
+        byte[] hmacKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(authenticatedReceiptJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedKeyId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedAudience);
+        ArgumentNullException.ThrowIfNull(hmacKey);
+        if (hmacKey.Length is < 32 or > 256)
+            throw new ArgumentOutOfRangeException(nameof(hmacKey), "HMAC key must contain 32..=256 bytes.");
+        var receiptPtr = NativeMethods.StringToNativeOrNull(authenticatedReceiptJson);
+        var keyIdPtr = NativeMethods.StringToNativeOrNull(expectedKeyId);
+        var audiencePtr = NativeMethods.StringToNativeOrNull(expectedAudience);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json(
+                receiptPtr, keyIdPtr, audiencePtr, nowUnix, allowedFutureSkewSecs,
+                hmacKey, (UIntPtr)hmacKey.Length, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(receiptPtr);
+            Marshal.FreeCoTaskMem(keyIdPtr);
+            Marshal.FreeCoTaskMem(audiencePtr);
+        }
+    }
+
     public WellfriendBinaryResult EditTextRange(string requestJson)
     {
         ThrowIfDisposed();
@@ -1739,6 +1996,108 @@ public sealed class WellfriendDocument : IDisposable
         {
             var status = NativeMethods.wellfriendpdf_document_advanced_editing_closeout_text_range_edit_json(
                 _handle, requestPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    /// <summary>
+    /// Applies reviewed physical regions/final lines to the exact proposal and
+    /// input revision from
+    /// <see cref="ProposeTextRangePaintPartitions(PaintPartitionTextRangeRequest)"/>.
+    /// Stale, reordered, or altered proposal/approval identities fail closed.
+    /// </summary>
+    public WellfriendBinaryResult ApplyTextRangePaintPartitions(
+        string requestJson,
+        string proposalJson,
+        string approvalJson,
+        byte[]? fontBytes = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(proposalJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(approvalJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        var proposalPtr = NativeMethods.StringToNativeOrNull(proposalJson);
+        var approvalPtr = NativeMethods.StringToNativeOrNull(approvalJson);
+        var effectiveFont = fontBytes ?? Array.Empty<byte>();
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_with_font_json(
+                _handle, requestPtr, proposalPtr, approvalPtr,
+                effectiveFont, (UIntPtr)effectiveFont.Length,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+            if (proposalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(proposalPtr);
+            if (approvalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(approvalPtr);
+        }
+    }
+
+    /// <summary>
+    /// Applies only the candidate covered by the canonical preview's
+    /// publication_receipt. Any changed input, approval, font, or candidate
+    /// digest causes the native layer to withhold output.
+    /// </summary>
+    public WellfriendBinaryResult ApplyReviewedTextRangePaintPartitions(
+        string requestJson,
+        string proposalJson,
+        string approvalJson,
+        string publicationReceiptJson,
+        byte[]? fontBytes = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(proposalJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(approvalJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(publicationReceiptJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        var proposalPtr = NativeMethods.StringToNativeOrNull(proposalJson);
+        var approvalPtr = NativeMethods.StringToNativeOrNull(approvalJson);
+        var receiptPtr = NativeMethods.StringToNativeOrNull(publicationReceiptJson);
+        var effectiveFont = fontBytes ?? Array.Empty<byte>();
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_advanced_editing_closeout_paint_partition_apply_reviewed_with_font_json(
+                _handle, requestPtr, proposalPtr, approvalPtr, receiptPtr,
+                effectiveFont, (UIntPtr)effectiveFont.Length,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+            if (proposalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(proposalPtr);
+            if (approvalPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(approvalPtr);
+            if (receiptPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(receiptPtr);
+        }
+    }
+
+    public string AuthoredTypedTableSourcesJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_authored_typed_table_sources_json(
+            _handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public WellfriendBinaryResult MutateAuthoredTypedTable(string requestJson, byte[]? fontBytes = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        var effectiveFont = fontBytes ?? Array.Empty<byte>();
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_authored_typed_table_mutate_with_font_json(
+                _handle, requestPtr, effectiveFont, (UIntPtr)effectiveFont.Length,
+                out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
         finally

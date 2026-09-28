@@ -1225,7 +1225,7 @@ pub fn runtime_capabilities_for(
             name: "render_document_cache_byte_accounting".to_string(),
             state: CapabilityState::Active,
             mode: ExecutionMode::Standard,
-            reason: "RenderDocumentCache_resource_bounds_cover_byte_accounted_raw_images_scaled_images_SMask_groups_meshes_Form_programs_tiling_programs_annotation_appearance_programs_transformed_path_clip_nodes_font_bytes_font_resolvers_glyph_outline_entries_device_glyph_masks_glyph_mask_atlas_pages_Type3_parsed_geometry_programs_Type3_parsed_charproc_programs_Type3_masks_Type3_rendered_glyphs_path_fill_masks_path_stroke_masks_and_retained_display_lists_under_RenderResourceBudget_max_cache_bytes_plus_entry_capped_transparent_page_group_decisions; tenant_server_memory_pressure_policy_is_structured_in_runtime_capabilities; Rust_server_C_Python_WASM_DotNet_and_Java_render_contract_report_surfaces_expose_one_shot_cache_telemetry; external_runtime_cache_telemetry_validation_deferred".to_string(),
+            reason: "RenderDocumentCache_resource_bounds_cover_byte_accounted_raw_images_scaled_images_SMask_groups_meshes_Form_programs_tiling_programs_annotation_appearance_programs_transformed_path_clip_nodes_font_bytes_font_resolvers_glyph_outline_entries_device_glyph_masks_glyph_mask_atlas_pages_Type3_parsed_geometry_programs_Type3_parsed_charproc_programs_Type3_masks_Type3_rendered_glyphs_path_fill_masks_path_stroke_masks_prepared_function_graphs_and_retained_display_lists_under_RenderResourceBudget_max_cache_bytes_plus_entry_capped_transparent_page_group_decisions; aggregate_eviction_occurs_at_cache_handoff_not_every_allocation; standalone_reader_function_cache_is_separate; function_graph_use_also_carries_consumer_memory_limits; tenant_server_memory_pressure_policy_is_structured_in_runtime_capabilities; Rust_server_C_Python_WASM_DotNet_and_Java_render_contract_report_surfaces_expose_one_shot_cache_telemetry; external_runtime_cache_telemetry_validation_deferred".to_string(),
         },
         RuntimeCapability {
             name: "renderer_structured_concurrency_matrix".to_string(),
@@ -1313,7 +1313,7 @@ fn renderer_cache_pressure_policy(config: &RuntimeConfig) -> RendererCachePressu
         spill_eligible: config.caches.spill_eligible,
         pressure_actions: pressure_actions(),
         correctness_preserved: true,
-        remaining_limitation: "external_runtime_cache_telemetry_validation_deferred".to_string(),
+        remaining_limitation: "aggregate_resource_eviction_at_render_cache_handoff_not_all_allocation_admission; standalone_reader_function_cache_separately_bounded; native_codec_and_parser_allocations_not_fully_attributed; external_runtime_cache_telemetry_validation_deferred".to_string(),
     }
 }
 

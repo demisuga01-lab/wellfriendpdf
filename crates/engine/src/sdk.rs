@@ -35,7 +35,7 @@ use crate::{
     codec_isolation::{
         codec_isolation_availability_report, decode_filter_with_isolation, CodecIsolationConfig,
     },
-    color_report::{color_report_bytes, ColorValidationProfile},
+    color_report::{color_report, color_report_bytes, ColorValidationProfile},
     compliance::{validate_pdfa, validate_pdfua, PdfAProfile},
     decode_scanner::scanner_availability_report,
     decode_scheduler::{
@@ -88,6 +88,92 @@ fn envelope<T: Serialize>(kind: &str, report: &T) -> Result<String> {
 
 fn json_err(err: serde_json::Error) -> crate::WellfriendError {
     crate::WellfriendError::invalid_input(format!("JSON serialization error: {err}"))
+}
+
+/// Execute the deterministic ECBES research kernel over a caller-supplied
+/// provenance graph and candidate evidence. This does not mutate a PDF or
+/// generate candidates; it verifies influence closure and selects a qualified
+/// construction through the shared versioned report envelope.
+pub fn evidence_constrained_edit_synthesis_json(request_json: &str) -> Result<String> {
+    if request_json.len() > 32 * 1024 * 1024 {
+        return Err(WellfriendError::ResourceLimit(
+            "edit synthesis request exceeds 32 MiB".into(),
+        ));
+    }
+    let request: crate::research_edit_synthesis::EvidenceConstrainedEditRequest =
+        serde_json::from_str(request_json).map_err(json_err)?;
+    let decision = crate::research_edit_synthesis::synthesize_evidence_constrained_edit(request)?;
+    envelope("evidence_constrained_edit_synthesis", &decision)
+}
+
+/// Execute the complete ECBES candidate transaction over canonical universal
+/// edit requests. Every candidate is materialized from the same normalized
+/// input revision; only the evidence-qualified selected output is returned.
+pub fn ecbes_universal_edit_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    if request_json.len() > 256 * 1024 * 1024 {
+        return Err(WellfriendError::ResourceLimit(
+            "ECBES universal edit request exceeds 256 MiB".into(),
+        ));
+    }
+    crate::cancel::check_current_cancel("ECBES SDK input")?;
+    let input = mutation_input(bytes, password)?;
+    let request: crate::ecbes_universal::EcbesUniversalEditRequest =
+        serde_json::from_str(request_json).map_err(json_err)?;
+    let (output, mut report) =
+        crate::ecbes_universal::execute_ecbes_universal_edit(&input, &request, None)?;
+    let output = crate::ecbes_universal::preserve_ecbes_no_change_transport(
+        bytes,
+        &input,
+        output,
+        &mut report,
+    )?;
+    Ok((output, envelope("ecbes_universal_edit", &report)?))
+}
+
+/// ECBES universal editing with apply-only Standard-handler output secrets.
+/// The same credentials are used for every secured candidate and are never
+/// serialized into its plan, decision, report, or receipt.
+pub fn ecbes_universal_edit_with_output_credentials_json(
+    bytes: &[u8],
+    request_json: &str,
+    input_password: Option<&[u8]>,
+    output_user_password: &[u8],
+    output_owner_password: &[u8],
+) -> Result<(Vec<u8>, String)> {
+    if output_user_password.len() > 127 || output_owner_password.len() > 127 {
+        return Err(WellfriendError::invalid_input(
+            "ECBES output user and owner passwords must each be at most 127 bytes",
+        ));
+    }
+    if request_json.len() > 256 * 1024 * 1024 {
+        return Err(WellfriendError::ResourceLimit(
+            "ECBES universal edit request exceeds 256 MiB".into(),
+        ));
+    }
+    crate::cancel::check_current_cancel("secured ECBES SDK input")?;
+    let input = mutation_input(bytes, input_password)?;
+    let request: crate::ecbes_universal::EcbesUniversalEditRequest =
+        serde_json::from_str(request_json).map_err(json_err)?;
+    let credentials = crate::universal_editing::UniversalOutputSecurityCredentialsV2 {
+        user_password: crate::crypto::secret_bytes(output_user_password.to_vec()),
+        owner_password: crate::crypto::secret_bytes(output_owner_password.to_vec()),
+    };
+    let (output, mut report) =
+        crate::ecbes_universal::execute_ecbes_universal_edit(&input, &request, Some(&credentials))?;
+    let output = crate::ecbes_universal::preserve_ecbes_no_change_transport(
+        bytes,
+        &input,
+        output,
+        &mut report,
+    )?;
+    Ok((
+        output,
+        envelope("ecbes_universal_edit_with_output_credentials", &report)?,
+    ))
 }
 
 fn open(bytes: &[u8], password: Option<&[u8]>) -> Result<ContentEngine> {
@@ -398,8 +484,24 @@ pub fn parser_report_json(
 /// Separation / spot inventory, overprint, rendering intents, diagnostics.
 /// `profile` is one of `generic` | `pdfa` | `pdfx` (default `generic`).
 pub fn color_report_json(bytes: &[u8], profile: Option<&str>) -> Result<String> {
+    color_report_json_with_password(bytes, profile, None)
+}
+
+/// Credential-aware color/prepress report for retained document handles.
+pub fn color_report_json_with_password(
+    bytes: &[u8],
+    profile: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
     let profile = parse_color_profile(profile);
-    envelope("color_report", &color_report_bytes(bytes, profile)?)
+    if password.is_none_or(|value| value.is_empty()) {
+        return envelope("color_report", &color_report_bytes(bytes, profile)?);
+    }
+    let engine = open(bytes, password)?;
+    envelope(
+        "color_report",
+        &color_report(engine.document().reader(), profile),
+    )
 }
 
 /// PDF/A validation report. `profile` is one of `pdfa1b` | `pdfa2b` | `pdfa2a`
@@ -1026,6 +1128,47 @@ pub fn advanced_editing_closeout_text_range_analyze_json(
     )
 }
 
+pub fn advanced_editing_closeout_paint_partition_propose_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::advanced_editing::MultiRunTextRangeRequest>(request_json)
+            .map_err(json_err)?;
+    envelope(
+        "advanced_editing_closeout_paint_partition_proposal",
+        &crate::advanced_editing::propose_generated_paint_partitions(&input, &request)?,
+    )
+}
+
+pub fn authored_typed_table_sources_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "authored_typed_table_source_report",
+        &crate::authoring::inspect_authored_typed_table_sources(&input)?,
+    )
+}
+
+pub fn authored_typed_table_mutate_json(
+    bytes: &[u8],
+    request_json: &str,
+    font_bytes: Option<&[u8]>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::authoring::AuthoredTypedTableMutationRequest>(request_json)
+            .map_err(json_err)?;
+    let (output, report) =
+        crate::authoring::mutate_authored_typed_table(&input, &request, font_bytes)?;
+    Ok((
+        output,
+        envelope("authored_typed_table_mutation_report", &report)?,
+    ))
+}
+
 pub fn advanced_editing_closeout_text_range_edit_json(
     bytes: &[u8],
     request_json: &str,
@@ -1043,6 +1186,303 @@ pub fn advanced_editing_closeout_text_range_edit_json(
             "advanced_editing_closeout_multi_run_text_edit_report",
             &report,
         )?,
+    ))
+}
+
+pub fn advanced_editing_closeout_paint_partition_apply_json(
+    bytes: &[u8],
+    request_json: &str,
+    proposal_json: &str,
+    approval_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    advanced_editing_closeout_paint_partition_apply_with_font_json(
+        bytes,
+        request_json,
+        proposal_json,
+        approval_json,
+        None,
+        password,
+    )
+}
+
+pub fn advanced_editing_closeout_paint_partition_apply_with_font_json(
+    bytes: &[u8],
+    request_json: &str,
+    proposal_json: &str,
+    approval_json: &str,
+    font_bytes: Option<&[u8]>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let font_bytes = font_bytes.filter(|font| !font.is_empty());
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::advanced_editing::MultiRunTextRangeRequest>(request_json)
+            .map_err(json_err)?;
+    let proposal = parse_generated_paint_partition_proposal_json(proposal_json)?;
+    let approval =
+        serde_json::from_str::<crate::advanced_editing::GeneratedPaintPartitionApproval>(
+            approval_json,
+        )
+        .map_err(json_err)?;
+    let (output, report) = crate::advanced_editing::apply_generated_paint_partition_proposal(
+        &input, &request, &proposal, &approval, font_bytes,
+    )?;
+    Ok((
+        output,
+        envelope(
+            "advanced_editing_closeout_multi_run_text_edit_report",
+            &report,
+        )?,
+    ))
+}
+
+fn parse_generated_paint_partition_proposal_json(
+    proposal_json: &str,
+) -> Result<crate::advanced_editing::GeneratedPaintPartitionProposal> {
+    let proposal_value =
+        serde_json::from_str::<serde_json::Value>(proposal_json).map_err(json_err)?;
+    let proposal_value = if let Some(report) = proposal_value.get("report") {
+        if proposal_value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            != Some("advanced_editing_closeout_paint_partition_proposal")
+        {
+            return Err(crate::WellfriendError::invalid_input(
+                "paint partition proposal envelope has the wrong kind",
+            ));
+        }
+        report.clone()
+    } else {
+        proposal_value
+    };
+    serde_json::from_value::<crate::advanced_editing::GeneratedPaintPartitionProposal>(
+        proposal_value,
+    )
+    .map_err(json_err)
+}
+
+/// Render a private before/candidate comparison for one exact generated
+/// paint-partition approval. The candidate PDF bytes are never returned.
+pub fn advanced_editing_closeout_paint_partition_preview_json(
+    bytes: &[u8],
+    request_json: &str,
+    proposal_json: &str,
+    approval_json: &str,
+    font_bytes: Option<&[u8]>,
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    crate::cancel::check_current_cancel("paint partition preview input")?;
+    let font_bytes = font_bytes.filter(|font| !font.is_empty());
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::advanced_editing::MultiRunTextRangeRequest>(request_json)
+            .map_err(json_err)?;
+    let proposal = parse_generated_paint_partition_proposal_json(proposal_json)?;
+    let approval =
+        serde_json::from_str::<crate::advanced_editing::GeneratedPaintPartitionApproval>(
+            approval_json,
+        )
+        .map_err(json_err)?;
+    let options = options_json
+        .map(serde_json::from_str::<crate::universal_editing::scoped_preview::ScopedPreviewOptions>)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let preview = crate::universal_editing::scoped_preview::preview_paint_partition_candidate(
+        &input, &request, &proposal, &approval, font_bytes, &options,
+    )?;
+    // Avoid envelope()'s intermediate serde_json::Value because PNG byte arrays
+    // would be expanded into one Value allocation per byte.
+    #[derive(Serialize)]
+    struct PreviewEnvelope<'a> {
+        schema_version: u32,
+        kind: &'static str,
+        report: &'a crate::universal_editing::scoped_preview::PaintPartitionCandidatePreview,
+    }
+    let report = serde_json::to_string(&PreviewEnvelope {
+        schema_version: REPORT_ENVELOPE_VERSION,
+        kind: "advanced_editing_closeout_paint_partition_preview",
+        report: &preview,
+    })
+    .map_err(json_err)?;
+    if report.len() > 72 * 1024 * 1024 {
+        return Err(WellfriendError::ResourceLimit(
+            "paint partition preview JSON exceeds 72 MiB".into(),
+        ));
+    }
+    crate::cancel::check_current_cancel("paint partition preview serialization")?;
+    Ok(report)
+}
+
+/// Wrap one canonical paint-partition preview receipt with an
+/// application-held HMAC-SHA-256 authorization token. The key is caller-owned,
+/// never serialized and must be kept outside untrusted clients.
+pub fn advanced_editing_closeout_paint_partition_authenticate_receipt_json(
+    publication_receipt_json: &str,
+    key_id: &str,
+    audience: &str,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    hmac_key: &[u8],
+) -> Result<String> {
+    let receipt = serde_json::from_str::<
+        crate::universal_editing::scoped_preview::PaintPartitionPublicationReceipt,
+    >(publication_receipt_json)
+    .map_err(json_err)?;
+    let authenticated =
+        crate::universal_editing::scoped_preview::authenticate_paint_partition_publication_receipt(
+            receipt,
+            key_id,
+            audience,
+            issued_at_unix,
+            expires_at_unix,
+            hmac_key,
+        )?;
+    envelope(
+        "advanced_editing_closeout_authenticated_paint_partition_publication_receipt",
+        &authenticated,
+    )
+}
+
+/// Verify a host-authenticated receipt and return its nested content-bound
+/// publication receipt in the ordinary JSON envelope.
+pub fn advanced_editing_closeout_paint_partition_verify_authenticated_receipt_json(
+    authenticated_receipt_json: &str,
+    expected_key_id: &str,
+    expected_audience: &str,
+    now_unix: u64,
+    allowed_future_skew_secs: u64,
+    hmac_key: &[u8],
+) -> Result<String> {
+    let authenticated = serde_json::from_str::<
+        crate::universal_editing::scoped_preview::AuthenticatedPaintPartitionPublicationReceipt,
+    >(authenticated_receipt_json)
+    .map_err(json_err)?;
+    let receipt = crate::universal_editing::scoped_preview::verify_authenticated_paint_partition_publication_receipt(
+        &authenticated,
+        expected_key_id,
+        expected_audience,
+        now_unix,
+        allowed_future_skew_secs,
+        hmac_key,
+    )?;
+    envelope(
+        "advanced_editing_closeout_verified_paint_partition_publication_receipt",
+        &receipt,
+    )
+}
+
+/// Apply an exact paint-partition candidate only when the caller presents the
+/// compact receipt emitted by the canonical preview. Output is withheld when
+/// any input, approval, font, evidence, or candidate digest differs.
+pub fn advanced_editing_closeout_paint_partition_apply_reviewed_with_font_json(
+    bytes: &[u8],
+    request_json: &str,
+    proposal_json: &str,
+    approval_json: &str,
+    publication_receipt_json: &str,
+    font_bytes: Option<&[u8]>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    crate::cancel::check_current_cancel("reviewed paint partition apply input")?;
+    let font_bytes = font_bytes.filter(|font| !font.is_empty());
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::advanced_editing::MultiRunTextRangeRequest>(request_json)
+            .map_err(json_err)?;
+    let proposal = parse_generated_paint_partition_proposal_json(proposal_json)?;
+    let approval =
+        serde_json::from_str::<crate::advanced_editing::GeneratedPaintPartitionApproval>(
+            approval_json,
+        )
+        .map_err(json_err)?;
+    let receipt = serde_json::from_str::<
+        crate::universal_editing::scoped_preview::PaintPartitionPublicationReceipt,
+    >(publication_receipt_json)
+    .map_err(json_err)?;
+    let (output, report) = crate::advanced_editing::apply_generated_paint_partition_proposal(
+        &input, &request, &proposal, &approval, font_bytes,
+    )?;
+    crate::universal_editing::scoped_preview::verify_paint_partition_publication_receipt(
+        &receipt,
+        &input,
+        &request,
+        &proposal.proposal_id,
+        &approval,
+        font_bytes,
+        &report.output_sha256,
+    )?;
+    Ok((
+        output,
+        envelope(
+            "advanced_editing_closeout_reviewed_multi_run_text_edit_report",
+            &report,
+        )?,
+    ))
+}
+
+pub fn advanced_editing_form_text_analyze_json(
+    bytes: &[u8],
+    page: usize,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "advanced_editing_form_text_inventory",
+        &crate::advanced_editing::form_text::analyze_form_text(&input, page)?,
+    )
+}
+
+pub fn advanced_editing_form_text_edit_json(
+    bytes: &[u8],
+    request_json: &str,
+    font_bytes: Option<&[u8]>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::advanced_editing::form_text::FormTextEditRequest>(
+        request_json,
+    )
+    .map_err(json_err)?;
+    let (output, report) =
+        crate::advanced_editing::form_text::edit_form_text(&input, &request, font_bytes)?;
+    Ok((
+        output,
+        envelope("advanced_editing_form_text_edit_report", &report)?,
+    ))
+}
+
+pub fn advanced_editing_appearance_text_analyze_json(
+    bytes: &[u8],
+    page: usize,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "advanced_editing_appearance_text_inventory",
+        &crate::advanced_editing::form_text::appearance::analyze_appearance_text(&input, page)?,
+    )
+}
+
+pub fn advanced_editing_appearance_text_edit_json(
+    bytes: &[u8],
+    request_json: &str,
+    font_bytes: Option<&[u8]>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<
+        crate::advanced_editing::form_text::appearance::AppearanceTextEditRequest,
+    >(request_json)
+    .map_err(json_err)?;
+    let (output, report) = crate::advanced_editing::form_text::appearance::edit_appearance_text(
+        &input, &request, font_bytes,
+    )?;
+    Ok((
+        output,
+        envelope("advanced_editing_appearance_text_edit_report", &report)?,
     ))
 }
 
@@ -1326,9 +1766,9 @@ pub fn universal_render_qualification_v2_json(
     let input = mutation_input(bytes, password)?;
     crate::cancel::check_current_cancel("universal render qualification decrypted input")?;
     let options = options_json
-        .map(serde_json::from_str::<
-            crate::universal_editing::UniversalRenderQualificationOptionsV2,
-        >)
+        .map(
+            serde_json::from_str::<crate::universal_editing::UniversalRenderQualificationOptionsV2>,
+        )
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
@@ -1350,11 +1790,7 @@ pub fn universal_editing_inspect_object_v2_json(
     let input = mutation_input(bytes, password)?;
     envelope(
         "universal_editing_inspect_object_v2",
-        &crate::universal_editing::inspect_universal_object_v2(
-            &input,
-            number,
-            generation,
-        )?,
+        &crate::universal_editing::inspect_universal_object_v2(&input, number, generation)?,
     )
 }
 
@@ -1376,19 +1812,103 @@ pub fn universal_editing_plan_v2_json(
     )
 }
 
+/// Preview the dedicated cross-story Figure transfer without publishing PDF
+/// bytes.  The operation-specific envelope keeps callers out of the universal
+/// operation enum while retaining the same revision/plan-hash contract.
+pub fn story_figure_transfer_preview_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    crate::cancel::check_current_cancel("story Figure transfer preview input")?;
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::linked_stories::figures::StoryFigureTransferRequest>(
+            request_json,
+        )
+        .map_err(json_err)?;
+    envelope(
+        "story_figure_transfer_preview",
+        &crate::linked_stories::figures::preview_story_figure_transfer(&input, &request)?,
+    )
+}
+
+/// Apply the exact operation-specific Figure transfer plan.  The caller must
+/// pass the `plan_sha256` returned by `story_figure_transfer_preview_json`;
+/// stale or altered requests fail before output publication.
+pub fn story_figure_transfer_apply_json(
+    bytes: &[u8],
+    request_json: &str,
+    approved_plan_sha256: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    crate::cancel::check_current_cancel("story Figure transfer apply input")?;
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::linked_stories::figures::StoryFigureTransferRequest>(
+            request_json,
+        )
+        .map_err(json_err)?;
+    let (output, report) = crate::linked_stories::figures::apply_story_figure_transfer(
+        &input,
+        &request,
+        approved_plan_sha256,
+    )?;
+    Ok((output, envelope("story_figure_transfer_apply", &report)?))
+}
+
+/// Render bounded before/candidate PNGs for a canonical native scoped-text
+/// plan. Does not approve, apply, or return candidate PDF bytes.
+pub fn universal_editing_scoped_preview_v2_json(
+    bytes: &[u8],
+    plan_json: &str,
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    crate::cancel::check_current_cancel("universal scoped preview input")?;
+    let plan = serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
+        .map_err(json_err)?;
+    let options = options_json
+        .map(serde_json::from_str::<crate::universal_editing::scoped_preview::ScopedPreviewOptions>)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let input = mutation_input(bytes, password)?;
+    let preview = crate::universal_editing::scoped_preview::preview_scoped_candidate(
+        &input, &plan, &options,
+    )?;
+    // Do not route PNG byte arrays through envelope()'s intermediate Value:
+    // one serde Value per byte would multiply the bounded PNG memory budget.
+    #[derive(Serialize)]
+    struct PreviewEnvelope<'a> {
+        schema_version: u32,
+        kind: &'static str,
+        report: &'a crate::universal_editing::scoped_preview::ScopedCandidatePreview,
+    }
+    let report = serde_json::to_string(&PreviewEnvelope {
+        schema_version: REPORT_ENVELOPE_VERSION,
+        kind: "universal_editing_scoped_preview_v2",
+        report: &preview,
+    })
+    .map_err(json_err)?;
+    if report.len() > 72 * 1024 * 1024 {
+        return Err(WellfriendError::ResourceLimit(
+            "scoped candidate preview JSON exceeds 72 MiB".into(),
+        ));
+    }
+    crate::cancel::check_current_cancel("universal scoped preview serialization")?;
+    Ok(report)
+}
+
 /// Bind explicit candidate/font/rewrite decisions to a plan and document
 /// revision. The digest prevents accidental use against a different plan;
 /// deployments may additionally sign this token with their authorization key.
-pub fn universal_editing_approval_v2_json(
-    plan_json: &str,
-    decision_json: &str,
-) -> Result<String> {
-    let plan =
-        serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
-            .map_err(json_err)?;
-    let decision = serde_json::from_str::<
-        crate::universal_editing::UniversalApprovalDecisionV2,
-    >(decision_json)
+pub fn universal_editing_approval_v2_json(plan_json: &str, decision_json: &str) -> Result<String> {
+    let plan = serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
+        .map_err(json_err)?;
+    let decision = serde_json::from_str::<crate::universal_editing::UniversalApprovalDecisionV2>(
+        decision_json,
+    )
     .map_err(json_err)?;
     envelope(
         "universal_editing_approval_v2",
@@ -1408,32 +1928,23 @@ pub fn universal_editing_apply_v2_json(
     crate::cancel::check_current_cancel("universal editing apply input")?;
     let input = mutation_input(bytes, password)?;
     crate::cancel::check_current_cancel("universal editing apply decrypted input")?;
-    let plan =
-        serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
-            .map_err(json_err)?;
+    let plan = serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
+        .map_err(json_err)?;
     let approval = approval_json
-        .map(serde_json::from_str::<
-            crate::universal_editing::UniversalApprovalTokenV2,
-        >)
+        .map(serde_json::from_str::<crate::universal_editing::UniversalApprovalTokenV2>)
         .transpose()
         .map_err(json_err)?;
     // The input credential must never silently become the output credential.
     // Standard-handler plans require the explicit apply-only credentials API.
-    let (output, mut report) = crate::universal_editing::apply_universal_edit_v2(
-        &input,
-        &plan,
-        approval.as_ref(),
-    )?;
+    let (output, mut report) =
+        crate::universal_editing::apply_universal_edit_v2(&input, &plan, approval.as_ref())?;
     let output = crate::universal_editing::preserve_universal_no_change_transport_v2(
         bytes,
         &input,
         output,
         &mut report,
     );
-    Ok((
-        output,
-        envelope("universal_editing_apply_v2", &report)?,
-    ))
+    Ok((output, envelope("universal_editing_apply_v2", &report)?))
 }
 
 /// Apply a Standard-handler output-security plan with credentials that are
@@ -1458,13 +1969,10 @@ pub fn universal_editing_apply_v2_with_output_credentials_json(
     }
     let input = mutation_input(bytes, input_password)?;
     crate::cancel::check_current_cancel("universal secured editing apply decrypted input")?;
-    let plan =
-        serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
-            .map_err(json_err)?;
+    let plan = serde_json::from_str::<crate::universal_editing::UniversalEditPlanV2>(plan_json)
+        .map_err(json_err)?;
     let approval = approval_json
-        .map(serde_json::from_str::<
-            crate::universal_editing::UniversalApprovalTokenV2,
-        >)
+        .map(serde_json::from_str::<crate::universal_editing::UniversalApprovalTokenV2>)
         .transpose()
         .map_err(json_err)?;
     let (output, mut report) =
@@ -4698,12 +5206,15 @@ pub fn feature_report_json() -> Result<String> {
         "signature_validation_certificate_trust_pades_ocsp_crl_validation": crate::signature::signature_validation_feature_report_value(REPORT_ENVELOPE_VERSION),
         "universal_editing_v2": {
             "schema_version": crate::universal_editing::UNIVERSAL_EDITING_SCHEMA_VERSION,
+            "source_contract_status": "complete_for_declared_v2_operations_with_typed_limits",
             "api_style": "revision_bound_analyze_plan_approve_apply",
             "ambiguity_policy": "preview_and_explicit_confirmation",
             "signature_modes": ["preserve_signatures", "authorized_rewrite"],
             "render_qualification": "compile_retained_plan_render_native_pixels_compare_optional_rgba_oracles_then_vps_reference_corpus",
             "capabilities": crate::universal_editing::universal_capability_registry_v2(),
-            "qualification": "source_implemented_vps_corpus_validation_pending"
+            "binding_surfaces": ["Rust", "server", "C", "Python", "WASM", ".NET", "Java"],
+            "qualification": "source_contract_complete_runtime_corpus_validation_pending",
+            "universal_or_adobe_superiority_claim": false
         },
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
@@ -4740,9 +5251,19 @@ pub fn feature_report_json() -> Result<String> {
             "writer_closeout_report", "pubsec_report", "aes_gcm_report",
             "pdf_mac_report", "pdf_mac_verify", "crypto_tamper_test",
             "signature_validation", "signature_validation_with_evidence",
+            "advanced_editing_closeout_text_range_analyze",
+            "advanced_editing_closeout_text_range_edit",
+            "advanced_editing_closeout_paint_partition_propose",
+            "advanced_editing_closeout_paint_partition_preview",
+            "advanced_editing_closeout_paint_partition_apply",
+            "advanced_editing_closeout_paint_partition_apply_reviewed",
+            "advanced_editing_closeout_paint_partition_authenticate_receipt",
+            "advanced_editing_closeout_paint_partition_verify_authenticated_receipt",
+            "story_figure_transfer_preview", "story_figure_transfer_apply",
             "universal_editing_capabilities_v2", "universal_editing_analyze_v2",
             "universal_editing_inspect_object_v2", "universal_editing_plan_v2", "universal_editing_approval_v2",
-            "universal_editing_apply_v2", "universal_editing_apply_v2_with_output_credentials",
+            "universal_editing_scoped_preview_v2", "universal_editing_apply_v2",
+            "universal_editing_apply_v2_with_output_credentials",
             "universal_render_qualification_v2",
         ],
         "progress": {

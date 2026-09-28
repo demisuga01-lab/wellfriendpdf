@@ -17,17 +17,16 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::render::cmm;
 use crate::render::color::{ColorSpaceHandler, RenderColor};
-use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use crate::render::function::{FunctionResources, PreparedFunction};
+use std::cell::{Cell, RefCell};
 use std::mem::size_of;
+use std::sync::{Arc, Weak};
 
 pub(crate) const MAX_DEVICEN_COMPONENTS: usize = 16;
 pub(crate) const DEFAULT_TINT_TRANSFORM_CACHE_ENTRIES: usize = 64;
 pub(crate) const DEFAULT_TINT_TRANSFORM_CACHE_BYTES: usize =
     DEFAULT_TINT_TRANSFORM_CACHE_ENTRIES * MAX_TINT_TRANSFORM_OUTPUT_COMPONENTS * size_of::<f64>();
 const MAX_TINT_TRANSFORM_OUTPUT_COMPONENTS: usize = 32;
-const TINT_TRANSFORM_HASH_DEPTH_LIMIT: usize = 16;
 
 thread_local! {
     static TINT_TRANSFORM_CACHE: RefCell<TintTransformCache> =
@@ -72,14 +71,23 @@ pub(crate) struct TintTransformCacheMetrics {
     pub max_bytes: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 struct TintTransformCacheKey {
-    document_hash: u64,
-    document_len: usize,
-    function_hash: u64,
+    // Weak retains allocation identity, not the decoded graph. Its control
+    // block cannot be reused while an entry exists, even after reader eviction.
+    function: Weak<PreparedFunction>,
     input_count: usize,
     input_bits: [u64; MAX_DEVICEN_COMPONENTS],
 }
+
+impl PartialEq for TintTransformCacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.function, &other.function)
+            && self.input_count == other.input_count
+            && self.input_bits == other.input_bits
+    }
+}
+impl Eq for TintTransformCacheKey {}
 
 #[derive(Debug, Clone)]
 struct CachedTintTransform {
@@ -127,8 +135,20 @@ impl TintTransformCache {
         tint_fn: &PdfObject,
         inputs: &[f64],
         reader: &PdfReader,
+        resources: FunctionResources<'_>,
     ) -> std::result::Result<Vec<f64>, NamedColor> {
-        let key = tint_transform_cache_key(tint_fn, inputs, reader);
+        let Some(lease) = PreparedFunction::cached_with_resources(
+            tint_fn,
+            inputs.len(),
+            false,
+            reader,
+            resources,
+        ) else {
+            self.metrics.misses += 1;
+            return Err(NamedColor::Invalid(INVALID_TINT_FUNCTION));
+        };
+        let function = lease.graph();
+        let key = tint_transform_cache_key(function, inputs);
         if let Some(key) = key.as_ref() {
             if let Some(idx) = self
                 .entries
@@ -144,7 +164,10 @@ impl TintTransformCache {
         }
 
         self.metrics.misses += 1;
-        let output = evaluate_tint_transform_uncached(tint_fn, inputs, reader)?;
+        let output = function.evaluate(inputs);
+        if output.is_empty() {
+            return Err(NamedColor::Invalid(INVALID_TINT_FUNCTION));
+        }
         if let Some(key) = key {
             self.admit(key, output.clone());
         }
@@ -212,6 +235,79 @@ pub(crate) fn resolve_named_color_with_options(
     reader: &PdfReader,
     options: cmm::ColorTransformOptions,
 ) -> NamedColor {
+    resolve_named_color_with_source(space_obj, None, components, alpha, reader, options)
+}
+
+thread_local! {
+    static ACTIVE_COLOR_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct ColorResolutionGuard;
+impl ColorResolutionGuard {
+    fn enter() -> Option<Self> {
+        crate::cancel::check_current_cancel("named colour conversion").ok()?;
+        ACTIVE_COLOR_DEPTH.with(|depth| {
+            if depth.get() >= 32 {
+                return None;
+            }
+            depth.set(depth.get() + 1);
+            Some(Self)
+        })
+    }
+}
+impl Drop for ColorResolutionGuard {
+    fn drop(&mut self) {
+        ACTIVE_COLOR_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// Interpret components using a bound colour graph, retaining the corresponding
+/// original graph for nested Indexed lookup domains. The source must be resolved
+/// in the resource scope that selected it, before Default* substitutions.
+pub(crate) fn resolve_named_color_with_source(
+    space_obj: &PdfObject,
+    source_space: Option<&PdfObject>,
+    components: &[f64],
+    alpha: f32,
+    reader: &PdfReader,
+    options: cmm::ColorTransformOptions,
+) -> NamedColor {
+    resolve_named_color_with_resources(
+        space_obj,
+        source_space,
+        components,
+        alpha,
+        reader,
+        options,
+        FunctionResources::default(),
+    )
+}
+
+pub(crate) fn resolve_named_color_with_resources(
+    space_obj: &PdfObject,
+    source_space: Option<&PdfObject>,
+    components: &[f64],
+    alpha: f32,
+    reader: &PdfReader,
+    options: cmm::ColorTransformOptions,
+    resources: FunctionResources<'_>,
+) -> NamedColor {
+    let Some(_guard) = ColorResolutionGuard::enter() else {
+        return NamedColor::Invalid("colour conversion cancelled or nesting exceeds 32");
+    };
+    if !alpha.is_finite() {
+        return NamedColor::Invalid("paint alpha is not finite");
+    }
+    let resolved;
+    let space_obj = if matches!(space_obj, PdfObject::Reference { .. }) {
+        resolved = match reader.resolve(space_obj.clone()) {
+            Ok(value) => value,
+            Err(_) => return NamedColor::Invalid("colour space reference cannot be resolved"),
+        };
+        &resolved
+    } else {
+        space_obj
+    };
     let arr = match space_obj {
         PdfObject::Array(arr) => arr.as_slice(),
         PdfObject::Name(name) => return alternate_components_to_color(name, components, alpha),
@@ -224,13 +320,36 @@ pub(crate) fn resolve_named_color_with_options(
     };
 
     match family {
-        "Separation" => resolve_separation(arr, components, alpha, reader, options),
-        "DeviceN" => resolve_device_n(arr, components, alpha, reader, options),
-        "ICCBased" => {
-            cmm::icc_components_to_srgb_with_options(space_obj, components, reader, options)
-                .map(|[r, g, b]| NamedColor::Color(RenderColor::new(r, g, b, alpha)))
-                .unwrap_or(NamedColor::Unhandled)
-        }
+        "Separation" => resolve_separation(
+            arr,
+            source_space,
+            components,
+            alpha,
+            reader,
+            options,
+            resources,
+        ),
+        "DeviceN" => resolve_device_n(
+            arr,
+            source_space,
+            components,
+            alpha,
+            reader,
+            options,
+            resources,
+        ),
+        "ICCBased" => super::icc_conversion::resolve_color_with_resources(
+            space_obj,
+            source_space,
+            components,
+            alpha,
+            reader,
+            options,
+            resources,
+        )
+        .unwrap_or(NamedColor::Invalid(
+            "ICCBased metadata, profile or Alternate conversion rejected",
+        )),
         "Lab" => {
             let Some(params) = strict_lab_params_from_space(space_obj, reader) else {
                 return NamedColor::Invalid(INVALID_LAB);
@@ -270,203 +389,67 @@ pub(crate) fn resolve_named_color_with_options(
             let [r, g, b] = cmm::cal_rgb_to_srgb(comps, params);
             NamedColor::Color(RenderColor::new(r, g, b, alpha))
         }
-        "Indexed" => resolve_indexed(arr, components, alpha, reader, options),
+        "Indexed" => {
+            if !components_have_exact_finite_count(components, 1) {
+                return NamedColor::Invalid(INVALID_INDEXED_COMPONENTS);
+            }
+            crate::images::indexed_samples::resolve_color_with_resources(
+                space_obj,
+                source_space,
+                components[0],
+                alpha,
+                reader,
+                options,
+                resources,
+            )
+            .unwrap_or(NamedColor::Invalid(INVALID_INDEXED))
+        }
         _ => NamedColor::Unhandled,
     }
 }
 
-fn resolve_indexed(
-    arr: &[PdfObject],
-    components: &[f64],
-    alpha: f32,
+pub(crate) fn indexed_lookup_bytes(
+    lookup: &PdfObject,
     reader: &PdfReader,
-    options: cmm::ColorTransformOptions,
-) -> NamedColor {
-    if arr.len() != 4 {
-        return NamedColor::Invalid(INVALID_INDEXED);
-    }
-    if !components_have_exact_finite_count(components, 1) {
-        return NamedColor::Invalid(INVALID_INDEXED_COMPONENTS);
-    }
-    let hival = match arr.get(2).and_then(PdfObject::as_integer) {
-        Some(value) if value >= 0 => value as usize,
-        _ => return NamedColor::Invalid(INVALID_INDEXED),
-    };
-    let index = match indexed_component_to_index(components[0], hival) {
-        Some(index) => index,
-        None => return NamedColor::Invalid(INVALID_INDEXED_COMPONENTS),
-    };
-    let base = match arr.get(1) {
-        Some(base) => base,
-        None => return NamedColor::Invalid(INVALID_INDEXED),
-    };
-    let channels = match indexed_base_component_count(base, reader) {
-        Some(channels) => channels,
-        None => return NamedColor::Unhandled,
-    };
-    let lookup = match arr
-        .get(3)
-        .and_then(|lookup| indexed_lookup_bytes(lookup, reader))
-    {
-        Some(lookup) => lookup,
-        None => return NamedColor::Invalid(INVALID_INDEXED),
-    };
-    let entries = match hival.checked_add(1) {
-        Some(entries) => entries,
-        None => return NamedColor::Invalid(INVALID_INDEXED),
-    };
-    let expected = match entries.checked_mul(channels) {
-        Some(expected) => expected,
-        None => return NamedColor::Invalid(INVALID_INDEXED),
-    };
-    if lookup.len() != expected {
-        return NamedColor::Invalid(INVALID_INDEXED);
-    }
-    let start = match index.checked_mul(channels) {
-        Some(start) => start,
-        None => return NamedColor::Invalid(INVALID_INDEXED),
-    };
-    let end = match start.checked_add(channels) {
-        Some(end) if end <= lookup.len() => end,
-        _ => return NamedColor::Invalid(INVALID_INDEXED),
-    };
-    let palette_components = match indexed_palette_components(base, &lookup[start..end], reader) {
-        Some(components) => components,
-        None => return NamedColor::Invalid(INVALID_INDEXED),
-    };
-    resolve_alternate_color(base, &palette_components, alpha, reader, options)
-}
-
-fn indexed_component_to_index(component: f64, hival: usize) -> Option<usize> {
-    if !component.is_finite() || component < 0.0 || component > hival as f64 {
-        return None;
-    }
-    let rounded = component.round();
-    ((component - rounded).abs() <= 1e-9).then_some(rounded as usize)
-}
-
-fn indexed_lookup_bytes(lookup: &PdfObject, reader: &PdfReader) -> Option<Vec<u8>> {
-    match lookup {
-        PdfObject::String(bytes) => Some(bytes.clone()),
-        PdfObject::Stream { raw, .. } => Some(raw.clone()),
-        PdfObject::Reference { number, generation } => {
-            match reader.get_object(*number, *generation).ok()? {
-                PdfObject::String(bytes) => Some(bytes),
-                PdfObject::Stream { raw, .. } => Some(raw),
-                _ => None,
+) -> Result<Vec<u8>, String> {
+    use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
+    // At most 256 entries, each with at most 16 supported base components.
+    const MAX_LOOKUP_BYTES: usize = 256 * MAX_DEVICEN_COMPONENTS;
+    crate::cancel::check_current_cancel("Indexed palette decoding").map_err(|e| e.to_string())?;
+    let lookup = reader.resolve(lookup.clone()).map_err(|e| e.to_string())?;
+    let bytes = match lookup {
+        PdfObject::String(bytes) => bytes,
+        stream @ PdfObject::Stream { .. } => {
+            let limits = DecodeLimits {
+                // Allow bounded filter intermediates larger than the final table.
+                max_decoded_bytes_per_stream: 64 * 1024,
+                max_decoded_bytes_per_document: 64 * 1024,
+                ..DecodeLimits::default()
+            };
+            let decoded = decode_stream_lossless_with_limits(&stream, reader, &limits)
+                .map_err(|e| e.to_string())?;
+            if !matches!(decoded.status, StreamDecodeStatus::Complete) {
+                return Err("Indexed lookup uses an image filter instead of a byte stream".into());
             }
+            decoded.data
         }
-        _ => None,
-    }
-}
-
-fn indexed_base_component_count(base: &PdfObject, reader: &PdfReader) -> Option<usize> {
-    let resolved = match base {
-        PdfObject::Reference { .. } => reader.resolve(base.clone()).ok()?,
-        other => other.clone(),
+        _ => return Err("Indexed lookup is not a String or Stream".into()),
     };
-    match &resolved {
-        PdfObject::Name(name) => indexed_base_family_component_count(name, &resolved, reader),
-        PdfObject::Array(items) => {
-            let head = items.first().and_then(PdfObject::as_name)?;
-            indexed_base_family_component_count(head, &resolved, reader)
-        }
-        _ => None,
+    if bytes.len() > MAX_LOOKUP_BYTES {
+        return Err("Indexed lookup exceeds the supported palette size".into());
     }
-}
-
-fn indexed_base_family_component_count(
-    space_name: &str,
-    space: &PdfObject,
-    reader: &PdfReader,
-) -> Option<usize> {
-    match space_name {
-        "DeviceGray" | "G" | "CalGray" | "Separation" => Some(1),
-        "DeviceRGB" | "RGB" | "sRGB" | "CalRGB" | "Lab" => Some(3),
-        "DeviceCMYK" | "CMYK" => Some(4),
-        "ICCBased" => indexed_iccbased_component_count(space, reader),
-        "DeviceN" => indexed_device_n_component_count(space),
-        _ => None,
-    }
-}
-
-fn indexed_iccbased_component_count(space: &PdfObject, reader: &PdfReader) -> Option<usize> {
-    let arr = space.as_array()?;
-    if arr.first().and_then(PdfObject::as_name) != Some("ICCBased") {
-        return None;
-    }
-    let profile = reader.resolve(arr.get(1)?.clone()).ok()?;
-    profile
-        .as_stream()
-        .and_then(|(dict, _)| dict.get_integer("N"))
-        .and_then(|n| (1..=4).contains(&n).then_some(n as usize))
-}
-
-fn indexed_device_n_component_count(space: &PdfObject) -> Option<usize> {
-    let arr = space.as_array()?;
-    if arr.first().and_then(PdfObject::as_name) != Some("DeviceN") {
-        return None;
-    }
-    let names = arr.get(1)?.as_array()?;
-    if names.is_empty()
-        || names.len() > MAX_DEVICEN_COMPONENTS
-        || names.iter().any(|name| name.as_name().is_none())
-    {
-        return None;
-    }
-    Some(names.len())
-}
-
-fn indexed_palette_components(
-    base: &PdfObject,
-    samples: &[u8],
-    reader: &PdfReader,
-) -> Option<Vec<f64>> {
-    let resolved = match base {
-        PdfObject::Reference { .. } => reader.resolve(base.clone()).ok()?,
-        other => other.clone(),
-    };
-    let family = match &resolved {
-        PdfObject::Name(name) => name.as_str(),
-        PdfObject::Array(items) => items.first()?.as_name()?,
-        _ => return None,
-    };
-    if family == "Lab" {
-        return indexed_lab_palette_components(&resolved, samples, reader);
-    }
-    Some(
-        samples
-            .iter()
-            .map(|sample| f64::from(*sample) / 255.0)
-            .collect(),
-    )
-}
-
-fn indexed_lab_palette_components(
-    space: &PdfObject,
-    samples: &[u8],
-    reader: &PdfReader,
-) -> Option<Vec<f64>> {
-    if samples.len() != 3 {
-        return None;
-    }
-    let params = strict_lab_params_from_space(space, reader)?;
-    Some(vec![
-        f64::from(samples[0]) * 100.0 / 255.0,
-        f64::from(params.range[0])
-            + f64::from(samples[1]) * f64::from(params.range[1] - params.range[0]) / 255.0,
-        f64::from(params.range[2])
-            + f64::from(samples[2]) * f64::from(params.range[3] - params.range[2]) / 255.0,
-    ])
+    Ok(bytes)
 }
 
 /// `[/Separation /Name altSpace tintTransform]`
 fn resolve_separation(
     arr: &[PdfObject],
+    source_space: Option<&PdfObject>,
     components: &[f64],
     alpha: f32,
     reader: &PdfReader,
     options: cmm::ColorTransformOptions,
+    resources: FunctionResources<'_>,
 ) -> NamedColor {
     // Colorant name: /None paints nothing; /All approximates as full ink.
     let colorant = arr.get(1).and_then(PdfObject::as_name);
@@ -487,20 +470,35 @@ fn resolve_separation(
     }
     let tint = components[0];
 
-    let alt_components = match evaluate_tint_transform(tint_fn, &[tint], reader) {
-        Ok(components) => components,
-        Err(invalid) => return invalid,
+    let alt_components =
+        match evaluate_tint_transform_with_resources(tint_fn, &[tint], reader, resources) {
+            Ok(components) => components,
+            Err(invalid) => return invalid,
+        };
+    let source_alt = match source_alternate(source_space, "Separation", reader) {
+        Ok(value) => value,
+        Err(reason) => return NamedColor::Invalid(reason),
     };
-    resolve_alternate_color(alt, &alt_components, alpha, reader, options)
+    resolve_alternate_color(
+        alt,
+        source_alt.as_ref(),
+        &alt_components,
+        alpha,
+        reader,
+        options,
+        resources,
+    )
 }
 
 /// `[/DeviceN [/Name1 /Name2 ...] altSpace tintTransform attributes?]`
 fn resolve_device_n(
     arr: &[PdfObject],
+    source_space: Option<&PdfObject>,
     components: &[f64],
     alpha: f32,
     reader: &PdfReader,
     options: cmm::ColorTransformOptions,
+    resources: FunctionResources<'_>,
 ) -> NamedColor {
     let names = match arr.get(1).and_then(PdfObject::as_array) {
         Some(n) => n,
@@ -530,44 +528,75 @@ fn resolve_device_n(
     if !components_have_exact_finite_count(components, n) {
         return NamedColor::Invalid(INVALID_TINT_COMPONENTS);
     }
-    let alt_components = match evaluate_tint_transform(tint_fn, components, reader) {
-        Ok(components) => components,
-        Err(invalid) => return invalid,
+    let alt_components =
+        match evaluate_tint_transform_with_resources(tint_fn, components, reader, resources) {
+            Ok(components) => components,
+            Err(invalid) => return invalid,
+        };
+    let source_alt = match source_alternate(source_space, "DeviceN", reader) {
+        Ok(value) => value,
+        Err(reason) => return NamedColor::Invalid(reason),
     };
-    resolve_alternate_color(alt, &alt_components, alpha, reader, options)
+    resolve_alternate_color(
+        alt,
+        source_alt.as_ref(),
+        &alt_components,
+        alpha,
+        reader,
+        options,
+        resources,
+    )
 }
 
+fn source_alternate(
+    source: Option<&PdfObject>,
+    family: &str,
+    reader: &PdfReader,
+) -> Result<Option<PdfObject>, &'static str> {
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    let source = reader
+        .resolve(source.clone())
+        .map_err(|_| "original colour space reference cannot be resolved")?;
+    if super::default_colorspace::family(&source) != Some(family) {
+        // Default* replaced this node: its alternate is a new graph, not a
+        // child of the original device space.
+        return Ok(None);
+    }
+    source
+        .as_array()
+        .and_then(|items| items.get(2))
+        .cloned()
+        .map(Some)
+        .ok_or("original colour space alternate is missing")
+}
+
+#[cfg(test)]
 fn evaluate_tint_transform(
     tint_fn: &PdfObject,
     inputs: &[f64],
     reader: &PdfReader,
 ) -> std::result::Result<Vec<f64>, NamedColor> {
-    TINT_TRANSFORM_CACHE.with(|cache| cache.borrow_mut().evaluate(tint_fn, inputs, reader))
+    evaluate_tint_transform_with_resources(tint_fn, inputs, reader, FunctionResources::default())
 }
 
-fn evaluate_tint_transform_uncached(
+fn evaluate_tint_transform_with_resources(
     tint_fn: &PdfObject,
     inputs: &[f64],
     reader: &PdfReader,
+    resources: FunctionResources<'_>,
 ) -> std::result::Result<Vec<f64>, NamedColor> {
-    if !tint_transform_accepts_input_count(tint_fn, inputs.len(), reader) {
-        return Err(NamedColor::Invalid(INVALID_TINT_FUNCTION));
-    }
-    if !crate::render::function::validate_function_shape(tint_fn, inputs.len(), reader) {
-        return Err(NamedColor::Invalid(INVALID_TINT_FUNCTION));
-    }
-    let alt_components = crate::render::function::eval_function_n(tint_fn, inputs, reader);
-    if alt_components.is_empty() {
-        Err(NamedColor::Invalid(INVALID_TINT_FUNCTION))
-    } else {
-        Ok(alt_components)
-    }
+    TINT_TRANSFORM_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .evaluate(tint_fn, inputs, reader, resources)
+    })
 }
 
 fn tint_transform_cache_key(
-    tint_fn: &PdfObject,
+    function: &Arc<PreparedFunction>,
     inputs: &[f64],
-    reader: &PdfReader,
 ) -> Option<TintTransformCacheKey> {
     if inputs.len() > MAX_DEVICEN_COMPONENTS || inputs.iter().any(|input| !input.is_finite()) {
         return None;
@@ -577,142 +606,33 @@ fn tint_transform_cache_key(
         input_bits[idx] = input.to_bits();
     }
     Some(TintTransformCacheKey {
-        document_hash: stable_hash(reader.file_bytes()),
-        document_len: reader.file_bytes().len(),
-        function_hash: tint_function_hash(tint_fn, reader),
+        function: Arc::downgrade(function),
         input_count: inputs.len(),
         input_bits,
     })
 }
 
-fn tint_function_hash(tint_fn: &PdfObject, reader: &PdfReader) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hash_pdf_object_resolved(tint_fn, reader, &mut hasher, 0);
-    hasher.finish()
-}
-
-fn stable_hash(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn hash_pdf_dictionary<H: Hasher>(
-    dict: &PdfDictionary,
-    reader: &PdfReader,
-    state: &mut H,
-    depth: usize,
-) {
-    dict.len().hash(state);
-    for (key, value) in dict.entries() {
-        key.hash(state);
-        hash_pdf_object_resolved(value, reader, state, depth + 1);
-    }
-}
-
-fn hash_pdf_object_resolved<H: Hasher>(
-    object: &PdfObject,
-    reader: &PdfReader,
-    state: &mut H,
-    depth: usize,
-) {
-    if depth > TINT_TRANSFORM_HASH_DEPTH_LIMIT {
-        13u8.hash(state);
-        return;
-    }
-    match object {
-        PdfObject::Boolean(value) => {
-            0u8.hash(state);
-            value.hash(state);
-        }
-        PdfObject::Integer(value) => {
-            1u8.hash(state);
-            value.hash(state);
-        }
-        PdfObject::Real(value) => {
-            2u8.hash(state);
-            value.to_bits().hash(state);
-        }
-        PdfObject::String(value) => {
-            3u8.hash(state);
-            value.hash(state);
-        }
-        PdfObject::Name(value) => {
-            4u8.hash(state);
-            value.hash(state);
-        }
-        PdfObject::Array(items) => {
-            5u8.hash(state);
-            items.len().hash(state);
-            for item in items {
-                hash_pdf_object_resolved(item, reader, state, depth + 1);
-            }
-        }
-        PdfObject::Dictionary(dict) => {
-            6u8.hash(state);
-            hash_pdf_dictionary(dict, reader, state, depth + 1);
-        }
-        PdfObject::Stream { dict, raw } => {
-            7u8.hash(state);
-            hash_pdf_dictionary(dict, reader, state, depth + 1);
-            raw.hash(state);
-        }
-        PdfObject::Null => {
-            8u8.hash(state);
-        }
-        PdfObject::Reference { number, generation } => {
-            9u8.hash(state);
-            number.hash(state);
-            generation.hash(state);
-            if depth >= TINT_TRANSFORM_HASH_DEPTH_LIMIT {
-                10u8.hash(state);
-                return;
-            }
-            match reader.resolve(object.clone()) {
-                Ok(resolved) => {
-                    11u8.hash(state);
-                    hash_pdf_object_resolved(&resolved, reader, state, depth + 1);
-                }
-                Err(_) => {
-                    12u8.hash(state);
-                }
-            }
-        }
-    }
-}
-
-fn tint_transform_accepts_input_count(
-    tint_fn: &PdfObject,
-    input_count: usize,
-    reader: &PdfReader,
-) -> bool {
-    input_count <= 1 || !matches!(resolved_function_type(tint_fn, reader), Some(2 | 3))
-}
-
-fn resolved_function_type(func_obj: &PdfObject, reader: &PdfReader) -> Option<i64> {
-    let resolved = match func_obj {
-        PdfObject::Reference { .. } => reader.resolve(func_obj.clone()).ok()?,
-        other => other.clone(),
-    };
-    match resolved {
-        PdfObject::Dictionary(dict) => dict.get_integer("FunctionType"),
-        PdfObject::Stream { dict, .. } => dict.get_integer("FunctionType"),
-        _ => None,
-    }
-}
-
 fn resolve_alternate_color(
     alt: &PdfObject,
+    source_alt: Option<&PdfObject>,
     components: &[f64],
     alpha: f32,
     reader: &PdfReader,
     options: cmm::ColorTransformOptions,
+    resources: FunctionResources<'_>,
 ) -> NamedColor {
     let resolved = match alt {
-        PdfObject::Reference { .. } => reader.resolve(alt.clone()).unwrap_or_else(|_| alt.clone()),
+        PdfObject::Reference { .. } => match reader.resolve(alt.clone()) {
+            Ok(value) => value,
+            Err(_) => {
+                return NamedColor::Invalid("alternate colour space reference cannot be resolved")
+            }
+        },
         other => other.clone(),
     };
-    match resolve_named_color_with_options(&resolved, components, alpha, reader, options) {
+    match resolve_named_color_with_resources(
+        &resolved, source_alt, components, alpha, reader, options, resources,
+    ) {
         NamedColor::Color(color) => return NamedColor::Color(color),
         NamedColor::NoPaint => return NamedColor::NoPaint,
         NamedColor::Invalid(reason) => return NamedColor::Invalid(reason),
@@ -958,6 +878,38 @@ mod tests {
         PdfObject::Dictionary(PdfDictionary::new(m))
     }
 
+    #[test]
+    fn named_colour_depth_and_cancellation_rejection_do_not_poison_next_paint() {
+        let reader = reader();
+        // Deliberately nonconforming recursive alternate nesting must fail
+        // closed, not overflow the stack or leave a thread-local depth behind.
+        let mut nested = name("DeviceGray");
+        for _ in 0..40 {
+            nested = PdfObject::Array(vec![
+                name("Separation"),
+                name("Ink"),
+                nested,
+                type2_fn(&[0.0], &[1.0]),
+            ]);
+        }
+        assert!(matches!(
+            resolve_named_color(&nested, &[0.5], 1.0, &reader),
+            NamedColor::Invalid(_)
+        ));
+        assert_eq!(ACTIVE_COLOR_DEPTH.with(Cell::get), 0);
+        let cancel = crate::cancel::CancelToken::new();
+        cancel.cancel();
+        assert!(matches!(
+            cancel.scope(|| resolve_named_color(&name("DeviceGray"), &[0.5], 1.0, &reader)),
+            NamedColor::Invalid(_)
+        ));
+        assert_eq!(ACTIVE_COLOR_DEPTH.with(Cell::get), 0);
+        assert!(matches!(
+            resolve_named_color(&name("DeviceGray"), &[0.5], 1.0, &reader),
+            NamedColor::Color(_)
+        ));
+    }
+
     fn type4_device_n_rgb_fn() -> PdfObject {
         let mut m: BTreeMap<String, PdfObject> = BTreeMap::new();
         m.insert("FunctionType".into(), PdfObject::Integer(4));
@@ -1076,12 +1028,89 @@ mod tests {
         let r2 = PdfReader::from_bytes(bytes).unwrap();
         let tint_fn = type2_fn(&[1.0], &[0.0]);
 
-        let key1 = tint_transform_cache_key(&tint_fn, &[0.25], &r1).unwrap();
-        let key2 = tint_transform_cache_key(&tint_fn, &[0.25], &r2).unwrap();
+        let function1 = PreparedFunction::cached_single(&tint_fn, 1, &r1).unwrap();
+        let function2 = PreparedFunction::cached_single(&tint_fn, 1, &r2).unwrap();
+        let key1 = tint_transform_cache_key(&function1, &[0.25]).unwrap();
+        let key2 = tint_transform_cache_key(&function2, &[0.25]).unwrap();
 
         assert_ne!(key1, key2);
-        assert_ne!(key1.document_hash, key2.document_hash);
-        assert_eq!(key1.document_len, key2.document_len);
+        assert!(!Weak::ptr_eq(&key1.function, &key2.function));
+        assert_eq!(key1.input_bits, key2.input_bits);
+    }
+
+    #[test]
+    fn tint_results_do_not_hold_graphs_after_reader_drop() {
+        reset_tint_transform_cache_for_tests(4);
+        {
+            let reader = reader();
+            assert!(evaluate_tint_transform(&type2_fn(&[0.0], &[1.0]), &[0.25], &reader).is_ok());
+            TINT_TRANSFORM_CACHE.with(|cache| {
+                assert!(cache.borrow().entries[0].0.function.upgrade().is_some());
+            });
+        }
+        TINT_TRANSFORM_CACHE.with(|cache| {
+            assert!(cache.borrow().entries[0].0.function.upgrade().is_none());
+        });
+    }
+
+    #[test]
+    fn tint_keys_preserve_float_bits_and_evicted_allocation_identity() {
+        let reader = reader();
+        let object = type2_fn(&[0.0], &[1.0]);
+        let graph = PreparedFunction::cached_single(&object, 1, &reader).unwrap();
+        let old = tint_transform_cache_key(&graph, &[0.0]).unwrap();
+        assert_ne!(old, tint_transform_cache_key(&graph, &[-0.0]).unwrap());
+        assert!(tint_transform_cache_key(&graph, &[f64::NAN]).is_none());
+        *reader.function_cache.lock().unwrap() = crate::render::function::FunctionCache::default();
+        drop(graph);
+        assert!(old.function.upgrade().is_none());
+        let graph = PreparedFunction::cached_single(&object, 1, &reader).unwrap();
+        assert_ne!(old, tint_transform_cache_key(&graph, &[0.0]).unwrap());
+    }
+
+    #[test]
+    fn tint_reference_values_do_not_cross_readers() {
+        use crate::render::parameter_dictionary::tests::{reader_with_objects, reference};
+        reset_tint_transform_cache_for_tests(4);
+        let first = reader_with_objects(&[type2_fn(&[0.0], &[1.0])]);
+        let second = reader_with_objects(&[type2_fn(&[0.0], &[0.5])]);
+        assert_eq!(
+            evaluate_tint_transform(&reference(4), &[1.0], &first),
+            Ok(vec![1.0])
+        );
+        assert_eq!(
+            evaluate_tint_transform(&reference(4), &[1.0], &second),
+            Ok(vec![0.5])
+        );
+        assert_eq!(
+            evaluate_tint_transform(&reference(4), &[1.0], &first),
+            Ok(vec![1.0])
+        );
+        assert_eq!(tint_transform_cache_metrics().hits, 1);
+        assert_eq!(tint_transform_cache_metrics().misses, 2);
+    }
+
+    #[test]
+    fn tint_output_hit_still_observes_cancellation() {
+        reset_tint_transform_cache_for_tests(4);
+        let reader = reader();
+        let object = type2_fn(&[0.0], &[1.0]);
+        assert_eq!(
+            evaluate_tint_transform(&object, &[0.5], &reader),
+            Ok(vec![0.5])
+        );
+        let cancel = crate::cancel::CancelToken::new();
+        cancel.cancel();
+        assert_eq!(
+            cancel.scope(|| evaluate_tint_transform(&object, &[0.5], &reader)),
+            Err(NamedColor::Invalid(INVALID_TINT_FUNCTION))
+        );
+        assert_eq!(tint_transform_cache_metrics().hits, 0);
+        assert_eq!(
+            evaluate_tint_transform(&object, &[0.5], &reader),
+            Ok(vec![0.5])
+        );
+        assert_eq!(tint_transform_cache_metrics().hits, 1);
     }
 
     #[test]
@@ -1654,20 +1683,32 @@ mod tests {
         ]);
         assert_eq!(
             resolve_named_color(&space, &[0.0], 1.0, &reader()),
-            NamedColor::Invalid(INVALID_CAL_RGB)
+            NamedColor::Invalid(INVALID_INDEXED)
         );
     }
 
     #[test]
-    fn indexed_non_integer_component_is_invalid_not_rounded() {
+    fn indexed_components_round_half_up_and_clip_to_the_palette() {
         let space = PdfObject::Array(vec![
             name("Indexed"),
             name("DeviceRGB"),
             PdfObject::Integer(1),
             PdfObject::String(vec![255, 0, 0, 0, 0, 255]),
         ]);
+        for component in [0.5, 1.5, 300.0] {
+            match resolve_named_color(&space, &[component], 1.0, &reader()) {
+                NamedColor::Color(color) => assert_eq!(color.to_pixel_color(), [0, 0, 255, 255]),
+                other => panic!("expected rounded/clipped blue, got {other:?}"),
+            }
+        }
+        for component in [-5.0, 0.49] {
+            match resolve_named_color(&space, &[component], 1.0, &reader()) {
+                NamedColor::Color(color) => assert_eq!(color.to_pixel_color(), [255, 0, 0, 255]),
+                other => panic!("expected clipped red, got {other:?}"),
+            }
+        }
         assert_eq!(
-            resolve_named_color(&space, &[0.5], 1.0, &reader()),
+            resolve_named_color(&space, &[f64::NAN], 1.0, &reader()),
             NamedColor::Invalid(INVALID_INDEXED_COMPONENTS)
         );
     }
@@ -1716,7 +1757,7 @@ mod tests {
     }
 
     #[test]
-    fn indexed_unsupported_base_is_unhandled_not_black() {
+    fn indexed_prohibited_pattern_base_is_invalid_not_black() {
         let space = PdfObject::Array(vec![
             name("Indexed"),
             name("Pattern"),
@@ -1725,16 +1766,16 @@ mod tests {
         ]);
         assert_eq!(
             resolve_named_color(&space, &[0.0], 1.0, &reader()),
-            NamedColor::Unhandled
+            NamedColor::Invalid(INVALID_INDEXED)
         );
     }
 
     #[test]
-    fn non_special_space_is_unhandled() {
+    fn incomplete_icc_space_is_invalid_not_an_implicit_device_fallback() {
         let space = PdfObject::Array(vec![name("ICCBased")]);
-        assert_eq!(
+        assert!(matches!(
             resolve_named_color(&space, &[0.5], 1.0, &reader()),
-            NamedColor::Unhandled
-        );
+            NamedColor::Invalid(_)
+        ));
     }
 }

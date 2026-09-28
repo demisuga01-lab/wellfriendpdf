@@ -344,12 +344,44 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
             post(routes::universal_editing::plan),
         )
         .route(
+            "/api/v2/universal-editing/paint-partition/propose",
+            post(routes::universal_editing::paint_partition_propose),
+        )
+        .route(
+            "/api/v2/universal-editing/paint-partition/preview",
+            post(routes::universal_editing::paint_partition_preview),
+        )
+        .route(
+            "/api/v2/universal-editing/paint-partition/preview-authenticated",
+            post(routes::universal_editing::paint_partition_preview_authenticated),
+        )
+        .route(
+            "/api/v2/universal-editing/paint-partition/apply",
+            post(routes::universal_editing::paint_partition_apply),
+        )
+        .route(
+            "/api/v2/universal-editing/paint-partition/apply-reviewed",
+            post(routes::universal_editing::paint_partition_apply_reviewed),
+        )
+        .route(
+            "/api/v2/universal-editing/paint-partition/apply-authenticated",
+            post(routes::universal_editing::paint_partition_apply_authenticated),
+        )
+        .route(
+            "/api/v2/universal-editing/scoped-preview",
+            post(routes::universal_editing::scoped_preview),
+        )
+        .route(
             "/api/v2/universal-editing/approve",
             post(routes::universal_editing::approve),
         )
         .route(
             "/api/v2/universal-editing/apply",
             post(routes::universal_editing::apply),
+        )
+        .route(
+            "/api/v2/universal-editing/ecbes",
+            post(routes::universal_editing::ecbes),
         )
         .route(
             "/api/v1/progressive-image-decode/lifecycle-report",

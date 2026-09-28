@@ -4059,9 +4059,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::UniversalEditCapabilities(args) => run_universal_edit_capabilities(args),
         Commands::UniversalEditAnalyze(args) => run_universal_edit_analyze(args),
         Commands::UniversalEditInspectObject(args) => run_universal_edit_inspect_object(args),
-        Commands::UniversalRenderQualification(args) => {
-            run_universal_render_qualification(args)
-        }
+        Commands::UniversalRenderQualification(args) => run_universal_render_qualification(args),
         Commands::UniversalEditPlan(args) => run_universal_edit_plan(args),
         Commands::UniversalEditApprove(args) => run_universal_edit_approve(args),
         Commands::UniversalEditApply(args) => run_universal_edit_apply(args),
@@ -6081,18 +6079,14 @@ fn run_universal_edit_capabilities(
     write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
 }
 
-fn run_universal_edit_analyze(
-    args: UniversalEditAnalyzeArgs,
-) -> Result<(), Box<dyn Error>> {
+fn run_universal_edit_analyze(args: UniversalEditAnalyzeArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let options = args
         .options
         .as_ref()
         .map(std::fs::read_to_string)
         .transpose()?
-        .map(|json| {
-            serde_json::from_str::<wellfriendpdf_engine::UniversalAnalyzeOptionsV2>(&json)
-        })
+        .map(|json| serde_json::from_str::<wellfriendpdf_engine::UniversalAnalyzeOptionsV2>(&json))
         .transpose()?
         .unwrap_or_default();
     let model = wellfriendpdf_engine::analyze_universal_document_v2(&input, &options)?;
@@ -6121,9 +6115,9 @@ fn run_universal_render_qualification(
         .map(std::fs::read_to_string)
         .transpose()?
         .map(|json| {
-            serde_json::from_str::<
-                wellfriendpdf_engine::UniversalRenderQualificationOptionsV2,
-            >(&json)
+            serde_json::from_str::<wellfriendpdf_engine::UniversalRenderQualificationOptionsV2>(
+                &json,
+            )
         })
         .transpose()?
         .unwrap_or_default();
@@ -6175,9 +6169,7 @@ fn run_universal_edit_apply(args: UniversalEditApplyArgs) -> Result<(), Box<dyn 
         .as_ref()
         .map(std::fs::read_to_string)
         .transpose()?
-        .map(|json| {
-            serde_json::from_str::<wellfriendpdf_engine::UniversalApprovalTokenV2>(&json)
-        })
+        .map(|json| serde_json::from_str::<wellfriendpdf_engine::UniversalApprovalTokenV2>(&json))
         .transpose()?;
     let (output, mut report) = if let Some(user_path) = args.output_user_password_file.as_ref() {
         let user_password = std::fs::read(user_path)?;
@@ -8506,12 +8498,6 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     let render_mode = RenderMode::from_name(&args.render_quality)
         .ok_or_else(|| format!("unknown render quality '{}'", args.render_quality))?;
 
-    let out_file = std::fs::File::create(&args.output)?;
-    let mut zip = ZipWriter::new(out_file);
-    let zip_opts = FileOptions::<()>::default()
-        .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(6));
-
     const PARALLEL_RENDER_PAGE_THRESHOLD: usize = 32;
     let quality = args.quality;
     let encode_page = |page_num: usize,
@@ -8630,17 +8616,50 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 .collect()
         };
 
+    let requested_count = page_nums.len();
+    let render_failures = rendered_pages
+        .iter()
+        .filter_map(|(page_num, output)| {
+            output
+                .as_ref()
+                .err()
+                .map(|error| (*page_num, error.clone()))
+        })
+        .collect::<Vec<_>>();
+    if !render_failures.is_empty() {
+        for (page_num, error) in &render_failures {
+            eprintln!("Warning: skipped page {}: {}", page_num, error);
+        }
+        let details = render_failures
+            .iter()
+            .take(8)
+            .map(|(page, error)| format!("page {page}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "render incomplete: produced 0/{requested_count} requested pages; no output was written; {details}"
+        )
+        .into());
+    }
+
+    // Do not create or truncate the destination until every requested page has
+    // rendered successfully. A non-zero render exit must never leave behind an
+    // archive that looks usable but silently omits rejected pages.
+    let out_file = std::fs::File::create(&args.output)?;
+    let mut zip = ZipWriter::new(out_file);
+    let zip_opts = FileOptions::<()>::default()
+        .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(6));
+
     let mut rendered_count = 0usize;
     let mut contract_sidecars = 0usize;
     let mut font_substitution_sidecars = 0usize;
     for (page_num, output) in rendered_pages {
-        let output = match output {
-            Ok(output) => output,
-            Err(err) => {
-                eprintln!("Warning: skipped page {}: {}", page_num, err);
-                continue;
-            }
-        };
+        let output = output.map_err(|error| {
+            std::io::Error::other(format!(
+                "validated page {page_num} unexpectedly lost its render output: {error}"
+            ))
+        })?;
         let filename = format!("page-{:03}.{}", page_num, output.extension);
         zip.start_file(&filename, zip_opts)?;
         zip.write_all(&output.bytes)?;
