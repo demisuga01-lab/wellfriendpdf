@@ -37,6 +37,30 @@ MuPDF rejected `f1040.pdf`, `f1040sa.pdf`, `f1040sc.pdf`, `f1040sd.pdf`, and
 `f1040se.pdf` with `syntax error after element name`. It rejected the same five
 files before and after editing; WellPDF and qpdf accepted all five.
 
+### Timing percentiles
+
+These are process durations from the retained 100 per-file observations. P50,
+P90, P95, and P99 are latency percentiles in milliseconds; they are unrelated
+to the visual-divergence percentiles below.
+
+| Workload | Corpus | P50 | P90 | P95 | P99 | Maximum |
+|---|---|---:|---:|---:|---:|---:|
+| WellPDF semantic parse | Originals | 1,164.201 ms | 4,550.653 ms | 6,944.989 ms | 14,024.827 ms | 16,136.160 ms |
+| WellPDF semantic parse | Edited | 1,109.898 ms | 4,727.693 ms | 6,484.281 ms | 15,025.047 ms | 15,919.602 ms |
+| qpdf structural check | Originals | 182.814 ms | 1,331.799 ms | 2,029.282 ms | 7,946.815 ms | 11,974.864 ms |
+| qpdf structural check | Edited | 191.145 ms | 1,305.994 ms | 2,138.305 ms | 8,167.515 ms | 11,679.947 ms |
+| MuPDF `mutool info` | Originals | 26.593 ms | 49.605 ms | 58.166 ms | 93.001 ms | 280.164 ms |
+| MuPDF `mutool info` | Edited | 26.404 ms | 49.009 ms | 55.323 ms | 166.890 ms | 327.036 ms |
+| Verified edit, end-to-end | Edited | 33,016.260 ms | 55,890.344 ms | 68,940.164 ms | 98,026.668 ms | 111,736.765 ms |
+| Edit planning | Edited | 7,636.419 ms | 13,036.515 ms | 16,907.035 ms | 21,318.599 ms | 23,204.997 ms |
+| Edit apply | Edited | 24,370.821 ms | 39,875.242 ms | 48,818.867 ms | 67,200.242 ms | 73,955.928 ms |
+
+The parser rows are not equivalent-operation speed comparisons: WellPDF emits
+a semantic document model, qpdf performs structural checks, and `mutool info`
+inventories document resources. End-to-end edit time includes extraction,
+planning, approval, mutation, qpdf checks, reopen/extraction, and independent
+Poppler verification.
+
 ### Rendering against PDFium, MuPDF, and Poppler
 
 Page one of every original and edited PDF was rendered at 144 DPI. A comparison
@@ -51,17 +75,40 @@ with identical dimensions.
 `Changed > 8` is the percentage of pixels where at least one RGB channel
 differs from the reference by more than 8. Antialiasing and color-management
 policy can contribute to the value, so it is a diagnostic—not a percentage of
-objectively incorrect pixels.
+objectively incorrect pixels. These P50/P90/P95/P99 columns are distributions
+of pixel divergence across files, not render-time percentiles.
 
-| Reference | Original median / P95 / max changed > 8 | Edited median / P95 / max changed > 8 |
-|---|---:|---:|
-| MuPDF | 8.379496% / 11.791062% / 31.288504% | 8.366498% / 11.794105% / 31.297379% |
-| Poppler | 9.161623% / 13.444442% / 31.454685% | 9.155820% / 13.439491% / 31.462513% |
-| PDFium | 10.087342% / 14.624750% / 32.420260% | 10.078393% / 14.618561% / 32.425445% |
+| Corpus | Reference | P50 | P90 | P95 | P99 | Maximum |
+|---|---|---:|---:|---:|---:|---:|
+| Originals | MuPDF | 8.379496% | 11.293026% | 11.791062% | 15.770450% | 31.288504% |
+| Originals | Poppler | 9.161623% | 12.973691% | 13.444442% | 17.801277% | 31.454685% |
+| Originals | PDFium | 10.087342% | 14.145231% | 14.624750% | 18.511040% | 32.420260% |
+| Edited | MuPDF | 8.366498% | 11.277501% | 11.794105% | 15.751366% | 31.297379% |
+| Edited | Poppler | 9.155820% | 12.949965% | 13.439491% | 17.781729% | 31.462513% |
+| Edited | PDFium | 10.078393% | 14.142704% | 14.618561% | 18.493297% | 32.425445% |
 
 The edited-output distribution closely follows the original distribution,
 which is evidence against a broad rendering regression in this edit workflow.
 It is not pixel identity with the reference engines.
+
+The four-worker rendering campaign took 302.035 seconds for the 100 originals
+(0.331 completed comparison-set pages/s) and 282.391 seconds for the 100 edited
+outputs (0.354 pages/s). Each completed page includes WellPDF plus the three
+reference renders and image comparisons. The harness did not retain per-page
+render durations, so render-latency P90/P95/P99 cannot be truthfully recovered
+from this run; campaign throughput must not be relabeled as per-page latency.
+
+### Timestamped result history
+
+| Campaign date | Source state | Semantic parse | Compatibility render | Verified source edit | Visual result |
+|---|---|---:|---:|---:|---|
+| 2026-09-27 | Research snapshot over `27e62db` | 99/100 | 99/100 | 6/100 glyph-preserving | Poppler median 9.611%, P95 13.444%; PDFium median 10.215%, P95 14.625% |
+| 2026-09-28 | Implementation `e2a83fc` | 100/100 originals and edited | 100/100 originals and edited | 100/100 | Full P50/P90/P95/P99 table above |
+
+The implementation commit timestamp is `2026-09-28T22:50:39+05:30`; the
+evidence publication commit timestamp is `2026-09-28T22:55:36+05:30`. The
+original harness did not record wall-clock campaign start and finish timestamps,
+so the report does not invent them from copied-file modification times.
 
 ### Build and binding gates
 
@@ -83,7 +130,8 @@ Raw evidence is available in
 [`parse-original.json`](docs/reports/ecbes-vps-20260928/parse-original.json),
 [`parse-edited.json`](docs/reports/ecbes-vps-20260928/parse-edited.json),
 [`render-original.json`](docs/reports/ecbes-vps-20260928/render-original.json),
-and [`render-edited.json`](docs/reports/ecbes-vps-20260928/render-edited.json).
+[`render-edited.json`](docs/reports/ecbes-vps-20260928/render-edited.json), and
+the derived [`timing-summary.json`](docs/reports/ecbes-vps-20260928/timing-summary.json).
 
 These results establish 100/100 operational success for the published corpus
 and workflow. They do not prove that every valid PDF or every possible edit is

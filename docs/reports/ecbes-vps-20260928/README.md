@@ -77,6 +77,19 @@ The replacement preserves the selected word length. This is a broad source-edit 
 
 Raw per-file operation evidence is in [editing-results.jsonl](editing-results.jsonl), with the aggregate in [editing-summary.json](editing-summary.json).
 
+### Editing timing
+
+The per-file `elapsed_ms` measurement covers the complete harness operation:
+initial SDK and Poppler extraction, planning, approval where required, apply,
+qpdf comparison, SDK reopen/extraction, and final Poppler verification.
+
+| Measurement | P50 | P90 | P95 | P99 | Maximum |
+|---|---:|---:|---:|---:|---:|
+| End-to-end verified edit | 33,016.260 ms | 55,890.344 ms | 68,940.164 ms | 98,026.668 ms | 111,736.765 ms |
+| Plan | 7,636.419 ms | 13,036.515 ms | 16,907.035 ms | 21,318.599 ms | 23,204.997 ms |
+| Approval | 25.978 ms | 33.209 ms | 36.433 ms | 57.788 ms | 70.570 ms |
+| Apply | 24,370.821 ms | 39,875.242 ms | 48,818.867 ms | 67,200.242 ms | 73,955.928 ms |
+
 ## Parsing comparison
 
 `accepted` follows each tool's documented process result. qpdf warning exit 3 is accepted but separately reported. MuPDF was invoked through `mutool info`.
@@ -87,6 +100,22 @@ Raw per-file operation evidence is in [editing-results.jsonl](editing-results.js
 | 100 edited outputs | 100 accepted, 0 failed | 100 accepted: 99 clean, 1 warning | 95 accepted, 5 failed |
 
 MuPDF's five failures are the same IRS form family before and after editing: `f1040.pdf`, `f1040sa.pdf`, `f1040sc.pdf`, `f1040sd.pdf`, and `f1040se.pdf`. Each reports `syntax error after element name`, associated with metadata parsing. WellPDF accepted all five, and the edit did not introduce the condition. See [mupdf-input-metadata-failures.json](mupdf-input-metadata-failures.json), [parse-original.json](parse-original.json), and [parse-edited.json](parse-edited.json).
+
+### Parsing timing
+
+These are process durations from 100 per-file observations. They are not an
+equivalent-operation speed ranking: WellPDF emits a semantic document model,
+qpdf performs a structural check, and MuPDF `mutool info` inventories document
+resources.
+
+| Tool and corpus | P50 | P90 | P95 | P99 | Maximum |
+|---|---:|---:|---:|---:|---:|
+| WellPDF, originals | 1,164.201 ms | 4,550.653 ms | 6,944.989 ms | 14,024.827 ms | 16,136.160 ms |
+| WellPDF, edited | 1,109.898 ms | 4,727.693 ms | 6,484.281 ms | 15,025.047 ms | 15,919.602 ms |
+| qpdf, originals | 182.814 ms | 1,331.799 ms | 2,029.282 ms | 7,946.815 ms | 11,974.864 ms |
+| qpdf, edited | 191.145 ms | 1,305.994 ms | 2,138.305 ms | 8,167.515 ms | 11,679.947 ms |
+| MuPDF, originals | 26.593 ms | 49.605 ms | 58.166 ms | 93.001 ms | 280.164 ms |
+| MuPDF, edited | 26.404 ms | 49.009 ms | 55.323 ms | 166.890 ms | 327.036 ms |
 
 ## Rendering comparison
 
@@ -99,27 +128,48 @@ Every comparison rendered page one at 144 DPI. A page was comparable only when W
 | Originals | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
 | Edited outputs | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
 
-### Pixel divergence: originals
+### Pixel divergence distribution
 
-| Reference | Median changed > 8 | P95 | Maximum |
-|---|---:|---:|---:|
-| MuPDF | 8.379496% | 11.791062% | 31.288504% |
-| Poppler | 9.161623% | 13.444442% | 31.454685% |
-| PDFium | 10.087342% | 14.624750% | 32.420260% |
+These are fidelity percentiles across files, not render-time percentiles.
 
-### Pixel divergence: edited outputs
-
-| Reference | Median changed > 8 | P95 | Maximum |
-|---|---:|---:|---:|
-| MuPDF | 8.366498% | 11.794105% | 31.297379% |
-| Poppler | 9.155820% | 13.439491% | 31.462513% |
-| PDFium | 10.078393% | 14.618561% | 32.425445% |
+| Corpus | Reference | P50 | P90 | P95 | P99 | Maximum |
+|---|---|---:|---:|---:|---:|---:|
+| Originals | MuPDF | 8.379496% | 11.293026% | 11.791062% | 15.770450% | 31.288504% |
+| Originals | Poppler | 9.161623% | 12.973691% | 13.444442% | 17.801277% | 31.454685% |
+| Originals | PDFium | 10.087342% | 14.145231% | 14.624750% | 18.511040% | 32.420260% |
+| Edited | MuPDF | 8.366498% | 11.277501% | 11.794105% | 15.751366% | 31.297379% |
+| Edited | Poppler | 9.155820% | 12.949965% | 13.439491% | 17.781729% | 31.462513% |
+| Edited | PDFium | 10.078393% | 14.142704% | 14.618561% | 18.493297% | 32.425445% |
 
 The edited-output distribution closely tracks the original distribution, which is evidence against a broad renderer regression from this edit workflow. It does not mean the renderer is pixel-identical to any reference engine. Raw page-level results are in [render-original.json](render-original.json) and [render-edited.json](render-edited.json).
+
+### Rendering campaign time
+
+| Corpus | Workers | Pages | Wall time | Completed comparison-set pages/s | Mean campaign wall time/page |
+|---|---:|---:|---:|---:|---:|
+| Originals | 4 | 100 | 302.035 s | 0.331087 | 3,020.350 ms |
+| Edited outputs | 4 | 100 | 282.391 s | 0.354119 | 2,823.910 ms |
+
+Each comparison-set page includes WellPDF, PDFium, MuPDF, and Poppler renders
+plus pixel comparison. The harness retained total campaign duration but not an
+individual duration for each page. Therefore P90/P95/P99 render latency is not
+recoverable from this evidence and is not fabricated from aggregate throughput.
 
 ## What changed relative to the 2026-09-27 run
 
 The prior run observed 99/100 semantic parses, 99/100 compatibility renders, and only 6/100 verified edits. The new tested source state produced 100/100 in all three corresponding WellPDF operational gates. The implementation work that closed those observed failures includes deterministic source/provenance handling, strict no-op rejection, broader text/font routing, page-selection error handling, simple-font fallback when malformed ToUnicode data is recoverable, image/color decoding fixes, renderer fallback corrections, and adaptive nonlinear gradient approximation with explicit fail-closed behavior where exact preservation is unavailable.
+
+| Campaign date | Source state | Semantic parse | Compatibility render | Verified source edit |
+|---|---|---:|---:|---:|
+| 2026-09-27 | Research snapshot over `27e62db` | 99/100 | 99/100 | 6/100 glyph-preserving |
+| 2026-09-28 | Implementation `e2a83fc` | 100/100 originals and edited | 100/100 originals and edited | 100/100 |
+
+The implementation commit timestamp is `2026-09-28T22:50:39+05:30`, and the
+evidence commit timestamp is `2026-09-28T22:55:36+05:30`. The original harness
+did not retain wall-clock execution start and finish timestamps; filesystem
+copy times are not substituted for missing execution timestamps. Derived
+latency values and their calculation rule are in
+[timing-summary.json](timing-summary.json).
 
 ## Remaining claim boundaries
 
@@ -146,5 +196,6 @@ It does not support an unrestricted “edit any object in any PDF” or “bette
 - [editing-summary.json](editing-summary.json) and [editing-results.jsonl](editing-results.jsonl): edit outcomes and per-file proofs.
 - [parse-original.json](parse-original.json) and [parse-edited.json](parse-edited.json): WellPDF/qpdf/MuPDF parser records.
 - [render-original.json](render-original.json) and [render-edited.json](render-edited.json): page-level renderer comparisons.
+- [timing-summary.json](timing-summary.json): derived P50/P90/P95/P99 latency and campaign-throughput summary.
 - [corpus-manifest.tsv](corpus-manifest.tsv): exact corpus hashes, sizes, and names.
 - [reproducibility.txt](reproducibility.txt): toolchain and binary identity.
