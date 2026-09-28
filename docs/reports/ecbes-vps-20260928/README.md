@@ -128,6 +128,13 @@ Every comparison rendered page one at 144 DPI. A page was comparable only when W
 | Originals | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
 | Edited outputs | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
 
+These are operational output and dimension checks, not visual-fidelity passes.
+The subsequent retained-artifact campaign found a severe WellPDF layout failure
+in the maximum-divergence page. See the
+[human-viewable visual evidence](../ecbes-vps-20260929-visual/README.md) for all
+200 four-renderer sheets, heatmaps, timestamps, raster hashes, and per-engine
+latencies.
+
 ### Pixel divergence distribution
 
 These are fidelity percentiles across files, not render-time percentiles.

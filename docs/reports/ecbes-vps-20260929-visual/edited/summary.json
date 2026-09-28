@@ -1,0 +1,72 @@
+{
+  "schema_version": "wellfriend.visual_render_evidence.v1",
+  "corpus": "edited",
+  "started_at_utc": "2026-09-28T20:50:39Z",
+  "finished_at_utc": "2026-09-28T20:57:46Z",
+  "wall_seconds": 427.281,
+  "dpi": 144,
+  "workers": 4,
+  "files_attempted": 100,
+  "passed": 100,
+  "failed": 0,
+  "render_duration": {
+    "wellpdf": {
+      "n": 100,
+      "p50_ms": 490.34,
+      "p90_ms": 813.415,
+      "p95_ms": 1164.499,
+      "p99_ms": 1546.844,
+      "max_ms": 39961.103
+    },
+    "pdfium": {
+      "n": 100,
+      "p50_ms": 730.14,
+      "p90_ms": 850.722,
+      "p95_ms": 918.24,
+      "p99_ms": 1069.498,
+      "max_ms": 1139.994
+    },
+    "mupdf": {
+      "n": 100,
+      "p50_ms": 965.53,
+      "p90_ms": 1103.554,
+      "p95_ms": 1184.153,
+      "p99_ms": 1328.426,
+      "max_ms": 1435.239
+    },
+    "poppler": {
+      "n": 100,
+      "p50_ms": 923.954,
+      "p90_ms": 1146.064,
+      "p95_ms": 1217.007,
+      "p99_ms": 1280.089,
+      "max_ms": 1788.012
+    }
+  },
+  "contact_sheets": [
+    {
+      "file": "contact-001-025.webp",
+      "sha256": "4695e3325ca8d9474590edba0c696a3248621418ea43dc6f1d08a04e8cfa34d2",
+      "bytes": 219356
+    },
+    {
+      "file": "contact-026-050.webp",
+      "sha256": "f22bf9518bd738fc8b6824b9285b01d42b5ab91a1fdf17c968129761ced132e5",
+      "bytes": 224116
+    },
+    {
+      "file": "contact-051-075.webp",
+      "sha256": "e2d5f791ddd672fbe6663948e4da93187a815dc33c4170ebbddaa99a7ac39971",
+      "bytes": 193394
+    },
+    {
+      "file": "contact-076-100.webp",
+      "sha256": "7e084dc62544bf8214b6ac6ac99636f7140277e5f836fd44ee86890787477178",
+      "bytes": 209850
+    }
+  ],
+  "retention_policy": {
+    "retained": "one labeled WebP comparison with three amplified diff panels per page, contact sheets, raster hashes, dimensions, durations, and metrics",
+    "transient": "full-resolution PNG rasters"
+  }
+}

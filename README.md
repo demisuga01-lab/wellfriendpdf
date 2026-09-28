@@ -72,6 +72,14 @@ with identical dimensions.
 | 100 originals | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
 | 100 edited outputs | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
 
+**These are output-production and same-dimension results, not visual-fidelity
+passes.** The retained visual rerun exposes a severe WellPDF layout failure in
+the maximum-divergence document. The full four-renderer sheets, heatmaps,
+timestamps, raster hashes, and timing measurements are in the
+[human-viewable visual evidence report](docs/reports/ecbes-vps-20260929-visual/README.md).
+
+![Maximum-divergence four-renderer comparison](docs/reports/ecbes-vps-20260929-visual/originals/pages/047-arxiv-eess-iv-2609-28194v1-5e65af65d2ee-pdf.webp)
+
 `Changed > 8` is the percentage of pixels where at least one RGB channel
 differs from the reference by more than 8. Antialiasing and color-management
 policy can contribute to the value, so it is a diagnostic—not a percentage of
@@ -91,12 +99,22 @@ The edited-output distribution closely follows the original distribution,
 which is evidence against a broad rendering regression in this edit workflow.
 It is not pixel identity with the reference engines.
 
-The four-worker rendering campaign took 302.035 seconds for the 100 originals
-(0.331 completed comparison-set pages/s) and 282.391 seconds for the 100 edited
-outputs (0.354 pages/s). Each completed page includes WellPDF plus the three
-reference renders and image comparisons. The harness did not retain per-page
-render durations, so render-latency P90/P95/P99 cannot be truthfully recovered
-from this run; campaign throughput must not be relabeled as per-page latency.
+The original aggregate campaign did not retain per-page durations. A timestamped
+visual rerun retained individual engine durations and produced these percentiles:
+
+| Corpus | Renderer | P50 | P90 | P95 | P99 | Maximum |
+|---|---|---:|---:|---:|---:|---:|
+| Originals | WellPDF | 495.160 ms | 773.481 ms | 997.802 ms | 1,489.815 ms | 40,854.901 ms |
+| Originals | PDFium | 735.010 ms | 868.279 ms | 913.387 ms | 1,089.188 ms | 1,154.583 ms |
+| Originals | MuPDF | 957.148 ms | 1,133.023 ms | 1,181.795 ms | 1,287.178 ms | 1,455.695 ms |
+| Originals | Poppler | 900.829 ms | 1,146.898 ms | 1,168.173 ms | 1,393.087 ms | 1,634.043 ms |
+| Edited | WellPDF | 490.340 ms | 813.415 ms | 1,164.499 ms | 1,546.844 ms | 39,961.103 ms |
+| Edited | PDFium | 730.140 ms | 850.722 ms | 918.240 ms | 1,069.498 ms | 1,139.994 ms |
+| Edited | MuPDF | 965.530 ms | 1,103.554 ms | 1,184.153 ms | 1,328.426 ms | 1,435.239 ms |
+| Edited | Poppler | 923.954 ms | 1,146.064 ms | 1,217.007 ms | 1,280.089 ms | 1,788.012 ms |
+
+The WellPDF maximum is `i1040gi.pdf`; it took about 40 seconds in both corpora,
+while the next-slowest WellPDF page was about 1.5 seconds.
 
 ### Timestamped result history
 
@@ -125,6 +143,8 @@ so the report does not invent them from copied-file modification times.
 The complete methodology, exact tool versions, corpus manifest, per-file edit
 proofs, parser diagnostics, and page-level render measurements are published in
 the [100-PDF VPS qualification report](docs/reports/ecbes-vps-20260928/README.md).
+Human-viewable WellPDF/PDFium/MuPDF/Poppler sheets and heatmaps are in the
+[visual evidence report](docs/reports/ecbes-vps-20260929-visual/README.md).
 Raw evidence is available in
 [`editing-results.jsonl`](docs/reports/ecbes-vps-20260928/editing-results.jsonl),
 [`parse-original.json`](docs/reports/ecbes-vps-20260928/parse-original.json),
