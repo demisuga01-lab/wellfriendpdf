@@ -11,22 +11,85 @@ canonical implementation is Rust; the CLI, HTTP server, C ABI, Python, WASM,
 
 ## Benchmark Results
 
-This section is reserved at the front of the README for the final post-closure
-verification and benchmark campaign. The current source-closure task does not
-run a PDF corpus, performance benchmark, or competitor comparison, so no new
-performance numbers are claimed here.
+The 2026-09-28 qualification used implementation commit [`e2a83fc`](https://github.com/demisuga01-lab/wellfriendpdf/commit/e2a83fc),
+release CLI SHA-256
+`879e2bc695790fc7523cf6a835b7149b2d6b7ee7a6dd542466930ecb18f83943`,
+and a fixed 100-PDF corpus on the project VPS. The corpus contains 81 arXiv
+papers, 16 IRS forms, one DARPA SafeDocs sample, one Mozilla PDF.js regression
+file, and one veraPDF conformance file.
 
-| Campaign | Dataset and host | Correctness result | Performance result | Status |
-|---|---|---|---|---|
-| Universal raster rendering | To be recorded | To be recorded | P50/P95/P99 to be recorded | Pending final campaign |
-| Progressive and tiled rendering | To be recorded | To be recorded | Latency/throughput to be recorded | Pending final campaign |
-| Print and color-managed rendering | To be recorded | To be recorded | To be recorded | Pending final campaign |
-| Cross-binding parity | To be recorded | To be recorded | Not applicable | Pending final campaign |
-| Competitor comparison | Same-host setup to be recorded | Pixel policy to be recorded | Same-operation results to be recorded | Pending final campaign |
+### Editing and parsing
 
-When results are added, record the exact commit, machine, tool versions,
-dataset manifest, command lines, failures, page counts, and raw evidence path.
-Do not compare rows produced by different workloads.
+| Qualification | Originals | Edited outputs | Result |
+|---|---:|---:|---|
+| Revision-bound source edit | 100 attempted | 100 applied and independently verified | **100/100** |
+| WellPDF semantic parse | 100/100 accepted | 100/100 accepted | **100/100** |
+| qpdf structural check | 100/100 accepted: 97 clean, 3 warning | 100/100 accepted: 99 clean, 1 warning | **100/100 accepted** |
+| MuPDF `mutool info` | 95/100 accepted | 95/100 accepted | Same five input-metadata failures before and after |
+
+Every counted edit had to produce changed bytes, report an applied mutation,
+prove the selected source occurrence was replaced, reopen through WellPDF,
+expose the replacement through independent Poppler extraction, and introduce no
+new qpdf structural diagnostic. There were no timeouts, typed refusals, or
+verification failures in this particular workflow.
+
+MuPDF rejected `f1040.pdf`, `f1040sa.pdf`, `f1040sc.pdf`, `f1040sd.pdf`, and
+`f1040se.pdf` with `syntax error after element name`. It rejected the same five
+files before and after editing; WellPDF and qpdf accepted all five.
+
+### Rendering against PDFium, MuPDF, and Poppler
+
+Page one of every original and edited PDF was rendered at 144 DPI. A comparison
+was counted only when WellPDF and the reference renderer both produced an image
+with identical dimensions.
+
+| Corpus | WellPDF renders | PDFium comparable | MuPDF comparable | Poppler comparable | Failures |
+|---|---:|---:|---:|---:|---:|
+| 100 originals | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
+| 100 edited outputs | 100/100 | 100/100 | 100/100 | 100/100 | 0 |
+
+`Changed > 8` is the percentage of pixels where at least one RGB channel
+differs from the reference by more than 8. Antialiasing and color-management
+policy can contribute to the value, so it is a diagnostic—not a percentage of
+objectively incorrect pixels.
+
+| Reference | Original median / P95 / max changed > 8 | Edited median / P95 / max changed > 8 |
+|---|---:|---:|
+| MuPDF | 8.379496% / 11.791062% / 31.288504% | 8.366498% / 11.794105% / 31.297379% |
+| Poppler | 9.161623% / 13.444442% / 31.454685% | 9.155820% / 13.439491% / 31.462513% |
+| PDFium | 10.087342% / 14.624750% / 32.420260% | 10.078393% / 14.618561% / 32.425445% |
+
+The edited-output distribution closely follows the original distribution,
+which is evidence against a broad rendering regression in this edit workflow.
+It is not pixel identity with the reference engines.
+
+### Build and binding gates
+
+| Gate | Result |
+|---|---:|
+| Focused renderer regression | 232 passed, 0 failed |
+| Full Rust workspace | 5,399 passed, 0 failed |
+| Optimized CLI and C ABI | Built successfully |
+| Java binding | 3 passed, 0 failed |
+| .NET binding | 17 passed, 0 failed |
+| Python optimized binding | 32 passed, 0 failed, 1 skipped |
+| WASM/TypeScript | `npm ci` and typecheck passed |
+
+The complete methodology, exact tool versions, corpus manifest, per-file edit
+proofs, parser diagnostics, and page-level render measurements are published in
+the [100-PDF VPS qualification report](docs/reports/ecbes-vps-20260928/README.md).
+Raw evidence is available in
+[`editing-results.jsonl`](docs/reports/ecbes-vps-20260928/editing-results.jsonl),
+[`parse-original.json`](docs/reports/ecbes-vps-20260928/parse-original.json),
+[`parse-edited.json`](docs/reports/ecbes-vps-20260928/parse-edited.json),
+[`render-original.json`](docs/reports/ecbes-vps-20260928/render-original.json),
+and [`render-edited.json`](docs/reports/ecbes-vps-20260928/render-edited.json).
+
+These results establish 100/100 operational success for the published corpus
+and workflow. They do not prove that every valid PDF or every possible edit is
+supported, and Acrobat was not part of the comparator set. The project does not
+claim universal PDF editing, pixel-perfect equivalence, or superiority over
+Adobe from this campaign alone.
 
 ## Repository Status
 
@@ -43,31 +106,12 @@ reported policies. Codec-native region, tile, component, reduction, and
 progressive capabilities are reported from the selected decoder rather than
 being simulated.
 
-The latest independent source-closure evidence and exact current verdict are in
-[`docs/renderer/independent-closure-audit-2026-09-07.md`](docs/renderer/independent-closure-audit-2026-09-07.md).
-Deferred corpus and platform verification is not presented as completed source
-work.
-
-The additive universal editing v2 transaction and its unexecuted VPS
-qualification gate are documented in
+The latest runtime qualification and exact current verdict are in the
+[2026-09-28 VPS report](docs/reports/ecbes-vps-20260928/README.md). The renderer
+architecture remains documented in
+[`docs/renderer/final-universal-renderer-implementation-report.md`](docs/renderer/final-universal-renderer-implementation-report.md),
+and universal-editing implementation details are recorded in
 [`docs/universal_editing_v2_implementation_report.md`](docs/universal_editing_v2_implementation_report.md).
-
-Verified local closure baseline (`0601400fabfbc85491a4923a2bac6406f0865892`):
-
-| Evidence | Result |
-|---|---|
-| Rust workspace, all targets and all features | 3,636 tests passed across 90 harnesses; 0 failed |
-| Formatting, compile, and Clippy | Default and all-feature gates passed with warnings denied |
-| C ABI | Library built; C example loaded the DLL and extracted `Hi` from `minimal.pdf` |
-| .NET | 15 tests passed |
-| Java | JDK 25 preview compile and contract-builder smoke passed |
-| WASM | `wasm32-unknown-unknown` feature check passed |
-| Python visual-normalization tool | 46 tests passed |
-
-These are local correctness and build results, not corpus fidelity or
-performance benchmark results. The independent audit records the commands,
-evidence hashes, defects repaired during the audit, and remaining proof
-boundary.
 
 ## Requirements
 
