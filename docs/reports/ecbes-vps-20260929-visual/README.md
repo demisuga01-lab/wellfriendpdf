@@ -29,6 +29,8 @@ retains the new comparison image and raw record. The full 100-file campaign has
 not yet been rerun with the correction; the results below remain historical
 pre-fix evidence.
 
+![Post-fix four-renderer comparison](fixes/type1-font-matrix/comparison.webp)
+
 The retained historical sheets and JSON use `wellpdf` as a legacy harness
 label. The product name is **Wellfriend PDF SDK**, the binary is
 `wellfriendpdf`, and the harness has been corrected for future runs.
@@ -57,10 +59,10 @@ label. The product name is **Wellfriend PDF SDK**, the binary is
 metrics were calculated, and a labeled comparison artifact was retained. It
 does not mean that the page was visually correct.
 
-| Corpus | PDFs | Pipeline complete | PDFium comparable | MuPDF comparable | Poppler comparable |
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
 |---|---:|---:|---:|---:|---:|
-| Originals | 100 | 100/100 | 100/100 | 100/100 | 100/100 |
-| Edited outputs | 100 | 100/100 | 100/100 | 100/100 | 100/100 |
+| First-page raster, 100 originals | 100/100 produced | — | 100/100 produced | 100/100 produced | 100/100 produced |
+| First-page raster, 100 edited outputs | 100/100 produced | — | 100/100 produced | 100/100 produced | 100/100 produced |
 
 ## Per-renderer latency
 
@@ -68,16 +70,18 @@ These are measured subprocess durations from the retained run. They are not a
 claim that the engines expose identical APIs or perform identical internal
 work.
 
-| Corpus | Renderer | P50 | P90 | P95 | P99 | Maximum |
-|---|---|---:|---:|---:|---:|---:|
-| Originals | Wellfriend PDF | 495.160 ms | 773.481 ms | 997.802 ms | 1,489.815 ms | 40,854.901 ms |
-| Originals | PDFium | 735.010 ms | 868.279 ms | 913.387 ms | 1,089.188 ms | 1,154.583 ms |
-| Originals | MuPDF | 957.148 ms | 1,133.023 ms | 1,181.795 ms | 1,287.178 ms | 1,455.695 ms |
-| Originals | Poppler | 900.829 ms | 1,146.898 ms | 1,168.173 ms | 1,393.087 ms | 1,634.043 ms |
-| Edited | Wellfriend PDF | 490.340 ms | 813.415 ms | 1,164.499 ms | 1,546.844 ms | 39,961.103 ms |
-| Edited | PDFium | 730.140 ms | 850.722 ms | 918.240 ms | 1,069.498 ms | 1,139.994 ms |
-| Edited | MuPDF | 965.530 ms | 1,103.554 ms | 1,184.153 ms | 1,328.426 ms | 1,435.239 ms |
-| Edited | Poppler | 923.954 ms | 1,146.064 ms | 1,217.007 ms | 1,280.089 ms | 1,788.012 ms |
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Original render, P50 | 495.160 ms | — | 957.148 ms | 735.010 ms | 900.829 ms |
+| Original render, P90 | 773.481 ms | — | 1,133.023 ms | 868.279 ms | 1,146.898 ms |
+| Original render, P95 | 997.802 ms | — | 1,181.795 ms | 913.387 ms | 1,168.173 ms |
+| Original render, P99 | 1,489.815 ms | — | 1,287.178 ms | 1,089.188 ms | 1,393.087 ms |
+| Original render, maximum | 40,854.901 ms | — | 1,455.695 ms | 1,154.583 ms | 1,634.043 ms |
+| Edited render, P50 | 490.340 ms | — | 965.530 ms | 730.140 ms | 923.954 ms |
+| Edited render, P90 | 813.415 ms | — | 1,103.554 ms | 850.722 ms | 1,146.064 ms |
+| Edited render, P95 | 1,164.499 ms | — | 1,184.153 ms | 918.240 ms | 1,217.007 ms |
+| Edited render, P99 | 1,546.844 ms | — | 1,328.426 ms | 1,069.498 ms | 1,280.089 ms |
+| Edited render, maximum | 39,961.103 ms | — | 1,435.239 ms | 1,139.994 ms | 1,788.012 ms |
 
 The Wellfriend PDF maximum is a repeatable document-specific outlier: `i1040gi.pdf`
 took 40,854.901 ms before editing and 39,961.103 ms afterward. The next-slowest
@@ -91,14 +95,19 @@ the retained [original](originals/pages/095-i1040gi-pdf.webp) and
 differs from the reference by more than eight. These are fidelity diagnostics,
 not timing measurements and not a count of conclusively incorrect pixels.
 
-| Corpus | Reference | Median | P90 | P95 | P99 | Maximum |
-|---|---|---:|---:|---:|---:|---:|
-| Originals | MuPDF | 8.379496% | 11.293026% | 11.791062% | 15.770450% | 31.288504% |
-| Originals | Poppler | 9.161623% | 12.973691% | 13.444442% | 17.801277% | 31.454685% |
-| Originals | PDFium | 10.087342% | 14.145231% | 14.624750% | 18.511040% | 32.420260% |
-| Edited | MuPDF | 8.366498% | 11.277501% | 11.794105% | 15.751366% | 31.297379% |
-| Edited | Poppler | 9.155820% | 12.949965% | 13.439491% | 17.781729% | 31.462513% |
-| Edited | PDFium | 10.078393% | 14.142704% | 14.618561% | 18.493297% | 32.425445% |
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Originals, changed > 8 median | Comparison source | — | 8.379496% | 10.087342% | 9.161623% |
+| Originals, changed > 8 P90 | Comparison source | — | 11.293026% | 14.145231% | 12.973691% |
+| Originals, changed > 8 P95 | Comparison source | — | 11.791062% | 14.624750% | 13.444442% |
+| Originals, changed > 8 P99 | Comparison source | — | 15.770450% | 18.511040% | 17.801277% |
+| Originals, changed > 8 maximum, pre-fix | Comparison source | — | 31.288504% | 32.420260% | 31.454685% |
+| Exact formerly broken page, post-fix | Comparison source | — | 10.000130% | 12.801973% | 11.236840% |
+| Edited, changed > 8 median | Comparison source | — | 8.366498% | 10.078393% | 9.155820% |
+| Edited, changed > 8 P90 | Comparison source | — | 11.277501% | 14.142704% | 12.949965% |
+| Edited, changed > 8 P95 | Comparison source | — | 11.794105% | 14.618561% | 13.439491% |
+| Edited, changed > 8 P99 | Comparison source | — | 15.751366% | 18.493297% | 17.781729% |
+| Edited, changed > 8 maximum, pre-fix | Comparison source | — | 31.297379% | 32.425445% | 31.462513% |
 
 The nearly unchanged original/edited distributions indicate that the qualified
 edit workflow did not introduce a broad new rendering regression. They do not
