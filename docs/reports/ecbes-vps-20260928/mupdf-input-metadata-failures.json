@@ -1,0 +1,56 @@
+{
+  "edited": [
+    {
+      "exit": 1,
+      "relative_path": "files/083-3d31c226df0d189c/edited.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    },
+    {
+      "exit": 1,
+      "relative_path": "files/087-c14acf3478f4c33f/edited.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    },
+    {
+      "exit": 1,
+      "relative_path": "files/089-ddf401dbe060467d/edited.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    },
+    {
+      "exit": 1,
+      "relative_path": "files/090-90564c8b7e492803/edited.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    },
+    {
+      "exit": 1,
+      "relative_path": "files/091-c5e2c8fa0ec5ee91/edited.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    }
+  ],
+  "original": [
+    {
+      "exit": 1,
+      "relative_path": "f1040.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    },
+    {
+      "exit": 1,
+      "relative_path": "f1040sa.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    },
+    {
+      "exit": 1,
+      "relative_path": "f1040sc.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    },
+    {
+      "exit": 1,
+      "relative_path": "f1040sd.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    },
+    {
+      "exit": 1,
+      "relative_path": "f1040se.pdf",
+      "stderr_tail": "syntax error: syntax error after element name\n"
+    }
+  ]
+}

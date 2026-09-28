@@ -1,0 +1,2426 @@
+{
+  "schema_version": "wellfriend.reference_render_compare.v1",
+  "dpi": 144,
+  "limit": 100,
+  "wellfriend_render_quality": "compat",
+  "files_attempted": 100,
+  "pages_mode": "first",
+  "workers": 4,
+  "batch_by_file": false,
+  "pages_attempted": 100,
+  "failures": 0,
+  "reference_failures": 0,
+  "duration_sec": 302.035,
+  "requested_reference_tools": [
+    "pdfium",
+    "mupdf",
+    "poppler"
+  ],
+  "tools": {
+    "pdfium": "available",
+    "mupdf": "available",
+    "poppler": "available"
+  },
+  "pages": [
+    {
+      "path_sha256": "82c7ed51a58b6c22df4c97bc9dcc9c546b1018c06f1ef5849caee1b31fb15a6f",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.358428,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.911474,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.124566,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "23fd492214abd438f170dbabb876a4f522cb98bb1f6537037e43f180e0d31278",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.701979,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.282572,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.356106,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "20986d5075a3a8fb21b54e7bcfd332df78785a028c4f11888105d0569380976e",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.757516,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.217211,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.329562,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "7e265f6752b039935213e0fb296c492915b06cc4fceef2dc5c75bf1959f60e19",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.474675,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.037526,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.509404,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "869a3d9949560c4e663ce7cddb88d85a81dc59dfa469ea61e6106e4abd794ac2",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.819636,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.054392,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.843267,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "9b765c69cc151a0b8670c6534755ae01de2908948b72302538c0a98b8ad38245",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.006833,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.003137,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.65687,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "01ebe4e4352508f3a4b0c01d34e6569547a7b63c92c1e8a7ccc1a25162d561df",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.466611,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.499895,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.106347,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "0d0b4d205e6811de2130801ce6cfce6a78213f102061c7813d94634e7cd1e72c",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.791561,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.388196,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.767483,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "38da6ccc596b5f2bf0366b6dff30bd720e84e6649010c07f0fa9ef11f5e8cf8b",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.052391,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.97804,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.911179,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "814e49e57e59488d54809be2a874f8944a9d934e5de696accef6da357ba75ca0",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.839184,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.110612,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.992653,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "1c5c1c6ae849dfc4bfa40e6ba0007ec14d567a082f4cf4072e49419d45e32925",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.234347,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.07883,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.611227,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "c1712cc75ff234fe22da5df502046fed9c31b8d2c318e4a2a01a3ec71a3c44b2",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.630837,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.387723,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.444442,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "8101dcf338ca5a3948d113808052ae2b2486ccfa776286eac89afae3b3d7aa4e",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.434288,
+          "max_channel_delta": 224
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.260788,
+          "max_channel_delta": 224
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.017848,
+          "max_channel_delta": 224
+        }
+      }
+    },
+    {
+      "path_sha256": "ece419dcaf47661a881a2b00fe8707d023f67b0d04f2bc993cf38d43228c4208",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.886929,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.136083,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.124315,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "f1e4f9d1bf4368ba027e953e94cf3b63a48e3be0e8dfbefe37333a6f4eb7740c",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 18.51104,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 15.77045,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 17.801277,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "10dd8502b9c9a2d7b567c9b393eec21974071477990e335fda2763d7d2c399a1",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.846756,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.891955,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.874049,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "258da4043c8c47fc1c5c378af93c01ff8ecd5defd370d097dfbf8f7980d26ee3",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.232464,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.933475,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.6518,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "b6ff442722ad0133766227640e5da92dd9660d8fb3317edc6d8be3033e5ff585",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.767253,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.362118,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.897585,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "ccfba479272c819ca8e5ced0cf76d63a97fd67882efa2a845efd060d3b763fbd",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.213398,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.714605,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.425804,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "0e7d34343212db9456469f8a7566538f9c422aa340705d23dfda1e3cfe5fc225",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.378938,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.06212,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.000778,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "a5948700976699e98f3537d658f763d0d5d5a9bc210f8914c88c12001dc7eddd",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.597635,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.668004,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.616056,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "66c345be7a16e92a5d8a246f096dd5823b2e0f72c54adf764e397af4939e33ed",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.861173,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.942579,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.080232,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "b5649faf103f175f9b4ac9e8e6cbf9c9ed108dd08a9664937cbdb9863c17e957",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.415369,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.955466,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.000949,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "65fad6d9e909b150ccb84a5cd0b951872bb4d15c6c0a2a02e739bccd01227252",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.961286,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.370469,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.151513,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "0fffedaecb4f3bd27213f73ce99e297aee4d1da2a105031dcede6d51353d4214",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.645602,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.792564,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.051941,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "1b5310a91d21c4a74c78c825cdcfd93514ce37fb0fca52a32929f48618403936",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.558653,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.801783,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.145242,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "b35ce7f10fd54ffda925a8dd137b45dbdfac5553457a98b5dc0c9ddd7a352ac8",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.774438,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.293026,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.119665,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "d5578b7d7535f957387547fc7a7504bc2f7b5d9721da67481ee6b0b6bfd6bac4",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.814809,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.697633,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.754401,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "6d0eafed56b3be40f0273f131bce81709fdf7e5aa82bd52df5b7d982f0552fb8",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.068116,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.154366,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.189994,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "49d2d213cd37f8bc0b9fb543b9db8eb489f59222f321ca8df5470fec86ffb3af",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.783447,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.683423,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.986895,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "f1de8c90a554266b8e3536cd3306c4c63b186ae1686b0f9f0ede80702a4d5f6c",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.290825,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.56374,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.236625,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "50386ed1a3bc70781306c8ec433e8abffbc604348b240fbcd493b25ff3afc27f",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.754425,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.700654,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.58923,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "63d0ffc7f43fc8662deee6ee48290f2d77efc10800b8a3752fbec016485bc8ef",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.197995,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.824639,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.693469,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "fd4cca420676133ce3e1e0664147cb5fdbe5830627f8a95e9a22a4ae554b845c",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.488387,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.253526,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.319838,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "eb8373d37327d34bfbf4265354bc05a4ffbe57dd1fcfe00a3621f13705574d1f",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.403017,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.783643,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.973691,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "bca64607a2e985df9a6bef305f108ac8b551be4d99e2414a0cc3a57ffdaac191",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.670362,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.312789,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.413048,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "dcd26ca4db791e9aef2dc6ab6d603ad4c25dc0e20c791fbde236b7afc77d55aa",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.259251,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.388522,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.403265,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "e7491a14f4de4eb7ca139ce356fdcefd5277b70e90cb237f06b8c529e9d3eb33",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.21811,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.551491,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.492212,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "831210d15fd170e91c2f1c702830da0f3247413b0647373d94c3d08c42e57ff0",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.726701,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.698144,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.158674,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "16eae5bc3c0995b7912bbb265d30e5e56b54937ca4472e53e91a34f57f194fd9",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.733709,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.858601,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.226989,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "b0235f428482f31b24faece9d4908c5f71a967515d6f5e019cef9b6fe72a26b8",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.276975,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.41553,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.288331,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "165dc592aa47933f570f43e8d0458276fa7586b3adceeb8f96892f7a2b4436c4",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.218198,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.388733,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.713594,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "cd2a4878a334058e95f83973aaede54e97e048243656225d57ce7ec3cbf54025",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.344994,
+          "max_channel_delta": 218
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.242356,
+          "max_channel_delta": 226
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.503469,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "88a099d012caef843fbb1a8771e1df069e0f75d44e33848a6ed86a812b403081",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.728249,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.416167,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.041541,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "bda8151b78dbc96fe94c70ef0e22cfa1002dc9e9d2ea4ce20f292a632def28c0",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.19545,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.173656,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.73131,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "500e0b3fe6a6958417d27f93310515fc0303982713a95ae6400bfb2a30f9748a",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.661851,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.363859,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.175944,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "35103771f490c20e5b47eeb5d758ac0ba28e89d2a7b84ff0126eaf00f5ec71a8",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 32.42026,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 31.288504,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 31.454685,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "efd5bbfd3e8684acff5ccc098df8c9b0a3e48d3d4a434a6dbd2783aba0db1ec4",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.724989,
+          "max_channel_delta": 240
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.377878,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.1059,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "042dc670164f99ed02482764e4a1430c8b3199b7f866097e32100da6e6d8fbb3",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.402566,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.280953,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.840374,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "e766d6fd4a52be091d3d791556662fdb19f89ae3fb41562b472de69e004e213b",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.696225,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.595781,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.702607,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "aec7d98f647a373b9c424a6f975a6b5c2839c0d80f2cb11ec6c1b84eb6dae2f2",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.71361,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.417268,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.506816,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "3cb6866aed2f60a41897dd4574ab517d2d99b81dfd2438cbb28daf96ebfdff98",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.235533,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.593302,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.303934,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "63df3df292b388c9f07ec7f84ff58901a1896b476aac13e66cea61a73a889681",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.052973,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.462363,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.727,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "0d12f5603bb0f91d7ec38b419f686c23fd75c76765149ce64df34c01e44dddf4",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.501838,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.31798,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.328081,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "ebf7dd249ff6f72a7df1bd172383b059eb7cae5c7b78180f30a42933f3f37dea",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.619479,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.837369,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.212237,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "49aa25dbcc64a8f226b36572b44b722b0efa518301ec470bc764dd6494f20451",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.583005,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.587406,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.654758,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "9f83a62553d0594c9a7874b5cc0f1be3d8b9d5ffef29c6926c058bc8d5867c4d",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.971436,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 3.548403,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.608844,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "c2d0640f6aead801ec42e5524c5afca253a52344b52e79dde063f5b872a189d6",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.385128,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.804953,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.149374,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "1d8442b8ce06b8031f6ebc213e7397dc4a27c45c4ca192ade7f716ec0836c5f4",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.663543,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.969055,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.485659,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "d373b016294e04eb5277e0e0b95b983917ed25e644e62e43805c7de64ddad83f",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.948133,
+          "max_channel_delta": 250
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.310596,
+          "max_channel_delta": 253
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.564557,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "7bda75bcd0d7950a1a3b6117a778f7466a7c12126009d60627056e0e9a04f7b7",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.75741,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.678849,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.451489,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "a2451af15a4252018c25e18f78741eb5ab066af01bbcd9e1cce2502c85de1409",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.916621,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.159352,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.174986,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "ebb462bac7d699fda4a7f84ff218c5f40f1741e4b102841dc6b8b7ff93d8fbcb",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.390337,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.975727,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.760115,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "c10a9b6f1a4d4285ce6455d4836bbed8c6b383121ea5bb13826be0bca3f0bcdd",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.893213,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.399122,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.609234,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "a225c5d2e7dc15882fe1750fa7bb1bdb802237b86b2b3df0a5c2ffab2812d334",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.917497,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.026306,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.251797,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "f6492b76b3317138809073a2a3de75672dd3a9ac272778ae91d035d59fce4305",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.220603,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.966916,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.747281,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "b86362023bec27142390ad9cbb8c1be8559b0788910bd6eaaf41fad3ac5806a5",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.947538,
+          "max_channel_delta": 234
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 3.767618,
+          "max_channel_delta": 200
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.033418,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "af60fda98c90bc32eff14d4f1fc49551d1a5ab03fd853070679536d594927b13",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.753835,
+          "max_channel_delta": 239
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 3.534127,
+          "max_channel_delta": 207
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 3.87666,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "1994e35f0171d69392cce5369f818435b561204e6200e0fd66963f84548389a3",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.06144,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 3.548403,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.214015,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "0724bf2d8087670d65dc178608642cddf513820304e573e8f2b198db6bfe54d7",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.150902,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.549152,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.189388,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "7d25d4dbfd80a0485d32a9c431a0a02b8cb1d2a8fa321e3a93a9bfbf2bcc984a",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.838976,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.182707,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.255114,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "fdf9bbf1e7dc6cd119ac8eb619a955497a12a24c270b0ca9a84b5e3d49f8df1d",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.304811,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.992833,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.957752,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "817eeff1602f45de57e6041c462aef7aed71f128703c73ad46de4ebb1902adad",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.937172,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.0961,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.306839,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "0847935659f0ecd09f4160bc99c7b465f1ab0ef82774da74b769913802510f38",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.740652,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.362964,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.135755,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "a114d888be80018b40dc87ba15df75c75f60bbd024bf124be658c24f355ac73e",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.944634,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.321685,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.662503,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "72bd5a4b9a8b871ee03cf9aa716b85824eb7e5c6f2d672c6b5e8e17da269f0c2",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.916068,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.202548,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.651938,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "dae4229dc5f135ee5a4acf1b79d374346112d1ca33bc1af236a9ddfb1f5506cd",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.28767,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.803371,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.171732,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "09010cf1e99a3ad3ff4a7435c7a21eed5485076289a6eeb835284b9f4909a768",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.865169,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.976336,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.767592,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "a03e0639ed46f35e132509cc0765ba8356bc953e3ec048fb8dddee807a560a38",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.720262,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.311215,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.987186,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "4a615df22ca94a9cbac5992afeb45cfa09854279b789d7b5ab17d2443c365264",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.732395,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 3.641972,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 4.414891,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "760ba1db0e2cd64694abbd2af27f57781507a47cab3aa407f26b0d962e5dc8a7",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.932144,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.055956,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.282426,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "a3de10c9cd71982cf189596576b1d6420ff4cc5f89a9577616d93118a71cf1a2",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.157488,
+          "max_channel_delta": 112
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.085082,
+          "max_channel_delta": 84
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.084732,
+          "max_channel_delta": 68
+        }
+      }
+    },
+    {
+      "path_sha256": "6be4bd24fb06a35b57f7ffc71a9e9b0d4cd6c8ed942d675846fc96e4da945c14",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.987066,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.791062,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.604179,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "34e103b05f59d6dbd2396c5dfc9749be965a80794902d74b8aa7f97166bfe40b",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.693665,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.544037,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.900226,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "52aa272bbc55452f44d302c0684019b9fdaca8e521f8f49dad32f8eeafca72ea",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.874453,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.532595,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.063426,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "a01d1b4b08852fb04e5b3d7526206570f7c8025518ef525d96c3c0f50e8863b3",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.106193,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 6.892196,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.749721,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "52df0e41b9d76ed9cbe499e7cc56007a4a3d1dfac1aec7cd19f7d016adb921b8",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.578784,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.960004,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.602811,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "5d2e5b4a603a2016fcda60b225a99480c152de414455a2173ca01e48d7f90c74",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.865196,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.93431,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.787107,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "314a99bfec82ba265dd09886bbfbb11be046357392094d14a9b69526887304b7",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.517295,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.947919,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.331349,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "9fb20ba16dc2dd8a4ab8d5ee9414a2614e4c9afcae12193de4daf5ebe8179337",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.708597,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.776525,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.338097,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "e620f53e63cf261940e8986c01129ab0fd543c0f96bb9f0a3571158d2ba28e9e",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.981358,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 9.931216,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.067373,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "a3c100c20ab5dd5e0e89326b2a3d1da9433fe624e1f331e03a612f5ae8ea8b30",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 8.3404,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.427935,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 7.780676,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "79e9a9f03e1721060ac8c30525a40d987181503299ac195ceb8102b8498bf134",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.361033,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.199095,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.477865,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "959e6b56d22eca565885c6b13ad51e2df7e2b3ea2ee2fa35b2cdbb77e84d0664",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.090626,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.254188,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.065861,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "b9bfb2af795c13865b41aa45cf21ab7176de779aaf5c371b7048bfdd42bc9f68",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.333781,
+          "max_channel_delta": 224
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 12.477615,
+          "max_channel_delta": 225
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 5.278428,
+          "max_channel_delta": 224
+        }
+      }
+    },
+    {
+      "path_sha256": "27979e1329917ef0bc7d03fc8c286fde41ebabef5ac60495213da566341628da",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.145231,
+          "max_channel_delta": 224
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 10.823977,
+          "max_channel_delta": 225
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.215127,
+          "max_channel_delta": 225
+        }
+      }
+    },
+    {
+      "path_sha256": "7485b212d133563cc78e95159078083bf8d67fc76318ca62578e8b32c7caec6e",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.949227,
+          "max_channel_delta": 255
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.386073,
+          "max_channel_delta": 255
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.031252,
+          "max_channel_delta": 255
+        }
+      }
+    },
+    {
+      "path_sha256": "54d394bc00f049b343d76e3373dd9686fd20ef28017d471f8108029da484aa57",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 14.62475,
+          "max_channel_delta": 224
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 11.022707,
+          "max_channel_delta": 225
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 13.052193,
+          "max_channel_delta": 225
+        }
+      }
+    },
+    {
+      "path_sha256": "32d3c1ad49eb552f91def3923eec7b0bd0b7ee0b564737571129b8c020cb2505",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.085131,
+          "max_channel_delta": 209
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.07081,
+          "max_channel_delta": 187
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.075201,
+          "max_channel_delta": 187
+        }
+      }
+    },
+    {
+      "path_sha256": "235b79bd4ed9dd21d5732093967b98191cb2fd12d371c0041daca5bde9b8ce8e",
+      "page_number": 1,
+      "ok": true,
+      "error_class": null,
+      "reference_errors": {},
+      "comparisons": {
+        "pdfium": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.448727,
+          "max_channel_delta": 249
+        },
+        "mupdf": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.443518,
+          "max_channel_delta": 164
+        },
+        "poppler": {
+          "same_size": true,
+          "changed_pixel_threshold8_percentage": 0.45208,
+          "max_channel_delta": 162
+        }
+      }
+    }
+  ]
+}
