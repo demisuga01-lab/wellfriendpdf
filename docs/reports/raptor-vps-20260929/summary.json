@@ -1,0 +1,690 @@
+{
+  "core": {
+    "exactness": {
+      "observations": 100,
+      "page_program_exact": 100,
+      "raster_exact": 100,
+      "semantic_output_exact": 100
+    },
+    "failures": {
+      "by_stage": {},
+      "count": 0
+    },
+    "observations": 100,
+    "requested_structural_parse_slo": {
+      "checks": {
+        "max": false,
+        "p50": false,
+        "p90": false,
+        "p95": false,
+        "p99": false
+      },
+      "measured_ms": {
+        "max": 315.642013,
+        "p50": 20.02035,
+        "p90": 93.424017,
+        "p95": 158.913556,
+        "p99": 254.819166
+      },
+      "status": "fail",
+      "target_ms": {
+        "max": 200.0,
+        "p50": 15.0,
+        "p90": 30.0,
+        "p95": 50.0,
+        "p99": 75.0
+      }
+    },
+    "timings": {
+      "file_read": {
+        "count": 100,
+        "max_ms": 69.897707,
+        "mean_ms": 8.917596,
+        "p50_ms": 3.850103,
+        "p90_ms": 25.601549,
+        "p95_ms": 35.985596,
+        "p99_ms": 60.882466
+      },
+      "page_program_cold": {
+        "count": 100,
+        "max_ms": 32.087123,
+        "mean_ms": 8.091344,
+        "p50_ms": 7.072843,
+        "p90_ms": 13.836054,
+        "p95_ms": 16.880029,
+        "p99_ms": 21.429051
+      },
+      "page_program_warm": {
+        "count": 100,
+        "max_ms": 1.50129,
+        "mean_ms": 0.312027,
+        "p50_ms": 0.233075,
+        "p90_ms": 0.574344,
+        "p95_ms": 1.008751,
+        "p99_ms": 1.387647
+      },
+      "page_tree": {
+        "count": 100,
+        "max_ms": 35.031499,
+        "mean_ms": 5.638256,
+        "p50_ms": 4.170116,
+        "p90_ms": 11.864507,
+        "p95_ms": 14.032141,
+        "p99_ms": 23.726799
+      },
+      "png_encode": {
+        "count": 100,
+        "max_ms": 16.928177,
+        "mean_ms": 9.940526,
+        "p50_ms": 9.918739,
+        "p90_ms": 13.708125,
+        "p95_ms": 15.150739,
+        "p99_ms": 15.896145
+      },
+      "raster_cold": {
+        "count": 100,
+        "max_ms": 39587.782138,
+        "mean_ms": 618.764354,
+        "p50_ms": 180.721003,
+        "p90_ms": 393.269835,
+        "p95_ms": 481.878825,
+        "p99_ms": 1070.793148
+      },
+      "raster_warm": {
+        "count": 100,
+        "max_ms": 48.433268,
+        "mean_ms": 7.205543,
+        "p50_ms": 3.664048,
+        "p90_ms": 16.677992,
+        "p95_ms": 26.422324,
+        "p99_ms": 41.525772
+      },
+      "render_cold_with_open_and_encode": {
+        "count": 100,
+        "max_ms": 39693.20355,
+        "mean_ms": 654.744512,
+        "p50_ms": 207.268493,
+        "p90_ms": 436.505187,
+        "p95_ms": 522.638449,
+        "p99_ms": 1247.488156
+      },
+      "semantic_document_cold": {
+        "count": 100,
+        "max_ms": 10377.431706,
+        "mean_ms": 660.934437,
+        "p50_ms": 300.74993,
+        "p90_ms": 1427.874608,
+        "p95_ms": 2490.308657,
+        "p99_ms": 5269.477422
+      },
+      "semantic_document_cold_with_open": {
+        "count": 100,
+        "max_ms": 10460.335548,
+        "mean_ms": 687.326342,
+        "p50_ms": 343.407151,
+        "p90_ms": 1443.325054,
+        "p95_ms": 2512.413698,
+        "p99_ms": 5582.802332
+      },
+      "semantic_document_warm": {
+        "count": 100,
+        "max_ms": 10377.159012,
+        "mean_ms": 411.85432,
+        "p50_ms": 104.104193,
+        "p90_ms": 415.605453,
+        "p95_ms": 1871.433608,
+        "p99_ms": 5471.055788
+      },
+      "source_open": {
+        "count": 100,
+        "max_ms": 222.017507,
+        "mean_ms": 25.426368,
+        "p50_ms": 9.409742,
+        "p90_ms": 66.378068,
+        "p95_ms": 121.323213,
+        "p99_ms": 187.545851
+      },
+      "structural_parse_e2e": {
+        "count": 100,
+        "max_ms": 315.642013,
+        "mean_ms": 39.98222,
+        "p50_ms": 20.02035,
+        "p90_ms": 93.424017,
+        "p95_ms": 158.913556,
+        "p99_ms": 254.819166
+      }
+    }
+  },
+  "editing": {
+    "failures": {
+      "by_stage": {
+        "no_unique_ascii_page_one_word": 1,
+        "plan_not_applicable": 1
+      },
+      "count": 2
+    },
+    "observations": 98,
+    "requested_apply_slo": {
+      "checks": {
+        "max": false,
+        "p50": false,
+        "p90": false,
+        "p95": false,
+        "p99": false
+      },
+      "measured_ms": {
+        "max": 8207.121544,
+        "p50": 2115.375275,
+        "p90": 4387.260976,
+        "p95": 5208.620332,
+        "p99": 8207.121544
+      },
+      "status": "fail",
+      "target_ms": {
+        "max": 200.0,
+        "p50": 15.0,
+        "p90": 30.0,
+        "p95": 50.0,
+        "p99": 75.0
+      }
+    },
+    "requested_verified_e2e_slo": {
+      "checks": {
+        "max": false,
+        "p50": false,
+        "p90": false,
+        "p95": false,
+        "p99": false
+      },
+      "measured_ms": {
+        "max": 12481.507999,
+        "p50": 3586.491558,
+        "p90": 6796.926766,
+        "p95": 7756.64411,
+        "p99": 12481.507999
+      },
+      "status": "fail",
+      "target_ms": {
+        "max": 200.0,
+        "p50": 15.0,
+        "p90": 30.0,
+        "p95": 50.0,
+        "p99": 75.0
+      }
+    },
+    "timings": {
+      "apply": {
+        "count": 98,
+        "max_ms": 8207.121544,
+        "mean_ms": 2351.579959,
+        "p50_ms": 2115.375275,
+        "p90_ms": 4387.260976,
+        "p95_ms": 5208.620332,
+        "p99_ms": 8207.121544
+      },
+      "approval": {
+        "count": 98,
+        "max_ms": 0.136886,
+        "mean_ms": 0.042399,
+        "p50_ms": 0.036185,
+        "p90_ms": 0.061184,
+        "p95_ms": 0.094675,
+        "p99_ms": 0.136886
+      },
+      "plan": {
+        "count": 98,
+        "max_ms": 4749.657474,
+        "mean_ms": 1338.912073,
+        "p50_ms": 1318.710306,
+        "p90_ms": 2075.820793,
+        "p95_ms": 2978.169834,
+        "p99_ms": 4749.657474
+      },
+      "reopen_verify": {
+        "count": 98,
+        "max_ms": 221.341208,
+        "mean_ms": 45.457007,
+        "p50_ms": 32.53237,
+        "p90_ms": 95.892394,
+        "p95_ms": 139.323986,
+        "p99_ms": 221.341208
+      },
+      "target_discovery": {
+        "count": 98,
+        "max_ms": 285.945611,
+        "mean_ms": 48.356486,
+        "p50_ms": 35.100427,
+        "p90_ms": 94.314373,
+        "p95_ms": 158.959167,
+        "p99_ms": 285.945611
+      },
+      "verified_end_to_end": {
+        "count": 98,
+        "max_ms": 12481.507999,
+        "mean_ms": 3818.46711,
+        "p50_ms": 3586.491558,
+        "p90_ms": 6796.926766,
+        "p95_ms": 7756.64411,
+        "p99_ms": 12481.507999
+      }
+    },
+    "verification": {
+      "observations": 98,
+      "prepared_plan_cache_hits": 98,
+      "replacement_observed_after_reopen": 98
+    }
+  },
+  "external_parser_tools": {
+    "metadata": {
+      "corpus": "/root/raptor-corpus-20260929",
+      "files": 100,
+      "protocol": "one fresh process per tool and PDF; deterministic order rotation",
+      "schema_version": "wellfriend.external_pdf_tool_benchmark.v1",
+      "started_at_utc": "2026-09-29T11:16:40.725543Z",
+      "timeout_sec": 180,
+      "versions": {
+        "mupdf": {
+          "command": [
+            "mutool",
+            "-v"
+          ],
+          "exit": 0,
+          "text": "mutool version 1.27.0"
+        },
+        "poppler": {
+          "command": [
+            "pdfinfo",
+            "-v"
+          ],
+          "exit": 0,
+          "text": "pdfinfo version 26.01.0\nCopyright 2005-2026 The Poppler Developers - http://poppler.freedesktop.org\nCopyright 1996-2011, 2022 Glyph & Cog, LLC"
+        },
+        "qpdf": {
+          "command": [
+            "qpdf",
+            "--version"
+          ],
+          "exit": 0,
+          "text": "qpdf version 12.3.2\nRun qpdf --copyright to see copyright and license information."
+        }
+      },
+      "workload_warning": "commands are intentionally different and are not semantic-equivalence claims"
+    },
+    "tools": {
+      "mupdf": {
+        "accepted": 95,
+        "command_workload": [
+          "mutool",
+          "info"
+        ],
+        "fresh_process_timing": {
+          "count": 95,
+          "max_ms": 260.429305,
+          "mean_ms": 27.833638,
+          "p50_ms": 22.057309,
+          "p90_ms": 39.31001,
+          "p95_ms": 49.201843,
+          "p99_ms": 260.429305
+        },
+        "observations": 100,
+        "status_counts": {
+          "accepted": 95,
+          "rejected": 5
+        }
+      },
+      "poppler": {
+        "accepted": 100,
+        "command_workload": [
+          "pdfinfo"
+        ],
+        "fresh_process_timing": {
+          "count": 100,
+          "max_ms": 59.346296,
+          "mean_ms": 41.548446,
+          "p50_ms": 40.702583,
+          "p90_ms": 49.992775,
+          "p95_ms": 52.475983,
+          "p99_ms": 57.26333
+        },
+        "observations": 100,
+        "status_counts": {
+          "accepted": 100
+        }
+      },
+      "qpdf": {
+        "accepted": 100,
+        "command_workload": [
+          "qpdf",
+          "--check"
+        ],
+        "fresh_process_timing": {
+          "count": 100,
+          "max_ms": 11081.225353,
+          "mean_ms": 575.263285,
+          "p50_ms": 175.557703,
+          "p90_ms": 1193.705562,
+          "p95_ms": 1976.644564,
+          "p99_ms": 7436.913268
+        },
+        "observations": 100,
+        "status_counts": {
+          "accepted": 97,
+          "accepted_with_warnings": 3
+        }
+      }
+    },
+    "workload_warning": "These tools execute different inspection contracts; timings are labeled fresh-process measurements, not semantic-equivalence claims."
+  },
+  "kind": "raptor_stage_separated_benchmark_summary",
+  "latency_units": "milliseconds",
+  "percentile_definition": "nearest_rank",
+  "schema_version": 1,
+  "visual_rendering": {
+    "failures": {
+      "count": 0,
+      "statuses": {}
+    },
+    "observations": 98,
+    "process_render_timings": {
+      "mupdf": {
+        "count": 98,
+        "max_ms": 1526.179,
+        "mean_ms": 980.653633,
+        "p50_ms": 944.19,
+        "p90_ms": 1156.429,
+        "p95_ms": 1185.603,
+        "p99_ms": 1526.179
+      },
+      "pdfium": {
+        "count": 98,
+        "max_ms": 1112.247,
+        "mean_ms": 723.530531,
+        "p50_ms": 705.232,
+        "p90_ms": 851.732,
+        "p95_ms": 867.605,
+        "p99_ms": 1112.247
+      },
+      "poppler": {
+        "count": 98,
+        "max_ms": 1759.373,
+        "mean_ms": 881.954041,
+        "p50_ms": 871.752,
+        "p90_ms": 1139.882,
+        "p95_ms": 1209.075,
+        "p99_ms": 1759.373
+      },
+      "wellfriendpdf": {
+        "count": 98,
+        "max_ms": 43689.996,
+        "mean_ms": 924.306235,
+        "p50_ms": 432.789,
+        "p90_ms": 716.201,
+        "p95_ms": 1005.492,
+        "p99_ms": 43689.996
+      }
+    },
+    "quality": {
+      "mupdf_vs_poppler_changed_gt_8_percent": {
+        "count": 98,
+        "max_percent": 13.00732,
+        "mean_percent": 7.352911,
+        "p50_percent": 7.337095,
+        "p90_percent": 10.251824,
+        "p95_percent": 10.753986,
+        "p99_percent": 13.00732
+      },
+      "mupdf_vs_poppler_mean_absolute_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 9.669917,
+        "mean_channel_delta": 5.625125,
+        "p50_channel_delta": 5.669869,
+        "p90_channel_delta": 8.087487,
+        "p95_channel_delta": 8.818261,
+        "p99_channel_delta": 9.669917
+      },
+      "mupdf_vs_poppler_psnr_db": {
+        "count": 98,
+        "max_db": 54.817078,
+        "mean_db": 20.693831,
+        "p50_db": 19.934493,
+        "p90_db": 23.121151,
+        "p95_db": 26.290672,
+        "p99_db": 54.817078
+      },
+      "mupdf_vs_poppler_root_mean_squared_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 35.929483,
+        "mean_channel_delta": 25.124533,
+        "p50_channel_delta": 25.635971,
+        "p90_channel_delta": 32.389032,
+        "p95_channel_delta": 33.292416,
+        "p99_channel_delta": 35.929483
+      },
+      "pdfium_vs_mupdf_changed_gt_8_percent": {
+        "count": 98,
+        "max_percent": 13.012839,
+        "mean_percent": 8.61944,
+        "p50_percent": 8.686985,
+        "p90_percent": 12.080156,
+        "p95_percent": 12.32087,
+        "p99_percent": 13.012839
+      },
+      "pdfium_vs_mupdf_mean_absolute_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 8.74976,
+        "mean_channel_delta": 3.887112,
+        "p50_channel_delta": 3.57465,
+        "p90_channel_delta": 6.602601,
+        "p95_channel_delta": 6.987175,
+        "p99_channel_delta": 8.74976
+      },
+      "pdfium_vs_mupdf_psnr_db": {
+        "count": 98,
+        "max_db": 49.517726,
+        "mean_db": 25.003367,
+        "p50_db": 25.528482,
+        "p90_db": 28.000114,
+        "p95_db": 29.322758,
+        "p99_db": 49.517726
+      },
+      "pdfium_vs_mupdf_root_mean_squared_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 31.782278,
+        "mean_channel_delta": 15.765433,
+        "p50_channel_delta": 13.310836,
+        "p90_channel_delta": 24.36726,
+        "p95_channel_delta": 25.639608,
+        "p99_channel_delta": 31.782278
+      },
+      "pdfium_vs_poppler_changed_gt_8_percent": {
+        "count": 98,
+        "max_percent": 15.545157,
+        "mean_percent": 10.08115,
+        "p50_percent": 10.05655,
+        "p90_percent": 13.906116,
+        "p95_percent": 14.50631,
+        "p99_percent": 15.545157
+      },
+      "pdfium_vs_poppler_mean_absolute_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 10.699802,
+        "mean_channel_delta": 6.568512,
+        "p50_channel_delta": 6.690266,
+        "p90_channel_delta": 9.145655,
+        "p95_channel_delta": 9.558263,
+        "p99_channel_delta": 10.699802
+      },
+      "pdfium_vs_poppler_psnr_db": {
+        "count": 98,
+        "max_db": 50.925795,
+        "mean_db": 20.166516,
+        "p50_db": 19.265629,
+        "p90_db": 22.362554,
+        "p95_db": 23.800691,
+        "p99_db": 50.925795
+      },
+      "pdfium_vs_poppler_root_mean_squared_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 35.821495,
+        "mean_channel_delta": 26.452279,
+        "p50_channel_delta": 27.579006,
+        "p90_channel_delta": 32.197955,
+        "p95_channel_delta": 34.614033,
+        "p99_channel_delta": 35.821495
+      },
+      "wellfriendpdf_vs_mupdf_changed_gt_8_percent": {
+        "count": 98,
+        "max_percent": 15.750179,
+        "mean_percent": 8.00788,
+        "p50_percent": 8.371346,
+        "p90_percent": 11.375035,
+        "p95_percent": 11.794105,
+        "p99_percent": 15.750179
+      },
+      "wellfriendpdf_vs_mupdf_mean_absolute_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 13.896443,
+        "mean_channel_delta": 4.739537,
+        "p50_channel_delta": 4.368742,
+        "p90_channel_delta": 7.423719,
+        "p95_channel_delta": 8.51657,
+        "p99_channel_delta": 13.896443
+      },
+      "wellfriendpdf_vs_mupdf_psnr_db": {
+        "count": 98,
+        "max_db": 41.276962,
+        "mean_db": 22.235433,
+        "p50_db": 21.962407,
+        "p90_db": 26.721019,
+        "p95_db": 27.531873,
+        "p99_db": 41.276962
+      },
+      "wellfriendpdf_vs_mupdf_root_mean_squared_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 45.281417,
+        "mean_channel_delta": 21.218459,
+        "p50_channel_delta": 20.280035,
+        "p90_channel_delta": 30.076397,
+        "p95_channel_delta": 34.990618,
+        "p99_channel_delta": 45.281417
+      },
+      "wellfriendpdf_vs_pdfium_changed_gt_8_percent": {
+        "count": 98,
+        "max_percent": 18.501807,
+        "mean_percent": 9.982847,
+        "p50_percent": 9.955664,
+        "p90_percent": 14.046511,
+        "p95_percent": 14.402553,
+        "p99_percent": 18.501807
+      },
+      "wellfriendpdf_vs_pdfium_mean_absolute_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 15.06794,
+        "mean_channel_delta": 6.067162,
+        "p50_channel_delta": 6.041153,
+        "p90_channel_delta": 8.583159,
+        "p95_channel_delta": 9.155905,
+        "p99_channel_delta": 15.06794
+      },
+      "wellfriendpdf_vs_pdfium_psnr_db": {
+        "count": 98,
+        "max_db": 41.636868,
+        "mean_db": 21.032496,
+        "p50_db": 20.532401,
+        "p90_db": 24.136438,
+        "p95_db": 25.685448,
+        "p99_db": 41.636868
+      },
+      "wellfriendpdf_vs_pdfium_root_mean_squared_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 45.831522,
+        "mean_channel_delta": 23.942983,
+        "p50_channel_delta": 23.919886,
+        "p90_channel_delta": 30.231672,
+        "p95_channel_delta": 34.622689,
+        "p99_channel_delta": 45.831522
+      },
+      "wellfriendpdf_vs_poppler_changed_gt_8_percent": {
+        "count": 98,
+        "max_percent": 17.794829,
+        "mean_percent": 9.127337,
+        "p50_percent": 9.158321,
+        "p90_percent": 12.903184,
+        "p95_percent": 13.451663,
+        "p99_percent": 17.794829
+      },
+      "wellfriendpdf_vs_poppler_mean_absolute_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 17.147251,
+        "mean_channel_delta": 6.9992,
+        "p50_channel_delta": 6.651082,
+        "p90_channel_delta": 10.660884,
+        "p95_channel_delta": 11.733574,
+        "p99_channel_delta": 17.147251
+      },
+      "wellfriendpdf_vs_poppler_psnr_db": {
+        "count": 98,
+        "max_db": 40.758275,
+        "mean_db": 19.618189,
+        "p50_db": 19.1489,
+        "p90_db": 22.616101,
+        "p95_db": 24.516912,
+        "p99_db": 40.758275
+      },
+      "wellfriendpdf_vs_poppler_root_mean_squared_channel_delta": {
+        "count": 98,
+        "max_channel_delta": 51.108278,
+        "mean_channel_delta": 28.324622,
+        "p50_channel_delta": 27.90615,
+        "p90_channel_delta": 37.196748,
+        "p95_channel_delta": 41.571636,
+        "p99_channel_delta": 51.108278
+      }
+    },
+    "ten_percent_faster_than_fastest_competitor": {
+      "checks": {
+        "max_ms": {
+          "fastest_competitor": "pdfium",
+          "fastest_competitor_ms": 1112.247,
+          "observed_ratio": 39.28084,
+          "required_for_ten_percent_lead_ms": 1001.0223,
+          "status": "fail",
+          "wellfriendpdf_ms": 43689.996
+        },
+        "p50_ms": {
+          "fastest_competitor": "pdfium",
+          "fastest_competitor_ms": 705.232,
+          "observed_ratio": 0.613683,
+          "required_for_ten_percent_lead_ms": 634.7088,
+          "status": "pass",
+          "wellfriendpdf_ms": 432.789
+        },
+        "p90_ms": {
+          "fastest_competitor": "pdfium",
+          "fastest_competitor_ms": 851.732,
+          "observed_ratio": 0.840876,
+          "required_for_ten_percent_lead_ms": 766.5588,
+          "status": "pass",
+          "wellfriendpdf_ms": 716.201
+        },
+        "p95_ms": {
+          "fastest_competitor": "pdfium",
+          "fastest_competitor_ms": 867.605,
+          "observed_ratio": 1.158928,
+          "required_for_ten_percent_lead_ms": 780.8445,
+          "status": "fail",
+          "wellfriendpdf_ms": 1005.492
+        },
+        "p99_ms": {
+          "fastest_competitor": "pdfium",
+          "fastest_competitor_ms": 1112.247,
+          "observed_ratio": 39.28084,
+          "required_for_ten_percent_lead_ms": 1001.0223,
+          "status": "fail",
+          "wellfriendpdf_ms": 43689.996
+        }
+      },
+      "status": "fail"
+    }
+  }
+}

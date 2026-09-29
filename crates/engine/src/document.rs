@@ -107,16 +107,11 @@ impl PdfDocument {
     }
 
     pub fn get_pages(&self) -> Result<Vec<PdfPage>> {
-        if let Some(pages) = self.pages_cache.get() {
-            return Ok(pages.clone());
-        }
-        let pages = self.collect_pages()?;
-        let _ = self.pages_cache.set(pages);
-        Ok(self.pages_cache.get().cloned().unwrap_or_default())
+        Ok(self.cached_pages()?.to_vec())
     }
 
     pub fn page_count(&self) -> Result<usize> {
-        Ok(self.get_pages()?.len())
+        Ok(self.cached_pages()?.len())
     }
 
     pub fn get_page(&self, page_number: usize) -> Result<PdfPage> {
@@ -125,12 +120,27 @@ impl PdfDocument {
                 "page numbers are 1-indexed".to_string(),
             ));
         }
-        self.get_pages()?
+        self.cached_pages()?
             .get(page_number - 1)
             .cloned()
             .ok_or_else(|| {
                 WellfriendError::MalformedPdf(format!("page {page_number} is out of range"))
             })
+    }
+
+    /// Return the immutable page-tree projection without cloning the complete
+    /// document on every count or indexed lookup. Concurrent first callers may
+    /// both perform collection, but `OnceLock` publishes exactly one result and
+    /// all subsequent access is lock-free.
+    fn cached_pages(&self) -> Result<&[PdfPage]> {
+        if self.pages_cache.get().is_none() {
+            let pages = self.collect_pages()?;
+            let _ = self.pages_cache.set(pages);
+        }
+        self.pages_cache
+            .get()
+            .map(Vec::as_slice)
+            .ok_or_else(|| WellfriendError::ParseError("page cache initialization failed".into()))
     }
 
     fn collect_pages(&self) -> Result<Vec<PdfPage>> {

@@ -1,7 +1,7 @@
 #![allow(clippy::too_many_arguments)] // Python signatures mirror the stable SDK surface.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyIndexError, PyInterruptedError, PyTypeError, PyValueError};
@@ -27,6 +27,7 @@ create_exception!(wellfriendpdf, WellfriendError, PyException);
 #[pyclass(name = "Document", module = "wellfriendpdf", unsendable)]
 struct PyDocument {
     engine: Arc<ContentEngine>,
+    render_cache: Arc<Mutex<RenderDocumentCache>>,
     input_password: Option<SecretBytes>,
 }
 
@@ -54,6 +55,7 @@ struct PyRenderCache {
 #[pyclass(name = "Page", module = "wellfriendpdf", unsendable)]
 struct PyPage {
     engine: Arc<ContentEngine>,
+    render_cache: Arc<Mutex<RenderDocumentCache>>,
     number: usize,
 }
 
@@ -67,6 +69,7 @@ struct PyRegionPage {
 #[pyclass(name = "_PageIterator", module = "wellfriendpdf", unsendable)]
 struct PyPageIterator {
     engine: Arc<ContentEngine>,
+    render_cache: Arc<Mutex<RenderDocumentCache>>,
     next: usize,
     total: usize,
 }
@@ -935,6 +938,7 @@ impl PyDocument {
         };
         Ok(Self {
             engine: Arc::new(engine),
+            render_cache: Arc::new(Mutex::new(RenderDocumentCache::new())),
             input_password: password.map(|value| SecretBytes::new(value.as_bytes().to_vec())),
         })
     }
@@ -953,6 +957,7 @@ impl PyDocument {
         })?;
         Ok(Self {
             engine: Arc::new(engine),
+            render_cache: Arc::new(Mutex::new(RenderDocumentCache::new())),
             input_password: Some(password),
         })
     }
@@ -973,6 +978,7 @@ impl PyDocument {
         };
         Ok(Self {
             engine: Arc::new(engine),
+            render_cache: Arc::new(Mutex::new(RenderDocumentCache::new())),
             input_password: password.map(|value| SecretBytes::new(value.as_bytes().to_vec())),
         })
     }
@@ -990,6 +996,7 @@ impl PyDocument {
         })?;
         Ok(Self {
             engine: Arc::new(engine),
+            render_cache: Arc::new(Mutex::new(RenderDocumentCache::new())),
             input_password: Some(password),
         })
     }
@@ -1005,6 +1012,11 @@ impl PyDocument {
             )
         })?;
         run_wellfriendpdf(|| engine.register_font_bytes(name, font_bytes))?;
+        *self
+            .render_cache
+            .lock()
+            .map_err(|_| WellfriendError::new_err("render cache lock poisoned"))? =
+            RenderDocumentCache::new();
         Ok(())
     }
 
@@ -1026,6 +1038,7 @@ impl PyDocument {
     fn __iter__(slf: PyRef<'_, Self>) -> PyResult<PyPageIterator> {
         Ok(PyPageIterator {
             engine: Arc::clone(&slf.engine),
+            render_cache: Arc::clone(&slf.render_cache),
             next: 1,
             total: run_wellfriendpdf(|| slf.engine.page_count())?,
         })
@@ -1044,6 +1057,7 @@ impl PyDocument {
         validate_page(&self.engine, number)?;
         Ok(PyPage {
             engine: Arc::clone(&self.engine),
+            render_cache: Arc::clone(&self.render_cache),
             number,
         })
     }
@@ -1053,6 +1067,7 @@ impl PyDocument {
         Ok((1..=total)
             .map(|number| PyPage {
                 engine: Arc::clone(&self.engine),
+                render_cache: Arc::clone(&self.render_cache),
                 number,
             })
             .collect())
@@ -1176,7 +1191,14 @@ impl PyDocument {
 
     #[pyo3(signature = (page, dpi=150))]
     fn render(&self, page: usize, dpi: u32) -> PyResult<Vec<u8>> {
-        run_wellfriendpdf(|| self.engine.render_page_png_fast(page, dpi))
+        let mut cache = self
+            .render_cache
+            .lock()
+            .map_err(|_| WellfriendError::new_err("render cache lock poisoned"))?;
+        run_wellfriendpdf(|| {
+            self.engine
+                .render_page_png_fast_with_cache(page, dpi, &mut cache)
+        })
     }
 
     #[pyo3(signature = (page, dpi=150, mode="compat"))]
@@ -1188,9 +1210,18 @@ impl PyDocument {
     ) -> PyResult<(Vec<u8>, String)> {
         let render_mode = wellfriendpdf_engine::RenderMode::from_name(mode)
             .ok_or_else(|| PyValueError::new_err("mode must be compat or high"))?;
+        let mut cache = self
+            .render_cache
+            .lock()
+            .map_err(|_| WellfriendError::new_err("render cache lock poisoned"))?;
         let (png, log) = run_wellfriendpdf(|| {
             self.engine
-                .render_page_png_fast_with_font_substitution_report(page, dpi, render_mode)
+                .render_page_png_fast_with_font_substitution_report_and_cache(
+                    page,
+                    dpi,
+                    render_mode,
+                    &mut cache,
+                )
         })?;
         let json = serde_json::to_string(&log)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
@@ -3808,7 +3839,14 @@ impl PyPage {
 
     #[pyo3(signature = (dpi=150))]
     fn render(&self, dpi: u32) -> PyResult<Vec<u8>> {
-        run_wellfriendpdf(|| self.engine.render_page_png_fast(self.number, dpi))
+        let mut cache = self
+            .render_cache
+            .lock()
+            .map_err(|_| WellfriendError::new_err("render cache lock poisoned"))?;
+        run_wellfriendpdf(|| {
+            self.engine
+                .render_page_png_fast_with_cache(self.number, dpi, &mut cache)
+        })
     }
 }
 
@@ -3865,6 +3903,7 @@ impl PyPageIterator {
         }
         let page = PyPage {
             engine: Arc::clone(&self.engine),
+            render_cache: Arc::clone(&self.render_cache),
             number: self.next,
         };
         self.next += 1;
@@ -5112,6 +5151,7 @@ fn open_impl(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyDo
         };
         return Ok(PyDocument {
             engine: Arc::new(engine),
+            render_cache: Arc::new(Mutex::new(RenderDocumentCache::new())),
             input_password: password.map(|value| SecretBytes::new(value.as_bytes().to_vec())),
         });
     }
@@ -5129,6 +5169,7 @@ fn open_impl(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyDo
     };
     Ok(PyDocument {
         engine: Arc::new(engine),
+        render_cache: Arc::new(Mutex::new(RenderDocumentCache::new())),
         input_password: password.map(|value| SecretBytes::new(value.as_bytes().to_vec())),
     })
 }

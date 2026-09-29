@@ -1,6 +1,7 @@
 //! Governed native Form/AP text edits. Planning stages a private, deterministic
-//! candidate; apply recomputes that candidate and publishes those same bytes
-//! only after the canonical plan and approval checks have succeeded.
+//! candidate; apply reuses that private revision-bound artifact when available,
+//! or recomputes it on a cache miss, and publishes those same bytes only after
+//! canonical plan and approval checks have succeeded.
 use super::*;
 use crate::advanced_editing::form_text::{self, appearance};
 use crate::editing_transactions::ApprovedFontAsset;
@@ -30,6 +31,7 @@ pub struct ScopedTextEditRequest {
     pub planned_output_sha256: Option<String>,
 }
 
+#[derive(Clone)]
 pub(super) struct StagedScopedText {
     pub bytes: Vec<u8>,
     pub report: Value,

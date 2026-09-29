@@ -5,7 +5,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::slice;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::de::DeserializeOwned;
 use wellfriendpdf_engine::render::{
@@ -13,8 +13,8 @@ use wellfriendpdf_engine::render::{
     DeviceMatrix, OptionalContentStateId, PixelFormat, RenderContract,
 };
 use wellfriendpdf_engine::{
-    sdk, CancelToken, ContentEngine, DocType, ExtractOptions, OcrPolicy, ParseOptions,
-    RenderDocumentCache, Result as WellfriendResult, TextExtractor,
+    sdk, CancelToken, ContentEngine, DocType, ExtractOptions, ImageEncoder, OcrPolicy,
+    ParseOptions, RenderDocumentCache, RenderMode, Result as WellfriendResult, TextExtractor,
 };
 
 pub mod ocr_backend;
@@ -32,6 +32,10 @@ pub const WELLFRIENDPDF_STATUS_PANIC: c_int = 3;
 #[repr(C)]
 pub struct WellfriendDocument {
     engine: ContentEngine,
+    /// Revision-local retained renderer state. Serializing access on one C
+    /// document handle preserves ABI thread safety while avoiding repeated
+    /// display-list/font/image construction across calls.
+    render_cache: Mutex<RenderDocumentCache>,
     /// Retained only so byte-backed SDK operations can reopen the immutable
     /// encrypted source. The zeroizing wrapper clears its allocation on drop
     /// and the credential is never serialized into a report or edit plan.
@@ -231,6 +235,7 @@ pub unsafe extern "C" fn wellfriendpdf_document_open_pubsec_from_bytes(
     })) {
         Ok(Ok(engine)) => Box::into_raw(Box::new(WellfriendDocument {
             engine,
+            render_cache: Mutex::new(RenderDocumentCache::new()),
             input_password: None,
             ocr: None,
         })),
@@ -286,6 +291,7 @@ pub unsafe extern "C" fn wellfriendpdf_document_open_pubsec_pfx_from_bytes(
     })) {
         Ok(Ok(engine)) => Box::into_raw(Box::new(WellfriendDocument {
             engine,
+            render_cache: Mutex::new(RenderDocumentCache::new()),
             input_password: None,
             ocr: None,
         })),
@@ -334,6 +340,7 @@ unsafe fn open_document_from_parts(
     })) {
         Ok(Ok((engine, input_password))) => Box::into_raw(Box::new(WellfriendDocument {
             engine,
+            render_cache: Mutex::new(RenderDocumentCache::new()),
             input_password,
             ocr: None,
         })),
@@ -388,7 +395,11 @@ pub unsafe extern "C" fn wellfriendpdf_document_register_font_bytes(
         let name = unsafe { required_c_string(name, "name") }?;
         let bytes = unsafe { read_input_bytes(font_data, font_len, "font_data") }?.to_vec();
         let doc = unsafe { &mut *document };
-        wellfriendpdf(doc.engine.register_font_bytes(name, bytes))
+        wellfriendpdf(doc.engine.register_font_bytes(name, bytes))?;
+        *doc.render_cache
+            .lock()
+            .map_err(|_| "render cache lock poisoned".to_string())? = RenderDocumentCache::new();
+        Ok(())
     })
 }
 
@@ -1406,7 +1417,14 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_page_png(
         if out_buffer.is_null() {
             return Err("out_buffer pointer is null".into());
         }
-        let png = wellfriendpdf(doc.engine.render_page_png_fast(page, dpi))?;
+        let mut cache = doc
+            .render_cache
+            .lock()
+            .map_err(|_| "render cache lock poisoned".to_string())?;
+        let png = wellfriendpdf(
+            doc.engine
+                .render_page_png_fast_with_cache(page, dpi, &mut cache),
+        )?;
         unsafe {
             *out_buffer = into_buffer(png);
         }
@@ -1445,9 +1463,15 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_font_substi
             unsafe { optional_c_string(render_mode) }?.unwrap_or_else(|| "compat".to_string());
         let mode = wellfriendpdf_engine::RenderMode::from_name(&mode_name)
             .ok_or_else(|| format!("unsupported render mode '{mode_name}'"))?;
+        let mut cache = doc
+            .render_cache
+            .lock()
+            .map_err(|_| "render cache lock poisoned".to_string())?;
         let (png, log) = wellfriendpdf(
             doc.engine
-                .render_page_png_fast_with_font_substitution_report(page, dpi, mode),
+                .render_page_png_fast_with_font_substitution_report_and_cache(
+                    page, dpi, mode, &mut cache,
+                ),
         )?;
         let json = serde_json::to_string(&log).map_err(|err| err.to_string())?;
         unsafe {
@@ -3285,13 +3309,18 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_page_jpeg(
         if out_buffer.is_null() {
             return Err("out_buffer pointer is null".into());
         }
-        let (jpeg, _, _) = wellfriendpdf(wellfriendpdf_engine::render_page_image(
-            &doc.engine,
+        let mut cache = doc
+            .render_cache
+            .lock()
+            .map_err(|_| "render cache lock poisoned".to_string())?;
+        let buffer = wellfriendpdf(doc.engine.render_page_cancellable_with_mode_and_cache(
             page,
             dpi,
-            wellfriendpdf_engine::RasterImageFormat::Jpeg,
-            quality,
+            &CancelToken::none(),
+            RenderMode::Compat,
+            &mut cache,
         ))?;
+        let jpeg = wellfriendpdf(ImageEncoder::encode_jpeg(&buffer.to_raw_image(), quality))?;
         unsafe {
             *out_buffer = into_buffer(jpeg);
         }

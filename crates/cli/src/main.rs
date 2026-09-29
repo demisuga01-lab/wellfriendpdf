@@ -8551,16 +8551,21 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             }
             let (buf, font_substitution_json) = if args.font_substitution_report {
                 let (buf, log) = engine
-                    .render_page_with_contract_and_font_substitution_report(
+                    .render_page_with_contract_and_font_substitution_report_and_cache(
                         &contract,
                         &CancelToken::none(),
+                        document_cache,
                     )
                     .map_err(|err| err.to_string())?;
                 (buf, Some(encode_font_substitution_log_json(&log)?))
             } else {
                 (
                     engine
-                        .render_page_with_contract(&contract, &CancelToken::none())
+                        .render_page_with_contract_and_cache(
+                            &contract,
+                            &CancelToken::none(),
+                            document_cache,
+                        )
                         .map_err(|err| err.to_string())?,
                     None,
                 )

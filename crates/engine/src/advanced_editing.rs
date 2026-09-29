@@ -241,6 +241,22 @@ pub enum GeneratedPaintOrderPolicy {
     AnchorAfterLastSourceTextObject,
 }
 
+/// Governs the coordinate contract for a generated local replacement.
+///
+/// `ApprovedRegion` is the reflow contract: the caller supplied or approved
+/// the rectangle used by the positioned serializer. `SourceAnchoredInline`
+/// is the true local-edit contract: the replacement is emitted at the exact
+/// source text matrix inside the original `BT`/`ET` paint slot.  Keeping this
+/// decision explicit prevents a missing region from silently becoming a
+/// generic page-margin rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratedTextPlacementPolicy {
+    #[default]
+    ApprovedRegion,
+    SourceAnchoredInline,
+}
+
 /// Explicitly maps a contiguous part of replacement Unicode to one original
 /// source text-object paint slot. Emitting every partition after its own `ET`
 /// preserves intervening non-text paint instead of moving the complete
@@ -334,6 +350,9 @@ pub struct AdvancedTextEditOptions {
     /// source selection spans several `BT`/`ET` paint slots.
     #[serde(default)]
     pub paint_order_policy: GeneratedPaintOrderPolicy,
+    /// Exact placement contract for nonempty generated replacement text.
+    #[serde(default)]
+    pub placement_policy: GeneratedTextPlacementPolicy,
     /// Optional exact partition plan for preserving non-text paint between
     /// several selected source text objects.
     #[serde(default)]
@@ -366,6 +385,7 @@ impl Default for AdvancedTextEditOptions {
             target_stream_generation: None,
             target_decoded_byte_range: None,
             paint_order_policy: GeneratedPaintOrderPolicy::default(),
+            placement_policy: GeneratedTextPlacementPolicy::default(),
             paint_partitions: Vec::new(),
         }
     }
@@ -2519,7 +2539,11 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
     let reader = engine.document().reader();
     let resources = PageResources::from_dict(&page.resources, reader);
     let initial_scanner_state = scope.map(|scope| scope.initial.clone()).unwrap_or_default();
-    let normalized_model = analyze_multi_run_source(&engine, &page, initial_scanner_state.clone())?;
+    let normalized_model = if scope.is_none() {
+        crate::source_editing::prepared_page_text_model(input, request.page)?
+    } else {
+        analyze_multi_run_source(&engine, &page, initial_scanner_state.clone())?
+    };
     let isomorphic_actual_text = isomorphic_actual_text_sources(&normalized_model.source_spans);
     let normalized_source_spans = normalized_model
         .source_spans
@@ -2899,7 +2923,10 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
     // or inventing structure elements.
     let source_has_marked_content =
         !request.replacement_text.is_empty() && selected.iter().any(|item| item.4.marked_depth > 0);
-    let source_requires_inline_replacement = source_has_clipping || source_has_marked_content;
+    let source_position_anchored =
+        request.options.placement_policy == GeneratedTextPlacementPolicy::SourceAnchoredInline;
+    let source_requires_inline_replacement =
+        source_has_clipping || source_has_marked_content || source_position_anchored;
     if !request.options.paint_partitions.is_empty() {
         if request.replacement_text.is_empty() {
             return Err(WellfriendError::invalid_input(
@@ -3444,7 +3471,6 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
             }
         }
         let clipping_inline = source_has_clipping;
-        let tagged_inline = source_has_marked_content;
         // Different inherited typography must not be encoded under the first
         // operand's original font by the exact-CMap inline shortcut.
         if source_requires_inline_replacement
@@ -3456,7 +3482,37 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
         {
             requires_generated_style_font = true;
         }
-        if clipping_inline || tagged_inline {
+        // Encoding one scalar at a time is not sufficient to prove that the
+        // complete replacement has one unambiguous source-CMap byte sequence.
+        // Variable-length CMaps can make every scalar individually encodable
+        // while the concatenated run still has competing segmentations. Route
+        // that case through the generated Type0 font before any stream edits
+        // are materialized, rather than failing after the route is committed.
+        if source_requires_inline_replacement && !requires_generated_style_font {
+            for (selected_index, replacement) in replacement_by_selected.iter().enumerate() {
+                if replacement.is_empty() {
+                    continue;
+                }
+                let font_dict = resources
+                    .fonts
+                    .get(&selected[selected_index].5.font_resource)
+                    .ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "advanced_editing inline semantic source font resource disappeared"
+                                .to_string(),
+                        )
+                    })?;
+                let resolver = FontResolver::new(font_dict, reader);
+                match encode_with_existing_font(&resolver, replacement) {
+                    Ok((_, false)) => {}
+                    Ok((_, true)) | Err(_) => {
+                        requires_generated_style_font = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if source_requires_inline_replacement {
             if !logical_only_replacement
                 && request
                     .replacement_text
@@ -3695,6 +3751,8 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
                     status: AdvancedEditingSupportStatus::ImplementedWithLimits,
                     operation: if clipping_inline {
                         "replace_shaped_clipping_text_in_source".to_string()
+                    } else if source_position_anchored {
+                        "replace_shaped_at_exact_source_position".to_string()
                     } else {
                         "replace_shaped_tagged_text_in_source".to_string()
                     },
@@ -3791,6 +3849,8 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
                 status: AdvancedEditingSupportStatus::ImplementedWithLimits,
                 operation: if clipping_inline {
                     "replace_clipping_text_in_source".to_string()
+                } else if source_position_anchored {
+                    "replace_at_exact_source_position".to_string()
                 } else {
                     "replace_tagged_text_in_source".to_string()
                 },
@@ -9778,6 +9838,29 @@ pub fn apply_same_width_patch(
 ) -> Result<(Vec<u8>, SameWidthPatchApplyReport)> {
     let analysis =
         analyze_same_width_patch(input, page_number, source_text, replacement_text, options)?;
+    apply_same_width_patch_with_analysis(
+        input,
+        page_number,
+        source_text,
+        replacement_text,
+        options,
+        analysis,
+    )
+}
+
+pub(crate) fn apply_same_width_patch_with_analysis(
+    input: &[u8],
+    page_number: usize,
+    source_text: &str,
+    replacement_text: &str,
+    options: &SameWidthPatchOptions,
+    analysis: SameWidthPatchEligibilityReport,
+) -> Result<(Vec<u8>, SameWidthPatchApplyReport)> {
+    if analysis.source_text != source_text || analysis.replacement_text != replacement_text {
+        return Err(WellfriendError::invalid_input(
+            "advanced_editing prepared same-width analysis belongs to different text",
+        ));
+    }
     enforce_advanced_editing_signature_policy(
         &analysis.signature_policy,
         options.signature_policy_override,
@@ -17243,8 +17326,8 @@ fn advanced_editing_cache_invalidation(
         search_and_rag: text,
         optional_content: vector,
         writer: true,
-        fingerprint_before: format!("{:x}", Sha256::digest(input)),
-        fingerprint_after: format!("{:x}", Sha256::digest(output)),
+        fingerprint_before: crate::input_identity::sha256(input),
+        fingerprint_after: crate::input_identity::sha256(output),
         render_write_set_refs: Vec::new(),
         changed_object_refs: Vec::new(),
         created_object_refs: Vec::new(),

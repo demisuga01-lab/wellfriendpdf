@@ -1,0 +1,77 @@
+{
+  "schema_version": "wellfriend.visual_render_evidence.v1",
+  "corpus": "raptor-originals-20260929",
+  "started_at_utc": "2026-09-29T08:06:03Z",
+  "finished_at_utc": "2026-09-29T08:17:45Z",
+  "wall_seconds": 702.277,
+  "dpi": 144,
+  "workers": 1,
+  "timing_protocol": {
+    "renderer_order": "deterministic Latin rotation by one-based corpus index",
+    "recommended_workers_for_comparable_timings": 1,
+    "process_scope": "one fresh renderer process per PDF page and tool"
+  },
+  "files_attempted": 100,
+  "passed": 100,
+  "failed": 0,
+  "render_duration": {
+    "wellfriendpdf": {
+      "n": 100,
+      "p50_ms": 431.034,
+      "p90_ms": 707.937,
+      "p95_ms": 877.839,
+      "p99_ms": 1391.595,
+      "max_ms": 40222.529
+    },
+    "pdfium": {
+      "n": 100,
+      "p50_ms": 712.888,
+      "p90_ms": 787.518,
+      "p95_ms": 833.069,
+      "p99_ms": 1023.804,
+      "max_ms": 1304.64
+    },
+    "mupdf": {
+      "n": 100,
+      "p50_ms": 940.327,
+      "p90_ms": 1058.059,
+      "p95_ms": 1072.552,
+      "p99_ms": 1236.113,
+      "max_ms": 1467.801
+    },
+    "poppler": {
+      "n": 100,
+      "p50_ms": 856.094,
+      "p90_ms": 1097.819,
+      "p95_ms": 1146.968,
+      "p99_ms": 1375.845,
+      "max_ms": 1758.234
+    }
+  },
+  "contact_sheets": [
+    {
+      "file": "contact-001-025.webp",
+      "sha256": "487bbaefdf034a963bc5285d65705fb8dbe68433253ab807979e0f9360ac63ae",
+      "bytes": 241314
+    },
+    {
+      "file": "contact-026-050.webp",
+      "sha256": "95d1f9d09b0ae548db51ce5c187d6f1fe8640e0ec683fb555f3f15ebcac6a786",
+      "bytes": 235354
+    },
+    {
+      "file": "contact-051-075.webp",
+      "sha256": "00b9fd33b9f3afb358068444376150b6644a0debe58d98c596b0ee75d5ad0c6d",
+      "bytes": 214038
+    },
+    {
+      "file": "contact-076-100.webp",
+      "sha256": "5565c15a7753c1f9158d7f7a1dd2a4a7c76dbb17ca69051809fe8d3d6084d765",
+      "bytes": 232856
+    }
+  ],
+  "retention_policy": {
+    "retained": "one labeled WebP comparison with three amplified diff panels per page, contact sheets, raster hashes, dimensions, durations, and metrics",
+    "transient": "full-resolution PNG rasters"
+  }
+}

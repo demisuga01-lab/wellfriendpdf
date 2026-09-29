@@ -143,6 +143,7 @@ pub mod html;
 pub mod image_fragments;
 pub mod images;
 pub mod info;
+pub(crate) mod input_identity;
 pub mod interactive;
 pub mod linked_stories;
 pub mod object;
@@ -399,9 +400,10 @@ pub use editing_transactions::{
 };
 pub use engine::{
     max_decode_pixels, max_render_pixels, ContentEngine, ExtractionProfile,
-    ImageDecodeCapabilityDocumentReport, ImageDecodeCapabilityImageReport, PageRegion,
-    PageResources, PlacedImageReference, RegionImage, RegionWord, RenderContractTelemetryReport,
-    DEFAULT_MAX_DECODE_PIXELS, DEFAULT_MAX_RENDER_PIXELS,
+    ImageDecodeCapabilityDocumentReport, ImageDecodeCapabilityImageReport,
+    PageArtifactCacheMetrics, PageRegion, PageResources, PlacedImageReference, RegionImage,
+    RegionWord, RenderContractTelemetryReport, DEFAULT_MAX_DECODE_PIXELS,
+    DEFAULT_MAX_RENDER_PIXELS,
 };
 pub use error::{ErrorKind, Result, WellfriendError};
 pub use eval::{score, score_json, ScoreInput, ScoreOutput};
@@ -492,7 +494,7 @@ pub use pubsec::{
     PubSecIdentity, PubSecKeyProvider, PubSecRecipientCertificate, PubSecRecipientIdMode,
     PubSecRecoveredKey,
 };
-pub use reader::{EncryptionContext, PdfReader, XrefEntry};
+pub use reader::{EncryptionContext, PdfObjectCacheMetrics, PdfReader, XrefEntry};
 pub use render::{
     dirty_regions_to_render_tiles, flatten_cubic, flatten_path, get_fallback_font,
     map_refs_to_canonical_ids, path_raster_stats, pixel_buffer_allocation_stats,
@@ -680,10 +682,11 @@ pub use utilities::{
     add_page_numbers_pdf, attachments_json, crop_pdf, crop_pdf_pages, decrypt_pdf, encrypt_pdf,
     encrypt_pdf_with_pdf_mac, export_pdf_pages_to_images, fonts_json, html_string,
     images_to_pdf_from_bytes, images_to_pdf_from_paths, linearize_pdf, n_up_pdf, optimize_pdf,
-    organize_pdf, organize_pdf_with_insert, render_page_image, repair_pdf, rotate_pdf,
-    scale_pdf_pages, signatures_json, watermark_image_pdf, watermark_text_pdf, ImagePdfPageSize,
-    ImageToPdfOptions, ImageWatermarkOptions, NUpOptions, PageNumberOptions, RasterImageFormat,
-    RasterPageResult, RgbColor, ScalePagesOptions, StampPosition, TextWatermarkOptions,
+    organize_pdf, organize_pdf_with_insert, render_page_image, render_page_image_with_cache,
+    repair_pdf, rotate_pdf, scale_pdf_pages, signatures_json, watermark_image_pdf,
+    watermark_text_pdf, ImagePdfPageSize, ImageToPdfOptions, ImageWatermarkOptions, NUpOptions,
+    PageNumberOptions, RasterImageFormat, RasterPageResult, RgbColor, ScalePagesOptions,
+    StampPosition, TextWatermarkOptions,
 };
 pub use versioning::{
     content_defined_chunks, hamming_distance, resource_dedup_report, resource_digest, simhash_text,

@@ -446,6 +446,10 @@ pub struct RenderDocumentCache {
     clip_dag_stats: ClipDagStats,
     document_revision: Option<RevisionId>,
     dependency_graph: Option<RenderDependencyGraph>,
+    /// Pages whose conservative source dependency closure was completely
+    /// recorded for the bound revision. This prevents repeated whole-resource
+    /// graph walks on display-list and raster cache hits.
+    page_dependency_complete: HashSet<usize>,
     source_identities: HashMap<(u32, u16), ObjectIdentityId>,
     source_cache_markers: HashMap<ObjectIdentityId, Vec<String>>,
     font_substitution_log: FontSubstitutionLog,
@@ -512,6 +516,7 @@ impl RenderDocumentCache {
             clip_dag_stats: ClipDagStats::default(),
             document_revision: None,
             dependency_graph: None,
+            page_dependency_complete: HashSet::new(),
             source_identities: HashMap::new(),
             source_cache_markers: HashMap::new(),
             font_substitution_log: FontSubstitutionLog::new(),
@@ -578,6 +583,7 @@ impl RenderDocumentCache {
         self.clip_dag_stats = ClipDagStats::default();
         self.document_revision = None;
         self.dependency_graph = None;
+        self.page_dependency_complete.clear();
         self.source_identities.clear();
         self.source_cache_markers.clear();
         self.font_substitution_log.clear();
@@ -1150,6 +1156,9 @@ impl RenderDocumentCache {
     }
 
     fn invalidate_page_artifacts_impl(&mut self, pages: &[usize], include_page_rasters: bool) {
+        for page in pages {
+            self.page_dependency_complete.remove(page);
+        }
         for page in pages {
             let prefix = format!("page:{page}:");
             remove_ordered_cache_entries_matching(
@@ -2978,6 +2987,9 @@ impl PageRenderer {
         cache: &mut RenderDocumentCache,
     ) -> Result<()> {
         cache.bind_document_revision(engine.canonical_document().revision());
+        if cache.page_dependency_complete.contains(&page_number) {
+            return Ok(());
+        }
         cache.remember_source_identities(engine.canonical_document().object_identities());
         let page = engine.get_page(page_number)?;
         let mut refs = HashSet::new();
@@ -3012,6 +3024,7 @@ impl PageRenderer {
                 cache.record_page_source_dependency(page_number, identity);
             }
         }
+        cache.page_dependency_complete.insert(page_number);
         Ok(())
     }
 
@@ -3775,7 +3788,7 @@ impl PageRenderer {
         dpi: u32,
         cache: &mut RenderDocumentCache,
     ) -> Result<(Arc<DisplayList>, bool)> {
-        Self::record_page_render_dependencies(engine, page_number, cache)?;
+        cache.bind_document_revision(engine.canonical_document().revision());
         let key = RenderDocumentCache::display_list_key_with_revision(
             page_number,
             dpi,
@@ -3784,6 +3797,7 @@ impl PageRenderer {
         if let Some(list) = cache.cached_display_list(&key) {
             return Ok((list, true));
         }
+        Self::record_page_render_dependencies(engine, page_number, cache)?;
         let list = Self::build_display_list(engine, page_number, dpi)?;
         Ok((cache.insert_display_list(key, list), false))
     }
@@ -3796,7 +3810,7 @@ impl PageRenderer {
         cache: &mut RenderDocumentCache,
     ) -> Result<(Arc<DisplayList>, bool)> {
         cancel.check("cached display-list build start")?;
-        Self::record_page_render_dependencies(engine, page_number, cache)?;
+        cache.bind_document_revision(engine.canonical_document().revision());
         let key = RenderDocumentCache::display_list_key_with_revision(
             page_number,
             dpi,
@@ -3805,6 +3819,7 @@ impl PageRenderer {
         if let Some(list) = cache.cached_display_list(&key) {
             return Ok((list, true));
         }
+        Self::record_page_render_dependencies(engine, page_number, cache)?;
         let list = Self::build_display_list_cancellable(engine, page_number, dpi, cancel)?;
         Ok((cache.insert_display_list(key, list), false))
     }
@@ -4212,7 +4227,7 @@ impl PageRenderer {
         cache: &mut RenderDocumentCache,
     ) -> Result<PixelBuffer> {
         cancel.check("display-list render start")?;
-        Self::record_page_render_dependencies(engine, page_number, cache)?;
+        cache.bind_document_revision(engine.canonical_document().revision());
         let resources = engine.get_page_resources(page_number)?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
         let mut annotation_contract = contract.clone();
@@ -4240,6 +4255,7 @@ impl PageRenderer {
         if let Some(hit) = cache.cached_display_list_raster(&raster_key) {
             return Ok(hit);
         }
+        Self::record_page_render_dependencies(engine, page_number, cache)?;
         Self::record_display_list_tile_resource_dependencies(
             engine,
             page_number,
@@ -7371,6 +7387,7 @@ impl<'a> RenderState<'a> {
             std::mem::take(&mut cache.transparent_page_group_cache_order);
         let document_revision = cache.document_revision;
         let dependency_graph = std::mem::take(&mut cache.dependency_graph);
+        let page_dependency_complete = std::mem::take(&mut cache.page_dependency_complete);
         let source_identities = std::mem::take(&mut cache.source_identities);
         let source_cache_markers = std::mem::take(&mut cache.source_cache_markers);
         let clip_dag_stats = self.clip_dag.stats();
@@ -7438,6 +7455,7 @@ impl<'a> RenderState<'a> {
             clip_dag_stats,
             document_revision,
             dependency_graph,
+            page_dependency_complete,
             source_identities,
             source_cache_markers,
             font_substitution_log: merged_font_substitution_log,
@@ -7517,6 +7535,7 @@ impl<'a> RenderState<'a> {
             std::mem::take(&mut cache.transparent_page_group_cache_order);
         let document_revision = cache.document_revision;
         let dependency_graph = std::mem::take(&mut cache.dependency_graph);
+        let page_dependency_complete = std::mem::take(&mut cache.page_dependency_complete);
         let source_identities = std::mem::take(&mut cache.source_identities);
         let source_cache_markers = std::mem::take(&mut cache.source_cache_markers);
         // Merge the render state's font substitution log into the cache's
@@ -7582,6 +7601,7 @@ impl<'a> RenderState<'a> {
             clip_dag_stats,
             document_revision,
             dependency_graph,
+            page_dependency_complete,
             source_identities,
             source_cache_markers,
             font_substitution_log: merged_font_substitution_log,
@@ -29209,6 +29229,7 @@ mod tests {
         let metrics_after_first = cache.display_list_raster_cache_metrics();
         assert_eq!(metrics_after_first.inserts, 1);
         assert_eq!(metrics_after_first.hits, 0);
+        assert!(cache.page_dependency_complete.contains(&1));
 
         let second = engine
             .render_page_display_list_cancellable_with_mode_and_cache(
@@ -29225,6 +29246,8 @@ mod tests {
         assert_eq!(metrics_after_second.inserts, 1);
         assert_eq!(metrics_after_second.hits, 1);
         assert_same_pixels(&first, &second);
+        cache.invalidate_page_artifacts(&[1]);
+        assert!(!cache.page_dependency_complete.contains(&1));
     }
 
     #[test]

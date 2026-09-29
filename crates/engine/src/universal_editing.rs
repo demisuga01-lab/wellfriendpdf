@@ -7,8 +7,8 @@
 //! policy denial, and input that cannot be recovered safely.
 
 use crate::advanced_editing::{
-    analyze_multi_run_text_range, edit_vector_object, list_vector_objects, SharedFormEditPolicy,
-    VectorEditOperation, VectorEditOptions, VectorFormInvocation,
+    edit_vector_object, list_vector_objects, SharedFormEditPolicy, VectorEditOperation,
+    VectorEditOptions, VectorFormInvocation,
 };
 use crate::content::{ContentToken, ContentTokenizer, SpannedContentToken};
 use crate::editing_transactions::{
@@ -26,13 +26,14 @@ use crate::secure_mutation::{
     analyze_edit_policy, EditOperation as SignatureEditOperation, EditPolicyDecision,
     EditPolicyReport,
 };
-use crate::source_editing::TrueEditingMode;
+use crate::source_editing::{prepared_multi_run_text_range, TrueEditingMode};
 use crate::writer::{write_incremental_update, IncrementalObject};
 use crate::{ContentEngine, PdfDictionary, Result, WellfriendError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::{OnceLock, RwLock};
 
 #[path = "universal_scoped_text.rs"]
 pub mod scoped_text;
@@ -1319,6 +1320,134 @@ pub struct UniversalEditPlanV2 {
     pub implementation_report: Value,
 }
 
+const PREPARED_PLAN_CACHE_ENTRIES: usize = 32;
+const PREPARED_PLAN_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_PREPARED_PLAN_BYTES: usize = 32 * 1024 * 1024;
+const PREPARED_PLAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+#[derive(Clone)]
+struct PreparedPlanArtifact {
+    plan: UniversalEditPlanV2,
+    staged_scoped_text: Option<scoped_text::StagedScopedText>,
+    secure_policy: EditPolicyReport,
+    estimated_bytes: usize,
+    created_at: std::time::Instant,
+}
+
+#[derive(Default)]
+struct PreparedPlanCache {
+    entries: HashMap<(String, String), PreparedPlanArtifact>,
+    order: VecDeque<(String, String)>,
+    total_bytes: usize,
+}
+
+impl PreparedPlanCache {
+    fn get(
+        &self,
+        revision_id: &str,
+        plan_id: &str,
+    ) -> Option<(
+        UniversalEditPlanV2,
+        Option<scoped_text::StagedScopedText>,
+        EditPolicyReport,
+    )> {
+        self.entries
+            .get(&(revision_id.to_string(), plan_id.to_string()))
+            .filter(|entry| entry.created_at.elapsed() <= PREPARED_PLAN_CACHE_TTL)
+            .map(|entry| {
+                (
+                    entry.plan.clone(),
+                    entry.staged_scoped_text.clone(),
+                    entry.secure_policy.clone(),
+                )
+            })
+    }
+
+    fn insert(
+        &mut self,
+        plan: &UniversalEditPlanV2,
+        staged_scoped_text: Option<&scoped_text::StagedScopedText>,
+        secure_policy: &EditPolicyReport,
+    ) {
+        let mut estimated_bytes = serde_json::to_vec(plan).map_or(0, |bytes| bytes.len());
+        estimated_bytes = estimated_bytes
+            .saturating_add(serde_json::to_vec(secure_policy).map_or(0, |bytes| bytes.len()));
+        if let Some(staged) = staged_scoped_text {
+            estimated_bytes = estimated_bytes
+                .saturating_add(staged.bytes.len())
+                .saturating_add(serde_json::to_vec(&staged.report).map_or(0, |bytes| bytes.len()))
+                .saturating_add(staged.objects.iter().map(String::capacity).sum::<usize>())
+                .saturating_add(
+                    staged
+                        .cloned_resources
+                        .iter()
+                        .map(String::capacity)
+                        .sum::<usize>(),
+                );
+        }
+        if estimated_bytes > MAX_PREPARED_PLAN_BYTES {
+            return;
+        }
+        let key = (plan.revision_id.clone(), plan.plan_id.clone());
+        if let Some(previous) = self.entries.remove(&key) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous.estimated_bytes);
+            self.order.retain(|candidate| candidate != &key);
+        }
+        while self.entries.len() >= PREPARED_PLAN_CACHE_ENTRIES
+            || self.total_bytes.saturating_add(estimated_bytes) > PREPARED_PLAN_CACHE_BYTES
+        {
+            let Some(victim) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&victim) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.estimated_bytes);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.total_bytes = self.total_bytes.saturating_add(estimated_bytes);
+        self.entries.insert(
+            key,
+            PreparedPlanArtifact {
+                plan: plan.clone(),
+                staged_scoped_text: staged_scoped_text.cloned(),
+                secure_policy: secure_policy.clone(),
+                estimated_bytes,
+                created_at: std::time::Instant::now(),
+            },
+        );
+    }
+}
+
+fn prepared_plan_cache() -> &'static RwLock<PreparedPlanCache> {
+    static CACHE: OnceLock<RwLock<PreparedPlanCache>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(PreparedPlanCache::default()))
+}
+
+fn cache_prepared_plan(
+    plan: &UniversalEditPlanV2,
+    staged_scoped_text: Option<&scoped_text::StagedScopedText>,
+    secure_policy: &EditPolicyReport,
+) {
+    prepared_plan_cache()
+        .write()
+        .expect("prepared universal plan cache lock poisoned")
+        .insert(plan, staged_scoped_text, secure_policy);
+}
+
+fn cached_prepared_plan(
+    revision_id: &str,
+    plan_id: &str,
+) -> Option<(
+    UniversalEditPlanV2,
+    Option<scoped_text::StagedScopedText>,
+    EditPolicyReport,
+)> {
+    prepared_plan_cache()
+        .read()
+        .expect("prepared universal plan cache lock poisoned")
+        .get(revision_id, plan_id)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniversalApprovalDecisionV2 {
     #[serde(default)]
@@ -1475,13 +1604,22 @@ pub fn plan_universal_edit_v2(
     input: &[u8],
     request: &UniversalEditRequestV2,
 ) -> Result<UniversalEditPlanV2> {
-    Ok(plan_universal_edit_v2_staged(input, request)?.0)
+    crate::input_identity::with_input_identity(input, || {
+        let (plan, staged_scoped_text, secure_policy) =
+            plan_universal_edit_v2_staged(input, request)?;
+        cache_prepared_plan(&plan, staged_scoped_text.as_ref(), &secure_policy);
+        Ok(plan)
+    })
 }
 
 fn plan_universal_edit_v2_staged(
     input: &[u8],
     request: &UniversalEditRequestV2,
-) -> Result<(UniversalEditPlanV2, Option<scoped_text::StagedScopedText>)> {
+) -> Result<(
+    UniversalEditPlanV2,
+    Option<scoped_text::StagedScopedText>,
+    EditPolicyReport,
+)> {
     crate::cancel::check_current_cancel("universal edit planning snapshot")?;
     if let Some(contract) = &request.policy.edit_contract {
         crate::edit_contracts::validate_contract_input(input, contract)?;
@@ -2632,6 +2770,7 @@ fn plan_universal_edit_v2_staged(
             implementation_report,
         },
         staged_scoped_text,
+        secure_policy,
     ))
 }
 
@@ -5169,16 +5308,18 @@ pub fn apply_universal_edit_v2(
     plan: &UniversalEditPlanV2,
     approval: Option<&UniversalApprovalTokenV2>,
 ) -> Result<(Vec<u8>, UniversalEditResultV2)> {
-    crate::cancel::check_current_cancel("universal editing apply entry")?;
-    if !matches!(
-        plan.policy.output_security,
-        UniversalOutputSecurityPolicyV2::Unencrypted
-    ) {
-        return Err(WellfriendError::invalid_input(
-            "universal edit plan requires apply_universal_edit_v2_with_output_security and apply-only credentials",
-        ));
-    }
-    apply_universal_edit_v2_inner(input, plan, approval)
+    crate::input_identity::with_input_identity(input, || {
+        crate::cancel::check_current_cancel("universal editing apply entry")?;
+        if !matches!(
+            plan.policy.output_security,
+            UniversalOutputSecurityPolicyV2::Unencrypted
+        ) {
+            return Err(WellfriendError::invalid_input(
+                "universal edit plan requires apply_universal_edit_v2_with_output_security and apply-only credentials",
+            ));
+        }
+        apply_universal_edit_v2_inner(input, plan, approval)
+    })
 }
 
 /// Preserve the exact transport container for a typed no-change result when a
@@ -5219,23 +5360,24 @@ pub fn apply_universal_edit_v2_with_output_security(
     approval: Option<&UniversalApprovalTokenV2>,
     credentials: &UniversalOutputSecurityCredentialsV2,
 ) -> Result<(Vec<u8>, UniversalEditResultV2)> {
-    crate::cancel::check_current_cancel("universal secured editing apply entry")?;
-    let UniversalOutputSecurityPolicyV2::Standard {
-        algorithm,
-        permissions,
-        encrypt_metadata,
-    } = plan.policy.output_security
-    else {
-        return Err(WellfriendError::invalid_input(
+    crate::input_identity::with_input_identity(input, || {
+        crate::cancel::check_current_cancel("universal secured editing apply entry")?;
+        let UniversalOutputSecurityPolicyV2::Standard {
+            algorithm,
+            permissions,
+            encrypt_metadata,
+        } = plan.policy.output_security
+        else {
+            return Err(WellfriendError::invalid_input(
             "universal secured apply requires output_security.kind=standard in the immutable plan",
         ));
-    };
-    let (plaintext, mut result) = apply_universal_edit_v2_inner(input, plan, approval)?;
-    crate::cancel::check_current_cancel("universal secured editing encryption")?;
-    if !result.changed {
-        return Ok((plaintext, result));
-    }
-    let algorithm = match algorithm {
+        };
+        let (plaintext, mut result) = apply_universal_edit_v2_inner(input, plan, approval)?;
+        crate::cancel::check_current_cancel("universal secured editing encryption")?;
+        if !result.changed {
+            return Ok((plaintext, result));
+        }
+        let algorithm = match algorithm {
         UniversalStandardEncryptionAlgorithmV2::Rc4_128
         | UniversalStandardEncryptionAlgorithmV2::Aes128 => {
             return Err(WellfriendError::UnsupportedFeature(
@@ -5248,58 +5390,59 @@ pub fn apply_universal_edit_v2_with_output_security(
             crate::EncryptAlgorithm::Aes256Gcm
         }
     };
-    let params = crate::EncryptParams {
-        user_password: credentials.user_password.clone(),
-        owner_password: credentials.owner_password.clone(),
-        permissions,
-        algorithm,
-        encrypt_metadata,
-    };
-    let plaintext_engine = ContentEngine::open_bytes(plaintext.clone())?;
-    let encrypted = crate::structural::encrypt(&plaintext_engine, &params)?;
-    crate::cancel::check_current_cancel("universal secured editing reopen")?;
-    let reopened = ContentEngine::open_bytes_with_password(
-        encrypted.clone(),
-        credentials.user_password.as_slice(),
-    )?;
-    let required_profiles = required_conformance_profiles_v2(input, &plan.policy)?;
-    if required_profiles.contains(&UniversalConformanceProfileV2::PdfUa1) {
-        let pdfua = crate::compliance::validate_pdfua(reopened.document())?;
-        if !pdfua.compliant {
-            return Err(WellfriendError::UnsupportedFeature(format!(
+        let params = crate::EncryptParams {
+            user_password: credentials.user_password.clone(),
+            owner_password: credentials.owner_password.clone(),
+            permissions,
+            algorithm,
+            encrypt_metadata,
+        };
+        let plaintext_engine = ContentEngine::open_bytes(plaintext.clone())?;
+        let encrypted = crate::structural::encrypt(&plaintext_engine, &params)?;
+        crate::cancel::check_current_cancel("universal secured editing reopen")?;
+        let reopened = ContentEngine::open_bytes_with_password(
+            encrypted.clone(),
+            credentials.user_password.as_slice(),
+        )?;
+        let required_profiles = required_conformance_profiles_v2(input, &plan.policy)?;
+        if required_profiles.contains(&UniversalConformanceProfileV2::PdfUa1) {
+            let pdfua = crate::compliance::validate_pdfua(reopened.document())?;
+            if !pdfua.compliant {
+                return Err(WellfriendError::UnsupportedFeature(format!(
                 "universal editing no_change: encrypted output failed required PDF/UA validation: {}",
                 serde_json::to_string(&pdfua).map_err(json_error)?
             )));
+            }
         }
-    }
-    let plaintext_revision = result.output_revision_id.clone();
-    let encrypted_revision = revision_id(&encrypted);
-    result.output_revision_id = encrypted_revision.clone();
-    result.transaction_id = stable_id(
-        "transaction-v2-secured",
-        &[plan.plan_id.as_bytes(), encrypted_revision.as_bytes()],
-    );
-    let previous_report = std::mem::replace(&mut result.operation_report, Value::Null);
-    result.operation_report = json!({
-        "operation": previous_report,
-        "output_security": {
-            "status": "standard_security_handler_reencrypted",
-            "algorithm": plan.policy.output_security,
-            "permissions": permissions,
-            "encrypt_metadata": encrypt_metadata,
-            "plaintext_revision_id": plaintext_revision,
-            "encrypted_revision_id": encrypted_revision,
-            "credentials_serialized_or_reported": false,
-            "output_reopened_with_user_credential": true,
-        }
-    });
-    result.inverse = json!({
-        "kind": "exact_preimage_restore",
-        "input_sha256": digest_hex(input),
-        "output_sha256": digest_hex(&encrypted),
-        "preimage_retention_required": true,
-    });
-    Ok((encrypted, result))
+        let plaintext_revision = result.output_revision_id.clone();
+        let encrypted_revision = revision_id(&encrypted);
+        result.output_revision_id = encrypted_revision.clone();
+        result.transaction_id = stable_id(
+            "transaction-v2-secured",
+            &[plan.plan_id.as_bytes(), encrypted_revision.as_bytes()],
+        );
+        let previous_report = std::mem::replace(&mut result.operation_report, Value::Null);
+        result.operation_report = json!({
+            "operation": previous_report,
+            "output_security": {
+                "status": "standard_security_handler_reencrypted",
+                "algorithm": plan.policy.output_security,
+                "permissions": permissions,
+                "encrypt_metadata": encrypt_metadata,
+                "plaintext_revision_id": plaintext_revision,
+                "encrypted_revision_id": encrypted_revision,
+                "credentials_serialized_or_reported": false,
+                "output_reopened_with_user_credential": true,
+            }
+        });
+        result.inverse = json!({
+            "kind": "exact_preimage_restore",
+            "input_sha256": digest_hex(input),
+            "output_sha256": digest_hex(&encrypted),
+            "preimage_retention_required": true,
+        });
+        Ok((encrypted, result))
+    })
 }
 
 fn apply_universal_edit_v2_inner(
@@ -5308,8 +5451,10 @@ fn apply_universal_edit_v2_inner(
     approval: Option<&UniversalApprovalTokenV2>,
 ) -> Result<(Vec<u8>, UniversalEditResultV2)> {
     crate::cancel::check_current_cancel("universal editing apply snapshot")?;
-    let current_snapshot = build_document_snapshot(input, None)?;
-    if current_snapshot.revision_id != plan.revision_id {
+    // Stale-plan rejection only depends on the immutable revision digest. A
+    // complete document snapshot would reopen the PDF and walk the page tree
+    // even though none of its other fields participate in this decision.
+    if revision_id(input) != plan.revision_id {
         return Err(WellfriendError::invalid_input(
             "universal editing stale_plan: input revision differs from the planned revision",
         ));
@@ -5325,14 +5470,23 @@ fn apply_universal_edit_v2_inner(
             "universal editing plan content does not match its plan_id",
         ));
     }
-    crate::cancel::check_current_cancel("universal editing canonical plan recomputation")?;
-    let (canonical_plan, mut staged_scoped_text) = plan_universal_edit_v2_staged(
-        input,
-        &UniversalEditRequestV2 {
-            operation: plan.requested_operation.clone(),
-            policy: plan.policy.clone(),
-        },
-    )?;
+    crate::cancel::check_current_cancel("universal editing canonical plan authentication")?;
+    let cached_prepared = cached_prepared_plan(&plan.revision_id, &plan.plan_id);
+    let prepared_plan_cache_hit = cached_prepared.is_some();
+    let (canonical_plan, mut staged_scoped_text, secure_policy) =
+        if let Some(prepared) = cached_prepared {
+            prepared
+        } else {
+            let prepared = plan_universal_edit_v2_staged(
+                input,
+                &UniversalEditRequestV2 {
+                    operation: plan.requested_operation.clone(),
+                    policy: plan.policy.clone(),
+                },
+            )?;
+            cache_prepared_plan(&prepared.0, prepared.1.as_ref(), &prepared.2);
+            prepared
+        };
     // Authenticate every field that can authorize or steer mutation. The
     // preview is part of the reviewed decision surface: accepting a supplied
     // plan whose preview differs from the canonical recomputation would allow
@@ -5347,12 +5501,9 @@ fn apply_universal_edit_v2_inner(
                 .to_string(),
         ));
     }
-    // Canonical planning must be a pure function of the supplied bytes and
-    // request.  Run policy enforcement only after the byte-for-byte plan
-    // authentication check so mutable policy-analysis caches cannot perturb
-    // candidate discovery within this apply call.
-    let policy_engine = ContentEngine::open_bytes(input.to_vec())?;
-    let secure_policy = analyze_edit_policy(&policy_engine, SignatureEditOperation::ContentEdit)?;
+    // Canonical planning is a pure function of the supplied bytes and request.
+    // Its signature policy report is retained with the same authenticated plan
+    // artifact; a cache miss recomputes both before this point.
     let validated_approval = if plan.state == UniversalPlanStateV2::ApprovalRequired {
         let token = approval.ok_or_else(|| {
             WellfriendError::invalid_input(
@@ -5687,6 +5838,24 @@ fn apply_universal_edit_v2_inner(
             Ok(value) => value,
             Err(error) => return Err(error),
         };
+    let prepared_plan_report = json!({
+        "cache_hit": prepared_plan_cache_hit,
+        "revision_bound": true,
+        "canonical_authority_revalidated": true,
+        "fallback_replanning_on_miss": true,
+    });
+    match &mut operation_report {
+        Value::Object(fields) => {
+            fields.insert("raptor_prepared_plan".to_string(), prepared_plan_report);
+        }
+        other => {
+            let legacy = other.take();
+            *other = json!({
+                "legacy_operation_report": legacy,
+                "raptor_prepared_plan": prepared_plan_report,
+            });
+        }
+    }
     crate::cancel::check_current_cancel("universal editing post-mutation")?;
     if output == input {
         return Err(WellfriendError::UnsupportedFeature(
@@ -5694,7 +5863,16 @@ fn apply_universal_edit_v2_inner(
                 .to_string(),
         ));
     }
-    if universal_input_recovery_state(input)["strict_open"] == Value::Bool(false) {
+    let canonical_input_recovery = canonical_plan
+        .implementation_report
+        .get("input_recovery")
+        .cloned()
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "universal editing canonical plan omitted its input-recovery decision".into(),
+            )
+        })?;
+    if canonical_input_recovery["strict_open"] == Value::Bool(false) {
         if !plan.policy.allow_deterministic_repair
             || plan.policy.mutation_mode != UniversalMutationModeV2::AuthorizedRewrite
         {
@@ -7990,7 +8168,12 @@ fn logical_text_range_candidates_v2(
     revision: &str,
     existing: &[UniversalCandidateV2],
 ) -> Result<Vec<UniversalCandidateV2>> {
-    let model = analyze_multi_run_text_range(input, request.page)?;
+    let model = prepared_multi_run_text_range(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+    )?;
     let scalar_len = model.logical_text.chars().count();
     let mut ranges = Vec::<[usize; 2]>::new();
     if let Some(range @ [start, end]) = request.target_logical_scalar_range {
@@ -8231,7 +8414,13 @@ fn selected_source_text_span(
     input: &[u8],
     request: &SceneTextEditRequest,
 ) -> Option<crate::advanced_editing::MultiRunSourceSpan> {
-    let model = analyze_multi_run_text_range(input, request.page).ok()?;
+    let model = prepared_multi_run_text_range(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+    )
+    .ok()?;
     if let Some([start, end]) = request.target_logical_scalar_range {
         return model.source_spans.into_iter().find(|span| {
             if start == end {
@@ -8490,7 +8679,7 @@ fn stable_id(kind: &str, values: &[&[u8]]) -> String {
 }
 
 pub(crate) fn digest_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::input_identity::sha256(bytes)
 }
 
 fn digest_hex_cancellable(bytes: &[u8], context: &str) -> Result<String> {
@@ -8504,7 +8693,7 @@ fn digest_hex_cancellable(bytes: &[u8], context: &str) -> Result<String> {
 }
 
 pub(crate) fn revision_id(bytes: &[u8]) -> String {
-    stable_id("revision", &[bytes, &bytes.len().to_le_bytes()])
+    crate::input_identity::revision_id(bytes)
 }
 
 fn json_error(error: serde_json::Error) -> WellfriendError {

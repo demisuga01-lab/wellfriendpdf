@@ -13,6 +13,8 @@ mod image_fragments;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
+    use std::cell::RefCell;
+
     use js_sys::{Function, Reflect};
     use serde::de::DeserializeOwned;
     use wasm_bindgen::prelude::*;
@@ -487,6 +489,7 @@ mod wasm_api {
     #[wasm_bindgen]
     pub struct WellfriendPdf {
         engine: ContentEngine,
+        render_cache: RefCell<RenderDocumentCache>,
         bytes: Vec<u8>,
         input_password: Option<SecretBytes>,
         closed: bool,
@@ -922,6 +925,7 @@ mod wasm_api {
             let engine = ContentEngine::open_bytes(bytes.to_vec()).map_err(js_err)?;
             Ok(Self {
                 engine,
+                render_cache: RefCell::new(RenderDocumentCache::new()),
                 bytes: bytes.to_vec(),
                 input_password: None,
                 closed: false,
@@ -935,6 +939,7 @@ mod wasm_api {
                 .map_err(js_err)?;
             Ok(Self {
                 engine,
+                render_cache: RefCell::new(RenderDocumentCache::new()),
                 bytes: bytes.to_vec(),
                 input_password: Some(SecretBytes::new(password.to_vec())),
                 closed: false,
@@ -950,7 +955,9 @@ mod wasm_api {
             self.ensure_open()?;
             self.engine
                 .register_font_bytes(name.to_string(), font_bytes.to_vec())
-                .map_err(js_err)
+                .map_err(js_err)?;
+            *self.render_cache.borrow_mut() = RenderDocumentCache::new();
+            Ok(())
         }
 
         #[wasm_bindgen(js_name = sdkVersion)]
@@ -1185,7 +1192,9 @@ mod wasm_api {
         #[wasm_bindgen(js_name = renderPagePng)]
         pub fn render_page_png(&self, page: usize, dpi: u32) -> Result<Vec<u8>, JsValue> {
             self.ensure_open()?;
-            self.engine.render_page_png_fast(page, dpi).map_err(js_err)
+            self.engine
+                .render_page_png_fast_with_cache(page, dpi, &mut self.render_cache.borrow_mut())
+                .map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = renderPagePngWithFontSubstitutionReport)]
@@ -1201,7 +1210,12 @@ mod wasm_api {
                 .ok_or_else(|| JsValue::from_str("mode must be compat or high"))?;
             let (bytes, log) = self
                 .engine
-                .render_page_png_fast_with_font_substitution_report(page, dpi, render_mode)
+                .render_page_png_fast_with_font_substitution_report_and_cache(
+                    page,
+                    dpi,
+                    render_mode,
+                    &mut self.render_cache.borrow_mut(),
+                )
                 .map_err(js_err)?;
             let report_json = serde_json::to_string(&log)
                 .map_err(|error| JsValue::from_str(&error.to_string()))?;

@@ -1,7 +1,7 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::{self, Cursor, Read};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::content::{ContentOperation, ContentParser, StreamingContentTokenizer};
 use crate::document::{PdfDocument, PdfPage};
@@ -1203,11 +1203,236 @@ fn numeric_array_6(dict: &PdfDictionary, key: &str) -> Option<[f64; 6]> {
     ])
 }
 
+const MAX_PAGE_ARTIFACT_CACHE_ENTRIES: usize = 256;
+const MAX_PAGE_ARTIFACT_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_SINGLE_PAGE_ARTIFACT_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PageArtifactKey {
+    Operations(usize),
+    StrictOperations(usize),
+    Resources(usize),
+    ScopedText(usize),
+}
+
+/// Immutable-revision page products shared by parsing, editing, extraction and
+/// rendering. Entries are bounded by both count and estimated heap use. FIFO
+/// insertion order avoids taking an exclusive lock just to update recency on a
+/// cache hit, which matters when independent pages are processed in parallel.
+#[derive(Default)]
+struct PageArtifactCache {
+    operations: HashMap<usize, (Arc<Vec<ContentOperation>>, usize)>,
+    strict_operations: HashMap<usize, (Arc<Vec<ContentOperation>>, usize)>,
+    resources: HashMap<usize, (Arc<PageResources>, usize)>,
+    scoped_text: HashMap<usize, (Arc<Vec<crate::text::ScopedTextChunk>>, usize)>,
+    order: VecDeque<PageArtifactKey>,
+    total_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct PageArtifactCacheMetrics {
+    pub operation_pages: usize,
+    pub strict_operation_pages: usize,
+    pub resource_pages: usize,
+    pub scoped_text_pages: usize,
+    pub entries: usize,
+    pub estimated_bytes: usize,
+}
+
+impl PageArtifactCache {
+    fn operations(&self, page: usize) -> Option<Vec<ContentOperation>> {
+        self.operations
+            .get(&page)
+            .map(|(value, _)| value.as_ref().clone())
+    }
+
+    fn strict_operations(&self, page: usize) -> Option<Vec<ContentOperation>> {
+        self.strict_operations
+            .get(&page)
+            .map(|(value, _)| value.as_ref().clone())
+    }
+
+    fn resources(&self, page: usize) -> Option<PageResources> {
+        self.resources
+            .get(&page)
+            .map(|(value, _)| value.as_ref().clone())
+    }
+
+    fn scoped_text(&self, page: usize) -> Option<Vec<crate::text::ScopedTextChunk>> {
+        self.scoped_text
+            .get(&page)
+            .map(|(value, _)| value.as_ref().clone())
+    }
+
+    fn insert_operations(&mut self, page: usize, value: Vec<ContentOperation>) {
+        let bytes = estimate_operations_bytes(&value);
+        self.remove(PageArtifactKey::Operations(page));
+        if !self.reserve(PageArtifactKey::Operations(page), bytes) {
+            return;
+        }
+        self.operations.insert(page, (Arc::new(value), bytes));
+    }
+
+    fn insert_strict_operations(&mut self, page: usize, value: Vec<ContentOperation>) {
+        let bytes = estimate_operations_bytes(&value);
+        self.remove(PageArtifactKey::StrictOperations(page));
+        if !self.reserve(PageArtifactKey::StrictOperations(page), bytes) {
+            return;
+        }
+        self.strict_operations
+            .insert(page, (Arc::new(value), bytes));
+    }
+
+    fn insert_resources(&mut self, page: usize, value: PageResources) {
+        let bytes = estimate_resources_bytes(&value);
+        self.remove(PageArtifactKey::Resources(page));
+        if !self.reserve(PageArtifactKey::Resources(page), bytes) {
+            return;
+        }
+        self.resources.insert(page, (Arc::new(value), bytes));
+    }
+
+    fn insert_scoped_text(&mut self, page: usize, value: Vec<crate::text::ScopedTextChunk>) {
+        let bytes = estimate_scoped_text_bytes(&value);
+        self.remove(PageArtifactKey::ScopedText(page));
+        if !self.reserve(PageArtifactKey::ScopedText(page), bytes) {
+            return;
+        }
+        self.scoped_text.insert(page, (Arc::new(value), bytes));
+    }
+
+    fn reserve(&mut self, key: PageArtifactKey, bytes: usize) -> bool {
+        if bytes > MAX_SINGLE_PAGE_ARTIFACT_BYTES || bytes > MAX_PAGE_ARTIFACT_CACHE_BYTES {
+            return false;
+        }
+        while self.order.len() >= MAX_PAGE_ARTIFACT_CACHE_ENTRIES
+            || self.total_bytes.saturating_add(bytes) > MAX_PAGE_ARTIFACT_CACHE_BYTES
+        {
+            let Some(victim) = self.order.pop_front() else {
+                break;
+            };
+            self.remove_value(victim);
+        }
+        self.order.push_back(key);
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+        true
+    }
+
+    fn remove(&mut self, key: PageArtifactKey) {
+        self.order.retain(|candidate| *candidate != key);
+        self.remove_value(key);
+    }
+
+    fn remove_value(&mut self, key: PageArtifactKey) {
+        let removed = match key {
+            PageArtifactKey::Operations(page) => {
+                self.operations.remove(&page).map(|(_, bytes)| bytes)
+            }
+            PageArtifactKey::StrictOperations(page) => {
+                self.strict_operations.remove(&page).map(|(_, bytes)| bytes)
+            }
+            PageArtifactKey::Resources(page) => {
+                self.resources.remove(&page).map(|(_, bytes)| bytes)
+            }
+            PageArtifactKey::ScopedText(page) => {
+                self.scoped_text.remove(&page).map(|(_, bytes)| bytes)
+            }
+        };
+        if let Some(bytes) = removed {
+            self.total_bytes = self.total_bytes.saturating_sub(bytes);
+        }
+    }
+}
+
+fn estimate_operations_bytes(operations: &[ContentOperation]) -> usize {
+    let mut bytes = operations
+        .len()
+        .saturating_mul(std::mem::size_of::<ContentOperation>());
+    let mut pending = Vec::new();
+    for operation in operations {
+        bytes = bytes.saturating_add(operation.operator.capacity());
+        bytes = bytes.saturating_add(
+            operation
+                .operands
+                .capacity()
+                .saturating_mul(std::mem::size_of::<crate::content::Operand>()),
+        );
+        pending.extend(operation.operands.iter());
+    }
+    while let Some(operand) = pending.pop() {
+        use crate::content::Operand;
+        match operand {
+            Operand::Name(value) => bytes = bytes.saturating_add(value.capacity()),
+            Operand::String(value) => bytes = bytes.saturating_add(value.capacity()),
+            Operand::Array(values) => {
+                bytes = bytes.saturating_add(
+                    values
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<Operand>()),
+                );
+                pending.extend(values.iter());
+            }
+            Operand::Dictionary(values) => {
+                bytes = bytes.saturating_add(values.capacity().saturating_mul(
+                    std::mem::size_of::<String>() + std::mem::size_of::<Operand>(),
+                ));
+                for (key, value) in values {
+                    bytes = bytes.saturating_add(key.capacity());
+                    pending.push(value);
+                }
+            }
+            Operand::Null | Operand::Integer(_) | Operand::Real(_) | Operand::Boolean(_) => {}
+        }
+        if bytes > MAX_SINGLE_PAGE_ARTIFACT_BYTES {
+            return bytes;
+        }
+    }
+    bytes
+}
+
+fn estimate_resources_bytes(resources: &PageResources) -> usize {
+    let entries = resources.fonts.len()
+        + resources.font_references.len()
+        + resources.xobjects.len()
+        + resources.xobject_subtypes.len()
+        + resources.xobject_stream_dicts.len()
+        + resources.xobject_bboxes.len()
+        + resources.xobject_matrices.len()
+        + resources.color_spaces.len()
+        + resources.color_space_references.len()
+        + resources.ext_g_states.len()
+        + resources.ext_g_state_references.len()
+        + resources.patterns.len()
+        + resources.shadings.len()
+        + resources.properties.len()
+        + resources.properties_references.len();
+    std::mem::size_of::<PageResources>().saturating_add(entries.saturating_mul(256))
+}
+
+fn estimate_scoped_text_bytes(chunks: &[crate::text::ScopedTextChunk]) -> usize {
+    chunks.iter().fold(
+        chunks
+            .len()
+            .saturating_mul(std::mem::size_of::<crate::text::ScopedTextChunk>()),
+        |bytes, item| {
+            bytes
+                .saturating_add(item.chunk.text.capacity())
+                .saturating_add(item.chunk.font_name.capacity())
+                .saturating_add(
+                    item.form_path
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<crate::text::TextFormInvocation>()),
+                )
+        },
+    )
+}
+
 #[derive(Clone)]
 pub struct ContentEngine {
     doc: Arc<PdfDocument>,
     canonical: CanonicalDocument,
     registered_fonts: RegisteredFontProvider,
+    page_artifacts: Arc<RwLock<PageArtifactCache>>,
 }
 
 impl ContentEngine {
@@ -1217,6 +1442,7 @@ impl ContentEngine {
             doc: Arc::new(doc),
             canonical,
             registered_fonts: RegisteredFontProvider::default(),
+            page_artifacts: Arc::new(RwLock::new(PageArtifactCache::default())),
         }
     }
 
@@ -1226,8 +1452,16 @@ impl ContentEngine {
     }
 
     pub fn open_bytes(data: Vec<u8>) -> Result<Self> {
+        let scoped = crate::input_identity::scoped_engine(&data);
+        if let Some((_, Some(engine))) = scoped.as_ref() {
+            return Ok(engine.clone());
+        }
         let doc = PdfDocument::open_bytes(data)?;
-        Ok(Self::from_document(doc))
+        let engine = Self::from_document(doc);
+        if let Some((position, None)) = scoped {
+            crate::input_identity::retain_engine(position, &engine);
+        }
+        Ok(engine)
     }
 
     /// Open a PDF from bytes, supplying a password for encrypted PDFs.
@@ -1264,6 +1498,28 @@ impl ContentEngine {
 
     pub fn document(&self) -> &PdfDocument {
         &self.doc
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_document_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.doc, &other.doc)
+    }
+
+    /// Snapshot bounded immutable page-artifact retention for observability and
+    /// stage-separated benchmarks. Metrics never alter cache admission.
+    pub fn page_artifact_cache_metrics(&self) -> PageArtifactCacheMetrics {
+        let cache = self
+            .page_artifacts
+            .read()
+            .expect("page artifact cache lock poisoned");
+        PageArtifactCacheMetrics {
+            operation_pages: cache.operations.len(),
+            strict_operation_pages: cache.strict_operations.len(),
+            resource_pages: cache.resources.len(),
+            scoped_text_pages: cache.scoped_text.len(),
+            entries: cache.order.len(),
+            estimated_bytes: cache.total_bytes,
+        }
     }
 
     /// Register caller-owned deterministic replacement font bytes for rendering.
@@ -2085,14 +2341,27 @@ impl ContentEngine {
     }
 
     pub fn get_page_content(&self, page_number: usize) -> Result<Vec<ContentOperation>> {
+        if let Some(operations) = self
+            .page_artifacts
+            .read()
+            .expect("page artifact cache lock poisoned")
+            .operations(page_number)
+        {
+            return Ok(operations);
+        }
         let limits = DecodeLimits::default();
-        self.get_page_content_with_limits_inner(
+        let operations = self.get_page_content_with_limits_inner(
             page_number,
             &limits,
             &CancelToken::none(),
             false,
             false,
-        )
+        )?;
+        self.page_artifacts
+            .write()
+            .expect("page artifact cache lock poisoned")
+            .insert_operations(page_number, operations.clone());
+        Ok(operations)
     }
 
     pub(crate) fn get_page_content_with_decode_limits(
@@ -2101,6 +2370,26 @@ impl ContentEngine {
         limits: &DecodeLimits,
         cancel: &CancelToken,
     ) -> Result<Vec<ContentOperation>> {
+        // Preserve the established cancellation-stage contract even when the
+        // immutable page program can be served from RAPTOR's cache.
+        cancel.check("content stream decode")?;
+        if limits == &DecodeLimits::default() {
+            if let Some(operations) = self
+                .page_artifacts
+                .read()
+                .expect("page artifact cache lock poisoned")
+                .operations(page_number)
+            {
+                return Ok(operations);
+            }
+            let operations =
+                self.get_page_content_with_limits_inner(page_number, limits, cancel, true, false)?;
+            self.page_artifacts
+                .write()
+                .expect("page artifact cache lock poisoned")
+                .insert_operations(page_number, operations.clone());
+            return Ok(operations);
+        }
         self.get_page_content_with_limits_inner(page_number, limits, cancel, true, false)
     }
 
@@ -2197,8 +2486,21 @@ impl ContentEngine {
 
     pub fn get_page_resources(&self, page_number: usize) -> Result<PageResources> {
         self.validate_page(page_number)?;
+        if let Some(resources) = self
+            .page_artifacts
+            .read()
+            .expect("page artifact cache lock poisoned")
+            .resources(page_number)
+        {
+            return Ok(resources);
+        }
         let page = self.doc.get_page(page_number)?;
-        Ok(PageResources::from_dict(&page.resources, self.doc.reader()))
+        let resources = PageResources::from_dict(&page.resources, self.doc.reader());
+        self.page_artifacts
+            .write()
+            .expect("page artifact cache lock poisoned")
+            .insert_resources(page_number, resources.clone());
+        Ok(resources)
     }
 
     pub fn get_page(&self, page_number: usize) -> Result<PdfPage> {
@@ -2288,11 +2590,26 @@ impl ContentEngine {
         &self,
         page_number: usize,
     ) -> Result<Vec<crate::text::ScopedTextChunk>> {
-        self.collect_page_scoped_text_chunks_with_limits(
+        let cancel = crate::cancel::current_cancel_token();
+        cancel.check("page text cache lookup")?;
+        if let Some(chunks) = self
+            .page_artifacts
+            .read()
+            .expect("page artifact cache lock poisoned")
+            .scoped_text(page_number)
+        {
+            return Ok(chunks);
+        }
+        let chunks = self.collect_page_scoped_text_chunks_with_limits(
             page_number,
             &crate::text::TextTraversalLimits::default(),
-            &crate::cancel::current_cancel_token(),
-        )
+            &cancel,
+        )?;
+        self.page_artifacts
+            .write()
+            .expect("page artifact cache lock poisoned")
+            .insert_scoped_text(page_number, chunks.clone());
+        Ok(chunks)
     }
 
     pub fn collect_page_scoped_text_chunks_with_limits(
@@ -2302,13 +2619,41 @@ impl ContentEngine {
         cancel: &CancelToken,
     ) -> Result<Vec<crate::text::ScopedTextChunk>> {
         cancel.check("page text extraction")?;
-        let ops = self.get_page_content_with_limits_inner(
-            page_number,
-            &limits.decode,
-            cancel,
-            true,
-            true,
-        )?;
+        let ops = if limits.decode == DecodeLimits::default() {
+            // Keep the read guard in its own scope. An `if let` scrutinee
+            // temporary can otherwise live through the `else` arm, where a
+            // cache miss needs the write lock and would self-deadlock.
+            let cached_operations = {
+                self.page_artifacts
+                    .read()
+                    .expect("page artifact cache lock poisoned")
+                    .strict_operations(page_number)
+            };
+            if let Some(operations) = cached_operations {
+                operations
+            } else {
+                let operations = self.get_page_content_with_limits_inner(
+                    page_number,
+                    &limits.decode,
+                    cancel,
+                    true,
+                    true,
+                )?;
+                self.page_artifacts
+                    .write()
+                    .expect("page artifact cache lock poisoned")
+                    .insert_strict_operations(page_number, operations.clone());
+                operations
+            }
+        } else {
+            self.get_page_content_with_limits_inner(
+                page_number,
+                &limits.decode,
+                cancel,
+                true,
+                true,
+            )?
+        };
         let resources = self.get_page_resources(page_number)?;
         let mut collector = crate::text::TextCollector::new(resources, self.doc.reader());
         collector.collect_scoped(&ops, limits, cancel)
@@ -3603,6 +3948,33 @@ impl ContentEngine {
         ImageEncoder::encode_png_fast(&buf.to_raw_image())
     }
 
+    /// Render and encode a page while retaining document-scoped parse, font,
+    /// glyph, image, display-list and raster artifacts for subsequent calls.
+    /// The output is identical to [`render_page_png_fast`](Self::render_page_png_fast);
+    /// only immutable intermediate work is reused.
+    pub fn render_page_png_fast_with_cache(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<Vec<u8>> {
+        let buf = match self.render_page_cancellable_with_mode_and_cache(
+            page_number,
+            dpi,
+            &CancelToken::none(),
+            RenderMode::Compat,
+            cache,
+        ) {
+            Ok(buffer) => buffer,
+            // Retained replay is an optimization, not a narrower replacement
+            // for the established immediate renderer. Preserve the simple API's
+            // compatibility on valid pages outside the retained subset.
+            Err(WellfriendError::UnsupportedFeature(_)) => self.render_page(page_number, dpi)?,
+            Err(error) => return Err(error),
+        };
+        ImageEncoder::encode_png_fast(&buf.to_raw_image())
+    }
+
     /// Render a page to fast PNG bytes and return the bounded font-substitution
     /// report collected during the same render pass.
     pub fn render_page_png_fast_with_font_substitution_report(
@@ -3613,6 +3985,36 @@ impl ContentEngine {
     ) -> Result<(Vec<u8>, FontSubstitutionLog)> {
         let (buf, log) =
             self.render_page_with_font_substitution_report(page_number, dpi, render_mode)?;
+        Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
+    }
+
+    /// Cached counterpart of
+    /// [`render_page_png_fast_with_font_substitution_report`](Self::render_page_png_fast_with_font_substitution_report).
+    pub fn render_page_png_fast_with_font_substitution_report_and_cache(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(Vec<u8>, FontSubstitutionLog)> {
+        let buf = match self.render_page_cancellable_with_mode_and_cache(
+            page_number,
+            dpi,
+            &CancelToken::none(),
+            render_mode,
+            cache,
+        ) {
+            Ok(buffer) => buffer,
+            Err(WellfriendError::UnsupportedFeature(_)) => {
+                return self.render_page_png_fast_with_font_substitution_report(
+                    page_number,
+                    dpi,
+                    render_mode,
+                );
+            }
+            Err(error) => return Err(error),
+        };
+        let log = cache.take_font_substitution_log();
         Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
     }
 
@@ -4003,6 +4405,25 @@ mod tests {
         let media = [0.0, 0.0, 612.0, 792.0];
 
         assert_eq!(intersect_boxes(media, media), Some(media));
+    }
+
+    #[test]
+    fn cold_scoped_text_cache_miss_drops_read_guard_before_insert() {
+        let pdf = minimal_pdf_from_objects(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R >>".to_vec(),
+            b"<< /Length 0 >>\nstream\n\nendstream".to_vec(),
+        ]);
+        let engine = ContentEngine::open_bytes(pdf).expect("open empty text page");
+
+        assert!(engine
+            .collect_page_scoped_text_chunks(1)
+            .expect("cold scoped text extraction")
+            .is_empty());
+        let metrics = engine.page_artifact_cache_metrics();
+        assert_eq!(metrics.strict_operation_pages, 1);
+        assert_eq!(metrics.scoped_text_pages, 1);
     }
 
     #[test]

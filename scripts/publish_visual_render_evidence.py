@@ -28,16 +28,27 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 ENGINES = ("wellfriendpdf", "pdfium", "mupdf", "poppler")
 REFERENCES = ("pdfium", "mupdf", "poppler")
+PAIRWISE_ENGINES = (
+    ("wellfriendpdf", "pdfium"),
+    ("wellfriendpdf", "mupdf"),
+    ("wellfriendpdf", "poppler"),
+    ("pdfium", "mupdf"),
+    ("pdfium", "poppler"),
+    ("mupdf", "poppler"),
+)
 ENGINE_LABELS = {
     "wellfriendpdf": "Wellfriend PDF",
     "pdfium": "PDFium",
     "mupdf": "MuPDF",
     "poppler": "Poppler",
 }
-PANEL_WIDTH = 360
-PANEL_HEIGHT = 540
-PANEL_GAP = 12
-TITLE_HEIGHT = 38
+# Individual sheets are evidence, not thumbnails.  A 600-pixel-wide page panel
+# keeps ordinary document text recognizable when the WebP is opened or zoomed;
+# the separate contact sheets remain compact corpus overviews.
+PANEL_WIDTH = 600
+PANEL_HEIGHT = 840
+PANEL_GAP = 16
+TITLE_HEIGHT = 50
 
 
 def utc_now() -> str:
@@ -185,21 +196,40 @@ def diff_metric(base: Image.Image, reference: Image.Image) -> dict[str, Any]:
             "reference_size": list(reference.size),
         }
     with ImageChops.difference(base, reference) as difference:
-        pixels = difference.getdata()
         total = base.width * base.height
-        changed = 0
-        max_delta = 0
-        absolute_sum = 0
-        for pixel in pixels:
-            local_max = max(pixel)
-            if local_max > 8:
-                changed += 1
-            max_delta = max(max_delta, local_max)
-            absolute_sum += sum(pixel)
+        channels = difference.split()
+        try:
+            channel_histograms = [channel.histogram() for channel in channels]
+            absolute_sum = sum(
+                delta * count
+                for histogram in channel_histograms
+                for delta, count in enumerate(histogram)
+            )
+            squared_sum = sum(
+                delta * delta * count
+                for histogram in channel_histograms
+                for delta, count in enumerate(histogram)
+            )
+            with ImageChops.lighter(channels[0], channels[1]) as red_green_max:
+                with ImageChops.lighter(red_green_max, channels[2]) as per_pixel_max:
+                    maximum_histogram = per_pixel_max.histogram()
+            changed = sum(maximum_histogram[9:])
+            max_delta = next(
+                (delta for delta in range(255, -1, -1) if maximum_histogram[delta]),
+                0,
+            )
+        finally:
+            for channel in channels:
+                channel.close()
+    mean_squared_delta = squared_sum / (total * 3.0)
+    rmse = math.sqrt(mean_squared_delta)
     return {
         "same_size": True,
         "changed_pixel_threshold8_percentage": round(changed * 100.0 / total, 6),
         "mean_absolute_channel_delta": round(absolute_sum / (total * 3.0), 6),
+        "mean_squared_channel_delta": round(mean_squared_delta, 6),
+        "root_mean_squared_channel_delta": round(rmse, 6),
+        "psnr_db": None if mean_squared_delta == 0.0 else round(10.0 * math.log10((255.0**2) / mean_squared_delta), 6),
         "max_channel_delta": max_delta,
     }
 
@@ -211,7 +241,7 @@ def fit_panel(image: Image.Image, label: str) -> Image.Image:
     left = (PANEL_WIDTH - copy.width) // 2
     top = TITLE_HEIGHT + (PANEL_HEIGHT - TITLE_HEIGHT - copy.height) // 2
     canvas.paste(copy, (left, top))
-    ImageDraw.Draw(canvas).text((10, 10), label, fill="black", font=ImageFont.load_default())
+    ImageDraw.Draw(canvas).text((12, 14), label, fill="black", font=ImageFont.load_default())
     copy.close()
     return canvas
 
@@ -255,7 +285,7 @@ def comparison_sheet(
         sheet.paste(panel, (x, y))
         panel.close()
     output.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(output, format="WEBP", quality=82, method=6)
+    sheet.save(output, format="WEBP", quality=88, method=6)
     sheet.close()
 
 
@@ -276,21 +306,39 @@ def compare_one(task: dict[str, Any]) -> dict[str, Any]:
         images: dict[str, Image.Image] = {}
         commands: dict[str, dict[str, Any]] = {}
         try:
-            images["wellfriendpdf"], commands["wellfriendpdf"] = render_wellfriendpdf(
-                Path(task["wellfriend_bin"]), pdf, int(task["dpi"]), work, int(task["timeout"])
-            )
-            for reference in ("pdfium", "mupdf"):
-                images[reference], commands[reference] = render_helper(
-                    Path(task["helper"]), reference, pdf, int(task["dpi"]), work, int(task["timeout"])
-                )
-            images["poppler"], commands["poppler"] = render_poppler(
-                pdf, int(task["dpi"]), work, int(task["timeout"])
-            )
+            rotation = (index - 1) % len(ENGINES)
+            execution_order = ENGINES[rotation:] + ENGINES[:rotation]
+            for engine in execution_order:
+                if engine == "wellfriendpdf":
+                    images[engine], commands[engine] = render_wellfriendpdf(
+                        Path(task["wellfriend_bin"]),
+                        pdf,
+                        int(task["dpi"]),
+                        work,
+                        int(task["timeout"]),
+                    )
+                elif engine == "poppler":
+                    images[engine], commands[engine] = render_poppler(
+                        pdf, int(task["dpi"]), work, int(task["timeout"])
+                    )
+                else:
+                    images[engine], commands[engine] = render_helper(
+                        Path(task["helper"]),
+                        engine,
+                        pdf,
+                        int(task["dpi"]),
+                        work,
+                        int(task["timeout"]),
+                    )
             raster_identity = {}
             for engine, image in images.items():
                 raster_identity[engine] = normalized_png(image, work / f"{engine}-normalized.png")
+            pairwise_metrics = {
+                f"{left}_vs_{right}": diff_metric(images[left], images[right])
+                for left, right in PAIRWISE_ENGINES
+            }
             metrics = {
-                reference: diff_metric(images["wellfriendpdf"], images[reference])
+                reference: pairwise_metrics[f"wellfriendpdf_vs_{reference}"]
                 for reference in REFERENCES
             }
             durations = {engine: float(commands[engine]["duration_ms"]) for engine in ENGINES}
@@ -305,9 +353,11 @@ def compare_one(task: dict[str, Any]) -> dict[str, Any]:
             )
             record.update(
                 status="pass",
+                render_execution_order=list(execution_order),
                 commands=commands,
                 rasters=raster_identity,
                 comparisons=metrics,
+                pairwise_comparisons=pairwise_metrics,
                 artifact=artifact_name,
                 artifact_sha256=sha256_file(artifact),
                 artifact_bytes=artifact.stat().st_size,
@@ -382,6 +432,7 @@ def collect_edited_inputs(
         for line in editing_results.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    rows = [row for row in rows if "index" in row and "input_sha256" in row]
     rows.sort(key=lambda row: int(row["index"]))
     inputs = []
     for row in rows[:limit]:
@@ -458,6 +509,11 @@ def main() -> int:
         "wall_seconds": round(time.perf_counter() - started, 3),
         "dpi": args.dpi,
         "workers": args.workers,
+        "timing_protocol": {
+            "renderer_order": "deterministic Latin rotation by one-based corpus index",
+            "recommended_workers_for_comparable_timings": 1,
+            "process_scope": "one fresh renderer process per PDF page and tool",
+        },
         "files_attempted": len(final_records),
         "passed": sum(record["status"] == "pass" for record in final_records),
         "failed": sum(record["status"] != "pass" for record in final_records),

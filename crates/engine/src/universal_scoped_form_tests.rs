@@ -41,6 +41,10 @@ fn governed_nested_form_clone_preserves_other_page_and_source_programs() {
     let (output, report) = apply_universal_edit_v2(&input, &plan, Some(&approve(&plan))).unwrap();
     assert_eq!(report.affected_pages, vec![1]);
     assert_eq!(
+        report.operation_report["raptor_prepared_plan"]["cache_hit"],
+        true
+    );
+    assert_eq!(
         report.operation_report["native"]["direct_text_after"],
         "XYZ"
     );

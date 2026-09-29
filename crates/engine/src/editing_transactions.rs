@@ -439,15 +439,15 @@ fn stable_id(kind: &str, values: &[impl AsRef<[u8]>]) -> String {
 }
 
 fn digest_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::input_identity::sha256(bytes)
 }
 
 fn document_id(input: &[u8]) -> String {
-    stable_id("document", &[input])
+    crate::input_identity::document_id(input)
 }
 
 fn revision_id(input: &[u8]) -> String {
-    stable_id("revision", &[input, &input.len().to_le_bytes()])
+    crate::input_identity::revision_id(input)
 }
 
 fn snapshot_id(input: &[u8]) -> String {
@@ -1821,6 +1821,15 @@ pub fn plan_scene_text_transaction(
     input: &[u8],
     request: &SceneTextEditRequest,
 ) -> Result<EditTransactionReport> {
+    crate::input_identity::with_input_identity(input, || {
+        plan_scene_text_transaction_inner(input, request)
+    })
+}
+
+fn plan_scene_text_transaction_inner(
+    input: &[u8],
+    request: &SceneTextEditRequest,
+) -> Result<EditTransactionReport> {
     if request_uses_text_reflow(request.requested_mode) {
         let reflow_request = scene_text_reflow_request(input, request)?;
         let report = crate::text_reflow::preview_reflow(input, &reflow_request)?;
@@ -1972,6 +1981,15 @@ pub fn plan_scene_text_transaction(
 }
 
 pub fn apply_scene_text_transaction(
+    input: &[u8],
+    request: &SceneTextEditRequest,
+) -> Result<(Vec<u8>, EditTransactionReport)> {
+    crate::input_identity::with_input_identity(input, || {
+        apply_scene_text_transaction_inner(input, request)
+    })
+}
+
+fn apply_scene_text_transaction_inner(
     input: &[u8],
     request: &SceneTextEditRequest,
 ) -> Result<(Vec<u8>, EditTransactionReport)> {

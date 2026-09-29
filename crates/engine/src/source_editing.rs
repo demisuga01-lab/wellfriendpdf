@@ -6,16 +6,170 @@
 //! eligibility, refusal, and validation contracts explicit for callers.
 
 use crate::advanced_editing::{
-    analyze_multi_run_text_range, analyze_same_width_patch, apply_same_width_patch,
-    edit_vector_object, list_vector_objects, SameWidthPatchOptions, VectorEditOperation,
-    VectorEditOptions,
+    analyze_multi_run_text_range, analyze_same_width_patch, apply_same_width_patch_with_analysis,
+    edit_vector_object, list_vector_objects, MultiRunRangeModel, SameWidthPatchEligibilityReport,
+    SameWidthPatchOptions, VectorEditOperation, VectorEditOptions,
 };
 use crate::universal_editing::universal_image_occurrences_v2;
 use crate::{Result, WellfriendError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 pub const SOURCE_EDITING_SCHEMA_VERSION: &str = "source_editing.provenance-operator-editing.v1";
+
+const SOURCE_ANALYSIS_CACHE_ENTRIES: usize = 32;
+const SOURCE_ANALYSIS_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SOURCE_ANALYSIS_BYTES: usize = 16 * 1024 * 1024;
+const SOURCE_ANALYSIS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct SourceAnalysisKey {
+    revision_id: String,
+    page: usize,
+    source_text: String,
+    replacement_text: String,
+}
+
+#[derive(Clone)]
+struct SourceAnalysisArtifact {
+    same_width: SameWidthPatchEligibilityReport,
+    multi_run: Option<MultiRunRangeModel>,
+    estimated_bytes: usize,
+    created_at: Instant,
+}
+
+#[derive(Default)]
+struct SourceAnalysisCache {
+    entries: HashMap<SourceAnalysisKey, SourceAnalysisArtifact>,
+    order: VecDeque<SourceAnalysisKey>,
+    total_bytes: usize,
+}
+
+impl SourceAnalysisCache {
+    fn get(&self, key: &SourceAnalysisKey) -> Option<SourceAnalysisArtifact> {
+        self.entries
+            .get(key)
+            .filter(|artifact| artifact.created_at.elapsed() <= SOURCE_ANALYSIS_CACHE_TTL)
+            .cloned()
+    }
+
+    fn insert(&mut self, key: SourceAnalysisKey, mut artifact: SourceAnalysisArtifact) {
+        artifact.estimated_bytes = serde_json::to_vec(&artifact.same_width)
+            .map_or(0, |bytes| bytes.len())
+            .saturating_add(
+                artifact
+                    .multi_run
+                    .as_ref()
+                    .and_then(|model| serde_json::to_vec(model).ok())
+                    .map_or(0, |bytes| bytes.len()),
+            );
+        if artifact.estimated_bytes > MAX_SOURCE_ANALYSIS_BYTES {
+            return;
+        }
+        if let Some(previous) = self.entries.remove(&key) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous.estimated_bytes);
+            self.order.retain(|candidate| candidate != &key);
+        }
+        while self.entries.len() >= SOURCE_ANALYSIS_CACHE_ENTRIES
+            || self.total_bytes.saturating_add(artifact.estimated_bytes)
+                > SOURCE_ANALYSIS_CACHE_BYTES
+        {
+            let Some(victim) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&victim) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.estimated_bytes);
+            }
+        }
+        self.total_bytes = self.total_bytes.saturating_add(artifact.estimated_bytes);
+        self.order.push_back(key.clone());
+        self.entries.insert(key, artifact);
+    }
+}
+
+fn source_analysis_cache() -> &'static RwLock<SourceAnalysisCache> {
+    static CACHE: OnceLock<RwLock<SourceAnalysisCache>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(SourceAnalysisCache::default()))
+}
+
+fn source_analysis(
+    input: &[u8],
+    page: usize,
+    source_text: &str,
+    replacement_text: &str,
+) -> Result<SourceAnalysisArtifact> {
+    let key = SourceAnalysisKey {
+        revision_id: revision_id(input),
+        page,
+        source_text: source_text.to_string(),
+        replacement_text: replacement_text.to_string(),
+    };
+    let cached = {
+        source_analysis_cache()
+            .read()
+            .expect("source analysis cache lock poisoned")
+            .get(&key)
+    };
+    if let Some(artifact) = cached {
+        return Ok(artifact);
+    }
+    let same_width = analyze_same_width_patch(
+        input,
+        page,
+        source_text,
+        replacement_text,
+        &SameWidthPatchOptions::default(),
+    )?;
+    let multi_run = analyze_multi_run_text_range(input, page).ok();
+    let artifact = SourceAnalysisArtifact {
+        same_width,
+        multi_run,
+        estimated_bytes: 0,
+        created_at: Instant::now(),
+    };
+    source_analysis_cache()
+        .write()
+        .expect("source analysis cache lock poisoned")
+        .insert(key, artifact.clone());
+    Ok(artifact)
+}
+
+pub(crate) fn prepared_multi_run_text_range(
+    input: &[u8],
+    page: usize,
+    source_text: &str,
+    replacement_text: &str,
+) -> Result<MultiRunRangeModel> {
+    if let Some(model) = source_analysis(input, page, source_text, replacement_text)?.multi_run {
+        return Ok(model);
+    }
+    // Provenance reports deliberately tolerate an unavailable semantic model,
+    // while callers that require the page-logical range need the exact error.
+    analyze_multi_run_text_range(input, page)
+}
+
+pub(crate) fn prepared_page_text_model(input: &[u8], page: usize) -> Result<MultiRunRangeModel> {
+    let revision = revision_id(input);
+    let cached = {
+        let cache = source_analysis_cache()
+            .read()
+            .expect("source analysis cache lock poisoned");
+        cache
+            .entries
+            .iter()
+            .find(|(key, artifact)| {
+                key.revision_id == revision
+                    && key.page == page
+                    && artifact.created_at.elapsed() <= SOURCE_ANALYSIS_CACHE_TTL
+                    && artifact.multi_run.is_some()
+            })
+            .and_then(|(_, artifact)| artifact.multi_run.clone())
+    };
+    cached.map_or_else(|| analyze_multi_run_text_range(input, page), Ok)
+}
 
 /// The requested editing contract.  Only [`OperatorPreserving`] is executable
 /// in source editing; callers receive an explicit route for later modes.
@@ -152,18 +306,18 @@ fn stable_id(kind: &str, values: &[impl AsRef<[u8]>]) -> String {
 }
 
 fn document_id(input: &[u8]) -> String {
-    stable_id("document", &[input])
+    crate::input_identity::document_id(input)
 }
 
 fn revision_id(input: &[u8]) -> String {
-    stable_id("revision", &[input, &input.len().to_le_bytes()])
+    crate::input_identity::revision_id(input)
 }
 
 fn identity_from_candidate(
-    input: &[u8],
     candidate: &crate::advanced_editing::SameWidthPatchEligibility,
+    revision: &str,
+    reader: &crate::PdfReader,
 ) -> SourceInstructionIdentity {
-    let revision = revision_id(input);
     let object = format!(
         "object-{}-{}-{}",
         candidate.stream_object, candidate.stream_generation, revision
@@ -186,20 +340,14 @@ fn identity_from_candidate(
         instruction_id: instruction,
         stream_identity: stream,
         object_identity: object,
-        revision_id: revision,
+        revision_id: revision.to_string(),
         stream_object: candidate.stream_object,
         stream_generation: candidate.stream_generation,
         opcode: candidate.operator.clone(),
         decoded_byte_range: range,
-        raw_object_range: crate::ContentEngine::open_bytes(input.to_vec())
-            .ok()
-            .and_then(|engine| {
-                engine
-                    .document()
-                    .reader()
-                    .uncompressed_object_range(candidate.stream_object, candidate.stream_generation)
-                    .map(|range| [range.start, range.end])
-            }),
+        raw_object_range: reader
+            .uncompressed_object_range(candidate.stream_object, candidate.stream_generation)
+            .map(|range| [range.start, range.end]),
         tj_element: candidate.tj_element,
         font_resource: candidate.font_resource.clone(),
         marked_content_depth: candidate.marked_content_depth,
@@ -216,14 +364,20 @@ pub fn operator_text_provenance(
     source_text: &str,
     replacement_text: &str,
 ) -> Result<ProvenanceSelectionReport> {
-    let analysis = analyze_same_width_patch(
-        input,
-        page,
-        source_text,
-        replacement_text,
-        &SameWidthPatchOptions::default(),
-    )?;
-    let semantic_source_spans = analyze_multi_run_text_range(input, page)
+    crate::input_identity::with_input_identity(input, || {
+        operator_text_provenance_inner(input, page, source_text, replacement_text)
+    })
+}
+
+fn operator_text_provenance_inner(
+    input: &[u8],
+    page: usize,
+    source_text: &str,
+    replacement_text: &str,
+) -> Result<ProvenanceSelectionReport> {
+    let analysis = source_analysis(input, page, source_text, replacement_text)?;
+    let semantic_source_spans = analysis
+        .multi_run
         .map(|model| {
             model
                 .source_spans
@@ -232,15 +386,20 @@ pub fn operator_text_provenance(
                 .collect()
         })
         .unwrap_or_default();
+    let engine = crate::ContentEngine::open_bytes(input.to_vec())?;
+    let revision = revision_id(input);
     Ok(ProvenanceSelectionReport {
         schema_version: SOURCE_EDITING_SCHEMA_VERSION.to_string(),
         document_id: document_id(input),
         revision_id: revision_id(input),
         page,
         source_instructions: analysis
+            .same_width
             .candidates
             .iter()
-            .map(|candidate| identity_from_candidate(input, candidate))
+            .map(|candidate| {
+                identity_from_candidate(candidate, &revision, engine.document().reader())
+            })
             .collect(),
         semantic_source_spans,
         // Existing display lists are canonical rendering operations, but they
@@ -264,6 +423,15 @@ pub fn operator_text_eligibility(
     input: &[u8],
     request: &OperatorTextEditRequest,
 ) -> Result<OperatorTextEligibilityReport> {
+    crate::input_identity::with_input_identity(input, || {
+        operator_text_eligibility_inner(input, request)
+    })
+}
+
+fn operator_text_eligibility_inner(
+    input: &[u8],
+    request: &OperatorTextEditRequest,
+) -> Result<OperatorTextEligibilityReport> {
     let provenance = operator_text_provenance(
         input,
         request.page,
@@ -271,21 +439,13 @@ pub fn operator_text_eligibility(
         &request.replacement_text,
     )?;
     let selected_identity = requested_source_instruction(&provenance, request)?;
-    let patch_options = SameWidthPatchOptions {
-        signature_policy_override: request.signature_policy_override,
-        target_stream_object: selected_identity.map(|identity| identity.stream_object),
-        target_stream_generation: selected_identity.map(|identity| identity.stream_generation),
-        target_decoded_byte_range: selected_identity.map(|identity| identity.decoded_byte_range),
-        ..SameWidthPatchOptions::default()
-    };
-    let analysis = analyze_same_width_patch(
+    let analysis = source_analysis(
         input,
         request.page,
         &request.source_text,
         &request.replacement_text,
-        &patch_options,
     )?;
-    let selected = analysis.candidates.iter().find(|candidate| {
+    let selected = analysis.same_width.candidates.iter().find(|candidate| {
         candidate.eligible
             && selected_identity.is_none_or(|identity| {
                 candidate.stream_object == identity.stream_object
@@ -296,12 +456,14 @@ pub fn operator_text_eligibility(
     });
     let refusal = selected.is_none().then(|| OperatorEditRefusal {
         code: analysis
+            .same_width
             .candidates
             .first()
             .map(|candidate| refusal_code(candidate))
             .unwrap_or("source_not_resolved")
             .to_string(),
         message: analysis
+            .same_width
             .candidates
             .first()
             .map(|candidate| candidate.exact_reason.clone())
@@ -319,10 +481,10 @@ pub fn operator_text_eligibility(
         revision_id: revision_id(input),
         page: request.page,
         candidates: provenance.source_instructions,
-        signature_impact: serde_json::to_value(analysis.signature_policy)
+        signature_impact: serde_json::to_value(analysis.same_width.signature_policy)
             .unwrap_or(serde_json::Value::Null),
         refusal,
-        exact_limits: analysis.exact_limits,
+        exact_limits: analysis.same_width.exact_limits,
     })
 }
 
@@ -350,6 +512,13 @@ pub fn edit_text_operator(
     input: &[u8],
     request: &OperatorTextEditRequest,
 ) -> Result<(Vec<u8>, OperatorEditOperationReport)> {
+    crate::input_identity::with_input_identity(input, || edit_text_operator_inner(input, request))
+}
+
+fn edit_text_operator_inner(
+    input: &[u8],
+    request: &OperatorTextEditRequest,
+) -> Result<(Vec<u8>, OperatorEditOperationReport)> {
     let eligibility = operator_text_eligibility(input, request)?;
     if let Some(refusal) = eligibility.refusal {
         return Err(WellfriendError::UnsupportedFeature(format!(
@@ -364,7 +533,13 @@ pub fn edit_text_operator(
         &request.replacement_text,
     )?;
     let selected_identity = requested_source_instruction(&provenance, request)?;
-    let (output, applied) = apply_same_width_patch(
+    let analysis = source_analysis(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+    )?;
+    let (output, applied) = apply_same_width_patch_with_analysis(
         input,
         request.page,
         &request.source_text,
@@ -377,6 +552,7 @@ pub fn edit_text_operator(
                 .map(|identity| identity.decoded_byte_range),
             ..SameWidthPatchOptions::default()
         },
+        analysis.same_width,
     )?;
     if !applied.output_reopened || !applied.replacement_extracts || !applied.old_text_absent {
         return Err(WellfriendError::MalformedPdf(
@@ -706,6 +882,33 @@ mod tests {
                 .trim_end(),
             "DEF"
         );
+    }
+
+    #[test]
+    fn immutable_revision_reuses_prepared_source_analysis() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td (ABC) Tj ET\n");
+        crate::input_identity::with_input_identity(&input, || {
+            let first = source_analysis(&input, 1, "ABC", "DEF").expect("first analysis");
+            let second = source_analysis(&input, 1, "ABC", "DEF").expect("cached analysis");
+            assert_eq!(first.created_at, second.created_at);
+            assert_eq!(
+                first.same_width.candidates.len(),
+                second.same_width.candidates.len()
+            );
+        });
+    }
+
+    #[test]
+    fn revision_scope_reuses_the_immutable_parsed_engine() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td (ABC) Tj ET\n");
+        crate::input_identity::with_input_identity(&input, || {
+            let first = crate::ContentEngine::open_bytes(input.clone()).expect("first open");
+            let second = crate::ContentEngine::open_bytes(input.clone()).expect("cached open");
+            assert!(first.shares_document_with(&second));
+        });
+        let outside = crate::ContentEngine::open_bytes(input.clone()).expect("outside open");
+        let another = crate::ContentEngine::open_bytes(input).expect("another outside open");
+        assert!(!outside.shares_document_with(&another));
     }
 
     #[test]

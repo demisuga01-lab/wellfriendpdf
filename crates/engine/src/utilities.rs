@@ -19,7 +19,9 @@ use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
 use crate::signature::SignatureReport;
 use crate::writer::{build_merged, build_subset, write_document_roundtrip};
-use crate::{attachments::Attachment, fonts_report::FontInfo};
+use crate::{
+    attachments::Attachment, fonts_report::FontInfo, CancelToken, RenderDocumentCache, RenderMode,
+};
 
 /// Raster output format for full-page rendering exports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,9 +74,29 @@ pub fn render_page_image(
     format: RasterImageFormat,
     quality: u8,
 ) -> Result<(Vec<u8>, u32, u32)> {
+    let mut cache = RenderDocumentCache::new();
+    render_page_image_with_cache(engine, page, dpi, format, quality, &mut cache)
+}
+
+/// Cached counterpart of [`render_page_image`] for retained document sessions
+/// and multi-page exports. The raster and encoding contract is identical.
+pub fn render_page_image_with_cache(
+    engine: &ContentEngine,
+    page: usize,
+    dpi: u32,
+    format: RasterImageFormat,
+    quality: u8,
+    cache: &mut RenderDocumentCache,
+) -> Result<(Vec<u8>, u32, u32)> {
     let dpi = dpi.max(1);
     let quality = quality.clamp(1, 100);
-    let buffer = engine.render_page(page, dpi)?;
+    let buffer = engine.render_page_cancellable_with_mode_and_cache(
+        page,
+        dpi,
+        &CancelToken::none(),
+        RenderMode::Compat,
+        cache,
+    )?;
     let width = buffer.width;
     let height = buffer.height;
     let bytes = ImageEncoder::encode(
@@ -110,13 +132,14 @@ pub fn export_pdf_pages_to_images(
         .len()
         .max(3);
     let mut results = Vec::with_capacity(selected.len());
+    let mut render_cache = RenderDocumentCache::new();
     for page in selected {
         let path = out_dir.join(format!(
             "{stem}-{page:0width$}.{}",
             format.extension(),
             width = width
         ));
-        match render_page_image(engine, page, dpi, format, quality) {
+        match render_page_image_with_cache(engine, page, dpi, format, quality, &mut render_cache) {
             Ok((bytes, image_width, image_height)) => {
                 fs::write(&path, bytes)?;
                 results.push(RasterPageResult {

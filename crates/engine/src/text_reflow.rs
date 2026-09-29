@@ -23,7 +23,9 @@ use crate::editing_transactions::{
 };
 use crate::filters::{decode_stream_lossless, flate_encode_cancellable, StreamDecodeStatus};
 use crate::render::get_fallback_font;
-use crate::source_editing::{operator_text_provenance, TrueEditingMode};
+use crate::source_editing::{
+    operator_text_provenance, prepared_multi_run_text_range, TrueEditingMode,
+};
 #[cfg(test)]
 use crate::writer::build_merged;
 use crate::writer::{
@@ -794,9 +796,7 @@ fn stable_id(kind: &str, values: &[impl AsRef<[u8]>]) -> String {
 }
 
 fn digest_hex(data: impl AsRef<[u8]>) -> String {
-    let mut digest = Sha256::new();
-    digest.update(data.as_ref());
-    format!("{:x}", digest.finalize())
+    crate::input_identity::sha256(data.as_ref())
 }
 
 fn layout_extraction_equivalent(extracted: &str, expected: &str) -> bool {
@@ -865,7 +865,13 @@ fn unaffected_content_proof(
     let source_occurrences = source_page_before.matches(source_text).count();
     let expected_source_page = source_page_before.replacen(source_text, replacement_text, 1);
     let logical_range_proof = target_logical_scalar_range.and_then(|[start, end]| {
-        let before_model = analyze_multi_run_text_range(input, affected_page).ok()?;
+        let before_model = prepared_multi_run_text_range(
+            input,
+            affected_page,
+            source_text,
+            replacement_text,
+        )
+        .ok()?;
         let after_model = analyze_multi_run_text_range(output, affected_page).ok()?;
         if start > end || end > before_model.logical_text.chars().count() {
             return None;
@@ -924,8 +930,76 @@ fn unaffected_content_proof(
             .collect()
     };
     let mut untouched_pages = Vec::new();
-    let mut untouched_pages_proven = page_count_before == page_count_after;
-    if page_count_before == page_count_after {
+    let incremental_definitions = after
+        .document()
+        .reader()
+        .incremental_definition_ids_since(before.document().reader())
+        .ok();
+    let mut untouched_pages_proven = false;
+    if page_count_before == page_count_after
+        && incremental_definitions.is_some()
+        && expected_link_rects.is_empty()
+    {
+        let before_ids = before
+            .document()
+            .reader()
+            .object_ids()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let affected = before.document().get_page(affected_page).ok();
+        let mut allowed_existing = affected
+            .as_ref()
+            .map(|page| page.contents.iter().copied().collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        if let Some(page) = &affected {
+            allowed_existing.insert((page.object_number, page.generation_number));
+        }
+        let changed_existing = incremental_definitions
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|identity| before_ids.contains(identity))
+            .collect::<BTreeSet<_>>();
+        let unexpected_existing = changed_existing
+            .difference(&allowed_existing)
+            .copied()
+            .collect::<Vec<_>>();
+        let changed_content_streams = changed_existing
+            .intersection(&allowed_existing)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut shared_with_untouched_page = Vec::new();
+        for page_number in 1..=page_count_before {
+            if page_number == affected_page {
+                continue;
+            }
+            if let Ok(page) = before.document().get_page(page_number) {
+                for identity in page
+                    .contents
+                    .iter()
+                    .filter(|identity| changed_content_streams.contains(identity))
+                {
+                    shared_with_untouched_page.push((page_number, *identity));
+                }
+            }
+        }
+        untouched_pages_proven = affected.is_some()
+            && unexpected_existing.is_empty()
+            && shared_with_untouched_page.is_empty();
+        untouched_pages.push(json!({
+            "proof": "append_only_xref_write_set_and_page_content_ownership",
+            "unchanged_pdf_prefix": output.starts_with(input),
+            "page_count_unchanged": true,
+            "physical_incremental_write_set": incremental_definitions,
+            "allowed_existing_definitions": allowed_existing,
+            "unexpected_existing_definitions": unexpected_existing,
+            "changed_content_shared_with_untouched_page": shared_with_untouched_page,
+            "untouched_page_count": page_count_before.saturating_sub(1),
+            "unchanged": untouched_pages_proven,
+        }));
+    } else if page_count_before == page_count_after {
+        untouched_pages_proven = true;
         for page in 1..=page_count_before {
             if page == affected_page {
                 continue;
@@ -1037,66 +1111,92 @@ fn unaffected_content_proof(
         && affected_page_stream_proof["unmodified_existing_streams_match"]
             .as_bool()
             .unwrap_or(false);
-    let annotation_proof = (|| -> Result<Value> {
-        let before_annotations = interactive_report(&before)?.annotations.annotations;
-        let after_annotations = interactive_report(&after)?.annotations.annotations;
-        let expected = expected_link_rects
-            .iter()
-            .copied()
-            .collect::<BTreeMap<usize, [f64; 4]>>();
-        let mut rows = Vec::new();
-        let mut unchanged = before_annotations.len() == after_annotations.len();
-        for before_annotation in &before_annotations {
-            let after_annotation = after_annotations.iter().find(|candidate| {
-                candidate.page == before_annotation.page
-                    && candidate.index == before_annotation.index
-            });
-            let expected_link_rect = (before_annotation.page == affected_page)
-                .then(|| expected.get(&before_annotation.index))
-                .flatten()
-                .copied();
-            let action_same = after_annotation.is_some_and(|candidate| {
-                serde_json::to_value(&candidate.action).ok()
-                    == serde_json::to_value(&before_annotation.action).ok()
-            });
-            let row_unchanged = match (after_annotation, expected_link_rect) {
-                (Some(after_annotation), Some(expected_rect)) => {
-                    before_annotation.subtype == "Link"
-                        && after_annotation.subtype == "Link"
-                        && action_same
-                        && after_annotation
-                            .rect
-                            .is_some_and(|actual| rects_nearly_equal(actual, expected_rect))
-                }
-                (Some(after_annotation), None) => {
-                    serde_json::to_value(after_annotation).ok()
-                        == serde_json::to_value(before_annotation).ok()
-                }
-                (None, _) => false,
-            };
-            unchanged &= row_unchanged;
-            rows.push(json!({
-                "page": before_annotation.page,
-                "index": before_annotation.index,
-                "subtype": before_annotation.subtype,
-                "expected_source_link_move": expected_link_rect.is_some(),
-                "action_or_destination_unchanged": action_same,
-                "unchanged_or_expectedly_moved": row_unchanged,
-            }));
-        }
-        for (index, _) in expected {
-            if !before_annotations
+    let annotation_proof = if expected_link_rects.is_empty() {
+        (|| -> Result<Value> {
+            let before_page = before.document().get_page(affected_page)?;
+            let after_page = after.document().get_page(affected_page)?;
+            let before_object = before
+                .document()
+                .reader()
+                .get_object(before_page.object_number, before_page.generation_number)?;
+            let after_object = after
+                .document()
+                .reader()
+                .get_object(after_page.object_number, after_page.generation_number)?;
+            let before_annots = before_object
+                .as_dict()
+                .and_then(|dictionary| dictionary.get("Annots"));
+            let after_annots = after_object
+                .as_dict()
+                .and_then(|dictionary| dictionary.get("Annots"));
+            Ok(json!({
+                "annotations_outside_flow_unchanged": before_annots == after_annots,
+                "proof": "affected_page_annots_entry_exact_and_incremental_write_set_excludes_other_existing_objects",
+                "rows": [],
+            }))
+        })()
+    } else {
+        (|| -> Result<Value> {
+            let before_annotations = interactive_report(&before)?.annotations.annotations;
+            let after_annotations = interactive_report(&after)?.annotations.annotations;
+            let expected = expected_link_rects
                 .iter()
-                .any(|annotation| annotation.page == affected_page && annotation.index == index)
-            {
-                unchanged = false;
+                .copied()
+                .collect::<BTreeMap<usize, [f64; 4]>>();
+            let mut rows = Vec::new();
+            let mut unchanged = before_annotations.len() == after_annotations.len();
+            for before_annotation in &before_annotations {
+                let after_annotation = after_annotations.iter().find(|candidate| {
+                    candidate.page == before_annotation.page
+                        && candidate.index == before_annotation.index
+                });
+                let expected_link_rect = (before_annotation.page == affected_page)
+                    .then(|| expected.get(&before_annotation.index))
+                    .flatten()
+                    .copied();
+                let action_same = after_annotation.is_some_and(|candidate| {
+                    serde_json::to_value(&candidate.action).ok()
+                        == serde_json::to_value(&before_annotation.action).ok()
+                });
+                let row_unchanged = match (after_annotation, expected_link_rect) {
+                    (Some(after_annotation), Some(expected_rect)) => {
+                        before_annotation.subtype == "Link"
+                            && after_annotation.subtype == "Link"
+                            && action_same
+                            && after_annotation
+                                .rect
+                                .is_some_and(|actual| rects_nearly_equal(actual, expected_rect))
+                    }
+                    (Some(after_annotation), None) => {
+                        serde_json::to_value(after_annotation).ok()
+                            == serde_json::to_value(before_annotation).ok()
+                    }
+                    (None, _) => false,
+                };
+                unchanged &= row_unchanged;
+                rows.push(json!({
+                    "page": before_annotation.page,
+                    "index": before_annotation.index,
+                    "subtype": before_annotation.subtype,
+                    "expected_source_link_move": expected_link_rect.is_some(),
+                    "action_or_destination_unchanged": action_same,
+                    "unchanged_or_expectedly_moved": row_unchanged,
+                }));
             }
-        }
-        Ok(json!({
-            "annotations_outside_flow_unchanged": unchanged,
-            "rows": rows,
-        }))
-    })();
+            for (index, _) in expected {
+                if !before_annotations
+                    .iter()
+                    .any(|annotation| annotation.page == affected_page && annotation.index == index)
+                {
+                    unchanged = false;
+                }
+            }
+            Ok(json!({
+                "annotations_outside_flow_unchanged": unchanged,
+                "rows": rows,
+            }))
+        })()
+    };
     let annotation_proof = annotation_proof.unwrap_or_else(|error| {
         json!({
             "annotations_outside_flow_unchanged": false,
@@ -1335,8 +1435,12 @@ fn paragraph_source_style_runs(input: &[u8], request: &GeometricReflowRequest) -
     if request.source_text.is_empty() {
         return Vec::new();
     }
-    let Ok(model) = crate::advanced_editing::analyze_multi_run_text_range(input, request.page)
-    else {
+    let Ok(model) = prepared_multi_run_text_range(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+    ) else {
         return Vec::new();
     };
     if model.logical_text.matches(&request.source_text).count() != 1 {
@@ -2381,7 +2485,12 @@ pub fn analyze_geometric_region(
         && (request.target_logical_scalar_range.is_some()
             || request.font_policy == "preserve_original_per_run")
     {
-        if let Ok(model) = analyze_multi_run_text_range(input, request.page) {
+        if let Ok(model) = prepared_multi_run_text_range(
+            input,
+            request.page,
+            &request.source_text,
+            &request.replacement_text,
+        ) {
             if let Ok([start, end]) = selected_scalar_range(request, &model) {
                 let selected = model
                     .source_spans
@@ -2864,7 +2973,9 @@ pub fn preview_reflow(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<ReflowTransactionReport> {
-    preview_reflow_internal(input, request, true)
+    crate::input_identity::with_input_identity(input, || {
+        preview_reflow_internal(input, request, true)
+    })
 }
 
 fn preview_reflow_internal(
@@ -3474,6 +3585,7 @@ fn source_reflow_options(
         target_stream_generation: request.target_stream_generation,
         target_decoded_byte_range: request.target_decoded_byte_range,
         paint_order_policy: crate::advanced_editing::GeneratedPaintOrderPolicy::default(),
+        placement_policy: crate::advanced_editing::GeneratedTextPlacementPolicy::default(),
         paint_partitions: Vec::new(),
     })
 }
@@ -3679,7 +3791,12 @@ fn apply_selected_source_segment_with_layout(
     final_lines: &[ExplicitLayoutLine],
 ) -> Result<(Vec<u8>, Value, bool, String)> {
     if request.target_logical_scalar_range.is_some() {
-        let model = analyze_multi_run_text_range(input, request.page)?;
+        let model = prepared_multi_run_text_range(
+            input,
+            request.page,
+            &request.source_text,
+            &request.replacement_text,
+        )?;
         let [logical_start, logical_end] = selected_scalar_range(request, &model)?;
         let multi_request = MultiRunTextRangeRequest {
             page: request.page,
@@ -3742,7 +3859,9 @@ pub fn apply_reflow_region(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<(Vec<u8>, ReflowTransactionReport)> {
-    apply_source_linked_reflow(input, request, TrueEditingMode::GeometricBlock)
+    crate::input_identity::with_input_identity(input, || {
+        apply_source_linked_reflow(input, request, TrueEditingMode::GeometricBlock)
+    })
 }
 
 fn apply_source_linked_reflow(
@@ -3774,9 +3893,40 @@ fn apply_source_linked_reflow(
     let (mutation_input, downstream_link_moves) =
         apply_downstream_link_moves(&vector_mutation_input, request)?;
     let source_region = effective_region_for_report(input, request, report.overflow_status)?;
-    let options = source_reflow_options(request, source_region)?;
+    let mut options = source_reflow_options(request, source_region)?;
     let approved_font = approved_reflow_font(request)?;
     let final_lines = source_output_lines(&report.line_breaking.lines);
+    // A revision-bound local text selection without an approved rectangle is
+    // not permission to relocate paint to the historical fallback page
+    // margins.  A single resolved line can instead use the exact source text
+    // matrix; anything requiring multiple lines must obtain an explicit region
+    // or a linked-flow decision before mutation.
+    if request.target_logical_scalar_range.is_some()
+        && request.region.is_none()
+        && required_mode == TrueEditingMode::GeometricBlock
+    {
+        let exact_local_line = final_lines.len() == 1
+            && !final_lines[0].inserted_visual_hyphen
+            && !request
+                .replacement_text
+                .chars()
+                .any(crate::fonts::hard_break::is_hard_break)
+            && request.allowed_expansion_region.is_none()
+            && request.next_region.is_none()
+            && request.next_column.is_none()
+            && !request.allow_page_creation
+            && request.downstream_vector_moves.is_empty()
+            && request.downstream_link_moves.is_empty()
+            && request.layout_constraints.is_empty();
+        if !exact_local_line {
+            return Err(WellfriendError::UnsupportedFeature(
+                "text_reflow region_not_resolved: a local exact-source replacement that needs reflow requires an explicit region or linked-flow approval"
+                    .to_string(),
+            ));
+        }
+        options.placement_policy =
+            crate::advanced_editing::GeneratedTextPlacementPolicy::SourceAnchoredInline;
+    }
     let (
         output,
         removed_old_reachable_content,
@@ -3788,7 +3938,12 @@ fn apply_source_linked_reflow(
     ) = if request.font_policy == "preserve_original_per_run"
         || request.target_logical_scalar_range.is_some()
     {
-        let model = analyze_multi_run_text_range(&mutation_input, request.page)?;
+        let model = prepared_multi_run_text_range(
+            &mutation_input,
+            request.page,
+            &request.source_text,
+            &request.replacement_text,
+        )?;
         let [logical_start, logical_end] = selected_scalar_range(request, &model)?;
         let preserve_per_segment = request.font_policy == "preserve_original_per_run";
         let multi_request = MultiRunTextRangeRequest {
@@ -4628,7 +4783,12 @@ fn apply_single_paragraph_page_creation(
                 .to_string(),
         ));
     }
-    let source_range_model = analyze_multi_run_text_range(input, request.page)?;
+    let source_range_model = prepared_multi_run_text_range(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+    )?;
     let source_scalar_range = selected_scalar_range(request, &source_range_model)?;
     let expected_combined_extraction = replace_logical_scalar_range(
         &source_range_model.logical_text,
@@ -4903,6 +5063,15 @@ fn apply_single_paragraph_page_creation(
 }
 
 pub fn apply_reflow_document(
+    input: &[u8],
+    request: &GeometricReflowRequest,
+) -> Result<(Vec<u8>, ReflowTransactionReport)> {
+    crate::input_identity::with_input_identity(input, || {
+        apply_reflow_document_inner(input, request)
+    })
+}
+
+fn apply_reflow_document_inner(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<(Vec<u8>, ReflowTransactionReport)> {
@@ -7851,6 +8020,10 @@ mod tests {
                 ["unmodified_existing_streams_match"],
             true
         );
+        assert_eq!(
+            report.validation_evidence["unaffected_content_proof"]["untouched_pages"][0]["proof"],
+            "append_only_xref_write_set_and_page_content_ownership"
+        );
         assert!(report.fonts_resources_changed[0].starts_with("generated_type0_font_resource:"));
     }
 
@@ -7907,6 +8080,23 @@ mod tests {
             report.validation_evidence["unaffected_content_proof"]["status"],
             "pass_with_documented_layout_whitespace_policy"
         );
+    }
+
+    #[test]
+    fn exact_local_range_without_region_refuses_implicit_multiline_relocation() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td [(HEL) 0 (LO,)] TJ ET\n");
+        let model = analyze_multi_run_text_range(&input, 1).expect("multi-run model");
+        let byte_start = model.logical_text.find("HELLO").expect("source text");
+        let byte_end = byte_start + "HELLO".len();
+        let mut req = request("HELLO", "ONE\nTWO");
+        req.region = None;
+        req.target_logical_scalar_range = Some([
+            model.logical_text[..byte_start].chars().count(),
+            model.logical_text[..byte_end].chars().count(),
+        ]);
+
+        let error = apply_reflow_region(&input, &req).expect_err("missing approved region");
+        assert!(error.to_string().contains("region_not_resolved"));
     }
 
     #[test]
@@ -8943,6 +9133,10 @@ mod tests {
         assert_eq!(
             report.validation_evidence["unaffected_content_proof"]["status"],
             "pass_with_documented_layout_whitespace_policy"
+        );
+        assert_eq!(
+            report.validation_evidence["source_rewrite"]["detail"]["operation"],
+            "replace_shaped_at_exact_source_position"
         );
     }
 

@@ -6,6 +6,7 @@ use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::crypto::{
@@ -32,6 +33,9 @@ const MAX_XREF_ENTRIES: usize = MAX_FALLBACK_XREF_OBJECTS;
 const MAX_OBJECT_STREAM_OBJECTS: usize = 200_000;
 const MAX_OBJECT_STREAM_DECODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CACHED_OBJECT_STREAM_OBJECTS: usize = 200_000;
+const DEFAULT_OBJECT_CACHE_ENTRIES: usize = 4096;
+const DEFAULT_OBJECT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CACHED_OBJECT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum XrefEntry {
@@ -87,6 +91,124 @@ impl EncryptionContext {
 }
 
 type ParsedObjectStream = HashMap<u32, (u32, PdfObject)>;
+
+struct CachedObject {
+    object: PdfObject,
+    estimated_bytes: usize,
+}
+
+/// Revision-local cache for ordinary indirect objects.
+///
+/// PDF cross-reference tables are designed for random access, but callers often
+/// revisit the catalog, page tree, resources, fonts, and shared XObjects many
+/// times during parse/edit/render. Reparsing those immutable source ranges on
+/// every lookup is unnecessary work. This bounded FIFO cache deliberately does
+/// not mutate recency on a read, so the hot path only needs a shared lock.
+struct BoundedObjectCache {
+    objects: HashMap<(u32, u16), CachedObject>,
+    order: VecDeque<(u32, u16)>,
+    max_entries: usize,
+    max_bytes: usize,
+    total_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct PdfObjectCacheMetrics {
+    pub hits: u64,
+    pub misses: u64,
+    pub entries: usize,
+    pub estimated_bytes: usize,
+}
+
+impl BoundedObjectCache {
+    fn new(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            objects: HashMap::new(),
+            order: VecDeque::new(),
+            max_entries: max_entries.max(1),
+            max_bytes: max_bytes.max(1),
+            total_bytes: 0,
+        }
+    }
+
+    fn get(&self, id: &(u32, u16)) -> Option<&PdfObject> {
+        self.objects.get(id).map(|entry| &entry.object)
+    }
+
+    fn insert(&mut self, id: (u32, u16), object: PdfObject) {
+        let estimated_bytes = estimate_object_heap_bytes(&object, MAX_CACHED_OBJECT_BYTES);
+        if estimated_bytes > MAX_CACHED_OBJECT_BYTES || estimated_bytes > self.max_bytes {
+            return;
+        }
+        if let Some(previous) = self.objects.remove(&id) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous.estimated_bytes);
+            self.order.retain(|cached| *cached != id);
+        }
+        while self.objects.len() >= self.max_entries
+            || self.total_bytes.saturating_add(estimated_bytes) > self.max_bytes
+        {
+            let Some(victim) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.objects.remove(&victim) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.estimated_bytes);
+            }
+        }
+        self.order.push_back(id);
+        self.total_bytes = self.total_bytes.saturating_add(estimated_bytes);
+        self.objects.insert(
+            id,
+            CachedObject {
+                object,
+                estimated_bytes,
+            },
+        );
+    }
+}
+
+fn estimate_object_heap_bytes(object: &PdfObject, stop_after: usize) -> usize {
+    let mut bytes = std::mem::size_of::<PdfObject>();
+    let mut pending = vec![object];
+    while let Some(value) = pending.pop() {
+        bytes = bytes.saturating_add(match value {
+            PdfObject::Boolean(_)
+            | PdfObject::Integer(_)
+            | PdfObject::Real(_)
+            | PdfObject::Null
+            | PdfObject::Reference { .. } => 0,
+            PdfObject::String(value) => value.capacity(),
+            PdfObject::Name(value) => value.capacity(),
+            PdfObject::Array(values) => {
+                pending.extend(values.iter());
+                values
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<PdfObject>())
+            }
+            PdfObject::Dictionary(dict) => {
+                for (key, value) in dict.entries() {
+                    bytes = bytes.saturating_add(key.capacity());
+                    pending.push(value);
+                }
+                dict.len().saturating_mul(
+                    std::mem::size_of::<String>() + std::mem::size_of::<PdfObject>(),
+                )
+            }
+            PdfObject::Stream { dict, raw } => {
+                for (key, value) in dict.entries() {
+                    bytes = bytes.saturating_add(key.capacity());
+                    pending.push(value);
+                }
+                raw.capacity().saturating_add(dict.len().saturating_mul(
+                    std::mem::size_of::<String>() + std::mem::size_of::<PdfObject>(),
+                ))
+            }
+        });
+        if bytes > stop_after {
+            break;
+        }
+    }
+    bytes
+}
 
 struct BoundedObjectStreamCache {
     streams: HashMap<u32, ParsedObjectStream>,
@@ -331,12 +453,19 @@ pub struct PdfReader {
     /// thread. Reads dominate; the lock is only taken for writing the first time
     /// a given object stream is decoded.
     object_stream_cache: RwLock<BoundedObjectStreamCache>,
+    /// Parsed/decrypted ordinary objects for this immutable source revision.
+    /// Large streams are skipped and both entry count and heap estimate are
+    /// bounded, preventing cache growth from tracking hostile document size.
+    object_cache: RwLock<BoundedObjectCache>,
+    object_cache_hits: AtomicU64,
+    object_cache_misses: AtomicU64,
     /// Prepared functions are scoped to this reader's immutable object/revision
     /// namespace. No document-byte hashing or process-global object IDs.
     pub(crate) function_cache: Arc<Mutex<crate::render::function::FunctionCache>>,
     encryption: Option<EncryptionContext>,
     startxref: usize,
-    diagnostics: Vec<ParserDiagnostic>,
+    repair_diagnostics: Vec<ParserDiagnostic>,
+    diagnostics: OnceLock<Vec<ParserDiagnostic>>,
 }
 
 impl PdfReader {
@@ -355,7 +484,7 @@ impl PdfReader {
             Err(primary) if metadata_len <= STREAMING_FULL_READ_FALLBACK_LIMIT => {
                 match Self::from_bytes_with_password(fs::read(path)?, password) {
                     Ok(mut reader) => {
-                        reader.diagnostics.push(
+                        reader.repair_diagnostics.push(
                             ParserDiagnostic::new(
                                 ParserSeverity::RecoverableError,
                                 ParserCategory::Source,
@@ -389,7 +518,7 @@ impl PdfReader {
 
     /// Strict parser-mode variant of [`Self::from_bytes_with_password`].
     pub fn from_bytes_strict_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
-        let diagnostics = crate::parser_report::diagnose_pdf_bytes(&data);
+        let repair_diagnostics = Vec::new();
         let version = parse_header_version(&data)?;
         let mut xref = HashMap::new();
         let mut trailer = None;
@@ -412,10 +541,17 @@ impl PdfReader {
             object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
                 DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
             )),
+            object_cache: RwLock::new(BoundedObjectCache::new(
+                DEFAULT_OBJECT_CACHE_ENTRIES,
+                DEFAULT_OBJECT_CACHE_BYTES,
+            )),
+            object_cache_hits: AtomicU64::new(0),
+            object_cache_misses: AtomicU64::new(0),
             function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             encryption,
             startxref,
-            diagnostics,
+            repair_diagnostics,
+            diagnostics: OnceLock::new(),
         })
     }
 
@@ -427,7 +563,7 @@ impl PdfReader {
     /// (the most common case in the wild — permission-only encryption). If no
     /// password verifies, [`WellfriendError::EncryptedPdf`] is returned.
     pub fn from_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
-        let mut diagnostics = crate::parser_report::diagnose_pdf_bytes(&data);
+        let mut repair_diagnostics = Vec::new();
         let version = parse_header_version(&data)?;
         let mut xref = HashMap::new();
         let mut trailer = None;
@@ -443,7 +579,7 @@ impl PdfReader {
                     if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
                         return Err(primary);
                     }
-                    diagnostics.push(
+                    repair_diagnostics.push(
                         ParserDiagnostic::new(
                             ParserSeverity::RecoverableError,
                             ParserCategory::Repair,
@@ -461,7 +597,7 @@ impl PdfReader {
                 if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
                     return Err(primary);
                 }
-                diagnostics.push(
+                repair_diagnostics.push(
                     ParserDiagnostic::new(
                         ParserSeverity::RecoverableError,
                         ParserCategory::Repair,
@@ -476,7 +612,7 @@ impl PdfReader {
         };
         let repaired_offsets = repair_uncompressed_xref_offsets(&data, &mut xref);
         if repaired_offsets > 0 {
-            diagnostics.push(
+            repair_diagnostics.push(
                 ParserDiagnostic::new(
                     ParserSeverity::RecoverableError,
                     ParserCategory::Repair,
@@ -507,10 +643,17 @@ impl PdfReader {
             object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
                 DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
             )),
+            object_cache: RwLock::new(BoundedObjectCache::new(
+                DEFAULT_OBJECT_CACHE_ENTRIES,
+                DEFAULT_OBJECT_CACHE_BYTES,
+            )),
+            object_cache_hits: AtomicU64::new(0),
+            object_cache_misses: AtomicU64::new(0),
             function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             encryption,
             startxref,
-            diagnostics,
+            repair_diagnostics,
+            diagnostics: OnceLock::new(),
         })
     }
 
@@ -521,7 +664,7 @@ impl PdfReader {
         data: Vec<u8>,
         provider: &PubSecKeyProvider,
     ) -> Result<Self> {
-        let mut diagnostics = crate::parser_report::diagnose_pdf_bytes(&data);
+        let mut repair_diagnostics = Vec::new();
         let version = parse_header_version(&data)?;
         let mut xref = HashMap::new();
         let mut trailer = None;
@@ -537,7 +680,7 @@ impl PdfReader {
                     if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
                         return Err(primary);
                     }
-                    diagnostics.push(
+                    repair_diagnostics.push(
                         ParserDiagnostic::new(
                             ParserSeverity::RecoverableError,
                             ParserCategory::Repair,
@@ -555,7 +698,7 @@ impl PdfReader {
                 if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
                     return Err(primary);
                 }
-                diagnostics.push(
+                repair_diagnostics.push(
                     ParserDiagnostic::new(
                         ParserSeverity::RecoverableError,
                         ParserCategory::Repair,
@@ -570,7 +713,7 @@ impl PdfReader {
         };
         let repaired_offsets = repair_uncompressed_xref_offsets(&data, &mut xref);
         if repaired_offsets > 0 {
-            diagnostics.push(
+            repair_diagnostics.push(
                 ParserDiagnostic::new(
                     ParserSeverity::RecoverableError,
                     ParserCategory::Repair,
@@ -601,15 +744,22 @@ impl PdfReader {
             object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
                 DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
             )),
+            object_cache: RwLock::new(BoundedObjectCache::new(
+                DEFAULT_OBJECT_CACHE_ENTRIES,
+                DEFAULT_OBJECT_CACHE_BYTES,
+            )),
+            object_cache_hits: AtomicU64::new(0),
+            object_cache_misses: AtomicU64::new(0),
             function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             encryption,
             startxref,
-            diagnostics,
+            repair_diagnostics,
+            diagnostics: OnceLock::new(),
         })
     }
 
     fn from_seekable_source_with_password(source: PdfSource, password: &[u8]) -> Result<Self> {
-        let diagnostics = Vec::new();
+        let repair_diagnostics = Vec::new();
         let prefix = source.read_prefix(1024)?;
         let version = parse_header_version(&prefix)?;
         let tail = source.read_tail(STREAMING_TAIL_READ_LIMIT)?;
@@ -633,10 +783,17 @@ impl PdfReader {
             object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
                 DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
             )),
+            object_cache: RwLock::new(BoundedObjectCache::new(
+                DEFAULT_OBJECT_CACHE_ENTRIES,
+                DEFAULT_OBJECT_CACHE_BYTES,
+            )),
+            object_cache_hits: AtomicU64::new(0),
+            object_cache_misses: AtomicU64::new(0),
             function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             encryption,
             startxref,
-            diagnostics,
+            repair_diagnostics,
+            diagnostics: OnceLock::new(),
         })
     }
 
@@ -670,6 +827,21 @@ impl PdfReader {
             .unwrap_or_default()
     }
 
+    /// Snapshot of revision-local ordinary-object reuse. Counters are relaxed
+    /// telemetry only and never participate in parsing decisions.
+    pub fn object_cache_metrics(&self) -> PdfObjectCacheMetrics {
+        let cache = self
+            .object_cache
+            .read()
+            .expect("object cache lock poisoned");
+        PdfObjectCacheMetrics {
+            hits: self.object_cache_hits.load(Ordering::Relaxed),
+            misses: self.object_cache_misses.load(Ordering::Relaxed),
+            entries: cache.objects.len(),
+            estimated_bytes: cache.total_bytes,
+        }
+    }
+
     /// Configure this reader's standalone function cache without changing any
     /// caller-owned render cache. Zero disables retention, not evaluation.
     pub fn set_function_cache_byte_limit(&self, bytes: usize) -> Result<()> {
@@ -682,7 +854,17 @@ impl PdfReader {
 
     /// Structured diagnostics collected during parser open/repair.
     pub fn parser_diagnostics(&self) -> &[ParserDiagnostic] {
-        &self.diagnostics
+        self.diagnostics
+            .get_or_init(|| {
+                let mut diagnostics = self
+                    .source
+                    .as_bytes()
+                    .map(crate::parser_report::diagnose_pdf_bytes)
+                    .unwrap_or_default();
+                diagnostics.extend(self.repair_diagnostics.iter().cloned());
+                diagnostics
+            })
+            .as_slice()
     }
 
     /// Source/laziness metrics that can be reported without forcing object parsing.
@@ -836,9 +1018,20 @@ impl PdfReader {
     }
 
     pub fn get_object(&self, number: u32, generation: u16) -> Result<PdfObject> {
+        let id = (number, generation);
+        if let Some(object) = self
+            .object_cache
+            .read()
+            .expect("object cache lock poisoned")
+            .get(&id)
+        {
+            self.object_cache_hits.fetch_add(1, Ordering::Relaxed);
+            return Ok(object.clone());
+        }
+        self.object_cache_misses.fetch_add(1, Ordering::Relaxed);
         let entry = self
             .xref
-            .get(&(number, generation))
+            .get(&id)
             .cloned()
             .ok_or(WellfriendError::MissingObject { number, generation })?;
 
@@ -849,7 +1042,12 @@ impl PdfReader {
                 if parsed.number != number || parsed.generation != generation {
                     return Err(WellfriendError::MissingObject { number, generation });
                 }
-                self.decrypt_object(parsed.object, number, generation)
+                let object = self.decrypt_object(parsed.object, number, generation)?;
+                self.object_cache
+                    .write()
+                    .expect("object cache lock poisoned")
+                    .insert(id, object.clone());
+                Ok(object)
             }
             XrefEntry::Compressed { stream_obj, index } => {
                 // Objects stored inside an object stream are decrypted as part
@@ -2554,6 +2752,32 @@ mod tests {
             .as_bytes(),
         );
         pdf
+    }
+
+    #[test]
+    fn ordinary_object_cache_reuses_revision_local_parse() {
+        let reader = PdfReader::from_bytes(tiny_pdf()).unwrap();
+        assert_eq!(reader.object_cache_metrics().entries, 0);
+        let first = reader.get_object(1, 0).unwrap();
+        let after_first = reader.object_cache_metrics();
+        assert_eq!(after_first.misses, 1);
+        assert_eq!(after_first.hits, 0);
+        assert_eq!(after_first.entries, 1);
+        let second = reader.get_object(1, 0).unwrap();
+        let after_second = reader.object_cache_metrics();
+        assert_eq!(first, second);
+        assert_eq!(after_second.misses, 1);
+        assert_eq!(after_second.hits, 1);
+        assert_eq!(after_second.entries, 1);
+    }
+
+    #[test]
+    fn parser_diagnostics_are_lazy_but_preserve_report_contents() {
+        let reader = PdfReader::from_bytes(tiny_pdf()).unwrap();
+        assert!(reader.diagnostics.get().is_none());
+        let first = reader.parser_diagnostics().to_vec();
+        assert!(reader.diagnostics.get().is_some());
+        assert_eq!(reader.parser_diagnostics(), first.as_slice());
     }
 
     fn remove_startxref(mut pdf: Vec<u8>) -> Vec<u8> {

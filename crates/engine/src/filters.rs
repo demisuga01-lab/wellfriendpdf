@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Cursor, Read};
+use std::sync::OnceLock;
 
 use flate2::read::{DeflateDecoder, ZlibDecoder};
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,15 @@ const DEFAULT_MAX_DECOMPRESSION_RATIO: u64 = 10_000;
 const DEFAULT_MAX_IMAGE_PIXELS: u64 = 100_000_000;
 const DEFAULT_CACHE_BUDGET_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_CACHE_MAX_ENTRY_BYTES: usize = 4 * 1024 * 1024;
+
+fn default_decode_workers() -> usize {
+    static WORKERS: OnceLock<usize> = OnceLock::new();
+    *WORKERS.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|workers| workers.get().min(8))
+            .unwrap_or(1)
+    })
+}
 
 /// Stable stream decode status returned by the lossless decode layer.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -108,9 +118,7 @@ impl Default for DecodeLimits {
             max_ccitt_columns: 1_000_000,
             max_ccitt_rows: 1_000_000,
             max_dct_components: 8,
-            max_concurrent_decode_jobs: std::thread::available_parallelism()
-                .map(|workers| workers.get().min(8))
-                .unwrap_or(1),
+            max_concurrent_decode_jobs: default_decode_workers(),
             scheduler_memory_budget_bytes: MAX_FILTER_OUTPUT_BYTES,
             cache_budget_bytes: DEFAULT_CACHE_BUDGET_BYTES,
             cache_max_entry_bytes: DEFAULT_CACHE_MAX_ENTRY_BYTES,
@@ -2762,6 +2770,15 @@ mod tests {
                 .map(|(key, value)| ((*key).to_string(), value.clone()))
                 .collect::<BTreeMap<_, _>>(),
         )
+    }
+
+    #[test]
+    fn default_decode_worker_count_is_stable_and_bounded() {
+        let first = DecodeLimits::default().max_concurrent_decode_jobs;
+        for _ in 0..1024 {
+            assert_eq!(DecodeLimits::default().max_concurrent_decode_jobs, first);
+        }
+        assert!((1..=8).contains(&first));
     }
 
     #[test]

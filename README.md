@@ -11,6 +11,84 @@ canonical implementation is Rust; the CLI, HTTP server, C ABI, Python, WASM,
 
 ## Benchmark Results
 
+### Current RAPTOR qualification — 2026-09-29
+
+The current result is a stage-separated 100-PDF VPS campaign. Tools are
+columns; measurements are rows. Percentiles use nearest rank. Full per-file
+evidence, commands, hashes, timestamps, readable comparison sheets, and the
+methodology are in the
+[RAPTOR qualification report](docs/reports/raptor-vps-20260929/README.md).
+
+#### Parsing
+
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Accepted | 100/100 | 100/100 | 95/100 | Not run | 100/100 |
+| P50 | 20.020 ms | 175.558 ms | 22.057 ms | — | 40.703 ms |
+| P90 | 93.424 ms | 1,193.706 ms | 39.310 ms | — | 49.993 ms |
+| P95 | 158.914 ms | 1,976.645 ms | 49.202 ms | — | 52.476 ms |
+| P99 | 254.819 ms | 7,436.913 ms | 260.429 ms | — | 57.263 ms |
+| Maximum | 315.642 ms | 11,081.225 ms | 260.429 ms | — | 59.346 ms |
+
+These parsing workloads are deliberately labeled and are not semantically
+equivalent: Wellfriend performs structural open/page-tree work, qpdf checks the
+file, MuPDF inventories resources, and Poppler reads metadata. Wellfriend missed
+the requested 15/30/50/75/200 ms structural-parse SLO at every gate.
+
+#### Editing
+
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Attempted | 100 | — | — | — | — |
+| Applicable and verified after reopen | 98/98 | — | — | — | — |
+| Typed non-applicable | 2/100 | — | — | — | — |
+| Apply P50 / P90 | 2,115.375 / 4,387.261 ms | — | — | — | — |
+| Apply P95 / P99 / max | 5,208.620 / 8,207.122 / 8,207.122 ms | — | — | — | — |
+| Verified E2E P50 / P90 | 3,586.492 / 6,796.927 ms | — | — | — | — |
+| Verified E2E P95 / P99 / max | 7,756.644 / 12,481.508 / 12,481.508 ms | — | — | — | — |
+
+Every applicable result changed bytes, reopened, removed the selected source
+occurrence from the reachable revision, and exposed the replacement. The two
+non-applicable files were retained in the denominator. All requested edit
+latency gates failed.
+
+#### Visual rendering time
+
+The table below is the corrected 98-file edited-output campaign at 144 DPI,
+using one fresh process per tool and page.
+
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Matching-dimension output | 98/98 | — | 98/98 | 98/98 | 98/98 |
+| P50 | 432.789 ms | — | 944.190 ms | 705.232 ms | 871.752 ms |
+| P90 | 716.201 ms | — | 1,156.429 ms | 851.732 ms | 1,139.882 ms |
+| P95 | 1,005.492 ms | — | 1,185.603 ms | 867.605 ms | 1,209.075 ms |
+| P99 / maximum | 43,689.996 ms | — | 1,526.179 ms | 1,112.247 ms | 1,759.373 ms |
+
+Wellfriend was at least 10% faster than the fastest reference at P50 and P90,
+but failed at P95, P99, and maximum because `i1040gi.pdf` took 43.690 seconds.
+The overall 10%-faster claim is therefore **failed**, not passed.
+
+#### Visual rendering quality diagnostics
+
+| Edited-output `changed > 8` | Wellfriend vs MuPDF | Wellfriend vs PDFium | Wellfriend vs Poppler |
+|---|---:|---:|---:|
+| P50 | 8.371346% | 9.955664% | 9.158321% |
+| P90 | 11.375035% | 14.046511% | 12.903184% |
+| P95 | 11.794105% | 14.402553% | 13.451663% |
+| P99 / maximum | 15.750179% | 18.501807% | 17.794829% |
+
+`Changed > 8` is a raster-policy diagnostic, not a percentage of objectively
+wrong pixels. The formerly misplaced replacement now stays at its source
+position, and the inspected comparison pages are recognizable in all four
+renderers. This bounded evidence does not establish pixel identity, universal
+editing, or superiority over Adobe.
+
+![Corrected four-renderer edited output](docs/reports/raptor-vps-20260929/visual/edited/075-arxiv-stat-ap-2609-28419v1-fa39e6badcda-pdf.webp)
+
+<details>
+<summary>Historical 2026-09-28 campaign and pre-RAPTOR evidence</summary>
+
 The 2026-09-28 qualification used implementation commit [`e2a83fc`](https://github.com/demisuga01-lab/wellfriendpdf/commit/e2a83fc),
 release CLI SHA-256
 `879e2bc695790fc7523cf6a835b7149b2d6b7ee7a6dd542466930ecb18f83943`,
@@ -191,6 +269,8 @@ and workflow. They do not prove that every valid PDF or every possible edit is
 supported, and Acrobat was not part of the comparator set. The project does not
 claim universal PDF editing, pixel-perfect equivalence, or superiority over
 Adobe from this campaign alone.
+
+</details>
 
 ## Repository Status
 
