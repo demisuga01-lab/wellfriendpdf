@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -103,6 +104,7 @@ def normalized_png(image: Image.Image, output: Path) -> dict[str, Any]:
 
 def render_wellfriendpdf(binary: Path, pdf: Path, dpi: int, work: Path, timeout: int) -> tuple[Image.Image, dict[str, Any]]:
     output_zip = work / "wellfriendpdf.zip"
+    output_zip.unlink(missing_ok=True)
     result = run_timed(
         [
             str(binary),
@@ -142,6 +144,7 @@ def render_helper(
     timeout: int,
 ) -> tuple[Image.Image, dict[str, Any]]:
     output = work / f"{engine}-source.png"
+    output.unlink(missing_ok=True)
     result = run_timed(
         [
             sys.executable,
@@ -166,6 +169,7 @@ def render_helper(
 
 def render_poppler(pdf: Path, dpi: int, work: Path, timeout: int) -> tuple[Image.Image, dict[str, Any]]:
     prefix = work / "poppler-source"
+    prefix.with_suffix(".png").unlink(missing_ok=True)
     result = run_timed(
         [
             "pdftoppm",
@@ -253,6 +257,26 @@ def heatmap(base: Image.Image, reference: Image.Image) -> Image.Image:
         return difference.point(lambda value: min(255, value * 4))
 
 
+def reading_guide_panel() -> Image.Image:
+    panel = Image.new("RGB", (PANEL_WIDTH, PANEL_HEIGHT), "white")
+    draw = ImageDraw.Draw(panel)
+    lines = (
+        "HOW TO READ THIS SHEET",
+        "",
+        "Top row: complete page from each renderer.",
+        "Bottom row: Wellfriend PDF minus the tool above.",
+        "Bright pixels are absolute RGB differences amplified 4x.",
+        "Changed > 8 means at least one RGB channel differs by > 8.",
+        "It is a divergence diagnostic, not an objective error rate.",
+        "Timing labels are medians of fresh-process repetitions.",
+    )
+    y = 24
+    for line in lines:
+        draw.text((20, y), line, fill="black", font=ImageFont.load_default())
+        y += 28
+    return panel
+
+
 def comparison_sheet(
     images: dict[str, Image.Image],
     metrics: dict[str, dict[str, Any]],
@@ -265,13 +289,18 @@ def comparison_sheet(
         panels.append(
             fit_panel(images[engine], f"{ENGINE_LABELS[engine]} - {durations[engine]:.3f} ms")
         )
+    panels.append(reading_guide_panel())
     for reference in REFERENCES:
         diff = heatmap(images["wellfriendpdf"], images[reference])
         metric = metrics[reference]
         value = metric.get("changed_pixel_threshold8_percentage", "size mismatch")
-        panels.append(fit_panel(diff, f"diff x4: Wellfriend PDF vs {reference} - changed > 8: {value}%"))
+        panels.append(
+            fit_panel(
+                diff,
+                f"absolute RGB diff x4 vs {ENGINE_LABELS[reference]} - changed > 8: {value}%",
+            )
+        )
         diff.close()
-    panels.append(fit_panel(Image.new("RGB", (10, 10), "white"), "Black/bright regions are amplified pixel deltas"))
     width = PANEL_WIDTH * 4 + PANEL_GAP * 5
     height = PANEL_HEIGHT * 2 + PANEL_GAP * 3 + 34
     sheet = Image.new("RGB", (width, height), (235, 235, 235))
@@ -306,30 +335,49 @@ def compare_one(task: dict[str, Any]) -> dict[str, Any]:
         images: dict[str, Image.Image] = {}
         commands: dict[str, dict[str, Any]] = {}
         try:
-            rotation = (index - 1) % len(ENGINES)
-            execution_order = ENGINES[rotation:] + ENGINES[:rotation]
-            for engine in execution_order:
-                if engine == "wellfriendpdf":
-                    images[engine], commands[engine] = render_wellfriendpdf(
-                        Path(task["wellfriend_bin"]),
-                        pdf,
-                        int(task["dpi"]),
-                        work,
-                        int(task["timeout"]),
-                    )
-                elif engine == "poppler":
-                    images[engine], commands[engine] = render_poppler(
-                        pdf, int(task["dpi"]), work, int(task["timeout"])
-                    )
-                else:
-                    images[engine], commands[engine] = render_helper(
-                        Path(task["helper"]),
-                        engine,
-                        pdf,
-                        int(task["dpi"]),
-                        work,
-                        int(task["timeout"]),
-                    )
+            execution_orders = []
+            samples: dict[str, list[dict[str, Any]]] = {engine: [] for engine in ENGINES}
+            for repetition in range(int(task["timing_repetitions"])):
+                rotation = (index - 1 + repetition) % len(ENGINES)
+                execution_order = ENGINES[rotation:] + ENGINES[:rotation]
+                execution_orders.append(list(execution_order))
+                for engine in execution_order:
+                    if engine == "wellfriendpdf":
+                        image, command = render_wellfriendpdf(
+                            Path(task["wellfriend_bin"]),
+                            pdf,
+                            int(task["dpi"]),
+                            work,
+                            int(task["timeout"]),
+                        )
+                    elif engine == "poppler":
+                        image, command = render_poppler(
+                            pdf, int(task["dpi"]), work, int(task["timeout"])
+                        )
+                    else:
+                        image, command = render_helper(
+                            Path(task["helper"]),
+                            engine,
+                            pdf,
+                            int(task["dpi"]),
+                            work,
+                            int(task["timeout"]),
+                        )
+                    previous = images.get(engine)
+                    if previous is not None:
+                        previous.close()
+                    images[engine] = image
+                    samples[engine].append(command)
+            for engine in ENGINES:
+                durations = [float(sample["duration_ms"]) for sample in samples[engine]]
+                commands[engine] = {
+                    "duration_ms": round(statistics.median(durations), 3),
+                    "duration_samples_ms": durations,
+                    "minimum_ms": round(min(durations), 3),
+                    "maximum_ms": round(max(durations), 3),
+                    "runs": len(durations),
+                    "representative": samples[engine][-1],
+                }
             raster_identity = {}
             for engine, image in images.items():
                 raster_identity[engine] = normalized_png(image, work / f"{engine}-normalized.png")
@@ -353,7 +401,7 @@ def compare_one(task: dict[str, Any]) -> dict[str, Any]:
             )
             record.update(
                 status="pass",
-                render_execution_order=list(execution_order),
+                render_execution_orders=execution_orders,
                 commands=commands,
                 rasters=raster_identity,
                 comparisons=metrics,
@@ -376,8 +424,8 @@ def percentile(values: list[float], fraction: float) -> float | None:
     if not values:
         return None
     ordered = sorted(values)
-    index = round((len(ordered) - 1) * fraction)
-    return round(ordered[index], 3)
+    rank = max(1, math.ceil(fraction * len(ordered)))
+    return round(ordered[rank - 1], 3)
 
 
 def duration_summary(records: list[dict[str, Any]], engine: str) -> dict[str, Any]:
@@ -458,6 +506,7 @@ def main() -> int:
     parser.add_argument("--dpi", type=int, default=144)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--timeout-sec", type=int, default=180)
+    parser.add_argument("--timing-repetitions", type=int, default=3)
     args = parser.parse_args()
 
     if args.editing_results is not None:
@@ -486,6 +535,7 @@ def main() -> int:
             "artifact_dir": str(artifacts),
             "dpi": args.dpi,
             "timeout": args.timeout_sec,
+            "timing_repetitions": max(1, args.timing_repetitions),
         }
         for index, (pdf, relative_path) in enumerate(inputs, start=1)
     ]
@@ -509,10 +559,11 @@ def main() -> int:
         "wall_seconds": round(time.perf_counter() - started, 3),
         "dpi": args.dpi,
         "workers": args.workers,
+        "timing_repetitions": max(1, args.timing_repetitions),
         "timing_protocol": {
-            "renderer_order": "deterministic Latin rotation by one-based corpus index",
+            "renderer_order": "deterministic Latin rotation by corpus index and repetition",
             "recommended_workers_for_comparable_timings": 1,
-            "process_scope": "one fresh renderer process per PDF page and tool",
+            "process_scope": "one fresh renderer process per PDF page, tool, and repetition; per-page timing is the repetition median",
         },
         "files_attempted": len(final_records),
         "passed": sum(record["status"] == "pass" for record in final_records),

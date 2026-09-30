@@ -7,9 +7,9 @@ struct InputIdentity {
     address: usize,
     length: usize,
     comparable_bytes: Option<Arc<[u8]>>,
-    sha256: String,
-    document_id: String,
-    revision_id: String,
+    sha256: Option<String>,
+    document_id: Option<String>,
+    revision_id: Option<String>,
     engine: Option<crate::ContentEngine>,
 }
 
@@ -43,14 +43,18 @@ fn stable_id(kind: &str, values: &[&[u8]]) -> String {
 
 fn compute(bytes: &[u8]) -> InputIdentity {
     let length = bytes.len();
-    let length_bytes = length.to_le_bytes();
     InputIdentity {
         address: bytes.as_ptr() as usize,
         length,
         comparable_bytes: (length <= MAX_COMPARABLE_INPUT_BYTES).then(|| Arc::<[u8]>::from(bytes)),
-        sha256: format!("{:x}", Sha256::digest(bytes)),
-        document_id: stable_id("document", &[bytes]),
-        revision_id: stable_id("revision", &[bytes, &length_bytes]),
+        // A scope can need only one of these values. Computing all three
+        // eagerly made a request for one revision identity hash the complete
+        // PDF three times, and unscoped output checks repeated that work.
+        // Preserve the exact existing byte-derived contracts, but materialize
+        // each digest only when it is actually requested.
+        sha256: None,
+        document_id: None,
+        revision_id: None,
         engine: None,
     }
 }
@@ -101,38 +105,49 @@ pub(crate) fn with_input_identity<T>(bytes: &[u8], operation: impl FnOnce() -> T
 pub(crate) fn document_id(bytes: &[u8]) -> String {
     INPUT_IDENTITIES
         .with(|identities| {
-            identities
-                .borrow()
+            let mut identities = identities.borrow_mut();
+            let position = identities
                 .iter()
-                .rev()
-                .find(|identity| matches(identity, bytes))
-                .map(|identity| identity.document_id.clone())
+                .rposition(|identity| matches(identity, bytes))?;
+            if identities[position].document_id.is_none() {
+                identities[position].document_id = Some(stable_id("document", &[bytes]));
+            }
+            identities[position].document_id.clone()
         })
-        .unwrap_or_else(|| compute(bytes).document_id)
+        .unwrap_or_else(|| stable_id("document", &[bytes]))
 }
 
 pub(crate) fn revision_id(bytes: &[u8]) -> String {
     INPUT_IDENTITIES
         .with(|identities| {
-            identities
-                .borrow()
+            let mut identities = identities.borrow_mut();
+            let position = identities
                 .iter()
-                .rev()
-                .find(|identity| matches(identity, bytes))
-                .map(|identity| identity.revision_id.clone())
+                .rposition(|identity| matches(identity, bytes))?;
+            if identities[position].revision_id.is_none() {
+                let length_bytes = bytes.len().to_le_bytes();
+                identities[position].revision_id =
+                    Some(stable_id("revision", &[bytes, &length_bytes]));
+            }
+            identities[position].revision_id.clone()
         })
-        .unwrap_or_else(|| compute(bytes).revision_id)
+        .unwrap_or_else(|| {
+            let length_bytes = bytes.len().to_le_bytes();
+            stable_id("revision", &[bytes, &length_bytes])
+        })
 }
 
 pub(crate) fn sha256(bytes: &[u8]) -> String {
     INPUT_IDENTITIES
         .with(|identities| {
-            identities
-                .borrow()
+            let mut identities = identities.borrow_mut();
+            let position = identities
                 .iter()
-                .rev()
-                .find(|identity| matches(identity, bytes))
-                .map(|identity| identity.sha256.clone())
+                .rposition(|identity| matches(identity, bytes))?;
+            if identities[position].sha256.is_none() {
+                identities[position].sha256 = Some(format!("{:x}", Sha256::digest(bytes)));
+            }
+            identities[position].sha256.clone()
         })
         .unwrap_or_else(|| format!("{:x}", Sha256::digest(bytes)))
 }

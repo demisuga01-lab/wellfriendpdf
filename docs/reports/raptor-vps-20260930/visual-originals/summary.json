@@ -1,0 +1,78 @@
+{
+  "schema_version": "wellfriend.visual_render_evidence.v1",
+  "corpus": "originals",
+  "started_at_utc": "2026-09-30T01:00:36Z",
+  "finished_at_utc": "2026-09-30T01:22:00Z",
+  "wall_seconds": 1284.368,
+  "dpi": 144,
+  "workers": 1,
+  "timing_repetitions": 3,
+  "timing_protocol": {
+    "renderer_order": "deterministic Latin rotation by corpus index and repetition",
+    "recommended_workers_for_comparable_timings": 1,
+    "process_scope": "one fresh renderer process per PDF page, tool, and repetition; per-page timing is the repetition median"
+  },
+  "files_attempted": 100,
+  "passed": 100,
+  "failed": 0,
+  "render_duration": {
+    "wellfriendpdf": {
+      "n": 100,
+      "p50_ms": 406.167,
+      "p90_ms": 632.02,
+      "p95_ms": 732.437,
+      "p99_ms": 1264.523,
+      "max_ms": 1310.24
+    },
+    "pdfium": {
+      "n": 100,
+      "p50_ms": 694.41,
+      "p90_ms": 774.717,
+      "p95_ms": 803.991,
+      "p99_ms": 1014.655,
+      "max_ms": 1102.913
+    },
+    "mupdf": {
+      "n": 100,
+      "p50_ms": 946.182,
+      "p90_ms": 1047.133,
+      "p95_ms": 1070.129,
+      "p99_ms": 1208.693,
+      "max_ms": 1671.627
+    },
+    "poppler": {
+      "n": 100,
+      "p50_ms": 841.898,
+      "p90_ms": 1073.674,
+      "p95_ms": 1104.522,
+      "p99_ms": 1292.722,
+      "max_ms": 1716.905
+    }
+  },
+  "contact_sheets": [
+    {
+      "file": "contact-001-025.webp",
+      "sha256": "c8c88a7fb1e6b7816da454196359a16d3bd5c3536bb43cacaece33c7691f8869",
+      "bytes": 245072
+    },
+    {
+      "file": "contact-026-050.webp",
+      "sha256": "05de05cb8f88d2df0e39fcf688b71217e1bfbbc5198cd6ba1a7de830d5dedc59",
+      "bytes": 238914
+    },
+    {
+      "file": "contact-051-075.webp",
+      "sha256": "e6b373dce9db7214b3150bd395c5ffd7e421227971f13506f3df19e87f9dec77",
+      "bytes": 217556
+    },
+    {
+      "file": "contact-076-100.webp",
+      "sha256": "692876c0faeed7ced44c4f3d0540f96315e76639ed29200369d30d59b1d75e2a",
+      "bytes": 235792
+    }
+  ],
+  "retention_policy": {
+    "retained": "one labeled WebP comparison with three amplified diff panels per page, contact sheets, raster hashes, dimensions, durations, and metrics",
+    "transient": "full-resolution PNG rasters"
+  }
+}

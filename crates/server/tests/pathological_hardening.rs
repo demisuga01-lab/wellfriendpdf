@@ -206,20 +206,30 @@ async fn self_referential_form_fails_closed() {
     assert_eq!(json["error"], "unsupported_feature");
 }
 
-/// A pathological tiling pattern (tiny step, huge fill) must hit the tile cap
-/// and/or timeout and terminate, not hang. Either a clean render (cap skipped
-/// the pattern) or a 503 timeout is acceptable; a hang is not.
+/// A pathological tiling pattern (tiny step, huge fill) must hit the exact-cell
+/// cap and/or timeout and terminate, not hang. A complete render, a typed 422
+/// refusal, or a 503 timeout is acceptable; silently skipping cells is not.
 #[tokio::test]
 async fn pathological_tiling_pattern_terminates() {
     install_test_config();
     let pdf = pathological::pathological_tiling_pattern_pdf();
     let start = Instant::now();
-    let (status, _bytes) = post_pdf2img(&pdf, &[("dpi", "72")]).await;
+    let (status, bytes) = post_pdf2img(&pdf, &[("dpi", "72")]).await;
     assert!(
-        status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-        "tiling pattern should render (cap) or time out, got {}",
-        status
+        status == StatusCode::OK
+            || status == StatusCode::UNPROCESSABLE_ENTITY
+            || status == StatusCode::SERVICE_UNAVAILABLE,
+        "tiling pattern should render, refuse exactly, or time out, got {}: {}",
+        status,
+        String::from_utf8_lossy(&bytes)
     );
+    if status == StatusCode::UNPROCESSABLE_ENTITY {
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"], "unsupported_feature");
+        assert!(json["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("exceeding exact render limit")));
+    }
     assert!(
         start.elapsed() < Duration::from_secs(20),
         "must terminate promptly"

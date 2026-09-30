@@ -11,7 +11,74 @@ canonical implementation is Rust; the CLI, HTTP server, C ABI, Python, WASM,
 
 ## Benchmark Results
 
-### Current RAPTOR qualification — 2026-09-29
+### Current RAPTOR qualification — 2026-09-30
+
+This stage-separated 100-PDF VPS campaign uses nearest-rank percentiles after
+collapsing repeated fresh-process measurements to one median per document. The
+[full report](docs/reports/raptor-vps-20260930/README.md) contains raw JSONL,
+source/corpus hashes, timestamps, 5,412-test workspace logs, 198 page-level
+four-renderer sheets, contact sheets, and amplified differences.
+
+#### Parsing
+
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Accepted | 100/100 | 100/100 | 95/100 | Not measured | 100/100 |
+| Workload | xref open + indexed page count | structural check | document inventory | Not measured | metadata + page count |
+| P50 | 1.959 ms | 159.358 ms | 21.008 ms | — | 38.457 ms |
+| P90 | 3.474 ms | 1,121.336 ms | 39.362 ms | — | 46.655 ms |
+| P95 | 3.826 ms | 1,801.061 ms | 44.569 ms | — | 51.971 ms |
+| P99 | 20.176 ms | 7,271.322 ms | 265.436 ms | — | 60.162 ms |
+| Maximum | 44.338 ms | 9,283.166 ms | 265.436 ms | — | 63.557 ms |
+
+The commands perform different work and are not semantic-equivalence claims.
+Wellfriend's indexed structural path passes the requested 15/30/50/75/200 ms
+upper bounds. Requested-page, full-tree, page-program, semantic, cold-raster,
+and retained-raster stages remain separate in the full report.
+
+#### Editing
+
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Applicable and verified after reopen | 98/98 | — | — | — | — |
+| Typed non-applicable | 2/100 | — | — | — | — |
+| Plan P50 / P95 / max | 1,208.958 / 2,465.182 / 4,456.134 ms | — | — | — | — |
+| Apply P50 / P95 / max | 1,306.047 / 3,161.706 / 5,182.854 ms | — | — | — | — |
+| Verified E2E P50 / P95 / max | 2,624.005 / 6,196.141 / 9,193.955 ms | — | — | — | — |
+
+Every applicable output changed bytes, reopened, removed the selected reachable
+source occurrence, and exposed the replacement. The requested edit latency
+gates still fail.
+
+#### Visual rendering — original inputs
+
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Rendered outputs | 100/100 | — | 100/100 | 100/100 | 100/100 |
+| P50 | 406.167 ms | — | 946.182 ms | 694.410 ms | 841.898 ms |
+| P90 | 632.020 ms | — | 1,047.133 ms | 774.717 ms | 1,073.674 ms |
+| P95 | 732.437 ms | — | 1,070.129 ms | 803.991 ms | 1,104.522 ms |
+| P99 / maximum | 1,264.523 / 1,310.240 ms | — | 1,208.693 / 1,671.627 ms | 1,014.655 / 1,102.913 ms | 1,292.722 / 1,716.905 ms |
+
+#### Visual rendering — verified edited outputs
+
+| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|---:|
+| Rendered outputs | 98/98 | — | 98/98 | 98/98 | 98/98 |
+| P50 | 407.149 ms | — | 906.762 ms | 682.421 ms | 848.388 ms |
+| P90 | 663.924 ms | — | 1,030.038 ms | 772.669 ms | 1,081.573 ms |
+| P95 | 875.002 ms | — | 1,113.652 ms | 821.685 ms | 1,135.360 ms |
+| P99 / maximum | 1,317.898 / 1,317.898 ms | — | 1,444.954 / 1,444.954 ms | 1,086.931 / 1,086.931 ms | 1,710.013 / 1,710.013 ms |
+
+Wellfriend leads at P50 and P90, but the required 10% lead fails at the original
+P95/P99/max and edited P95/P99/max gates. Pixel differences are diagnostics,
+not objective error rates. This corpus does not establish universal editing or
+superiority over Adobe.
+
+![Edited four-renderer comparison](docs/reports/raptor-vps-20260930/visual-edited/pages/094-i1040gi-pdf.webp)
+
+<details>
+<summary>Previous RAPTOR qualification — 2026-09-29</summary>
 
 The current result is a stage-separated 100-PDF VPS campaign. Tools are
 columns; measurements are rows. Percentiles use nearest rank. Full per-file
@@ -85,6 +152,8 @@ renderers. This bounded evidence does not establish pixel identity, universal
 editing, or superiority over Adobe.
 
 ![Corrected four-renderer edited output](docs/reports/raptor-vps-20260929/visual/edited/075-arxiv-stat-ap-2609-28419v1-fa39e6badcda-pdf.webp)
+
+</details>
 
 <details>
 <summary>Historical 2026-09-28 campaign and pre-RAPTOR evidence</summary>

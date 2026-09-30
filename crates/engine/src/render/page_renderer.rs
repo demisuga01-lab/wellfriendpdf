@@ -1088,10 +1088,6 @@ impl RenderDocumentCache {
         for identity in identities {
             self.source_identities
                 .insert((identity.number, identity.generation), identity.id);
-            self.source_cache_markers.insert(
-                identity.id,
-                source_cache_markers_for_object(identity.number, identity.generation),
-            );
         }
     }
 
@@ -1205,6 +1201,17 @@ impl RenderDocumentCache {
         for source in changed_sources {
             if let Some(source_markers) = self.source_cache_markers.get(source) {
                 markers.extend(source_markers.iter().cloned());
+            }
+            // Most source identities never participate in invalidation. Build
+            // their string-key projections only when that exact identity is
+            // invalidated instead of allocating thirteen strings for every
+            // xref entry during first-page rendering.
+            if let Some((&(number, generation), _)) = self
+                .source_identities
+                .iter()
+                .find(|(_, identity)| **identity == *source)
+            {
+                markers.extend(source_cache_markers_for_object(number, generation));
             }
         }
         markers.sort();
@@ -2162,12 +2169,13 @@ fn canonical_object_identity_id(
     number: u32,
     generation: u16,
 ) -> Option<ObjectIdentityId> {
-    engine
-        .canonical_document()
-        .object_identities()
-        .iter()
-        .find(|identity| identity.number == number && identity.generation == generation)
-        .map(|identity| identity.id)
+    let identities = engine.canonical_document().object_identities();
+    identities
+        .binary_search_by_key(&(number, generation), |identity| {
+            (identity.number, identity.generation)
+        })
+        .ok()
+        .map(|index| identities[index].id)
 }
 
 fn object_identity_from_pdf_object(

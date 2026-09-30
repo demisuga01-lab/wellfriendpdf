@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Cursor;
 
 use crate::error::{Result, WellfriendError};
@@ -1879,6 +1880,16 @@ impl ImageDecoder {
             values.push(value);
         }
 
+        // The explicit default decode array is common in generated PDFs. Its
+        // scalar mapping is the identity for normalized 8-bit samples, so a
+        // per-sample floating-point pass can be skipped exactly.
+        if values
+            .chunks_exact(2)
+            .all(|range| range[0] == 0.0 && range[1] == 1.0)
+        {
+            return Ok(());
+        }
+
         for (idx, sample) in pixels.iter_mut().enumerate() {
             let ch = idx % channels;
             let low = values[ch * 2];
@@ -2037,15 +2048,41 @@ impl ColorSpaceConverter {
         let family =
             Self::tint_space_family_name(space_obj).unwrap_or_else(|| "tint-space".to_string());
         let mut output = Vec::with_capacity((pixels.len() / channels).saturating_mul(4));
+        // Eight-bit Separation/DeviceN samples have a finite input alphabet.
+        // Evaluate the PDF tint function once per distinct sample tuple rather
+        // than once per pixel. One- and two-component spaces use direct tables;
+        // wider DeviceN spaces use a bounded sparse table and fall back to exact
+        // evaluation after the bound. This changes no colour math and cannot
+        // introduce approximation error.
+        let mut one_component = (channels == 1).then(|| vec![None::<[u8; 4]>; 1usize << 8]);
+        let mut two_component = (channels == 2).then(|| vec![None::<[u8; 4]>; 1usize << 16]);
+        const MAX_SPARSE_TINT_TUPLES: usize = 16_384;
+        let mut wider_components: HashMap<Vec<u8>, [u8; 4]> = HashMap::new();
         for (index, chunk) in pixels.chunks_exact(channels).enumerate() {
             if index % 4096 == 0 {
                 crate::cancel::check_current_cancel("image tint conversion")?;
             }
-            let mut components = Vec::with_capacity(channels);
-            for sample in chunk.iter().take(channels) {
-                components.push(f64::from(*sample) / 255.0);
+
+            let dense_index = match channels {
+                1 => usize::from(chunk[0]),
+                2 => (usize::from(chunk[0]) << 8) | usize::from(chunk[1]),
+                _ => 0,
+            };
+            let cached = match channels {
+                1 => one_component.as_ref().and_then(|table| table[dense_index]),
+                2 => two_component.as_ref().and_then(|table| table[dense_index]),
+                _ => wider_components.get(chunk).copied(),
+            };
+            if let Some(pixel) = cached {
+                output.extend_from_slice(&pixel);
+                continue;
             }
-            match crate::render::colorspace::resolve_named_color_with_resources(
+
+            let components = chunk
+                .iter()
+                .map(|sample| f64::from(*sample) / 255.0)
+                .collect::<Vec<_>>();
+            let pixel = match crate::render::colorspace::resolve_named_color_with_resources(
                 space_obj,
                 None,
                 &components,
@@ -2054,12 +2091,8 @@ impl ColorSpaceConverter {
                 color_options.options,
                 color_options.functions,
             ) {
-                crate::render::colorspace::NamedColor::Color(color) => {
-                    output.extend_from_slice(&color.to_pixel_color());
-                }
-                crate::render::colorspace::NamedColor::NoPaint => {
-                    output.extend_from_slice(&[0, 0, 0, 0]);
-                }
+                crate::render::colorspace::NamedColor::Color(color) => color.to_pixel_color(),
+                crate::render::colorspace::NamedColor::NoPaint => [0, 0, 0, 0],
                 crate::render::colorspace::NamedColor::Invalid(reason) => {
                     return Err(WellfriendError::UnsupportedFeature(format!(
                         "invalid image ColorSpace /{family} tint transform: {reason}"
@@ -2070,7 +2103,24 @@ impl ColorSpaceConverter {
                         "unsupported image ColorSpace /{family} tint transform"
                     )));
                 }
+            };
+            match channels {
+                1 => {
+                    one_component
+                        .as_mut()
+                        .expect("one-component tint table exists")[dense_index] = Some(pixel)
+                }
+                2 => {
+                    two_component
+                        .as_mut()
+                        .expect("two-component tint table exists")[dense_index] = Some(pixel)
+                }
+                _ if wider_components.len() < MAX_SPARSE_TINT_TUPLES => {
+                    wider_components.insert(chunk.to_vec(), pixel);
+                }
+                _ => {}
             }
+            output.extend_from_slice(&pixel);
         }
         Ok((output, 4))
     }
@@ -4465,6 +4515,57 @@ mod tests {
         let error = ImageDecoder::build_raw_image_pub(vec![128], 1, 1, 8, "DeviceN", &empty_names)
             .expect_err("empty DeviceN component array must fail typed");
         assert!(format!("{error}").contains("has no components"));
+    }
+
+    #[test]
+    fn separation_image_tuple_memo_preserves_exact_colour_results() {
+        let reader = PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf()).unwrap();
+        let tint = dict_obj(&[
+            ("FunctionType", PdfObject::Integer(2)),
+            ("Domain", real_arr(&[0.0, 1.0])),
+            ("C0", real_arr(&[1.0, 1.0, 1.0, 0.0])),
+            ("C1", real_arr(&[0.0, 0.0, 0.0, 1.0])),
+            ("N", PdfObject::Real(1.0)),
+        ]);
+        let space = PdfObject::Array(vec![
+            PdfObject::Name("Separation".to_string()),
+            PdfObject::Name("Spot".to_string()),
+            PdfObject::Name("DeviceCMYK".to_string()),
+            tint,
+        ]);
+        let mut dict = PdfDictionary::empty();
+        dict.insert("ColorSpace", space.clone());
+        let samples = [0_u8, 127, 255, 127, 0, 255, 0, 127];
+
+        let (actual, channels) = ColorSpaceConverter::tint_space_to_rgba(
+            &samples,
+            &dict,
+            &reader,
+            1,
+            ColorTransformOptions::default(),
+        )
+        .expect("memoized Separation conversion");
+        let expected = samples
+            .iter()
+            .flat_map(
+                |sample| match crate::render::colorspace::resolve_named_color_with_resources(
+                    &space,
+                    None,
+                    &[f64::from(*sample) / 255.0],
+                    1.0,
+                    &reader,
+                    ColorTransformOptions::default(),
+                    Default::default(),
+                ) {
+                    crate::render::colorspace::NamedColor::Color(color) => color.to_pixel_color(),
+                    other => panic!("unexpected direct tint result: {other:?}"),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        assert_eq!(channels, 4);
+        assert_eq!(actual, expected);
+        assert_eq!(&actual[4..8], &actual[12..16]);
     }
 
     #[test]

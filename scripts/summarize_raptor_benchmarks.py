@@ -21,6 +21,13 @@ from typing import Any, Callable
 
 PERCENTILES = (50, 90, 95, 99)
 LATENCY_SLO_MS = {"p50": 15.0, "p90": 30.0, "p95": 50.0, "p99": 75.0, "max": 200.0}
+EDIT_LATENCY_SLO_MS = {
+    "p50": 1000.0,
+    "p90": 1500.0,
+    "p95": 1750.0,
+    "p99": 2000.0,
+    "max": 2000.0,
+}
 
 
 def rows(path: Path | None) -> list[dict[str, Any]]:
@@ -49,10 +56,18 @@ def distribution(values: list[float], suffix: str = "ms") -> dict[str, Any]:
     result: dict[str, Any] = {
         "count": len(values),
         f"mean_{suffix}": round(statistics.fmean(values), 6),
+        f"stddev_{suffix}": round(statistics.pstdev(values), 6),
     }
+    median = statistics.median(values)
+    result[f"median_absolute_deviation_{suffix}"] = round(
+        statistics.median(abs(value - median) for value in values), 6
+    )
     for percentile in PERCENTILES:
         result[f"p{percentile}_{suffix}"] = round(nearest_rank(values, percentile), 6)
     result[f"max_{suffix}"] = round(max(values), 6)
+    result["p99_to_p50_ratio"] = round(
+        result[f"p99_{suffix}"] / result[f"p50_{suffix}"], 6
+    ) if result[f"p50_{suffix}"] else None
     return result
 
 
@@ -80,6 +95,30 @@ def failure_summary(all_rows: list[dict[str, Any]]) -> dict[str, Any]:
         "count": len(failures),
         "by_stage": dict(sorted(Counter(str(row.get("stage", "unknown")) for row in failures).items())),
     }
+
+
+def collapse_numeric_repetitions(
+    observations: list[dict[str, Any]], key: str
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in observations:
+        grouped.setdefault(str(row[key]), []).append(row)
+    collapsed = []
+    for identity, group in sorted(grouped.items()):
+        value = dict(group[-1])
+        for field in set().union(*(row.keys() for row in group)):
+            samples = [row.get(field) for row in group]
+            if all(isinstance(sample, bool) for sample in samples):
+                value[field] = all(samples)
+            elif all(
+                isinstance(sample, (int, float)) and not isinstance(sample, bool)
+                for sample in samples
+            ):
+                value[field] = statistics.median(float(sample) for sample in samples)
+        value[key] = identity
+        value["benchmark_repetitions"] = len(group)
+        collapsed.append(value)
+    return collapsed
 
 
 def external_parser_summary(all_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -127,7 +166,9 @@ def external_parser_summary(all_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def slo_result(stats: dict[str, Any]) -> dict[str, Any]:
+def slo_result(
+    stats: dict[str, Any], targets: dict[str, float] = LATENCY_SLO_MS
+) -> dict[str, Any]:
     if stats.get("count", 0) == 0:
         return {"status": "not_measured"}
     measured = {
@@ -137,26 +178,37 @@ def slo_result(stats: dict[str, Any]) -> dict[str, Any]:
         "p99": stats["p99_ms"],
         "max": stats["max_ms"],
     }
-    checks = {name: measured[name] <= limit for name, limit in LATENCY_SLO_MS.items()}
+    checks = {name: measured[name] <= limit for name, limit in targets.items()}
     return {
         "status": "pass" if all(checks.values()) else "fail",
-        "target_ms": LATENCY_SLO_MS,
+        "target_ms": targets,
         "measured_ms": measured,
         "checks": checks,
     }
 
 
 def core_summary(all_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    successful = [row for row in all_rows if "stage" not in row]
+    raw_successful = [row for row in all_rows if "stage" not in row]
+    successful = collapse_numeric_repetitions(raw_successful, "path")
     timings = summarize_fields(
         successful,
         {
             "file_read": lambda row: row["read_ms"],
-            "source_open": lambda row: row["open_ms"],
-            "page_tree": lambda row: row["page_tree_ms"],
-            "structural_parse_e2e": lambda row: row["read_ms"]
-            + row["open_ms"]
-            + row["page_tree_ms"],
+            "input_sha256": lambda row: row["input_sha256_ms"],
+            "file_source_open_xref": lambda row: row["file_source_open_ms"],
+            "indexed_page_count": lambda row: row["indexed_page_count_ms"],
+            "metadata_page_count_e2e": lambda row: row["file_source_open_ms"]
+            + row["indexed_page_count_ms"],
+            "requested_page_materialize": lambda row: row["requested_page_materialize_ms"],
+            "requested_page_e2e": lambda row: row["file_source_open_ms"]
+            + row["indexed_page_count_ms"]
+            + row["requested_page_materialize_ms"],
+            "full_page_tree_materialize": lambda row: row["full_page_tree_materialize_ms"],
+            "full_page_tree_e2e": lambda row: row["file_source_open_ms"]
+            + row["indexed_page_count_ms"]
+            + row["requested_page_materialize_ms"]
+            + row["full_page_tree_materialize_ms"],
+            "byte_source_engine_open": lambda row: row["open_ms"],
             "page_program_cold": lambda row: row["page_program_parse_cold_ms"],
             "page_program_warm": lambda row: row["page_program_parse_warm_ms"],
             "semantic_document_cold": lambda row: row["semantic_parse_cold_ms"],
@@ -175,14 +227,16 @@ def core_summary(all_rows: list[dict[str, Any]]) -> dict[str, Any]:
         "page_program_exact": sum(row.get("page_program_output_exact_match") is True for row in successful),
         "semantic_output_exact": sum(row.get("semantic_output_exact_match") is True for row in successful),
         "raster_exact": sum(row.get("raster_exact_match") is True for row in successful),
-        "observations": len(successful),
+        "documents": len(successful),
+        "raw_observations": len(raw_successful),
     }
     return {
         "observations": len(successful),
         "failures": failure_summary(all_rows),
         "timings": timings,
         "exactness": exactness,
-        "requested_structural_parse_slo": slo_result(timings["structural_parse_e2e"]),
+        "requested_metadata_page_count_slo": slo_result(timings["metadata_page_count_e2e"]),
+        "requested_first_page_slo": slo_result(timings["requested_page_e2e"]),
     }
 
 
@@ -204,6 +258,12 @@ def edit_summary(all_rows: list[dict[str, Any]]) -> dict[str, Any]:
             row.get("replacement_observed_after_reopen") is True for row in successful
         ),
         "prepared_plan_cache_hits": sum(row.get("prepared_plan_cache_hit") is True for row in successful),
+        "prepared_engine_reused": sum(
+            row.get("prepared_engine_reused") is True for row in successful
+        ),
+        "prepared_text_transaction_reused": sum(
+            row.get("prepared_text_transaction_reused") is True for row in successful
+        ),
         "observations": len(successful),
     }
     return {
@@ -211,8 +271,10 @@ def edit_summary(all_rows: list[dict[str, Any]]) -> dict[str, Any]:
         "failures": failure_summary(all_rows),
         "timings": timings,
         "verification": verification,
-        "requested_apply_slo": slo_result(timings["apply"]),
-        "requested_verified_e2e_slo": slo_result(timings["verified_end_to_end"]),
+        "requested_apply_slo": slo_result(timings["apply"], EDIT_LATENCY_SLO_MS),
+        "requested_verified_e2e_slo": slo_result(
+            timings["verified_end_to_end"], EDIT_LATENCY_SLO_MS
+        ),
     }
 
 
@@ -305,7 +367,7 @@ def main() -> int:
     visual_rows = rows(args.visual)
     external_rows = rows(args.external_parse)
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "raptor_stage_separated_benchmark_summary",
         "percentile_definition": "nearest_rank",
         "latency_units": "milliseconds",

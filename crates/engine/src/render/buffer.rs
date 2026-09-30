@@ -1013,6 +1013,11 @@ impl ClipMask {
 
     /// Build a ClipMask from a flattened path using scanline fill.
     pub fn from_path(flat: &FlatPath, width: u32, height: u32, fill_rule: FillRule) -> Self {
+        if let Some((x0, y0, x1, y1)) = integral_axis_aligned_rectangle(flat) {
+            let mut clip = Self::empty(width, height);
+            clip.fill_rect(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0), true);
+            return clip;
+        }
         Self::scanline_fill_antialiased(flat, width, height, fill_rule)
     }
 
@@ -1531,6 +1536,70 @@ impl AlphaMask {
         }
         self.outside_alpha = lut[self.outside_alpha as usize];
     }
+}
+
+fn integral_axis_aligned_rectangle(flat: &FlatPath) -> Option<(i32, i32, i32, i32)> {
+    if flat.subpaths.len() != 1 {
+        return None;
+    }
+    let points = flat.subpaths.first()?;
+    let approximately_same = |left: (f64, f64), right: (f64, f64)| {
+        (left.0 - right.0).abs() <= 1e-9 && (left.1 - right.1).abs() <= 1e-9
+    };
+    let repeated_close = points
+        .first()
+        .zip(points.last())
+        .is_some_and(|(first, last)| approximately_same(*first, *last));
+    if !flat.closed.first().copied().unwrap_or(false) && !repeated_close {
+        return None;
+    }
+    let points = if repeated_close {
+        &points[..points.len().saturating_sub(1)]
+    } else {
+        points.as_slice()
+    };
+    if points.len() != 4 {
+        return None;
+    }
+
+    let mut integral = Vec::with_capacity(4);
+    for &(x, y) in points {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let rounded_x = x.round();
+        let rounded_y = y.round();
+        if (x - rounded_x).abs() > 1e-9
+            || (y - rounded_y).abs() > 1e-9
+            || rounded_x < i32::MIN as f64
+            || rounded_x > i32::MAX as f64
+            || rounded_y < i32::MIN as f64
+            || rounded_y > i32::MAX as f64
+        {
+            return None;
+        }
+        integral.push((rounded_x as i32, rounded_y as i32));
+    }
+    for index in 0..4 {
+        let current = integral[index];
+        let next = integral[(index + 1) % 4];
+        if current == next || (current.0 != next.0 && current.1 != next.1) {
+            return None;
+        }
+    }
+    let x0 = integral.iter().map(|point| point.0).min()?;
+    let x1 = integral.iter().map(|point| point.0).max()?;
+    let y0 = integral.iter().map(|point| point.1).min()?;
+    let y1 = integral.iter().map(|point| point.1).max()?;
+    if x0 >= x1 || y0 >= y1 {
+        return None;
+    }
+    for corner in [(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
+        if integral.iter().filter(|point| **point == corner).count() != 1 {
+            return None;
+        }
+    }
+    Some((x0, y0, x1, y1))
 }
 
 #[derive(Debug, Clone)]

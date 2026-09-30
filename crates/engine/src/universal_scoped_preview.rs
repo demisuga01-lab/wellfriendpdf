@@ -286,7 +286,7 @@ pub fn preview_scoped_candidate(
     }
     // Reject unreasonable caller options before expensive candidate generation.
     selected_pages(options, 1, usize::MAX)?;
-    let (canonical, staged, _) = plan_universal_edit_v2_staged(
+    let (canonical, staged, _, _) = plan_universal_edit_v2_staged(
         input,
         &UniversalEditRequestV2 {
             operation: plan.requested_operation.clone(),

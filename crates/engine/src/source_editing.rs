@@ -519,13 +519,6 @@ fn edit_text_operator_inner(
     input: &[u8],
     request: &OperatorTextEditRequest,
 ) -> Result<(Vec<u8>, OperatorEditOperationReport)> {
-    let eligibility = operator_text_eligibility(input, request)?;
-    if let Some(refusal) = eligibility.refusal {
-        return Err(WellfriendError::UnsupportedFeature(format!(
-            "source_editing {}: {}",
-            refusal.code, refusal.message
-        )));
-    }
     let provenance = operator_text_provenance(
         input,
         request.page,
@@ -539,6 +532,25 @@ fn edit_text_operator_inner(
         &request.source_text,
         &request.replacement_text,
     )?;
+    let eligible = analysis.same_width.candidates.iter().any(|candidate| {
+        candidate.eligible
+            && selected_identity.is_none_or(|identity| {
+                candidate.stream_object == identity.stream_object
+                    && candidate.stream_generation == identity.stream_generation
+                    && candidate.decoded_byte_start == identity.decoded_byte_range[0]
+                    && candidate.decoded_byte_end == identity.decoded_byte_range[1]
+            })
+    });
+    if !eligible {
+        let candidate = analysis.same_width.candidates.first();
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "source_editing {}: {}",
+            candidate.map(refusal_code).unwrap_or("source_not_resolved"),
+            candidate
+                .map(|candidate| candidate.exact_reason.as_str())
+                .unwrap_or("no source text operator resolved for the requested selection")
+        )));
+    }
     let (output, applied) = apply_same_width_patch_with_analysis(
         input,
         request.page,

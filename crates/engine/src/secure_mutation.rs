@@ -1270,7 +1270,7 @@ pub fn associated_files_sanitize_pdf(
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditOperation {
     FormValueUpdate,
@@ -1367,6 +1367,9 @@ pub fn analyze_edit_policy_for_target(
     operation: EditOperation,
     target_field: Option<&str>,
 ) -> Result<EditPolicyReport> {
+    if let Some(report) = engine.cached_edit_policy(operation, target_field) {
+        return Ok(report);
+    }
     let structural = structural_signature_policies(engine.document())?;
     let crypto = verify_signatures(engine.document())?;
     let signatures = !crypto.is_empty() || !structural.is_empty();
@@ -1430,7 +1433,7 @@ pub fn analyze_edit_policy_for_target(
     let mut impact = signature_impact_summary(engine, operation)?;
     impact.append_only_update = incremental;
     impact.signature_value_preserved = incremental;
-    Ok(EditPolicyReport {
+    let report = EditPolicyReport {
         schema_version: SECURE_MUTATION_SCHEMA_VERSION.to_string(),
         operation,
         decision,
@@ -1458,7 +1461,9 @@ pub fn analyze_edit_policy_for_target(
             "safe_incremental preserves the original prefix and signature dictionary but does not promise certification acceptance or absence of viewer warnings".to_string(),
             "secure redaction, sanitizer removal, attachment removal, XFA flattening, canonicalization, and full rewrite require explicit signed-semantics override".to_string(),
         ],
-    })
+    };
+    engine.retain_edit_policy(operation, target_field, &report);
+    Ok(report)
 }
 
 /// Execute a bounded metadata incremental update. This is the proof-carrying

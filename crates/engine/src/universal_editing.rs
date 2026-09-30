@@ -12,9 +12,9 @@ use crate::advanced_editing::{
 };
 use crate::content::{ContentToken, ContentTokenizer, SpannedContentToken};
 use crate::editing_transactions::{
-    apply_scene_text_transaction, build_document_snapshot, build_scene_graph,
-    plan_scene_text_transaction, substitution_report_with_source_font, EditableSceneGraph,
-    SceneTextEditRequest,
+    apply_scene_text_transaction, apply_scene_text_transaction_preplanned, build_document_snapshot,
+    build_scene_graph, plan_scene_text_transaction, substitution_report_with_source_font,
+    EditTransactionReport, EditableSceneGraph, SceneTextEditRequest,
 };
 use crate::filters::{
     decode_stream_lossless_with_limits, flate_encode_cancellable, DecodeLimits, StreamDecodeStatus,
@@ -1329,6 +1329,8 @@ const PREPARED_PLAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_s
 struct PreparedPlanArtifact {
     plan: UniversalEditPlanV2,
     staged_scoped_text: Option<scoped_text::StagedScopedText>,
+    staged_text_transaction: Option<EditTransactionReport>,
+    prepared_engine: Option<crate::ContentEngine>,
     secure_policy: EditPolicyReport,
     estimated_bytes: usize,
     created_at: std::time::Instant,
@@ -1349,6 +1351,8 @@ impl PreparedPlanCache {
     ) -> Option<(
         UniversalEditPlanV2,
         Option<scoped_text::StagedScopedText>,
+        Option<EditTransactionReport>,
+        Option<crate::ContentEngine>,
         EditPolicyReport,
     )> {
         self.entries
@@ -1358,6 +1362,8 @@ impl PreparedPlanCache {
                 (
                     entry.plan.clone(),
                     entry.staged_scoped_text.clone(),
+                    entry.staged_text_transaction.clone(),
+                    entry.prepared_engine.clone(),
                     entry.secure_policy.clone(),
                 )
             })
@@ -1367,6 +1373,9 @@ impl PreparedPlanCache {
         &mut self,
         plan: &UniversalEditPlanV2,
         staged_scoped_text: Option<&scoped_text::StagedScopedText>,
+        staged_text_transaction: Option<&EditTransactionReport>,
+        prepared_engine: Option<&crate::ContentEngine>,
+        input_len: usize,
         secure_policy: &EditPolicyReport,
     ) {
         let mut estimated_bytes = serde_json::to_vec(plan).map_or(0, |bytes| bytes.len());
@@ -1384,6 +1393,25 @@ impl PreparedPlanCache {
                         .map(String::capacity)
                         .sum::<usize>(),
                 );
+        }
+        if let Some(staged) = staged_text_transaction {
+            estimated_bytes = estimated_bytes
+                .saturating_add(serde_json::to_vec(staged).map_or(0, |bytes| bytes.len()));
+        }
+        let mut admitted_engine = prepared_engine.cloned();
+        if admitted_engine.is_some() {
+            // The reader owns the original bytes and the canonical projection
+            // owns additional object metadata. Charge twice the input length
+            // so the existing cache limits remain conservative.
+            let with_engine = estimated_bytes.saturating_add(input_len.saturating_mul(2));
+            if with_engine <= MAX_PREPARED_PLAN_BYTES {
+                estimated_bytes = with_engine;
+            } else {
+                // Parsed-state reuse is optional. Keep the much smaller
+                // authenticated plan/analysis artifact when only the engine
+                // would exceed the per-entry budget.
+                admitted_engine = None;
+            }
         }
         if estimated_bytes > MAX_PREPARED_PLAN_BYTES {
             return;
@@ -1410,6 +1438,8 @@ impl PreparedPlanCache {
             PreparedPlanArtifact {
                 plan: plan.clone(),
                 staged_scoped_text: staged_scoped_text.cloned(),
+                staged_text_transaction: staged_text_transaction.cloned(),
+                prepared_engine: admitted_engine,
                 secure_policy: secure_policy.clone(),
                 estimated_bytes,
                 created_at: std::time::Instant::now(),
@@ -1424,14 +1454,25 @@ fn prepared_plan_cache() -> &'static RwLock<PreparedPlanCache> {
 }
 
 fn cache_prepared_plan(
+    input: &[u8],
     plan: &UniversalEditPlanV2,
     staged_scoped_text: Option<&scoped_text::StagedScopedText>,
+    staged_text_transaction: Option<&EditTransactionReport>,
     secure_policy: &EditPolicyReport,
 ) {
+    let prepared_engine =
+        crate::input_identity::scoped_engine(input).and_then(|(_, engine)| engine);
     prepared_plan_cache()
         .write()
         .expect("prepared universal plan cache lock poisoned")
-        .insert(plan, staged_scoped_text, secure_policy);
+        .insert(
+            plan,
+            staged_scoped_text,
+            staged_text_transaction,
+            prepared_engine.as_ref(),
+            input.len(),
+            secure_policy,
+        );
 }
 
 fn cached_prepared_plan(
@@ -1440,6 +1481,8 @@ fn cached_prepared_plan(
 ) -> Option<(
     UniversalEditPlanV2,
     Option<scoped_text::StagedScopedText>,
+    Option<EditTransactionReport>,
+    Option<crate::ContentEngine>,
     EditPolicyReport,
 )> {
     prepared_plan_cache()
@@ -1605,9 +1648,15 @@ pub fn plan_universal_edit_v2(
     request: &UniversalEditRequestV2,
 ) -> Result<UniversalEditPlanV2> {
     crate::input_identity::with_input_identity(input, || {
-        let (plan, staged_scoped_text, secure_policy) =
+        let (plan, staged_scoped_text, staged_text_transaction, secure_policy) =
             plan_universal_edit_v2_staged(input, request)?;
-        cache_prepared_plan(&plan, staged_scoped_text.as_ref(), &secure_policy);
+        cache_prepared_plan(
+            input,
+            &plan,
+            staged_scoped_text.as_ref(),
+            staged_text_transaction.as_ref(),
+            &secure_policy,
+        );
         Ok(plan)
     })
 }
@@ -1618,6 +1667,7 @@ fn plan_universal_edit_v2_staged(
 ) -> Result<(
     UniversalEditPlanV2,
     Option<scoped_text::StagedScopedText>,
+    Option<EditTransactionReport>,
     EditPolicyReport,
 )> {
     crate::cancel::check_current_cancel("universal edit planning snapshot")?;
@@ -1643,6 +1693,7 @@ fn plan_universal_edit_v2_staged(
     let mut conformance_impact = json!({"requires_revalidation": true});
     let mut implementation_report;
     let mut staged_scoped_text = None;
+    let mut staged_text_transaction = None;
 
     crate::cancel::check_current_cancel("universal edit operation planning")?;
     match &requested_operation {
@@ -1887,6 +1938,7 @@ fn plan_universal_edit_v2_staged(
             planning_request.source_instruction_id = None;
             match plan_scene_text_transaction(input, &planning_request) {
                 Ok(report) => {
+                    staged_text_transaction = Some(report.clone());
                     read_set = report.read_set.clone();
                     write_set = report.write_set.clone();
                     signature_impact = report.signature_impact.clone();
@@ -2770,6 +2822,7 @@ fn plan_universal_edit_v2_staged(
             implementation_report,
         },
         staged_scoped_text,
+        staged_text_transaction,
         secure_policy,
     ))
 }
@@ -5473,20 +5526,39 @@ fn apply_universal_edit_v2_inner(
     crate::cancel::check_current_cancel("universal editing canonical plan authentication")?;
     let cached_prepared = cached_prepared_plan(&plan.revision_id, &plan.plan_id);
     let prepared_plan_cache_hit = cached_prepared.is_some();
-    let (canonical_plan, mut staged_scoped_text, secure_policy) =
-        if let Some(prepared) = cached_prepared {
-            prepared
-        } else {
-            let prepared = plan_universal_edit_v2_staged(
-                input,
-                &UniversalEditRequestV2 {
-                    operation: plan.requested_operation.clone(),
-                    policy: plan.policy.clone(),
-                },
-            )?;
-            cache_prepared_plan(&prepared.0, prepared.1.as_ref(), &prepared.2);
-            prepared
-        };
+    let (
+        canonical_plan,
+        mut staged_scoped_text,
+        mut staged_text_transaction,
+        prepared_engine,
+        secure_policy,
+    ) = if let Some(prepared) = cached_prepared {
+        prepared
+    } else {
+        let prepared = plan_universal_edit_v2_staged(
+            input,
+            &UniversalEditRequestV2 {
+                operation: plan.requested_operation.clone(),
+                policy: plan.policy.clone(),
+            },
+        )?;
+        cache_prepared_plan(
+            input,
+            &prepared.0,
+            prepared.1.as_ref(),
+            prepared.2.as_ref(),
+            &prepared.3,
+        );
+        let engine = crate::input_identity::scoped_engine(input).and_then(|(_, engine)| engine);
+        (prepared.0, prepared.1, prepared.2, engine, prepared.3)
+    };
+    let mut prepared_engine_reused = false;
+    if let Some(engine) = prepared_engine.as_ref() {
+        if let Some((position, None)) = crate::input_identity::scoped_engine(input) {
+            crate::input_identity::retain_engine(position, engine);
+            prepared_engine_reused = true;
+        }
+    }
     // Authenticate every field that can authorize or steer mutation. The
     // preview is part of the reviewed decision surface: accepting a supplied
     // plan whose preview differs from the canonical recomputation would allow
@@ -5529,6 +5601,7 @@ fn apply_universal_edit_v2_inner(
     enforce_universal_signature_policy(&secure_policy, plan.policy.mutation_mode)?;
 
     crate::cancel::check_current_cancel("universal editing operation dispatch")?;
+    let mut prepared_text_transaction_reused = false;
     let applied = match &plan.execution_operation {
         UniversalEditOperationV2::ScopedText { request } => {
             let staged = staged_scoped_text.take().ok_or_else(|| {
@@ -5657,7 +5730,26 @@ fn apply_universal_edit_v2_inner(
                     })?;
                 effective_request.font_policy = format!("approved_substitute:{approved_font}");
             }
-            apply_scene_text_transaction(input, &effective_request).map(|(bytes, report)| {
+            // Candidate and font approvals refine authorization but do not
+            // change operator eligibility. The preplanned apply path rebinds
+            // the operation identity to the effective approved request before
+            // mutation. Refused plans are never reused.
+            let reusable_prepared_transaction =
+                effective_request.requested_mode == TrueEditingMode::OperatorPreserving;
+            let applied = if reusable_prepared_transaction {
+                if let Some(transaction) = staged_text_transaction
+                    .take()
+                    .filter(|transaction| transaction.refusal.is_none())
+                {
+                    prepared_text_transaction_reused = true;
+                    apply_scene_text_transaction_preplanned(input, &effective_request, transaction)
+                } else {
+                    apply_scene_text_transaction(input, &effective_request)
+                }
+            } else {
+                apply_scene_text_transaction(input, &effective_request)
+            };
+            applied.map(|(bytes, report)| {
                 (
                     bytes,
                     serde_json::to_value(&report).unwrap_or(Value::Null),
@@ -5840,6 +5932,8 @@ fn apply_universal_edit_v2_inner(
         };
     let prepared_plan_report = json!({
         "cache_hit": prepared_plan_cache_hit,
+        "engine_reused": prepared_engine_reused,
+        "text_transaction_reused": prepared_text_transaction_reused,
         "revision_bound": true,
         "canonical_authority_revalidated": true,
         "fallback_replanning_on_miss": true,

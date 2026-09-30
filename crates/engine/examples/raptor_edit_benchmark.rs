@@ -41,6 +41,8 @@ struct Observation {
     plan_state: UniversalPlanStateV2,
     candidates: usize,
     prepared_plan_cache_hit: bool,
+    prepared_engine_reused: bool,
+    prepared_text_transaction_reused: bool,
     changed: bool,
     outcome: UniversalEditOutcomeV2,
     output_bytes: usize,
@@ -355,6 +357,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .pointer("/raptor_prepared_plan/cache_hit")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
+        let prepared_text_transaction_reused = report
+            .operation_report
+            .pointer("/raptor_prepared_plan/text_transaction_reused")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let prepared_engine_reused = report
+            .operation_report
+            .pointer("/raptor_prepared_plan/engine_reused")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         println!(
             "{}",
             serde_json::to_string(&Observation {
@@ -377,6 +389,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 plan_state: plan.state,
                 candidates: plan.candidates.len(),
                 prepared_plan_cache_hit,
+                prepared_engine_reused,
+                prepared_text_transaction_reused,
                 changed: report.changed,
                 outcome: report.outcome,
                 output_bytes: output.len(),

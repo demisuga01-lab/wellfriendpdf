@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use wellfriendpdf_engine::PdfDocument;
 use wellfriendpdf_engine::{
     CancelToken, ContentEngine, ExtractionProfile, ImageEncoder, ParseOptions, RenderDocumentCache,
     RenderMode, WellfriendError,
@@ -21,12 +22,18 @@ use wellfriendpdf_engine::{
 
 #[derive(Serialize)]
 struct Observation {
+    benchmark_schema: &'static str,
     path: String,
     input_bytes: usize,
     input_sha256: String,
     pages: usize,
     dpi: u32,
+    file_source_open_ms: f64,
+    indexed_page_count_ms: f64,
+    requested_page_materialize_ms: f64,
+    full_page_tree_materialize_ms: f64,
     read_ms: f64,
+    input_sha256_ms: f64,
     open_ms: f64,
     page_tree_ms: f64,
     page_program_session_open_ms: f64,
@@ -151,6 +158,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     for path in paths {
+        // This path-backed reader workload is directly comparable to a
+        // metadata/page-count inspection command: open the cross-reference
+        // graph, read the root /Pages /Count index, and stop. Requested-page
+        // and full-tree materialization are reported separately.
+        let file_open_start = Instant::now();
+        let file_document = match PdfDocument::open_path(&path) {
+            Ok(document) => document,
+            Err(error) => {
+                emit_failure(&path, "file_source_open", error);
+                continue;
+            }
+        };
+        let file_source_open_ms = elapsed_ms(file_open_start);
+        let count_start = Instant::now();
+        let indexed_pages = match file_document.page_count() {
+            Ok(pages) if pages > 0 => pages,
+            Ok(_) => {
+                emit_failure(&path, "indexed_page_count", "document has no pages");
+                continue;
+            }
+            Err(error) => {
+                emit_failure(&path, "indexed_page_count", error);
+                continue;
+            }
+        };
+        let indexed_page_count_ms = elapsed_ms(count_start);
+        let requested_page_start = Instant::now();
+        if let Err(error) = file_document.get_page(1) {
+            emit_failure(&path, "requested_page_materialize", error);
+            continue;
+        }
+        let requested_page_materialize_ms = elapsed_ms(requested_page_start);
+        let full_page_tree_start = Instant::now();
+        let materialized_pages = match file_document.get_pages() {
+            Ok(pages) => pages,
+            Err(error) => {
+                emit_failure(&path, "full_page_tree_materialize", error);
+                continue;
+            }
+        };
+        let full_page_tree_materialize_ms = elapsed_ms(full_page_tree_start);
+        if materialized_pages.len() != indexed_pages {
+            emit_failure(
+                &path,
+                "page_count_consistency",
+                format!(
+                    "indexed page count {indexed_pages} differs from materialized count {}",
+                    materialized_pages.len()
+                ),
+            );
+            continue;
+        }
+
         let read_start = Instant::now();
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
@@ -160,7 +220,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         let read_ms = elapsed_ms(read_start);
+        let input_sha256_start = Instant::now();
         let input_sha256 = digest(&bytes);
+        let input_sha256_ms = elapsed_ms(input_sha256_start);
 
         let open_start = Instant::now();
         let structural_engine = match ContentEngine::open_bytes(bytes.clone()) {
@@ -305,12 +367,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let png_encode_ms = elapsed_ms(encode_start);
 
         let observation = Observation {
+            benchmark_schema: "wellfriendpdf.stage-separated.v2",
             path: path.display().to_string(),
             input_bytes: bytes.len(),
             input_sha256,
             pages,
             dpi,
+            file_source_open_ms,
+            indexed_page_count_ms,
+            requested_page_materialize_ms,
+            full_page_tree_materialize_ms,
             read_ms,
+            input_sha256_ms,
             open_ms,
             page_tree_ms,
             page_program_session_open_ms,

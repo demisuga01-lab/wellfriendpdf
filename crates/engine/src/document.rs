@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
@@ -17,6 +17,8 @@ const DEFAULT_MEDIA_BOX: [f64; 4] = [0.0, 0.0, 612.0, 792.0];
 pub struct PdfDocument {
     reader: PdfReader,
     pages_cache: OnceLock<Vec<PdfPage>>,
+    page_count_cache: OnceLock<usize>,
+    page_lookup_cache: RwLock<HashMap<usize, PdfPage>>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,34 +46,35 @@ struct InheritedAttrs {
 }
 
 impl PdfDocument {
-    pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self {
-            reader: PdfReader::from_path(path)?,
+    fn from_reader(reader: PdfReader) -> Self {
+        Self {
+            reader,
             pages_cache: OnceLock::new(),
-        })
+            page_count_cache: OnceLock::new(),
+            page_lookup_cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self::from_reader(PdfReader::from_path(path)?))
     }
 
     pub fn open_bytes(data: Vec<u8>) -> Result<Self> {
-        Ok(Self {
-            reader: PdfReader::from_bytes(data)?,
-            pages_cache: OnceLock::new(),
-        })
+        Ok(Self::from_reader(PdfReader::from_bytes(data)?))
     }
 
     /// Open a PDF from a file path, supplying a password for encrypted PDFs.
     pub fn open_path_with_password(path: impl AsRef<Path>, password: &[u8]) -> Result<Self> {
-        Ok(Self {
-            reader: PdfReader::from_path_with_password(path, password)?,
-            pages_cache: OnceLock::new(),
-        })
+        Ok(Self::from_reader(PdfReader::from_path_with_password(
+            path, password,
+        )?))
     }
 
     /// Open a PDF from bytes, supplying a password for encrypted PDFs.
     pub fn open_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
-        Ok(Self {
-            reader: PdfReader::from_bytes_with_password(data, password)?,
-            pages_cache: OnceLock::new(),
-        })
+        Ok(Self::from_reader(PdfReader::from_bytes_with_password(
+            data, password,
+        )?))
     }
 
     /// Open a public-key encrypted PDF from bytes using an explicit provider.
@@ -79,10 +82,9 @@ impl PdfDocument {
         data: Vec<u8>,
         provider: &PubSecKeyProvider,
     ) -> Result<Self> {
-        Ok(Self {
-            reader: PdfReader::from_bytes_with_pubsec_provider(data, provider)?,
-            pages_cache: OnceLock::new(),
-        })
+        Ok(Self::from_reader(
+            PdfReader::from_bytes_with_pubsec_provider(data, provider)?,
+        ))
     }
 
     pub fn reader(&self) -> &PdfReader {
@@ -111,7 +113,25 @@ impl PdfDocument {
     }
 
     pub fn page_count(&self) -> Result<usize> {
-        Ok(self.cached_pages()?.len())
+        if let Some(pages) = self.pages_cache.get() {
+            return Ok(pages.len());
+        }
+        if let Some(count) = self.page_count_cache.get() {
+            return Ok(*count);
+        }
+
+        // /Pages /Count is the PDF's random-access page-count index. Reading it
+        // must not instantiate every page, clone every inherited resource
+        // dictionary, or decode page content. If the index is absent or
+        // malformed, retain the established full traversal as a correctness
+        // fallback. Full traversal also validates the advertised count when a
+        // caller explicitly asks for every page.
+        let count = match self.indexed_page_count() {
+            Some(count) => count,
+            None => self.cached_pages()?.len(),
+        };
+        let _ = self.page_count_cache.set(count);
+        Ok(count)
     }
 
     pub fn get_page(&self, page_number: usize) -> Result<PdfPage> {
@@ -120,12 +140,214 @@ impl PdfDocument {
                 "page numbers are 1-indexed".to_string(),
             ));
         }
-        self.cached_pages()?
-            .get(page_number - 1)
-            .cloned()
-            .ok_or_else(|| {
+        if let Some(pages) = self.pages_cache.get() {
+            return pages.get(page_number - 1).cloned().ok_or_else(|| {
                 WellfriendError::MalformedPdf(format!("page {page_number} is out of range"))
-            })
+            });
+        }
+        if page_number > self.page_count()? {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "page {page_number} is out of range"
+            )));
+        }
+        if let Some(page) = self
+            .page_lookup_cache
+            .read()
+            .expect("page lookup cache lock poisoned")
+            .get(&page_number)
+            .cloned()
+        {
+            return Ok(page);
+        }
+
+        let page = match self.collect_page(page_number)? {
+            Some(page) => page,
+            None => self
+                .cached_pages()?
+                .get(page_number - 1)
+                .cloned()
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf(format!(
+                        "page {page_number} is absent from the page tree"
+                    ))
+                })?,
+        };
+        self.page_lookup_cache
+            .write()
+            .expect("page lookup cache lock poisoned")
+            .insert(page_number, page.clone());
+        Ok(page)
+    }
+
+    fn indexed_page_count(&self) -> Option<usize> {
+        let catalog = self.get_catalog().ok()?;
+        let pages_ref = catalog.get_reference("Pages")?;
+        let root = self.reader.get_and_resolve(pages_ref.0, pages_ref.1).ok()?;
+        let dict = root.as_dict()?;
+        let count = self.reader.resolve(dict.get("Count")?.clone()).ok()?;
+        let count = match count {
+            PdfObject::Integer(value) => usize::try_from(value).ok()?,
+            PdfObject::Real(value)
+                if value.is_finite()
+                    && value > 0.0
+                    && value.fract() == 0.0
+                    && value <= usize::MAX as f64 =>
+            {
+                value as usize
+            }
+            _ => return None,
+        };
+        (count > 0 && count <= MAX_DOCUMENT_PAGES).then_some(count)
+    }
+
+    fn collect_page(&self, page_number: usize) -> Result<Option<PdfPage>> {
+        let catalog = self.get_catalog()?;
+        let pages_ref = catalog.get_reference("Pages").ok_or_else(|| {
+            WellfriendError::MalformedPdf("catalog is missing /Pages reference".to_string())
+        })?;
+        let root_pages_obj = self.reader.get_and_resolve(pages_ref.0, pages_ref.1)?;
+        let root_pages = root_pages_obj.as_dict().cloned().ok_or_else(|| {
+            WellfriendError::MalformedPdf("/Pages did not resolve to a dictionary".to_string())
+        })?;
+        let mut visited = HashSet::new();
+        visited.insert(pages_ref);
+        let mut next_page_number = 1usize;
+        self.walk_page_tree_until(
+            pages_ref,
+            &root_pages,
+            InheritedAttrs::default(),
+            &mut visited,
+            &mut next_page_number,
+            page_number,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn walk_page_tree_until(
+        &self,
+        object_ref: (u32, u16),
+        dict: &PdfDictionary,
+        inherited: InheritedAttrs,
+        visited: &mut HashSet<(u32, u16)>,
+        next_page_number: &mut usize,
+        target_page: usize,
+        depth: usize,
+    ) -> Result<Option<PdfPage>> {
+        if depth >= MAX_PAGE_TREE_DEPTH {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "page tree exceeds depth limit {MAX_PAGE_TREE_DEPTH}"
+            )));
+        }
+        let inherited = apply_inherited_attrs(dict, inherited, Some(&self.reader))?;
+        if dict.get("Kids").is_some() {
+            let kids_object =
+                self.reader
+                    .resolve(dict.get("Kids").cloned().ok_or_else(|| {
+                        WellfriendError::MalformedPdf(format!(
+                            "page tree node {} {} is missing /Kids",
+                            object_ref.0, object_ref.1
+                        ))
+                    })?)?;
+            let kids = kids_object.as_array().ok_or_else(|| {
+                WellfriendError::MalformedPdf(format!(
+                    "page tree node {} {} has non-array /Kids",
+                    object_ref.0, object_ref.1
+                ))
+            })?;
+            for kid in kids {
+                let Some(kid_ref) = kid.as_reference() else {
+                    log::warn!(
+                        "page tree node {} {} contains a non-reference /Kids entry",
+                        object_ref.0,
+                        object_ref.1
+                    );
+                    continue;
+                };
+                if !visited.insert(kid_ref) {
+                    log::warn!(
+                        "skipping cyclic page-tree reference {} {}",
+                        kid_ref.0,
+                        kid_ref.1
+                    );
+                    continue;
+                }
+                if visited.len() > MAX_PAGE_TREE_NODES {
+                    return Err(WellfriendError::ResourceLimit(format!(
+                        "page tree exceeds node limit {MAX_PAGE_TREE_NODES}"
+                    )));
+                }
+                let kid_object = self.reader.get_and_resolve(kid_ref.0, kid_ref.1)?;
+                let kid_dict = kid_object.as_dict().ok_or_else(|| {
+                    WellfriendError::MalformedPdf(format!(
+                        "page-tree object {} {} did not resolve to a dictionary",
+                        kid_ref.0, kid_ref.1
+                    ))
+                })?;
+                if kid_dict.get("Kids").is_some() {
+                    let subtree_count = kid_dict
+                        .get("Count")
+                        .and_then(|value| self.reader.resolve(value.clone()).ok())
+                        .and_then(|value| match value {
+                            PdfObject::Integer(count) => usize::try_from(count).ok(),
+                            PdfObject::Real(count)
+                                if count.is_finite()
+                                    && count > 0.0
+                                    && count.fract() == 0.0
+                                    && count <= usize::MAX as f64 =>
+                            {
+                                Some(count as usize)
+                            }
+                            _ => None,
+                        })
+                        .filter(|count| *count <= MAX_DOCUMENT_PAGES);
+                    if let Some(count) = subtree_count {
+                        let subtree_end =
+                            (*next_page_number).checked_add(count).ok_or_else(|| {
+                                WellfriendError::ResourceLimit(
+                                    "page-tree indexed count overflows".to_string(),
+                                )
+                            })?;
+                        if target_page >= subtree_end {
+                            *next_page_number = subtree_end;
+                            continue;
+                        }
+                    }
+                }
+                if let Some(page) = self.walk_page_tree_until(
+                    kid_ref,
+                    kid_dict,
+                    inherited.clone(),
+                    visited,
+                    next_page_number,
+                    target_page,
+                    depth + 1,
+                )? {
+                    return Ok(Some(page));
+                }
+            }
+            return Ok(None);
+        }
+
+        if *next_page_number > MAX_DOCUMENT_PAGES {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "document exceeds page limit {MAX_DOCUMENT_PAGES}"
+            )));
+        }
+        let current = *next_page_number;
+        *next_page_number += 1;
+        if current != target_page {
+            return Ok(None);
+        }
+        build_page_from_dict(
+            object_ref.0,
+            object_ref.1,
+            current,
+            dict,
+            inherited,
+            Some(&self.reader),
+        )
+        .map(Some)
     }
 
     /// Return the immutable page-tree projection without cloning the complete
@@ -173,6 +395,13 @@ impl PdfDocument {
                     expected_count,
                     pages.len()
                 );
+            }
+        }
+
+        let _ = self.page_count_cache.set(pages.len());
+        if let Ok(mut lookup) = self.page_lookup_cache.write() {
+            for page in &pages {
+                lookup.insert(page.page_number, page.clone());
             }
         }
 
@@ -609,5 +838,26 @@ mod tests {
         let page = dict(&[("UserUnit", PdfObject::Real(0.0))]);
         let err = parse_user_unit(&page, None).unwrap_err();
         assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+    }
+
+    #[test]
+    fn indexed_page_count_and_requested_page_do_not_materialize_the_full_tree() {
+        let document = PdfDocument::open_bytes(crate::render::shading::tests_minimal_pdf())
+            .expect("minimal PDF opens");
+
+        assert_eq!(document.page_count().expect("indexed page count"), 1);
+        assert!(document.pages_cache.get().is_none());
+
+        let page = document.get_page(1).expect("requested page materializes");
+        assert_eq!(page.page_number, 1);
+        assert!(document.pages_cache.get().is_none());
+        assert_eq!(
+            document
+                .page_lookup_cache
+                .read()
+                .expect("page cache lock")
+                .len(),
+            1
+        );
     }
 }

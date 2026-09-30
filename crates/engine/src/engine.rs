@@ -1433,6 +1433,14 @@ pub struct ContentEngine {
     canonical: CanonicalDocument,
     registered_fonts: RegisteredFontProvider,
     page_artifacts: Arc<RwLock<PageArtifactCache>>,
+    edit_policy_cache: Arc<
+        RwLock<
+            HashMap<
+                (crate::secure_mutation::EditOperation, Option<String>),
+                crate::secure_mutation::EditPolicyReport,
+            >,
+        >,
+    >,
 }
 
 impl ContentEngine {
@@ -1443,7 +1451,32 @@ impl ContentEngine {
             canonical,
             registered_fonts: RegisteredFontProvider::default(),
             page_artifacts: Arc::new(RwLock::new(PageArtifactCache::default())),
+            edit_policy_cache: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub(crate) fn cached_edit_policy(
+        &self,
+        operation: crate::secure_mutation::EditOperation,
+        target_field: Option<&str>,
+    ) -> Option<crate::secure_mutation::EditPolicyReport> {
+        self.edit_policy_cache
+            .read()
+            .expect("edit policy cache lock poisoned")
+            .get(&(operation, target_field.map(str::to_owned)))
+            .cloned()
+    }
+
+    pub(crate) fn retain_edit_policy(
+        &self,
+        operation: crate::secure_mutation::EditOperation,
+        target_field: Option<&str>,
+        report: &crate::secure_mutation::EditPolicyReport,
+    ) {
+        self.edit_policy_cache
+            .write()
+            .expect("edit policy cache lock poisoned")
+            .insert((operation, target_field.map(str::to_owned)), report.clone());
     }
 
     pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {

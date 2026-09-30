@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import subprocess
+import statistics
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,7 +68,7 @@ def version(candidates: tuple[tuple[str, ...], ...]) -> dict[str, Any]:
     return {"error": last_error}
 
 
-def run_tool(
+def run_tool_once(
     prefix: tuple[str, ...], accepted_codes: frozenset[int], path: Path, timeout_sec: int
 ) -> dict[str, Any]:
     command = [*prefix, str(path)]
@@ -112,12 +113,40 @@ def run_tool(
     }
 
 
+def run_tool(
+    prefix: tuple[str, ...],
+    accepted_codes: frozenset[int],
+    path: Path,
+    timeout_sec: int,
+    repetitions: int,
+) -> dict[str, Any]:
+    samples = [
+        run_tool_once(prefix, accepted_codes, path, timeout_sec)
+        for _ in range(max(1, repetitions))
+    ]
+    durations = [float(sample["duration_ms"]) for sample in samples]
+    statuses = [str(sample["status"]) for sample in samples]
+    accepted = all(status in {"accepted", "accepted_with_warnings"} for status in statuses)
+    warning = any(status == "accepted_with_warnings" for status in statuses)
+    return {
+        "command": samples[-1]["command"],
+        "status": "accepted_with_warnings" if accepted and warning else "accepted" if accepted else next(status for status in statuses if status not in {"accepted", "accepted_with_warnings"}),
+        "duration_ms": round(statistics.median(durations), 6),
+        "duration_samples_ms": durations,
+        "minimum_ms": round(min(durations), 6),
+        "maximum_ms": round(max(durations), 6),
+        "runs": len(samples),
+        "samples": samples,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--timeout-sec", type=int, default=180)
+    parser.add_argument("--repetitions", type=int, default=3)
     args = parser.parse_args()
 
     inputs = pdfs(args.corpus, args.limit)
@@ -128,7 +157,8 @@ def main() -> int:
         "corpus": str(args.corpus.resolve()),
         "files": len(inputs),
         "timeout_sec": args.timeout_sec,
-        "protocol": "one fresh process per tool and PDF; deterministic order rotation",
+        "repetitions": max(1, args.repetitions),
+        "protocol": "fresh process per tool, PDF, and repetition; per-file result is the repetition median; deterministic order rotation",
         "workload_warning": "commands are intentionally different and are not semantic-equivalence claims",
         "versions": {name: version(VERSION_COMMANDS[name]) for name, _, _ in TOOLS},
     }
@@ -137,7 +167,13 @@ def main() -> int:
         for index, path in enumerate(inputs, start=1):
             rotated = TOOLS[(index - 1) % len(TOOLS) :] + TOOLS[: (index - 1) % len(TOOLS)]
             commands = {
-                name: run_tool(prefix, accepted_codes, path, args.timeout_sec)
+                name: run_tool(
+                    prefix,
+                    accepted_codes,
+                    path,
+                    args.timeout_sec,
+                    args.repetitions,
+                )
                 for name, prefix, accepted_codes in rotated
             }
             row = {

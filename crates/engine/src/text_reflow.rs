@@ -18,8 +18,9 @@ use crate::advanced_editing::{
 use crate::authoring::{PageSize as AuthorPageSize, PdfBuilder, TextStyle};
 use crate::editing_transactions::{
     build_document_snapshot, build_scene_graph, build_scene_graph_for_analysis,
-    dirty_region_report, text_identity_report, undo_restoration_report, DocumentSnapshot,
-    EditTransactionReport, EditableSceneGraph, SceneTextEditRequest, TransactionState,
+    dirty_region_report, source_text_scene_node_ids, text_identity_report, undo_restoration_report,
+    DocumentSnapshot, EditTransactionReport, EditableSceneGraph, SceneTextEditRequest,
+    TransactionState,
 };
 use crate::filters::{decode_stream_lossless, flate_encode_cancellable, StreamDecodeStatus};
 use crate::render::get_fallback_font;
@@ -2461,7 +2462,7 @@ pub fn analyze_geometric_region(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<GeometricTextRegion> {
-    let graph = build_scene_graph(input, &[request.page])?;
+    let text_scene_nodes = source_text_scene_node_ids(input, request.page, 16)?;
     let region = region_for_request(input, request)?;
     let page_box = page_bounds(input, request.page)?;
     let provenance = operator_text_provenance(
@@ -2536,17 +2537,12 @@ pub fn analyze_geometric_region(
         }
     }
     let source_mapping_resolved = !source_instructions.is_empty();
-    let source_scene_nodes = graph
-        .nodes
-        .iter()
-        .filter(|node| node.page == request.page)
-        .map(|node| node.node_id.clone())
-        .take(16)
-        .collect::<Vec<_>>();
+    let source_scene_nodes = text_scene_nodes;
+    let input_revision = crate::input_identity::revision_id(input);
     let region_id = stable_id(
         "geometric-region",
         &[
-            input,
+            input_revision.as_bytes(),
             &request.page.to_le_bytes(),
             request.source_text.as_bytes(),
             request.replacement_text.as_bytes(),
@@ -2718,10 +2714,11 @@ fn geometric_preview_semantic_layout(
     request: &GeometricReflowRequest,
     region: &GeometricTextRegion,
 ) -> SemanticLayoutReport {
+    let input_revision = crate::input_identity::revision_id(input);
     let region_id = stable_id(
         "semantic-geometric-preview",
         &[
-            input,
+            input_revision.as_bytes(),
             request.source_text.as_bytes(),
             request.replacement_text.as_bytes(),
         ],
@@ -2748,12 +2745,15 @@ fn geometric_preview_semantic_layout(
             "source_instructions": region.source_instructions.clone(),
             "preview_scope": "geometric_block_single_region",
         }),
-        transaction_revision: stable_id("semantic-preview-revision", &[input]),
+        transaction_revision: stable_id("semantic-preview-revision", &[input_revision.as_bytes()]),
         alternatives: Vec::new(),
     };
     SemanticLayoutReport {
         schema_version: TEXT_REFLOW_SCHEMA_VERSION.to_string(),
-        document_id: stable_id("semantic-layout-geometric-preview", &[input]),
+        document_id: stable_id(
+            "semantic-layout-geometric-preview",
+            &[input_revision.as_bytes()],
+        ),
         nodes: vec![node],
         edges: Vec::new(),
         algorithms_used: vec![
@@ -2800,6 +2800,7 @@ fn no_change_preview_reflow(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<ReflowTransactionReport> {
+    let input_revision = crate::input_identity::revision_id(input);
     let snapshot = build_document_snapshot(input, None)?;
     let rect = region_for_request(input, request)?;
     let page_box = page_bounds(input, request.page)?;
@@ -2816,7 +2817,7 @@ fn no_change_preview_reflow(
         schema_version: TEXT_REFLOW_SCHEMA_VERSION.to_string(),
         region_id: stable_id(
             "geometric-no-change-region",
-            &[input, request.source_text.as_bytes()],
+            &[input_revision.as_bytes(), request.source_text.as_bytes()],
         ),
         source_scene_nodes: Vec::new(),
         source_semantic_nodes: Vec::new(),
@@ -2850,7 +2851,7 @@ fn no_change_preview_reflow(
         })],
         paragraph_ids: vec![stable_id(
             "paragraph-no-change",
-            &[input, request.source_text.as_bytes()],
+            &[input_revision.as_bytes(), request.source_text.as_bytes()],
         )],
         allowed_expansion_region: request.allowed_expansion_region.unwrap_or(rect),
         locked_neighbors: Vec::new(),
@@ -2924,7 +2925,7 @@ fn no_change_preview_reflow(
         schema_version: TEXT_REFLOW_SCHEMA_VERSION.to_string(),
         transaction_id: stable_id(
             "reflow-no-change-transaction",
-            &[input, request.source_text.as_bytes()],
+            &[input_revision.as_bytes(), request.source_text.as_bytes()],
         ),
         input_snapshot: snapshot,
         requested_mode: request.requested_mode,
@@ -2992,6 +2993,7 @@ fn preview_reflow_internal(
     if allow_no_change_fast_path && request.source_text == request.replacement_text {
         return no_change_preview_reflow(input, request);
     }
+    let input_revision = crate::input_identity::revision_id(input);
     let snapshot = build_document_snapshot(input, None)?;
     let region = analyze_geometric_region(input, request)?;
     let paragraph = paragraph_style_model_from_region(input, request, &region)?;
@@ -3047,7 +3049,7 @@ fn preview_reflow_internal(
         transaction_id: stable_id(
             "reflow-transaction",
             &[
-                input,
+                input_revision.as_bytes(),
                 request.source_text.as_bytes(),
                 request.replacement_text.as_bytes(),
             ],

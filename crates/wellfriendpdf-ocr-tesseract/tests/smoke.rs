@@ -17,7 +17,7 @@
 //! - policy `Off` with the real engine present is byte-identical to no engine;
 //! - field extraction and chunking work source-agnostically over OCR'd text.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use wellfriendpdf_engine::ocr::preprocess::{preprocess, PreprocessConfig};
 use wellfriendpdf_engine::{
@@ -82,6 +82,15 @@ fn text_pdf(lines: &[&str]) -> Vec<u8> {
 /// (not `#[ignore]`) the recognition tests when the binary is absent.
 fn tesseract() -> Option<TesseractEngine> {
     TesseractEngine::new().ok()
+}
+
+/// Live OCR tests share a finite external process and CPU budget. Rust runs
+/// independent tests concurrently by default, which can make several full-page
+/// Tesseract workloads exhaust each other's per-page deadlines. Serialize the
+/// live-backend cases while retaining each case's internal page concurrency.
+fn live_ocr_test_guard() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Build a single-page **image-only** PDF (no text layer) embedding `gray`
@@ -174,6 +183,7 @@ fn render_gray(lines: &[&str], dpi: u32) -> OcrImage {
 
 #[test]
 fn ocr_recovers_rendered_text_with_plausible_geometry() {
+    let _live_ocr_guard = live_ocr_test_guard();
     let Some(tess) = tesseract() else {
         eprintln!("SKIP: tesseract not installed; install it + the eng pack to run this test");
         return;
@@ -240,6 +250,7 @@ fn ocr_recovers_rendered_text_with_plausible_geometry() {
 fn full_parse_path_ocrs_a_scanned_pdf_with_merged_positions() {
     use wellfriendpdf_engine::SourceInfo;
 
+    let _live_ocr_guard = live_ocr_test_guard();
     let Some(_) = tesseract() else {
         eprintln!("SKIP: tesseract not installed");
         return;
@@ -299,6 +310,7 @@ fn full_parse_path_ocrs_a_scanned_pdf_with_merged_positions() {
 
 #[test]
 fn multi_page_scan_ocrs_through_the_backends_concurrency_window() {
+    let _live_ocr_guard = live_ocr_test_guard();
     let Some(tess) = tesseract() else {
         eprintln!("SKIP: tesseract not installed");
         return;
@@ -385,6 +397,7 @@ fn policy_off_with_real_tesseract_matches_no_engine() {
 fn extract_fields_on_an_ocrd_scanned_invoice() {
     use wellfriendpdf_engine::{DocType, ExtractOptions, FieldValue};
 
+    let _live_ocr_guard = live_ocr_test_guard();
     let Some(_) = tesseract() else {
         eprintln!("SKIP: tesseract not installed");
         return;
@@ -436,6 +449,7 @@ fn extract_fields_on_an_ocrd_scanned_invoice() {
 fn chunk_an_ocrd_scanned_document() {
     use wellfriendpdf_engine::ChunkOptions;
 
+    let _live_ocr_guard = live_ocr_test_guard();
     let Some(_) = tesseract() else {
         eprintln!("SKIP: tesseract not installed");
         return;

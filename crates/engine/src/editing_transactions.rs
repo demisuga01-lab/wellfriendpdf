@@ -6,16 +6,15 @@
 //! without creating a second parser, renderer, writer, or binding-specific edit
 //! engine.
 
-use crate::advanced_editing::{
-    analyze_multi_run_text_range, list_vector_objects, SharedFormEditPolicy,
-};
+use crate::advanced_editing::{list_vector_objects, SharedFormEditPolicy};
 use crate::fonts::{
     BundledFontProvider, FontMatchRequest, FontProvider, ShapeOptions, TextDirection, TextShaper,
 };
 use crate::render::font_rasterizer::get_fallback_font;
 use crate::source_editing::{
     edit_text_operator, operator_text_eligibility, operator_text_provenance,
-    OperatorEditOperationReport, OperatorTextEditRequest, TrueEditingMode,
+    prepared_page_text_model, OperatorEditOperationReport, OperatorTextEditRequest,
+    TrueEditingMode,
 };
 use crate::universal_editing::universal_image_occurrences_v2;
 use crate::{ContentEngine, Result, WellfriendError};
@@ -946,6 +945,41 @@ pub fn build_scene_graph_for_analysis(input: &[u8], pages: &[usize]) -> Result<E
     build_scene_graph_with_options(input, pages, false)
 }
 
+/// Return exact text-scene identities without inventorying unrelated images,
+/// vectors, annotations, or resource definitions on the page. Local text
+/// reflow needs these provenance links, not a complete editable scene graph.
+pub(crate) fn source_text_scene_node_ids(
+    input: &[u8],
+    page: usize,
+    limit: usize,
+) -> Result<Vec<String>> {
+    let snapshot = snapshot_id(input);
+    let document = document_id(input);
+    let model = prepared_page_text_model(input, page)?;
+    Ok(model
+        .source_spans
+        .iter()
+        .take(limit)
+        .map(|span| {
+            let occurrence_id = stable_id(
+                "occurrence-text-token",
+                &[
+                    document.as_bytes(),
+                    &page.to_le_bytes(),
+                    &span.stream_object.to_le_bytes(),
+                    &span.stream_generation.to_le_bytes(),
+                    &span.byte_range[0].to_le_bytes(),
+                    &span.byte_range[1].to_le_bytes(),
+                ],
+            );
+            stable_id(
+                "scene-text-token",
+                &[snapshot.as_bytes(), occurrence_id.as_bytes()],
+            )
+        })
+        .collect())
+}
+
 fn build_scene_graph_with_options(
     input: &[u8],
     pages: &[usize],
@@ -970,7 +1004,7 @@ fn build_scene_graph_with_options(
         let bounds = page_bounds(&engine, page);
         let text = engine.get_page_text(page).unwrap_or_default();
         let mut exact_text_nodes_added = false;
-        if let Ok(model) = analyze_multi_run_text_range(input, page) {
+        if let Ok(model) = prepared_page_text_model(input, page) {
             for span in model.source_spans {
                 exact_text_nodes_added = true;
                 let occurrence_id = stable_id(
@@ -2007,13 +2041,61 @@ fn apply_scene_text_transaction_inner(
         let report = text_reflow_transaction_report(input, request, &reflow_report, Some(&output))?;
         return Ok((output, report));
     }
-    let mut report = plan_scene_text_transaction(input, request)?;
+    let report = plan_scene_text_transaction(input, request)?;
+    apply_scene_text_transaction_preplanned_inner(input, request, report)
+}
+
+/// Apply an operator-preserving text transaction from the canonical report
+/// already produced by the enclosing universal plan. This avoids repeating
+/// snapshot construction, eligibility analysis, shaping, and page discovery
+/// between approval and mutation. The function is crate-private so the only
+/// caller is the revision-authenticated universal transaction cache.
+pub(crate) fn apply_scene_text_transaction_preplanned(
+    input: &[u8],
+    request: &SceneTextEditRequest,
+    report: EditTransactionReport,
+) -> Result<(Vec<u8>, EditTransactionReport)> {
+    crate::input_identity::with_input_identity(input, || {
+        apply_scene_text_transaction_preplanned_inner(input, request, report)
+    })
+}
+
+fn apply_scene_text_transaction_preplanned_inner(
+    input: &[u8],
+    request: &SceneTextEditRequest,
+    mut report: EditTransactionReport,
+) -> Result<(Vec<u8>, EditTransactionReport)> {
+    if request_uses_text_reflow(request.requested_mode)
+        || report.requested_mode != request.requested_mode
+        || report.affected_pages.first().copied() != Some(request.page)
+    {
+        return Err(WellfriendError::invalid_input(
+            "editing_transactions prepared operator plan does not match the apply request",
+        ));
+    }
     if let Some(refusal) = report.refusal.as_ref() {
         return Err(WellfriendError::UnsupportedFeature(format!(
             "editing_transactions transaction refused: {}",
             refusal["code"]
         )));
     }
+    // Universal approval may bind an exact source instruction or replace an
+    // abstract `allow_substitute` policy with the approved font name. Neither
+    // changes operator eligibility, but both belong to the authenticated
+    // operation identity. Rebind the cheap identity fields while retaining the
+    // expensive snapshot and source-analysis result.
+    let identity = text_identity_report(&request.replacement_text, request.direction.as_deref())?;
+    report.operation_log_hash = stable_id(
+        "operation-log",
+        &[
+            report.base_snapshot_id.as_bytes(),
+            request.source_text.as_bytes(),
+            request.replacement_text.as_bytes(),
+            request.font_policy.as_bytes(),
+            identity.text_hash.as_bytes(),
+        ],
+    );
+    report.transaction_id = stable_id("transaction", &[report.operation_log_hash.as_bytes()]);
     let (output, source_editing) = edit_text_operator(
         input,
         &OperatorTextEditRequest {

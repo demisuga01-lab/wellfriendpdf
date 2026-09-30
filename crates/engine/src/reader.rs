@@ -23,7 +23,9 @@ use crate::parser_report::{ParserCategory, ParserDiagnostic, ParserSeverity, Par
 use crate::pubsec::{parse_pubsec_encryption_info, recover_pubsec_file_key, PubSecKeyProvider};
 
 const MAX_FALLBACK_XREF_OBJECTS: usize = 200_000;
+const STREAMING_INITIAL_TAIL_READ: usize = 64 * 1024;
 const STREAMING_TAIL_READ_LIMIT: usize = 16 * 1024 * 1024;
+const STREAMING_INITIAL_XREF_READ: usize = 64 * 1024;
 const STREAMING_XREF_READ_LIMIT: usize = 64 * 1024 * 1024;
 const STREAMING_FULL_READ_FALLBACK_LIMIT: u64 = 128 * 1024 * 1024;
 const STREAMING_STREAM_HEADER_READ_LIMIT: usize = 1024 * 1024;
@@ -762,11 +764,10 @@ impl PdfReader {
         let repair_diagnostics = Vec::new();
         let prefix = source.read_prefix(1024)?;
         let version = parse_header_version(&prefix)?;
-        let tail = source.read_tail(STREAMING_TAIL_READ_LIMIT)?;
         let mut xref = HashMap::new();
         let mut trailer = None;
         let mut visited = HashSet::new();
-        let startxref = find_startxref(&tail)?;
+        let startxref = find_startxref_from_source(&source)?;
 
         read_xref_chain_from_source(&source, startxref, &mut xref, &mut trailer, &mut visited)?;
 
@@ -2037,17 +2038,27 @@ fn read_xref_section_from_source(
     xref: &mut HashMap<(u32, u16), XrefEntry>,
 ) -> Result<XrefSection> {
     let base = offset.saturating_sub(64);
-    let data = source.read_from(base, STREAMING_XREF_READ_LIMIT)?;
-    let rel_offset = offset - base;
-    let rel_offset = skip_ws_and_comments(&data, rel_offset);
-    if bytes_at(&data, rel_offset, b"xref") {
-        read_classic_xref(&data, rel_offset, xref)
-    } else if let Ok(section) = read_xref_stream(&data, rel_offset, xref) {
-        Ok(section)
-    } else if let Some(repaired) = nearby_classic_xref_offset(&data, rel_offset) {
-        read_classic_xref(&data, repaired, xref)
-    } else {
-        read_xref_stream(&data, rel_offset, xref)
+    let available = source.len().saturating_sub(base);
+    let limit = available.min(STREAMING_XREF_READ_LIMIT);
+    let mut read_len = limit.min(STREAMING_INITIAL_XREF_READ);
+
+    loop {
+        let data = source.read_at(base, read_len)?;
+        let mut section_xref = HashMap::new();
+        match read_xref_section(&data, offset - base, &mut section_xref) {
+            Ok(section) => {
+                for ((object_number, generation), entry) in section_xref {
+                    insert_xref_entry(xref, object_number, generation, entry)?;
+                }
+                return Ok(section);
+            }
+            Err(error) => {
+                if read_len >= limit {
+                    return Err(error);
+                }
+            }
+        }
+        read_len = read_len.saturating_mul(2).min(limit);
     }
 }
 
@@ -2576,6 +2587,23 @@ fn find_startxref(data: &[u8]) -> Result<usize> {
     let offset = read_u64_token(data, &mut pos)?;
     usize::try_from(offset)
         .map_err(|_| WellfriendError::MalformedPdf("startxref is too large".to_string()))
+}
+
+fn find_startxref_from_source(source: &PdfSource) -> Result<usize> {
+    let limit = source.len().min(STREAMING_TAIL_READ_LIMIT);
+    let mut read_len = limit.min(STREAMING_INITIAL_TAIL_READ);
+    loop {
+        let tail = source.read_tail(read_len)?;
+        match find_startxref(&tail) {
+            Ok(offset) => return Ok(offset),
+            Err(error) => {
+                if read_len >= limit {
+                    return Err(error);
+                }
+            }
+        }
+        read_len = read_len.saturating_mul(2).min(limit);
+    }
 }
 
 fn read_u64_token(data: &[u8], pos: &mut usize) -> Result<u64> {
