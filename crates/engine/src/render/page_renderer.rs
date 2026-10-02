@@ -104,6 +104,16 @@ trait Type3ProgramCacheValue {
     fn approximate_bytes(&self) -> usize;
 }
 
+// The bounded program cache is also suitable for immutable parsed Type 1
+// programs.  Reusing it keeps program lifetime, LRU eviction and byte budgets
+// aligned with the existing Type 3 caches instead of introducing an unbounded
+// process-global font cache.
+impl Type3ProgramCacheValue for crate::fonts::type1::Type1Font {
+    fn approximate_bytes(&self) -> usize {
+        self.approximate_bytes()
+    }
+}
+
 enum Type3ProgramState<T: Type3ProgramCacheValue> {
     Compiling,
     Compiled(Arc<T>),
@@ -404,6 +414,7 @@ pub struct RenderDocumentCache {
     font_resolver_cache_order: VecDeque<String>,
     font_resolver_cache_bytes: usize,
     font_resolver_cache_stats: RenderArtifactCacheStats,
+    type1_program_cache: Type3ProgramCache<crate::fonts::type1::Type1Font>,
     type3_geometry_cache: Type3ProgramCache<Type3GlyphGeometry>,
     type3_charproc_cache: Type3ProgramCache<Type3CharProc>,
     type3_retained_charproc_cache: Type3ProgramCache<Type3RetainedCharProcPlan>,
@@ -474,6 +485,7 @@ impl RenderDocumentCache {
             font_resolver_cache_order: VecDeque::new(),
             font_resolver_cache_bytes: 0,
             font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            type1_program_cache: Type3ProgramCache::default(),
             type3_geometry_cache: Type3ProgramCache::default(),
             type3_charproc_cache: Type3ProgramCache::default(),
             type3_retained_charproc_cache: Type3ProgramCache::default(),
@@ -541,6 +553,7 @@ impl RenderDocumentCache {
         self.font_resolver_cache_order.clear();
         self.font_resolver_cache_bytes = 0;
         self.font_resolver_cache_stats = RenderArtifactCacheStats::default();
+        self.type1_program_cache.clear();
         self.type3_geometry_cache.clear();
         self.type3_charproc_cache.clear();
         self.type3_retained_charproc_cache.clear();
@@ -598,6 +611,7 @@ impl RenderDocumentCache {
             .saturating_add(self.font_resolver_cache_bytes)
             .saturating_add(self.glyph_cache.current_bytes())
             .saturating_add(self.glyph_mask_cache.bytes())
+            .saturating_add(self.type1_program_cache.bytes())
             .saturating_add(self.type3_geometry_cache.bytes())
             .saturating_add(self.type3_charproc_cache.bytes())
             .saturating_add(self.type3_retained_charproc_cache.bytes())
@@ -657,6 +671,7 @@ impl RenderDocumentCache {
                 FONT_RESOLVER_ENTRIES,
                 |_| font_resolver_cache_entry_bytes(),
             ) as u64);
+        self.type1_program_cache.trim_to_capacity();
         self.type3_geometry_cache.trim_to_capacity();
         self.type3_charproc_cache.trim_to_capacity();
         self.type3_retained_charproc_cache.trim_to_capacity();
@@ -828,6 +843,7 @@ impl RenderDocumentCache {
         consider(17, self.type3_geometry_cache.oldest_entry_bytes());
         consider(18, self.type3_charproc_cache.oldest_entry_bytes());
         consider(19, self.type3_retained_charproc_cache.oldest_entry_bytes());
+        consider(21, self.type1_program_cache.oldest_entry_bytes());
         consider(
             20,
             self.function_cache
@@ -1051,6 +1067,14 @@ impl RenderDocumentCache {
                 .lock()
                 .map(|mut functions| functions.evict_one())
                 .unwrap_or(false),
+            Some(21) => {
+                let evicted = self.type1_program_cache.evict_one_lru();
+                if evicted {
+                    self.type1_program_cache.stats.evictions =
+                        self.type1_program_cache.stats.evictions.saturating_add(1);
+                }
+                evicted
+            }
             _ => false,
         }
     }
@@ -1298,6 +1322,7 @@ impl RenderDocumentCache {
         );
         self.type3_mask_cache.remove_entries_matching(&markers);
         self.type3_rendered_cache.remove_entries_matching(&markers);
+        self.type1_program_cache.remove_entries_matching(&markers);
         self.type3_geometry_cache.remove_entries_matching(&markers);
         self.type3_charproc_cache.remove_entries_matching(&markers);
         self.type3_retained_charproc_cache
@@ -1503,6 +1528,10 @@ impl RenderDocumentCache {
 
     pub fn type3_geometry_program_cache_stats(&self) -> RenderArtifactCacheStats {
         self.type3_geometry_cache.stats()
+    }
+
+    pub fn type1_program_cache_stats(&self) -> RenderArtifactCacheStats {
+        self.type1_program_cache.stats()
     }
 
     pub fn type3_charproc_program_cache_stats(&self) -> RenderArtifactCacheStats {
@@ -5239,6 +5268,7 @@ struct RenderState<'a> {
     font_resolver_cache_order: VecDeque<String>,
     font_resolver_cache_bytes: usize,
     font_resolver_cache_stats: RenderArtifactCacheStats,
+    type1_program_cache: Type3ProgramCache<crate::fonts::type1::Type1Font>,
     // Dictionaries can be replaced in-place when scopes change; allocation
     // addresses are not identities. Confirm the complete dictionary on reuse.
     font_resource_key_cache: HashMap<String, (PdfDictionary, String)>,
@@ -6770,7 +6800,7 @@ impl FontReplacementSelection {
 fn restore_buffer_clip_from_node(buf: &mut PixelBuffer, saved: &ClipNode) {
     let mask = match &saved.state {
         ClipState::Full => None,
-        state => Some(state.to_clip_mask(buf.width, buf.height)),
+        _ => Some(saved.materialize(buf.width, buf.height).as_ref().clone()),
     };
     buf.restore_clip(mask);
 }
@@ -6931,6 +6961,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order: std::mem::take(&mut cache.font_resolver_cache_order),
             font_resolver_cache_bytes,
             font_resolver_cache_stats,
+            type1_program_cache: std::mem::take(&mut cache.type1_program_cache),
             font_resource_key_cache: HashMap::new(),
             active_font_resource: None,
             active_fill_color_space_resource: None,
@@ -7418,6 +7449,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order: self.font_resolver_cache_order,
             font_resolver_cache_bytes: self.font_resolver_cache_bytes,
             font_resolver_cache_stats: self.font_resolver_cache_stats,
+            type1_program_cache: self.type1_program_cache,
             type3_geometry_cache: self.type3_geometry_cache,
             type3_charproc_cache: self.type3_charproc_cache,
             type3_retained_charproc_cache: self.type3_retained_charproc_cache,
@@ -7490,6 +7522,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order,
             font_resolver_cache_bytes,
             font_resolver_cache_stats,
+            type1_program_cache,
             type3_geometry_cache,
             type3_charproc_cache,
             type3_retained_charproc_cache,
@@ -7567,6 +7600,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order,
             font_resolver_cache_bytes,
             font_resolver_cache_stats,
+            type1_program_cache,
             type3_geometry_cache,
             type3_charproc_cache,
             type3_retained_charproc_cache,
@@ -8714,6 +8748,8 @@ impl<'a> RenderState<'a> {
         child.font_resolver_cache_stats = RenderArtifactCacheStats::default();
         self.font_resource_key_cache
             .extend(child.font_resource_key_cache.drain());
+        self.type1_program_cache
+            .absorb_from(std::mem::take(&mut child.type1_program_cache));
         self.type3_geometry_cache
             .absorb_from(std::mem::take(&mut child.type3_geometry_cache));
         self.type3_charproc_cache
@@ -11524,6 +11560,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order: self.font_resolver_cache_order.clone(),
             font_resolver_cache_bytes: self.font_resolver_cache_bytes,
             font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            type1_program_cache: self.type1_program_cache.clone(),
             font_resource_key_cache: self.font_resource_key_cache.clone(),
             active_font_resource: self.active_font_resource.clone(),
             active_fill_color_space_resource: self.active_fill_color_space_resource.clone(),
@@ -13091,6 +13128,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order: self.font_resolver_cache_order.clone(),
             font_resolver_cache_bytes: self.font_resolver_cache_bytes,
             font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            type1_program_cache: self.type1_program_cache.clone(),
             font_resource_key_cache: self.font_resource_key_cache.clone(),
             active_font_resource: self.active_font_resource.clone(),
             active_fill_color_space_resource: self.active_fill_color_space_resource.clone(),
@@ -14479,6 +14517,7 @@ impl<'a> RenderState<'a> {
                     if !font_bytes.is_empty() {
                         ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
                             font_name: &font_name,
+                            font_program_cache_key: &font_cache_key,
                             font_subtype: font_subtype.clone(),
                             code: glyph.code,
                             ch: glyph.unicode,
@@ -14572,7 +14611,19 @@ impl<'a> RenderState<'a> {
         let cached = match cached {
             Some(cached) => cached,
             None => {
-                let (path, advance_width) = if request.is_gid {
+                let type1_program = if !request.is_gid
+                    && request.glyph_name.is_some()
+                    && crate::fonts::type1::Type1Font::is_type1(request.font_bytes)
+                {
+                    self.cached_type1_program(request.font_program_cache_key, request.font_bytes)
+                } else {
+                    None
+                };
+                let (path, advance_width) = if let (Some(program), Some(glyph_name)) =
+                    (type1_program.as_ref(), request.glyph_name)
+                {
+                    program.outline_by_name(glyph_name)
+                } else if request.is_gid {
                     crate::render::glyph_outline::extract_glyph_path_by_gid_var(
                         request.font_bytes,
                         request.code,
@@ -14792,6 +14843,20 @@ impl<'a> RenderState<'a> {
             other => log::warn!("PageRenderer: unknown text render mode {}", other),
         }
         Some(advance_width)
+    }
+
+    fn cached_type1_program(
+        &mut self,
+        cache_key: &str,
+        font_bytes: &[u8],
+    ) -> Option<Arc<crate::fonts::type1::Type1Font>> {
+        if let Some(cached) = self.type1_program_cache.get(cache_key) {
+            return cached;
+        }
+        let parsed = crate::fonts::type1::Type1Font::parse(font_bytes).map(Arc::new);
+        self.type1_program_cache
+            .insert(cache_key.to_string(), parsed.clone());
+        parsed
     }
 
     fn set_active_text_font(&mut self, name: &str, size: f64, dict: Option<PdfDictionary>) {
@@ -17080,6 +17145,7 @@ fn smask_transfer_function_cache_label(smask_dict: &PdfDictionary) -> String {
 
 struct GlyphRenderRequest<'a> {
     font_name: &'a str,
+    font_program_cache_key: &'a str,
     font_subtype: FontSubtype,
     code: u16,
     ch: char,
@@ -26904,6 +26970,7 @@ mod tests {
         .expect("bundled LiberationSans should resolve A");
         let request = GlyphRenderRequest {
             font_name: "LiberationSans-Regular",
+            font_program_cache_key: "test:LiberationSans-Regular",
             font_subtype: FontSubtype::TrueType,
             code: b'A' as u16,
             ch: 'A',
@@ -29561,6 +29628,28 @@ mod tests {
             )
             .expect("second cached transparency form render");
         assert_same_pixels(&first, &second);
+    }
+
+    #[test]
+    fn transparency_group_window_keeps_nested_image_in_page_pixel_space() {
+        let pdf = pdf_with_transparency_group_image_xobject();
+        let engine = ContentEngine::open_bytes(pdf).expect("open transparency image Form PDF");
+        let mut cache = RenderDocumentCache::new();
+
+        let rendered = engine
+            .render_page_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("render nested image inside offset transparency group");
+
+        assert!(
+            count_red_pixels(&rendered) > 2_000,
+            "the 50x50 red image must not be culled against group-local coordinates"
+        );
     }
 
     #[test]
@@ -38464,6 +38553,33 @@ mod tests {
 
     fn pdf_with_transparency_group_form_xobject() -> Vec<u8> {
         pdf_with_transparency_group_form_xobject_group_entries("")
+    }
+
+    fn pdf_with_transparency_group_image_xobject() -> Vec<u8> {
+        let page_content = "q\n1 0 0 1 25 25 cm\n/Fm0 Do\nQ\n";
+        let form_content = "q\n50 0 0 50 0 0 cm\n/Im1 Do\nQ\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /XObject << /Fm0 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                page_content.len(),
+                page_content
+            )
+            .into_bytes(),
+            format!(
+                "<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 50 50] \
+                 /Group << /Type /Group /S /Transparency /I true /CS /DeviceRGB >> \
+                 /Resources << /XObject << /Im1 6 0 R >> >> /Length {} >>\n\
+                 stream\n{}\nendstream",
+                form_content.len(),
+                form_content
+            )
+            .into_bytes(),
+            one_pixel_rgb_image_xobject(),
+        ];
+        build_test_pdf_from_objects(&objects)
     }
 
     fn pdf_with_transparency_group_form_xobject_group_entries(group_entries: &str) -> Vec<u8> {

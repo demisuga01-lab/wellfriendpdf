@@ -122,6 +122,40 @@ def tool_version(command: list[str]) -> dict[str, Any]:
     }
 
 
+def pdfium_version(adapter: Path) -> dict[str, Any]:
+    """Read the version metadata belonging to the adapter's loaded PDFium.
+
+    The benchmark controller may run in a Python environment that does not
+    contain pypdfium2_raw even though the native adapter is correctly linked
+    against that package's libpdfium. Resolve the library through the dynamic
+    linker instead of importing an unrelated controller dependency.
+    """
+
+    linkage = tool_version(["ldd", str(adapter)])
+    if linkage.get("exit") == 0:
+        for line in str(linkage.get("text", "")).splitlines():
+            if "libpdfium.so" not in line:
+                continue
+            location = line.split("=>", 1)[-1].strip().split(maxsplit=1)[0]
+            version_path = Path(location).parent / "version.json"
+            try:
+                version = json.loads(version_path.read_text(encoding="utf-8"))
+                if all(key in version for key in ("major", "minor", "build", "patch")):
+                    return {
+                        "command": ["read", str(version_path)],
+                        "exit": 0,
+                        "text": json.dumps(version, sort_keys=True),
+                    }
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+    return {
+        "command": ["ldd", str(adapter)],
+        "exit": 1,
+        "text": "PDFium version unavailable; adapter linkage was retained in environment metadata",
+        "linkage": linkage,
+    }
+
+
 class Worker:
     def __init__(self, engine: str, binary: Path, cpu: int, stderr_path: Path):
         self.engine = engine
@@ -583,7 +617,7 @@ def build_report(summary: dict[str, Any]) -> str:
         "- All five native parser adapters returned the same page count on all 100 PDFs.",
         "- The matched persistent parser evidence rejects the 20× Poppler claim.",
         "- All four raster engines rendered all 100 pages, but only 97 had identical native dimensions.",
-        "- Wellfriend PDF is not the fastest renderer in this campaign; PDFium has the lowest median and tail latency.",
+        "- Wellfriend PDF is not the fastest renderer in this campaign; reference leadership varies by percentile.",
         "- Consensus quality is diagnostic rather than ground truth and does not establish universal correctness.",
         "",
         "## Reproducibility",
@@ -650,7 +684,7 @@ def main() -> int:
             "qpdf": tool_version(["qpdf", "--version"]),
             "poppler": tool_version(["pdfinfo", "-v"]),
             "mupdf": tool_version(["mutool", "-v"]),
-            "pdfium": tool_version([sys.executable, "-c", "import pathlib,pypdfium2_raw; print((pathlib.Path(pypdfium2_raw.__file__).parent/'version.json').read_text())"]),
+            "pdfium": pdfium_version(adapters["pdfium"]),
             "kernel": tool_version(["uname", "-a"]),
             "cpu": tool_version(["lscpu"]),
             "perf_hardware_counters": tool_version(["perf", "stat", "-e", "cycles,instructions", "true"]),

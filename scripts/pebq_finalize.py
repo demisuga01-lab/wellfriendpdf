@@ -39,12 +39,62 @@ def main() -> int:
     parser.add_argument("--benchmark-script", type=Path, required=True)
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--source", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--adapter-dir",
+        type=Path,
+        help="refresh adapter-derived environment metadata before reporting",
+    )
+    parser.add_argument(
+        "--benchmark-execution-sha256",
+        help="hash of the benchmark script used for the timed campaign when reporting code changed later",
+    )
     parser.add_argument("--seed", type=int, default=20260936)
+    parser.add_argument(
+        "--recompute-quality",
+        action="store_true",
+        help="recompute quality from retained rasters before finalizing",
+    )
+    parser.add_argument(
+        "--corpus",
+        type=Path,
+        help="corpus root required with --recompute-quality",
+    )
     args = parser.parse_args()
 
     benchmark = load_benchmark_module(args.benchmark_script)
     summary_path = args.results / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    if args.adapter_dir is not None:
+        environment_path = args.results / "environment.json"
+        environment = json.loads(environment_path.read_text(encoding="utf-8"))
+        environment.setdefault("versions", {})["pdfium"] = benchmark.pdfium_version(
+            args.adapter_dir / "pebq-pdfium"
+        )
+        environment_path.write_text(
+            json.dumps(environment, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        summary["environment"] = environment
+
+    if args.recompute_quality:
+        if args.corpus is None:
+            parser.error("--corpus is required with --recompute-quality")
+        manifest = json.loads(
+            (args.results / "corpus-manifest.json").read_text(encoding="utf-8")
+        )
+        inputs = [args.corpus / row["relative_path"] for row in manifest]
+        quality = benchmark.quality_metrics(
+            args.results / "rasters", inputs, args.corpus
+        )
+        page_rows = quality.pop("pages", None)
+        if page_rows is not None:
+            with (args.results / "quality-pages.jsonl").open(
+                "w", encoding="utf-8", newline="\n"
+            ) as stream:
+                for row in page_rows:
+                    stream.write(json.dumps(row, sort_keys=True) + "\n")
+        summary["quality"] = quality
 
     fresh_rows = load_jsonl(args.results / "parse-fresh.jsonl")
     wellfriend = benchmark.median_by_key(
@@ -67,6 +117,13 @@ def main() -> int:
         path.name: benchmark.sha256_file(path)
         for path in [args.benchmark_script, *args.source]
     }
+    if args.benchmark_execution_sha256:
+        summary["source_sha256"]["pebq_benchmark_execution.py"] = (
+            args.benchmark_execution_sha256
+        )
+        summary["source_sha256"]["pebq_benchmark_reporter.py"] = (
+            summary["source_sha256"].pop(args.benchmark_script.name)
+        )
 
     summary_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"

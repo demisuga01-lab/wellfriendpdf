@@ -72,6 +72,31 @@ impl Type1Font {
         }
     }
 
+    /// Approximate the heap retained by the parsed Type 1 program.
+    ///
+    /// Renderer caches use this value to keep decrypted `/Subrs` and
+    /// `/CharStrings` bounded.  Counting the byte payloads is deliberately
+    /// conservative enough for eviction decisions while avoiding allocator-
+    /// specific accounting in the font parser.
+    pub(crate) fn approximate_bytes(&self) -> usize {
+        let subrs = self.subrs.iter().fold(0usize, |total, (index, bytes)| {
+            total
+                .saturating_add(std::mem::size_of_val(index))
+                .saturating_add(bytes.capacity())
+        });
+        let charstrings = self
+            .charstrings
+            .iter()
+            .fold(0usize, |total, (name, bytes)| {
+                total
+                    .saturating_add(name.capacity())
+                    .saturating_add(bytes.capacity())
+            });
+        std::mem::size_of::<Self>()
+            .saturating_add(subrs)
+            .saturating_add(charstrings)
+    }
+
     #[cfg(test)]
     pub(crate) fn glyph_count(&self) -> usize {
         self.charstrings.len()
@@ -985,6 +1010,14 @@ mod tests {
         let outline = outline.expect("glyph A should have an outline");
         assert!(outline.segments.len() > 5);
         assert!(advance > 500.0);
+    }
+
+    #[test]
+    fn type1_program_reports_bounded_cache_charge() {
+        let bytes = tracemonkey_type1_font_bytes("F41");
+        let font = Type1Font::parse(&bytes).expect("embedded Type1 should parse");
+        assert!(font.approximate_bytes() >= std::mem::size_of::<Type1Font>());
+        assert!(font.approximate_bytes() < bytes.len().saturating_mul(8));
     }
 
     #[test]

@@ -9,6 +9,13 @@ enum SmoothMode {
     LegacyBilinear,
 }
 
+#[derive(Clone, Copy)]
+struct BilinearAxisSample {
+    low: usize,
+    high: usize,
+    fraction: f32,
+}
+
 pub struct ImagePainter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -357,6 +364,23 @@ impl ImagePainter {
             return;
         }
 
+        if matches!(smooth, SmoothMode::LegacyBilinear) && !use_area_average {
+            Self::paint_axis_aligned_bilinear_precomputed(
+                buf,
+                image,
+                px_min,
+                py_min,
+                dst_w,
+                dst_h,
+                x0,
+                x1,
+                y0,
+                y1,
+                paint_alpha,
+            );
+            return;
+        }
+
         if image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped() {
             for py in y0..=y1 {
                 for px in x0..=x1 {
@@ -408,6 +432,98 @@ impl ImagePainter {
                 buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_axis_aligned_bilinear_precomputed(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        px_min: f64,
+        py_min: f64,
+        dst_w: f64,
+        dst_h: f64,
+        x0: i32,
+        x1: i32,
+        y0: i32,
+        y1: i32,
+        paint_alpha: f32,
+    ) {
+        let x_samples = (x0..=x1)
+            .map(|px| {
+                let u = (px as f64 + 0.5 - px_min) / dst_w;
+                Self::bilinear_axis_sample(u, image.width)
+            })
+            .collect::<Vec<_>>();
+        let direct_opaque =
+            image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped();
+
+        for py in y0..=y1 {
+            let v = (py as f64 + 0.5 - py_min) / dst_h;
+            let Some(y_sample) = Self::bilinear_axis_sample(v, image.height) else {
+                continue;
+            };
+            for (offset, x_sample) in x_samples.iter().enumerate() {
+                let Some(x_sample) = x_sample else {
+                    continue;
+                };
+                let px = x0 + offset as i32;
+                let sample = Self::bilinear_sample_precomputed(image, *x_sample, y_sample);
+                if direct_opaque {
+                    buf.write_opaque_pixel_unclipped(
+                        px,
+                        py,
+                        [sample[0], sample[1], sample[2], 255],
+                    );
+                } else {
+                    let coverage = if image.channels == 4 {
+                        sample[3] as f32 / 255.0
+                    } else {
+                        1.0
+                    } * paint_alpha;
+                    buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn bilinear_axis_sample(normalized: f64, extent: u32) -> Option<BilinearAxisSample> {
+        if extent == 0 || !inside_unit_image_sample(normalized) {
+            return None;
+        }
+        let max = extent.saturating_sub(1) as usize;
+        let source = (normalized * max as f64).clamp(0.0, max as f64);
+        let low = source.floor() as usize;
+        Some(BilinearAxisSample {
+            low,
+            high: (low + 1).min(max),
+            fraction: (source - low as f64) as f32,
+        })
+    }
+
+    #[inline]
+    fn bilinear_sample_precomputed(
+        image: &RawImage,
+        x: BilinearAxisSample,
+        y: BilinearAxisSample,
+    ) -> [u8; 4] {
+        let p00 = Self::get_pixel_channels(image, x.low, y.low);
+        let p10 = Self::get_pixel_channels(image, x.high, y.low);
+        let p01 = Self::get_pixel_channels(image, x.low, y.high);
+        let p11 = Self::get_pixel_channels(image, x.high, y.high);
+        let lerp = |v00: u8, v10: u8, v01: u8, v11: u8| -> u8 {
+            let top = v00 as f32 * (1.0 - x.fraction) + v10 as f32 * x.fraction;
+            let bottom = v01 as f32 * (1.0 - x.fraction) + v11 as f32 * x.fraction;
+            (top * (1.0 - y.fraction) + bottom * y.fraction)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        [
+            lerp(p00[0], p10[0], p01[0], p11[0]),
+            lerp(p00[1], p10[1], p01[1], p11[1]),
+            lerp(p00[2], p10[2], p01[2], p11[2]),
+            lerp(p00[3], p10[3], p01[3], p11[3]),
+        ]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -915,6 +1031,27 @@ mod tests {
         };
         let center = ImagePainter::bilinear_sample(&image, 0.5, 0.5);
         assert!((center[0] as i32 - 100).abs() <= 3);
+    }
+
+    #[test]
+    fn precomputed_bilinear_coordinates_are_pixel_identical() {
+        let image = rgb_2x2_image();
+        for (u, v) in [
+            (0.0, 0.0),
+            (0.125, 0.875),
+            (0.333, 0.667),
+            (0.5, 0.5),
+            (0.999, 0.001),
+            (0.999_999, 0.999_999),
+        ] {
+            let x = ImagePainter::bilinear_axis_sample(u, image.width).expect("x sample");
+            let y = ImagePainter::bilinear_axis_sample(v, image.height).expect("y sample");
+            assert_eq!(
+                ImagePainter::bilinear_sample_precomputed(&image, x, y),
+                ImagePainter::bilinear_sample(&image, u, v),
+                "sample mismatch at ({u}, {v})"
+            );
+        }
     }
 
     #[test]

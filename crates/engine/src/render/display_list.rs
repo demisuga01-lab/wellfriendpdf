@@ -427,10 +427,10 @@ impl RenderTile {
 
 /// Full-page pixel-space bounds for display-list culling.
 ///
-/// Bounds are computed against the display list's full-page viewport, not a
-/// tile-local viewport. Tile and band replay can therefore skip vector ops whose
-/// retained bounds do not intersect the current viewport window, avoiding the
-/// previous "execute every vector op for every tile" cost.
+/// Bounds remain in full-page coordinates even when they are produced while a
+/// tile, band, or transparency-group pixel window is active. Replay can
+/// therefore compare every retained operation with a viewport window in one
+/// coordinate system instead of accidentally culling offset nested content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RenderBounds {
     pub x0: i32,
@@ -456,11 +456,15 @@ impl RenderBounds {
         let mut min_y = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
         let mut max_y = f64::NEG_INFINITY;
+        let origin_x = viewport.origin_x_px as f64;
+        let origin_y = viewport.origin_y_px as f64;
         for (x, y) in points {
             let (px, py) = viewport.page_to_pixel_f64(x, y);
             if !px.is_finite() || !py.is_finite() {
                 continue;
             }
+            let px = px + origin_x;
+            let py = py + origin_y;
             min_x = min_x.min(px);
             min_y = min_y.min(py);
             max_x = max_x.max(px);
@@ -493,11 +497,15 @@ impl RenderBounds {
         let mut min_y = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
         let mut max_y = f64::NEG_INFINITY;
+        let origin_x = viewport.origin_x_px as f64;
+        let origin_y = viewport.origin_y_px as f64;
         for (x, y) in points {
             let (px, py) = viewport.page_to_pixel_f64(x, y);
             if !px.is_finite() || !py.is_finite() {
                 continue;
             }
+            let px = px + origin_x;
+            let py = py + origin_y;
             min_x = min_x.min(px);
             min_y = min_y.min(py);
             max_x = max_x.max(px);
@@ -526,11 +534,15 @@ impl RenderBounds {
         let mut min_y = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
         let mut max_y = f64::NEG_INFINITY;
+        let origin_x = viewport.origin_x_px as f64;
+        let origin_y = viewport.origin_y_px as f64;
         for subpath in &flat.subpaths {
             for &(x, y) in subpath {
                 if !x.is_finite() || !y.is_finite() {
                     continue;
                 }
+                let x = x + origin_x;
+                let y = y + origin_y;
                 min_x = min_x.min(x);
                 min_y = min_y.min(y);
                 max_x = max_x.max(x);
@@ -597,12 +609,16 @@ impl RenderBounds {
         let mut min_y = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
         let mut max_y = f64::NEG_INFINITY;
+        let origin_x = viewport.origin_x_px as f64;
+        let origin_y = viewport.origin_y_px as f64;
         for (x, y) in text_points {
             let (ux, uy) = ctm.transform_point(x, y);
             let (px, py) = viewport.page_to_pixel_f64(ux, uy);
             if !px.is_finite() || !py.is_finite() {
                 continue;
             }
+            let px = px + origin_x;
+            let py = py + origin_y;
             min_x = min_x.min(px);
             min_y = min_y.min(py);
             max_x = max_x.max(px);
@@ -3280,6 +3296,25 @@ mod tests {
 
         assert!(bounds.intersects_viewport(&full.pixel_window(10, 20, 5, 5)));
         assert!(!bounds.intersects_viewport(&full.pixel_window(0, 0, 5, 5)));
+    }
+
+    #[test]
+    fn render_bounds_keep_full_page_coordinates_inside_pixel_windows() {
+        let full = Viewport::new([0.0, 0.0, 50.0, 50.0], 72);
+        let window = full.pixel_window(7, 19, 31, 23);
+        let ctm = Transform2D::identity();
+        let bbox = [10.0, 10.0, 30.0, 30.0];
+        let mut path = Path::new();
+        path.rect(10.0, 10.0, 20.0, 20.0);
+
+        assert_eq!(
+            RenderBounds::from_bbox(bbox, &ctm, &full, 1.0),
+            RenderBounds::from_bbox(bbox, &ctm, &window, 1.0)
+        );
+        assert_eq!(
+            RenderBounds::from_path(&path, &ctm, &full, 1.0),
+            RenderBounds::from_path(&path, &ctm, &window, 1.0)
+        );
     }
 
     #[test]

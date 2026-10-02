@@ -1092,6 +1092,16 @@ pub(crate) fn image_device_target_dimensions(ctm: &Transform2D, viewport: &Viewp
     (w.round() as u32, h.round() as u32)
 }
 
+fn viewport_global_device_bounds(viewport: &Viewport) -> (i32, i32, i32, i32) {
+    let to_i32 = |value: u32| value.min(i32::MAX as u32) as i32;
+    (
+        to_i32(viewport.origin_x_px),
+        to_i32(viewport.origin_y_px),
+        to_i32(viewport.origin_x_px.saturating_add(viewport.width_px)),
+        to_i32(viewport.origin_y_px.saturating_add(viewport.height_px)),
+    )
+}
+
 fn axis_aligned_source_region_for_viewport(
     metadata: &ImageMetadata,
     ctm: &Transform2D,
@@ -1104,20 +1114,30 @@ fn axis_aligned_source_region_for_viewport(
     if !ctm.is_axis_aligned() {
         return None;
     }
-    let clip_x0 = device_bounds.x0.max(0);
-    let clip_y0 = device_bounds.y0.max(0);
-    let clip_x1 = device_bounds.x1.min(viewport.width_px as i32);
-    let clip_y1 = device_bounds.y1.min(viewport.height_px as i32);
+    let (viewport_x0, viewport_y0, viewport_x1, viewport_y1) =
+        viewport_global_device_bounds(viewport);
+    let clip_x0 = device_bounds.x0.max(viewport_x0);
+    let clip_y0 = device_bounds.y0.max(viewport_y0);
+    let clip_x1 = device_bounds.x1.min(viewport_x1);
+    let clip_y1 = device_bounds.y1.min(viewport_y1);
     if clip_x1 <= clip_x0 || clip_y1 <= clip_y0 {
         return None;
     }
 
+    // `Viewport::to_transform` maps into the current surface's local pixel
+    // coordinates. RenderBounds deliberately remain in full-page coordinates,
+    // so translate the clipped global window back into that local domain before
+    // applying the inverse image transform.
+    let local_x0 = clip_x0.saturating_sub(viewport_x0);
+    let local_y0 = clip_y0.saturating_sub(viewport_y0);
+    let local_x1 = clip_x1.saturating_sub(viewport_x0);
+    let local_y1 = clip_y1.saturating_sub(viewport_y0);
     let inverse = ctm.concat(&viewport.to_transform()).inverse()?;
     let points = [
-        inverse.transform_point(clip_x0 as f64, clip_y0 as f64),
-        inverse.transform_point(clip_x1 as f64, clip_y0 as f64),
-        inverse.transform_point(clip_x0 as f64, clip_y1 as f64),
-        inverse.transform_point(clip_x1 as f64, clip_y1 as f64),
+        inverse.transform_point(local_x0 as f64, local_y0 as f64),
+        inverse.transform_point(local_x1 as f64, local_y0 as f64),
+        inverse.transform_point(local_x0 as f64, local_y1 as f64),
+        inverse.transform_point(local_x1 as f64, local_y1 as f64),
     ];
     let mut min_u = f64::INFINITY;
     let mut min_v = f64::INFINITY;
@@ -1395,13 +1415,15 @@ pub(crate) fn plan_image_decode_with_identity(
     identity: ImageDecodePlanIdentity,
 ) -> ImageDecodePlan {
     let device_bounds = image_device_bounds(ctm, viewport);
+    let (viewport_x0, viewport_y0, viewport_x1, viewport_y1) =
+        viewport_global_device_bounds(viewport);
     let intersects = device_bounds
         .as_ref()
         .map(|bounds| {
-            bounds.x1 > 0
-                && bounds.x0 < viewport.width_px as i32
-                && bounds.y1 > 0
-                && bounds.y0 < viewport.height_px as i32
+            bounds.x1 > viewport_x0
+                && bounds.x0 < viewport_x1
+                && bounds.y1 > viewport_y0
+                && bounds.y0 < viewport_y1
         })
         .unwrap_or(true);
 
@@ -1416,10 +1438,10 @@ pub(crate) fn plan_image_decode_with_identity(
         && device_bounds
             .as_ref()
             .map(|bounds| {
-                bounds.x0 < 0
-                    || bounds.y0 < 0
-                    || bounds.x1 > viewport.width_px as i32
-                    || bounds.y1 > viewport.height_px as i32
+                bounds.x0 < viewport_x0
+                    || bounds.y0 < viewport_y0
+                    || bounds.x1 > viewport_x1
+                    || bounds.y1 > viewport_y1
             })
             .unwrap_or(false);
     let requires_reduction_decode = matches!(decision, ImageDecodePlanDecision::DecodeRequired)

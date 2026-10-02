@@ -1,0 +1,891 @@
+{
+  "configuration": {
+    "cpu": 2,
+    "dpi": 144,
+    "fresh_repetitions": 1,
+    "persistent_repetitions": 3,
+    "seed": 20261002,
+    "timeout_seconds": 180
+  },
+  "corpus_manifest_sha256": "61c378353c0f125e46348740089d00a84a70a9571994d7e6da50aea6d95f40f7",
+  "environment": {
+    "adapter_sha256": {
+      "mupdf": "210101d2440512f6df52cd0e2e90ca4e3b85f53e0e78eba9f7bd23c77a4cc9c5",
+      "pdfium": "f036cc4cf93f8a125b9dbf17b5eab85c10ab2882d9ccfb9eb1338cd102cb8252",
+      "poppler": "2ce34091663851b590f63a40441c6a3edc55b0d2a80110354292a057282c6a15",
+      "qpdf": "fdcbb4c6de1e9d0456facd8737adddecb0b40ef1af15049a599793f596a600f9",
+      "wellfriendpdf": "c0f428cdbe6ce8d5efe80fd2cc439cc4cec1a98bc2e6f0aa151001fe3e6172ed"
+    },
+    "cpu_count": 4,
+    "hostname": "v72937",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+    "started_at_utc": "2026-10-02T11:02:10Z",
+    "versions": {
+      "cpu": {
+        "command": [
+          "lscpu"
+        ],
+        "exit": 0,
+        "text": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           40 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  4\nOn-line CPU(s) list:                     0-3\nVendor ID:                               GenuineIntel\nModel name:                              QEMU Virtual CPU version 2.5+\nCPU family:                              15\nModel:                                   107\nThread(s) per core:                      1\nCore(s) per socket:                      4\nSocket(s):                               1\nStepping:                                1\nBogoMIPS:                                5387.01\nFlags:                                   fpu de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm rep_good nopl xtopology cpuid tsc_known_freq pni pclmulqdq ssse3 cx16 sse4_1 sse4_2 x2apic popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cpuid_fault pti\nHypervisor vendor:                       KVM\nVirtualization type:                     full\nL1d cache:                               128 KiB (4 instances)\nL1i cache:                               128 KiB (4 instances)\nL2 cache:                                16 MiB (4 instances)\nL3 cache:                                16 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-3\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Mitigation; Aligned branch/return thunks\nVulnerability Itlb multihit:             KVM: Mitigation: VMX unsupported\nVulnerability L1tf:                      Mitigation; PTE Inversion\nVulnerability Mds:                       Vulnerable: Clear CPU buffers attempted, no microcode; SMT Host state unknown\nVulnerability Meltdown:                  Mitigation; P"
+      },
+      "kernel": {
+        "command": [
+          "uname",
+          "-a"
+        ],
+        "exit": 0,
+        "text": "Linux v72937 7.0.0-31-generic #31-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 04:26:38 UTC 2026 x86_64 GNU/Linux"
+      },
+      "mupdf": {
+        "command": [
+          "mutool",
+          "-v"
+        ],
+        "exit": 0,
+        "text": "mutool version 1.27.0"
+      },
+      "pdfium": {
+        "command": [
+          "read",
+          "/root/wellpdfsdk-qualification/visual-evidence-venv/lib/python3.14/site-packages/pypdfium2_raw/version.json"
+        ],
+        "exit": 0,
+        "text": "{\"build\": 7999, \"flags\": [], \"hash\": null, \"major\": 153, \"minor\": 0, \"n_commits\": 0, \"origin\": \"pdfium-binaries\", \"patch\": 0}"
+      },
+      "perf_hardware_counters": {
+        "command": [
+          "perf",
+          "stat",
+          "-e",
+          "cycles,instructions",
+          "true"
+        ],
+        "exit": 1,
+        "text": "Error:\nNo supported events found.\nThe cycles event is not supported."
+      },
+      "poppler": {
+        "command": [
+          "pdfinfo",
+          "-v"
+        ],
+        "exit": 0,
+        "text": "pdfinfo version 26.01.0\nCopyright 2005-2026 The Poppler Developers - http://poppler.freedesktop.org\nCopyright 1996-2011, 2022 Glyph & Cog, LLC"
+      },
+      "qpdf": {
+        "command": [
+          "qpdf",
+          "--version"
+        ],
+        "exit": 0,
+        "text": "qpdf version 12.3.2\nRun qpdf --copyright to see copyright and license information."
+      }
+    }
+  },
+  "finished_at_utc": "2026-10-02T11:05:42Z",
+  "parsing": {
+    "contract": "identical in-memory open plus resolved page count",
+    "fresh_peak_rss_kib": {
+      "mupdf": {
+        "count": 100,
+        "max": 52192.0,
+        "mean": 14015.68,
+        "median_absolute_deviation": 1524.0,
+        "p05": 9196.0,
+        "p50": 11172.0,
+        "p90": 21100.0,
+        "p95": 32564.0,
+        "p99": 42084.0
+      },
+      "pdfium": {
+        "count": 100,
+        "max": 28056.0,
+        "mean": 8889.8,
+        "median_absolute_deviation": 828.0,
+        "p05": 6388.0,
+        "p50": 7600.0,
+        "p90": 12440.0,
+        "p95": 18092.0,
+        "p99": 22820.0
+      },
+      "poppler": {
+        "count": 100,
+        "max": 38392.0,
+        "mean": 19234.0,
+        "median_absolute_deviation": 810.0,
+        "p05": 16728.0,
+        "p50": 17804.0,
+        "p90": 22720.0,
+        "p95": 28424.0,
+        "p99": 33184.0
+      },
+      "qpdf": {
+        "count": 100,
+        "max": 37924.0,
+        "mean": 12896.12,
+        "median_absolute_deviation": 1840.0,
+        "p05": 8928.0,
+        "p50": 11296.0,
+        "p90": 19408.0,
+        "p95": 22932.0,
+        "p99": 26836.0
+      },
+      "wellfriendpdf": {
+        "count": 100,
+        "max": 28092.0,
+        "mean": 8876.24,
+        "median_absolute_deviation": 828.0,
+        "p05": 6076.0,
+        "p50": 7516.0,
+        "p90": 12588.0,
+        "p95": 18360.0,
+        "p99": 22864.0
+      }
+    },
+    "fresh_process_ms": {
+      "mupdf": {
+        "count": 100,
+        "max": 145.312418,
+        "mean": 28.424202,
+        "median_absolute_deviation": 4.971258,
+        "p05": 13.736849,
+        "p50": 20.550499,
+        "p90": 46.813312,
+        "p95": 70.927351,
+        "p99": 117.205837
+      },
+      "pdfium": {
+        "count": 100,
+        "max": 104.65839,
+        "mean": 17.502971,
+        "median_absolute_deviation": 3.253668,
+        "p05": 8.791237,
+        "p50": 13.132734,
+        "p90": 26.956999,
+        "p95": 43.485685,
+        "p99": 73.293384
+      },
+      "poppler": {
+        "count": 100,
+        "max": 103.376459,
+        "mean": 46.57511,
+        "median_absolute_deviation": 6.794266,
+        "p05": 32.736466,
+        "p50": 42.572872,
+        "p90": 62.131044,
+        "p95": 71.478447,
+        "p99": 94.14541
+      },
+      "qpdf": {
+        "count": 100,
+        "max": 152.10958,
+        "mean": 36.39403,
+        "median_absolute_deviation": 11.496033,
+        "p05": 14.923175,
+        "p50": 30.18442,
+        "p90": 62.583568,
+        "p95": 82.270595,
+        "p99": 93.676796
+      },
+      "wellfriendpdf": {
+        "count": 100,
+        "max": 60.892161,
+        "mean": 14.557404,
+        "median_absolute_deviation": 2.944435,
+        "p05": 7.243883,
+        "p50": 11.864192,
+        "p90": 22.939219,
+        "p95": 30.3421,
+        "p99": 56.772993
+      }
+    },
+    "persistent_parse_ms": {
+      "mupdf": {
+        "count": 300,
+        "max": 67.045477,
+        "mean": 3.298383,
+        "median_absolute_deviation": 0.750658,
+        "p05": 0.351243,
+        "p50": 1.758512,
+        "p90": 6.176094,
+        "p95": 9.467937,
+        "p99": 34.94125
+      },
+      "pdfium": {
+        "count": 300,
+        "max": 37.405963,
+        "mean": 1.212395,
+        "median_absolute_deviation": 0.215156,
+        "p05": 0.324906,
+        "p50": 0.697164,
+        "p90": 1.319236,
+        "p95": 1.652611,
+        "p99": 9.142636
+      },
+      "poppler": {
+        "count": 300,
+        "max": 19.109912,
+        "mean": 3.617297,
+        "median_absolute_deviation": 0.806987,
+        "p05": 1.933358,
+        "p50": 3.210729,
+        "p90": 5.216575,
+        "p95": 6.248535,
+        "p99": 12.348567
+      },
+      "qpdf": {
+        "count": 300,
+        "max": 32.651676,
+        "mean": 8.109855,
+        "median_absolute_deviation": 3.652898,
+        "p05": 0.737134,
+        "p50": 5.48431,
+        "p90": 19.377575,
+        "p95": 24.846658,
+        "p99": 31.090615
+      },
+      "wellfriendpdf": {
+        "count": 300,
+        "max": 48.554919,
+        "mean": 1.767326,
+        "median_absolute_deviation": 0.443442,
+        "p05": 0.347534,
+        "p50": 1.230322,
+        "p90": 2.218386,
+        "p95": 2.688571,
+        "p99": 11.770906
+      }
+    },
+    "qualification": {
+      "disagreements": [],
+      "qualified_documents": {
+        "mupdf": 100,
+        "pdfium": 100,
+        "poppler": 100,
+        "qpdf": 100,
+        "wellfriendpdf": 100
+      }
+    },
+    "wellfriend_vs_poppler_fresh_paired_ratio": {
+      "bootstrap_95_percent_ci": [
+        3.1816,
+        3.939697
+      ],
+      "claim_20x_median_lower_bound_pass": false,
+      "count": 100,
+      "geometric_mean_paired_ratio": 3.516759,
+      "median_paired_ratio": 3.43634
+    },
+    "wellfriend_vs_poppler_persistent_paired_ratio": {
+      "bootstrap_95_percent_ci": [
+        2.376752,
+        2.943126
+      ],
+      "claim_20x_median_lower_bound_pass": false,
+      "count": 100,
+      "geometric_mean_paired_ratio": 2.80237,
+      "median_paired_ratio": 2.679562
+    }
+  },
+  "quality": {
+    "contract": "leave-one-engine-out per-pixel median consensus; diagnostic, not ground truth",
+    "dimension_failures": [
+      {
+        "relative_path": "arxiv_astro-ph.IM_2609.27676v1-b77c4db27da8.pdf",
+        "sizes": {
+          "mupdf": [
+            1191,
+            1588
+          ],
+          "pdfium": [
+            1191,
+            1588
+          ],
+          "poppler": [
+            1191,
+            1587
+          ],
+          "wellfriendpdf": [
+            1191,
+            1588
+          ]
+        }
+      },
+      {
+        "relative_path": "arxiv_cs.DL_2609.25327v1-e178a2e93b05.pdf",
+        "sizes": {
+          "mupdf": [
+            1191,
+            1684
+          ],
+          "pdfium": [
+            1191,
+            1684
+          ],
+          "poppler": [
+            1190,
+            1684
+          ],
+          "wellfriendpdf": [
+            1191,
+            1684
+          ]
+        }
+      },
+      {
+        "relative_path": "arxiv_physics.comp-ph_2609.28422v1-1f065a5ff5ec.pdf",
+        "sizes": {
+          "mupdf": [
+            1191,
+            1588
+          ],
+          "pdfium": [
+            1191,
+            1588
+          ],
+          "poppler": [
+            1191,
+            1587
+          ],
+          "wellfriendpdf": [
+            1191,
+            1588
+          ]
+        }
+      }
+    ],
+    "engines": {
+      "mupdf": {
+        "changed_pixel_gt8_percent": {
+          "count": 97,
+          "max": 22.224285,
+          "mean": 7.83039,
+          "median_absolute_deviation": 1.894146,
+          "p05": 3.7657,
+          "p50": 7.726159,
+          "p90": 10.677805,
+          "p95": 11.553804,
+          "p99": 22.224285
+        },
+        "mean_absolute_channel_delta": {
+          "count": 97,
+          "max": 7.23859,
+          "mean": 3.980118,
+          "median_absolute_deviation": 0.872875,
+          "p05": 1.745674,
+          "p50": 4.104464,
+          "p90": 5.759942,
+          "p95": 6.364161,
+          "p99": 7.23859
+        },
+        "mean_delta_e_2000": {
+          "count": 97,
+          "max": 2.557256,
+          "mean": 1.220903,
+          "median_absolute_deviation": 0.275659,
+          "p05": 0.530517,
+          "p50": 1.257197,
+          "p90": 1.771218,
+          "p95": 1.880425,
+          "p99": 2.557256
+        },
+        "mean_flip": {
+          "count": 97,
+          "max": 0.086861,
+          "mean": 0.030733,
+          "median_absolute_deviation": 0.006899,
+          "p05": 0.013501,
+          "p50": 0.03091,
+          "p90": 0.042191,
+          "p95": 0.0478,
+          "p99": 0.086861
+        },
+        "p95_delta_e_2000": {
+          "count": 97,
+          "max": 15.958964,
+          "mean": 6.663132,
+          "median_absolute_deviation": 2.695277,
+          "p05": 0.0,
+          "p50": 7.130842,
+          "p90": 11.700936,
+          "p95": 13.142968,
+          "p99": 15.958964
+        },
+        "psnr_db": {
+          "count": 97,
+          "max": 48.8058,
+          "mean": 23.801714,
+          "median_absolute_deviation": 1.42124,
+          "p05": 20.349071,
+          "p50": 22.951018,
+          "p90": 26.090116,
+          "p95": 27.55729,
+          "p99": 48.8058
+        },
+        "rmse": {
+          "count": 97,
+          "max": 28.824556,
+          "mean": 17.713873,
+          "median_absolute_deviation": 2.826973,
+          "p05": 10.682568,
+          "p50": 18.154708,
+          "p90": 22.822317,
+          "p95": 24.495519,
+          "p99": 28.824556
+        },
+        "ssim": {
+          "count": 97,
+          "max": 0.999888,
+          "mean": 0.963865,
+          "median_absolute_deviation": 0.009293,
+          "p05": 0.93626,
+          "p50": 0.964567,
+          "p90": 0.981668,
+          "p95": 0.986004,
+          "p99": 0.999888
+        }
+      },
+      "pdfium": {
+        "changed_pixel_gt8_percent": {
+          "count": 97,
+          "max": 49.436563,
+          "mean": 9.59933,
+          "median_absolute_deviation": 2.605489,
+          "p05": 4.580972,
+          "p50": 9.243373,
+          "p90": 13.136987,
+          "p95": 13.835042,
+          "p99": 49.436563
+        },
+        "mean_absolute_channel_delta": {
+          "count": 97,
+          "max": 9.640479,
+          "mean": 4.573779,
+          "median_absolute_deviation": 1.003366,
+          "p05": 2.059236,
+          "p50": 4.671081,
+          "p90": 6.734021,
+          "p95": 7.100935,
+          "p99": 9.640479
+        },
+        "mean_delta_e_2000": {
+          "count": 97,
+          "max": 6.614682,
+          "mean": 1.439261,
+          "median_absolute_deviation": 0.363727,
+          "p05": 0.612477,
+          "p50": 1.370901,
+          "p90": 2.135235,
+          "p95": 2.285444,
+          "p99": 6.614682
+        },
+        "mean_flip": {
+          "count": 97,
+          "max": 0.207985,
+          "mean": 0.042802,
+          "median_absolute_deviation": 0.010145,
+          "p05": 0.01869,
+          "p50": 0.043193,
+          "p90": 0.055516,
+          "p95": 0.071751,
+          "p99": 0.207985
+        },
+        "p95_delta_e_2000": {
+          "count": 97,
+          "max": 19.145552,
+          "mean": 8.460809,
+          "median_absolute_deviation": 2.869761,
+          "p05": 1.306925,
+          "p50": 8.756063,
+          "p90": 14.353461,
+          "p95": 16.5388,
+          "p99": 19.145552
+        },
+        "psnr_db": {
+          "count": 97,
+          "max": 46.473539,
+          "mean": 23.407903,
+          "median_absolute_deviation": 1.692968,
+          "p05": 19.820976,
+          "p50": 22.838752,
+          "p90": 25.766164,
+          "p95": 28.2759,
+          "p99": 46.473539
+        },
+        "rmse": {
+          "count": 97,
+          "max": 29.993135,
+          "mean": 18.455509,
+          "median_absolute_deviation": 3.433215,
+          "p05": 9.834339,
+          "p50": 18.390884,
+          "p90": 24.469149,
+          "p95": 26.031032,
+          "p99": 29.993135
+        },
+        "ssim": {
+          "count": 97,
+          "max": 0.999797,
+          "mean": 0.958467,
+          "median_absolute_deviation": 0.01242,
+          "p05": 0.924754,
+          "p50": 0.962659,
+          "p90": 0.979488,
+          "p95": 0.983362,
+          "p99": 0.999797
+        }
+      },
+      "poppler": {
+        "changed_pixel_gt8_percent": {
+          "count": 97,
+          "max": 14.573998,
+          "mean": 9.067562,
+          "median_absolute_deviation": 2.320367,
+          "p05": 4.439572,
+          "p50": 9.547941,
+          "p90": 12.697079,
+          "p95": 13.030272,
+          "p99": 14.573998
+        },
+        "mean_absolute_channel_delta": {
+          "count": 97,
+          "max": 16.058138,
+          "mean": 10.540696,
+          "median_absolute_deviation": 2.842049,
+          "p05": 5.083514,
+          "p50": 10.625876,
+          "p90": 14.936748,
+          "p95": 15.232222,
+          "p99": 16.058138
+        },
+        "mean_delta_e_2000": {
+          "count": 97,
+          "max": 5.161893,
+          "mean": 3.437574,
+          "median_absolute_deviation": 0.960202,
+          "p05": 1.62732,
+          "p50": 3.435389,
+          "p90": 4.874843,
+          "p95": 4.952123,
+          "p99": 5.161893
+        },
+        "mean_flip": {
+          "count": 97,
+          "max": 0.11224,
+          "mean": 0.061567,
+          "median_absolute_deviation": 0.015548,
+          "p05": 0.028079,
+          "p50": 0.063104,
+          "p90": 0.090349,
+          "p95": 0.095878,
+          "p99": 0.11224
+        },
+        "p95_delta_e_2000": {
+          "count": 97,
+          "max": 41.100136,
+          "mean": 23.165944,
+          "median_absolute_deviation": 10.165521,
+          "p05": 0.0,
+          "p50": 24.85688,
+          "p90": 38.419468,
+          "p95": 39.93447,
+          "p99": 41.100136
+        },
+        "psnr_db": {
+          "count": 97,
+          "max": 40.55321,
+          "mean": 16.404427,
+          "median_absolute_deviation": 0.98874,
+          "p05": 13.894941,
+          "p50": 15.545822,
+          "p90": 17.971496,
+          "p95": 18.898278,
+          "p99": 40.55321
+        },
+        "rmse": {
+          "count": 97,
+          "max": 52.510618,
+          "mean": 41.050176,
+          "median_absolute_deviation": 4.851396,
+          "p05": 28.948515,
+          "p50": 42.584258,
+          "p90": 50.457248,
+          "p95": 51.498327,
+          "p99": 52.510618
+        },
+        "ssim": {
+          "count": 97,
+          "max": 0.99925,
+          "mean": 0.86178,
+          "median_absolute_deviation": 0.031662,
+          "p05": 0.787523,
+          "p50": 0.854784,
+          "p90": 0.916965,
+          "p95": 0.933316,
+          "p99": 0.99925
+        }
+      },
+      "wellfriendpdf": {
+        "changed_pixel_gt8_percent": {
+          "count": 97,
+          "max": 14.284388,
+          "mean": 8.170951,
+          "median_absolute_deviation": 1.990338,
+          "p05": 3.846246,
+          "p50": 8.418592,
+          "p90": 11.758259,
+          "p95": 12.175678,
+          "p99": 14.284388
+        },
+        "mean_absolute_channel_delta": {
+          "count": 97,
+          "max": 10.112683,
+          "mean": 5.059526,
+          "median_absolute_deviation": 1.506077,
+          "p05": 1.94853,
+          "p50": 4.824711,
+          "p90": 7.363262,
+          "p95": 8.123021,
+          "p99": 10.112683
+        },
+        "mean_delta_e_2000": {
+          "count": 97,
+          "max": 3.168989,
+          "mean": 1.578378,
+          "median_absolute_deviation": 0.479154,
+          "p05": 0.583243,
+          "p50": 1.530997,
+          "p90": 2.319708,
+          "p95": 2.690108,
+          "p99": 3.168989
+        },
+        "mean_flip": {
+          "count": 97,
+          "max": 0.074197,
+          "mean": 0.037002,
+          "median_absolute_deviation": 0.010371,
+          "p05": 0.01481,
+          "p50": 0.038033,
+          "p90": 0.054814,
+          "p95": 0.058751,
+          "p99": 0.074197
+        },
+        "p95_delta_e_2000": {
+          "count": 97,
+          "max": 22.91495,
+          "mean": 8.888884,
+          "median_absolute_deviation": 4.490228,
+          "p05": 0.0,
+          "p50": 8.905667,
+          "p90": 15.361015,
+          "p95": 16.728784,
+          "p99": 22.91495
+        },
+        "psnr_db": {
+          "count": 97,
+          "max": 46.509926,
+          "mean": 22.004134,
+          "median_absolute_deviation": 1.575681,
+          "p05": 17.910155,
+          "p50": 21.224004,
+          "p90": 24.676622,
+          "p95": 27.001155,
+          "p99": 46.509926
+        },
+        "rmse": {
+          "count": 97,
+          "max": 36.320128,
+          "mean": 22.101344,
+          "median_absolute_deviation": 3.899526,
+          "p05": 11.388918,
+          "p50": 22.148278,
+          "p90": 29.786027,
+          "p95": 32.436384,
+          "p99": 36.320128
+        },
+        "ssim": {
+          "count": 97,
+          "max": 0.999856,
+          "mean": 0.944509,
+          "median_absolute_deviation": 0.015951,
+          "p05": 0.903857,
+          "p50": 0.946905,
+          "p90": 0.972978,
+          "p95": 0.984368,
+          "p99": 0.999856
+        }
+      }
+    },
+    "qualified_pages": 97,
+    "status": "complete"
+  },
+  "raw_row_counts": {
+    "parse-fresh.jsonl": 500,
+    "parse-persistent.jsonl": 1500,
+    "quality-pages.jsonl": 97,
+    "render-fresh.jsonl": 400,
+    "render-persistent.jsonl": 1200
+  },
+  "rendering": {
+    "accepted": {
+      "mupdf": 100,
+      "pdfium": 100,
+      "poppler": 100,
+      "wellfriendpdf": 100
+    },
+    "contract": "open identical bytes; render page 1 at fixed DPI to raw RGB; encoding excluded",
+    "fresh_peak_rss_kib": {
+      "mupdf": {
+        "count": 100,
+        "max": 78196.0,
+        "mean": 28714.68,
+        "median_absolute_deviation": 2050.0,
+        "p05": 23072.0,
+        "p50": 25952.0,
+        "p90": 36316.0,
+        "p95": 46832.0,
+        "p99": 56068.0
+      },
+      "pdfium": {
+        "count": 100,
+        "max": 83252.0,
+        "mean": 26081.6,
+        "median_absolute_deviation": 1184.0,
+        "p05": 21192.0,
+        "p50": 23196.0,
+        "p90": 32092.0,
+        "p95": 38464.0,
+        "p99": 66236.0
+      },
+      "poppler": {
+        "count": 100,
+        "max": 58976.0,
+        "mean": 36728.92,
+        "median_absolute_deviation": 1014.0,
+        "p05": 33628.0,
+        "p50": 35544.0,
+        "p90": 40596.0,
+        "p95": 45608.0,
+        "p99": 50756.0
+      },
+      "wellfriendpdf": {
+        "count": 100,
+        "max": 70028.0,
+        "mean": 32863.0,
+        "median_absolute_deviation": 1874.0,
+        "p05": 27188.0,
+        "p50": 30548.0,
+        "p90": 39364.0,
+        "p95": 44636.0,
+        "p99": 61172.0
+      }
+    },
+    "fresh_process_ms": {
+      "mupdf": {
+        "count": 100,
+        "max": 391.249022,
+        "mean": 114.749615,
+        "median_absolute_deviation": 17.67367,
+        "p05": 71.620312,
+        "p50": 102.230044,
+        "p90": 152.172712,
+        "p95": 198.872376,
+        "p99": 246.818643
+      },
+      "pdfium": {
+        "count": 100,
+        "max": 424.959118,
+        "mean": 102.602809,
+        "median_absolute_deviation": 10.778909,
+        "p05": 66.59246,
+        "p50": 89.237833,
+        "p90": 137.888509,
+        "p95": 191.385267,
+        "p99": 315.341743
+      },
+      "poppler": {
+        "count": 100,
+        "max": 394.465185,
+        "mean": 148.148365,
+        "median_absolute_deviation": 15.953079,
+        "p05": 100.362435,
+        "p50": 137.411646,
+        "p90": 186.059157,
+        "p95": 217.495252,
+        "p99": 365.251257
+      },
+      "wellfriendpdf": {
+        "count": 100,
+        "max": 839.588692,
+        "mean": 238.874203,
+        "median_absolute_deviation": 34.333164,
+        "p05": 139.674999,
+        "p50": 208.930306,
+        "p90": 356.41293,
+        "p95": 377.43328,
+        "p99": 817.057631
+      }
+    },
+    "persistent_render_ms": {
+      "mupdf": {
+        "count": 300,
+        "max": 269.917678,
+        "mean": 56.841017,
+        "median_absolute_deviation": 12.229029,
+        "p05": 27.890327,
+        "p50": 48.450591,
+        "p90": 91.521977,
+        "p95": 109.717871,
+        "p99": 156.912844
+      },
+      "pdfium": {
+        "count": 300,
+        "max": 350.352291,
+        "mean": 51.685203,
+        "median_absolute_deviation": 8.140987,
+        "p05": 25.660046,
+        "p50": 41.45825,
+        "p90": 73.247163,
+        "p95": 108.856796,
+        "p99": 271.614374
+      },
+      "poppler": {
+        "count": 300,
+        "max": 283.435274,
+        "mean": 59.382777,
+        "median_absolute_deviation": 9.715777,
+        "p05": 30.965018,
+        "p50": 49.017058,
+        "p90": 88.512736,
+        "p95": 135.783318,
+        "p99": 219.782627
+      },
+      "wellfriendpdf": {
+        "count": 300,
+        "max": 603.856812,
+        "mean": 137.551593,
+        "median_absolute_deviation": 24.406563,
+        "p05": 65.859735,
+        "p50": 115.738794,
+        "p90": 214.607725,
+        "p95": 288.681809,
+        "p99": 545.612193
+      }
+    }
+  },
+  "schema": "wellfriendpdf.pebq.v1",
+  "source_revision": "efc038676cbbbb1cc8cdf1f4c5aeed78be91b9be+uncommitted-renderer-optimization-20261002",
+  "source_sha256": {
+    "buffer.rs": "540d570db3ed9682cad930df004a31da074b7f55eb52f8b2241eab9a82e8265b",
+    "clip_dag.rs": "f033322164bce1c5106caeeedfc29767426d3003196f76c4435b0b8db67cc0aa",
+    "display_list.rs": "fc7499d69b9a63751eaa6ad39c8c4655262c59a9c74a8bba0faf51149dd00950",
+    "image_decode_planning.rs": "e395b0fa4f2ff726bd83a115349e10ef907200784f4a6a12ce693f7f1c2623c7",
+    "image_painter.rs": "723d0599dddb4a0b7336faf5a96d6de4e7b9b1483a5a46a2bab8a1654f4fca5b",
+    "page_renderer.rs": "1899cbcf916e527d0185b9a195ca5e07386ff45f7702564ad4785dee21147ebe",
+    "pebq_benchmark_execution.py": "5bdf99074d9b61125dea26e954b4af8e20517816e2e58db7e520e96468466cb0",
+    "pebq_benchmark_reporter.py": "bfc94c37003fd352fd6916d2a147ff7e5919380f24b2d14e39cccea72059510a",
+    "pebq_finalize.py": "5f0a0e468e3aeb4092ba84cbfc97d6fcc2b405132f70c5aacd1bbe06d0e834fe",
+    "type1.rs": "e3141725ed752534d72cabe5e0b7c312eb43d73bb39b814d15f94f1d5421d8a0"
+  },
+  "started_at_utc": "2026-10-02T11:02:10Z"
+}

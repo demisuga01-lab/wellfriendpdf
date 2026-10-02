@@ -11,28 +11,28 @@ canonical implementation is Rust; the CLI, HTTP server, C ABI, Python, WASM,
 
 ## Benchmark Results
 
-### Current PEBQ matched-contract qualification - 2026-10-01
+### Current PEBQ matched-contract qualification - 2026-10-02
 
 This is the current fair cross-engine comparison. Each native adapter receives
 the same in-memory page-count request or the same page-one 144-DPI raw-RGB
-render request. The fixed 100-PDF corpus, 13,597 retained observations, native
+render request. The fixed 100-PDF corpus, 3,697 retained observations, native
 adapter sources, hashes, strict dimension failures, and 100 visual comparison
-sheets are in the [complete PEBQ report](docs/reports/pebq-vps-20261001/README.md).
+sheets are in the [complete PEBQ report](docs/reports/pebq-vps-20261002/README.md).
 
 #### Parsing - persistent native adapters
 
 | Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
 |---|---:|---:|---:|---:|---:|
 | Qualified page counts | 100/100 | 100/100 | 100/100 | 100/100 | 100/100 |
-| P50 | 1.471 ms | 6.772 ms | 1.924 ms | 0.801 ms | 3.920 ms |
-| P90 | 2.667 ms | 22.297 ms | 6.129 ms | 1.436 ms | 5.909 ms |
-| P95 | 3.329 ms | 29.829 ms | 10.071 ms | 1.917 ms | 6.462 ms |
-| P99 | 13.667 ms | 38.927 ms | 28.282 ms | 7.709 ms | 16.208 ms |
-| Maximum | 49.275 ms | 49.733 ms | 90.889 ms | 49.147 ms | 25.847 ms |
+| P50 | 1.230 ms | 5.484 ms | 1.759 ms | 0.697 ms | 3.211 ms |
+| P90 | 2.218 ms | 19.378 ms | 6.176 ms | 1.319 ms | 5.217 ms |
+| P95 | 2.689 ms | 24.847 ms | 9.468 ms | 1.653 ms | 6.249 ms |
+| P99 | 11.771 ms | 31.091 ms | 34.941 ms | 9.143 ms | 12.349 ms |
+| Maximum | 48.555 ms | 32.652 ms | 67.045 ms | 37.406 ms | 19.110 ms |
 
 PDFium has the lowest persistent median. Wellfriend PDF is second. On the 100
-paired documents, Poppler/Wellfriend has a 2.639x median ratio with a bootstrap
-95% interval of 2.496x-2.901x. The previously discussed 20x claim is therefore
+paired documents, Poppler/Wellfriend has a 2.680x median ratio with a bootstrap
+95% interval of 2.377x-2.943x. The previously discussed 20x claim is therefore
 **rejected**, not advertised.
 
 #### Rendering - persistent native raw RGB
@@ -40,14 +40,18 @@ paired documents, Poppler/Wellfriend has a 2.639x median ratio with a bootstrap
 | Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
 |---|---:|---:|---:|---:|---:|
 | Successful renders | 100/100 | N/A (no rasterizer) | 100/100 | 100/100 | 100/100 |
-| P50 | 180.780 ms | - | 52.773 ms | 47.960 ms | 57.304 ms |
-| P90 | 372.123 ms | - | 98.820 ms | 78.807 ms | 96.109 ms |
-| P95 | 563.278 ms | - | 123.405 ms | 130.254 ms | 146.815 ms |
-| P99 | 1,005.455 ms | - | 182.717 ms | 274.303 ms | 247.313 ms |
-| Maximum | 1,095.182 ms | - | 314.309 ms | 435.279 ms | 298.590 ms |
+| P50 | 115.739 ms | - | 48.451 ms | 41.458 ms | 49.017 ms |
+| P90 | 214.608 ms | - | 91.522 ms | 73.247 ms | 88.513 ms |
+| P95 | 288.682 ms | - | 109.718 ms | 108.857 ms | 135.783 ms |
+| P99 | 545.612 ms | - | 156.913 ms | 271.614 ms | 219.783 ms |
+| Maximum | 603.857 ms | - | 269.918 ms | 350.352 ms | 283.435 ms |
 
-Wellfriend PDF rendered every page but is the slowest renderer in this
-campaign. PDFium has the lowest median and tail latency.
+Wellfriend PDF rendered every page. Relative to the 2026-10-01 matched campaign,
+its P50/P90/P95/P99/max fell by 36.0%/42.3%/48.7%/45.7%/44.9%. That comparison
+uses the same VPS, corpus, DPI, affinity, adapters, and render contract, but the
+new run has three persistent repetitions instead of ten. PDFium has the lowest
+P50 through P95, while MuPDF has the lowest P99 and maximum. This is an
+improvement result, not a claim that Wellfriend is the fastest renderer.
 
 #### Rendering quality - leave-one-engine-out consensus
 
@@ -61,10 +65,13 @@ campaign. PDFium has the lowest median and tail latency.
 Consensus is a symmetric diagnostic, not a ground-truth oracle. Three Poppler
 outputs differed from the other engines by one native pixel in width or height;
 those pages were reported as strict failures and never resized into the quality
-scores. Editing remains in the RAPTOR evidence below because the reference
+scores. Aggregate medians remained unchanged to the reported precision, while
+the formerly broken offset-transparency page improved from 0.862705 to 0.894591
+SSIM and from 0.101312 to 0.068472 mean FLIP after all four image panels were
+restored. Editing remains in the RAPTOR evidence below because the reference
 tools do not expose equivalent source-edit contracts.
 
-![Four-renderer PEBQ comparison](docs/reports/pebq-vps-20261001/visual/pages/084-f1040s1-pdf.webp)
+![Four-renderer PEBQ comparison](docs/reports/pebq-vps-20261002/visual/pages/015-arxiv-cs-cr-2609-28239v1-03731b7996f9-pdf.webp)
 
 ### Previous RAPTOR qualification — 2026-09-30
 

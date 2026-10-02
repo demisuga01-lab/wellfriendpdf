@@ -316,7 +316,7 @@ impl ClipState {
                 bytes,
                 ..
             } if *mask_width == width && *mask_height == height => {
-                ClipMask::from_alpha_bytes(width, height, (**bytes).clone())
+                ClipMask::from_shared_partial_alpha_bytes(width, height, Arc::clone(bytes))
             }
             ClipState::DenseMask {
                 width: mask_width,
@@ -459,13 +459,15 @@ impl ClipState {
             }
         }
         if mask.has_partial_coverage() {
-            let bytes = Self::extract_alpha_bytes(mask);
+            let bytes = mask
+                .shared_partial_alpha_bytes()
+                .unwrap_or_else(|| Arc::new(Self::extract_alpha_bytes(mask)));
             let fingerprint = Self::fingerprint_bytes(&bytes, mask.width, mask.height);
             return ClipState::DenseMask {
                 fingerprint,
                 width: mask.width,
                 height: mask.height,
-                bytes: Arc::new(bytes),
+                bytes,
             };
         }
 
