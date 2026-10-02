@@ -1,2 +1,0 @@
-Command exited with non-zero status 2
-WALL=0.33 RSS_KB=29356

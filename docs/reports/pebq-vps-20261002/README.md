@@ -2,8 +2,8 @@
 
 ## Renderer optimization result
 
-This report qualifies the uncommitted renderer candidate based on
-`efc038676cbbbb1cc8cdf1f4c5aeed78be91b9be`. The implementation adds a bounded
+This report qualifies source benchmarked before commit and published unchanged
+as `c3260044461cdb30a1355361ccad74f77df245d2`. The implementation adds a bounded
 parsed-Type-1 program cache, copy-on-write shared clip planes, a one-byte
 antialias coverage plane, precomputed axis-aligned bilinear coordinates, and a
 single full-page coordinate invariant for retained render bounds and image
@@ -15,34 +15,26 @@ full-page coordinate spaces and could be culled. The corrected renderer keeps
 the retained bounds global and converts to surface-local coordinates only when
 mapping the clipped source region.
 
-### Matched baseline delta
+### Current persistent render timing
 
-| Persistent page-one render | 2026-10-01 baseline | Current candidate | Change |
-|---|---:|---:|---:|
-| P50 | 180.780 ms | 115.739 ms | -35.978% |
-| P90 | 372.123 ms | 214.608 ms | -42.329% |
-| P95 | 563.278 ms | 288.682 ms | -48.750% |
-| P99 | 1,005.455 ms | 545.612 ms | -45.735% |
-| Maximum | 1,095.182 ms | 603.857 ms | -44.862% |
+| Persistent page-one render | Wellfriend PDF |
+|---|---:|
+| P50 | 115.739 ms |
+| P90 | 214.608 ms |
+| P95 | 288.682 ms |
+| P99 | 545.612 ms |
+| Maximum | 603.857 ms |
 
-Both campaigns used the same VPS, fixed corpus manifest, 144-DPI raw-RGB
-contract, CPU affinity, and reference adapters. The baseline used ten persistent
-repetitions and the current run used three, so the delta is strong directional
-evidence rather than an equal-repetition controlled trial. All 100 per-document
-Wellfriend medians were lower in this comparison; the largest reduction was
-`995.231 ms` to `163.187 ms` on the Type-1-heavy physics page.
+The campaign used the fixed 100-PDF corpus manifest, 144-DPI raw-RGB contract,
+CPU affinity, persistent native adapters, and three repetitions per document.
 
 ### Correctness evidence
 
-On `arxiv_cs.CR_2609.28239v1-03731b7996f9.pdf`, the old Wellfriend raster omitted
-three of four image panels. The current raster contains all four. Its
-leave-one-engine-out SSIM rose from `0.862705` to `0.894591`; mean FLIP fell from
-`0.101312` to `0.068472`; mean absolute channel delta fell from `14.478953` to
-`9.054367`.
+On `arxiv_cs.CR_2609.28239v1-03731b7996f9.pdf`, the current raster contains all
+four image panels. Its leave-one-engine-out SSIM is `0.894591`, mean FLIP is
+`0.068472`, and mean absolute channel delta is `9.054367`.
 
-| Before | Current candidate |
-|---|---|
-| ![Before: nested panels missing](../pebq-vps-20261001/visual/pages/015-arxiv-cs-cr-2609-28239v1-03731b7996f9-pdf.webp) | ![After: nested panels retained](visual/pages/015-arxiv-cs-cr-2609-28239v1-03731b7996f9-pdf.webp) |
+![Current four-renderer comparison with all image panels retained](visual/pages/015-arxiv-cs-cr-2609-28239v1-03731b7996f9-pdf.webp)
 
 Aggregate quality medians did not move at the reported precision because the
 repair changes a small subset of the 97 dimension-qualified pages. The complete
@@ -66,8 +58,9 @@ or unrecognizable Wellfriend page-one output was observed at contact-sheet scale
 - PDFium remains faster at every reported persistent render percentile. This
   report does not claim renderer leadership, universal correctness, or Adobe
   superiority.
-- The candidate is a working-tree build, not a committed release. Source and
-  adapter hashes are retained in `summary.json` and `environment.json`.
+- The exact benchmarked renderer source was subsequently committed as
+  `c3260044461cdb30a1355361ccad74f77df245d2`; it is not a packaged release.
+  Source and adapter hashes are retained in `summary.json` and `environment.json`.
 
 ### Executed verification
 
@@ -96,7 +89,7 @@ to raw RGB; PNG/WebP encoding is not part of the renderer timer.
 
 | Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
 |---|---:|---:|---:|---:|---:|
-| Version | efc038676cbbbb1cc8cdf1f4c5aeed78be91b9be+uncommitted-renderer-optimization-20261002 | qpdf version 12.3.2 | mutool version 1.27.0 | PDFium 153.0.7999.0 | pdfinfo version 26.01.0 |
+| Version | c3260044461cdb30a1355361ccad74f77df245d2 | qpdf version 12.3.2 | mutool version 1.27.0 | PDFium 153.0.7999.0 | pdfinfo version 26.01.0 |
 
 ## Parsing — persistent native adapters
 

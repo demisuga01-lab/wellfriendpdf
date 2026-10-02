@@ -874,7 +874,8 @@
     }
   },
   "schema": "wellfriendpdf.pebq.v1",
-  "source_revision": "efc038676cbbbb1cc8cdf1f4c5aeed78be91b9be+uncommitted-renderer-optimization-20261002",
+  "benchmark_recorded_revision": "efc038676cbbbb1cc8cdf1f4c5aeed78be91b9be+uncommitted-renderer-optimization-20261002",
+  "source_revision": "c3260044461cdb30a1355361ccad74f77df245d2",
   "source_sha256": {
     "buffer.rs": "540d570db3ed9682cad930df004a31da074b7f55eb52f8b2241eab9a82e8265b",
     "clip_dag.rs": "f033322164bce1c5106caeeedfc29767426d3003196f76c4435b0b8db67cc0aa",

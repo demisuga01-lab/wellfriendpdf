@@ -32,7 +32,7 @@ sheets are in the [complete PEBQ report](docs/reports/pebq-vps-20261002/README.m
 
 PDFium has the lowest persistent median. Wellfriend PDF is second. On the 100
 paired documents, Poppler/Wellfriend has a 2.680x median ratio with a bootstrap
-95% interval of 2.377x-2.943x. The previously discussed 20x claim is therefore
+95% interval of 2.377x-2.943x. The pre-registered 20x claim is therefore
 **rejected**, not advertised.
 
 #### Rendering - persistent native raw RGB
@@ -46,12 +46,9 @@ paired documents, Poppler/Wellfriend has a 2.680x median ratio with a bootstrap
 | P99 | 545.612 ms | - | 156.913 ms | 271.614 ms | 219.783 ms |
 | Maximum | 603.857 ms | - | 269.918 ms | 350.352 ms | 283.435 ms |
 
-Wellfriend PDF rendered every page. Relative to the 2026-10-01 matched campaign,
-its P50/P90/P95/P99/max fell by 36.0%/42.3%/48.7%/45.7%/44.9%. That comparison
-uses the same VPS, corpus, DPI, affinity, adapters, and render contract, but the
-new run has three persistent repetitions instead of ten. PDFium has the lowest
-P50 through P95, while MuPDF has the lowest P99 and maximum. This is an
-improvement result, not a claim that Wellfriend is the fastest renderer.
+Wellfriend PDF rendered every page. PDFium has the lowest P50 through P95,
+while MuPDF has the lowest P99 and maximum. The current result does not claim
+that Wellfriend PDF is the fastest renderer.
 
 #### Rendering quality - leave-one-engine-out consensus
 
@@ -65,343 +62,12 @@ improvement result, not a claim that Wellfriend is the fastest renderer.
 Consensus is a symmetric diagnostic, not a ground-truth oracle. Three Poppler
 outputs differed from the other engines by one native pixel in width or height;
 those pages were reported as strict failures and never resized into the quality
-scores. Aggregate medians remained unchanged to the reported precision, while
-the formerly broken offset-transparency page improved from 0.862705 to 0.894591
-SSIM and from 0.101312 to 0.068472 mean FLIP after all four image panels were
-restored. Editing remains in the RAPTOR evidence below because the reference
-tools do not expose equivalent source-edit contracts.
+scores. The inspected offset-transparency page contains all four image panels
+and scores 0.894591 SSIM and 0.068472 mean FLIP. Editing is not included in this
+matched parser/renderer campaign because the reference tools do not expose
+equivalent source-edit contracts.
 
 ![Four-renderer PEBQ comparison](docs/reports/pebq-vps-20261002/visual/pages/015-arxiv-cs-cr-2609-28239v1-03731b7996f9-pdf.webp)
-
-### Previous RAPTOR qualification — 2026-09-30
-
-This stage-separated 100-PDF VPS campaign uses nearest-rank percentiles after
-collapsing repeated fresh-process measurements to one median per document. The
-[full report](docs/reports/raptor-vps-20260930/README.md) contains raw JSONL,
-source/corpus hashes, timestamps, 5,412-test workspace logs, 198 page-level
-four-renderer sheets, contact sheets, and amplified differences.
-
-#### Parsing
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Accepted | 100/100 | 100/100 | 95/100 | Not measured | 100/100 |
-| Workload | xref open + indexed page count | structural check | document inventory | Not measured | metadata + page count |
-| P50 | 1.959 ms | 159.358 ms | 21.008 ms | — | 38.457 ms |
-| P90 | 3.474 ms | 1,121.336 ms | 39.362 ms | — | 46.655 ms |
-| P95 | 3.826 ms | 1,801.061 ms | 44.569 ms | — | 51.971 ms |
-| P99 | 20.176 ms | 7,271.322 ms | 265.436 ms | — | 60.162 ms |
-| Maximum | 44.338 ms | 9,283.166 ms | 265.436 ms | — | 63.557 ms |
-
-The commands perform different work and are not semantic-equivalence claims.
-Wellfriend's indexed structural path passes the requested 15/30/50/75/200 ms
-upper bounds. Requested-page, full-tree, page-program, semantic, cold-raster,
-and retained-raster stages remain separate in the full report.
-
-#### Editing
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Applicable and verified after reopen | 98/98 | — | — | — | — |
-| Typed non-applicable | 2/100 | — | — | — | — |
-| Plan P50 / P95 / max | 1,208.958 / 2,465.182 / 4,456.134 ms | — | — | — | — |
-| Apply P50 / P95 / max | 1,306.047 / 3,161.706 / 5,182.854 ms | — | — | — | — |
-| Verified E2E P50 / P95 / max | 2,624.005 / 6,196.141 / 9,193.955 ms | — | — | — | — |
-
-Every applicable output changed bytes, reopened, removed the selected reachable
-source occurrence, and exposed the replacement. The requested edit latency
-gates still fail.
-
-#### Visual rendering — original inputs
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Rendered outputs | 100/100 | — | 100/100 | 100/100 | 100/100 |
-| P50 | 406.167 ms | — | 946.182 ms | 694.410 ms | 841.898 ms |
-| P90 | 632.020 ms | — | 1,047.133 ms | 774.717 ms | 1,073.674 ms |
-| P95 | 732.437 ms | — | 1,070.129 ms | 803.991 ms | 1,104.522 ms |
-| P99 / maximum | 1,264.523 / 1,310.240 ms | — | 1,208.693 / 1,671.627 ms | 1,014.655 / 1,102.913 ms | 1,292.722 / 1,716.905 ms |
-
-#### Visual rendering — verified edited outputs
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Rendered outputs | 98/98 | — | 98/98 | 98/98 | 98/98 |
-| P50 | 407.149 ms | — | 906.762 ms | 682.421 ms | 848.388 ms |
-| P90 | 663.924 ms | — | 1,030.038 ms | 772.669 ms | 1,081.573 ms |
-| P95 | 875.002 ms | — | 1,113.652 ms | 821.685 ms | 1,135.360 ms |
-| P99 / maximum | 1,317.898 / 1,317.898 ms | — | 1,444.954 / 1,444.954 ms | 1,086.931 / 1,086.931 ms | 1,710.013 / 1,710.013 ms |
-
-Wellfriend leads at P50 and P90, but the required 10% lead fails at the original
-P95/P99/max and edited P95/P99/max gates. Pixel differences are diagnostics,
-not objective error rates. This corpus does not establish universal editing or
-superiority over Adobe.
-
-![Edited four-renderer comparison](docs/reports/raptor-vps-20260930/visual-edited/pages/094-i1040gi-pdf.webp)
-
-<details>
-<summary>Previous RAPTOR qualification — 2026-09-29</summary>
-
-The current result is a stage-separated 100-PDF VPS campaign. Tools are
-columns; measurements are rows. Percentiles use nearest rank. Full per-file
-evidence, commands, hashes, timestamps, readable comparison sheets, and the
-methodology are in the
-[RAPTOR qualification report](docs/reports/raptor-vps-20260929/README.md).
-
-#### Parsing
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Accepted | 100/100 | 100/100 | 95/100 | Not run | 100/100 |
-| P50 | 20.020 ms | 175.558 ms | 22.057 ms | — | 40.703 ms |
-| P90 | 93.424 ms | 1,193.706 ms | 39.310 ms | — | 49.993 ms |
-| P95 | 158.914 ms | 1,976.645 ms | 49.202 ms | — | 52.476 ms |
-| P99 | 254.819 ms | 7,436.913 ms | 260.429 ms | — | 57.263 ms |
-| Maximum | 315.642 ms | 11,081.225 ms | 260.429 ms | — | 59.346 ms |
-
-These parsing workloads are deliberately labeled and are not semantically
-equivalent: Wellfriend performs structural open/page-tree work, qpdf checks the
-file, MuPDF inventories resources, and Poppler reads metadata. Wellfriend missed
-the requested 15/30/50/75/200 ms structural-parse SLO at every gate.
-
-#### Editing
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Attempted | 100 | — | — | — | — |
-| Applicable and verified after reopen | 98/98 | — | — | — | — |
-| Typed non-applicable | 2/100 | — | — | — | — |
-| Apply P50 / P90 | 2,115.375 / 4,387.261 ms | — | — | — | — |
-| Apply P95 / P99 / max | 5,208.620 / 8,207.122 / 8,207.122 ms | — | — | — | — |
-| Verified E2E P50 / P90 | 3,586.492 / 6,796.927 ms | — | — | — | — |
-| Verified E2E P95 / P99 / max | 7,756.644 / 12,481.508 / 12,481.508 ms | — | — | — | — |
-
-Every applicable result changed bytes, reopened, removed the selected source
-occurrence from the reachable revision, and exposed the replacement. The two
-non-applicable files were retained in the denominator. All requested edit
-latency gates failed.
-
-#### Visual rendering time
-
-The table below is the corrected 98-file edited-output campaign at 144 DPI,
-using one fresh process per tool and page.
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Matching-dimension output | 98/98 | — | 98/98 | 98/98 | 98/98 |
-| P50 | 432.789 ms | — | 944.190 ms | 705.232 ms | 871.752 ms |
-| P90 | 716.201 ms | — | 1,156.429 ms | 851.732 ms | 1,139.882 ms |
-| P95 | 1,005.492 ms | — | 1,185.603 ms | 867.605 ms | 1,209.075 ms |
-| P99 / maximum | 43,689.996 ms | — | 1,526.179 ms | 1,112.247 ms | 1,759.373 ms |
-
-Wellfriend was at least 10% faster than the fastest reference at P50 and P90,
-but failed at P95, P99, and maximum because `i1040gi.pdf` took 43.690 seconds.
-The overall 10%-faster claim is therefore **failed**, not passed.
-
-#### Visual rendering quality diagnostics
-
-| Edited-output `changed > 8` | Wellfriend vs MuPDF | Wellfriend vs PDFium | Wellfriend vs Poppler |
-|---|---:|---:|---:|
-| P50 | 8.371346% | 9.955664% | 9.158321% |
-| P90 | 11.375035% | 14.046511% | 12.903184% |
-| P95 | 11.794105% | 14.402553% | 13.451663% |
-| P99 / maximum | 15.750179% | 18.501807% | 17.794829% |
-
-`Changed > 8` is a raster-policy diagnostic, not a percentage of objectively
-wrong pixels. The formerly misplaced replacement now stays at its source
-position, and the inspected comparison pages are recognizable in all four
-renderers. This bounded evidence does not establish pixel identity, universal
-editing, or superiority over Adobe.
-
-![Corrected four-renderer edited output](docs/reports/raptor-vps-20260929/visual/edited/075-arxiv-stat-ap-2609-28419v1-fa39e6badcda-pdf.webp)
-
-</details>
-
-<details>
-<summary>Historical 2026-09-28 campaign and pre-RAPTOR evidence</summary>
-
-The 2026-09-28 qualification used implementation commit [`e2a83fc`](https://github.com/demisuga01-lab/wellfriendpdf/commit/e2a83fc),
-release CLI SHA-256
-`879e2bc695790fc7523cf6a835b7149b2d6b7ee7a6dd542466930ecb18f83943`,
-and a fixed 100-PDF corpus on the project VPS. The corpus contains 81 arXiv
-papers, 16 IRS forms, one DARPA SafeDocs sample, one Mozilla PDF.js regression
-file, and one veraPDF conformance file.
-
-### Editing and parsing
-
-Tools are columns; benchmark workloads are rows. A dash means that the tool was
-not used for that workload.
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Semantic parse, originals | 100/100 accepted | 100/100 accepted: 97 clean, 3 warning | 95/100 accepted | — | — |
-| Semantic parse, edited outputs | 100/100 accepted | 100/100 accepted: 99 clean, 1 warning | 95/100 accepted | — | — |
-| Revision-bound source edit | 100/100 applied and verified | Structural verification | — | — | Independent text verification |
-
-Every counted edit had to produce changed bytes, report an applied mutation,
-prove the selected source occurrence was replaced, reopen through Wellfriend PDF,
-expose the replacement through independent Poppler extraction, and introduce no
-new qpdf structural diagnostic. There were no timeouts, typed refusals, or
-verification failures in this particular workflow.
-
-MuPDF rejected `f1040.pdf`, `f1040sa.pdf`, `f1040sc.pdf`, `f1040sd.pdf`, and
-`f1040se.pdf` with `syntax error after element name`. It rejected the same five
-files before and after editing; Wellfriend PDF and qpdf accepted all five.
-
-### Timing percentiles
-
-These are process durations from the retained 100 per-file observations. P50,
-P90, P95, and P99 are latency percentiles in milliseconds; they are unrelated
-to the visual-divergence percentiles below.
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Parse originals, P50 | 1,164.201 ms | 182.814 ms | 26.593 ms | — | — |
-| Parse originals, P90 | 4,550.653 ms | 1,331.799 ms | 49.605 ms | — | — |
-| Parse originals, P95 | 6,944.989 ms | 2,029.282 ms | 58.166 ms | — | — |
-| Parse originals, P99 | 14,024.827 ms | 7,946.815 ms | 93.001 ms | — | — |
-| Parse originals, maximum | 16,136.160 ms | 11,974.864 ms | 280.164 ms | — | — |
-| Parse edited outputs, P50 | 1,109.898 ms | 191.145 ms | 26.404 ms | — | — |
-| Parse edited outputs, P90 | 4,727.693 ms | 1,305.994 ms | 49.009 ms | — | — |
-| Parse edited outputs, P95 | 6,484.281 ms | 2,138.305 ms | 55.323 ms | — | — |
-| Parse edited outputs, P99 | 15,025.047 ms | 8,167.515 ms | 166.890 ms | — | — |
-| Parse edited outputs, maximum | 15,919.602 ms | 11,679.947 ms | 327.036 ms | — | — |
-| Verified edit end-to-end, P50 | 33,016.260 ms | — | — | — | — |
-| Verified edit end-to-end, P90 | 55,890.344 ms | — | — | — | — |
-| Verified edit end-to-end, P95 | 68,940.164 ms | — | — | — | — |
-| Verified edit end-to-end, P99 | 98,026.668 ms | — | — | — | — |
-| Verified edit end-to-end, maximum | 111,736.765 ms | — | — | — | — |
-
-The parser rows are not equivalent-operation speed comparisons: Wellfriend PDF emits
-a semantic document model, qpdf performs structural checks, and `mutool info`
-inventories document resources. End-to-end edit time includes extraction,
-planning, approval, mutation, qpdf checks, reopen/extraction, and independent
-Poppler verification.
-
-### Rendering against PDFium, MuPDF, and Poppler
-
-Page one of every original and edited PDF was rendered at 144 DPI. A comparison
-was counted only when Wellfriend PDF and the reference renderer both produced an image
-with identical dimensions.
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| First-page raster, 100 originals | 100/100 produced | — | 100/100 produced | 100/100 produced | 100/100 produced |
-| First-page raster, 100 edited outputs | 100/100 produced | — | 100/100 produced | 100/100 produced | 100/100 produced |
-
-**These are output-production and same-dimension results, not visual-fidelity
-passes.** The retained visual rerun exposes a severe Wellfriend PDF layout failure in
-the maximum-divergence document. The full four-renderer sheets, heatmaps,
-timestamps, raster hashes, and timing measurements are in the
-[human-viewable visual evidence report](docs/reports/ecbes-vps-20260929-visual/README.md).
-
-#### Current post-fix render
-
-![Corrected Wellfriend PDF/PDFium/MuPDF/Poppler comparison](docs/reports/ecbes-vps-20260929-visual/fixes/type1-font-matrix/comparison.webp)
-
-The catastrophic case was traced to an ignored non-default Type 1
-`/FontMatrix`: the font used approximately 1/2048 glyph-space scaling while the
-renderer assumed 1/1000. A source correction now applies the complete embedded
-font matrix. The exact input was rerendered on the VPS and is readable; its
-`changed > 8` divergence fell from 31.29-32.42% to 10.00-12.80% across the
-three references. See the [focused before/after correction report](docs/reports/ecbes-vps-20260929-visual/fixes/type1-font-matrix/README.md).
-The full 100-file corpus has not yet been rerun with this correction, so the
-original campaign is retained below as historical failure evidence.
-
-<details>
-<summary>Historical pre-fix failure: oversized and overlapping Type 1 text</summary>
-
-![Historical maximum-divergence comparison](docs/reports/ecbes-vps-20260929-visual/originals/pages/047-arxiv-eess-iv-2609-28194v1-5e65af65d2ee-pdf.webp)
-
-</details>
-
-`Changed > 8` is the percentage of pixels where at least one RGB channel
-differs from the reference by more than 8. Antialiasing and color-management
-policy can contribute to the value, so it is a diagnostic—not a percentage of
-objectively incorrect pixels. These P50/P90/P95/P99 columns are distributions
-of pixel divergence across files, not render-time percentiles.
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Originals, changed > 8 P50 | Comparison source | — | 8.379496% | 10.087342% | 9.161623% |
-| Originals, changed > 8 P90 | Comparison source | — | 11.293026% | 14.145231% | 12.973691% |
-| Originals, changed > 8 P95 | Comparison source | — | 11.791062% | 14.624750% | 13.444442% |
-| Originals, changed > 8 P99 | Comparison source | — | 15.770450% | 18.511040% | 17.801277% |
-| Originals, changed > 8 maximum, pre-fix | Comparison source | — | 31.288504% | 32.420260% | 31.454685% |
-| Exact formerly broken page, post-fix | Comparison source | — | 10.000130% | 12.801973% | 11.236840% |
-| Edited, changed > 8 P50 | Comparison source | — | 8.366498% | 10.078393% | 9.155820% |
-| Edited, changed > 8 P90 | Comparison source | — | 11.277501% | 14.142704% | 12.949965% |
-| Edited, changed > 8 P95 | Comparison source | — | 11.794105% | 14.618561% | 13.439491% |
-| Edited, changed > 8 P99 | Comparison source | — | 15.751366% | 18.493297% | 17.781729% |
-| Edited, changed > 8 maximum, pre-fix | Comparison source | — | 31.297379% | 32.425445% | 31.462513% |
-
-The edited-output distribution closely follows the original distribution,
-which is evidence against a broad rendering regression in this edit workflow.
-It is not pixel identity with the reference engines.
-
-The original aggregate campaign did not retain per-page durations. A timestamped
-visual rerun retained individual engine durations and produced these percentiles:
-
-| Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
-|---|---:|---:|---:|---:|---:|
-| Original render, P50 | 495.160 ms | — | 957.148 ms | 735.010 ms | 900.829 ms |
-| Original render, P90 | 773.481 ms | — | 1,133.023 ms | 868.279 ms | 1,146.898 ms |
-| Original render, P95 | 997.802 ms | — | 1,181.795 ms | 913.387 ms | 1,168.173 ms |
-| Original render, P99 | 1,489.815 ms | — | 1,287.178 ms | 1,089.188 ms | 1,393.087 ms |
-| Original render, maximum | 40,854.901 ms | — | 1,455.695 ms | 1,154.583 ms | 1,634.043 ms |
-| Edited render, P50 | 490.340 ms | — | 965.530 ms | 730.140 ms | 923.954 ms |
-| Edited render, P90 | 813.415 ms | — | 1,103.554 ms | 850.722 ms | 1,146.064 ms |
-| Edited render, P95 | 1,164.499 ms | — | 1,184.153 ms | 918.240 ms | 1,217.007 ms |
-| Edited render, P99 | 1,546.844 ms | — | 1,328.426 ms | 1,069.498 ms | 1,280.089 ms |
-| Edited render, maximum | 39,961.103 ms | — | 1,435.239 ms | 1,139.994 ms | 1,788.012 ms |
-
-The Wellfriend PDF maximum is `i1040gi.pdf`; it took about 40 seconds in both corpora,
-while the next-slowest Wellfriend PDF page was about 1.5 seconds.
-
-### Timestamped result history
-
-| Campaign date | Source state | Semantic parse | Compatibility render | Verified source edit | Visual result |
-|---|---|---:|---:|---:|---|
-| 2026-09-27 | Research snapshot over `27e62db` | 99/100 | 99/100 | 6/100 glyph-preserving | Poppler median 9.611%, P95 13.444%; PDFium median 10.215%, P95 14.625% |
-| 2026-09-28 | Implementation `e2a83fc` | 100/100 originals and edited | 100/100 originals and edited | 100/100 | Full P50/P90/P95/P99 table above |
-
-The implementation commit timestamp is `2026-09-28T22:50:39+05:30`; the
-evidence publication commit timestamp is `2026-09-28T22:55:36+05:30`. The
-original harness did not record wall-clock campaign start and finish timestamps,
-so the report does not invent them from copied-file modification times.
-
-### Build and binding gates
-
-| Gate | Result |
-|---|---:|
-| Focused renderer regression | 232 passed, 0 failed |
-| Full Rust workspace | 5,399 passed, 0 failed |
-| Optimized CLI and C ABI | Built successfully |
-| Java binding | 3 passed, 0 failed |
-| .NET binding | 17 passed, 0 failed |
-| Python optimized binding | 32 passed, 0 failed, 1 skipped |
-| WASM/TypeScript | `npm ci` and typecheck passed |
-
-The complete methodology, exact tool versions, corpus manifest, per-file edit
-proofs, parser diagnostics, and page-level render measurements are published in
-the [100-PDF VPS qualification report](docs/reports/ecbes-vps-20260928/README.md).
-Human-viewable Wellfriend PDF/PDFium/MuPDF/Poppler sheets and heatmaps are in the
-[visual evidence report](docs/reports/ecbes-vps-20260929-visual/README.md).
-Raw evidence is available in
-[`editing-results.jsonl`](docs/reports/ecbes-vps-20260928/editing-results.jsonl),
-[`parse-original.json`](docs/reports/ecbes-vps-20260928/parse-original.json),
-[`parse-edited.json`](docs/reports/ecbes-vps-20260928/parse-edited.json),
-[`render-original.json`](docs/reports/ecbes-vps-20260928/render-original.json),
-[`render-edited.json`](docs/reports/ecbes-vps-20260928/render-edited.json), and
-the derived [`timing-summary.json`](docs/reports/ecbes-vps-20260928/timing-summary.json).
-
-These results establish 100/100 operational success for the published corpus
-and workflow. They do not prove that every valid PDF or every possible edit is
-supported, and Acrobat was not part of the comparator set. The project does not
-claim universal PDF editing, pixel-perfect equivalence, or superiority over
-Adobe from this campaign alone.
-
-</details>
 
 ## Repository Status
 
@@ -419,7 +85,7 @@ progressive capabilities are reported from the selected decoder rather than
 being simulated.
 
 The latest runtime qualification and exact current verdict are in the
-[2026-09-28 VPS report](docs/reports/ecbes-vps-20260928/README.md). The renderer
+[2026-10-02 PEBQ report](docs/reports/pebq-vps-20261002/README.md). The renderer
 architecture remains documented in
 [`docs/renderer/final-universal-renderer-implementation-report.md`](docs/renderer/final-universal-renderer-implementation-report.md),
 and universal-editing implementation details are recorded in
