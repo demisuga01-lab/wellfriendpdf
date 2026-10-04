@@ -1,0 +1,907 @@
+{
+  "schema_version": "wellfriendpdf.corpus-manifest.v2",
+  "generated_at_utc": "2026-10-03T04:37:36.988115+00:00",
+  "pdf_count": 150,
+  "files": [
+    {
+      "relative_path": "arxiv_astro-ph.IM_2609.27622v1-5072fa37017b.pdf",
+      "bytes": 6371740,
+      "sha256": "5072fa37017b7146ab504c60b46bf97c2df64a7c3ac61f3ee4bd20fa25a44f8f",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_astro-ph.IM_2609.27666v1-c3f29c1ea3ba.pdf",
+      "bytes": 719678,
+      "sha256": "c3f29c1ea3bafc405e64686b9b56b2ca116503878bac5190729da1e8eaddfa5c",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_astro-ph.IM_2609.27676v1-b77c4db27da8.pdf",
+      "bytes": 1674981,
+      "sha256": "b77c4db27da80ef618f17a13dffe026a68f477105000c1f02a1acf13f996027e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_astro-ph.IM_2609.28031v1-4ad2548fd319.pdf",
+      "bytes": 5806104,
+      "sha256": "4ad2548fd31957b9974d413f973fc20ccedb99194118c3d2bb3544b701a8b362",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.AI_2609.28414v1-ba9a8681b835.pdf",
+      "bytes": 1658560,
+      "sha256": "ba9a8681b83557e4ab30d396c11ee90a0c66e3124f2db095faca4e18aca18df9",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.AI_2609.28416v1-29050477a4d3.pdf",
+      "bytes": 2554223,
+      "sha256": "29050477a4d3c83304779841ceb37e186f7507b87f7a3ef265498475977cc7a5",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.AI_2609.28442v1-7b417af83c6a.pdf",
+      "bytes": 306578,
+      "sha256": "7b417af83c6a7fe8d8b67147716c8279b77bcb0d907fdae44e0d073934443b71",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.AI_2609.28449v1-948158c37a25.pdf",
+      "bytes": 368210,
+      "sha256": "948158c37a2581ed4f7063e348dca97358cf711296fcf0cde05d09cf1738935e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.AI_2609.28467v1-7fc80def40c6.pdf",
+      "bytes": 4039369,
+      "sha256": "7fc80def40c677f441843cead3750d34705a3587a329b952988bd22b38b4c15d",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.AI_2609.28470v1-c6123f58e50c.pdf",
+      "bytes": 5970200,
+      "sha256": "c6123f58e50cdcc5b30c75ed3e567dc169d404a3b5e97a059877801bc36bde53",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CL_2609.28395v1-25a507663666.pdf",
+      "bytes": 392295,
+      "sha256": "25a5076636665f22d8d675a3fe5d5ec2c6ac4f142e5107414338f12b329d16fa",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CL_2609.28430v1-adf074e74051.pdf",
+      "bytes": 217585,
+      "sha256": "adf074e74051cd6baabdcaa9403681cff5720d46be79d7dd9747c0859c5b7085",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CL_2609.28471v1-9281117ce61b.pdf",
+      "bytes": 250348,
+      "sha256": "9281117ce61b0c27a594ce172111bf466d9bcb7f65c14ba5efea44a1f101603d",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CR_2609.28228v1-ccf61f9bd942.pdf",
+      "bytes": 10777430,
+      "sha256": "ccf61f9bd9425298b71163534430798e06b3dbac9b0eccf97032fd084ac8684a",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CR_2609.28239v1-03731b7996f9.pdf",
+      "bytes": 12795593,
+      "sha256": "03731b7996f947828f20c3d3340a5de979e6c320b7b3bf1c2ed47a45a4d10975",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CR_2609.28277v1-1b458019594d.pdf",
+      "bytes": 837193,
+      "sha256": "1b458019594d3f6f68f13ae4745dfb39ef28f1267508d371068058e741cef8f0",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CR_2609.28297v1-48c8b2dd2937.pdf",
+      "bytes": 807880,
+      "sha256": "48c8b2dd29374fb46517878030aa0bda44f2bbced5f4f9012ba7153b148b5cb1",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CR_2609.28305v1-0f9163af01f9.pdf",
+      "bytes": 457284,
+      "sha256": "0f9163af01f986d5c29f8c3331c8ba3d94ba9008c58d664378b67ee6f470f66d",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CR_2609.28378v1-a64c0f0ed518.pdf",
+      "bytes": 2731221,
+      "sha256": "a64c0f0ed518670a237cf3d75e77e31438a649db704084630dba5c13c0607a60",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CV_2609.28424v1-1b3c92ed15a0.pdf",
+      "bytes": 13896839,
+      "sha256": "1b3c92ed15a033f23b8025404a8e3f2884340f3a77aa0c29725e7850dcaed12b",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CV_2609.28434v1-f5cbcee8076d.pdf",
+      "bytes": 2125861,
+      "sha256": "f5cbcee8076dd57c6fdf0dd580d87efc8bca59a3930715b61021503d4e41452a",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CV_2609.28437v1-4115a5bb6450.pdf",
+      "bytes": 1723218,
+      "sha256": "4115a5bb64502c7df2db89187b9716290cda25a80a213ad3b785a1604a3d7e7a",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CV_2609.28439v1-8d45a8903050.pdf",
+      "bytes": 11892596,
+      "sha256": "8d45a8903050acd7cb819801cfb475b638e1adf9e35987864e21aef0cfdf0b05",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CV_2609.28466v1-b2a70c058ae3.pdf",
+      "bytes": 21989684,
+      "sha256": "b2a70c058ae3e48a33b2cb33bc749bc7297817fc1d44db76029d26ab4370ede8",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.CV_2609.28473v1-613198e049c6.pdf",
+      "bytes": 7717337,
+      "sha256": "613198e049c6790a756b31568093413ea298a102704682b5c78ef1e688384f6c",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.DL_2609.25327v1-e178a2e93b05.pdf",
+      "bytes": 992212,
+      "sha256": "e178a2e93b054fbd57c0da81d4dc394c5174e058865a8d83ca6bd92b96e9556e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.DL_2609.25347v1-7548eb615fba.pdf",
+      "bytes": 525819,
+      "sha256": "7548eb615fba8f7949b8eff8ae6542aa871e37d1349dd1fa82a22446d88c637e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.DL_2609.26361v1-226360c72bc7.pdf",
+      "bytes": 1488473,
+      "sha256": "226360c72bc7837cb7e672719b7e7c9feb969037fbb075b8a9ff9f7fb66cb4db",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.DL_2609.26381v1-ee5618c17e0c.pdf",
+      "bytes": 385085,
+      "sha256": "ee5618c17e0c2beffe095c85a1f370cb8237f1b709f7a242c983a1e52a7dd23b",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.DL_2609.27406v1-f38929f8ccff.pdf",
+      "bytes": 583895,
+      "sha256": "f38929f8ccff085c1a43948194b1e078de77819457d9888413e969fe329e28f1",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.DL_2609.28275v1-151b4537932a.pdf",
+      "bytes": 2773771,
+      "sha256": "151b4537932a0ed483fd3825615c6cd891ae4ff27a34749921d336b16905508c",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.IR_2609.28002v1-1e37cb54daba.pdf",
+      "bytes": 127011,
+      "sha256": "1e37cb54daba12834c5b33d2c0a9882e84be9ad53f1e67ee5a4473faed74d7a5",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.IR_2609.28007v1-88f04e6c2113.pdf",
+      "bytes": 1714701,
+      "sha256": "88f04e6c2113d2a70a5904f7d1ece03d192c3084ca39e5f84e087ac715e9bcd6",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.IR_2609.28108v1-04c39dc8fbea.pdf",
+      "bytes": 382473,
+      "sha256": "04c39dc8fbea6ebb032c7403a8ce2a182a0a7226b0fb18c5b6918b3dc8d8c973",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.IR_2609.28349v1-902245bf1349.pdf",
+      "bytes": 2524352,
+      "sha256": "902245bf1349502f0809cca062021ac0e324ac69c753191f1573715608d4c6db",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.IR_2609.28383v1-fe20b8854c01.pdf",
+      "bytes": 996597,
+      "sha256": "fe20b8854c01f2fe258be729b71d9d2ea25c71e03893e56a833b8f16593ec86d",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.LG_2609.28438v1-669f63ce9782.pdf",
+      "bytes": 1289592,
+      "sha256": "669f63ce97820ab3c128addf57b3ec88859d75f5ef813e4ad77b14ec9d9d3288",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.LG_2609.28448v1-25aa5abb2017.pdf",
+      "bytes": 1664414,
+      "sha256": "25aa5abb2017636cc20d262c715aa3abe2487a5815c3a66ab44383f3126cf4bf",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.LG_2609.28459v1-ee015fe2dcff.pdf",
+      "bytes": 461344,
+      "sha256": "ee015fe2dcff514435f47e782a98b85fd21b19595821d14cc02b1f04ce1df60b",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.SE_2609.28090v1-236f511493b5.pdf",
+      "bytes": 347516,
+      "sha256": "236f511493b5c0238022356a4491efbc86094847fe14d1360fc86b7ec28fcff0",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.SE_2609.28130v1-4c768f7492ee.pdf",
+      "bytes": 624972,
+      "sha256": "4c768f7492ee6649a2b4ff218620d60d6408709111b469dba87714cf814e197d",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_cs.SE_2609.28216v1-28233ddb8db7.pdf",
+      "bytes": 396901,
+      "sha256": "28233ddb8db7e987dd5a4134dabd791e935736c3efe66ca6cf002da413481967",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_eess.IV_2609.26924v1-14b0203690c8.pdf",
+      "bytes": 13407447,
+      "sha256": "14b0203690c8e1a190975c9327ba7fd313911a87aa34d40d1528c3acc3e5527e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_eess.IV_2609.27442v1-8d6863c3b2f7.pdf",
+      "bytes": 5420046,
+      "sha256": "8d6863c3b2f725892317fffdb435a7093b0197f063d7f82753daa97d69bd3f17",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_eess.IV_2609.28081v1-7a2ca7a76de3.pdf",
+      "bytes": 16783093,
+      "sha256": "7a2ca7a76de3a5c6357637544ae82fe22e4b7c845e259c59300010340cb8c060",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_eess.IV_2609.28154v1-2d0b69a123b2.pdf",
+      "bytes": 3508887,
+      "sha256": "2d0b69a123b22c1598c7bab462ad57ddea583a57d3f0b08b8775f182066f7323",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_eess.IV_2609.28194v1-5e65af65d2ee.pdf",
+      "bytes": 4730577,
+      "sha256": "5e65af65d2ee115c583d84f68de8341b4cc38a4f839f5993e79005c28f69527b",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.NA_2609.28282v1-5d064c500d09.pdf",
+      "bytes": 1986861,
+      "sha256": "5d064c500d0909c31665739828e5527fd7cd1e351c6b00e62c1457af98ec205c",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.NA_2609.28313v1-e31611bbf749.pdf",
+      "bytes": 483769,
+      "sha256": "e31611bbf749681db23be2db2bd7903a13c483e6e7a3ceb930f7847d1de0d78f",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.NA_2609.28345v1-5522e9cb56cd.pdf",
+      "bytes": 279001,
+      "sha256": "5522e9cb56cdaf762e0bcc2c96eafb28f1ab3875958f39d9c4ddf5991666066c",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.NA_2609.28412v1-a0e28ab2ebfc.pdf",
+      "bytes": 2713935,
+      "sha256": "a0e28ab2ebfc748026837af840c85487e7318dc56bd4baf7b18783df29a7c574",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.NA_2609.28444v1-7b521a9743c7.pdf",
+      "bytes": 6132377,
+      "sha256": "7b521a9743c7b824960eb0f71445e929f1ebb3eb419278e174d0c9a85f5fe11a",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.NA_2609.28472v1-85e79694a55a.pdf",
+      "bytes": 477141,
+      "sha256": "85e79694a55a98f5199d26921d2da22cb8ceb2648e6bdcbebc51c0faba06fda2",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.ST_2609.28242v1-af1bc7384dee.pdf",
+      "bytes": 3018765,
+      "sha256": "af1bc7384dee02ed6aa760e68f55913af6198c77c833ba6dc4e89425008bd6a9",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.ST_2609.28336v1-d36017ab8e65.pdf",
+      "bytes": 1139033,
+      "sha256": "d36017ab8e65ca40ba1c424a04db0142cbfdb19123b6aa754c1619051d7d8bc7",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_math.ST_2609.28464v1-63a6cfacb244.pdf",
+      "bytes": 766024,
+      "sha256": "63a6cfacb2440e8c3db57acecc380479af6e490a2180a6f67fa6ff5e74f21dbe",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.comp-ph_2609.28013v1-9411ad885400.pdf",
+      "bytes": 1745086,
+      "sha256": "9411ad8854004d96c7c4e55003dd4e04caa820fc628bbd6d80790bea2150993e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.comp-ph_2609.28126v1-c7dad07f7af8.pdf",
+      "bytes": 794404,
+      "sha256": "c7dad07f7af89061f558a56f8d40c5f3cd695647c3c371b30482327d3fef803a",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.comp-ph_2609.28237v1-2b61954154aa.pdf",
+      "bytes": 747195,
+      "sha256": "2b61954154aa5a082f72a6a89c91d93330af62292dccfd927a7e3ac9f1e9951e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.comp-ph_2609.28369v1-093d8399b834.pdf",
+      "bytes": 544243,
+      "sha256": "093d8399b834793169433a4144ee3246b4f4eb4f6b691bb08b91412622b76ef4",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.comp-ph_2609.28422v1-1f065a5ff5ec.pdf",
+      "bytes": 2509490,
+      "sha256": "1f065a5ff5ec8b8ca8dfb79035bcd0af9494b2f1d74d1d2299b18ff3247691f0",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.comp-ph_2609.28458v1-8d0803917cce.pdf",
+      "bytes": 1718760,
+      "sha256": "8d0803917ccec1b7f0d68612b62d4e14dd2689523d7f30fbf521fcd1570b827e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.soc-ph_2609.27166v1-fd4d2afb94ca.pdf",
+      "bytes": 1280714,
+      "sha256": "fd4d2afb94cace77cec61938df64cd25059a8c74e943e258604b29e40ba4448b",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.soc-ph_2609.27989v1-0a9711eaf535.pdf",
+      "bytes": 396904,
+      "sha256": "0a9711eaf535d91c4fe31918b58635576074523aaa2ab3874e7544f1dbe9fadb",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.soc-ph_2609.28132v1-08d840fd5b62.pdf",
+      "bytes": 480215,
+      "sha256": "08d840fd5b62fe5153a528f8699942a9f2f9b9b5838c747f88c559cd2e54d911",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.soc-ph_2609.28340v1-d2180b921cde.pdf",
+      "bytes": 1438545,
+      "sha256": "d2180b921cde145cac02b9da98ea15463ca19bf9eeed904118ac0f444f51d3ab",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.soc-ph_2609.28398v1-d6fcd578875f.pdf",
+      "bytes": 1956528,
+      "sha256": "d6fcd578875f8a0d8f3c0f0214c9cfb876cd6ad9072c96b945089a6e2aff84c5",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_physics.soc-ph_2609.28432v1-3149a040e3d4.pdf",
+      "bytes": 914690,
+      "sha256": "3149a040e3d4b965ab1fb8d107c0129fc99ab9e13bd10c14b170d8bcf0eb9403",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_q-bio.QM_2609.28252v1-534cdb60dd32.pdf",
+      "bytes": 2027569,
+      "sha256": "534cdb60dd326ae3a0529f8e4142c110848f361c5182e65e3c386200a3e77b50",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.AP_2609.27245v1-3ac6f5f55119.pdf",
+      "bytes": 647619,
+      "sha256": "3ac6f5f55119ce1f4a9daa09e0bf156bdec2b104b5c173efbee9487ea91510d6",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.AP_2609.27283v1-61a8be236a84.pdf",
+      "bytes": 1975753,
+      "sha256": "61a8be236a845c913c4f6664a093690eb6f3edee3f799b1c9ad0ae15a5f3aa00",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.AP_2609.27445v1-20f8d0d8128b.pdf",
+      "bytes": 1678761,
+      "sha256": "20f8d0d8128bc5489a26364dc84b60debc448081f24f37134b6e43ed4d0a3b2a",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.AP_2609.28321v1-01ee3b971920.pdf",
+      "bytes": 1196159,
+      "sha256": "01ee3b971920eb2828ad09e39fb50f5c719c420d7751d28a548b3c53eb1bf2f4",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.AP_2609.28407v1-97f25e5ab3ec.pdf",
+      "bytes": 5770830,
+      "sha256": "97f25e5ab3ec674f0a733f9626c6c7f9ee555c881ba36bee0461104fcf822e21",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.AP_2609.28419v1-fa39e6badcda.pdf",
+      "bytes": 1925319,
+      "sha256": "fa39e6badcdab2e2bd44c851efa9f1a007f4027fbdffe34b241e0d6a63d94619",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.ML_2609.28015v1-218c15ca375a.pdf",
+      "bytes": 3238441,
+      "sha256": "218c15ca375a368eeb75a369241c90b38444753cf1c10515fc187fe1a60887d6",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.ML_2609.28122v1-c9ceb97a1f0e.pdf",
+      "bytes": 1519319,
+      "sha256": "c9ceb97a1f0e683246e35f10f333f3eabb4c1178e4699d63ecffce6c6cafc835",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.ML_2609.28163v1-03efefd04b37.pdf",
+      "bytes": 5314737,
+      "sha256": "03efefd04b37e0945ae664662a2f2ed0cdae66d2d9bececfc0f02067556bed73",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.ML_2609.28177v1-61d64dbb342d.pdf",
+      "bytes": 971070,
+      "sha256": "61d64dbb342dbe8a98d44499f3f1b881ab404d0fc9c934e5ad39eae9eb6c3daa",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.ML_2609.28338v1-9676bb3ae227.pdf",
+      "bytes": 687867,
+      "sha256": "9676bb3ae227d0d0c6520a847f1a5d5485da0c99ba171c9da04d816341010206",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "arxiv_stat.ML_2609.28371v1-dd00948c14f6.pdf",
+      "bytes": 1443894,
+      "sha256": "dd00948c14f6df3a77b6321a20cfa1c182606d1d5300b4584c5d204b0c9a8b0b",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "darpa-safedocs_Unicode_passwords_baseline_unicode-test-actualtext-16ad05198b71.pdf",
+      "bytes": 4676,
+      "sha256": "16ad05198b71ecfbf34a8dba5b762de0f64a2e5242549421a284da28fe79563c",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040.pdf",
+      "bytes": 220237,
+      "sha256": "3d31c226df0d189ced80e039d01cf0f8820c1019681a0f0ca6264de277b7e982",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040s1.pdf",
+      "bytes": 99940,
+      "sha256": "8dafec719f6a4716c259a2bdaca546d9bb9e262d1eabef885fe116a7327458fa",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040s2.pdf",
+      "bytes": 96526,
+      "sha256": "64d867b683334cfc533993e37ccb0d143449ec29428a78206be2e4de333941e8",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040s3.pdf",
+      "bytes": 69852,
+      "sha256": "008cfd3fe3ebd0860452069b90fd0a3d53dda6dd8a5d870278370aa899a63f82",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040sa.pdf",
+      "bytes": 79008,
+      "sha256": "c14acf3478f4c33f27ac6e8ecd9f94b6fb25b16745b341728bd27847d2ef56bb",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040sb.pdf",
+      "bytes": 76411,
+      "sha256": "dd1ec3719954532bd219343d81385a2ada3c8e9573fc755a3893f1fbbecc63e2",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040sc.pdf",
+      "bytes": 122589,
+      "sha256": "ddf401dbe060467d39f90ad2abf645df1de31512821a150dc68a3882bbf19716",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040sd.pdf",
+      "bytes": 97968,
+      "sha256": "90564c8b7e49280363612639b804d113ebedb516c2e87c70649f29c844da1d2e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040se.pdf",
+      "bytes": 148367,
+      "sha256": "c5e2c8fa0ec5ee9153a0167734df634afe0ea8bb8483040766e5f4b1b12780f3",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040sr.pdf",
+      "bytes": 93840,
+      "sha256": "9b1acf56189a88a347d38936e0792552f7466040494b73bf779af17734620b79",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040v.pdf",
+      "bytes": 97663,
+      "sha256": "2426bb330ac54b765b32fbc3eceb878544aa333a3a823e1170aa8261a40fd251",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "f1040x.pdf",
+      "bytes": 164571,
+      "sha256": "e4d8d7df37209218d0d63d06e988004306365354873481726e93916accf3013e",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "i1040gi.pdf",
+      "bytes": 4434643,
+      "sha256": "482e9c487c608f1bbeaceef35bc3c0933e8b35443cfff447e4279d590468364a",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "i1040sc.pdf",
+      "bytes": 357575,
+      "sha256": "b5536db91498a450572e37078d7d5ee8fdc400e385d4fee3a26c230a33e399b6",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "i1040sca.pdf",
+      "bytes": 594250,
+      "sha256": "b0999b12d9dc4b13868501a9c1879011c00d2fc035f13a1391251d355a6242c8",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "i1040sd.pdf",
+      "bytes": 298718,
+      "sha256": "650643a686378b7573e4f4476ee4e7c9f9bab1384314dca32dc336f7b2276002",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19630009401-e5923f69ea8a.pdf",
+      "bytes": 14575401,
+      "sha256": "e5923f69ea8a0e38aab6786f72f8f49dbb87f41706a58b7f11a946fc47228119",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19630012285-ec05f1bf1c65.pdf",
+      "bytes": 17022921,
+      "sha256": "ec05f1bf1c655c89cf1743d2edecda2c190130982d82968e920d90ef26a83242",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19630041838-87e9e5b8909f.pdf",
+      "bytes": 13400367,
+      "sha256": "87e9e5b8909feabebca9a4bf93c01a2d26f7ce7414a062ea1c389cacea4d3fed",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19640018400-66a1fef7f519.pdf",
+      "bytes": 13747093,
+      "sha256": "66a1fef7f519be9cc5c2a9e215ab94508319528e0bb6a7c94b5eb1ab064483a6",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19650070869-08cd4f53c29a.pdf",
+      "bytes": 17853293,
+      "sha256": "08cd4f53c29a779e9deb0ce32cdb22e38ac8bdb121f29f5076dae807316f2d42",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19660001987-4b7738a87284.pdf",
+      "bytes": 58147926,
+      "sha256": "4b7738a872843d5ab7e7144305bf38987921083c8ae0b8d8c2b4ef7c5eaf2689",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19670006354-dcece4c216af.pdf",
+      "bytes": 17466743,
+      "sha256": "dcece4c216af5e035b26652fba251441f3554219bfd9fa137c00b950a6cfc6bc",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19670014004-c471c3833a92.pdf",
+      "bytes": 12808412,
+      "sha256": "c471c3833a92db95fdeb8c6deb4bb887286037fe50aa28b31df43f3e5eac332c",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19670017218-afa0328bb8cc.pdf",
+      "bytes": 15645949,
+      "sha256": "afa0328bb8ccfe8dbd8f3872155eb29c50ceaad1df19c9e37f39c8201dcdaf33",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19680009026-1cff06cbf328.pdf",
+      "bytes": 11857289,
+      "sha256": "1cff06cbf32833d022ed174fef1b6a10a9320a79ea4ca5da35edcb421c49cbe5",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19680020536-b1a69cc3362d.pdf",
+      "bytes": 12190486,
+      "sha256": "b1a69cc3362de3e6580764a83161c58b4c55f284dd826dcd89fec777af2cf067",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19680020926-b596cfe743e6.pdf",
+      "bytes": 12898735,
+      "sha256": "b596cfe743e6bb715e2c312bbbb4bbb63feca74f76d1951ad77947d663da96cb",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19680023496-f0b329e3984b.pdf",
+      "bytes": 11691143,
+      "sha256": "f0b329e3984b3dff2892e52fb1f01337ae81d729b9a3936caf2e404d1bb2401a",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19690021254-9e0f00b775b2.pdf",
+      "bytes": 12007238,
+      "sha256": "9e0f00b775b2b879233e3b80496366e771dab951954d4b33cf0382b5871e2126",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19700009038-5404a20798d3.pdf",
+      "bytes": 71856138,
+      "sha256": "5404a20798d3b45858301ac27058ade978fe0766095ca28c3c8bfc7d8cd7eeff",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19700033811-35675a0a3eb9.pdf",
+      "bytes": 63002278,
+      "sha256": "35675a0a3eb934ed61589c669279307d048593374ab9f2e84d0d41cee34863d4",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19710002733-7a363f86a8c2.pdf",
+      "bytes": 11279856,
+      "sha256": "7a363f86a8c233e5936a345d800d89eb52252177bb0c6c103b0f209e863481af",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19710002734-c4ba6beffa6c.pdf",
+      "bytes": 11488759,
+      "sha256": "c4ba6beffa6cb17bc637acad63d08441bd82669f95f1154e059a43c2490f1b42",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19710025723-ec5a3942ca93.pdf",
+      "bytes": 70183345,
+      "sha256": "ec5a3942ca93c421deccce7b6f7c1e9e5bc5a7b8f4bbc027f96820d865a365b7",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19710069510-b15a883ef30a.pdf",
+      "bytes": 63710408,
+      "sha256": "b15a883ef30a8005fb2baae01b40609e9f3ba37dcc4464447a5d66e26639334e",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19710069971-1b445edfb6ac.pdf",
+      "bytes": 53121745,
+      "sha256": "1b445edfb6acb5e8ebf09fb66ccdf46c780861d6179949d5eb2317f27f11e180",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19730004927-3f9781d9fd56.pdf",
+      "bytes": 55114390,
+      "sha256": "3f9781d9fd56dbc7f19135297f50880aa187ae8d1d461d92ed875d06cf1346e8",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19760004738-4e2aa289b8d3.pdf",
+      "bytes": 12076877,
+      "sha256": "4e2aa289b8d347fa5fef16b71abae0bd0802228eb3d7c6dd74fc061da1247ce6",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19760009740-2880446b4535.pdf",
+      "bytes": 14502994,
+      "sha256": "2880446b45353649ad1d523319673ec5b3b3e2a1fd29cd60ff8e8b4bd72d38fe",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19760009744-41b415288bd2.pdf",
+      "bytes": 14357459,
+      "sha256": "41b415288bd240c107d377167ba3d88c1ef43d9209d607545db8cb114483d604",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19760010469-cddfa3cf2311.pdf",
+      "bytes": 16120170,
+      "sha256": "cddfa3cf23115206844e6ba644b52a3107f23ea7e21bfcd98c46b87f4b4b6cb7",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19780070010-411799249452.pdf",
+      "bytes": 15755226,
+      "sha256": "4117992494527d525d5a765611176af58c6bc5c67d437116e888b35e9dad05c2",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19790077187-d078daad3404.pdf",
+      "bytes": 84085945,
+      "sha256": "d078daad340404e8d3d79e1e2c820424004672eda1c455afd0758c7cf935c4dc",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19810016477-cb05f22a929c.pdf",
+      "bytes": 268611994,
+      "sha256": "cb05f22a929c228d70a985e70a699be6b7ad4b93637e7f376c9047e0ebc21701",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19820015387-9f7c8218c5b9.pdf",
+      "bytes": 11388137,
+      "sha256": "9f7c8218c5b9e915725d6ef7eb6266ddbaeaf733de5eb90fbe64dfeaa7df2126",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19840070510-2dcbfc5f112a.pdf",
+      "bytes": 12226893,
+      "sha256": "2dcbfc5f112ae67dbf3ba08fc45cd8f66ea0b2bdd6d5e68c5e79a18ab789a222",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19860066639-4c1f2f64e4a2.pdf",
+      "bytes": 74282353,
+      "sha256": "4c1f2f64e4a2ca826b4b2c752929af189354e6ee3c386c0f0dbdabc609052b6d",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19870002394-f505a61c6212.pdf",
+      "bytes": 14484838,
+      "sha256": "f505a61c6212d4904bf4182c172d11081923c96487c4ce229662f4c09fb553eb",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19960055177-046df5b8688b.pdf",
+      "bytes": 222847650,
+      "sha256": "046df5b8688b1b7648496ab12155092ae96ce635dd57e717bf8f7b93cb6e27a4",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19980010868-6eaa8ebeee79.pdf",
+      "bytes": 266424074,
+      "sha256": "6eaa8ebeee79994c501c7ff5336108b07e5096b9dcb821ffafc6c3d7468abdf3",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20030065978-385a9e5588fd.pdf",
+      "bytes": 14411454,
+      "sha256": "385a9e5588fdac226b233acdb55c843a6f331fd19eb7804a5c013c5684b36812",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20030071647-e246196560c2.pdf",
+      "bytes": 12785688,
+      "sha256": "e246196560c22413a7e0785283019486e31df77f20e2ebe02440549ff7184b28",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20030106422-6f08a8b7ff8a.pdf",
+      "bytes": 16155769,
+      "sha256": "6f08a8b7ff8a38e347fd5622f3bae88392687ae78a6874b79972229cddeeead0",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20040068186-8e2b5d2eec1d.pdf",
+      "bytes": 57765272,
+      "sha256": "8e2b5d2eec1d0e84731f7fd1016f2e45ebf5f43a4079fceb16e4787a260451f8",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20040086438-2734846505a5.pdf",
+      "bytes": 15984634,
+      "sha256": "2734846505a5776478496a7594755338fa76880013e9ae06d89b181bd283a4ab",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20040161531-efc3bb8d5b0b.pdf",
+      "bytes": 16475725,
+      "sha256": "efc3bb8d5b0b022dac1dc9b0452894d3c408b69e30bbcd32ca5f70c1dd9fdac0",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20040171231-4771100e3f1d.pdf",
+      "bytes": 15915140,
+      "sha256": "4771100e3f1dcac31b5d60ae6af18633a3a596a9aef3698a8edb5f46704e413b",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20040171566-089f4b2ae0ec.pdf",
+      "bytes": 16302417,
+      "sha256": "089f4b2ae0ec0fe8aaf949b97d9892eb5db724c9e28231a45ebdf972a27a2992",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20040171624-8469fd5c9996.pdf",
+      "bytes": 15754284,
+      "sha256": "8469fd5c9996a0be8a7683134f849da0e836804f66072ca955c874afbea5ca94",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20040171818-108a1dcbea70.pdf",
+      "bytes": 16237168,
+      "sha256": "108a1dcbea70b588857edf47906c1ab12bac5846ebd3bc798169e065edb3c667",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20050010139-aa112d19748f.pdf",
+      "bytes": 14552590,
+      "sha256": "aa112d19748fafff591af7451c55be36179251bb3224e3c11958968bd1f112c0",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20050060627-52a16acb6b96.pdf",
+      "bytes": 15619789,
+      "sha256": "52a16acb6b96093331e42331006f751594cbeae7ae605805cf51241370ce875d",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20050156913-e2af42fa9555.pdf",
+      "bytes": 15861046,
+      "sha256": "e2af42fa955541146ccd88b323e031bf5d18512ebac2db15dbe44ddc5f1acbfe",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20050182778-c755fe14ad9d.pdf",
+      "bytes": 15140755,
+      "sha256": "c755fe14ad9d5f0613243643d2a3293645e9f8eac2ea386c62d4faafe64992d3",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_20060023310-e867b972bab6.pdf",
+      "bytes": 12910936,
+      "sha256": "e867b972bab620d61e03abe4fd6a844d94d44b9fd2c3f25e3f6f4189c5946146",
+      "corpus_partition": "added-real-world-50"
+    },
+    {
+      "relative_path": "mozilla-pdfjs_test_pdfs_issue7544-cc46f96ee726.pdf",
+      "bytes": 21143,
+      "sha256": "cc46f96ee726d3de2edd74995cac9217e7d6c3dc1ee970a30ee8d07f2dd03ea7",
+      "corpus_partition": "original-100"
+    },
+    {
+      "relative_path": "verapdf-corpus_PDF_UA-1_7.18_Annotations_7.18.1_General_7.18.1-t02-pass-a-12b4e06019bb.pdf",
+      "bytes": 20226,
+      "sha256": "12b4e06019bb5e1765d0bc371df16c84635a1e5145f2ecb5fba51c17245ebc51",
+      "corpus_partition": "original-100"
+    }
+  ]
+}

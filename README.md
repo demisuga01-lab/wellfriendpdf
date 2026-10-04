@@ -11,44 +11,131 @@ canonical implementation is Rust; the CLI, HTTP server, C ABI, Python, WASM,
 
 ## Benchmark Results
 
+### Current 150-document comprehensive qualification - 2026-10-03/04
+
+This is the current broad VPS qualification on 150 real-world PDFs (2.036 GiB,
+9,214 pages), including 50 additional 10-268 MiB technical reports. It tests
+matched parsing and all-page rendering, supported structural/conversion
+operations, PDF/A, and seven Wellfriend editing routes. The
+[complete report and raw JSONL evidence](docs/reports/comprehensive-150-vps-20261003/README.md)
+identify the exact commit, binaries, versions, corpus hashes, contracts,
+postconditions, timings, quality metrics, refusals, and failures.
+
+| Benchmark | Wellfriend SDK | PDFium | Poppler | MuPDF | qpdf |
+|---|---:|---:|---:|---:|---:|
+| Resolved page counts | 150/150 | 150/150 | 150/150 | 150/150 | 150/150 |
+| Resident parse P50 | 0.93 ms | 0.57 ms | 2.71 ms | 2.38 ms | 3.46 ms |
+| Fresh-process parse P50 | 14.31 ms | 15.29 ms | 45.54 ms | 25.96 ms | 37.58 ms |
+| Merge postconditions | 143/150 | N/A | 150/150 | 143/150 | 150/150 |
+| Split postconditions | 141/150 | N/A | 147/150 | 141/150 | 150/150 |
+| Repair postconditions | 56/150 | N/A | N/A | 150/150 | 150/150 |
+| Text extraction postconditions | 139/150 | N/A | 150/150 | 149/150 | N/A |
+| Complete all-page renders | 135/150 | 150/150 | 150/150 | 150/150 | N/A |
+| Pages emitted / expected | 3,649/9,214 | 9,214/9,214 | 9,214/9,214 | 9,214/9,214 | N/A |
+| Complete-document render P50 | 6,625.17 ms | 1,094.97 ms | 1,677.90 ms | 859.82 ms | N/A |
+| Complete-document per-page P50 | 284.43 ms | 44.64 ms | 78.66 ms | 45.41 ms | N/A |
+| Wellfriend thumbnail SSIM P50 vs engine | - | 0.979152 | 0.918150 | 0.982698 | N/A |
+| Verified edit route-document cases | 97/1,050 | N/A | N/A | N/A | N/A |
+| Independently compliant PDF/A-2B conversions | 7/150 | N/A | N/A | N/A | N/A |
+
+This is not a 100/100 result. Wellfriend completes 135/150 all-page render
+jobs and emits 3,649/9,214 corpus pages before 15 terminal failures; PDFium,
+Poppler, and MuPDF complete all 150 and all 9,214 pages. Rendering similarity
+is measured only on 3,596 complete paired pages and is not treated as ground
+truth. Editing records 97 verified passes across 1,050 route-document cases:
+30 operator-preserving, 3 scene-source, 10 direct-SDK paragraph reflow, and 54
+vector duplication. The public CLI paragraph-reflow route fails all 135
+applicable files because its command-local `--mode paragraph-reflow` collides
+with the global `standard|research` execution mode. The VPS is shared, so speed
+figures are observed evidence rather than laboratory-isolated competitive
+claims. qpdf is N/A for raster rendering because it is not a renderer.
+
+The worst successful three-reference paired page is visibly incorrect in the
+Wellfriend panel (mean thumbnail SSIM 0.339822); terminal render failures are
+not included in this image.
+
+![Worst successful paired four-renderer page](docs/reports/comprehensive-150-vps-20261003/render/visual/01-worst.webp)
+
 ### Current PEBQ matched-contract qualification - 2026-10-02
 
-This is the current fair cross-engine comparison. Each native adapter receives
-the same in-memory page-count request or the same page-one 144-DPI raw-RGB
-render request. The fixed 100-PDF corpus, 3,697 retained observations, native
-adapter sources, hashes, strict dimension failures, and 100 visual comparison
-sheets are in the [complete PEBQ report](docs/reports/pebq-vps-20261002/README.md).
+This is the current matched-contract cross-engine comparison. Each native
+adapter receives the same in-memory page-count request or the same page-one
+144-DPI raw-RGB render request. The adapter process remains resident, while
+every request reopens the document. File reading, process startup, and raster
+encoding stay outside the process-resident timer. The fixed 100-PDF corpus,
+3,697 raw observations, native adapter sources, hashes, strict dimension
+failures, and 100 visual comparison sheets are in the
+[complete PEBQ report](docs/reports/pebq-vps-20261002/README.md).
 
-#### Parsing - persistent native adapters
+#### Document open + resolved page count - process-resident, document-cold
+
+Each percentile uses one median per PDF, so every document has equal weight.
 
 | Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
 |---|---:|---:|---:|---:|---:|
 | Qualified page counts | 100/100 | 100/100 | 100/100 | 100/100 | 100/100 |
-| P50 | 1.230 ms | 5.484 ms | 1.759 ms | 0.697 ms | 3.211 ms |
-| P90 | 2.218 ms | 19.378 ms | 6.176 ms | 1.319 ms | 5.217 ms |
-| P95 | 2.689 ms | 24.847 ms | 9.468 ms | 1.653 ms | 6.249 ms |
-| P99 | 11.771 ms | 31.091 ms | 34.941 ms | 9.143 ms | 12.349 ms |
-| Maximum | 48.555 ms | 32.652 ms | 67.045 ms | 37.406 ms | 19.110 ms |
+| P50 | 1.186 ms | 5.240 ms | 1.704 ms | 0.666 ms | 3.203 ms |
+| P90 | 2.017 ms | 15.951 ms | 5.442 ms | 1.193 ms | 4.932 ms |
+| P95 | 2.473 ms | 24.242 ms | 9.440 ms | 1.539 ms | 5.527 ms |
+| P99 | 8.746 ms | 27.682 ms | 21.883 ms | 4.770 ms | 11.764 ms |
+| Maximum | 35.692 ms | 29.779 ms | 34.941 ms | 37.239 ms | 13.123 ms |
 
-PDFium has the lowest persistent median. Wellfriend PDF is second. On the 100
-paired documents, Poppler/Wellfriend has a 2.680x median ratio with a bootstrap
-95% interval of 2.377x-2.943x. The pre-registered 20x claim is therefore
-**rejected**, not advertised.
+PDFium has the lowest document-cold median. Wellfriend PDF is second. On the
+100 paired documents, Poppler/Wellfriend has a 2.680x median ratio with a
+bootstrap 95% interval of 2.377x-2.943x. The 20x claim is **rejected**.
 
-#### Rendering - persistent native raw RGB
+The raw 300-observation distribution has an 11.771 ms P99 and a 48.555 ms
+maximum for Wellfriend PDF. This is consistent: nearest-rank P99 is observation
+297, leaving three observations above it. All three are `i1040gi.pdf` at
+24.415, 35.692, and 48.555 ms. The tail is a reproducible hard-document path,
+not evidence that the maximum belongs inside P99. Poppler handles that document
+faster at a 13.123 ms median.
+
+This profile does not mean that every object, content stream, font, image, or
+signature is eagerly decoded. It measures the same externally visible
+operation for every engine: open identical in-memory bytes and resolve the page
+count. Library-specific lazy work remains outside that narrow contract.
+
+#### Rendering - process-resident, document-cold native raw RGB
+
+Each percentile uses one median per PDF. Every request performs a new render;
+the profile does not reuse a final page raster.
 
 | Benchmark | Wellfriend PDF | qpdf | MuPDF | PDFium | Poppler |
 |---|---:|---:|---:|---:|---:|
 | Successful renders | 100/100 | N/A (no rasterizer) | 100/100 | 100/100 | 100/100 |
-| P50 | 115.739 ms | - | 48.451 ms | 41.458 ms | 49.017 ms |
-| P90 | 214.608 ms | - | 91.522 ms | 73.247 ms | 88.513 ms |
-| P95 | 288.682 ms | - | 109.718 ms | 108.857 ms | 135.783 ms |
-| P99 | 545.612 ms | - | 156.913 ms | 271.614 ms | 219.783 ms |
-| Maximum | 603.857 ms | - | 269.918 ms | 350.352 ms | 283.435 ms |
+| P50 | 114.979 ms | - | 48.451 ms | 41.370 ms | 47.973 ms |
+| P90 | 206.626 ms | - | 88.260 ms | 66.382 ms | 83.988 ms |
+| P95 | 271.934 ms | - | 107.667 ms | 100.459 ms | 126.741 ms |
+| P99 | 533.881 ms | - | 136.061 ms | 203.666 ms | 215.028 ms |
+| Maximum | 554.989 ms | - | 242.380 ms | 304.614 ms | 247.404 ms |
 
-Wellfriend PDF rendered every page. PDFium has the lowest P50 through P95,
-while MuPDF has the lowest P99 and maximum. The current result does not claim
-that Wellfriend PDF is the fastest renderer.
+Wellfriend PDF renders every page. PDFium has the lowest P50 through P95,
+while MuPDF has the lowest P99 and maximum. Wellfriend PDF is not the fastest
+renderer in this profile. Its median is 2.78x PDFium's median. A single-digit
+document-cold target requires at least a 12.8x median speedup and is not a
+current result.
+
+#### Rendering - retained resources, fresh raster
+
+This separate profile opens each PDF once, warms resources once, and then
+executes three new full-page rasters with final-pixel caching disabled.
+
+| Benchmark | Wellfriend PDF | MuPDF | PDFium | Poppler |
+|---|---:|---:|---:|---:|
+| Successful documents | 100/100 | 100/100 | 100/100 | 100/100 |
+| P50 | 85.802 ms | 14.315 ms | 23.754 ms | 46.582 ms |
+| P90 | 128.807 ms | 28.546 ms | 36.831 ms | 75.748 ms |
+| P95 | 159.532 ms | 34.325 ms | 72.795 ms | 107.362 ms |
+| P99 | 218.646 ms | 45.863 ms | 200.248 ms | 205.693 ms |
+| Maximum | 239.446 ms | 82.233 ms | 212.789 ms | 236.042 ms |
+
+Repeated dimensions and hashes are stable for 400/400 engine-document pairs.
+Wellfriend output identity matches its qualified reference output on 100/100
+shared PDFs. Wellfriend is still not the fastest renderer; this profile does
+not support a single-digit full-page claim. Raw rows, binary/source hashes, and
+the precise contract are in the
+[retained-resource report](docs/reports/pebq-vps-20261003-retained/README.md).
 
 #### Rendering quality - leave-one-engine-out consensus
 
@@ -60,11 +147,11 @@ that Wellfriend PDF is the fastest renderer.
 | Mean Delta-E 2000 P50 (lower is closer) | 1.530997 | - | 1.257197 | 1.370901 | 3.435389 |
 
 Consensus is a symmetric diagnostic, not a ground-truth oracle. Three Poppler
-outputs differed from the other engines by one native pixel in width or height;
-those pages were reported as strict failures and never resized into the quality
-scores. The inspected offset-transparency page contains all four image panels
+outputs differ from the other engines by one native pixel in width or height;
+those pages are strict failures and never resize into the quality scores. The
+inspected offset-transparency page contains all four image panels
 and scores 0.894591 SSIM and 0.068472 mean FLIP. Editing is not included in this
-matched parser/renderer campaign because the reference tools do not expose
+matched document-open/renderer campaign because the reference tools do not expose
 equivalent source-edit contracts.
 
 ![Four-renderer PEBQ comparison](docs/reports/pebq-vps-20261002/visual/pages/015-arxiv-cs-cr-2609-28239v1-03731b7996f9-pdf.webp)
