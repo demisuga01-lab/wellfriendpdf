@@ -4,16 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import statistics
 import subprocess
+import tempfile
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
-from render_stream_benchmark import command_for, read_ppm_frame
+from render_stream_benchmark import (
+    command_for,
+    pixel_metrics,
+    read_ppm_frame,
+    thumbnail_array,
+)
 
 
 ENGINES = ("wellfriend", "pdfium", "poppler", "mupdf")
@@ -91,7 +99,40 @@ def render_page(
     pdf: Path,
     dpi: int,
     page_number: int,
+    wellfriend_cli: Path | None = None,
 ) -> Image.Image:
+    if engine == "wellfriend" and wellfriend_cli is not None:
+        with tempfile.TemporaryDirectory(prefix="wellfriend-visual-") as temporary:
+            archive = Path(temporary) / "page.zip"
+            completed = subprocess.run(
+                [
+                    str(wellfriend_cli),
+                    "render",
+                    str(pdf),
+                    "--pages",
+                    str(page_number),
+                    "--dpi",
+                    str(dpi),
+                    "--format",
+                    "png",
+                    "--output",
+                    str(archive),
+                    "--json",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=1800,
+                check=False,
+            )
+            if completed.returncode != 0:
+                message = completed.stderr.decode("utf-8", "replace")[-800:]
+                raise RuntimeError(f"wellfriend failed to render page {page_number}: {message}")
+            with zipfile.ZipFile(archive) as pages:
+                payload = pages.read(f"page-{page_number:03d}.png")
+            with Image.open(io.BytesIO(payload)) as rendered:
+                return rendered.convert("RGB")
+
     process = subprocess.Popen(
         command_for(engine, adapter_dir, pdf, dpi),
         stdin=subprocess.DEVNULL,
@@ -119,6 +160,17 @@ def render_page(
         message = stderr.decode("utf-8", "replace")[-800:]
         raise RuntimeError(f"{engine} failed to provide page {page_number}: {message}")
     return selected
+
+
+def refreshed_reference_metrics(frames: dict[str, Image.Image]) -> dict[str, dict[str, Any]]:
+    width, height = frames["wellfriend"].size
+    wellfriend = thumbnail_array(width, height, frames["wellfriend"].tobytes(), 96)
+    metrics: dict[str, dict[str, Any]] = {}
+    for reference in ("pdfium", "poppler", "mupdf"):
+        ref_width, ref_height = frames[reference].size
+        ref = thumbnail_array(ref_width, ref_height, frames[reference].tobytes(), 96)
+        metrics[reference] = pixel_metrics(wellfriend, ref)
+    return metrics
 
 
 def compose(
@@ -170,22 +222,51 @@ def main() -> int:
     parser.add_argument("--adapter-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--dpi", type=int, default=72)
+    parser.add_argument("--selection-json", type=Path)
+    parser.add_argument("--wellfriend-cli", type=Path)
     args = parser.parse_args()
 
-    selected = select_pages(measured_pages(args.quality_jsonl))
+    if args.selection_json:
+        supplied = json.loads(args.selection_json.read_text("utf-8"))["samples"]
+        selected = [(str(page["selection"]), page) for page in supplied]
+    else:
+        selected = select_pages(measured_pages(args.quality_jsonl))
     evidence: list[dict[str, Any]] = []
     for index, (label, page) in enumerate(selected, start=1):
         pdf = args.corpus / page["relative_path"]
         frames = {
-            engine: render_page(engine, args.adapter_dir, pdf, args.dpi, page["page_number"])
+            engine: render_page(
+                engine,
+                args.adapter_dir,
+                pdf,
+                args.dpi,
+                page["page_number"],
+                args.wellfriend_cli,
+            )
             for engine in ENGINES
         }
+        page["dimensions"] = {
+            engine: {"width": frame.width, "height": frame.height}
+            for engine, frame in frames.items()
+        }
+        page["metrics"] = refreshed_reference_metrics(frames)
+        page["mean_thumbnail_ssim"] = statistics.fmean(
+            float(page["metrics"][reference]["ssim"])
+            for reference in ("pdfium", "poppler", "mupdf")
+        )
         filename = f"{index:02d}-{label}.webp"
         compose(label, page, frames, args.output / filename)
         evidence.append({"selection": label, "image": filename, **page})
         print(f"sample {index}/{len(selected)} {label} {page['relative_path']} page={page['page_number']}", flush=True)
     (args.output / "visual-samples.json").write_text(
-        json.dumps({"contract": "distribution-selected successful paired pages; four engines; 72 DPI RGB", "samples": evidence}, indent=2) + "\n",
+        json.dumps(
+            {
+                "contract": "same-page four-engine comparison; 72 DPI RGB; normalized thumbnail metrics",
+                "samples": evidence,
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return 0

@@ -1,0 +1,60 @@
+=== image painter regressions ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.38s
+     Running unittests src/lib.rs (target/debug/deps/wellfriendpdf_engine-6a1491c1e8ed1aa5)
+
+running 29 tests
+test render::image_painter::tests::area_average_downscales_checkerboard_to_gray ... ok
+test render::image_painter::tests::bilinear_sample_at_center_blends_all_corners ... ok
+test render::image_painter::tests::bilinear_sample_empty_image_is_transparent ... ok
+test render::image_painter::tests::bilinear_sample_gray_image_replicates_channels ... ok
+test render::image_painter::tests::bilinear_sample_rgba_image_preserves_alpha ... ok
+test render::image_painter::tests::bilinear_sample_on_2x2_image_corners ... ok
+test render::image_painter::tests::box_minification_averages_halftone_without_aliasing ... ok
+test render::image_painter::tests::integer_target_requires_exact_device_phase ... ok
+test render::image_painter::tests::high_quality_minified_image_paint_uses_area_average ... ok
+test render::image_painter::tests::axis_aligned_image_does_not_extend_past_unit_square ... ok
+test render::image_painter::tests::magnified_nearest_run_fast_path_preserves_source_cells ... ok
+test render::image_painter::tests::interpolate_true_smooths_magnified_image ... ok
+test render::image_painter::tests::one_to_one_rgb_fast_path_writes_exact_source_rows ... ok
+test render::image_painter::tests::magnified_image_uses_nearest_neighbour_blocks ... ok
+test render::image_painter::tests::paint_image_places_pixels_in_correct_region ... ok
+test render::image_painter::tests::paint_image_singular_transform_skips_gracefully ... ok
+test render::image_painter::tests::paint_image_with_alpha_multiplies_source_coverage ... ok
+test render::image_painter::tests::paint_image_with_short_buffer_does_not_synthesize_black_pixels ... ok
+test render::image_painter::tests::paint_image_with_zero_size_image_does_not_panic ... ok
+test render::image_painter::tests::paint_image_rgba_uses_alpha_channel ... ok
+test render::image_painter::tests::paint_rotated_image_affine_path_draws_pixels ... ok
+test render::image_painter::tests::bilinear_rgb_row_fast_path_preserves_samples_and_binary_clip ... ok
+test render::image_painter::tests::paint_scaled_rgb_at_device_target_uses_binary_clip ... ok
+test render::image_painter::tests::one_to_one_rgb_fast_path_respects_binary_clip_runs ... ok
+test render::image_painter::tests::rotated_viewport_preserves_pdf_image_row_orientation ... ok
+test render::image_painter::tests::precomputed_bilinear_coordinates_are_pixel_identical ... ok
+test render::image_painter::tests::sample_short_buffer_is_transparent_not_black ... ok
+test render::image_painter::tests::scale_axis_aligned_default_rgb_matches_center_samples ... ok
+test render::image_painter::tests::sample_unsupported_channels_is_transparent_not_black ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 4314 filtered out; finished in 0.06s
+
+=== tiling pattern regressions ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running unittests src/lib.rs (target/debug/deps/wellfriendpdf_engine-6a1491c1e8ed1aa5)
+
+running 16 tests
+test render::page_renderer::tests::malformed_tiling_pattern_geometry_returns_typed_refusal ... ok
+test render::page_renderer::tests::colored_tiling_pattern_paints_stroked_paths ... ok
+test render::page_renderer::tests::high_quality_tiling_pattern_refuses_unsupported_retained_replay ... ok
+test render::page_renderer::tests::tiling_pattern_bbox_analysis_accepts_contained_fill_and_image ... ok
+test render::page_renderer::tests::tiling_pattern_bbox_analysis_keeps_clip_for_unproven_paint_extent ... ok
+test render::page_renderer::tests::tiling_pattern_budget_allows_many_small_visible_cells ... ok
+test render::page_renderer::tests::tiling_pattern_budget_rejects_excessive_cell_cardinality ... ok
+test render::page_renderer::tests::tiling_pattern_budget_rejects_excessive_overdraw ... ok
+test render::page_renderer::tests::compatibility_tiling_pattern_refuses_unsupported_retained_replay ... ok
+test render::page_renderer::tests::tiling_pattern_replay_restores_active_resource_stack_after_inner_refusal ... ok
+test render::page_renderer::tests::tiling_pattern_without_stream_returns_typed_refusal ... ok
+test render::page_renderer::tests::recursive_tiling_pattern_returns_typed_refusal ... ok
+test render::page_renderer::tests::uncolored_tiling_pattern_without_declared_base_returns_typed_refusal ... ok
+test render::page_renderer::tests::resource_scopes::tiling_pattern_has_a_complete_required_scope_and_legacy_children_use_page ... ok
+test render::page_renderer::tests::tiling_pattern_inside_form_renders_tile_content ... ok
+test render::vector_resource_scope::tests::legacy_form_inside_tiling_pattern_keeps_original_page_fallback ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 4327 filtered out; finished in 0.30s

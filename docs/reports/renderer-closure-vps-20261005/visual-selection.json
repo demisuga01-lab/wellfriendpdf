@@ -1,0 +1,28 @@
+{
+  "samples": [
+    {
+      "selection": "scan-minification",
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19710025723-ec5a3942ca93.pdf",
+      "page_number": 1,
+      "page_count": 45
+    },
+    {
+      "selection": "rotated-scan",
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19760009740-2880446b4535.pdf",
+      "page_number": 24,
+      "page_count": 29
+    },
+    {
+      "selection": "digital-text",
+      "relative_path": "arxiv_physics.soc-ph_2609.28432v1-3149a040e3d4.pdf",
+      "page_number": 19,
+      "page_count": 22
+    },
+    {
+      "selection": "technical-diagram",
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19680023496-f0b329e3984b.pdf",
+      "page_number": 15,
+      "page_count": 22
+    }
+  ]
+}

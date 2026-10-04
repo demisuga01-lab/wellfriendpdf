@@ -1,0 +1,225 @@
+{
+  "contract": "same-page four-engine comparison; 72 DPI RGB; normalized thumbnail metrics",
+  "samples": [
+    {
+      "selection": "scan-minification",
+      "image": "01-scan-minification.webp",
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19710025723-ec5a3942ca93.pdf",
+      "page_number": 1,
+      "page_count": 45,
+      "dimensions": {
+        "wellfriend": {
+          "width": 613,
+          "height": 793
+        },
+        "pdfium": {
+          "width": 613,
+          "height": 793
+        },
+        "poppler": {
+          "width": 612,
+          "height": 793
+        },
+        "mupdf": {
+          "width": 613,
+          "height": 793
+        }
+      },
+      "metrics": {
+        "pdfium": {
+          "same_shape": true,
+          "mae": 1.448568,
+          "rmse": 2.99801,
+          "psnr_db": 38.594142,
+          "changed_pixel_threshold8_percentage": 2.669271,
+          "max_channel_delta": 22,
+          "ssim": 0.9915493
+        },
+        "poppler": {
+          "same_shape": true,
+          "mae": 1.245551,
+          "rmse": 2.749625,
+          "psnr_db": 39.345334,
+          "changed_pixel_threshold8_percentage": 2.560764,
+          "max_channel_delta": 22,
+          "ssim": 0.99202281
+        },
+        "mupdf": {
+          "same_shape": true,
+          "mae": 0.913411,
+          "rmse": 1.872046,
+          "psnr_db": 42.684472,
+          "changed_pixel_threshold8_percentage": 1.150174,
+          "max_channel_delta": 15,
+          "ssim": 0.99585396
+        }
+      },
+      "mean_thumbnail_ssim": 0.9931420233333333
+    },
+    {
+      "selection": "rotated-scan",
+      "image": "02-rotated-scan.webp",
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19760009740-2880446b4535.pdf",
+      "page_number": 24,
+      "page_count": 29,
+      "dimensions": {
+        "wellfriend": {
+          "width": 754,
+          "height": 561
+        },
+        "pdfium": {
+          "width": 754,
+          "height": 561
+        },
+        "poppler": {
+          "width": 754,
+          "height": 561
+        },
+        "mupdf": {
+          "width": 754,
+          "height": 561
+        }
+      },
+      "metrics": {
+        "pdfium": {
+          "same_shape": true,
+          "mae": 0.449219,
+          "rmse": 2.223611,
+          "psnr_db": 41.189629,
+          "changed_pixel_threshold8_percentage": 1.074219,
+          "max_channel_delta": 35,
+          "ssim": 0.98584754
+        },
+        "poppler": {
+          "same_shape": true,
+          "mae": 0.429688,
+          "rmse": 1.344517,
+          "psnr_db": 45.559478,
+          "changed_pixel_threshold8_percentage": 0.401476,
+          "max_channel_delta": 17,
+          "ssim": 0.99614831
+        },
+        "mupdf": {
+          "same_shape": true,
+          "mae": 0.431315,
+          "rmse": 2.051237,
+          "psnr_db": 41.890486,
+          "changed_pixel_threshold8_percentage": 1.041667,
+          "max_channel_delta": 35,
+          "ssim": 0.98868013
+        }
+      },
+      "mean_thumbnail_ssim": 0.9902253266666667
+    },
+    {
+      "selection": "digital-text",
+      "image": "03-digital-text.webp",
+      "relative_path": "arxiv_physics.soc-ph_2609.28432v1-3149a040e3d4.pdf",
+      "page_number": 19,
+      "page_count": 22,
+      "dimensions": {
+        "wellfriend": {
+          "width": 596,
+          "height": 842
+        },
+        "pdfium": {
+          "width": 596,
+          "height": 842
+        },
+        "poppler": {
+          "width": 595,
+          "height": 842
+        },
+        "mupdf": {
+          "width": 596,
+          "height": 842
+        }
+      },
+      "metrics": {
+        "pdfium": {
+          "same_shape": true,
+          "mae": 0.863751,
+          "rmse": 1.868304,
+          "psnr_db": 42.701853,
+          "changed_pixel_threshold8_percentage": 0.108507,
+          "max_channel_delta": 29,
+          "ssim": 0.99413182
+        },
+        "poppler": {
+          "same_shape": true,
+          "mae": 4.259621,
+          "rmse": 8.843944,
+          "psnr_db": 29.197884,
+          "changed_pixel_threshold8_percentage": 23.12283,
+          "max_channel_delta": 43,
+          "ssim": 0.93402681
+        },
+        "mupdf": {
+          "same_shape": true,
+          "mae": 0.36263,
+          "rmse": 0.894864,
+          "psnr_db": 49.095665,
+          "changed_pixel_threshold8_percentage": 0.010851,
+          "max_channel_delta": 9,
+          "ssim": 0.99613547
+        }
+      },
+      "mean_thumbnail_ssim": 0.9747647
+    },
+    {
+      "selection": "technical-diagram",
+      "image": "04-technical-diagram.webp",
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19680023496-f0b329e3984b.pdf",
+      "page_number": 15,
+      "page_count": 22,
+      "dimensions": {
+        "wellfriend": {
+          "width": 622,
+          "height": 800
+        },
+        "pdfium": {
+          "width": 622,
+          "height": 800
+        },
+        "poppler": {
+          "width": 622,
+          "height": 799
+        },
+        "mupdf": {
+          "width": 622,
+          "height": 800
+        }
+      },
+      "metrics": {
+        "pdfium": {
+          "same_shape": true,
+          "mae": 0.251194,
+          "rmse": 1.011275,
+          "psnr_db": 48.033415,
+          "changed_pixel_threshold8_percentage": 0.097656,
+          "max_channel_delta": 11,
+          "ssim": 0.99868806
+        },
+        "poppler": {
+          "same_shape": true,
+          "mae": 0.273655,
+          "rmse": 1.051516,
+          "psnr_db": 47.694486,
+          "changed_pixel_threshold8_percentage": 0.15191,
+          "max_channel_delta": 13,
+          "ssim": 0.99847561
+        },
+        "mupdf": {
+          "same_shape": true,
+          "mae": 0.235352,
+          "rmse": 0.919326,
+          "psnr_db": 48.861411,
+          "changed_pixel_threshold8_percentage": 0.054253,
+          "max_channel_delta": 11,
+          "ssim": 0.99892548
+        }
+      },
+      "mean_thumbnail_ssim": 0.9986963833333333
+    }
+  ]
+}

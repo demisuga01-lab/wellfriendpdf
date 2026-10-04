@@ -1,0 +1,62 @@
+{
+  "dpi": 72,
+  "feature_area": "combined_native_renderer",
+  "input": "/root/raptor-corpus-150-20261003/arxiv_eess.IV_2609.27442v1-8d6863c3b2f7.pdf",
+  "kind": "render_compare",
+  "page_reports": [
+    {
+      "display_list": {
+        "approximate_memory_bytes": 93610,
+        "fully_supported": true,
+        "stats": {
+          "clips": 0,
+          "fills": 0,
+          "form_xobjects": 0,
+          "image_xobjects": 3,
+          "inline_images": 0,
+          "max_stack_depth": 2,
+          "native_form_xobjects": 0,
+          "native_image_xobjects": 3,
+          "native_inline_images": 0,
+          "native_text_ops": 156,
+          "operations": 240,
+          "path_segments": 2,
+          "paths": 1,
+          "patterns": 0,
+          "restores": 7,
+          "saves": 7,
+          "shadings": 0,
+          "strokes": 1,
+          "text_ops": 67,
+          "transparency_ops": 0,
+          "unsupported_ops": 0
+        },
+        "unsupported": []
+      },
+      "page": 4,
+      "render": {
+        "height": 792,
+        "status": "display_list_rendered",
+        "width": 612
+      }
+    }
+  ],
+  "pages": [
+    4
+  ],
+  "render_quality": "compat",
+  "schema_version": 1,
+  "skip_render": false,
+  "totals": {
+    "form_xobjects": 0,
+    "image_xobjects": 3,
+    "inline_images": 0,
+    "native_form_xobjects": 0,
+    "native_image_xobjects": 3,
+    "native_inline_images": 0,
+    "native_text_ops": 156,
+    "operations": 240,
+    "text_ops": 67,
+    "unsupported_ops": 0
+  }
+}

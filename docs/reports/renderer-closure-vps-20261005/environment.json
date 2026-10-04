@@ -1,0 +1,40 @@
+{
+  "schema_version": "wellfriendpdf.renderer-qualification-environment.v1",
+  "report_date": "2026-10-05",
+  "source_commit": "0539f33972b677512aaf336573a6a8385d0cf3bd",
+  "host": {
+    "name": "v72937",
+    "kernel": "Linux 7.0.0-31-generic",
+    "architecture": "x86_64",
+    "logical_cpus": 4
+  },
+  "binaries": {
+    "wellfriend": {
+      "sha256": "d02e9a9346120328537da72ea697f2c37969eab1ff52c86d76edb45353691959"
+    },
+    "pdfium": {
+      "version": "150.0.7857.0",
+      "adapter_sha256": "e51d195ddcc47fdddff2aeef8330ad3b52dda52457a7cd9ab9bca13e84c3f480",
+      "library_sha256": "3f3af4e4ba46bec9d0d11c5635262663b7020345ff4bed7eee85e883e2ce8455"
+    },
+    "poppler": {
+      "version": "26.01.0-2ubuntu0.1",
+      "adapter_sha256": "616052bc24491a36ef5e94869a9d2326fc41adc04460bec3448ea29e358e42e9"
+    },
+    "mupdf": {
+      "version": "1.27.0+ds1-3ubuntu2",
+      "adapter_sha256": "48c3292499a78fb18a73e3e39480b837dfda8ac1b1a5711837386cae1f07707c"
+    },
+    "qpdf": {
+      "version": "12.3.2-1"
+    }
+  },
+  "render_contract": {
+    "dpi": 72,
+    "pixel_format": "RGB8",
+    "workers": 1,
+    "pipeline": "display-list",
+    "document_cache": true,
+    "per_page_timeout_ms": 120000
+  }
+}

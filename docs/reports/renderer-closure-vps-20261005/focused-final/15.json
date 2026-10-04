@@ -1,0 +1,62 @@
+{
+  "dpi": 72,
+  "feature_area": "combined_native_renderer",
+  "input": "/root/raptor-corpus-150-20261003/internetarchive_nasa-techdocs_nasa_techdoc_20050060627-52a16acb6b96.pdf",
+  "kind": "render_compare",
+  "page_reports": [
+    {
+      "display_list": {
+        "approximate_memory_bytes": 3758,
+        "fully_supported": true,
+        "stats": {
+          "clips": 1,
+          "fills": 0,
+          "form_xobjects": 0,
+          "image_xobjects": 1,
+          "inline_images": 0,
+          "max_stack_depth": 2,
+          "native_form_xobjects": 0,
+          "native_image_xobjects": 1,
+          "native_inline_images": 0,
+          "native_text_ops": 0,
+          "operations": 9,
+          "path_segments": 5,
+          "paths": 1,
+          "patterns": 0,
+          "restores": 2,
+          "saves": 2,
+          "shadings": 0,
+          "strokes": 0,
+          "text_ops": 0,
+          "transparency_ops": 0,
+          "unsupported_ops": 0
+        },
+        "unsupported": []
+      },
+      "page": 1,
+      "render": {
+        "height": 792,
+        "status": "display_list_rendered",
+        "width": 612
+      }
+    }
+  ],
+  "pages": [
+    1
+  ],
+  "render_quality": "compat",
+  "schema_version": 1,
+  "skip_render": false,
+  "totals": {
+    "form_xobjects": 0,
+    "image_xobjects": 1,
+    "inline_images": 0,
+    "native_form_xobjects": 0,
+    "native_image_xobjects": 1,
+    "native_inline_images": 0,
+    "native_text_ops": 0,
+    "operations": 9,
+    "text_ops": 0,
+    "unsupported_ops": 0
+  }
+}
