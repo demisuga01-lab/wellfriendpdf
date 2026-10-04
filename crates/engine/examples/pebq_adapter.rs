@@ -10,7 +10,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use serde_json::{json, Value};
-use wellfriendpdf_engine::{CancelToken, ContentEngine, PdfDocument, RenderMode};
+use wellfriendpdf_engine::{
+    CancelToken, ContentEngine, PdfDocument, RenderDocumentCache, RenderMode,
+};
 
 fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1_000.0
@@ -29,9 +31,11 @@ fn read_file(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(1_469_598_103_934_665_603_u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
-    })
+    bytes
+        .iter()
+        .fold(1_469_598_103_934_665_603_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+        })
 }
 
 fn peak_rss_kib() -> u64 {
@@ -55,7 +59,23 @@ fn write_ppm(path: &Path, width: u32, height: u32, rgb: &[u8]) -> io::Result<()>
     output.flush()
 }
 
-fn execute(profile: &str, path: &Path, dpi: u32, output: Option<&Path>) -> Value {
+fn median(mut values: Vec<f64>) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let middle = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) / 2.0
+    } else {
+        values[middle]
+    }
+}
+
+fn execute(
+    profile: &str,
+    path: &Path,
+    dpi: u32,
+    output: Option<&Path>,
+    iterations: usize,
+) -> Value {
     let request_start = Instant::now();
     let result = (|| -> Result<Value, Box<dyn std::error::Error>> {
         let read_start = Instant::now();
@@ -86,7 +106,7 @@ fn execute(profile: &str, path: &Path, dpi: u32, output: Option<&Path>) -> Value
                 "request_ms": elapsed_ms(request_start),
             }));
         }
-        if profile != "render" {
+        if profile != "render" && profile != "render-retained-resources" {
             return Err(format!("unknown profile: {profile}").into());
         }
 
@@ -95,16 +115,52 @@ fn execute(profile: &str, path: &Path, dpi: u32, output: Option<&Path>) -> Value
         let page_count = engine.page_count()?;
         let parse_ms = elapsed_ms(parse_start);
 
-        let render_start = Instant::now();
-        let raster = engine.render_page_cancellable_with_mode(
-            1,
-            dpi,
-            &CancelToken::none(),
-            RenderMode::Compat,
-        )?;
-        let raw = raster.to_raw_image();
-        let render_ms = elapsed_ms(render_start);
-        let raster_hash = fnv1a(&raw.pixels);
+        let retained_resources = profile == "render-retained-resources";
+        let sample_count = if retained_resources {
+            iterations.max(1)
+        } else {
+            1
+        };
+        let mut cache = RenderDocumentCache::resources_only();
+        if retained_resources {
+            let warmup = engine.render_page_cancellable_with_mode_and_cache(
+                1,
+                dpi,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )?;
+            let _ = warmup.to_raw_image();
+        }
+        let mut render_samples_ms = Vec::with_capacity(sample_count);
+        let mut raster_hashes = Vec::with_capacity(sample_count);
+        let mut raw_output = None;
+        for _ in 0..sample_count {
+            let render_start = Instant::now();
+            let raster = if retained_resources {
+                engine.render_page_cancellable_with_mode_and_cache(
+                    1,
+                    dpi,
+                    &CancelToken::none(),
+                    RenderMode::Compat,
+                    &mut cache,
+                )?
+            } else {
+                engine.render_page_cancellable_with_mode(
+                    1,
+                    dpi,
+                    &CancelToken::none(),
+                    RenderMode::Compat,
+                )?
+            };
+            let raw = raster.to_raw_image();
+            render_samples_ms.push(elapsed_ms(render_start));
+            raster_hashes.push(format!("{:x}", fnv1a(&raw.pixels)));
+            raw_output = Some(raw);
+        }
+        let render_ms = median(render_samples_ms.clone());
+        let raw = raw_output.ok_or("renderer produced no samples")?;
+        let raster_hash = raster_hashes.last().cloned().unwrap_or_default();
 
         let mut write_ms = 0.0;
         if let Some(output) = output.filter(|path| path.as_os_str() != "-") {
@@ -123,10 +179,14 @@ fn execute(profile: &str, path: &Path, dpi: u32, output: Option<&Path>) -> Value
             "read_ms": read_ms,
             "parse_ms": parse_ms,
             "render_ms": render_ms,
+            "render_samples_ms": render_samples_ms,
+            "render_sample_hashes": raster_hashes,
+            "retained_resource_profile": retained_resources,
+            "final_raster_cache": "disabled",
             "write_ms": write_ms,
             "width": raw.width,
             "height": raw.height,
-            "raster_fnv1a64": format!("{raster_hash:x}"),
+            "raster_fnv1a64": raster_hash,
             "peak_rss_kib": peak_rss_kib(),
             "request_ms": elapsed_ms(request_start),
         }))
@@ -150,9 +210,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() >= 4 && args[1] == "--request" {
         let profile = &args[2];
         let path = Path::new(&args[3]);
-        let dpi = args.get(4).and_then(|value| value.parse().ok()).unwrap_or(144);
+        let dpi = args
+            .get(4)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(144);
         let output = args.get(5).map(Path::new);
-        let value = execute(profile, path, dpi, output);
+        let iterations = args
+            .get(6)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1);
+        let value = execute(profile, path, dpi, output, iterations);
         println!("{}", serde_json::to_string(&value)?);
         if value["status"] != "ok" {
             std::process::exit(1);
@@ -168,14 +235,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let value = if fields.len() < 2 {
                 json!({"engine": "wellfriendpdf", "status": "error", "error": "invalid request"})
             } else {
-                let dpi = fields.get(2).and_then(|value| value.parse().ok()).unwrap_or(144);
-                let output = fields.get(3).filter(|value| !value.is_empty()).map(Path::new);
-                execute(fields[0], Path::new(fields[1]), dpi, output)
+                let dpi = fields
+                    .get(2)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(144);
+                let output = fields
+                    .get(3)
+                    .filter(|value| !value.is_empty())
+                    .map(Path::new);
+                let iterations = fields
+                    .get(4)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(1);
+                execute(fields[0], Path::new(fields[1]), dpi, output, iterations)
             };
             writeln!(stdout, "{}", serde_json::to_string(&value)?)?;
             stdout.flush()?;
         }
         return Ok(());
     }
-    Err("usage: pebq_adapter --request <page-count|render> <pdf> [dpi] [output.ppm] | --server".into())
+    Err("usage: pebq_adapter --request <page-count|render|render-retained-resources> <pdf> [dpi] [output.ppm] [iterations] | --server".into())
 }

@@ -99,6 +99,7 @@ enum OptionalContentConfigSelector {
 #[derive(Clone, Debug)]
 pub struct OptionalContentContext {
     states: HashMap<String, bool>,
+    base_visible: bool,
     report: OptionalContentReport,
     strict_error: Option<String>,
 }
@@ -107,6 +108,7 @@ impl OptionalContentContext {
     pub fn absent() -> Self {
         Self {
             states: HashMap::new(),
+            base_visible: true,
             report: OptionalContentReport::default(),
             strict_error: None,
         }
@@ -172,6 +174,7 @@ impl OptionalContentContext {
                 );
                 return Self {
                     states: HashMap::new(),
+                    base_visible: true,
                     report,
                     strict_error,
                 };
@@ -181,6 +184,7 @@ impl OptionalContentContext {
         let Some(ocprops_obj) = catalog.get("OCProperties") else {
             return Self {
                 states: HashMap::new(),
+                base_visible: true,
                 report,
                 strict_error,
             };
@@ -196,6 +200,7 @@ impl OptionalContentContext {
             );
             return Self {
                 states: HashMap::new(),
+                base_visible: true,
                 report,
                 strict_error,
             };
@@ -385,6 +390,7 @@ impl OptionalContentContext {
 
         Self {
             states,
+            base_visible,
             report,
             strict_error,
         }
@@ -463,15 +469,18 @@ impl OptionalContentContext {
             .map_err(|err| format!("{id} failed to resolve: {err}"))?;
         let result = match &resolved {
             PdfObject::Dictionary(dict) => match dict.get_name("Type") {
-                Some("OCG") => self
-                    .states
-                    .get(&id)
-                    .copied()
-                    .or_else(|| {
-                        let direct_id = object_id(&PdfObject::Dictionary(dict.clone()));
-                        self.states.get(&direct_id).copied()
-                    })
-                    .ok_or_else(|| format!("OCG {id} has no configured visibility state")),
+                Some("OCG") => {
+                    let direct_id = object_id(&PdfObject::Dictionary(dict.clone()));
+                    // Some producers use an OCG on a page without repeating it
+                    // in /OCProperties/OCGs. The active configuration's
+                    // BaseState is the applicable visibility rule in that case.
+                    Ok(self
+                        .states
+                        .get(&id)
+                        .or_else(|| self.states.get(&direct_id))
+                        .copied()
+                        .unwrap_or(self.base_visible))
+                }
                 Some("OCMD") => self.evaluate_ocmd(dict, reader, visiting),
                 Some(other) => Err(format!(
                     "{id} has unsupported optional-content /Type /{other}"

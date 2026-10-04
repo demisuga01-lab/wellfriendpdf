@@ -11,6 +11,7 @@
 // produces one compact JSON line. File reading, document opening/page count,
 // rasterization, RGB normalization, and output writing have separate timers.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -72,6 +73,15 @@ constexpr const char *kEngine = "pdfium";
 
 double elapsed_ms(Clock::time_point start) {
     return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
+double median(std::vector<double> values) {
+    if (values.empty()) return 0.0;
+    std::sort(values.begin(), values.end());
+    const size_t middle = values.size() / 2;
+    return values.size() % 2 == 0
+        ? (values[middle - 1] + values[middle]) / 2.0
+        : values[middle];
 }
 
 std::string json_escape(const std::string &value) {
@@ -220,14 +230,15 @@ struct Raster {
     std::vector<unsigned char> rgb;
 };
 
-Raster render_first_page(EngineDocument &source, int dpi) {
+Raster render_page(EngineDocument &source, int dpi, int page_index) {
 #if defined(PEBQ_QPDF)
     (void)source;
     (void)dpi;
+    (void)page_index;
     throw std::runtime_error("qpdf has no raster renderer");
 #elif defined(PEBQ_POPPLER)
-    std::unique_ptr<poppler::page> page(source.document->create_page(0));
-    if (!page) throw std::runtime_error("Poppler could not load page 1");
+    std::unique_ptr<poppler::page> page(source.document->create_page(page_index));
+    if (!page) throw std::runtime_error("Poppler could not load requested page");
     poppler::page_renderer renderer;
     renderer.set_image_format(poppler::image::format_rgb24);
     renderer.set_paper_color(0xffffffffU);
@@ -250,7 +261,7 @@ Raster render_first_page(EngineDocument &source, int dpi) {
     fz_try(source.context) {
         const float scale = static_cast<float>(dpi) / 72.0f;
         pixmap = fz_new_pixmap_from_page_number(
-            source.context, source.document, 0, fz_scale(scale, scale),
+            source.context, source.document, page_index, fz_scale(scale, scale),
             fz_device_rgb(source.context), 0);
         out.width = fz_pixmap_width(source.context, pixmap);
         out.height = fz_pixmap_height(source.context, pixmap);
@@ -277,8 +288,8 @@ Raster render_first_page(EngineDocument &source, int dpi) {
     }
     return out;
 #elif defined(PEBQ_PDFIUM)
-    FPDF_PAGE page = FPDF_LoadPage(source.document, 0);
-    if (!page) throw std::runtime_error("PDFium could not load page 1");
+    FPDF_PAGE page = FPDF_LoadPage(source.document, page_index);
+    if (!page) throw std::runtime_error("PDFium could not load requested page");
     const int width = std::max(1, static_cast<int>(std::ceil(FPDF_GetPageWidthF(page) * dpi / 72.0)));
     const int height = std::max(1, static_cast<int>(std::ceil(FPDF_GetPageHeightF(page) * dpi / 72.0)));
     std::vector<unsigned char> bgra(static_cast<size_t>(width) * height * 4);
@@ -304,8 +315,22 @@ Raster render_first_page(EngineDocument &source, int dpi) {
 #endif
 }
 
+void stream_all_pages(const std::string &path, int dpi) {
+    const auto bytes = read_file(path);
+    auto document = open_document(path, bytes);
+    for (int page_index = 0; page_index < document->pages; ++page_index) {
+        const Raster raster = render_page(*document, dpi, page_index);
+        std::cout << "P6\n" << raster.width << " " << raster.height << "\n255\n";
+        std::cout.write(
+            reinterpret_cast<const char *>(raster.rgb.data()),
+            static_cast<std::streamsize>(raster.rgb.size()));
+        if (!std::cout) throw std::runtime_error("unable to stream raster page");
+    }
+    std::cout.flush();
+}
+
 std::string execute(const std::string &profile, const std::string &path,
-                    int dpi, const std::string &output) {
+                    int dpi, const std::string &output, size_t iterations) {
     const auto request_start = Clock::now();
     try {
         const auto read_start = Clock::now();
@@ -321,13 +346,27 @@ std::string execute(const std::string &profile, const std::string &path,
         int width = 0;
         int height = 0;
         uint64_t raster_hash = 0;
-        if (profile == "render") {
-            const auto render_start = Clock::now();
-            auto raster = render_first_page(*document, dpi);
-            render_ms = elapsed_ms(render_start);
+        std::vector<double> render_samples_ms;
+        std::vector<uint64_t> render_sample_hashes;
+        const bool retained_resources = profile == "render-retained-resources";
+        if (profile == "render" || retained_resources) {
+            if (retained_resources) {
+                (void)render_page(*document, dpi, 0);
+            }
+            Raster raster;
+            const size_t sample_count = retained_resources ? std::max<size_t>(1, iterations) : 1;
+            render_samples_ms.reserve(sample_count);
+            render_sample_hashes.reserve(sample_count);
+            for (size_t sample = 0; sample < sample_count; ++sample) {
+                const auto render_start = Clock::now();
+                raster = render_page(*document, dpi, 0);
+                render_samples_ms.push_back(elapsed_ms(render_start));
+                render_sample_hashes.push_back(fnv1a(raster.rgb.data(), raster.rgb.size()));
+            }
+            render_ms = median(render_samples_ms);
             width = raster.width;
             height = raster.height;
-            raster_hash = fnv1a(raster.rgb.data(), raster.rgb.size());
+            raster_hash = render_sample_hashes.back();
             if (!output.empty() && output != "-") {
                 const auto write_start = Clock::now();
                 write_ppm(output, width, height, raster.rgb);
@@ -347,6 +386,20 @@ std::string execute(const std::string &profile, const std::string &path,
              << ",\"read_ms\":" << read_ms
              << ",\"parse_ms\":" << parse_ms
              << ",\"render_ms\":" << render_ms
+             << ",\"render_samples_ms\":[";
+        for (size_t i = 0; i < render_samples_ms.size(); ++i) {
+            if (i != 0) json << ',';
+            json << render_samples_ms[i];
+        }
+        json << "]"
+             << ",\"render_sample_hashes\":[";
+        for (size_t i = 0; i < render_sample_hashes.size(); ++i) {
+            if (i != 0) json << ',';
+            json << '"' << std::hex << render_sample_hashes[i] << std::dec << '"';
+        }
+        json << "]"
+             << ",\"retained_resource_profile\":" << (retained_resources ? "true" : "false")
+             << ",\"final_raster_cache\":\"disabled\""
              << ",\"write_ms\":" << write_ms
              << ",\"width\":" << width << ",\"height\":" << height
              << ",\"raster_fnv1a64\":\"" << std::hex << raster_hash << std::dec << "\""
@@ -383,12 +436,20 @@ int main(int argc, char **argv) {
     FPDF_InitLibrary();
 #endif
     int code = 0;
-    if (argc >= 4 && std::string(argv[1]) == "--request") {
+    if (argc >= 4 && std::string(argv[1]) == "--stream-pages") {
+        try {
+            stream_all_pages(argv[2], std::stoi(argv[3]));
+        } catch (const std::exception &error) {
+            std::cerr << error.what() << '\n';
+            code = 1;
+        }
+    } else if (argc >= 4 && std::string(argv[1]) == "--request") {
         const std::string profile = argv[2];
         const std::string path = argv[3];
         const int dpi = argc >= 5 ? std::stoi(argv[4]) : 144;
         const std::string output = argc >= 6 ? argv[5] : "-";
-        const std::string result = execute(profile, path, dpi, output);
+        const size_t iterations = argc >= 7 ? static_cast<size_t>(std::stoul(argv[6])) : 1;
+        const std::string result = execute(profile, path, dpi, output, iterations);
         std::cout << result << '\n';
         code = result.find("\"status\":\"ok\"") == std::string::npos ? 1 : 0;
     } else if (argc == 2 && std::string(argv[1]) == "--server") {
@@ -401,13 +462,16 @@ int main(int argc, char **argv) {
             } else {
                 const int dpi = fields.size() >= 3 && !fields[2].empty() ? std::stoi(fields[2]) : 144;
                 const std::string output = fields.size() >= 4 ? fields[3] : "-";
-                std::cout << execute(fields[0], fields[1], dpi, output) << '\n';
+                const size_t iterations = fields.size() >= 5 && !fields[4].empty()
+                    ? static_cast<size_t>(std::stoul(fields[4])) : 1;
+                std::cout << execute(fields[0], fields[1], dpi, output, iterations) << '\n';
             }
             std::cout.flush();
         }
     } else {
         std::cerr << "usage: " << argv[0]
-                  << " --request <page-count|render> <pdf> [dpi] [output.ppm]\n"
+                  << " --request <page-count|render|render-retained-resources> <pdf> [dpi] [output.ppm] [iterations]\n"
+                  << "       " << argv[0] << " --stream-pages <pdf> <dpi>\n"
                   << "       " << argv[0] << " --server\n";
         code = 2;
     }

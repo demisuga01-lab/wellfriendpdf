@@ -1,5 +1,7 @@
+use std::io::{Cursor, Read};
+
 use crate::error::{Result, WellfriendError};
-use crate::filters::DecodeLimits;
+use crate::filters::{decode_stream_lossless_reader_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::images::decoder::{
     ImageDecoder, RawImage, RawImageComponentSelection, RawImageDecodeWindow,
 };
@@ -65,8 +67,8 @@ impl SmaskLoader {
                 )))
             }
         };
-        let smask_dict = match reader.get_object(smask_ref.0, smask_ref.1)? {
-            PdfObject::Stream { dict, .. } => dict,
+        let (smask_dict, smask_raw_stream) = match reader.get_object(smask_ref.0, smask_ref.1)? {
+            PdfObject::Stream { dict, raw } => (dict, raw),
             other => {
                 return Err(WellfriendError::MalformedPdf(format!(
                     "image SMask reference resolved to {}, expected Stream",
@@ -94,8 +96,11 @@ impl SmaskLoader {
             inline_data: None,
         };
 
-        let smask_raw = match source_window {
-            Some(window) => {
+        let reduced_target = (source_window.is_none()
+            && (main_raw.width != main_image.width || main_raw.height != main_image.height))
+            .then_some((main_raw.width, main_raw.height));
+        let smask_raw = match (source_window, reduced_target) {
+            (Some(window), _) => {
                 if !smask_source_window_is_compatible(
                     main_image,
                     &main_raw,
@@ -118,7 +123,16 @@ impl SmaskLoader {
                     None,
                 )
             }
-            None => ImageDecoder::decode_with_limits(&smask_image_ref, reader, limits),
+            (None, Some((target_width, target_height))) => decode_reduced_grayscale_smask(
+                &smask_dict,
+                smask_raw_stream,
+                &smask_image_ref,
+                target_width,
+                target_height,
+                reader,
+                limits,
+            ),
+            (None, None) => ImageDecoder::decode_with_limits(&smask_image_ref, reader, limits),
         }
         .map_err(|err| {
                 WellfriendError::MalformedPdf(format!(
@@ -214,6 +228,139 @@ impl SmaskLoader {
             pixels: rgba,
         })
     }
+}
+
+fn decode_reduced_grayscale_smask(
+    dict: &PdfDictionary,
+    raw_stream: Vec<u8>,
+    image: &ImageReference,
+    target_width: u32,
+    target_height: u32,
+    reader: &PdfReader,
+    limits: &DecodeLimits,
+) -> Result<RawImage> {
+    if image.bits_per_component != 8
+        || !matches!(image.color_space.as_str(), "DeviceGray" | "G")
+        || target_width == 0
+        || target_height == 0
+        || target_width > image.width
+        || target_height > image.height
+        || image.width > limits.max_image_width
+        || image.height > limits.max_image_height
+        || u64::from(target_width).saturating_mul(u64::from(target_height))
+            > limits.max_image_pixels
+        || !decode_array_is_default(dict)
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "image SMask reduced decode requires matching 8-bit default-decoded grayscale data"
+                .to_string(),
+        ));
+    }
+
+    let decoded = decode_stream_lossless_reader_with_limits(
+        dict,
+        Cursor::new(raw_stream),
+        Some(reader),
+        limits,
+    )?;
+    if let StreamDecodeStatus::StoppedAtImageFilter(filter) = decoded.status {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "image SMask reduced decode stopped at image filter {filter}"
+        )));
+    }
+
+    let source_width = image.width as usize;
+    let source_height = image.height as usize;
+    let destination_width = target_width as usize;
+    let destination_height = target_height as usize;
+    let destination_pixels = destination_width
+        .checked_mul(destination_height)
+        .ok_or_else(|| WellfriendError::MalformedPdf("image SMask target size overflow".into()))?;
+    let destination_bytes = destination_pixels as u64;
+    if destination_bytes > limits.max_image_decoded_bytes {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "image SMask reduced output requires {destination_bytes} bytes, exceeding limit {}",
+            limits.max_image_decoded_bytes
+        )));
+    }
+
+    let mut source_row = vec![0u8; source_width];
+    let mut horizontal = vec![0.0_f64; destination_width];
+    let mut accumulated = vec![0.0_f64; destination_pixels];
+    let source_per_destination_x = source_width as f64 / destination_width as f64;
+    let source_per_destination_y = source_height as f64 / destination_height as f64;
+    let mut decoded_reader = decoded.reader;
+
+    for source_y in 0..source_height {
+        decoded_reader.read_exact(&mut source_row)?;
+        for (destination_x, sample) in horizontal.iter_mut().enumerate() {
+            let source_x0 = destination_x as f64 * source_per_destination_x;
+            let source_x1 = (destination_x + 1) as f64 * source_per_destination_x;
+            let first_source_x = source_x0.floor() as usize;
+            let last_source_x = source_x1.ceil().min(source_width as f64) as usize;
+            let mut value = 0.0;
+            for source_x in first_source_x..last_source_x {
+                let weight =
+                    ((source_x + 1) as f64).min(source_x1) - (source_x as f64).max(source_x0);
+                if weight > 0.0 {
+                    value += source_row[source_x] as f64 * weight;
+                }
+            }
+            *sample = value / source_per_destination_x;
+        }
+
+        let destination_y0 = source_y as f64 / source_per_destination_y;
+        let destination_y1 = (source_y + 1) as f64 / source_per_destination_y;
+        let first_destination_y = destination_y0.floor() as usize;
+        let last_destination_y = destination_y1.ceil().min(destination_height as f64) as usize;
+        for destination_y in first_destination_y..last_destination_y {
+            let destination_source_y0 = destination_y as f64 * source_per_destination_y;
+            let destination_source_y1 = (destination_y + 1) as f64 * source_per_destination_y;
+            let weight = ((source_y + 1) as f64).min(destination_source_y1)
+                - (source_y as f64).max(destination_source_y0);
+            if weight <= 0.0 {
+                continue;
+            }
+            let output_base = destination_y * destination_width;
+            for (destination_x, sample) in horizontal.iter().enumerate() {
+                accumulated[output_base + destination_x] += sample * weight;
+            }
+        }
+    }
+
+    let mut trailing = [0u8; 1];
+    if decoded_reader.read(&mut trailing)? != 0 {
+        return Err(WellfriendError::MalformedPdf(
+            "image SMask decoded stream contains trailing samples".into(),
+        ));
+    }
+    let pixels = accumulated
+        .into_iter()
+        .map(|value| (value / source_per_destination_y).round().clamp(0.0, 255.0) as u8)
+        .collect();
+    Ok(RawImage {
+        width: target_width,
+        height: target_height,
+        channels: 1,
+        bits_per_sample: 8,
+        pixels,
+    })
+}
+
+fn decode_array_is_default(dict: &PdfDictionary) -> bool {
+    let Some(value) = dict.get("Decode").or_else(|| dict.get("D")) else {
+        return true;
+    };
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    items.len() == 2
+        && items[0]
+            .as_number()
+            .is_some_and(|value| value.is_finite() && value.abs() <= f64::EPSILON)
+        && items[1]
+            .as_number()
+            .is_some_and(|value| value.is_finite() && (value - 1.0).abs() <= f64::EPSILON)
 }
 
 fn smask_filter_names(dict: &PdfDictionary, label: &str) -> Result<Vec<String>> {
@@ -679,6 +826,54 @@ mod tests {
             combined.pixels,
             vec![200, 200, 200, 30, 210, 210, 210, 40, 220, 220, 220, 50]
         );
+    }
+
+    #[test]
+    fn reduced_grayscale_smask_box_filters_without_full_size_output() {
+        let reader = PdfReader::from_bytes(test_pdf_from_objects(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [] /Count 0 >>".to_vec(),
+        ]))
+        .expect("open reduction test PDF");
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Width", PdfObject::Integer(4));
+        dict.insert("Height", PdfObject::Integer(4));
+        dict.insert("BitsPerComponent", PdfObject::Integer(8));
+        dict.insert("ColorSpace", PdfObject::Name("DeviceGray".to_string()));
+        dict.insert("Length", PdfObject::Integer(16));
+        let image = ImageReference {
+            page_number: 1,
+            xobject_name: "Mask".to_string(),
+            object_number: 0,
+            generation_number: 0,
+            width: 4,
+            height: 4,
+            bits_per_component: 8,
+            color_space: "DeviceGray".to_string(),
+            filter: Vec::new(),
+            is_inline: false,
+            is_mask: false,
+            is_smask: true,
+            inline_data: None,
+        };
+        let pixels = vec![
+            0, 255, 0, 255, 255, 0, 255, 0, 0, 255, 0, 255, 255, 0, 255, 0,
+        ];
+
+        let reduced = decode_reduced_grayscale_smask(
+            &dict,
+            pixels,
+            &image,
+            2,
+            2,
+            &reader,
+            &DecodeLimits::default(),
+        )
+        .expect("streaming SMask reduction");
+
+        assert_eq!(reduced.width, 2);
+        assert_eq!(reduced.height, 2);
+        assert_eq!(reduced.pixels, vec![128, 128, 128, 128]);
     }
 
     #[test]

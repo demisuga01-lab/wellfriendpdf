@@ -84,6 +84,137 @@ def median_by_key(rows: Iterable[dict[str, Any]], key: str) -> dict[str, float]:
     return {path: statistics.median(values) for path, values in grouped.items()}
 
 
+def document_median_distribution(
+    rows: Iterable[dict[str, Any]],
+    engine: str,
+    key: str,
+    expected_rows: int | None = None,
+) -> dict[str, Any]:
+    """Summarize one equally weighted median per document."""
+
+    engine_rows = [row for row in rows if row.get("engine") == engine]
+    if expected_rows is None:
+        medians = median_by_key(engine_rows, key)
+    else:
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in engine_rows:
+            grouped[str(row.get("relative_path", ""))].append(row)
+        medians = {
+            path: statistics.median(float(row[key]) for row in document_rows)
+            for path, document_rows in grouped.items()
+            if path
+            and len(document_rows) == expected_rows
+            and all(
+                row.get("status") == "ok" and isinstance(row.get(key), (int, float))
+                for row in document_rows
+            )
+        }
+    return distribution(medians.values())
+
+
+def slowest_document_medians(
+    rows: Iterable[dict[str, Any]],
+    engine: str,
+    key: str,
+    limit: int = 5,
+    expected_rows: int | None = None,
+) -> list[dict[str, Any]]:
+    engine_rows = [row for row in rows if row.get("engine") == engine]
+    if expected_rows is None:
+        medians = median_by_key(engine_rows, key)
+    else:
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in engine_rows:
+            grouped[str(row.get("relative_path", ""))].append(row)
+        medians = {
+            path: statistics.median(float(row[key]) for row in document_rows)
+            for path, document_rows in grouped.items()
+            if path
+            and len(document_rows) == expected_rows
+            and all(
+                row.get("status") == "ok" and isinstance(row.get(key), (int, float))
+                for row in document_rows
+            )
+        }
+    return [
+        {"relative_path": path, "median_ms": round(value, 6)}
+        for path, value in sorted(medians.items(), key=lambda item: item[1], reverse=True)[:limit]
+    ]
+
+
+def raster_determinism(
+    rows: Iterable[dict[str, Any]], expected_repetitions: int | None = None
+) -> dict[str, Any]:
+    """Check that repeated successful renders publish one stable raster identity."""
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[(str(row.get("engine", "")), str(row.get("relative_path", "")))].append(row)
+    failures = []
+    for (engine, path), document_rows in sorted(grouped.items()):
+        successful = [row for row in document_rows if row.get("status") == "ok"]
+        outputs = {
+            (
+                int(row.get("width", 0)),
+                int(row.get("height", 0)),
+                str(row.get("raster_fnv1a64", "")),
+            )
+            for row in successful
+        }
+        reasons = []
+        if expected_repetitions is not None and len(document_rows) != expected_repetitions:
+            reasons.append(
+                f"expected {expected_repetitions} rows, observed {len(document_rows)}"
+            )
+        if len(successful) != len(document_rows):
+            reasons.append("one or more repetitions failed")
+        if len(outputs) != 1 or any(width <= 0 or height <= 0 or not digest for width, height, digest in outputs):
+            reasons.append("raster identity is missing or unstable")
+        if reasons:
+            failures.append(
+                {
+                    "engine": engine,
+                    "relative_path": path,
+                    "reasons": reasons,
+                    "observed_outputs": [
+                        {"width": width, "height": height, "raster_fnv1a64": digest}
+                        for width, height, digest in sorted(outputs)
+                    ],
+                }
+            )
+    return {
+        "qualified_engine_documents": len(grouped) - len(failures),
+        "checked_engine_documents": len(grouped),
+        "failures": failures,
+    }
+
+
+def successful_engine_documents(
+    rows: Iterable[dict[str, Any]],
+    engines: tuple[str, ...],
+    expected_rows: int,
+    required_numeric_fields: tuple[str, ...],
+) -> dict[str, int]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[(str(row.get("engine", "")), str(row.get("relative_path", "")))].append(row)
+    return {
+        engine: sum(
+            1
+            for (row_engine, path), document_rows in grouped.items()
+            if row_engine == engine
+            and path
+            and len(document_rows) == expected_rows
+            and all(
+                row.get("status") == "ok"
+                and all(isinstance(row.get(field), (int, float)) for field in required_numeric_fields)
+                for row in document_rows
+            )
+        )
+        for engine in engines
+    }
+
+
 def bootstrap_ratio_ci(
     numerator: dict[str, float], denominator: dict[str, float], seed: int, samples: int = 20_000
 ) -> dict[str, Any]:
@@ -151,7 +282,7 @@ def pdfium_version(adapter: Path) -> dict[str, Any]:
     return {
         "command": ["ldd", str(adapter)],
         "exit": 1,
-        "text": "PDFium version unavailable; adapter linkage was retained in environment metadata",
+        "text": "PDFium version unavailable; environment metadata contains the adapter linkage",
         "linkage": linkage,
     }
 
@@ -169,9 +300,18 @@ class Worker:
             bufsize=1,
         )
 
-    def request(self, profile: str, path: Path, dpi: int, output: Path | None) -> dict[str, Any]:
+    def request(
+        self,
+        profile: str,
+        path: Path,
+        dpi: int,
+        output: Path | None,
+        iterations: int = 1,
+    ) -> dict[str, Any]:
         assert self.process.stdin is not None and self.process.stdout is not None
-        payload = "\t".join((profile, str(path), str(dpi), str(output) if output else "-"))
+        payload = "\t".join(
+            (profile, str(path), str(dpi), str(output) if output else "-", str(iterations))
+        )
         started = time.perf_counter_ns()
         self.process.stdin.write(payload + "\n")
         self.process.stdin.flush()
@@ -205,16 +345,42 @@ def run_persistent(
     output_root: Path | None,
     seed: int,
     cpu: int,
+    warmup_passes: int,
     jsonl_path: Path,
 ) -> list[dict[str, Any]]:
     workers = {
         name: Worker(name, adapters[name], cpu, jsonl_path.with_name(f"{jsonl_path.stem}-{name}.stderr.log"))
         for name in engines
     }
-    tasks = [(repetition, path, engine) for repetition in range(repetitions) for path in inputs for engine in engines]
-    random.Random(seed).shuffle(tasks)
+    rng = random.Random(seed)
+    blocks = [(repetition, path) for repetition in range(repetitions) for path in inputs]
+    rng.shuffle(blocks)
+    tasks: list[tuple[int, Path, str]] = []
+    for repetition, path in blocks:
+        block_engines = list(engines)
+        rng.shuffle(block_engines)
+        tasks.extend((repetition, path, engine) for engine in block_engines)
     rows: list[dict[str, Any]] = []
     try:
+        warmup_path = jsonl_path.with_name(f"{jsonl_path.stem}-warmup.jsonl")
+        with warmup_path.open("w", encoding="utf-8", newline="\n") as warmup_stream:
+            warmup_tasks = [
+                (warmup, path, engine)
+                for warmup in range(warmup_passes)
+                for path in inputs
+                for engine in engines
+            ]
+            rng.shuffle(warmup_tasks)
+            for warmup, path, engine in warmup_tasks:
+                row = workers[engine].request(profile, path, dpi, None)
+                row.update(
+                    {
+                        "mode": "untimed_warmup",
+                        "warmup_pass": warmup,
+                        "relative_path": path.relative_to(corpus).as_posix(),
+                    }
+                )
+                warmup_stream.write(json.dumps(row, sort_keys=True) + "\n")
         with jsonl_path.open("w", encoding="utf-8", newline="\n") as stream:
             for index, (repetition, path, engine) in enumerate(tasks, start=1):
                 relative = path.relative_to(corpus).as_posix()
@@ -240,6 +406,97 @@ def run_persistent(
         for worker in workers.values():
             worker.close()
     return rows
+
+
+def run_retained_resource_render(
+    inputs: list[Path],
+    corpus: Path,
+    adapters: dict[str, Path],
+    iterations: int,
+    dpi: int,
+    seed: int,
+    cpu: int,
+    jsonl_path: Path,
+) -> list[dict[str, Any]]:
+    """Open each document once, warm resources once, then time new rasters."""
+
+    workers = {
+        name: Worker(name, adapters[name], cpu, jsonl_path.with_name(f"{jsonl_path.stem}-{name}.stderr.log"))
+        for name in RENDER_ENGINES
+    }
+    rng = random.Random(seed)
+    documents = list(inputs)
+    rng.shuffle(documents)
+    rows: list[dict[str, Any]] = []
+    try:
+        with jsonl_path.open("w", encoding="utf-8", newline="\n") as stream:
+            sequence = 0
+            for path in documents:
+                engines = list(RENDER_ENGINES)
+                rng.shuffle(engines)
+                for engine in engines:
+                    sequence += 1
+                    row = workers[engine].request(
+                        "render-retained-resources", path, dpi, None, iterations
+                    )
+                    row.update(
+                        {
+                            "mode": "retained_resources",
+                            "relative_path": path.relative_to(corpus).as_posix(),
+                            "sequence": sequence,
+                            "iterations": iterations,
+                        }
+                    )
+                    rows.append(row)
+                    stream.write(json.dumps(row, sort_keys=True) + "\n")
+                    stream.flush()
+    finally:
+        for worker in workers.values():
+            worker.close()
+    return rows
+
+
+def retained_sample_determinism(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    failures = []
+    checked = 0
+    for row in rows:
+        checked += 1
+        if row.get("status") != "ok":
+            failures.append(
+                {
+                    "engine": row.get("engine"),
+                    "relative_path": row.get("relative_path"),
+                    "hashes": [],
+                    "reasons": [
+                        f"render request status is {row.get('status', 'missing')}"
+                    ],
+                }
+            )
+            continue
+        hashes = [str(value) for value in row.get("render_sample_hashes", [])]
+        samples = row.get("render_samples_ms", [])
+        expected = int(row.get("iterations", 0))
+        reasons = []
+        if expected <= 0 or len(hashes) != expected or len(samples) != expected:
+            reasons.append(
+                f"expected {expected} samples, observed {len(samples)} timings and {len(hashes)} hashes"
+            )
+        if not hashes or len(set(hashes)) != 1:
+            reasons.append("raster identity is missing or unstable")
+        if reasons:
+            failures.append(
+                {
+                    "engine": row.get("engine"),
+                    "relative_path": row.get("relative_path"),
+                    "hashes": hashes,
+                    "reasons": reasons,
+                }
+            )
+    return {
+        "qualified_engine_documents": checked - len(failures),
+        "checked_engine_documents": checked,
+        "failures": failures,
+    }
 
 
 def run_fresh(
@@ -305,15 +562,50 @@ def run_fresh(
     return rows
 
 
-def page_count_qualification(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    by_document: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+def page_count_qualification(
+    rows: list[dict[str, Any]], expected_repetitions: int
+) -> dict[str, Any]:
+    raw_by_document: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for row in rows:
-        if row.get("status") == "ok" and isinstance(row.get("page_count"), int):
-            by_document[str(row["relative_path"])][str(row["engine"])].append(int(row["page_count"]))
+        raw_by_document[str(row.get("relative_path", ""))][str(row.get("engine", ""))].append(row)
     disagreements: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
     qualified: dict[str, int] = {engine: 0 for engine in PARSER_ENGINES}
-    for path, engines in sorted(by_document.items()):
-        medians = {engine: int(statistics.median(counts)) for engine, counts in engines.items()}
+    for path, engines in sorted(raw_by_document.items()):
+        counts_by_engine: dict[str, list[int]] = {}
+        for engine in PARSER_ENGINES:
+            engine_rows = engines.get(engine, [])
+            counts = [
+                int(row["page_count"])
+                for row in engine_rows
+                if row.get("status") == "ok" and isinstance(row.get("page_count"), int)
+            ]
+            reasons = []
+            if len(engine_rows) != expected_repetitions:
+                reasons.append(
+                    f"expected {expected_repetitions} rows, observed {len(engine_rows)}"
+                )
+            if len(counts) != len(engine_rows):
+                reasons.append("one or more repetitions failed")
+            if len(set(counts)) > 1:
+                reasons.append("page count changes between repetitions")
+            if reasons:
+                failures.append(
+                    {
+                        "relative_path": path,
+                        "engine": engine,
+                        "reasons": reasons,
+                    }
+                )
+            else:
+                counts_by_engine[engine] = counts
+        medians = {
+            engine: int(statistics.median(counts))
+            for engine, counts in counts_by_engine.items()
+            if counts
+        }
         if medians:
             consensus, votes = Counter(medians.values()).most_common(1)[0]
         else:
@@ -323,7 +615,11 @@ def page_count_qualification(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for engine in PARSER_ENGINES:
             if medians.get(engine) == consensus:
                 qualified[engine] += 1
-    return {"qualified_documents": qualified, "disagreements": disagreements}
+    return {
+        "qualified_documents": qualified,
+        "disagreements": disagreements,
+        "repetition_failures": failures,
+    }
 
 
 def quality_metrics(raster_root: Path, inputs: list[Path], corpus: Path) -> dict[str, Any]:
@@ -445,17 +741,20 @@ def build_report(summary: dict[str, Any]) -> str:
     parse = summary["parsing"]
     render = summary["rendering"]
     quality = summary["quality"]
+    document_count = int(summary["configuration"].get("document_count", 100))
     lines = [
-        "# PEBQ 100-PDF matched-contract qualification",
+        f"# PEBQ {document_count}-PDF matched-contract qualification",
         "",
         f"Generated `{summary['finished_at_utc']}` on `{summary['environment']['hostname']}`.",
         "Every column executes the same declared contract. Results are disqualified when the",
         "adapter fails or produces a page count/dimensions inconsistent with the contract.",
         "",
-        "The parsing profile is in-memory document open plus resolved page count. Persistent",
-        "timings exclude file reading and process startup; fresh-process timings include adapter",
-        "startup, file reading, parsing and JSON output. Rendering is page one at the declared DPI",
-        "to raw RGB; PNG/WebP encoding is not part of the renderer timer.",
+        "The parsing profile is in-memory document open plus resolved page count. Process-resident,",
+        "document-cold timings exclude file reading and process startup, but reopen each document",
+        "for every request. Fresh-process timings include adapter startup, file reading, parsing and",
+        "JSON output. Rendering is page one at the declared DPI to raw RGB; PNG/WebP encoding is not",
+        "part of the renderer timer. Primary percentile tables give every document equal weight by",
+        "summarizing one median per document. Raw-observation distributions remain diagnostic data.",
         "",
     ]
     versions = summary["environment"].get("versions", {})
@@ -485,19 +784,47 @@ def build_report(summary: dict[str, Any]) -> str:
     )
 
     qualified = parse["qualification"]["qualified_documents"]
+    parse_document_medians = parse.get(
+        "process_resident_document_cold_document_medians_ms",
+        parse.get("persistent_parse_document_medians_ms", parse["persistent_parse_ms"]),
+    )
+    parse_observations = parse.get(
+        "process_resident_document_cold_observations_ms",
+        parse.get("persistent_parse_observations_ms", parse["persistent_parse_ms"]),
+    )
     lines += metric_table(
-        "Parsing — persistent native adapters",
+        f"Document open + resolved page count - process-resident, document-cold ({document_count} document medians)",
         [
-            ("Qualified page counts", {e: f"{qualified.get(e, 0)}/100" for e in PARSER_ENGINES}),
+            ("Qualified page counts", {e: f"{qualified.get(e, 0)}/{document_count}" for e in PARSER_ENGINES}),
             *[
-                (name, {e: fmt_dist(parse["persistent_parse_ms"], e, key) for e in PARSER_ENGINES})
+                (name, {e: fmt_dist(parse_document_medians, e, key) for e in PARSER_ENGINES})
                 for name, key in (("P50", "p50"), ("P90", "p90"), ("P95", "p95"), ("P99", "p99"), ("Maximum", "max"))
             ],
         ],
         PARSER_ENGINES,
     )
     lines += metric_table(
-        "Parsing — fresh process end to end",
+        "Document open + resolved page count - raw observations (scheduler and tail diagnostic)",
+        [
+            (name, {e: fmt_dist(parse_observations, e, key) for e in PARSER_ENGINES})
+            for name, key in (("P50", "p50"), ("P90", "p90"), ("P95", "p95"), ("P99", "p99"), ("Maximum", "max"))
+        ],
+        PARSER_ENGINES,
+    )
+    parse_slowest = parse.get("slowest_document_medians_ms", {})
+    if parse_slowest:
+        lines += ["### Slowest document-open medians", ""]
+        for engine in PARSER_ENGINES:
+            entries = parse_slowest.get(engine, [])
+            if entries:
+                first = entries[0]
+                lines.append(
+                    f"- {LABELS[engine]}: `{first['relative_path']}` at "
+                    f"**{first['median_ms']:,.3f} ms**."
+                )
+        lines.append("")
+    lines += metric_table(
+        "Document open + resolved page count — fresh process end to end",
         [
             *[
                 (name, {e: fmt_dist(parse["fresh_process_ms"], e, key) for e in PARSER_ENGINES})
@@ -507,7 +834,7 @@ def build_report(summary: dict[str, Any]) -> str:
         PARSER_ENGINES,
     )
     lines += metric_table(
-        "Parsing — fresh-process peak RSS",
+        "Document open + resolved page count — fresh-process peak RSS",
         [
             (name, {e: fmt_dist(parse["fresh_peak_rss_kib"], e, key, " KiB") for e in PARSER_ENGINES})
             for name, key in (("P50", "p50"), ("P95", "p95"), ("Maximum", "max"))
@@ -516,13 +843,13 @@ def build_report(summary: dict[str, Any]) -> str:
     )
     ratio = parse["wellfriend_vs_poppler_persistent_paired_ratio"]
     lines += [
-        "## Parsing claim gate",
+        "## Document-open claim gate",
         "",
         f"- Shared qualified documents: **{ratio.get('count', 0)}**.",
         f"- Median paired Poppler/Wellfriend ratio: **{ratio.get('median_paired_ratio', '—')}×**.",
         f"- Geometric-mean paired ratio: **{ratio.get('geometric_mean_paired_ratio', '—')}×**.",
         f"- Bootstrapped 95% interval for the median ratio: **{ratio.get('bootstrap_95_percent_ci', '—')}**.",
-        f"- Pre-registered 20× lower-bound claim: **{'PASS' if ratio.get('claim_20x_median_lower_bound_pass') else 'FAIL'}**.",
+        f"- 20× lower-bound claim: **{'PASS' if ratio.get('claim_20x_median_lower_bound_pass') else 'FAIL'}**.",
         "",
     ]
     fresh_ratio = parse.get("wellfriend_vs_poppler_fresh_paired_ratio", {})
@@ -534,17 +861,62 @@ def build_report(summary: dict[str, Any]) -> str:
         ]
 
     accepted = render["accepted"]
+    render_document_medians = render.get(
+        "process_resident_document_cold_document_medians_ms",
+        render.get("persistent_render_document_medians_ms", render["persistent_render_ms"]),
+    )
+    render_observations = render.get(
+        "process_resident_document_cold_observations_ms",
+        render.get("persistent_render_observations_ms", render["persistent_render_ms"]),
+    )
     lines += metric_table(
-        "Rendering — persistent native raw-RGB page one",
+        f"Rendering - process-resident, document-cold raw RGB ({document_count} document medians)",
         [
-            ("Successful renders", {e: f"{accepted.get(e, 0)}/100" for e in RENDER_ENGINES}),
+            ("Successful renders", {e: f"{accepted.get(e, 0)}/{document_count}" for e in RENDER_ENGINES}),
             *[
-                (name, {e: fmt_dist(render["persistent_render_ms"], e, key) for e in RENDER_ENGINES})
+                (name, {e: fmt_dist(render_document_medians, e, key) for e in RENDER_ENGINES})
                 for name, key in (("P50", "p50"), ("P90", "p90"), ("P95", "p95"), ("P99", "p99"), ("Maximum", "max"))
             ],
         ],
         RENDER_ENGINES,
     )
+    lines += metric_table(
+        "Rendering - raw observations (scheduler and tail diagnostic)",
+        [
+            (name, {e: fmt_dist(render_observations, e, key) for e in RENDER_ENGINES})
+            for name, key in (("P50", "p50"), ("P90", "p90"), ("P95", "p95"), ("P99", "p99"), ("Maximum", "max"))
+        ],
+        RENDER_ENGINES,
+    )
+    determinism = render.get("raster_determinism", {})
+    if determinism:
+        lines += [
+            "Repeated-raster determinism is "
+            + ("**PASS**" if not determinism.get("failures") else "**FAIL**")
+            + f" for {determinism.get('qualified_engine_documents', 0)}/"
+            + f"{determinism.get('checked_engine_documents', 0)} engine-document pairs.",
+            "",
+        ]
+    retained_resources = render.get("retained_resource_render_document_medians_ms")
+    if retained_resources:
+        lines += metric_table(
+            f"Rendering - retained resources, fresh raster ({document_count} document medians)",
+            [
+                (name, {e: fmt_dist(retained_resources, e, key) for e in RENDER_ENGINES})
+                for name, key in (("P50", "p50"), ("P90", "p90"), ("P95", "p95"), ("P99", "p99"), ("Maximum", "max"))
+            ],
+            RENDER_ENGINES,
+        )
+        retained_determinism = render.get("retained_resource_raster_determinism", {})
+        lines += [
+            "This profile opens each document once, performs one untimed resource warm-up,",
+            "then executes new rasterizations with final-raster reuse disabled. Repeated-raster",
+            "determinism is "
+            + ("**PASS**" if not retained_determinism.get("failures") else "**FAIL**")
+            + f" for {retained_determinism.get('qualified_engine_documents', 0)}/"
+            + f"{retained_determinism.get('checked_engine_documents', 0)} engine-document pairs.",
+            "",
+        ]
     lines += metric_table(
         "Rendering — fresh process end to end",
         [
@@ -569,7 +941,7 @@ def build_report(summary: dict[str, Any]) -> str:
         lines += metric_table(
             "Rendering quality — leave-one-engine-out consensus",
             [
-                ("Dimension-qualified pages", {e: f"{quality['qualified_pages']}/100" for e in RENDER_ENGINES}),
+                ("Dimension-qualified pages", {e: f"{quality['qualified_pages']}/{document_count}" for e in RENDER_ENGINES}),
                 ("SSIM P50 ↑", {e: fmt_nested(qengines, e, "ssim", "p50") for e in RENDER_ENGINES}),
                 ("SSIM P05 ↑", {e: fmt_nested(qengines, e, "ssim", "p05") for e in RENDER_ENGINES}),
                 ("Changed pixels >8 P50 ↓", {e: fmt_nested(qengines, e, "changed_pixel_gt8_percent", "p50", "%") for e in RENDER_ENGINES}),
@@ -594,37 +966,48 @@ def build_report(summary: dict[str, Any]) -> str:
                 )
                 lines.append(f"- `{failure['relative_path']}` — {sizes}.")
             lines.append("")
-        lines += [
-            "### Visual evidence",
-            "",
-            "The repository retains one native-output comparison sheet for every PDF. The top",
-            "row contains the four unscaled renderer outputs; the bottom row contains amplified",
-            "absolute-difference maps against the leave-one-engine-out consensus.",
-            "",
-            "- [Pages 1–25 contact sheet](visual/contacts/contact-001-025.webp)",
-            "- [Pages 26–50 contact sheet](visual/contacts/contact-026-050.webp)",
-            "- [Pages 51–75 contact sheet](visual/contacts/contact-051-075.webp)",
-            "- [Pages 76–100 contact sheet](visual/contacts/contact-076-100.webp)",
-            "- [All 100 full comparison sheets](visual/pages/)",
-            "",
-        ]
+        visual_evidence = quality.get("visual_evidence")
+        if visual_evidence:
+            lines += [
+                "### Visual evidence",
+                "",
+                str(visual_evidence.get("description", "Native-output comparison sheets.")),
+                "",
+            ]
+            lines.extend(
+                f"- [{item['label']}]({item['path']})"
+                for item in visual_evidence.get("links", [])
+            )
+            lines.append("")
     else:
         lines += ["## Rendering quality", "", f"Unavailable: `{quality.get('error', 'unknown error')}`", ""]
 
     lines += [
         "## Verdict",
         "",
-        "- All five native parser adapters returned the same page count on all 100 PDFs.",
-        "- The matched persistent parser evidence rejects the 20× Poppler claim.",
-        "- All four raster engines rendered all 100 pages, but only 97 had identical native dimensions.",
+        f"- All five native document-open adapters return the same page count on {min(qualified.values(), default=0)}/{document_count} inputs.",
+        "- The matched process-resident, document-cold open/page-count evidence rejects the 20× Poppler claim.",
+        f"- All four raster engines render at least {min(accepted.values(), default=0)}/{document_count} pages.",
+    ]
+    if quality.get("status") == "complete":
+        lines += [
+            f"- {quality.get('qualified_pages', 0)}/{document_count} pages have identical native dimensions.",
+            "- Consensus quality is diagnostic rather than ground truth and does not establish universal correctness.",
+        ]
+    else:
+        lines.append(
+            f"- Quality comparison is unavailable: {quality.get('error', 'unknown error')}."
+        )
+    lines += [
         "- Wellfriend PDF is not the fastest renderer in this campaign; reference leadership varies by percentile.",
-        "- Consensus quality is diagnostic rather than ground truth and does not establish universal correctness.",
         "",
         "## Reproducibility",
         "",
         f"- Corpus SHA-256 manifest: `{summary['corpus_manifest_sha256']}`.",
         f"- DPI: `{summary['configuration']['dpi']}`.",
-        f"- Persistent repetitions: `{summary['configuration']['persistent_repetitions']}`.",
+        f"- Process-resident document-cold repetitions: `{summary['configuration']['persistent_repetitions']}`.",
+        f"- Process-resident warm-up passes: `{summary['configuration'].get('persistent_warmup_passes', 0)}`.",
+        f"- Retained-resource render iterations: `{summary['configuration'].get('retained_render_iterations', 0)}`.",
         f"- Fresh-process repetitions: `{summary['configuration']['fresh_repetitions']}`.",
         f"- CPU affinity: `{summary['configuration']['cpu']}`.",
         f"- Retained raw observations: `{sum(summary.get('raw_row_counts', {}).values())}`.",
@@ -643,6 +1026,8 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--dpi", type=int, default=144)
     parser.add_argument("--persistent-repetitions", type=int, default=10)
+    parser.add_argument("--persistent-warmup-passes", type=int, default=1)
+    parser.add_argument("--retained-render-iterations", type=int, default=5)
     parser.add_argument("--fresh-repetitions", type=int, default=5)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--cpu", type=int, default=2)
@@ -696,6 +1081,7 @@ def main() -> int:
     parse_persistent = run_persistent(
         "page-count", inputs, args.corpus, adapters, PARSER_ENGINES,
         args.persistent_repetitions, args.dpi, None, args.seed + 1, args.cpu,
+        args.persistent_warmup_passes,
         args.output / "parse-persistent.jsonl",
     )
     parse_fresh = run_fresh(
@@ -707,19 +1093,38 @@ def main() -> int:
     render_persistent = run_persistent(
         "render", inputs, args.corpus, adapters, RENDER_ENGINES,
         args.persistent_repetitions, args.dpi, raster_root, args.seed + 3, args.cpu,
+        args.persistent_warmup_passes,
         args.output / "render-persistent.jsonl",
+    )
+    render_retained_resources = run_retained_resource_render(
+        inputs,
+        args.corpus,
+        adapters,
+        args.retained_render_iterations,
+        args.dpi,
+        args.seed + 4,
+        args.cpu,
+        args.output / "render-retained-resources.jsonl",
     )
     render_fresh = run_fresh(
         "render", inputs, args.corpus, adapters, RENDER_ENGINES,
-        args.fresh_repetitions, args.dpi, args.seed + 4, args.cpu, args.timeout,
+        args.fresh_repetitions, args.dpi, args.seed + 5, args.cpu, args.timeout,
         args.output / "render-fresh.jsonl",
     )
 
-    qualification = page_count_qualification(parse_persistent)
-    parse_persistent_distributions = {
+    qualification = page_count_qualification(
+        parse_persistent, args.persistent_repetitions
+    )
+    parse_persistent_observation_distributions = {
         engine: distribution(
             row["parse_ms"] for row in parse_persistent
             if row.get("engine") == engine and row.get("status") == "ok"
+        )
+        for engine in PARSER_ENGINES
+    }
+    parse_persistent_document_distributions = {
+        engine: document_median_distribution(
+            parse_persistent, engine, "parse_ms", args.persistent_repetitions
         )
         for engine in PARSER_ENGINES
     }
@@ -736,22 +1141,21 @@ def main() -> int:
     poppler_by_doc = median_by_key(
         (row for row in parse_persistent if row.get("engine") == "poppler"), "parse_ms"
     )
-    qualified_paths = {
-        path for path, engines in {
-            path: {row["engine"] for row in parse_persistent if row.get("relative_path") == path and row.get("status") == "ok"}
-            for path in wellfriend_by_doc
-        }.items() if set(PARSER_ENGINES).issubset(engines)
-    }
+    qualified_paths = set(wellfriend_by_doc)
     qualified_paths -= {
         str(row["relative_path"]) for row in qualification["disagreements"]
+    }
+    qualified_paths -= {
+        str(row["relative_path"]) for row in qualification["repetition_failures"]
     }
     paired_ratio = bootstrap_ratio_ci(
         {path: poppler_by_doc[path] for path in qualified_paths if path in poppler_by_doc},
         {path: wellfriend_by_doc[path] for path in qualified_paths if path in wellfriend_by_doc},
-        args.seed + 5,
+        args.seed + 6,
     )
 
     quality = quality_metrics(raster_root, inputs, args.corpus)
+    quality_page_row_count = len(quality.get("pages", []))
     if quality.get("pages"):
         with (args.output / "quality-pages.jsonl").open("w", encoding="utf-8", newline="\n") as stream:
             for row in quality["pages"]:
@@ -760,13 +1164,16 @@ def main() -> int:
         quality.pop("pages", None)
 
     summary = {
-        "schema": "wellfriendpdf.pebq.v1",
+        "schema": "wellfriendpdf.pebq.v2",
         "started_at_utc": started,
         "finished_at_utc": utc_now(),
         "corpus_manifest_sha256": manifest_sha,
         "configuration": {
             "dpi": args.dpi,
+            "document_count": len(inputs),
             "persistent_repetitions": args.persistent_repetitions,
+            "persistent_warmup_passes": args.persistent_warmup_passes,
+            "retained_render_iterations": args.retained_render_iterations,
             "fresh_repetitions": args.fresh_repetitions,
             "cpu": args.cpu,
             "seed": args.seed,
@@ -775,8 +1182,20 @@ def main() -> int:
         "environment": metadata,
         "parsing": {
             "contract": "identical in-memory open plus resolved page count",
+            "profile": "process-resident adapter; document reopened for every request; file read excluded",
             "qualification": qualification,
-            "persistent_parse_ms": parse_persistent_distributions,
+            "persistent_parse_ms": parse_persistent_document_distributions,
+            "process_resident_document_cold_document_medians_ms": parse_persistent_document_distributions,
+            "process_resident_document_cold_observations_ms": parse_persistent_observation_distributions,
+            "slowest_document_medians_ms": {
+                engine: slowest_document_medians(
+                    parse_persistent,
+                    engine,
+                    "parse_ms",
+                    expected_rows=args.persistent_repetitions,
+                )
+                for engine in PARSER_ENGINES
+            },
             "fresh_process_ms": parse_fresh_distributions,
             "fresh_peak_rss_kib": {
                 engine: distribution(
@@ -789,20 +1208,69 @@ def main() -> int:
         },
         "rendering": {
             "contract": "open identical bytes; render page 1 at fixed DPI to raw RGB; encoding excluded",
-            "accepted": {
-                engine: len({
-                    row["relative_path"] for row in render_persistent
-                    if row.get("engine") == engine and row.get("status") == "ok"
-                })
+            "profile": "process-resident adapter; document reopened for every request; final-raster reuse disabled by construction",
+            "accepted": successful_engine_documents(
+                render_persistent,
+                RENDER_ENGINES,
+                args.persistent_repetitions,
+                ("render_ms", "width", "height"),
+            ),
+            "persistent_render_ms": {
+                engine: document_median_distribution(
+                    render_persistent,
+                    engine,
+                    "render_ms",
+                    args.persistent_repetitions,
+                )
                 for engine in RENDER_ENGINES
             },
-            "persistent_render_ms": {
+            "process_resident_document_cold_document_medians_ms": {
+                engine: document_median_distribution(
+                    render_persistent,
+                    engine,
+                    "render_ms",
+                    args.persistent_repetitions,
+                )
+                for engine in RENDER_ENGINES
+            },
+            "process_resident_document_cold_observations_ms": {
                 engine: distribution(
                     row["render_ms"] for row in render_persistent
                     if row.get("engine") == engine and row.get("status") == "ok"
                 )
                 for engine in RENDER_ENGINES
             },
+            "slowest_document_medians_ms": {
+                engine: slowest_document_medians(
+                    render_persistent,
+                    engine,
+                    "render_ms",
+                    expected_rows=args.persistent_repetitions,
+                )
+                for engine in RENDER_ENGINES
+            },
+            "raster_determinism": raster_determinism(
+                render_persistent, args.persistent_repetitions
+            ),
+            "retained_resource_render_document_medians_ms": {
+                engine: distribution(
+                    row["render_ms"] for row in render_retained_resources
+                    if row.get("engine") == engine and row.get("status") == "ok"
+                )
+                for engine in RENDER_ENGINES
+            },
+            "retained_resource_render_samples_ms": {
+                engine: distribution(
+                    sample
+                    for row in render_retained_resources
+                    if row.get("engine") == engine and row.get("status") == "ok"
+                    for sample in row.get("render_samples_ms", [])
+                )
+                for engine in RENDER_ENGINES
+            },
+            "retained_resource_raster_determinism": retained_sample_determinism(
+                render_retained_resources
+            ),
             "fresh_process_ms": {
                 engine: distribution(
                     row["process_ms"] for row in render_fresh
@@ -819,6 +1287,14 @@ def main() -> int:
             },
         },
         "quality": quality,
+        "raw_row_counts": {
+            "parse-persistent.jsonl": len(parse_persistent),
+            "parse-fresh.jsonl": len(parse_fresh),
+            "render-persistent.jsonl": len(render_persistent),
+            "render-retained-resources.jsonl": len(render_retained_resources),
+            "render-fresh.jsonl": len(render_fresh),
+            "quality-pages.jsonl": quality_page_row_count,
+        },
     }
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (args.output / "README.md").write_text(build_report(summary), encoding="utf-8", newline="\n")

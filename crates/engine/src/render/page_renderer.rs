@@ -386,6 +386,21 @@ fn merge_artifact_cache_counts(dst: &mut RenderArtifactCacheStats, src: RenderAr
     dst.skipped_oversized = dst.skipped_oversized.saturating_add(src.skipped_oversized);
 }
 
+/// Controls whether a document cache can return an already-rasterized page or
+/// tile. Resource-only mode still reuses parsed display lists, decoded images,
+/// fonts, glyphs, paths, shadings, and bounded scratch buffers, but every call
+/// executes the renderer and produces a new raster. This distinction keeps
+/// retained-resource benchmarks from measuring final-image cache hits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalRasterCachePolicy {
+    ResourcesOnly,
+    ResourcesAndFinalRasters,
+}
+
+const RENDER_PLAN_CACHE_MAX_ENTRIES: usize = 128;
+const RENDER_PLAN_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const RENDER_PLAN_CACHE_MAX_ENTRY_BYTES: usize = 32 * 1024 * 1024;
+
 /// Per-document renderer scratch reused across sequential page renders.
 ///
 /// The normal `render_page*` entry points keep the historical per-page cache
@@ -451,7 +466,12 @@ pub struct RenderDocumentCache {
     display_list_cache_order: VecDeque<String>,
     display_list_cache_bytes: usize,
     display_list_cache_stats: RenderArtifactCacheStats,
+    render_plan_cache: HashMap<String, Arc<RenderPlan>>,
+    render_plan_cache_order: VecDeque<String>,
+    render_plan_cache_bytes: usize,
+    render_plan_cache_stats: RenderArtifactCacheStats,
     display_list_raster_cache: RenderCache,
+    final_raster_cache_policy: FinalRasterCachePolicy,
     transparent_page_group_cache: HashMap<String, bool>,
     transparent_page_group_cache_order: VecDeque<String>,
     clip_dag_stats: ClipDagStats,
@@ -468,6 +488,20 @@ pub struct RenderDocumentCache {
 
 impl RenderDocumentCache {
     pub fn new() -> Self {
+        Self::new_with_final_raster_cache_policy(FinalRasterCachePolicy::ResourcesAndFinalRasters)
+    }
+
+    pub fn resources_only() -> Self {
+        Self::new_with_final_raster_cache_policy(FinalRasterCachePolicy::ResourcesOnly)
+    }
+
+    pub fn new_with_final_raster_cache_policy(policy: FinalRasterCachePolicy) -> Self {
+        let display_list_raster_cache = match policy {
+            FinalRasterCachePolicy::ResourcesOnly => RenderCache::disabled(),
+            FinalRasterCachePolicy::ResourcesAndFinalRasters => {
+                RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024)
+            }
+        };
         Self {
             function_cache: Arc::new(Mutex::new(crate::render::function::FunctionCache::default())),
             glyph_cache: GlyphCache::with_default_capacity(),
@@ -522,7 +556,12 @@ impl RenderDocumentCache {
             display_list_cache_order: VecDeque::new(),
             display_list_cache_bytes: 0,
             display_list_cache_stats: RenderArtifactCacheStats::default(),
-            display_list_raster_cache: RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
+            render_plan_cache: HashMap::new(),
+            render_plan_cache_order: VecDeque::new(),
+            render_plan_cache_bytes: 0,
+            render_plan_cache_stats: RenderArtifactCacheStats::default(),
+            display_list_raster_cache,
+            final_raster_cache_policy: policy,
             transparent_page_group_cache: HashMap::new(),
             transparent_page_group_cache_order: VecDeque::new(),
             clip_dag_stats: ClipDagStats::default(),
@@ -536,6 +575,7 @@ impl RenderDocumentCache {
     }
 
     pub fn clear(&mut self) {
+        let final_raster_cache_policy = self.final_raster_cache_policy;
         self.function_cache =
             Arc::new(Mutex::new(crate::render::function::FunctionCache::default()));
         self.glyph_cache.clear();
@@ -590,7 +630,16 @@ impl RenderDocumentCache {
         self.display_list_cache_order.clear();
         self.display_list_cache_bytes = 0;
         self.display_list_cache_stats = RenderArtifactCacheStats::default();
-        self.display_list_raster_cache = RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024);
+        self.render_plan_cache.clear();
+        self.render_plan_cache_order.clear();
+        self.render_plan_cache_bytes = 0;
+        self.render_plan_cache_stats = RenderArtifactCacheStats::default();
+        self.display_list_raster_cache = match final_raster_cache_policy {
+            FinalRasterCachePolicy::ResourcesOnly => RenderCache::disabled(),
+            FinalRasterCachePolicy::ResourcesAndFinalRasters => {
+                RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024)
+            }
+        };
         self.transparent_page_group_cache.clear();
         self.transparent_page_group_cache_order.clear();
         self.clip_dag_stats = ClipDagStats::default();
@@ -620,6 +669,7 @@ impl RenderDocumentCache {
             .saturating_add(self.path_fill_mask_cache.bytes())
             .saturating_add(self.path_stroke_mask_cache.bytes())
             .saturating_add(self.display_list_cache_bytes)
+            .saturating_add(self.render_plan_cache_bytes)
             .saturating_add(self.path_clip_node_cache.bytes())
             .saturating_add(self.image_xobject_cache_bytes)
             .saturating_add(self.scaled_image_cache_bytes)
@@ -732,6 +782,28 @@ impl RenderDocumentCache {
             ) {
                 self.display_list_cache_stats.evictions =
                     self.display_list_cache_stats.evictions.saturating_add(1);
+            } else {
+                break;
+            }
+        }
+        self.render_plan_cache_stats.evictions = self
+            .render_plan_cache_stats
+            .evictions
+            .saturating_add(trim_ordered_cache_entries(
+                &mut self.render_plan_cache,
+                &mut self.render_plan_cache_order,
+                &mut self.render_plan_cache_bytes,
+                RENDER_PLAN_CACHE_MAX_ENTRIES,
+                render_plan_cache_entry_bytes,
+            ) as u64);
+        while self.render_plan_cache_bytes > RENDER_PLAN_CACHE_MAX_BYTES.min(max_cache_bytes) {
+            if pop_front_render_plan_cache_entry(
+                &mut self.render_plan_cache,
+                &mut self.render_plan_cache_order,
+                &mut self.render_plan_cache_bytes,
+            ) {
+                self.render_plan_cache_stats.evictions =
+                    self.render_plan_cache_stats.evictions.saturating_add(1);
             } else {
                 break;
             }
@@ -850,6 +922,13 @@ impl RenderDocumentCache {
                 .lock()
                 .ok()
                 .and_then(|functions| functions.oldest_entry_bytes()),
+        );
+        consider(
+            22,
+            self.render_plan_cache_order
+                .front()
+                .and_then(|key| self.render_plan_cache.get(key))
+                .map(render_plan_cache_entry_bytes),
         );
 
         match candidate.map(|(kind, _)| kind) {
@@ -1075,6 +1154,18 @@ impl RenderDocumentCache {
                 }
                 evicted
             }
+            Some(22) => {
+                let evicted = pop_front_render_plan_cache_entry(
+                    &mut self.render_plan_cache,
+                    &mut self.render_plan_cache_order,
+                    &mut self.render_plan_cache_bytes,
+                );
+                if evicted {
+                    self.render_plan_cache_stats.evictions =
+                        self.render_plan_cache_stats.evictions.saturating_add(1);
+                }
+                evicted
+            }
             _ => false,
         }
     }
@@ -1186,8 +1277,16 @@ impl RenderDocumentCache {
                 &mut self.display_list_cache_order,
                 &mut self.display_list_cache_bytes,
                 &mut self.display_list_cache_stats,
-                &[prefix],
+                std::slice::from_ref(&prefix),
                 display_list_cache_entry_bytes,
+            );
+            remove_ordered_cache_entries_matching(
+                &mut self.render_plan_cache,
+                &mut self.render_plan_cache_order,
+                &mut self.render_plan_cache_bytes,
+                &mut self.render_plan_cache_stats,
+                std::slice::from_ref(&prefix),
+                render_plan_cache_entry_bytes,
             );
         }
         let removed_transparent_keys = self
@@ -1215,6 +1314,20 @@ impl RenderDocumentCache {
 
     fn invalidate_tile_raster_artifacts(&mut self, page_tiles: &[(usize, RenderTile)]) {
         self.display_list_raster_cache.invalidate_tiles(page_tiles);
+        let mut pages = page_tiles.iter().map(|(page, _)| *page).collect::<Vec<_>>();
+        pages.sort_unstable();
+        pages.dedup();
+        for page in pages {
+            let prefix = format!("page:{page}:");
+            remove_ordered_cache_entries_matching(
+                &mut self.render_plan_cache,
+                &mut self.render_plan_cache_order,
+                &mut self.render_plan_cache_bytes,
+                &mut self.render_plan_cache_stats,
+                &[prefix],
+                render_plan_cache_entry_bytes,
+            );
+        }
     }
 
     pub(crate) fn source_cache_markers_for_changed_sources(
@@ -1618,6 +1731,16 @@ impl RenderDocumentCache {
         }
     }
 
+    /// Compiled page plans retained by this document worker. A plan contains
+    /// normalized operations and spatial metadata, never output pixels.
+    pub fn render_plan_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.render_plan_cache.len(),
+            bytes: self.render_plan_cache_bytes,
+            ..self.render_plan_cache_stats
+        }
+    }
+
     pub fn image_xobject_entries(&self) -> usize {
         self.image_xobject_cache.len()
     }
@@ -1748,6 +1871,19 @@ impl RenderDocumentCache {
         self.display_list_raster_cache.metrics()
     }
 
+    pub fn final_raster_cache_policy(&self) -> FinalRasterCachePolicy {
+        self.final_raster_cache_policy
+    }
+
+    pub fn clear_final_rasters(&mut self) {
+        self.display_list_raster_cache = match self.final_raster_cache_policy {
+            FinalRasterCachePolicy::ResourcesOnly => RenderCache::disabled(),
+            FinalRasterCachePolicy::ResourcesAndFinalRasters => {
+                RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024)
+            }
+        };
+    }
+
     /// Access the font substitution log recorded during rendering.
     /// Events accumulate across render passes until explicitly cleared.
     pub fn font_substitution_log(&self) -> &FontSubstitutionLog {
@@ -1765,6 +1901,19 @@ impl RenderDocumentCache {
         revision: impl AsRef<str>,
     ) -> String {
         format!("page:{page_number}:dpi:{dpi}:{}", revision.as_ref())
+    }
+
+    pub(crate) fn render_plan_key_with_revision(
+        page_number: usize,
+        dpi: u32,
+        revision: impl AsRef<str>,
+        contract_fingerprint: impl AsRef<str>,
+    ) -> String {
+        format!(
+            "page:{page_number}:dpi:{dpi}:{}:contract:{}",
+            revision.as_ref(),
+            contract_fingerprint.as_ref()
+        )
     }
 
     pub(crate) fn transparent_page_group_key_with_revision(
@@ -1811,6 +1960,40 @@ impl RenderDocumentCache {
             },
         );
         list
+    }
+
+    pub(crate) fn cached_render_plan(&mut self, key: &str) -> Option<Arc<RenderPlan>> {
+        if let Some(cached) = self.render_plan_cache.get(key).cloned() {
+            self.render_plan_cache_stats.hits = self.render_plan_cache_stats.hits.saturating_add(1);
+            touch_ordered_cache_key(&mut self.render_plan_cache_order, key);
+            Some(cached)
+        } else {
+            self.render_plan_cache_stats.misses =
+                self.render_plan_cache_stats.misses.saturating_add(1);
+            None
+        }
+    }
+
+    pub(crate) fn insert_render_plan(
+        &mut self,
+        key: String,
+        plan: RenderPlan,
+        max_cache_bytes: u64,
+    ) -> Arc<RenderPlan> {
+        let plan = Arc::new(plan);
+        insert_render_plan_cache_entry(
+            &mut self.render_plan_cache,
+            &mut self.render_plan_cache_order,
+            &mut self.render_plan_cache_bytes,
+            &mut self.render_plan_cache_stats,
+            key,
+            Arc::clone(&plan),
+            CacheByteBudget {
+                max_bytes: RENDER_PLAN_CACHE_MAX_BYTES.min(budget_to_usize(max_cache_bytes)),
+                max_entry_bytes: RENDER_PLAN_CACHE_MAX_ENTRY_BYTES,
+            },
+        );
+        plan
     }
 
     pub(crate) fn cached_transparent_page_group(&mut self, key: &str) -> Option<bool> {
@@ -2019,6 +2202,10 @@ fn display_list_cache_entry_bytes(list: &Arc<DisplayList>) -> usize {
     std::mem::size_of::<Arc<DisplayList>>().saturating_add(list.approximate_memory_bytes())
 }
 
+fn render_plan_cache_entry_bytes(plan: &Arc<RenderPlan>) -> usize {
+    std::mem::size_of::<Arc<RenderPlan>>().saturating_add(estimate_render_plan_bytes(plan))
+}
+
 fn pop_front_font_bytes_cache_entry(
     cache: &mut HashMap<String, Option<Arc<Vec<u8>>>>,
     order: &mut VecDeque<String>,
@@ -2072,6 +2259,14 @@ fn pop_front_display_list_cache_entry(
     pop_front_ordered_cache_entry(cache, order, cache_bytes, display_list_cache_entry_bytes)
 }
 
+fn pop_front_render_plan_cache_entry(
+    cache: &mut HashMap<String, Arc<RenderPlan>>,
+    order: &mut VecDeque<String>,
+    cache_bytes: &mut usize,
+) -> bool {
+    pop_front_ordered_cache_entry(cache, order, cache_bytes, render_plan_cache_entry_bytes)
+}
+
 fn insert_display_list_cache_entry(
     cache: &mut HashMap<String, Arc<DisplayList>>,
     order: &mut VecDeque<String>,
@@ -2092,6 +2287,39 @@ fn insert_display_list_cache_entry(
     }
     while cache_bytes.saturating_add(entry_bytes) > budget.max_bytes {
         if pop_front_display_list_cache_entry(cache, order, cache_bytes) {
+            stats.evictions = stats.evictions.saturating_add(1);
+        } else {
+            break;
+        }
+    }
+    if cache_bytes.saturating_add(entry_bytes) <= budget.max_bytes {
+        order.push_back(key.clone());
+        cache.insert(key, value);
+        *cache_bytes = cache_bytes.saturating_add(entry_bytes);
+        stats.bytes = *cache_bytes;
+    }
+}
+
+fn insert_render_plan_cache_entry(
+    cache: &mut HashMap<String, Arc<RenderPlan>>,
+    order: &mut VecDeque<String>,
+    cache_bytes: &mut usize,
+    stats: &mut RenderArtifactCacheStats,
+    key: String,
+    value: Arc<RenderPlan>,
+    budget: CacheByteBudget,
+) {
+    let entry_bytes = render_plan_cache_entry_bytes(&value);
+    if entry_bytes == 0 || entry_bytes > budget.max_entry_bytes || budget.max_bytes == 0 {
+        stats.skipped_oversized = stats.skipped_oversized.saturating_add(1);
+        return;
+    }
+    if let Some(previous) = cache.remove(&key) {
+        *cache_bytes = cache_bytes.saturating_sub(render_plan_cache_entry_bytes(&previous));
+        order.retain(|item| item != &key);
+    }
+    while cache_bytes.saturating_add(entry_bytes) > budget.max_bytes {
+        if pop_front_render_plan_cache_entry(cache, order, cache_bytes) {
             stats.evictions = stats.evictions.saturating_add(1);
         } else {
             break;
@@ -3720,13 +3948,26 @@ impl PageRenderer {
     ) -> Result<PixelBuffer> {
         cancel.check("packed plan render start")?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
-        let resources = engine.get_page_resources(page_number)?;
-        let plan = RenderPlan::compile_with_resources_cancellable(
-            list.clone(),
-            contract,
-            &resources,
-            cancel,
-        )?;
+        let plan_key = RenderDocumentCache::render_plan_key_with_revision(
+            page_number,
+            dpi,
+            Self::revision_cache_key(engine),
+            contract.cache_fingerprint(),
+        );
+        let plan = match cache.cached_render_plan(&plan_key) {
+            Some(plan) => plan,
+            None => {
+                let resources = engine.get_page_resources(page_number)?;
+                let max_cache_bytes = contract.resource_budget.max_cache_bytes;
+                let compiled = RenderPlan::compile_with_resources_cancellable(
+                    list.clone(),
+                    contract,
+                    &resources,
+                    cancel,
+                )?;
+                cache.insert_render_plan(plan_key, compiled, max_cache_bytes)
+            }
+        };
         if !plan.packed.requires_native_replay() {
             let buf = plan
                 .execute_vector_tile_cancellable(
@@ -3745,7 +3986,7 @@ impl PageRenderer {
             engine,
             page_number,
             dpi,
-            &plan,
+            plan.as_ref(),
             cancel,
             render_mode,
             cache,
@@ -7411,15 +7652,27 @@ impl<'a> RenderState<'a> {
 
     fn return_document_cache(self, cache: &mut RenderDocumentCache) {
         let resource_budget = self.resource_budget;
+        let final_raster_cache_policy = cache.final_raster_cache_policy;
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
         let display_list_cache_order = std::mem::take(&mut cache.display_list_cache_order);
         let display_list_cache_bytes = cache.display_list_cache_bytes;
         let display_list_cache_stats = cache.display_list_cache_stats;
         cache.display_list_cache_bytes = 0;
         cache.display_list_cache_stats = RenderArtifactCacheStats::default();
+        let render_plan_cache = std::mem::take(&mut cache.render_plan_cache);
+        let render_plan_cache_order = std::mem::take(&mut cache.render_plan_cache_order);
+        let render_plan_cache_bytes = cache.render_plan_cache_bytes;
+        let render_plan_cache_stats = cache.render_plan_cache_stats;
+        cache.render_plan_cache_bytes = 0;
+        cache.render_plan_cache_stats = RenderArtifactCacheStats::default();
         let display_list_raster_cache = std::mem::replace(
             &mut cache.display_list_raster_cache,
-            RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
+            match final_raster_cache_policy {
+                FinalRasterCachePolicy::ResourcesOnly => RenderCache::disabled(),
+                FinalRasterCachePolicy::ResourcesAndFinalRasters => {
+                    RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024)
+                }
+            },
         );
         let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
         let transparent_page_group_cache_order =
@@ -7489,7 +7742,12 @@ impl<'a> RenderState<'a> {
             display_list_cache_order,
             display_list_cache_bytes,
             display_list_cache_stats,
+            render_plan_cache,
+            render_plan_cache_order,
+            render_plan_cache_bytes,
+            render_plan_cache_stats,
             display_list_raster_cache,
+            final_raster_cache_policy,
             transparent_page_group_cache,
             transparent_page_group_cache_order,
             clip_dag_stats,
@@ -7561,15 +7819,27 @@ impl<'a> RenderState<'a> {
             ..
         } = self;
         let clip_dag_stats = clip_dag.stats();
+        let final_raster_cache_policy = cache.final_raster_cache_policy;
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
         let display_list_cache_order = std::mem::take(&mut cache.display_list_cache_order);
         let display_list_cache_bytes = cache.display_list_cache_bytes;
         let display_list_cache_stats = cache.display_list_cache_stats;
         cache.display_list_cache_bytes = 0;
         cache.display_list_cache_stats = RenderArtifactCacheStats::default();
+        let render_plan_cache = std::mem::take(&mut cache.render_plan_cache);
+        let render_plan_cache_order = std::mem::take(&mut cache.render_plan_cache_order);
+        let render_plan_cache_bytes = cache.render_plan_cache_bytes;
+        let render_plan_cache_stats = cache.render_plan_cache_stats;
+        cache.render_plan_cache_bytes = 0;
+        cache.render_plan_cache_stats = RenderArtifactCacheStats::default();
         let display_list_raster_cache = std::mem::replace(
             &mut cache.display_list_raster_cache,
-            RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
+            match final_raster_cache_policy {
+                FinalRasterCachePolicy::ResourcesOnly => RenderCache::disabled(),
+                FinalRasterCachePolicy::ResourcesAndFinalRasters => {
+                    RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024)
+                }
+            },
         );
         let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
         let transparent_page_group_cache_order =
@@ -7637,7 +7907,12 @@ impl<'a> RenderState<'a> {
             display_list_cache_order,
             display_list_cache_bytes,
             display_list_cache_stats,
+            render_plan_cache,
+            render_plan_cache_order,
+            render_plan_cache_bytes,
+            render_plan_cache_stats,
             display_list_raster_cache,
+            final_raster_cache_policy,
             transparent_page_group_cache,
             transparent_page_group_cache_order,
             clip_dag_stats,
@@ -9033,7 +9308,7 @@ impl<'a> RenderState<'a> {
         let form_bbox = if let Some(bbox) = resolved_bbox {
             bbox
         } else {
-            match required_bbox(&form_dict, &bbox_label) {
+            match required_bbox_resolved(&form_dict, &bbox_label, reader) {
                 Ok(bbox) => bbox,
                 Err(err) => {
                     self.record_fatal_render_error(err);
@@ -9061,7 +9336,7 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
-        let ops = match crate::content::ContentParser::parse(&content_bytes) {
+        let ops = match crate::content::ContentParser::parse_compat(&content_bytes) {
             Ok(ops) => ops,
             Err(err) => {
                 self.record_fatal_render_error(format!(
@@ -9083,6 +9358,30 @@ impl<'a> RenderState<'a> {
         };
         let mut retained_resources =
             content_resource_scope(resources.as_ref(), &self.page_resources);
+        for active in [
+            self.active_fill_color_space_resource.as_ref(),
+            self.active_stroke_color_space_resource.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            retained_resources
+                .color_spaces
+                .entry(active.name.clone())
+                .or_insert_with(|| active.source.as_ref().clone());
+        }
+        for active in [
+            self.active_fill_pattern_resource.as_ref(),
+            self.active_stroke_pattern_resource.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            retained_resources
+                .patterns
+                .entry(active.name.clone())
+                .or_insert_with(|| active.object.clone());
+        }
         // A Form inherits fill/stroke state even when its own resource
         // dictionary is empty. Force path operators through the stateful replay
         // route so compilation never bakes the builder's default black into a
@@ -9092,7 +9391,8 @@ impl<'a> RenderState<'a> {
             .color_spaces
             .entry("DefaultGray".into())
             .or_insert_with(|| PdfObject::Name("DeviceGray".into()));
-        let mut retained_ops = ops.clone();
+        let mut retained_ops =
+            operations_with_inherited_color_state(&ops, &self.gs, &retained_resources);
         if let Some(font) = self.active_font_resource.as_ref() {
             // Display-list compilation must resolve the inherited font just as
             // direct interpretation does. Prepending a synthetic Tf is safe:
@@ -9119,7 +9419,7 @@ impl<'a> RenderState<'a> {
         let form_matrix = if let Some(matrix) = resolved_matrix {
             matrix
         } else {
-            match extract_form_matrix(&form_dict) {
+            match extract_form_matrix_resolved(&form_dict, reader) {
                 Ok(matrix) => matrix,
                 Err(err) => {
                     self.record_fatal_render_error(format!(
@@ -9183,7 +9483,7 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
-        let ops = match crate::content::ContentParser::parse(&content_bytes) {
+        let ops = match crate::content::ContentParser::parse_compat(&content_bytes) {
             Ok(ops) => ops,
             Err(err) => {
                 self.record_fatal_render_error(format!(
@@ -9370,7 +9670,8 @@ impl<'a> RenderState<'a> {
             return None;
         }
         let appearance_label = format!("annotation appearance '{name}'");
-        let bbox = match required_bbox(form_dict, &appearance_label) {
+        let reader = self.engine.document().reader();
+        let bbox = match required_bbox_resolved(form_dict, &appearance_label, reader) {
             Ok(bbox) => bbox,
             Err(err) => {
                 self.record_fatal_render_error(err);
@@ -9383,7 +9684,6 @@ impl<'a> RenderState<'a> {
             dict: form_dict.clone(),
             raw: raw_bytes,
         };
-        let reader = self.engine.document().reader();
         let content_bytes = match self.scheduled_decode_stream(
             &stream_obj,
             reader,
@@ -9398,7 +9698,7 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
-        let ops = match crate::content::ContentParser::parse(&content_bytes) {
+        let ops = match crate::content::ContentParser::parse_compat(&content_bytes) {
             Ok(ops) => ops,
             Err(err) => {
                 self.record_fatal_render_error(format!(
@@ -9422,7 +9722,7 @@ impl<'a> RenderState<'a> {
         let (retained_plan, retained_plan_refusal) = retained_plan_cache_fields(
             self.compile_annotation_appearance_retained_plan(&ops, &retained_resources),
         );
-        let form_matrix = match extract_form_matrix(form_dict) {
+        let form_matrix = match extract_form_matrix_resolved(form_dict, reader) {
             Ok(matrix) => matrix,
             Err(err) => {
                 self.record_fatal_render_error(format!(
@@ -11298,7 +11598,7 @@ impl<'a> RenderState<'a> {
             self.record_fatal_render_error("SMask /G is not /Subtype /Form");
             return;
         }
-        let group_bbox = match required_bbox(&g_dict, "SMask /G") {
+        let group_bbox = match required_bbox_resolved(&g_dict, "SMask /G", reader) {
             Ok(bbox) => bbox,
             Err(err) => {
                 self.record_fatal_render_error(err);
@@ -11306,13 +11606,40 @@ impl<'a> RenderState<'a> {
             }
         };
 
-        let g_resources = match PageResources::from_content_owner(&g_dict, reader) {
+        let mut g_resources = match PageResources::from_content_owner(&g_dict, reader) {
             Ok(resources) => content_resource_scope(resources.as_ref(), &self.page_resources),
             Err(err) => {
                 self.record_fatal_render_error(format!("SMask /G invalid /Resources: {err}"));
                 return;
             }
         };
+        // A transparency group starts with the invoking graphics state. Keep
+        // already-bound named color spaces available even when the group's
+        // explicit resource dictionary does not repeat the caller's entry.
+        for active in [
+            self.active_fill_color_space_resource.as_ref(),
+            self.active_stroke_color_space_resource.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            g_resources
+                .color_spaces
+                .entry(active.name.clone())
+                .or_insert_with(|| active.source.as_ref().clone());
+        }
+        for active in [
+            self.active_fill_pattern_resource.as_ref(),
+            self.active_stroke_pattern_resource.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            g_resources
+                .patterns
+                .entry(active.name.clone())
+                .or_insert_with(|| active.object.clone());
+        }
         let smask_group_color_space = match transparency_group_dict(&g_dict) {
             Some(group) => {
                 match transparency_group_color_space_policy(group, &g_resources, reader) {
@@ -11421,7 +11748,7 @@ impl<'a> RenderState<'a> {
             }
         };
 
-        let form_matrix = match extract_form_matrix(&g_dict) {
+        let form_matrix = match extract_form_matrix_resolved(&g_dict, reader) {
             Ok(matrix) => matrix,
             Err(err) => {
                 self.record_fatal_render_error(format!("SMask /G malformed /Matrix: {err}"));
@@ -11503,14 +11830,15 @@ impl<'a> RenderState<'a> {
         };
         mask_buf.blend_mode = BlendMode::Normal;
 
-        let ops = match crate::content::ContentParser::parse(&content_bytes) {
+        let ops = match crate::content::ContentParser::parse_compat(&content_bytes) {
             Ok(ops) => ops,
             Err(err) => {
                 self.record_fatal_render_error(format!("SMask /G content parse failed: {err}"));
                 return;
             }
         };
-        let retained_plan = self.compile_soft_mask_group_retained_plan(&ops, &g_resources);
+        let retained_ops = operations_with_inherited_color_state(&ops, &mask_gs, &g_resources);
+        let retained_plan = self.compile_soft_mask_group_retained_plan(&retained_ops, &g_resources);
         let child_glyph_cache =
             std::mem::replace(&mut self.glyph_cache, GlyphCache::with_default_capacity());
         let child_glyph_mask_cache = std::mem::take(&mut self.glyph_mask_cache);
@@ -12501,6 +12829,11 @@ impl<'a> RenderState<'a> {
                 dict,
                 self.engine.document().reader(),
             );
+            let soft_mask_allows_shared_reduction = image_smask_allows_shared_reduction(
+                &image_ref,
+                dict,
+                self.engine.document().reader(),
+            );
             let metadata = ImageMetadata {
                 object_number: obj_num,
                 generation_number: gen_num,
@@ -12512,7 +12845,8 @@ impl<'a> RenderState<'a> {
                 is_mask: image_ref.is_mask,
                 is_inline: false,
                 requires_full_image_postprocessing: (dict.contains_key("SMask")
-                    && !soft_mask_allows_shared_source_window)
+                    && !soft_mask_allows_shared_source_window
+                    && !soft_mask_allows_shared_reduction)
                     || (dict.contains_key("Mask") && !explicit_mask_allows_shared_raw_window),
                 decode_fingerprint: pdf_dict_entry_fingerprint(dict, "Decode"),
                 decode_params_fingerprint: pdf_decode_params_fingerprint(dict),
@@ -15814,7 +16148,7 @@ impl<'a> RenderState<'a> {
                 "Type 3 CharProc /{glyph_name} exceeded byte cap {TYPE3_MAX_CHARPROC_BYTES} for recursive render"
             ));
         }
-        let ops = crate::content::ContentParser::parse(&content).map_err(|err| {
+        let ops = crate::content::ContentParser::parse_compat(&content).map_err(|err| {
             format!("Type 3 CharProc /{glyph_name} parse failed for recursive render: {err}")
         })?;
         if ops.len() > TYPE3_MAX_CHARPROC_OPS {
@@ -16346,7 +16680,7 @@ impl<'a> RenderState<'a> {
                 "Type 3 glyph geometry /{glyph_name} exceeded byte cap {TYPE3_MAX_CHARPROC_BYTES} for clipping"
             ));
         }
-        let ops = crate::content::ContentParser::parse(&content).map_err(|err| {
+        let ops = crate::content::ContentParser::parse_compat(&content).map_err(|err| {
             format!("Type 3 glyph geometry /{glyph_name} parse failed for clipping: {err}")
         })?;
         Type3PathCollector::collect(glyph_name, &ops, cache_key)
@@ -20928,6 +21262,64 @@ fn image_smask_allows_shared_source_window(
         }
         _ => false,
     }
+}
+
+fn image_smask_allows_shared_reduction(
+    image_ref: &ImageReference,
+    image_dict: &PdfDictionary,
+    reader: &PdfReader,
+) -> bool {
+    if image_ref.is_mask || image_ref.is_smask || image_dict.contains_key("Mask") {
+        return false;
+    }
+    let Some(PdfObject::Reference { number, generation }) = image_dict.get("SMask") else {
+        return false;
+    };
+    let Ok(PdfObject::Stream {
+        dict: smask_dict, ..
+    }) = reader.get_object(*number, *generation)
+    else {
+        return false;
+    };
+    let Ok(smask_ref) = image_smask_reference(image_ref, *number, *generation, &smask_dict) else {
+        return false;
+    };
+    smask_ref.width == image_ref.width
+        && smask_ref.height == image_ref.height
+        && smask_ref.bits_per_component == 8
+        && matches!(smask_ref.color_space.as_str(), "DeviceGray" | "G")
+        && smask_ref.filter.iter().all(|filter| {
+            matches!(
+                filter.as_str(),
+                "FlateDecode"
+                    | "Fl"
+                    | "LZWDecode"
+                    | "LZW"
+                    | "RunLengthDecode"
+                    | "RL"
+                    | "ASCIIHexDecode"
+                    | "AHx"
+                    | "ASCII85Decode"
+                    | "A85"
+            )
+        })
+        && smask_decode_array_is_default(&smask_dict)
+}
+
+fn smask_decode_array_is_default(dict: &PdfDictionary) -> bool {
+    let Some(value) = dict.get("Decode").or_else(|| dict.get("D")) else {
+        return true;
+    };
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    items.len() == 2
+        && items[0]
+            .as_number()
+            .is_some_and(|value| value.is_finite() && value.abs() <= f64::EPSILON)
+        && items[1]
+            .as_number()
+            .is_some_and(|value| value.is_finite() && (value - 1.0).abs() <= f64::EPSILON)
 }
 
 fn raw_window_supports_image_reference(image_ref: &ImageReference) -> bool {
@@ -25931,14 +26323,37 @@ fn extract_bbox(dict: &PdfDictionary) -> Option<[f64; 4]> {
     exact_bbox_from_pdf_array(items)
 }
 
-fn required_bbox(dict: &PdfDictionary, label: &str) -> std::result::Result<[f64; 4], String> {
-    let Some(obj) = dict.get("BBox") else {
+fn required_bbox_resolved(
+    dict: &PdfDictionary,
+    label: &str,
+    reader: &PdfReader,
+) -> std::result::Result<[f64; 4], String> {
+    let Some(object) = dict.get("BBox") else {
         return Err(format!("{label} missing /BBox"));
     };
-    let PdfObject::Array(items) = obj else {
+    let resolved = reader
+        .resolve(object.clone())
+        .map_err(|err| format!("{label} /BBox failed to resolve: {err}"))?;
+    let PdfObject::Array(items) = resolved else {
         return Err(format!("{label} malformed /BBox"));
     };
-    exact_bbox_from_pdf_array(items).ok_or_else(|| format!("{label} malformed /BBox"))
+    if items.len() != 4 {
+        return Err(format!("{label} malformed /BBox"));
+    }
+    let mut values = [0.0; 4];
+    for (index, item) in items.iter().enumerate() {
+        let resolved_item = reader
+            .resolve(item.clone())
+            .map_err(|err| format!("{label} /BBox item {} failed to resolve: {err}", index + 1))?;
+        let Some(value) = resolved_item.as_number() else {
+            return Err(format!("{label} malformed /BBox"));
+        };
+        if !value.is_finite() {
+            return Err(format!("{label} malformed /BBox"));
+        }
+        values[index] = value;
+    }
+    Ok(values)
 }
 
 fn exact_bbox_from_pdf_array(items: &[PdfObject]) -> Option<[f64; 4]> {
@@ -25954,6 +26369,77 @@ fn exact_bbox_from_pdf_array(items: &[PdfObject]) -> Option<[f64; 4]> {
         values[idx] = value;
     }
     Some(values)
+}
+
+fn operations_with_inherited_color_state(
+    operations: &[ContentOperation],
+    state: &GraphicsState,
+    resources: &PageResources,
+) -> Vec<ContentOperation> {
+    fn selection_name(space: &ColorSpace, components: usize, resources: &PageResources) -> String {
+        match space {
+            ColorSpace::DeviceGray => "DeviceGray".to_string(),
+            ColorSpace::DeviceRGB => "DeviceRGB".to_string(),
+            ColorSpace::DeviceCMYK => "DeviceCMYK".to_string(),
+            ColorSpace::Named(name) if name == "Pattern" => name.clone(),
+            ColorSpace::Named(name) if resources.color_spaces.contains_key(name) => name.clone(),
+            ColorSpace::Named(_) => match components {
+                3 => "DeviceRGB".to_string(),
+                4 => "DeviceCMYK".to_string(),
+                _ => "DeviceGray".to_string(),
+            },
+        }
+    }
+
+    fn component_operands(color: &crate::content::state::Color) -> Vec<Operand> {
+        color
+            .components
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite())
+            .map(Operand::Real)
+            .collect()
+    }
+
+    fn selection_operands(
+        color: &crate::content::state::Color,
+        pattern_name: Option<&str>,
+    ) -> Vec<Operand> {
+        let mut operands = component_operands(color);
+        if let Some(name) = pattern_name {
+            operands.push(Operand::Name(name.to_string()));
+        }
+        operands
+    }
+
+    let stroke_components =
+        selection_operands(&state.stroke_color, state.stroke_pattern_name.as_deref());
+    let fill_components = selection_operands(&state.fill_color, state.fill_pattern_name.as_deref());
+    let mut inherited = Vec::with_capacity(4 + operations.len());
+    inherited.push(ContentOperation::new(
+        "CS",
+        vec![Operand::Name(selection_name(
+            &state.stroke_color_space,
+            stroke_components.len(),
+            resources,
+        ))],
+    ));
+    if !stroke_components.is_empty() {
+        inherited.push(ContentOperation::new("SCN", stroke_components));
+    }
+    inherited.push(ContentOperation::new(
+        "cs",
+        vec![Operand::Name(selection_name(
+            &state.fill_color_space,
+            fill_components.len(),
+            resources,
+        ))],
+    ));
+    if !fill_components.is_empty() {
+        inherited.push(ContentOperation::new("scn", fill_components));
+    }
+    inherited.extend_from_slice(operations);
+    inherited
 }
 
 fn form_bbox_intersects_viewport(bbox: [f64; 4], ctm: &Transform2D, viewport: &Viewport) -> bool {
@@ -26138,8 +26624,49 @@ fn extract_optional_matrix(
 }
 
 /// Extract a Form XObject's `/Matrix`, defaulting to identity only when absent.
+#[cfg(test)]
 fn extract_form_matrix(dict: &PdfDictionary) -> Result<crate::content::Matrix> {
     extract_optional_matrix(dict, "Matrix", "Form XObject /Matrix")
+}
+
+fn extract_form_matrix_resolved(
+    dict: &PdfDictionary,
+    reader: &PdfReader,
+) -> Result<crate::content::Matrix> {
+    const IDENTITY: crate::content::Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let Some(object) = dict.get("Matrix") else {
+        return Ok(IDENTITY);
+    };
+    let resolved = reader.resolve(object.clone())?;
+    let Some(items) = resolved.as_array() else {
+        return Err(WellfriendError::MalformedPdf(
+            "Form XObject /Matrix must resolve to an array of exactly six finite numbers".into(),
+        ));
+    };
+    if items.len() != 6 {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "Form XObject /Matrix must contain exactly six finite numbers, got {}",
+            items.len()
+        )));
+    }
+    let mut matrix = [0.0; 6];
+    for (index, item) in items.iter().enumerate() {
+        let resolved_item = reader.resolve(item.clone())?;
+        let Some(value) = resolved_item.as_number() else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "Form XObject /Matrix element {} is not numeric",
+                index + 1
+            )));
+        };
+        if !value.is_finite() {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "Form XObject /Matrix element {} is not finite",
+                index + 1
+            )));
+        }
+        matrix[index] = value;
+    }
+    Ok(matrix)
 }
 
 /// An explicit content-program dictionary is a complete namespace. Legacy
@@ -26175,6 +26702,52 @@ mod tests {
             vertical_advance: None,
             vertical_origin: None,
         }
+    }
+
+    #[test]
+    fn inherited_pattern_state_keeps_pattern_name_after_components() {
+        let mut state = GraphicsState::default();
+        state.fill_color_space = ColorSpace::Named("Pattern".into());
+        state.fill_color = Color {
+            space: ColorSpace::Named("Pattern".into()),
+            components: vec![0.25, 0.5, 0.75],
+        };
+        state.fill_pattern_name = Some("InheritedFill".into());
+        state.stroke_color_space = ColorSpace::Named("Pattern".into());
+        state.stroke_color = Color {
+            space: ColorSpace::Named("Pattern".into()),
+            components: Vec::new(),
+        };
+        state.stroke_pattern_name = Some("InheritedStroke".into());
+
+        let operations =
+            operations_with_inherited_color_state(&[], &state, &PageResources::default());
+
+        assert_eq!(operations[0].operator, "CS");
+        assert_eq!(
+            operations[0].operands,
+            vec![Operand::Name("Pattern".into())]
+        );
+        assert_eq!(operations[1].operator, "SCN");
+        assert_eq!(
+            operations[1].operands,
+            vec![Operand::Name("InheritedStroke".into())]
+        );
+        assert_eq!(operations[2].operator, "cs");
+        assert_eq!(
+            operations[2].operands,
+            vec![Operand::Name("Pattern".into())]
+        );
+        assert_eq!(operations[3].operator, "scn");
+        assert_eq!(
+            operations[3].operands,
+            vec![
+                Operand::Real(0.25),
+                Operand::Real(0.5),
+                Operand::Real(0.75),
+                Operand::Name("InheritedFill".into()),
+            ]
+        );
     }
 
     #[test]
@@ -31942,6 +32515,75 @@ mod tests {
         assert!(!result.cache_must_reset);
         assert!(cache.cached_display_list_raster(&key_a).is_none());
         assert!(cache.cached_display_list_raster(&key_b).is_some());
+    }
+
+    #[test]
+    fn resources_only_cache_never_reuses_a_final_raster() {
+        let mut cache = RenderDocumentCache::resources_only();
+        let key = RenderCacheKey::new_with_full_identity(
+            1,
+            144,
+            RenderMode::Compat,
+            RenderTile::full(2, 2),
+            "ocg:none",
+            "prepress:none",
+            "revision:one",
+            "contract:one",
+        );
+        cache.insert_display_list_raster(
+            key.clone(),
+            PixelBuffer::new_transparent_with_mode(2, 2, RenderMode::Compat),
+        );
+
+        assert_eq!(
+            cache.final_raster_cache_policy(),
+            FinalRasterCachePolicy::ResourcesOnly
+        );
+        assert!(cache.cached_display_list_raster(&key).is_none());
+        assert_eq!(cache.display_list_raster_cache_metrics().hits, 0);
+
+        cache.clear();
+        assert_eq!(
+            cache.final_raster_cache_policy(),
+            FinalRasterCachePolicy::ResourcesOnly
+        );
+    }
+
+    #[test]
+    fn resources_only_cache_reuses_compiled_plan_but_executes_fresh_rasters() {
+        let engine = ContentEngine::open_bytes(simple_nonembedded_font_pdf("Helvetica"))
+            .expect("open text fixture");
+        let mut cache = RenderDocumentCache::resources_only();
+
+        let first = engine
+            .render_page_display_list_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("first retained-resource render");
+        let after_first = cache.render_plan_cache_stats();
+        assert_eq!(after_first.entries, 1);
+        assert_eq!(after_first.hits, 0);
+        assert_eq!(after_first.misses, 1);
+
+        let second = engine
+            .render_page_display_list_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("second retained-resource render");
+        let after_second = cache.render_plan_cache_stats();
+        assert_eq!(after_second.entries, 1);
+        assert_eq!(after_second.hits, 1);
+        assert_eq!(after_second.misses, 1);
+        assert_eq!(cache.display_list_raster_cache_metrics().hits, 0);
+        assert_same_pixels(&first, &second);
     }
 
     #[test]

@@ -29,6 +29,16 @@ impl ContentParser {
         Self::parse_tokens_inner(ContentTokenizer::new(data), true, false, None)
     }
 
+    /// Parse a painted content program and apply narrowly-scoped recovery for
+    /// producer defects that established viewers tolerate. Editing and source
+    /// analysis continue to use [`parse`](Self::parse), so compatibility
+    /// recovery never changes provenance or mutation boundaries.
+    pub(crate) fn parse_compat(data: &[u8]) -> Result<Vec<ContentOperation>> {
+        let mut operations = Self::parse(data)?;
+        normalize_compatibility_operations(&mut operations);
+        Ok(operations)
+    }
+
     pub(crate) fn parse_cancellable(
         data: &[u8],
         cancel: &CancelToken,
@@ -193,6 +203,28 @@ impl ContentParser {
         }
 
         Ok(operations)
+    }
+}
+
+pub(crate) fn normalize_compatibility_operations(operations: &mut [ContentOperation]) {
+    for operation in operations {
+        if !matches!(operation.operator.as_str(), "BDC" | "DP") || operation.operands.len() <= 2 {
+            continue;
+        }
+        let len = operation.operands.len();
+        let trailing_pair_is_valid = operation.operands[len - 2].as_name().is_some()
+            && matches!(
+                operation.operands[len - 1],
+                Operand::Name(_) | Operand::Dictionary(_)
+            );
+        if trailing_pair_is_valid {
+            let ignored = len - 2;
+            operation.operands.drain(0..ignored);
+            log::warn!(
+                "content compatibility: ignored {ignored} stray prefix operand(s) before {}",
+                operation.operator
+            );
+        }
     }
 }
 
@@ -669,5 +701,29 @@ mod tests {
             .is_some_and(|dict| dict
                 .iter()
                 .any(|(key, value)| { key == "Predictor" && value.as_integer() == Some(15) })));
+    }
+
+    #[test]
+    fn compatibility_parser_keeps_the_valid_bdc_suffix() {
+        let strict = ContentParser::parse(b"17 23 /Span << /ActualText (value) >> BDC EMC")
+            .expect("strict lexical parse");
+        assert_eq!(strict[0].operator, "BDC");
+        assert_eq!(strict[0].operands.len(), 4);
+
+        let compatible =
+            ContentParser::parse_compat(b"17 23 /Span << /ActualText (value) >> BDC EMC")
+                .expect("compatibility parse");
+        assert_eq!(compatible[0].operator, "BDC");
+        assert_eq!(compatible[0].operands.len(), 2);
+        assert_eq!(compatible[0].operands[0].as_name(), Some("Span"));
+        assert!(matches!(compatible[0].operands[1], Operand::Dictionary(_)));
+        assert_eq!(compatible[1].operator, "EMC");
+    }
+
+    #[test]
+    fn compatibility_parser_does_not_repair_an_invalid_bdc_suffix() {
+        let operations = ContentParser::parse_compat(b"17 /Span 23 BDC")
+            .expect("lexically valid content remains inspectable");
+        assert_eq!(operations[0].operands.len(), 3);
     }
 }

@@ -631,7 +631,7 @@ fn build_page_from_dict(
             PdfDictionary::empty()
         }
     };
-    let contents = parse_contents(dict);
+    let contents = parse_contents(dict, reader)?;
 
     Ok(PdfPage {
         page_number,
@@ -704,30 +704,94 @@ fn parse_resources(object: &PdfObject, reader: Option<&PdfReader>) -> Result<Pdf
     })
 }
 
-fn parse_contents(dict: &PdfDictionary) -> Vec<(u32, u16)> {
+const MAX_PAGE_CONTENT_STREAMS: usize = 16_384;
+const MAX_PAGE_CONTENT_REFERENCE_DEPTH: usize = 32;
+
+fn parse_contents(dict: &PdfDictionary, reader: Option<&PdfReader>) -> Result<Vec<(u32, u16)>> {
     let Some(contents) = dict.get("Contents") else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    match contents {
-        PdfObject::Reference { number, generation } => vec![(*number, *generation)],
+    let mut refs = Vec::new();
+    let mut visiting = HashSet::new();
+    collect_content_stream_references(contents, reader, &mut refs, &mut visiting, 0)?;
+    Ok(refs)
+}
+
+fn collect_content_stream_references(
+    object: &PdfObject,
+    reader: Option<&PdfReader>,
+    refs: &mut Vec<(u32, u16)>,
+    visiting: &mut HashSet<(u32, u16)>,
+    depth: usize,
+) -> Result<()> {
+    if depth > MAX_PAGE_CONTENT_REFERENCE_DEPTH {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "/Contents reference nesting exceeds depth limit {MAX_PAGE_CONTENT_REFERENCE_DEPTH}"
+        )));
+    }
+    if refs.len() >= MAX_PAGE_CONTENT_STREAMS {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "/Contents exceeds stream limit {MAX_PAGE_CONTENT_STREAMS}"
+        )));
+    }
+
+    match object {
+        PdfObject::Null => Ok(()),
         PdfObject::Array(items) => {
-            let mut refs = Vec::new();
             for item in items {
-                if let Some(reference) = item.as_reference() {
-                    refs.push(reference);
-                } else {
-                    log::warn!("/Contents array contains a non-reference entry");
-                }
+                collect_content_stream_references(item, reader, refs, visiting, depth + 1)?;
             }
-            refs
+            Ok(())
         }
-        PdfObject::Null => Vec::new(),
+        PdfObject::Reference { number, generation } => {
+            let reference = (*number, *generation);
+            let Some(reader) = reader else {
+                refs.push(reference);
+                return Ok(());
+            };
+            if !visiting.insert(reference) {
+                log::warn!(
+                    "skipping cyclic /Contents reference {} {}",
+                    reference.0,
+                    reference.1
+                );
+                return Ok(());
+            }
+            let resolved = reader.get_object(reference.0, reference.1)?;
+            match resolved {
+                PdfObject::Stream { .. } => refs.push(reference),
+                PdfObject::Array(items) => {
+                    for item in &items {
+                        collect_content_stream_references(
+                            item,
+                            Some(reader),
+                            refs,
+                            visiting,
+                            depth + 1,
+                        )?;
+                    }
+                }
+                PdfObject::Null => {}
+                other => log::warn!(
+                    "skipping /Contents reference {} {} resolved to {}, expected stream or array",
+                    reference.0,
+                    reference.1,
+                    other.variant_name()
+                ),
+            }
+            visiting.remove(&reference);
+            Ok(())
+        }
+        PdfObject::Stream { .. } => {
+            log::warn!("direct /Contents stream cannot be retained without an object reference");
+            Ok(())
+        }
         other => {
             log::warn!(
-                "/Contents must be a reference or array of references, got {}",
+                "skipping /Contents entry of type {}, expected stream reference or array",
                 other.variant_name()
             );
-            Vec::new()
+            Ok(())
         }
     }
 }
@@ -767,6 +831,31 @@ mod tests {
 
     fn box_obj(values: [i64; 4]) -> PdfObject {
         PdfObject::Array(values.into_iter().map(PdfObject::Integer).collect())
+    }
+
+    fn pdf_with_objects(objects: &[&str]) -> Vec<u8> {
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::with_capacity(objects.len());
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            bytes.extend_from_slice(object.as_bytes());
+            bytes.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = bytes.len();
+        bytes.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        bytes.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        bytes.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        bytes
     }
 
     #[test]
@@ -838,6 +927,22 @@ mod tests {
         let page = dict(&[("UserUnit", PdfObject::Real(0.0))]);
         let err = parse_user_unit(&page, None).unwrap_err();
         assert!(matches!(err, WellfriendError::MalformedPdf(_)));
+    }
+
+    #[test]
+    fn page_contents_resolves_an_indirect_array_of_streams() {
+        let document = PdfDocument::open_bytes(pdf_with_objects(&[
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R >>",
+            "[5 0 R 6 0 R]",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "<< /Length 0 >>\nstream\n\nendstream",
+        ]))
+        .expect("PDF with an indirect /Contents array opens");
+
+        let page = document.get_page(1).expect("page materializes");
+        assert_eq!(page.contents, vec![(5, 0), (6, 0)]);
     }
 
     #[test]

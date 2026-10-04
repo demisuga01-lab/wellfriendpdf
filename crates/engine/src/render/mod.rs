@@ -81,7 +81,9 @@ pub use image_decode_planning::{
 pub use image_painter::ImagePainter;
 pub use invalidation::{InvalidationResult, RenderDependencyGraph};
 pub use line::{DashState, LinePainter, WuLineRenderer};
-pub use page_renderer::{PageRenderer, RenderArtifactCacheStats, RenderDocumentCache};
+pub use page_renderer::{
+    FinalRasterCachePolicy, PageRenderer, RenderArtifactCacheStats, RenderDocumentCache,
+};
 pub use path::{
     flatten_cubic, flatten_path, path_raster_stats, FillRule, FlatPath, Path, PathPainter,
     PathRasterStats, PathSegment,

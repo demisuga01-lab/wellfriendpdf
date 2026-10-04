@@ -14,6 +14,7 @@ RAW_FILES = (
     "parse-persistent.jsonl",
     "parse-fresh.jsonl",
     "render-persistent.jsonl",
+    "render-retained-resources.jsonl",
     "render-fresh.jsonl",
     "quality-pages.jsonl",
 )
@@ -64,6 +65,157 @@ def main() -> int:
     benchmark = load_benchmark_module(args.benchmark_script)
     summary_path = args.results / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (args.results / "corpus-manifest.json").read_text(encoding="utf-8")
+    )
+    summary.setdefault("configuration", {})["document_count"] = len(manifest)
+
+    parse_persistent_rows = load_jsonl(args.results / "parse-persistent.jsonl")
+    render_persistent_rows = load_jsonl(args.results / "render-persistent.jsonl")
+    retained_resource_path = args.results / "render-retained-resources.jsonl"
+    retained_resource_rows = (
+        load_jsonl(retained_resource_path) if retained_resource_path.is_file() else []
+    )
+    persistent_repetitions = int(
+        summary.get("configuration", {}).get("persistent_repetitions", 1)
+    )
+    parse_document_medians = {
+        engine: benchmark.document_median_distribution(
+            parse_persistent_rows, engine, "parse_ms", persistent_repetitions
+        )
+        for engine in benchmark.PARSER_ENGINES
+    }
+    render_document_medians = {
+        engine: benchmark.document_median_distribution(
+            render_persistent_rows, engine, "render_ms", persistent_repetitions
+        )
+        for engine in benchmark.RENDER_ENGINES
+    }
+    parse_qualification = benchmark.page_count_qualification(
+        parse_persistent_rows, persistent_repetitions
+    )
+    wellfriend_document_medians = benchmark.median_by_key(
+        (
+            row
+            for row in parse_persistent_rows
+            if row.get("engine") == "wellfriendpdf"
+        ),
+        "parse_ms",
+    )
+    poppler_document_medians = benchmark.median_by_key(
+        (
+            row
+            for row in parse_persistent_rows
+            if row.get("engine") == "poppler"
+        ),
+        "parse_ms",
+    )
+    qualified_parse_paths = set(wellfriend_document_medians)
+    qualified_parse_paths -= {
+        str(row["relative_path"])
+        for row in parse_qualification.get("disagreements", [])
+    }
+    qualified_parse_paths -= {
+        str(row["relative_path"])
+        for row in parse_qualification.get("repetition_failures", [])
+    }
+    summary["schema"] = "wellfriendpdf.pebq.v2"
+    summary["parsing"].update(
+        {
+            "profile": "process-resident adapter; document reopened for every request; file read excluded",
+            "qualification": parse_qualification,
+            "persistent_parse_ms": parse_document_medians,
+            "process_resident_document_cold_document_medians_ms": parse_document_medians,
+            "process_resident_document_cold_observations_ms": {
+                engine: benchmark.distribution(
+                    row["parse_ms"]
+                    for row in parse_persistent_rows
+                    if row.get("engine") == engine and row.get("status") == "ok"
+                )
+                for engine in benchmark.PARSER_ENGINES
+            },
+            "slowest_document_medians_ms": {
+                engine: benchmark.slowest_document_medians(
+                    parse_persistent_rows,
+                    engine,
+                    "parse_ms",
+                    expected_rows=persistent_repetitions,
+                )
+                for engine in benchmark.PARSER_ENGINES
+            },
+            "wellfriend_vs_poppler_persistent_paired_ratio": benchmark.bootstrap_ratio_ci(
+                {
+                    path: poppler_document_medians[path]
+                    for path in qualified_parse_paths
+                    if path in poppler_document_medians
+                },
+                {
+                    path: wellfriend_document_medians[path]
+                    for path in qualified_parse_paths
+                    if path in wellfriend_document_medians
+                },
+                args.seed,
+            ),
+        }
+    )
+    summary["rendering"].update(
+        {
+            "profile": "process-resident adapter; document reopened for every request; final-raster reuse disabled by construction",
+            "accepted": benchmark.successful_engine_documents(
+                render_persistent_rows,
+                benchmark.RENDER_ENGINES,
+                persistent_repetitions,
+                ("render_ms", "width", "height"),
+            ),
+            "persistent_render_ms": render_document_medians,
+            "process_resident_document_cold_document_medians_ms": render_document_medians,
+            "process_resident_document_cold_observations_ms": {
+                engine: benchmark.distribution(
+                    row["render_ms"]
+                    for row in render_persistent_rows
+                    if row.get("engine") == engine and row.get("status") == "ok"
+                )
+                for engine in benchmark.RENDER_ENGINES
+            },
+            "slowest_document_medians_ms": {
+                engine: benchmark.slowest_document_medians(
+                    render_persistent_rows,
+                    engine,
+                    "render_ms",
+                    expected_rows=persistent_repetitions,
+                )
+                for engine in benchmark.RENDER_ENGINES
+            },
+            "raster_determinism": benchmark.raster_determinism(
+                render_persistent_rows, persistent_repetitions
+            ),
+        }
+    )
+    if retained_resource_rows:
+        summary["rendering"].update(
+            {
+                "retained_resource_render_document_medians_ms": {
+                    engine: benchmark.distribution(
+                        row["render_ms"]
+                        for row in retained_resource_rows
+                        if row.get("engine") == engine and row.get("status") == "ok"
+                    )
+                    for engine in benchmark.RENDER_ENGINES
+                },
+                "retained_resource_render_samples_ms": {
+                    engine: benchmark.distribution(
+                        sample
+                        for row in retained_resource_rows
+                        if row.get("engine") == engine and row.get("status") == "ok"
+                        for sample in row.get("render_samples_ms", [])
+                    )
+                    for engine in benchmark.RENDER_ENGINES
+                },
+                "retained_resource_raster_determinism": benchmark.retained_sample_determinism(
+                    retained_resource_rows
+                ),
+            }
+        )
 
     if args.adapter_dir is not None:
         environment_path = args.results / "environment.json"
@@ -80,9 +232,6 @@ def main() -> int:
     if args.recompute_quality:
         if args.corpus is None:
             parser.error("--corpus is required with --recompute-quality")
-        manifest = json.loads(
-            (args.results / "corpus-manifest.json").read_text(encoding="utf-8")
-        )
         inputs = [args.corpus / row["relative_path"] for row in manifest]
         quality = benchmark.quality_metrics(
             args.results / "rasters", inputs, args.corpus
@@ -95,6 +244,31 @@ def main() -> int:
                 for row in page_rows:
                     stream.write(json.dumps(row, sort_keys=True) + "\n")
         summary["quality"] = quality
+
+    contact_sheets = sorted((args.results / "visual" / "contacts").glob("*.webp"))
+    page_sheets = args.results / "visual" / "pages"
+    if contact_sheets or page_sheets.is_dir():
+        links = [
+            {
+                "label": path.stem.replace("contact-", "Pages ").replace("-", "–"),
+                "path": path.relative_to(args.results).as_posix(),
+            }
+            for path in contact_sheets
+        ]
+        if page_sheets.is_dir():
+            links.append(
+                {
+                    "label": f"All {len(manifest)} full comparison sheets",
+                    "path": page_sheets.relative_to(args.results).as_posix() + "/",
+                }
+            )
+        summary["quality"]["visual_evidence"] = {
+            "description": (
+                "Each comparison sheet contains unscaled renderer output and "
+                "amplified absolute-difference maps against the leave-one-engine-out consensus."
+            ),
+            "links": links,
+        }
 
     fresh_rows = load_jsonl(args.results / "parse-fresh.jsonl")
     wellfriend = benchmark.median_by_key(
@@ -112,6 +286,7 @@ def main() -> int:
     summary["raw_row_counts"] = {
         name: sum(1 for line in (args.results / name).open(encoding="utf-8") if line.strip())
         for name in RAW_FILES
+        if (args.results / name).is_file()
     }
     summary["source_sha256"] = {
         path.name: benchmark.sha256_file(path)

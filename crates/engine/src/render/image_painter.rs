@@ -150,6 +150,15 @@ impl ImagePainter {
         let dst_h = target_height as f64;
         let footprint_x = image.width as f64 / dst_w;
         let footprint_y = image.height as f64 / dst_h;
+        // Bilinear sampling is not a minification filter: it observes at most
+        // four source samples regardless of the source footprint. On scanned
+        // pages that turns printer/scan halftones into large moire dots. Use an
+        // exact source-footprint box reduction whenever both axes shrink. This
+        // path is phase-correct for the integer device target, runs in
+        // O(source pixels), and keeps only one destination row of scratch data.
+        if target_width < image.width && target_height < image.height {
+            return Self::box_downscale_rgb(image, target_width, target_height);
+        }
         let smooth = if Self::magnifying(image, dst_w, dst_h) {
             SmoothMode::None
         } else {
@@ -167,6 +176,96 @@ impl ImagePainter {
                 pixels[base + 2] = sample[2];
             }
         }
+        Some(RawImage {
+            width: target_width,
+            height: target_height,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels,
+        })
+    }
+
+    fn box_downscale_rgb(
+        image: &RawImage,
+        target_width: u32,
+        target_height: u32,
+    ) -> Option<RawImage> {
+        if target_width == 0
+            || target_height == 0
+            || target_width >= image.width
+            || target_height >= image.height
+            || image.bits_per_sample != 8
+            || !matches!(image.channels, 1 | 3)
+            || !image.is_valid()
+        {
+            return None;
+        }
+
+        let dst_width = target_width as usize;
+        let dst_height = target_height as usize;
+        let source_width = image.width as usize;
+        let source_height = image.height as usize;
+        let output_len = dst_width.checked_mul(dst_height)?.checked_mul(3)?;
+        let row_len = dst_width.checked_mul(3)?;
+        let mut pixels = vec![0u8; output_len];
+        let mut accumulated = vec![0.0_f64; row_len];
+        let source_per_destination_x = source_width as f64 / dst_width as f64;
+        let source_per_destination_y = source_height as f64 / dst_height as f64;
+
+        for destination_y in 0..dst_height {
+            accumulated.fill(0.0);
+            let source_y0 = destination_y as f64 * source_per_destination_y;
+            let source_y1 = (destination_y + 1) as f64 * source_per_destination_y;
+            let first_source_y = source_y0.floor() as usize;
+            let last_source_y = source_y1.ceil().min(source_height as f64) as usize;
+
+            for source_y in first_source_y..last_source_y {
+                let y_weight =
+                    ((source_y + 1) as f64).min(source_y1) - (source_y as f64).max(source_y0);
+                if y_weight <= 0.0 {
+                    continue;
+                }
+                for destination_x in 0..dst_width {
+                    let source_x0 = destination_x as f64 * source_per_destination_x;
+                    let source_x1 = (destination_x + 1) as f64 * source_per_destination_x;
+                    let first_source_x = source_x0.floor() as usize;
+                    let last_source_x = source_x1.ceil().min(source_width as f64) as usize;
+                    let output_base = destination_x * 3;
+
+                    for source_x in first_source_x..last_source_x {
+                        let x_weight = ((source_x + 1) as f64).min(source_x1)
+                            - (source_x as f64).max(source_x0);
+                        if x_weight <= 0.0 {
+                            continue;
+                        }
+                        let weight = x_weight * y_weight;
+                        let source_base = (source_y * source_width + source_x)
+                            .checked_mul(image.channels as usize)?;
+                        if image.channels == 1 {
+                            let gray = *image.pixels.get(source_base)? as f64;
+                            accumulated[output_base] += gray * weight;
+                            accumulated[output_base + 1] += gray * weight;
+                            accumulated[output_base + 2] += gray * weight;
+                        } else {
+                            accumulated[output_base] +=
+                                *image.pixels.get(source_base)? as f64 * weight;
+                            accumulated[output_base + 1] +=
+                                *image.pixels.get(source_base + 1)? as f64 * weight;
+                            accumulated[output_base + 2] +=
+                                *image.pixels.get(source_base + 2)? as f64 * weight;
+                        }
+                    }
+                }
+            }
+
+            let normalization = source_per_destination_x * source_per_destination_y;
+            let output_row = destination_y * row_len;
+            for (offset, value) in accumulated.iter().enumerate() {
+                pixels[output_row + offset] =
+                    (value / normalization).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+
         Some(RawImage {
             width: target_width,
             height: target_height,
@@ -333,7 +432,7 @@ impl ImagePainter {
         } else {
             smooth_mode
         };
-        let use_area_average = buf.render_mode().is_high_quality();
+        let use_area_average = footprint_x > 1.0 || footprint_y > 1.0;
         let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
         if x0 > x1 || y0 > y1 {
             return;
@@ -454,34 +553,50 @@ impl ImagePainter {
                 Self::bilinear_axis_sample(u, image.width)
             })
             .collect::<Vec<_>>();
-        let direct_opaque =
-            image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped();
+        let direct_binary_clip =
+            image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_with_binary_clip();
+        let mut rgb_run = direct_binary_clip.then(|| Vec::with_capacity(x_samples.len() * 3));
 
         for py in y0..=y1 {
             let v = (py as f64 + 0.5 - py_min) / dst_h;
             let Some(y_sample) = Self::bilinear_axis_sample(v, image.height) else {
                 continue;
             };
+            if let Some(rgb_run) = rgb_run.as_mut() {
+                let mut offset = 0usize;
+                while offset < x_samples.len() {
+                    while offset < x_samples.len() && x_samples[offset].is_none() {
+                        offset += 1;
+                    }
+                    let run_start = offset;
+                    rgb_run.clear();
+                    while let Some(Some(x_sample)) = x_samples.get(offset) {
+                        let sample = Self::bilinear_sample_precomputed(image, *x_sample, y_sample);
+                        rgb_run.extend_from_slice(&sample[..3]);
+                        offset += 1;
+                    }
+                    if !rgb_run.is_empty() {
+                        buf.write_opaque_rgb_run_binary_clipped(
+                            x0.saturating_add(run_start as i32),
+                            py,
+                            rgb_run,
+                        );
+                    }
+                }
+                continue;
+            }
             for (offset, x_sample) in x_samples.iter().enumerate() {
                 let Some(x_sample) = x_sample else {
                     continue;
                 };
                 let px = x0 + offset as i32;
                 let sample = Self::bilinear_sample_precomputed(image, *x_sample, y_sample);
-                if direct_opaque {
-                    buf.write_opaque_pixel_unclipped(
-                        px,
-                        py,
-                        [sample[0], sample[1], sample[2], 255],
-                    );
+                let coverage = if image.channels == 4 {
+                    sample[3] as f32 / 255.0
                 } else {
-                    let coverage = if image.channels == 4 {
-                        sample[3] as f32 / 255.0
-                    } else {
-                        1.0
-                    } * paint_alpha;
-                    buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
-                }
+                    1.0
+                } * paint_alpha;
+                buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
             }
         }
     }
@@ -671,7 +786,7 @@ impl ImagePainter {
         } else {
             smooth_mode
         };
-        let use_area_average = buf.render_mode().is_high_quality();
+        let use_area_average = footprint_x > 1.0 || footprint_y > 1.0;
         let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
         if x0 > x1 || y0 > y1 {
             return;
@@ -1547,6 +1662,35 @@ mod tests {
     }
 
     #[test]
+    fn bilinear_rgb_row_fast_path_preserves_samples_and_binary_clip() {
+        let mut buf = PixelBuffer::new_filled(3, 1, WHITE);
+        let mut clip = ClipMask::empty(3, 1);
+        clip.set(0, 0, true);
+        clip.set(2, 0, true);
+        buf.set_clip(clip);
+        let image = RawImage {
+            width: 4,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
+        };
+
+        ImagePainter::paint_axis_aligned_bilinear_precomputed(
+            &mut buf, &image, 0.0, 0.0, 3.0, 1.0, 0, 2, 0, 0, 1.0,
+        );
+
+        let y_sample = ImagePainter::bilinear_axis_sample(0.5, 1).expect("y sample");
+        for x in [0, 2] {
+            let u = (x as f64 + 0.5) / 3.0;
+            let x_sample = ImagePainter::bilinear_axis_sample(u, 4).expect("x sample");
+            let expected = ImagePainter::bilinear_sample_precomputed(&image, x_sample, y_sample);
+            assert_eq!(&buf.get_pixel(x, 0)[..3], &expected[..3]);
+        }
+        assert_eq!(buf.get_pixel(1, 0), WHITE);
+    }
+
+    #[test]
     fn paint_rotated_image_affine_path_draws_pixels() {
         let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
         let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
@@ -1565,5 +1709,30 @@ mod tests {
             .flat_map(|y| (0..100i32).map(move |x| (x, y)))
             .any(|(x, y)| buf.get_pixel(x, y)[0] < 200);
         assert!(dark);
+    }
+
+    #[test]
+    fn box_minification_averages_halftone_without_aliasing() {
+        let mut pixels = Vec::with_capacity(8 * 8);
+        for y in 0..8 {
+            for x in 0..8 {
+                pixels.push(if (x + y) % 2 == 0 { 0 } else { 255 });
+            }
+        }
+        let image = RawImage {
+            width: 8,
+            height: 8,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels,
+        };
+
+        let reduced = ImagePainter::scale_axis_aligned_default_rgb(&image, 1, 1, false)
+            .expect("box-reduced RGB image");
+
+        assert_eq!(reduced.width, 1);
+        assert_eq!(reduced.height, 1);
+        assert_eq!(reduced.channels, 3);
+        assert_eq!(reduced.pixels, vec![128, 128, 128]);
     }
 }

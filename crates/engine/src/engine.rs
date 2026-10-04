@@ -1074,10 +1074,14 @@ impl PageResources {
                                 .xobject_subtypes
                                 .insert(name.clone(), subtype.to_string());
                             if subtype == "Form" {
-                                if let Some(bbox) = numeric_array_4(&dict, "BBox") {
+                                if let Some(bbox) =
+                                    resolved_numeric_array::<4>(&dict, "BBox", reader)
+                                {
                                     page_resources.xobject_bboxes.insert(name.clone(), bbox);
                                 }
-                                if let Some(matrix) = numeric_array_6(&dict, "Matrix") {
+                                if let Some(matrix) =
+                                    resolved_numeric_array::<6>(&dict, "Matrix", reader)
+                                {
                                     page_resources.xobject_matrices.insert(name.clone(), matrix);
                                 }
                             }
@@ -1175,32 +1179,26 @@ impl PageResources {
     }
 }
 
-fn numeric_array_4(dict: &PdfDictionary, key: &str) -> Option<[f64; 4]> {
-    let arr = dict.get(key)?.as_array()?;
-    if arr.len() != 4 {
+fn resolved_numeric_array<const N: usize>(
+    dict: &PdfDictionary,
+    key: &str,
+    reader: &PdfReader,
+) -> Option<[f64; N]> {
+    let resolved = reader.resolve(dict.get(key)?.clone()).ok()?;
+    let items = resolved.as_array()?;
+    if items.len() != N {
         return None;
     }
-    Some([
-        arr[0].as_number()?,
-        arr[1].as_number()?,
-        arr[2].as_number()?,
-        arr[3].as_number()?,
-    ])
-}
-
-fn numeric_array_6(dict: &PdfDictionary, key: &str) -> Option<[f64; 6]> {
-    let arr = dict.get(key)?.as_array()?;
-    if arr.len() != 6 {
-        return None;
+    let mut values = [0.0; N];
+    for (index, item) in items.iter().enumerate() {
+        let resolved_item = reader.resolve(item.clone()).ok()?;
+        let value = resolved_item.as_number()?;
+        if !value.is_finite() {
+            return None;
+        }
+        values[index] = value;
     }
-    Some([
-        arr[0].as_number()?,
-        arr[1].as_number()?,
-        arr[2].as_number()?,
-        arr[3].as_number()?,
-        arr[4].as_number()?,
-        arr[5].as_number()?,
-    ])
+    Some(values)
 }
 
 const MAX_PAGE_ARTIFACT_CACHE_ENTRIES: usize = 256;
@@ -2492,7 +2490,10 @@ impl ContentEngine {
             if strict_parse {
                 return ContentParser::parse_tokens_strict_cancellable(tokens, cancel);
             }
-            return ContentParser::parse_tokens_propagating_io_cancellable(tokens, cancel);
+            let mut operations =
+                ContentParser::parse_tokens_propagating_io_cancellable(tokens, cancel)?;
+            crate::content::parser::normalize_compatibility_operations(&mut operations);
+            return Ok(operations);
         }
         let page = self.doc.get_page(page_number)?;
         let estimate = estimate_raw_stream_decode_bytes(page.contents.len().saturating_mul(1024));
@@ -2514,7 +2515,11 @@ impl ContentEngine {
             &mut total_decoded_bytes,
             limits,
         )?;
-        ContentParser::parse_cancellable(&bytes, cancel)
+        let mut operations = ContentParser::parse_cancellable(&bytes, cancel)?;
+        if !strict_parse {
+            crate::content::parser::normalize_compatibility_operations(&mut operations);
+        }
+        Ok(operations)
     }
 
     pub fn get_page_resources(&self, page_number: usize) -> Result<PageResources> {
