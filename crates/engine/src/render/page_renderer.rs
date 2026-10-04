@@ -14392,6 +14392,12 @@ impl<'a> RenderState<'a> {
         let saved_clip = Arc::clone(&self.current_clip);
         self.apply_clip_mask_node(path_clip);
         self.pattern_stack.push(pattern_key);
+        let program_is_bbox_bounded = tiling_pattern_program_is_bbox_bounded(
+            program.ops.as_ref(),
+            &program.resources,
+            reader,
+            bbox,
+        );
 
         for j in j0..=j1 {
             for i in i0..=i1 {
@@ -14407,7 +14413,13 @@ impl<'a> RenderState<'a> {
                 let translate =
                     Transform2D::new(1.0, 0.0, 0.0, 1.0, i as f64 * x_step, j as f64 * y_step);
                 let tile_ctm = translate.concat(&pattern_ctm);
-                self.render_pattern_tile(program.as_ref(), tile_ctm, bbox, forced_color.as_ref());
+                self.render_pattern_tile(
+                    program.as_ref(),
+                    tile_ctm,
+                    bbox,
+                    forced_color.as_ref(),
+                    !program_is_bbox_bounded,
+                );
             }
         }
 
@@ -14427,6 +14439,7 @@ impl<'a> RenderState<'a> {
             crate::content::state::Color,
             ActiveColorSpaceResource,
         )>,
+        clip_to_bbox: bool,
     ) {
         let saved_gs = self.gs.clone();
         let saved_resources = self.resources.clone();
@@ -14462,7 +14475,7 @@ impl<'a> RenderState<'a> {
         let y_min = bbox[1].min(bbox[3]);
         let w = (bbox[2] - bbox[0]).abs();
         let h = (bbox[3] - bbox[1]).abs();
-        if w > 0.0 && h > 0.0 {
+        if clip_to_bbox && w > 0.0 && h > 0.0 {
             let bbox_clip = if let Some((x, y, width, height)) = axis_aligned_bbox_clip_rect(
                 bbox,
                 &self.ctm(),
@@ -14470,14 +14483,22 @@ impl<'a> RenderState<'a> {
                 self.buf.width,
                 self.buf.height,
             ) {
-                ClipMask::from_visible_rect(self.buf.width, self.buf.height, x, y, width, height)
+                self.apply_clip_rect_node(x, y, width, height);
+                None
             } else {
                 let mut bbox_path = Path::new();
                 bbox_path.rect(x_min, y_min, w, h);
                 let flat = flatten_path(&bbox_path, &self.ctm(), &self.viewport, 0.5);
-                ClipMask::from_path(&flat, self.buf.width, self.buf.height, FillRule::NonZero)
+                Some(ClipMask::from_path(
+                    &flat,
+                    self.buf.width,
+                    self.buf.height,
+                    FillRule::NonZero,
+                ))
             };
-            self.apply_clip_mask_node(bbox_clip);
+            if let Some(bbox_clip) = bbox_clip {
+                self.apply_clip_mask_node(bbox_clip);
+            }
         }
 
         if let Some(plan) = program.retained_plan.as_ref() {
@@ -26480,6 +26501,180 @@ fn transformed_bbox_pixel_area(bbox: [f64; 4], transform: &Transform2D) -> Optio
     Some(width.saturating_mul(height))
 }
 
+fn tiling_pattern_program_is_bbox_bounded(
+    operations: &[ContentOperation],
+    resources: &PageResources,
+    reader: &PdfReader,
+    bbox: [f64; 4],
+) -> bool {
+    let bbox = [
+        bbox[0].min(bbox[2]),
+        bbox[1].min(bbox[3]),
+        bbox[0].max(bbox[2]),
+        bbox[1].max(bbox[3]),
+    ];
+    if bbox.iter().any(|value| !value.is_finite()) || bbox[2] <= bbox[0] || bbox[3] <= bbox[1] {
+        return false;
+    }
+
+    let mut ctm = crate::content::state::IDENTITY_MATRIX;
+    let mut ctm_stack = Vec::new();
+    let mut path_bounds: Option<[f64; 4]> = None;
+
+    for operation in operations {
+        match operation.operator.as_str() {
+            "q" => ctm_stack.push(ctm),
+            "Q" => {
+                let Some(saved) = ctm_stack.pop() else {
+                    return false;
+                };
+                ctm = saved;
+            }
+            "cm" => {
+                let Some(matrix) = operation_matrix(operation) else {
+                    return false;
+                };
+                ctm = concat_matrix(&matrix, &ctm);
+            }
+            "m" | "l" => {
+                let Some(points) = operation_points(operation, &[0, 1]) else {
+                    return false;
+                };
+                extend_transformed_bounds(&mut path_bounds, &ctm, &points);
+            }
+            "c" => {
+                let Some(points) = operation_points(operation, &[0, 1, 2, 3, 4, 5]) else {
+                    return false;
+                };
+                extend_transformed_bounds(&mut path_bounds, &ctm, &points);
+            }
+            "v" | "y" => {
+                let Some(points) = operation_points(operation, &[0, 1, 2, 3]) else {
+                    return false;
+                };
+                extend_transformed_bounds(&mut path_bounds, &ctm, &points);
+            }
+            "re" => {
+                let (Some(x), Some(y), Some(width), Some(height)) = (
+                    operation.number(0),
+                    operation.number(1),
+                    operation.number(2),
+                    operation.number(3),
+                ) else {
+                    return false;
+                };
+                if [x, y, width, height].iter().any(|value| !value.is_finite()) {
+                    return false;
+                }
+                extend_transformed_bounds(
+                    &mut path_bounds,
+                    &ctm,
+                    &[
+                        (x, y),
+                        (x + width, y),
+                        (x, y + height),
+                        (x + width, y + height),
+                    ],
+                );
+            }
+            "f" | "F" | "f*" => {
+                if path_bounds.is_some_and(|bounds| !bounds_within_bbox(bounds, bbox)) {
+                    return false;
+                }
+                path_bounds = None;
+            }
+            "n" => path_bounds = None,
+            "Do" => {
+                let Some(name) = operation.name(0) else {
+                    return false;
+                };
+                let Some(&(number, generation)) = resources.xobjects.get(name) else {
+                    return false;
+                };
+                let Ok(PdfObject::Stream { dict, .. }) = reader.get_object(number, generation)
+                else {
+                    return false;
+                };
+                if dict.get_name("Subtype") != Some("Image") {
+                    return false;
+                }
+                let mut image_bounds = None;
+                extend_transformed_bounds(
+                    &mut image_bounds,
+                    &ctm,
+                    &[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)],
+                );
+                if image_bounds.is_none_or(|bounds| !bounds_within_bbox(bounds, bbox)) {
+                    return false;
+                }
+            }
+            // These operators change graphics/text state, metadata, or the
+            // pending clip, but do not paint pixels by themselves.
+            "h" | "W" | "W*" | "w" | "J" | "j" | "M" | "d" | "ri" | "i" | "gs" | "CS" | "cs"
+            | "SC" | "SCN" | "sc" | "scn" | "G" | "g" | "RG" | "rg" | "K" | "k" | "BT" | "ET"
+            | "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr" | "Ts" | "d0"
+            | "d1" | "BMC" | "BDC" | "EMC" | "MP" | "DP" | "BX" | "EX" => {}
+            // Stroke geometry, text, shadings, Forms, and inline images need
+            // their declared BBox clip unless a future analyzer proves their
+            // complete paint extent.
+            _ => return false,
+        }
+    }
+
+    ctm_stack.is_empty()
+}
+
+fn operation_matrix(operation: &ContentOperation) -> Option<[f64; 6]> {
+    let matrix = [
+        operation.number(0)?,
+        operation.number(1)?,
+        operation.number(2)?,
+        operation.number(3)?,
+        operation.number(4)?,
+        operation.number(5)?,
+    ];
+    matrix
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(matrix)
+}
+
+fn operation_points(operation: &ContentOperation, indices: &[usize]) -> Option<Vec<(f64, f64)>> {
+    let mut points = Vec::with_capacity(indices.len() / 2);
+    for pair in indices.chunks_exact(2) {
+        let x = operation.number(pair[0])?;
+        let y = operation.number(pair[1])?;
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        points.push((x, y));
+    }
+    Some(points)
+}
+
+fn extend_transformed_bounds(bounds: &mut Option<[f64; 4]>, ctm: &[f64; 6], points: &[(f64, f64)]) {
+    for &(x, y) in points {
+        let (x, y) = crate::content::state::transform_point(ctm, x, y);
+        if let Some(bounds) = bounds.as_mut() {
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        } else {
+            *bounds = Some([x, y, x, y]);
+        }
+    }
+}
+
+fn bounds_within_bbox(bounds: [f64; 4], bbox: [f64; 4]) -> bool {
+    const EPSILON: f64 = 1.0e-9;
+    bounds.iter().all(|value| value.is_finite())
+        && bounds[0] >= bbox[0] - EPSILON
+        && bounds[1] >= bbox[1] - EPSILON
+        && bounds[2] <= bbox[2] + EPSILON
+        && bounds[3] <= bbox[3] + EPSILON
+}
+
 fn tiling_pattern_work_budget(
     tile_count: i128,
     tile_pixel_area: i128,
@@ -26851,6 +27046,40 @@ mod tests {
         let error = tiling_pattern_work_budget(10_000, 10_000, 1, surface_pixels, false)
             .expect_err("excessive pattern overdraw must be bounded");
         assert!(error.contains("bounded coverage budget"), "got {error}");
+    }
+
+    #[test]
+    fn tiling_pattern_bbox_analysis_accepts_contained_fill_and_image() {
+        let engine = ContentEngine::open_bytes(pdf_with_indirect_pattern_xobject_resource())
+            .expect("open pattern image fixture");
+        let operations = crate::content::ContentParser::parse_compat(
+            b"0 1 1 -1 re f q 1 0 0 -1 0 1 cm /Im1 Do Q",
+        )
+        .expect("parse bounded pattern program");
+        let mut resources = PageResources::default();
+        resources.xobjects.insert("Im1".to_string(), (6, 0));
+
+        assert!(tiling_pattern_program_is_bbox_bounded(
+            &operations,
+            &resources,
+            engine.document().reader(),
+            [0.0, 0.0, 1.0, 1.0],
+        ));
+    }
+
+    #[test]
+    fn tiling_pattern_bbox_analysis_keeps_clip_for_unproven_paint_extent() {
+        let engine =
+            ContentEngine::open_bytes(simple_vector_pdf("")).expect("open pattern bounds fixture");
+        let operations = crate::content::ContentParser::parse_compat(b"0 0 2 1 re f")
+            .expect("parse out-of-bounds pattern program");
+
+        assert!(!tiling_pattern_program_is_bbox_bounded(
+            &operations,
+            &PageResources::default(),
+            engine.document().reader(),
+            [0.0, 0.0, 1.0, 1.0],
+        ));
     }
 
     #[test]
@@ -36473,6 +36702,7 @@ mod tests {
             Transform2D::identity(),
             [0.0, 0.0, 1.0, 1.0],
             None,
+            true,
         );
 
         let error = state
