@@ -14326,19 +14326,6 @@ impl<'a> RenderState<'a> {
         let j1 = ((pmaxy - bbox[1]) / y_step).ceil() as i64;
 
         let tile_count = (i1 - i0 + 1).max(0) as i128 * (j1 - j0 + 1).max(0) as i128;
-        const COMPAT_TILE_CAP: i128 = 4_096;
-        const HIGH_QUALITY_TILE_CAP: i128 = 20_000;
-        let tile_cap = if self.buf.render_mode().is_high_quality() {
-            HIGH_QUALITY_TILE_CAP
-        } else {
-            COMPAT_TILE_CAP
-        };
-        if tile_count > tile_cap {
-            self.record_fatal_render_error(format!(
-                "tiling pattern requires {tile_count} visible cells, exceeding exact render limit {tile_cap}"
-            ));
-            return;
-        }
         if tile_count == 0 {
             return;
         }
@@ -14351,6 +14338,23 @@ impl<'a> RenderState<'a> {
         ) else {
             return;
         };
+        let Some(tile_pixel_area) = transformed_bbox_pixel_area(bbox, &full) else {
+            self.record_fatal_render_error(
+                "tiling pattern cell has non-finite device-space bounds",
+            );
+            return;
+        };
+        let surface_pixels = i128::from(self.buf.width) * i128::from(self.buf.height);
+        if let Err(reason) = tiling_pattern_work_budget(
+            tile_count,
+            tile_pixel_area,
+            program.ops.len() as i128,
+            surface_pixels,
+            self.buf.render_mode().is_high_quality(),
+        ) {
+            self.record_fatal_render_error(reason);
+            return;
+        }
 
         // Bind the actual underlying space. Component count is not a colour
         // space: one component may be CalGray/Separation, not DeviceGray.
@@ -26442,6 +26446,83 @@ fn operations_with_inherited_color_state(
     inherited
 }
 
+fn transformed_bbox_pixel_area(bbox: [f64; 4], transform: &Transform2D) -> Option<i128> {
+    let corners = [
+        transform.transform_point(bbox[0], bbox[1]),
+        transform.transform_point(bbox[2], bbox[1]),
+        transform.transform_point(bbox[0], bbox[3]),
+        transform.transform_point(bbox[2], bbox[3]),
+    ];
+    if corners
+        .iter()
+        .any(|(x, y)| !x.is_finite() || !y.is_finite())
+    {
+        return None;
+    }
+    let min_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let width = (max_x - min_x).abs().ceil().max(1.0) as i128;
+    let height = (max_y - min_y).abs().ceil().max(1.0) as i128;
+    Some(width.saturating_mul(height))
+}
+
+fn tiling_pattern_work_budget(
+    tile_count: i128,
+    tile_pixel_area: i128,
+    operations_per_tile: i128,
+    surface_pixels: i128,
+    high_quality: bool,
+) -> std::result::Result<(), String> {
+    if tile_count <= 0 || tile_pixel_area <= 0 || surface_pixels <= 0 {
+        return Ok(());
+    }
+
+    // Cell count alone is a poor proxy for work: thousands of tiny cells can
+    // cover less than one page, while a few overlapping page-sized cells can
+    // be expensive. Bound all three independent costs: loop cardinality,
+    // clipped pixel coverage, and content-program replay operations.
+    let hard_tile_cap = surface_pixels
+        .saturating_mul(if high_quality { 4 } else { 2 })
+        .max(4_096)
+        .min(if high_quality { 2_000_000 } else { 1_000_000 });
+    if tile_count > hard_tile_cap {
+        return Err(format!(
+            "tiling pattern requires {tile_count} visible cells, exceeding bounded cell budget {hard_tile_cap}"
+        ));
+    }
+
+    let coverage = tile_count.saturating_mul(tile_pixel_area);
+    let coverage_cap = surface_pixels.saturating_mul(if high_quality { 256 } else { 64 });
+    if coverage > coverage_cap {
+        return Err(format!(
+            "tiling pattern requires {coverage} clipped cell-pixels, exceeding bounded coverage budget {coverage_cap}"
+        ));
+    }
+
+    let replay_operations = tile_count.saturating_mul(operations_per_tile.max(1));
+    let operation_cap = surface_pixels.saturating_mul(if high_quality { 1_024 } else { 256 });
+    if replay_operations > operation_cap {
+        return Err(format!(
+            "tiling pattern requires {replay_operations} replay operations, exceeding bounded replay budget {operation_cap}"
+        ));
+    }
+    Ok(())
+}
+
 fn form_bbox_intersects_viewport(bbox: [f64; 4], ctm: &Transform2D, viewport: &Viewport) -> bool {
     let x_min = bbox[0].min(bbox[2]);
     let y_min = bbox[1].min(bbox[3]);
@@ -26748,6 +26829,28 @@ mod tests {
                 Operand::Name("InheritedFill".into()),
             ]
         );
+    }
+
+    #[test]
+    fn tiling_pattern_budget_allows_many_small_visible_cells() {
+        let surface_pixels = 612_i128 * 792;
+        assert!(tiling_pattern_work_budget(6_324, 100, 20, surface_pixels, false).is_ok());
+    }
+
+    #[test]
+    fn tiling_pattern_budget_rejects_excessive_cell_cardinality() {
+        let surface_pixels = 612_i128 * 792;
+        let error = tiling_pattern_work_budget(1_000_001, 1, 1, surface_pixels, false)
+            .expect_err("million-cell pattern must be bounded");
+        assert!(error.contains("bounded cell budget"), "got {error}");
+    }
+
+    #[test]
+    fn tiling_pattern_budget_rejects_excessive_overdraw() {
+        let surface_pixels = 612_i128 * 792;
+        let error = tiling_pattern_work_budget(10_000, 10_000, 1, surface_pixels, false)
+            .expect_err("excessive pattern overdraw must be bounded");
+        assert!(error.contains("bounded coverage budget"), "got {error}");
     }
 
     #[test]
