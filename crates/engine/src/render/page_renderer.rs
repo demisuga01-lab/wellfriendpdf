@@ -14425,6 +14425,13 @@ impl<'a> RenderState<'a> {
 
         self.pattern_stack.pop();
         self.install_clip_node(saved_clip);
+        // A tiling-pattern replay can create several materialized clip nodes
+        // per cell. Those nodes are tile-local: after the caller clip is
+        // restored, retaining them in the page DAG only grows memory and makes
+        // later cells walk an ever larger intern table. Prune at the pattern
+        // boundary, where all live graphics-state/stack references remain
+        // protected by their Arc owners and unused cell nodes can be released.
+        self.clip_dag.evict_unused();
     }
 
     /// Render a single tile of a tiling pattern at `tile_ctm`, clipped to the
