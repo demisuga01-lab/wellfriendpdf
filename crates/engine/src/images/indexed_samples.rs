@@ -99,14 +99,20 @@ impl PreparedPalette {
                 "Indexed source/replacement base component mismatch",
             ));
         }
-        let lookup = colorspace::indexed_lookup_bytes(&bound[3], reader).map_err(invalid)?;
+        let mut lookup = colorspace::indexed_lookup_bytes(&bound[3], reader).map_err(invalid)?;
         let expected = (maximum + 1) * channels;
-        if lookup.len() != expected {
+        if lookup.len() < expected {
             return Err(invalid(format!(
-                "Indexed image ColorSpace lookup table has {} bytes, expected {expected}",
+                "Indexed image ColorSpace lookup table has {} bytes, expected at least {expected}",
                 lookup.len()
             )));
         }
+        // ISO 32000 addresses exactly `(hival + 1) * base-components` bytes.
+        // Several established producers append a padding byte to an otherwise
+        // complete lookup string. Ignore only the bounded trailing suffix;
+        // undersized tables remain malformed and every indexed read stays
+        // within the spec-defined prefix.
+        lookup.truncate(expected);
         let mut target_dict = PdfDictionary::empty();
         target_dict.insert("ColorSpace", target_base.clone());
         match target_family {

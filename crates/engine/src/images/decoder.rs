@@ -4161,7 +4161,7 @@ mod tests {
     }
 
     #[test]
-    fn indexed_image_rejects_overlong_lookup_table() {
+    fn indexed_image_ignores_bounded_trailing_lookup_bytes() {
         let reader =
             crate::reader::PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf())
                 .unwrap();
@@ -4176,11 +4176,34 @@ mod tests {
             ]),
         );
 
+        let (pixels, channels) =
+            ColorSpaceConverter::decode_indexed(&[0, 1], 8, &dict, &reader, 2, 1).unwrap();
+
+        assert_eq!(channels, 3);
+        assert_eq!(pixels, vec![255, 0, 0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn indexed_image_rejects_an_undersized_lookup_table() {
+        let reader =
+            crate::reader::PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf())
+                .unwrap();
+        let mut dict = PdfDictionary::empty();
+        dict.insert(
+            "ColorSpace",
+            PdfObject::Array(vec![
+                PdfObject::Name("Indexed".to_string()),
+                PdfObject::Name("DeviceRGB".to_string()),
+                PdfObject::Integer(1),
+                PdfObject::String(vec![255, 0, 0, 0, 0]),
+            ]),
+        );
+
         let error = ColorSpaceConverter::decode_indexed(&[0, 1], 8, &dict, &reader, 2, 1)
-            .expect_err("overlong Indexed lookup table must fail typed");
+            .expect_err("undersized Indexed lookup table must fail typed");
         assert!(matches!(error, WellfriendError::MalformedPdf(_)));
         assert!(
-            format!("{error}").contains("lookup table has 7 bytes, expected 6"),
+            format!("{error}").contains("lookup table has 5 bytes, expected at least 6"),
             "unexpected Indexed lookup length error: {error}"
         );
     }
