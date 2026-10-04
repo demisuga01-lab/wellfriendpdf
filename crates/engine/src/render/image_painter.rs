@@ -91,10 +91,18 @@ impl ImagePainter {
         ctm: &Transform2D,
         viewport: &Viewport,
     ) -> Option<AxisAlignedImageTarget> {
-        if !ctm.is_axis_aligned() || ctm.determinant().abs() < 1e-10 {
+        if ctm.determinant().abs() < 1e-10 {
             return None;
         }
         let combined = ctm.concat(&viewport.to_transform());
+        // The scaled-image cache stores the decoded raster in device row order,
+        // so it is valid only for the canonical PDF-image orientation: source
+        // columns advance to the right and source rows advance downward. Page
+        // rotation, reflection, and a reversed image matrix must use the affine
+        // sampler, which retains that orientation explicitly.
+        if !Self::is_top_down_axis_aligned(&combined) {
+            return None;
+        }
         let corners = [
             combined.transform_point(0.0, 0.0),
             combined.transform_point(1.0, 0.0),
@@ -117,6 +125,11 @@ impl ImagePainter {
             width,
             height,
         })
+    }
+
+    #[inline]
+    fn is_top_down_axis_aligned(transform: &Transform2D) -> bool {
+        transform.is_axis_aligned() && transform.a > 1e-10 && transform.d < -1e-10
     }
 
     /// Pre-scale an axis-aligned image to a device-size RGB image using the same
@@ -366,7 +379,7 @@ impl ImagePainter {
         let vp_transform = viewport.to_transform();
         let combined = ctm.concat(&vp_transform);
 
-        if ctm.is_axis_aligned() {
+        if Self::is_top_down_axis_aligned(&combined) {
             Self::paint_axis_aligned(buf, image, &combined, smooth_mode, paint_alpha);
         } else {
             Self::paint_affine(buf, image, &combined, smooth_mode, paint_alpha);
@@ -795,7 +808,11 @@ impl ImagePainter {
         if image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped() {
             for py in y0..=y1 {
                 for px in x0..=x1 {
-                    let (u, v) = inv.transform_point(px as f64 + 0.5, py as f64 + 0.5);
+                    let (u, pdf_v) = inv.transform_point(px as f64 + 0.5, py as f64 + 0.5);
+                    // PDF image samples are stored top row first while image
+                    // space has its origin at the lower-left. Convert the
+                    // inverse-mapped image-space ordinate to decoded row order.
+                    let v = 1.0 - pdf_v;
                     if !inside_unit_image_sample(u) || !inside_unit_image_sample(v) {
                         continue;
                     }
@@ -821,7 +838,8 @@ impl ImagePainter {
 
         for py in y0..=y1 {
             for px in x0..=x1 {
-                let (u, v) = inv.transform_point(px as f64 + 0.5, py as f64 + 0.5);
+                let (u, pdf_v) = inv.transform_point(px as f64 + 0.5, py as f64 + 0.5);
+                let v = 1.0 - pdf_v;
                 if !inside_unit_image_sample(u) || !inside_unit_image_sample(v) {
                     continue;
                 }
@@ -1237,6 +1255,29 @@ mod tests {
         let fractional =
             Transform2D::translation(10.3, 20.0).concat(&Transform2D::scale(12.0, 8.0));
         assert!(ImagePainter::axis_aligned_integer_target(&fractional, &viewport).is_none());
+
+        let rotated_viewport = Viewport::new_rotated([0.0, 0.0, 100.0, 100.0], 72, 90);
+        assert!(
+            ImagePainter::axis_aligned_integer_target(&ctm, &rotated_viewport).is_none(),
+            "a page-rotated image must retain its orientation through the affine sampler"
+        );
+    }
+
+    #[test]
+    fn rotated_viewport_preserves_pdf_image_row_orientation() {
+        // Decoded image rows are top-to-bottom: red/green, then blue/yellow.
+        // A clockwise page rotation produces blue/red, then yellow/green.
+        let image = rgb_2x2_image();
+        let viewport = Viewport::new_rotated([0.0, 0.0, 2.0, 2.0], 72, 90);
+        let ctm = Transform2D::scale(2.0, 2.0);
+        let mut buf = PixelBuffer::new_filled(2, 2, WHITE);
+
+        ImagePainter::paint_image(&mut buf, &image, &ctm, &viewport);
+
+        assert_eq!(buf.get_pixel(0, 0), [0, 0, 255, 255]);
+        assert_eq!(buf.get_pixel(1, 0), [255, 0, 0, 255]);
+        assert_eq!(buf.get_pixel(0, 1), [255, 255, 0, 255]);
+        assert_eq!(buf.get_pixel(1, 1), [0, 255, 0, 255]);
     }
 
     #[test]
