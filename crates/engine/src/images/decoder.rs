@@ -483,6 +483,13 @@ impl ImageDecoder {
             &effective_dict,
             Some(reader),
         )?;
+        let raw = normalise_unfiltered_image_line_ending(
+            raw,
+            effective_image.width,
+            effective_image.height,
+            channels,
+            effective_image.bits_per_component,
+        );
         let (cropped, selected_channels) = crop_raw_window_with_component_selection(
             &raw,
             effective_image.width,
@@ -562,17 +569,36 @@ impl ImageDecoder {
         let decoded = decode_stream_lossless_with_limits(&stream_obj, reader, limits)?;
 
         match decoded.status {
-            StreamDecodeStatus::Complete => Self::build_raw_image(
-                decoded.data,
-                effective_image.width,
-                effective_image.height,
-                effective_image.bits_per_component,
-                &effective_image.color_space,
-                &effective_dict,
-                ImageColorContext::with_reader(reader, color_options).with_source(
-                    source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
-                ),
-            ),
+            StreamDecodeStatus::Complete => {
+                let data = if image.filter.is_empty() {
+                    let channels = Self::raw_source_channel_count(
+                        effective_image.is_mask,
+                        &effective_image.color_space,
+                        &effective_dict,
+                        Some(reader),
+                    )?;
+                    normalise_unfiltered_image_line_ending(
+                        decoded.data,
+                        effective_image.width,
+                        effective_image.height,
+                        channels,
+                        effective_image.bits_per_component,
+                    )
+                } else {
+                    decoded.data
+                };
+                Self::build_raw_image(
+                    data,
+                    effective_image.width,
+                    effective_image.height,
+                    effective_image.bits_per_component,
+                    &effective_image.color_space,
+                    &effective_dict,
+                    ImageColorContext::with_reader(reader, color_options).with_source(
+                        source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
+                    ),
+                )
+            }
             StreamDecodeStatus::StoppedAtImageFilter(filter) => {
                 Self::decode_remaining_image_filter(
                     &decoded.data,
@@ -2472,6 +2498,37 @@ fn expected_len(width: u32, height: u32, channels: u8) -> usize {
     width as usize * height as usize * channels as usize
 }
 
+fn normalise_unfiltered_image_line_ending(
+    mut raw: Vec<u8>,
+    width: u32,
+    height: u32,
+    channels: u8,
+    bits_per_component: u8,
+) -> Vec<u8> {
+    let Some(samples_per_row) = (width as usize).checked_mul(channels.max(1) as usize) else {
+        return raw;
+    };
+    let Some(bits_per_row) = samples_per_row.checked_mul(bits_per_component as usize) else {
+        return raw;
+    };
+    let Some(expected) = bits_per_row.div_ceil(8).checked_mul(height as usize) else {
+        return raw;
+    };
+    let Some(suffix) = raw.get(expected..) else {
+        return raw;
+    };
+
+    // Some producers include the CR, LF, or CRLF immediately preceding
+    // `endstream` in an unfiltered image's declared /Length. A complete image
+    // has no samples after the dimension-derived byte count, so discard only
+    // that one line ending. Arbitrary excess data remains visible to the
+    // strict decoded-length checks below.
+    if matches!(suffix, [b'\r'] | [b'\n'] | [b'\r', b'\n']) {
+        raw.truncate(expected);
+    }
+    raw
+}
+
 fn validate_raw_component_selection(components: &[u8], source_channels: u8) -> Result<u8> {
     if components.is_empty() {
         return Err(WellfriendError::UnsupportedFeature(
@@ -3533,6 +3590,30 @@ mod tests {
         let pixels = vec![100u8, 150, 200];
         let out = ImageDecoder::normalise_bit_depth(pixels.clone(), 3, 1, 1, 8).unwrap();
         assert_eq!(out, pixels);
+    }
+
+    #[test]
+    fn unfiltered_image_discards_only_one_trailing_pdf_line_ending() {
+        assert_eq!(
+            normalise_unfiltered_image_line_ending(vec![1, 2, 3, b'\r'], 1, 1, 3, 8),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            normalise_unfiltered_image_line_ending(vec![1, 2, 3, b'\r', b'\n'], 1, 1, 3, 8,),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn unfiltered_image_preserves_arbitrary_excess_bytes_for_strict_validation() {
+        assert_eq!(
+            normalise_unfiltered_image_line_ending(vec![1, 2, 3, 0], 1, 1, 3, 8),
+            vec![1, 2, 3, 0]
+        );
+        assert_eq!(
+            normalise_unfiltered_image_line_ending(vec![1, 2, 3, b'\r', b'\n', b'\r'], 1, 1, 3, 8,),
+            vec![1, 2, 3, b'\r', b'\n', b'\r']
+        );
     }
 
     #[test]
