@@ -1,0 +1,52 @@
+{
+  "schema_version": "wellfriendpdf.matched_benchmark_environment.v1",
+  "report_date": "2026-10-05",
+  "source_commit": "0539f33972b677512aaf336573a6a8385d0cf3bd",
+  "host": {
+    "name": "v72937",
+    "platform": "linux",
+    "architecture": "x86_64",
+    "logical_cpus": 4,
+    "benchmark_cpu": 2
+  },
+  "corpus": {
+    "documents": 150,
+    "pages": 9214,
+    "bytes_gib": 2.036,
+    "manifest_sha256": "c5c357d38acd2a46e271ce42998abfc414811d9741ffd72c964ce2ced59e931d"
+  },
+  "engines": {
+    "wellfriend": {
+      "adapter_sha256": "154da7ea9af5f56c0cd83d602a9e630f8333d0e73c6b03bfdbdf951b8e5c189a"
+    },
+    "pdfium": {
+      "version": "150.0.7857.0",
+      "adapter_sha256": "ed0f75e9d1df4a7ad42aa2a8c28f10daedcba4264767b882970ec63e126deb5f"
+    },
+    "poppler": {
+      "version": "26.01.0-2ubuntu0.1",
+      "adapter_sha256": "932fcaa6b6edf72f1b016449d54a7ee3e57671a1cd9eebaba08af375a956deee"
+    },
+    "mupdf": {
+      "version": "1.27.0+ds1-3ubuntu2",
+      "adapter_sha256": "55f6961d911b559488462b37d687faf71b3805ea5f66f7e5adf958c7dc8bd59f"
+    },
+    "qpdf": {
+      "version": "12.3.2-1",
+      "adapter_sha256": "fdcbb4c6de1e9d0456facd8737adddecb0b40ef1af15049a599793f596a600f9"
+    }
+  },
+  "parse_contract": {
+    "operation": "open in-memory bytes and resolve page count",
+    "warmup_passes": 1,
+    "timed_repetitions": 3,
+    "fresh_process_repetitions": 1
+  },
+  "render_contract": {
+    "operation": "retained document resources with a new page-one RGB raster",
+    "dpi": 144,
+    "warmup_renders": 1,
+    "timed_renders": 3,
+    "final_raster_cache": false
+  }
+}

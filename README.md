@@ -1,48 +1,92 @@
 # Wellfriend PDF SDK
 
-Wellfriend PDF SDK is an MIT-licensed PDF engine for parsing, rendering,
-extracting, editing, transforming, validating, and securing PDF documents. Rust
-is the canonical implementation. The CLI, HTTP server, C ABI, Python, WASM,
-.NET, and Java packages use the same engine.
+Build PDF products with one coherent engine instead of stitching together a
+parser, renderer, editor, converter, and signing stack. Wellfriend opens the
+original document structure, turns it into reliable pixels and data, edits the
+source content, and writes the result through the same Rust core.
+
+Use that core directly from Rust or ship it through the CLI, HTTP API, C,
+Python, WebAssembly, .NET, and Java. One document model carries the work from
+uploaded bytes to the PDF your customer downloads.
+
+## Benchmark
+
+The benchmark uses public and interoperability PDFs on the same Linux VPS and
+pins every binary, source revision, input hash, command, and raw result. The
+matched speed profiles give every engine the same operation and give every
+document equal weight.
+
+### Real-document reliability
+
+The all-page campaign contains 150 PDFs, 9,214 pages, and 2.036 GiB of source
+documents. It renders the complete corpus through the optimized display-list
+pipeline at 72 DPI RGB.
+
+| Measurement | Result |
+|---|---:|
+| Full 150-document all-page render | 150/150 documents; 9,214/9,214 pages; 0 errors |
+| Display-list fallbacks | 0 |
+| Focused real-PDF pages | 15/15 fully supported |
+| Image and pattern regressions | 45/45 pass |
+| Full corpus wall time | 54m 04.289s |
+
+### Matched parsing speed
+
+The resident parse contract opens the document bytes and resolves the page
+count after one corpus warm-up.
+
+| 150-document resident parse | Wellfriend | PDFium | Poppler | MuPDF | qpdf |
+|---|---:|---:|---:|---:|---:|
+| Qualified documents | 150/150 | 150/150 | 150/150 | 150/150 | 150/150 |
+| P50 | 1.032 ms | 0.615 ms | 2.769 ms | 2.718 ms | 4.037 ms |
+| P90 | 2.355 ms | 1.284 ms | 4.991 ms | 11.730 ms | 19.321 ms |
+| P95 | 3.157 ms | 1.812 ms | 5.628 ms | 100.727 ms | 26.906 ms |
+| P99 | 11.555 ms | 5.829 ms | 9.887 ms | 422.891 ms | 44.812 ms |
+| Maximum | 43.615 ms | 47.796 ms | 24.623 ms | 439.354 ms | 48.510 ms |
+
+### Matched rendering speed
+
+Each engine opens a PDF once, warms its resources once, and produces three new
+page-one RGB rasters at 144 DPI with final-raster caching disabled.
+
+| 150-document fresh raster | Wellfriend | PDFium | Poppler | MuPDF |
+|---|---:|---:|---:|---:|
+| Successful documents | 150/150 | 150/150 | 150/150 | 150/150 |
+| P50 | 103.973 ms | 28.412 ms | 60.069 ms | 19.992 ms |
+| P90 | 516.076 ms | 209.293 ms | 221.332 ms | 45.663 ms |
+| P95 | 537.943 ms | 259.315 ms | 294.606 ms | 50.374 ms |
+| P99 | 579.335 ms | 392.720 ms | 968.025 ms | 72.310 ms |
+| Maximum | 749.481 ms | 703.016 ms | 1,076.739 ms | 75.102 ms |
+
+### Visual fidelity
+
+| Same page rendered by all four engines | Mean SSIM against PDFium, Poppler, and MuPDF |
+|---|---:|
+| Scanned cover | 0.993142 |
+| Rotated scan | 0.990225 |
+| Digital text | 0.974765 |
+| Technical diagram | 0.998696 |
+
+Each sheet below is generated from the recorded binaries and inspected at its
+original resolution before publication.
+
+![Four-renderer scan comparison](docs/reports/renderer-closure-vps-20261005/visual-final/01-scan-minification.webp)
+
+The [matched benchmark report](docs/reports/matched-benchmark-vps-20261005/README.md)
+contains both speed profiles, raw observations, binary hashes, and exact
+execution contract. The
+[renderer qualification](docs/reports/renderer-closure-vps-20261005/README.md)
+contains every all-page corpus result and comparison image.
 
 ## Capabilities
 
-| Area | Included workflows |
+| Build with Wellfriend | What the engine handles |
 |---|---|
-| Parse and inspect | Page trees, content streams, text, tables, forms, annotations, attachments, metadata, fonts, images, signatures, and document structure |
-| Render | PNG, JPEG, WebP, raw pixels, SVG, PostScript, and EPS with transparency, soft masks, optional content, color management, clipping, patterns, shadings, Type 3 fonts, and reusable render contracts |
-| Edit | Source-linked text and object editing, paragraph and linked-story reflow, image and vector changes, scanned-word reconstruction, forms, annotations, watermarking, and redaction |
-| Transform | Merge, split, extract, rotate, crop, resize, organize, flatten, linearize, optimize, sanitize, encrypt, decrypt, and sign |
-| Convert | Text, Markdown, JSON, HTML, DOCX, PPTX, XLSX, images, and PDF/A workflows |
-| Integrate | Rust library, command-line tool, HTTP API, C ABI, Python, WebAssembly, .NET, and Java |
-
-## Latest verification
-
-The current renderer qualification uses a 150-document public and
-interoperability corpus containing 9,214 pages and 2.036 GiB of source data.
-It executes the optimized Linux binary on
-the VPS with one document worker, the display-list pipeline, document-local
-resource caches, 72 DPI RGB output, and raw-pixel evidence.
-
-| Verification | Result |
-|---|---:|
-| Focused renderer regressions | 15/15 pass |
-| Tiling-pattern unit regressions | 16/16 pass |
-| Directly inspected four-renderer comparison sheets | 4/4 readable and clean |
-| Full 150-document all-page render | 150/150 documents; 9,214/9,214 pages; 0 errors |
-| Full corpus wall time | 54m 04.289s |
-
-The release binary used for this run has SHA-256
-`d02e9a9346120328537da72ea697f2c37969eab1ff52c86d76edb45353691959`.
-The [renderer qualification report](docs/reports/renderer-closure-vps-20261005/README.md)
-contains the complete contract, per-file evidence, timings, image comparisons,
-and reproducibility hashes.
-
-The comparison below renders the same scanned page at 72 DPI with Wellfriend,
-PDFium, Poppler, and MuPDF. The published sheet is generated directly from the
-qualified binaries and visually inspected before publication.
-
-![Four-renderer scan comparison](docs/reports/renderer-closure-vps-20261005/visual-final/01-scan-minification.webp)
+| Understand documents | Page trees, content streams, text, tables, forms, annotations, attachments, metadata, fonts, images, signatures, and logical structure |
+| Render pages | PNG, JPEG, WebP, raw pixels, SVG, PostScript, and EPS with transparency, masks, color management, clipping, patterns, shadings, and Type 3 fonts |
+| Edit real content | Source-linked text and object editing, paragraph and linked-story reflow, image and vector changes, scanned-word reconstruction, forms, annotations, watermarking, and redaction |
+| Rebuild documents | Merge, split, extract, rotate, crop, resize, organize, flatten, linearize, optimize, sanitize, encrypt, decrypt, and sign |
+| Deliver useful formats | Text, Markdown, JSON, HTML, DOCX, PPTX, XLSX, images, and PDF/A workflows |
 
 ## Requirements
 

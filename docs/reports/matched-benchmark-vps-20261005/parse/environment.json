@@ -1,0 +1,19 @@
+{
+  "adapter_sha256": {
+    "mupdf": "55f6961d911b559488462b37d687faf71b3805ea5f66f7e5adf958c7dc8bd59f",
+    "pdfium": "ed0f75e9d1df4a7ad42aa2a8c28f10daedcba4264767b882970ec63e126deb5f",
+    "poppler": "932fcaa6b6edf72f1b016449d54a7ee3e57671a1cd9eebaba08af375a956deee",
+    "qpdf": "fdcbb4c6de1e9d0456facd8737adddecb0b40ef1af15049a599793f596a600f9",
+    "wellfriendpdf": "154da7ea9af5f56c0cd83d602a9e630f8333d0e73c6b03bfdbdf951b8e5c189a"
+  },
+  "contract": "document open plus resolved page count",
+  "corpus_manifest_sha256": "c5c357d38acd2a46e271ce42998abfc414811d9741ffd72c964ce2ced59e931d",
+  "cpu": 2,
+  "fresh_repetitions": 1,
+  "hostname": "v72937",
+  "persistent_repetitions": 3,
+  "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+  "schema": "wellfriendpdf.pebq.parse-only.v1",
+  "started_at_utc": "2026-10-05T05:06:09Z",
+  "warmup_passes": 1
+}
