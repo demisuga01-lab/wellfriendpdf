@@ -38,25 +38,43 @@ count after one corpus warm-up.
 | 150-document resident parse | Wellfriend | PDFium | Poppler | MuPDF | qpdf |
 |---|---:|---:|---:|---:|---:|
 | Qualified documents | 150/150 | 150/150 | 150/150 | 150/150 | 150/150 |
-| P50 | 1.032 ms | 0.615 ms | 2.769 ms | 2.718 ms | 4.037 ms |
-| P90 | 2.355 ms | 1.284 ms | 4.991 ms | 11.730 ms | 19.321 ms |
-| P95 | 3.157 ms | 1.812 ms | 5.628 ms | 100.727 ms | 26.906 ms |
-| P99 | 11.555 ms | 5.829 ms | 9.887 ms | 422.891 ms | 44.812 ms |
-| Maximum | 43.615 ms | 47.796 ms | 24.623 ms | 439.354 ms | 48.510 ms |
+| P50 | 1.024 ms | 0.609 ms | 2.765 ms | 2.527 ms | 4.058 ms |
+| P90 | 2.422 ms | 1.277 ms | 4.456 ms | 9.738 ms | 17.557 ms |
+| P95 | 3.484 ms | 1.844 ms | 4.714 ms | 107.373 ms | 25.498 ms |
+| P99 | 9.690 ms | 5.122 ms | 13.590 ms | 408.382 ms | 48.894 ms |
+| Maximum | 35.030 ms | 34.778 ms | 16.653 ms | 528.445 ms | 55.196 ms |
 
 ### Matched rendering speed
 
-Each engine opens a PDF once, warms its resources once, and produces three new
+Each engine opens a PDF once, warms its resources once, and produces five new
 page-one RGB rasters at 144 DPI with final-raster caching disabled.
 
 | 150-document fresh raster | Wellfriend | PDFium | Poppler | MuPDF |
 |---|---:|---:|---:|---:|
 | Successful documents | 150/150 | 150/150 | 150/150 | 150/150 |
-| P50 | 103.973 ms | 28.412 ms | 60.069 ms | 19.992 ms |
-| P90 | 516.076 ms | 209.293 ms | 221.332 ms | 45.663 ms |
-| P95 | 537.943 ms | 259.315 ms | 294.606 ms | 50.374 ms |
-| P99 | 579.335 ms | 392.720 ms | 968.025 ms | 72.310 ms |
-| Maximum | 749.481 ms | 703.016 ms | 1,076.739 ms | 75.102 ms |
+| P50 | 74.206 ms | 31.342 ms | 62.058 ms | 21.077 ms |
+| P90 | 144.425 ms | 218.372 ms | 226.310 ms | 41.842 ms |
+| P95 | 192.349 ms | 271.324 ms | 320.914 ms | 46.313 ms |
+| P99 | 516.290 ms | 430.015 ms | 1,047.497 ms | 75.575 ms |
+| Maximum | 628.836 ms | 792.267 ms | 1,176.852 ms | 104.838 ms |
+
+### Scan rendering optimization
+
+The renderer now preserves fractional image phase while caching exact
+source-footprint reductions. It also shares parsed page resources and converts
+finished RGBA surfaces to RGB without allocating a second full-size raster.
+
+| Same PDF, page, DPI, CPU, and output hash | Before | Current | Change |
+|---|---:|---:|---:|
+| 70.2 MiB scanned NASA document | 512.501 ms | 34.050 ms | 15.05x faster |
+| Ordinary digital PDF | 97.580 ms | 98.424 ms | Within run noise |
+| Dense vector/text PDF | 435.258 ms | 457.579 ms | No measured gain |
+
+The scanned-page comparison produces the same `1225 x 1586` raster and the
+same `e957c6f7c5f9d940` pixel hash before and after the optimization. Across the
+50 large-document addition to the corpus, Wellfriend's fresh-raster P50 is
+38.443 ms, compared with 37.679 ms for MuPDF, 183.166 ms for PDFium, and
+170.439 ms for Poppler.
 
 ### Visual fidelity
 
@@ -72,8 +90,8 @@ original resolution before publication.
 
 ![Four-renderer scan comparison](docs/reports/renderer-closure-vps-20261005/visual-final/01-scan-minification.webp)
 
-The [matched benchmark report](docs/reports/matched-benchmark-vps-20261005/README.md)
-contains both speed profiles, raw observations, binary hashes, and exact
+The [matched benchmark report](docs/reports/matched-benchmark-vps-20261006/README.md)
+contains both speed profiles, binary and raw-result hashes, and the exact
 execution contract. The
 [renderer qualification](docs/reports/renderer-closure-vps-20261005/README.md)
 contains every all-page corpus result and comparison image.
