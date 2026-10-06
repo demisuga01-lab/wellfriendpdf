@@ -4606,11 +4606,11 @@ impl PixelBuffer {
     /// Return RGB bytes, discarding alpha.
     pub fn to_rgb_bytes(&self) -> Vec<u8> {
         let pixel_count = self.width as usize * self.height as usize;
-        let mut out = Vec::with_capacity(pixel_count * 3);
-        for chunk in self.data.chunks_exact(4) {
-            out.push(chunk[0]);
-            out.push(chunk[1]);
-            out.push(chunk[2]);
+        let mut out = vec![0; pixel_count * 3];
+        if !wellfriendpdf_render_simd::rgba_to_rgb8(&self.data, &mut out) {
+            for (rgba, rgb) in self.data.chunks_exact(4).zip(out.chunks_exact_mut(3)) {
+                rgb.copy_from_slice(&rgba[..3]);
+            }
         }
         out
     }
@@ -4686,6 +4686,37 @@ impl PixelBuffer {
             channels: 3,
             bits_per_sample: 8,
             pixels: self.to_rgb_bytes(),
+        }
+    }
+
+    /// Consume this buffer and reuse its allocation for a packed RGB image.
+    ///
+    /// The conversion moves forward through the allocation. Each RGB write is
+    /// strictly behind the next unread RGBA pixel, so no temporary image-sized
+    /// allocation is required.
+    pub fn into_raw_image(mut self) -> RawImage {
+        let pixel_count = self.width as usize * self.height as usize;
+        let pixel_buffer_bytes = self.data.len();
+        for pixel in 0..pixel_count {
+            let source = pixel * 4;
+            let destination = pixel * 3;
+            let red = self.data[source];
+            let green = self.data[source + 1];
+            let blue = self.data[source + 2];
+            self.data[destination] = red;
+            self.data[destination + 1] = green;
+            self.data[destination + 2] = blue;
+        }
+        self.data.truncate(pixel_count * 3);
+        let pixels = std::mem::take(&mut self.data);
+        record_pixel_buffer_free(pixel_buffer_bytes);
+
+        RawImage {
+            width: self.width,
+            height: self.height,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels,
         }
     }
 
@@ -13413,6 +13444,30 @@ mod tests {
         assert_eq!(raw.height, 200);
         assert_eq!(raw.channels, 3);
         assert_eq!(raw.pixels.len(), 100 * 200 * 3);
+    }
+
+    #[test]
+    fn consuming_raw_image_conversion_matches_borrowed_conversion() {
+        let mut buf = PixelBuffer::new(3, 2);
+        let pixels = [
+            [1, 2, 3, 4],
+            [5, 6, 7, 8],
+            [9, 10, 11, 12],
+            [13, 14, 15, 16],
+            [17, 18, 19, 20],
+            [21, 22, 23, 24],
+        ];
+        for (index, pixel) in pixels.into_iter().enumerate() {
+            buf.set_pixel((index % 3) as i32, (index / 3) as i32, pixel);
+        }
+
+        let expected = buf.to_raw_image();
+        let actual = buf.into_raw_image();
+        assert_eq!(actual.width, expected.width);
+        assert_eq!(actual.height, expected.height);
+        assert_eq!(actual.channels, expected.channels);
+        assert_eq!(actual.bits_per_sample, expected.bits_per_sample);
+        assert_eq!(actual.pixels, expected.pixels);
     }
 
     #[test]

@@ -1250,10 +1250,10 @@ impl PageArtifactCache {
             .map(|(value, _)| value.as_ref().clone())
     }
 
-    fn resources(&self, page: usize) -> Option<PageResources> {
+    fn resources_shared(&self, page: usize) -> Option<Arc<PageResources>> {
         self.resources
             .get(&page)
-            .map(|(value, _)| value.as_ref().clone())
+            .map(|(value, _)| Arc::clone(value))
     }
 
     fn scoped_text(&self, page: usize) -> Option<Vec<crate::text::ScopedTextChunk>> {
@@ -1281,13 +1281,13 @@ impl PageArtifactCache {
             .insert(page, (Arc::new(value), bytes));
     }
 
-    fn insert_resources(&mut self, page: usize, value: PageResources) {
+    fn insert_resources(&mut self, page: usize, value: Arc<PageResources>) {
         let bytes = estimate_resources_bytes(&value);
         self.remove(PageArtifactKey::Resources(page));
         if !self.reserve(PageArtifactKey::Resources(page), bytes) {
             return;
         }
-        self.resources.insert(page, (Arc::new(value), bytes));
+        self.resources.insert(page, (value, bytes));
     }
 
     fn insert_scoped_text(&mut self, page: usize, value: Vec<crate::text::ScopedTextChunk>) {
@@ -2523,21 +2523,31 @@ impl ContentEngine {
     }
 
     pub fn get_page_resources(&self, page_number: usize) -> Result<PageResources> {
+        Ok(self
+            .get_page_resources_shared(page_number)?
+            .as_ref()
+            .clone())
+    }
+
+    pub(crate) fn get_page_resources_shared(
+        &self,
+        page_number: usize,
+    ) -> Result<Arc<PageResources>> {
         self.validate_page(page_number)?;
         if let Some(resources) = self
             .page_artifacts
             .read()
             .expect("page artifact cache lock poisoned")
-            .resources(page_number)
+            .resources_shared(page_number)
         {
             return Ok(resources);
         }
         let page = self.doc.get_page(page_number)?;
-        let resources = PageResources::from_dict(&page.resources, self.doc.reader());
+        let resources = Arc::new(PageResources::from_dict(&page.resources, self.doc.reader()));
         self.page_artifacts
             .write()
             .expect("page artifact cache lock poisoned")
-            .insert_resources(page_number, resources.clone());
+            .insert_resources(page_number, Arc::clone(&resources));
         Ok(resources)
     }
 
@@ -3983,7 +3993,7 @@ impl ContentEngine {
     pub fn render_page_png_fast(&self, page_number: usize, dpi: u32) -> Result<Vec<u8>> {
         // NOTE: line width 0 renders as 1px (PDF hairline spec). Verified in tests.
         let buf = self.render_page(page_number, dpi)?;
-        ImageEncoder::encode_png_fast(&buf.to_raw_image())
+        ImageEncoder::encode_png_fast(&buf.into_raw_image())
     }
 
     /// Render and encode a page while retaining document-scoped parse, font,
@@ -4010,7 +4020,7 @@ impl ContentEngine {
             Err(WellfriendError::UnsupportedFeature(_)) => self.render_page(page_number, dpi)?,
             Err(error) => return Err(error),
         };
-        ImageEncoder::encode_png_fast(&buf.to_raw_image())
+        ImageEncoder::encode_png_fast(&buf.into_raw_image())
     }
 
     /// Render a page to fast PNG bytes and return the bounded font-substitution
@@ -4023,7 +4033,7 @@ impl ContentEngine {
     ) -> Result<(Vec<u8>, FontSubstitutionLog)> {
         let (buf, log) =
             self.render_page_with_font_substitution_report(page_number, dpi, render_mode)?;
-        Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
+        Ok((ImageEncoder::encode_png_fast(&buf.into_raw_image())?, log))
     }
 
     /// Cached counterpart of
@@ -4053,7 +4063,7 @@ impl ContentEngine {
             Err(error) => return Err(error),
         };
         let log = cache.take_font_substitution_log();
-        Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
+        Ok((ImageEncoder::encode_png_fast(&buf.into_raw_image())?, log))
     }
 
     /// Render a page with an explicit render mode and encode it as PNG.
@@ -4064,7 +4074,7 @@ impl ContentEngine {
         render_mode: RenderMode,
     ) -> Result<Vec<u8>> {
         let buf = self.render_page_with_mode(page_number, dpi, render_mode)?;
-        ImageEncoder::encode_png_fast(&buf.to_raw_image())
+        ImageEncoder::encode_png_fast(&buf.into_raw_image())
     }
 
     /// Render through a fully specified contract and encode the resulting
@@ -4076,7 +4086,7 @@ impl ContentEngine {
         cancel: &crate::cancel::CancelToken,
     ) -> Result<Vec<u8>> {
         let buf = self.render_page_with_contract(contract, cancel)?;
-        ImageEncoder::encode_png_fast(&buf.to_raw_image())
+        ImageEncoder::encode_png_fast(&buf.into_raw_image())
     }
 
     /// Render through a contract with a caller-owned cache and encode PNG bytes.
@@ -4087,7 +4097,7 @@ impl ContentEngine {
         cache: &mut RenderDocumentCache,
     ) -> Result<Vec<u8>> {
         let buf = self.render_page_with_contract_and_cache(contract, cancel, cache)?;
-        ImageEncoder::encode_png_fast(&buf.to_raw_image())
+        ImageEncoder::encode_png_fast(&buf.into_raw_image())
     }
 
     /// Render through a contract, encode PNG bytes, and return the bounded
@@ -4099,7 +4109,7 @@ impl ContentEngine {
     ) -> Result<(Vec<u8>, FontSubstitutionLog)> {
         let (buf, log) =
             self.render_page_with_contract_and_font_substitution_report(contract, cancel)?;
-        Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
+        Ok((ImageEncoder::encode_png_fast(&buf.into_raw_image())?, log))
     }
 
     /// Render through a contract with a caller-owned cache, encode PNG bytes,
@@ -4113,7 +4123,7 @@ impl ContentEngine {
         let (buf, log) = self.render_page_with_contract_and_font_substitution_report_and_cache(
             contract, cancel, cache,
         )?;
-        Ok((ImageEncoder::encode_png_fast(&buf.to_raw_image())?, log))
+        Ok((ImageEncoder::encode_png_fast(&buf.into_raw_image())?, log))
     }
 
     /// Render through a contract, encode PNG bytes, and return the bounded
@@ -4126,7 +4136,7 @@ impl ContentEngine {
         let (buf, log, telemetry_report) =
             self.render_page_with_contract_and_telemetry_report(contract, cancel)?;
         Ok((
-            ImageEncoder::encode_png_fast(&buf.to_raw_image())?,
+            ImageEncoder::encode_png_fast(&buf.into_raw_image())?,
             log,
             telemetry_report,
         ))
@@ -4143,7 +4153,7 @@ impl ContentEngine {
         let (buf, log, telemetry_report) =
             self.render_page_with_contract_and_telemetry_report_and_cache(contract, cancel, cache)?;
         Ok((
-            ImageEncoder::encode_png_fast(&buf.to_raw_image())?,
+            ImageEncoder::encode_png_fast(&buf.into_raw_image())?,
             log,
             telemetry_report,
         ))

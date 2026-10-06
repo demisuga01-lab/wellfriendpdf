@@ -141,7 +141,7 @@ pub(crate) async fn process_pdf2img(
                     let buf = render_engine
                         .render_page_cancellable(*page_num, dpi, &cancel)
                         .map_err(ServerError::from)?;
-                    let raw = buf.to_raw_image();
+                    let raw = buf.into_raw_image();
                     let bytes = match format {
                         ImageOutputFormat::Jpeg => ImageEncoder::encode_jpeg(&raw, quality),
                         ImageOutputFormat::Webp => ImageEncoder::encode_webp(&raw, quality),

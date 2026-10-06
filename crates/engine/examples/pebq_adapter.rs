@@ -130,7 +130,7 @@ fn execute(
                 RenderMode::Compat,
                 &mut cache,
             )?;
-            let _ = warmup.to_raw_image();
+            let _ = warmup.into_raw_image();
         }
         let mut render_samples_ms = Vec::with_capacity(sample_count);
         let mut raster_hashes = Vec::with_capacity(sample_count);
@@ -153,7 +153,7 @@ fn execute(
                     RenderMode::Compat,
                 )?
             };
-            let raw = raster.to_raw_image();
+            let raw = raster.into_raw_image();
             render_samples_ms.push(elapsed_ms(render_start));
             raster_hashes.push(format!("{:x}", fnv1a(&raw.pixels)));
             raw_output = Some(raw);

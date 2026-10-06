@@ -8375,12 +8375,12 @@ fn read_render_contract_json(
 
 fn encode_cli_render_buffer(
     output_format: CliRenderRasterFormat,
-    buffer: &wellfriendpdf_engine::PixelBuffer,
+    buffer: wellfriendpdf_engine::PixelBuffer,
     quality: u8,
 ) -> wellfriendpdf_engine::Result<Vec<u8>> {
     use wellfriendpdf_engine::ImageEncoder;
 
-    let raw = buffer.to_raw_image();
+    let raw = buffer.into_raw_image();
     match output_format {
         CliRenderRasterFormat::Png => ImageEncoder::encode_png_fast(&raw),
         CliRenderRasterFormat::Jpeg => ImageEncoder::encode_jpeg(&raw, quality),
@@ -8570,7 +8570,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                     None,
                 )
             };
-            let bytes = encode_cli_render_buffer(output_format, &buf, quality)
+            let bytes = encode_cli_render_buffer(output_format, buf, quality)
                 .map_err(|err| err.to_string())?;
             return Ok(RenderedPageOutput {
                 bytes,
@@ -8595,8 +8595,8 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         } else {
             None
         };
-        let bytes = encode_cli_render_buffer(output_format, &buf, quality)
-            .map_err(|err| err.to_string())?;
+        let bytes =
+            encode_cli_render_buffer(output_format, buf, quality).map_err(|err| err.to_string())?;
         Ok(RenderedPageOutput {
             bytes,
             extension: output_format.file_extension(),

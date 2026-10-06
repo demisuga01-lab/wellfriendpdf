@@ -558,7 +558,7 @@ pub async fn finish_png(
                 job.finish_checked_consuming()
             })?
             .map_err(|err| ServerError::InvalidParameter(err.to_string()))?;
-        let raw = buffer.to_raw_image();
+        let raw = buffer.into_raw_image();
         ImageEncoder::encode_png_fast(&raw)
             .map_err(|e| ServerError::Internal(format!("PNG encode failed: {e}")))
     })

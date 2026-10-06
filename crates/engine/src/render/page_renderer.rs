@@ -55,7 +55,7 @@ use crate::render::image_decode_planning::{
     ImageDecodeCapabilityStatus, ImageDecodeCodec, ImageDecodePlan, ImageDecodePlanDecision,
     ImageDecodePlanIdentity, ImageMetadata, ImageSourceRegion,
 };
-use crate::render::image_painter::ImagePainter;
+use crate::render::image_painter::{AxisAlignedImageCacheTarget, ImagePainter};
 use crate::render::invalidation::{InvalidationResult, RenderDependencyGraph};
 use crate::render::line::DashState;
 use crate::render::path::{
@@ -3942,6 +3942,7 @@ impl PageRenderer {
         page_number: usize,
         dpi: u32,
         list: &DisplayList,
+        resources: Arc<PageResources>,
         cancel: &CancelToken,
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
@@ -3957,12 +3958,11 @@ impl PageRenderer {
         let plan = match cache.cached_render_plan(&plan_key) {
             Some(plan) => plan,
             None => {
-                let resources = engine.get_page_resources(page_number)?;
                 let max_cache_bytes = contract.resource_budget.max_cache_bytes;
                 let compiled = RenderPlan::compile_with_resources_cancellable(
                     list.clone(),
                     contract,
-                    &resources,
+                    resources.as_ref(),
                     cancel,
                 )?;
                 cache.insert_render_plan(plan_key, compiled, max_cache_bytes)
@@ -3987,6 +3987,7 @@ impl PageRenderer {
             page_number,
             dpi,
             plan.as_ref(),
+            resources,
             cancel,
             render_mode,
             cache,
@@ -3998,12 +3999,12 @@ impl PageRenderer {
         page_number: usize,
         dpi: u32,
         plan: &RenderPlan,
+        resources: Arc<PageResources>,
         cancel: &CancelToken,
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
     ) -> Result<PixelBuffer> {
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let resources = engine.get_page_resources(page_number)?;
         let transparent_contract_fingerprint = plan.contract.cache_fingerprint();
         let transparent_key = RenderDocumentCache::transparent_page_group_key_with_revision(
             page_number,
@@ -4019,7 +4020,7 @@ impl PageRenderer {
             }
         };
         let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
-        let mut state = RenderState::new_with_document_cache(
+        let mut state = RenderState::new_with_shared_document_cache(
             buf,
             viewport.clone(),
             resources,
@@ -4160,7 +4161,7 @@ impl PageRenderer {
         )?;
         cancel.check("page content parsing")?;
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let resources = engine.get_page_resources(page_number)?;
+        let resources = engine.get_page_resources_shared(page_number)?;
         let list = build_display_list_cancellable(&ops, viewport.clone(), &resources, cancel)?;
         if list.is_fully_supported() {
             return Self::render_display_list_cancellable_with_mode(
@@ -4506,7 +4507,7 @@ impl PageRenderer {
     ) -> Result<PixelBuffer> {
         cancel.check("display-list render start")?;
         cache.bind_document_revision(engine.canonical_document().revision());
-        let resources = engine.get_page_resources(page_number)?;
+        let resources = engine.get_page_resources_shared(page_number)?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
         let mut annotation_contract = contract.clone();
         annotation_contract.print_profile = print_profile;
@@ -4549,6 +4550,7 @@ impl PageRenderer {
                 page_number,
                 dpi,
                 list,
+                Arc::clone(&resources),
                 cancel,
                 render_mode,
                 cache,
@@ -7106,6 +7108,24 @@ impl<'a> RenderState<'a> {
         page_number: usize,
         cache: &mut RenderDocumentCache,
     ) -> Self {
+        Self::new_with_shared_document_cache(
+            buf,
+            viewport,
+            Arc::new(resources),
+            engine,
+            page_number,
+            cache,
+        )
+    }
+
+    fn new_with_shared_document_cache(
+        buf: PixelBuffer,
+        viewport: Viewport,
+        resources: Arc<PageResources>,
+        engine: &'a ContentEngine,
+        page_number: usize,
+        cache: &mut RenderDocumentCache,
+    ) -> Self {
         let viewport_width = viewport.width_px;
         let viewport_height = viewport.height_px;
         let image_xobject_cache_bytes = cache.image_xobject_cache_bytes;
@@ -7174,8 +7194,8 @@ impl<'a> RenderState<'a> {
             page_number,
             buf,
             viewport,
-            page_resources: Arc::new(resources.clone()),
-            resources,
+            page_resources: Arc::clone(&resources),
+            resources: resources.as_ref().clone(),
             gs,
             initial_rendering_intent,
             clip_stack: Vec::new(),
@@ -8414,11 +8434,10 @@ impl<'a> RenderState<'a> {
         &mut self,
         base_key: &str,
         image: &RawImage,
-        target_width: u32,
-        target_height: u32,
+        target: &AxisAlignedImageCacheTarget,
     ) -> Option<Arc<RawImage>> {
         let high_quality = self.buf.render_mode().is_high_quality();
-        let cache_key = scaled_image_cache_key(base_key, target_width, target_height, high_quality);
+        let cache_key = scaled_image_cache_key(base_key, target, high_quality);
         if self.scaled_image_cache.contains_key(&cache_key) {
             touch_scaled_image_cache_key(&mut self.scaled_image_cache_order, &cache_key);
             if let Some(cached) = self.scaled_image_cache.get(&cache_key) {
@@ -8429,12 +8448,8 @@ impl<'a> RenderState<'a> {
         }
         self.scaled_image_cache_stats.misses =
             self.scaled_image_cache_stats.misses.saturating_add(1);
-        let scaled = ImagePainter::scale_axis_aligned_default_rgb(
-            image,
-            target_width,
-            target_height,
-            high_quality,
-        )?;
+        let scaled =
+            ImagePainter::scale_axis_aligned_default_rgb_for_target(image, target, high_quality)?;
         let scaled = Arc::new(scaled);
         let cache_max_bytes = self.cache_budget(SCALED_IMAGE_CACHE_MAX_BYTES);
         let cache_max_entry_bytes = self.cache_entry_budget(SCALED_IMAGE_CACHE_MAX_ENTRY_BYTES);
@@ -13036,18 +13051,17 @@ impl<'a> RenderState<'a> {
                     && !interpolate
                 {
                     if let Some(target) =
-                        ImagePainter::axis_aligned_integer_target(&paint_ctm, &self.viewport)
+                        ImagePainter::axis_aligned_cache_target(&paint_ctm, &self.viewport)
                     {
                         if let Some(scaled) = self.cached_axis_aligned_scaled_image(
                             &image_cache_key,
                             paint_raw,
-                            target.width,
-                            target.height,
+                            &target,
                         ) {
                             if ImagePainter::paint_scaled_rgb_at_device_target(
                                 &mut self.buf,
                                 scaled.as_ref(),
-                                target,
+                                target.paint,
                                 paint_alpha,
                             ) {
                                 return;
@@ -23258,14 +23272,19 @@ fn insert_program_cache_entry<V>(
 
 fn scaled_image_cache_key(
     base_key: &str,
-    target_width: u32,
-    target_height: u32,
+    target: &AxisAlignedImageCacheTarget,
     high_quality: bool,
 ) -> String {
     format!(
-        "{base_key}:scaled:{}x{}:{}",
-        target_width,
-        target_height,
+        "{base_key}:scaled:{}:{}:{}x{}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+        target.paint.x_origin,
+        target.paint.y_origin,
+        target.paint.width,
+        target.paint.height,
+        stable_f64_cache_bits(target.device_x_min),
+        stable_f64_cache_bits(target.device_y_min),
+        stable_f64_cache_bits(target.device_width),
+        stable_f64_cache_bits(target.device_height),
         if high_quality { "hq" } else { "compat" }
     )
 }
