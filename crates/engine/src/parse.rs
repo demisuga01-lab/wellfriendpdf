@@ -1347,6 +1347,22 @@ fn assemble(
     // Convert every block to the canonical form (furniture included), preserving
     // ids so cross-links and the page view stay resolvable.
     let mut converted: Vec<Block> = blocks.iter().map(convert_block).collect();
+    // Some damaged or partially tagged PDFs contain logical blocks whose
+    // structure element has no resolvable page owner. The lower-level model
+    // represents that unknown owner as page zero, but the public parse schema
+    // and every page API are deliberately 1-based. Preserve the content on the
+    // first selected page instead of emitting an impossible page zero that
+    // later exporters could pass back into a 1-based engine API.
+    let fallback_page = page_dims
+        .iter()
+        .map(|(number, _, _)| *number as u32)
+        .find(|number| *number > 0)
+        .unwrap_or(1);
+    for block in &mut converted {
+        if block.page == 0 {
+            block.page = fallback_page;
+        }
+    }
 
     // Attach hyperlinks: a link whose rect overlaps a block's bbox marks that
     // block's text spans with the href (so [text](href) survives). Whole-block

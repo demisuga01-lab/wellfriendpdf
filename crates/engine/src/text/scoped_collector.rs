@@ -92,7 +92,13 @@ impl Default for TextTraversalLimits {
         Self {
             decode: DecodeLimits::default(),
             max_form_depth: 64,
-            max_form_invocations: 4096,
+            // Form-heavy technical PDFs commonly reuse tiny glyph, symbol, or
+            // layout Forms many thousands of times on one page. Invocation
+            // count alone is not a useful memory bound: decoded source bytes,
+            // total operations, emitted chunks, recursion depth, and output
+            // text are all bounded separately below. Keep a finite cycle/work
+            // guard, but do not reject otherwise valid pages at 4,096 uses.
+            max_form_invocations: 65_536,
             max_form_decoded_bytes: 256 * 1024 * 1024,
             max_operations: 1_000_000,
             max_marked_depth: 128,
@@ -134,6 +140,24 @@ struct Walk<'a> {
 
 fn malformed(message: impl Into<String>) -> WellfriendError {
     WellfriendError::MalformedPdf(format!("text extraction: {}", message.into()))
+}
+
+fn scoped_marked_content_operand_refusal(op: &ContentOperation) -> Option<String> {
+    if op.operator == "BDC" && op.operands.len() >= 2 {
+        // A material amount of real-world TeX output prefixes BDC with a
+        // stray name (for example `/S /Span <<...>> BDC`). PDF processors in
+        // the field recover this by treating the final name/dictionary pair as
+        // the BDC operands. Do the same for logical extraction while retaining
+        // strict validation for every other malformed marked-content shape.
+        let tag = &op.operands[op.operands.len() - 2];
+        let properties = &op.operands[op.operands.len() - 1];
+        if tag.as_name().is_some()
+            && matches!(properties, Operand::Name(_) | Operand::Dictionary(_))
+        {
+            return None;
+        }
+    }
+    crate::render::plan::marked_content_operand_refusal(op)
 }
 
 fn charge(current: &mut usize, amount: usize, maximum: usize, what: &str) -> Result<()> {
@@ -407,7 +431,7 @@ impl Walk<'_> {
             )?;
             if let Some(reason) = crate::render::plan::text_operand_refusal(op)
                 .or_else(|| crate::render::plan::graphics_state_operand_refusal(op))
-                .or_else(|| crate::render::plan::marked_content_operand_refusal(op))
+                .or_else(|| scoped_marked_content_operand_refusal(op))
                 .or_else(|| crate::render::plan::resource_invocation_operand_refusal(op))
             {
                 return Err(malformed(reason));
@@ -600,9 +624,10 @@ impl Walk<'_> {
     }
 
     fn marker(&self, collector: &TextCollector<'_>, op: &ContentOperation) -> Result<Marker> {
+        let property_operand = op.operands.last();
         let (actual_text, mcid) = if op.operator == "BMC" {
             (None, None)
-        } else if let Some(Operand::Name(name)) = op.operands.get(1) {
+        } else if let Some(Operand::Name(name)) = property_operand {
             let object = collector
                 .resources
                 .properties
@@ -631,7 +656,7 @@ impl Walk<'_> {
                 _ => return Err(malformed("MCID is not a nonnegative integer")),
             };
             (text, mcid)
-        } else if let Some(Operand::Dictionary(entries)) = op.operands.get(1) {
+        } else if let Some(Operand::Dictionary(entries)) = property_operand {
             let text = match entries
                 .iter()
                 .find(|(key, _)| key == "ActualText")

@@ -79,9 +79,9 @@ fn main() -> wellfriendpdf_engine::Result<()> {
             })
         }
         other => {
-            return Err(wellfriendpdf_engine::WellfriendError::invalid_input(format!(
-                "unsupported benchmark adapter operation: {other}"
-            )));
+            return Err(wellfriendpdf_engine::WellfriendError::invalid_input(
+                format!("unsupported benchmark adapter operation: {other}"),
+            ));
         }
     };
 

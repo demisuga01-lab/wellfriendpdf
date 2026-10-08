@@ -36,12 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     for page in 1..=page_count {
         let cancel = CancelToken::none();
-        let retained = PageRenderer::get_or_build_display_list_with_cache(
-            &engine,
-            page,
-            dpi,
-            &mut cache,
-        );
+        let retained =
+            PageRenderer::get_or_build_display_list_with_cache(&engine, page, dpi, &mut cache);
         let retained_raster = match retained {
             Ok((list, _)) if list.is_fully_supported() => {
                 PageRenderer::render_display_list_cancellable_with_mode_and_cache(

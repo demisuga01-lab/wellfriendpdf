@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
 
@@ -64,17 +64,13 @@ pub struct GlyphCacheStats {
 /// That means it needs no locking, and recency updates on a cache hit are
 /// cheap unsynchronised writes.
 ///
-/// Recency is tracked with a monotonic sequence number per entry plus a
-/// `BTreeMap<seq, key>` index, giving O(log n) hit-recency updates and O(log n)
-/// eviction of the genuinely least-recently-*used* entry (not merely the
-/// least-recently-*inserted*, which is the behaviour this replaces). A hit on
-/// an old-but-hot glyph refreshes its recency so it survives eviction — the
-/// defining difference from the previous insertion-order policy.
+/// Recency is tracked with a monotonic sequence number per entry. Cache hits
+/// only update that entry; the bounded cache scans for the oldest stamp only
+/// when it must evict. A hot glyph therefore costs O(1) and still survives
+/// capacity pressure.
 pub struct GlyphCache {
     /// key -> (glyph, recency sequence number, approximate byte size).
     entries: HashMap<GlyphCacheKey, (CachedGlyph, u64, usize)>,
-    /// recency sequence number -> key, ordered so the first entry is the LRU.
-    order: BTreeMap<u64, GlyphCacheKey>,
     /// Next recency stamp to hand out. Strictly increasing; u64 never wraps in
     /// any realistic render (2^64 glyph accesses).
     next_seq: u64,
@@ -92,7 +88,6 @@ impl GlyphCache {
     pub fn new_with_budget(max_entries: usize, max_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            order: BTreeMap::new(),
             next_seq: 0,
             max_entries,
             max_bytes,
@@ -110,24 +105,44 @@ impl GlyphCache {
     /// Takes `&mut self` because an LRU read updates recency. Returns `None`
     /// on a miss without touching recency.
     pub fn get(&mut self, key: &GlyphCacheKey) -> Option<&CachedGlyph> {
-        // Read the old recency stamp first, then release that borrow before
-        // mutating `order`, then re-borrow mutably to write the new stamp.
-        let Some((_, old_seq, _)) = self.entries.get(key) else {
+        let new_seq = self.next_usage();
+        let Some((glyph, last_used, _)) = self.entries.get_mut(key) else {
             self.stats.misses = self.stats.misses.saturating_add(1);
             return None;
         };
-        let old_seq = *old_seq;
         self.stats.hits = self.stats.hits.saturating_add(1);
-        let new_seq = self.next_seq;
-        self.next_seq += 1;
-        self.order.remove(&old_seq);
-        self.order.insert(new_seq, key.clone());
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("entry existed a moment ago");
-        entry.1 = new_seq;
-        Some(&entry.0)
+        *last_used = new_seq;
+        Some(glyph)
+    }
+
+    /// Look up a glyph before its rendering class has been rediscovered from
+    /// the font tables. The rendering class is deterministic for a font,
+    /// variation instance and source code, so retained renders can consult the
+    /// outline cache before reparsing cmap/COLR/bitmap/SVG tables.
+    pub fn get_matching_render_class(
+        &mut self,
+        font_hash: u64,
+        variation_hash: u64,
+        code: u16,
+        is_gid: bool,
+    ) -> Option<(CachedGlyph, u8)> {
+        for color_mode in 0..=4 {
+            let key = GlyphCacheKey {
+                font_hash,
+                variation_hash,
+                code,
+                is_gid,
+                color_mode,
+            };
+            let new_seq = self.next_usage();
+            if let Some((glyph, last_used, _)) = self.entries.get_mut(&key) {
+                self.stats.hits = self.stats.hits.saturating_add(1);
+                *last_used = new_seq;
+                return Some((glyph.clone(), color_mode));
+            }
+        }
+        self.stats.misses = self.stats.misses.saturating_add(1);
+        None
     }
 
     pub fn insert(&mut self, key: GlyphCacheKey, glyph: CachedGlyph) {
@@ -143,14 +158,10 @@ impl GlyphCache {
         // Overwriting an existing key: replace the value and refresh recency,
         // never counts toward eviction.
         if self.entries.contains_key(&key) {
-            let (_, old_seq, old_bytes) =
-                self.entries.remove(&key).expect("contains_key just held");
-            self.order.remove(&old_seq);
+            let (_, _, old_bytes) = self.entries.remove(&key).expect("contains_key just held");
             self.current_bytes = self.current_bytes.saturating_sub(old_bytes);
             self.evict_until_fits(glyph_bytes);
-            let new_seq = self.next_seq;
-            self.next_seq += 1;
-            self.order.insert(new_seq, key.clone());
+            let new_seq = self.next_usage();
             self.entries.insert(key, (glyph, new_seq, glyph_bytes));
             self.current_bytes = self.current_bytes.saturating_add(glyph_bytes);
             self.stats.bytes = self.current_bytes;
@@ -166,9 +177,7 @@ impl GlyphCache {
             }
         }
 
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        self.order.insert(seq, key.clone());
+        let seq = self.next_usage();
         self.entries.insert(key, (glyph, seq, glyph_bytes));
         self.current_bytes = self.current_bytes.saturating_add(glyph_bytes);
         self.stats.bytes = self.current_bytes;
@@ -184,7 +193,7 @@ impl GlyphCache {
 
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.order.clear();
+        self.next_seq = 0;
         self.current_bytes = 0;
         self.stats.bytes = 0;
     }
@@ -194,10 +203,9 @@ impl GlyphCache {
     }
 
     pub(crate) fn oldest_entry_bytes(&self) -> Option<usize> {
-        self.order
-            .iter()
-            .next()
-            .and_then(|(_, key)| self.entries.get(key))
+        self.entries
+            .values()
+            .min_by_key(|(_, last_used, _)| *last_used)
             .map(|(_, _, bytes)| *bytes)
     }
 
@@ -261,14 +269,29 @@ impl GlyphCache {
         }
     }
 
+    fn next_usage(&mut self) -> u64 {
+        if self.next_seq == u64::MAX {
+            let mut ordered: Vec<_> = self.entries.values_mut().collect();
+            ordered.sort_unstable_by_key(|(_, last_used, _)| *last_used);
+            for (index, (_, last_used, _)) in ordered.into_iter().enumerate() {
+                *last_used = index as u64;
+            }
+            self.next_seq = self.entries.len() as u64;
+        }
+        let usage = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+        usage
+    }
+
     fn evict_one(&mut self) -> bool {
-        let Some((&lru_seq, _)) = self.order.iter().next() else {
+        let Some(lru_key) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, (_, last_used, _))| *last_used)
+            .map(|(key, _)| key.clone())
+        else {
             return false;
         };
-        let lru_key = self
-            .order
-            .remove(&lru_seq)
-            .expect("iterator yielded this key");
         if let Some((_, _, bytes)) = self.entries.remove(&lru_key) {
             self.current_bytes = self.current_bytes.saturating_sub(bytes);
             self.stats.evictions = self.stats.evictions.saturating_add(1);

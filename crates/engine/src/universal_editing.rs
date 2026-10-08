@@ -5926,10 +5926,7 @@ fn apply_universal_edit_v2_inner(
     };
 
     let (mut output, mut operation_report, affected_pages, affected_objects, cloned_resources) =
-        match applied {
-            Ok(value) => value,
-            Err(error) => return Err(error),
-        };
+        applied?;
     let prepared_plan_report = json!({
         "cache_hit": prepared_plan_cache_hit,
         "engine_reused": prepared_engine_reused,

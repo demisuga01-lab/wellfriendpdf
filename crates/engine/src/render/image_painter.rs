@@ -26,6 +26,24 @@ pub(crate) struct AxisAlignedImageTarget {
     pub height: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OrthogonalSourceAxis {
+    X,
+    Y,
+}
+
+/// Affine mapping from one device-space axis to one decoded source-image
+/// axis. Orthogonal image transforms have exactly one such mapping for device
+/// X and one for device Y; keeping the mapping in the retained cache target
+/// lets quarter-turn rotations and reflections use the same linear-time box
+/// reducer as canonical page scans.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OrthogonalSourceMapping {
+    pub axis: OrthogonalSourceAxis,
+    pub scale: f64,
+    pub offset: f64,
+}
+
 /// Device-pixel coverage and source-sampling geometry for a canonical,
 /// top-down axis-aligned image draw.
 ///
@@ -40,6 +58,8 @@ pub(crate) struct AxisAlignedImageCacheTarget {
     pub device_y_min: f64,
     pub device_width: f64,
     pub device_height: f64,
+    pub device_x_source: OrthogonalSourceMapping,
+    pub device_y_source: OrthogonalSourceMapping,
 }
 
 impl ImagePainter {
@@ -144,8 +164,8 @@ impl ImagePainter {
         })
     }
 
-    /// Return the visible device-pixel target for a canonical axis-aligned
-    /// image while preserving its fractional sampling phase.
+    /// Return the visible device-pixel target for an orthogonal image while
+    /// preserving its fractional sampling phase and source orientation.
     ///
     /// A destination pixel participates exactly when its centre lies inside
     /// the transformed image. This matches `paint_axis_aligned` without
@@ -158,9 +178,47 @@ impl ImagePainter {
             return None;
         }
         let combined = ctm.concat(&viewport.to_transform());
-        if !Self::is_top_down_axis_aligned(&combined) {
+        let inverse = combined.inverse()?;
+        let epsilon = 1e-10;
+        let source_width = 1.0;
+        let source_height = 1.0;
+        let (device_x_source, device_y_source) = if inverse.c.abs() <= epsilon
+            && inverse.b.abs() <= epsilon
+            && inverse.a.abs() > epsilon
+            && inverse.d.abs() > epsilon
+        {
+            (
+                OrthogonalSourceMapping {
+                    axis: OrthogonalSourceAxis::X,
+                    scale: source_width * inverse.a,
+                    offset: source_width * inverse.e,
+                },
+                OrthogonalSourceMapping {
+                    axis: OrthogonalSourceAxis::Y,
+                    scale: -source_height * inverse.d,
+                    offset: source_height * (1.0 - inverse.f),
+                },
+            )
+        } else if inverse.a.abs() <= epsilon
+            && inverse.d.abs() <= epsilon
+            && inverse.b.abs() > epsilon
+            && inverse.c.abs() > epsilon
+        {
+            (
+                OrthogonalSourceMapping {
+                    axis: OrthogonalSourceAxis::Y,
+                    scale: -source_height * inverse.b,
+                    offset: source_height * (1.0 - inverse.f),
+                },
+                OrthogonalSourceMapping {
+                    axis: OrthogonalSourceAxis::X,
+                    scale: source_width * inverse.c,
+                    offset: source_width * inverse.e,
+                },
+            )
+        } else {
             return None;
-        }
+        };
         let corners = [
             combined.transform_point(0.0, 0.0),
             combined.transform_point(1.0, 0.0),
@@ -201,6 +259,8 @@ impl ImagePainter {
             device_y_min: py_min,
             device_width,
             device_height,
+            device_x_source,
+            device_y_source,
         })
     }
 
@@ -235,6 +295,16 @@ impl ImagePainter {
             device_y_min: 0.0,
             device_width: f64::from(target_width),
             device_height: f64::from(target_height),
+            device_x_source: OrthogonalSourceMapping {
+                axis: OrthogonalSourceAxis::X,
+                scale: 1.0 / f64::from(target_width),
+                offset: 0.0,
+            },
+            device_y_source: OrthogonalSourceMapping {
+                axis: OrthogonalSourceAxis::Y,
+                scale: 1.0 / f64::from(target_height),
+                offset: 0.0,
+            },
         };
         Self::scale_axis_aligned_default_rgb_for_target(image, &target, high_quality)
     }
@@ -259,16 +329,31 @@ impl ImagePainter {
             .checked_mul(target_height as usize)?
             .checked_mul(3)?;
         let mut pixels = vec![0u8; pixels_len];
-        let footprint_x = image.width as f64 / target.device_width;
-        let footprint_y = image.height as f64 / target.device_height;
+        let device_x_source_extent = match target.device_x_source.axis {
+            OrthogonalSourceAxis::X => image.width as f64,
+            OrthogonalSourceAxis::Y => image.height as f64,
+        };
+        let device_y_source_extent = match target.device_y_source.axis {
+            OrthogonalSourceAxis::X => image.width as f64,
+            OrthogonalSourceAxis::Y => image.height as f64,
+        };
+        let footprint_x = target.device_x_source.scale.abs() * device_x_source_extent;
+        let footprint_y = target.device_y_source.scale.abs() * device_y_source_extent;
         // Bilinear sampling is not a minification filter: it observes at most
         // four source samples regardless of the source footprint. On scanned
         // pages that turns printer/scan halftones into large moire dots. Use an
         // exact source-footprint box reduction whenever both axes shrink. This
         // path is phase-correct for the device target, runs in
         // O(source pixels), and keeps only one destination row of scratch data.
-        if target.device_width < image.width as f64 && target.device_height < image.height as f64 {
+        if footprint_x > 1.0 && footprint_y > 1.0 {
             return Self::box_downscale_rgb_for_target(image, target);
+        }
+        if target.device_x_source.axis != OrthogonalSourceAxis::X
+            || target.device_y_source.axis != OrthogonalSourceAxis::Y
+            || target.device_x_source.scale <= 0.0
+            || target.device_y_source.scale <= 0.0
+        {
+            return None;
         }
         let smooth = if Self::magnifying(image, target.device_width, target.device_height) {
             SmoothMode::None
@@ -313,8 +398,6 @@ impl ImagePainter {
         let target_height = target.paint.height;
         if target_width == 0
             || target_height == 0
-            || target.device_width >= image.width as f64
-            || target.device_height >= image.height as f64
             || image.bits_per_sample != 8
             || !matches!(image.channels, 1 | 3)
             || !image.is_valid()
@@ -331,30 +414,16 @@ impl ImagePainter {
         let mut pixels = vec![0u8; output_len];
         let mut accumulated = vec![0.0_f64; row_len];
         let mut normalization = vec![0.0_f64; dst_width];
-        let source_per_device_x = source_width as f64 / target.device_width;
-        let source_per_device_y = source_height as f64 / target.device_height;
         let x_spans = (0..dst_width)
             .map(|destination_x| {
                 let device_x = f64::from(target.paint.x_origin) + destination_x as f64;
-                source_box_span(
-                    device_x,
-                    device_x + 1.0,
-                    target.device_x_min,
-                    source_per_device_x,
-                    source_width,
-                )
+                orthogonal_source_box_span(device_x, device_x + 1.0, target.device_x_source, image)
             })
             .collect::<Option<Vec<_>>>()?;
         let y_spans = (0..dst_height)
             .map(|destination_y| {
                 let device_y = f64::from(target.paint.y_origin) + destination_y as f64;
-                source_box_span(
-                    device_y,
-                    device_y + 1.0,
-                    target.device_y_min,
-                    source_per_device_y,
-                    source_height,
-                )
+                orthogonal_source_box_span(device_y, device_y + 1.0, target.device_y_source, image)
             })
             .collect::<Option<Vec<_>>>()?;
 
@@ -369,9 +438,16 @@ impl ImagePainter {
                 for (destination_x, x_span) in x_spans.iter().enumerate() {
                     let output_base = destination_x * 3;
 
-                    for source_x in x_span.first..x_span.end {
-                        let x_weight = box_pixel_weight(source_x, x_span.start, x_span.finish);
+                    for source_x_axis in x_span.first..x_span.end {
+                        let x_weight = box_pixel_weight(source_x_axis, x_span.start, x_span.finish);
                         if x_weight <= 0.0 {
+                            continue;
+                        }
+                        let (source_x, source_y) = match target.device_x_source.axis {
+                            OrthogonalSourceAxis::X => (source_x_axis, source_y),
+                            OrthogonalSourceAxis::Y => (source_y, source_x_axis),
+                        };
+                        if source_x >= source_width || source_y >= source_height {
                             continue;
                         }
                         let weight = x_weight * y_weight;
@@ -1179,25 +1255,30 @@ struct SourceBoxSpan {
     end: usize,
 }
 
-fn source_box_span(
+fn orthogonal_source_box_span(
     device_start: f64,
     device_finish: f64,
-    device_image_start: f64,
-    source_per_device: f64,
-    source_extent: usize,
+    mapping: OrthogonalSourceMapping,
+    image: &RawImage,
 ) -> Option<SourceBoxSpan> {
+    let source_extent = match mapping.axis {
+        OrthogonalSourceAxis::X => image.width as usize,
+        OrthogonalSourceAxis::Y => image.height as usize,
+    };
     if !device_start.is_finite()
         || !device_finish.is_finite()
-        || !device_image_start.is_finite()
-        || !source_per_device.is_finite()
-        || source_per_device <= 0.0
+        || !mapping.scale.is_finite()
+        || !mapping.offset.is_finite()
+        || mapping.scale.abs() <= 1e-12
         || source_extent == 0
     {
         return None;
     }
     let extent = source_extent as f64;
-    let start = ((device_start - device_image_start) * source_per_device).clamp(0.0, extent);
-    let finish = ((device_finish - device_image_start) * source_per_device).clamp(0.0, extent);
+    let first_edge = (mapping.scale * device_start + mapping.offset) * extent;
+    let second_edge = (mapping.scale * device_finish + mapping.offset) * extent;
+    let start = first_edge.min(second_edge).clamp(0.0, extent);
+    let finish = first_edge.max(second_edge).clamp(0.0, extent);
     if finish <= start {
         return None;
     }
@@ -1442,9 +1523,45 @@ mod tests {
             "fractional axis-aligned images should retain their sampling phase in cache"
         );
         assert!(
-            ImagePainter::axis_aligned_cache_target(&ctm, &rotated_viewport).is_none(),
-            "rotated images must remain on the affine sampler"
+            ImagePainter::axis_aligned_cache_target(&ctm, &rotated_viewport).is_some(),
+            "quarter-turn images should retain their source orientation in the cache target"
         );
+    }
+
+    #[test]
+    fn rotated_cached_reduction_matches_general_sampler() {
+        let viewport = Viewport::new_rotated([0.0, 0.0, 10.0, 10.0], 72, 90);
+        let ctm = Transform2D::scale(10.0, 10.0);
+        let mut pixels = Vec::with_capacity(20 * 20 * 3);
+        for y in 0..20 {
+            for x in 0..20 {
+                pixels.extend_from_slice(&[(x * 11) as u8, (y * 11) as u8, ((x + y) * 5) as u8]);
+            }
+        }
+        let image = RawImage {
+            width: 20,
+            height: 20,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels,
+        };
+        let mut general = PixelBuffer::new_filled(10, 10, WHITE);
+        ImagePainter::paint_image(&mut general, &image, &ctm, &viewport);
+
+        let target = ImagePainter::axis_aligned_cache_target(&ctm, &viewport)
+            .expect("orthogonal cache target");
+        let scaled =
+            ImagePainter::scale_axis_aligned_default_rgb_for_target(&image, &target, false)
+                .expect("orthogonal cached reduction");
+        let mut cached = PixelBuffer::new_filled(10, 10, WHITE);
+        assert!(ImagePainter::paint_scaled_rgb_at_device_target(
+            &mut cached,
+            &scaled,
+            target.paint,
+            1.0,
+        ));
+
+        assert_eq!(cached.to_rgba_bytes(), general.to_rgba_bytes());
     }
 
     #[test]

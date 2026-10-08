@@ -53,10 +53,11 @@ mod resource_scopes {
         else {
             panic!("fixture outer Form");
         };
-        state.resources =
+        state.resources = SharedPageResources::from(Arc::new(
             PageResources::from_content_owner(&dict, state.engine.document().reader())
                 .unwrap()
-                .unwrap();
+                .unwrap(),
+        ));
     }
 
     fn type3_font(resources: Option<PdfObject>) -> PdfDictionary {
@@ -101,11 +102,8 @@ mod resource_scopes {
         let local = PageResources::from_content_owner(&owner, reader)
             .unwrap()
             .unwrap();
-        assert!(
-            content_resource_scope(Some(&local), &engine.get_page_resources(1).unwrap())
-                .fonts
-                .is_empty()
-        );
+        let page = Arc::new(engine.get_page_resources(1).unwrap());
+        assert!(content_resource_scope(Some(&local), &page).fonts.is_empty());
         for invalid in [
             PdfObject::Integer(42),
             PdfObject::Reference {

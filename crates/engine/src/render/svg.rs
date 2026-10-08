@@ -369,7 +369,7 @@ fn extract_image_color_space_name(
         other => other.clone(),
     };
     match &resolved {
-        PdfObject::Name(name) => Ok(canonical_image_color_space_name(&name)),
+        PdfObject::Name(name) => Ok(canonical_image_color_space_name(name)),
         PdfObject::Array(items) => items
             .first()
             .and_then(PdfObject::as_name)

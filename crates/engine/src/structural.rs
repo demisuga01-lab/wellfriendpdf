@@ -324,7 +324,7 @@ fn pdf_number(value: f64) -> PdfObject {
 /// rather than emitting a bogus file.
 pub fn repair(bytes: Vec<u8>, password: &[u8]) -> Result<Vec<u8>> {
     let reader = crate::reader::PdfReader::from_bytes_with_password(bytes, password)?;
-    crate::writer::write_document_roundtrip(&reader)
+    crate::writer::write_document_repaired(&reader)
 }
 
 /// Linearization (fast-web-view) is implemented for the proven, qpdf-validated

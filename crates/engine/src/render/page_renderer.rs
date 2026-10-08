@@ -400,6 +400,149 @@ pub enum FinalRasterCachePolicy {
 const RENDER_PLAN_CACHE_MAX_ENTRIES: usize = 128;
 const RENDER_PLAN_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const RENDER_PLAN_CACHE_MAX_ENTRY_BYTES: usize = 32 * 1024 * 1024;
+const PREPARED_TEXT_CACHE_MAX_ENTRIES: usize = 65_536;
+const PREPARED_TEXT_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone)]
+struct PreparedTextCacheEntry {
+    glyphs: Arc<Vec<DecodedGlyph>>,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct PreparedTextCache {
+    entries: HashMap<String, HashMap<Vec<u8>, PreparedTextCacheEntry>>,
+    order: VecDeque<(String, Vec<u8>)>,
+    entry_count: usize,
+    bytes: usize,
+    stats: RenderArtifactCacheStats,
+}
+
+impl PreparedTextCache {
+    fn get(&mut self, font_key: &str, text: &[u8]) -> Option<Arc<Vec<DecodedGlyph>>> {
+        let hit = self
+            .entries
+            .get(font_key)
+            .and_then(|strings| strings.get(text))
+            .map(|entry| Arc::clone(&entry.glyphs));
+        if hit.is_some() {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+        } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+        }
+        hit
+    }
+
+    fn insert(&mut self, font_key: String, text: Vec<u8>, glyphs: Arc<Vec<DecodedGlyph>>) {
+        let bytes = std::mem::size_of::<PreparedTextCacheEntry>()
+            .saturating_add(font_key.len())
+            .saturating_add(text.len())
+            .saturating_add(
+                glyphs
+                    .iter()
+                    .map(|glyph| {
+                        std::mem::size_of::<DecodedGlyph>()
+                            .saturating_add(glyph.glyph_name.as_ref().map_or(0, String::len))
+                    })
+                    .sum::<usize>(),
+            );
+        if bytes > PREPARED_TEXT_CACHE_MAX_BYTES / 4 {
+            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
+            return;
+        }
+        if self
+            .entries
+            .get(&font_key)
+            .is_some_and(|strings| strings.contains_key(text.as_slice()))
+        {
+            return;
+        }
+        while self.entry_count >= PREPARED_TEXT_CACHE_MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > PREPARED_TEXT_CACHE_MAX_BYTES
+        {
+            if !self.evict_one() {
+                break;
+            }
+        }
+        if self.entry_count >= PREPARED_TEXT_CACHE_MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > PREPARED_TEXT_CACHE_MAX_BYTES
+        {
+            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
+            return;
+        }
+        self.order.push_back((font_key.clone(), text.clone()));
+        self.entries
+            .entry(font_key)
+            .or_default()
+            .insert(text, PreparedTextCacheEntry { glyphs, bytes });
+        self.entry_count = self.entry_count.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(bytes);
+    }
+
+    fn remove_matching(&mut self, markers: &[String]) {
+        if markers.is_empty() {
+            return;
+        }
+        let removed_fonts = self
+            .entries
+            .keys()
+            .filter(|font_key| markers.iter().any(|marker| font_key.contains(marker)))
+            .cloned()
+            .collect::<HashSet<_>>();
+        if removed_fonts.is_empty() {
+            return;
+        }
+        for font_key in &removed_fonts {
+            if let Some(strings) = self.entries.remove(font_key) {
+                for entry in strings.into_values() {
+                    self.entry_count = self.entry_count.saturating_sub(1);
+                    self.bytes = self.bytes.saturating_sub(entry.bytes);
+                    self.stats.evictions = self.stats.evictions.saturating_add(1);
+                }
+            }
+        }
+        self.order
+            .retain(|(font_key, _)| !removed_fonts.contains(font_key));
+    }
+
+    fn oldest_entry_bytes(&self) -> Option<usize> {
+        self.order.front().and_then(|(font_key, text)| {
+            self.entries
+                .get(font_key)
+                .and_then(|strings| strings.get(text.as_slice()))
+                .map(|entry| entry.bytes)
+        })
+    }
+
+    fn evict_one(&mut self) -> bool {
+        while let Some((font_key, text)) = self.order.pop_front() {
+            let mut removed = None;
+            let mut font_empty = false;
+            if let Some(strings) = self.entries.get_mut(&font_key) {
+                removed = strings.remove(text.as_slice());
+                font_empty = strings.is_empty();
+            }
+            if font_empty {
+                self.entries.remove(&font_key);
+            }
+            if let Some(entry) = removed {
+                self.entry_count = self.entry_count.saturating_sub(1);
+                self.bytes = self.bytes.saturating_sub(entry.bytes);
+                self.stats.evictions = self.stats.evictions.saturating_add(1);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.entry_count,
+            bytes: self.bytes,
+            ..self.stats
+        }
+    }
+}
 
 /// Per-document renderer scratch reused across sequential page renders.
 ///
@@ -429,6 +572,7 @@ pub struct RenderDocumentCache {
     font_resolver_cache_order: VecDeque<String>,
     font_resolver_cache_bytes: usize,
     font_resolver_cache_stats: RenderArtifactCacheStats,
+    prepared_text_cache: Arc<Mutex<PreparedTextCache>>,
     type1_program_cache: Type3ProgramCache<crate::fonts::type1::Type1Font>,
     type3_geometry_cache: Type3ProgramCache<Type3GlyphGeometry>,
     type3_charproc_cache: Type3ProgramCache<Type3CharProc>,
@@ -519,6 +663,7 @@ impl RenderDocumentCache {
             font_resolver_cache_order: VecDeque::new(),
             font_resolver_cache_bytes: 0,
             font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            prepared_text_cache: Arc::new(Mutex::new(PreparedTextCache::default())),
             type1_program_cache: Type3ProgramCache::default(),
             type3_geometry_cache: Type3ProgramCache::default(),
             type3_charproc_cache: Type3ProgramCache::default(),
@@ -593,6 +738,7 @@ impl RenderDocumentCache {
         self.font_resolver_cache_order.clear();
         self.font_resolver_cache_bytes = 0;
         self.font_resolver_cache_stats = RenderArtifactCacheStats::default();
+        self.prepared_text_cache = Arc::new(Mutex::new(PreparedTextCache::default()));
         self.type1_program_cache.clear();
         self.type3_geometry_cache.clear();
         self.type3_charproc_cache.clear();
@@ -656,8 +802,14 @@ impl RenderDocumentCache {
         if !functions.available {
             return usize::MAX;
         }
+        let prepared_text_bytes = self
+            .prepared_text_cache
+            .lock()
+            .map(|cache| cache.bytes)
+            .unwrap_or(usize::MAX);
         self.font_bytes_cache_bytes
             .saturating_add(self.font_resolver_cache_bytes)
+            .saturating_add(prepared_text_bytes)
             .saturating_add(self.glyph_cache.current_bytes())
             .saturating_add(self.glyph_mask_cache.bytes())
             .saturating_add(self.type1_program_cache.bytes())
@@ -694,6 +846,9 @@ impl RenderDocumentCache {
         if self.function_cache.is_poisoned() {
             self.function_cache =
                 Arc::new(Mutex::new(crate::render::function::FunctionCache::default()));
+        }
+        if self.prepared_text_cache.is_poisoned() {
+            self.prepared_text_cache = Arc::new(Mutex::new(PreparedTextCache::default()));
         }
         if let Ok(mut functions) = self.function_cache.lock() {
             functions.set_byte_limit(max_cache_bytes);
@@ -929,6 +1084,13 @@ impl RenderDocumentCache {
                 .front()
                 .and_then(|key| self.render_plan_cache.get(key))
                 .map(render_plan_cache_entry_bytes),
+        );
+        consider(
+            23,
+            self.prepared_text_cache
+                .lock()
+                .ok()
+                .and_then(|cache| cache.oldest_entry_bytes()),
         );
 
         match candidate.map(|(kind, _)| kind) {
@@ -1166,6 +1328,11 @@ impl RenderDocumentCache {
                 }
                 evicted
             }
+            Some(23) => self
+                .prepared_text_cache
+                .lock()
+                .map(|mut cache| cache.evict_one())
+                .unwrap_or(false),
             _ => false,
         }
     }
@@ -1377,6 +1544,9 @@ impl RenderDocumentCache {
             &markers,
             |_| font_resolver_cache_entry_bytes(),
         );
+        if let Ok(mut prepared_text) = self.prepared_text_cache.lock() {
+            prepared_text.remove_matching(&markers);
+        }
         remove_ordered_cache_entries_matching(
             &mut self.image_xobject_cache,
             &mut self.image_xobject_cache_order,
@@ -1717,6 +1887,13 @@ impl RenderDocumentCache {
             bytes: self.font_resolver_cache_bytes,
             ..self.font_resolver_cache_stats
         }
+    }
+
+    pub fn prepared_text_cache_stats(&self) -> RenderArtifactCacheStats {
+        self.prepared_text_cache
+            .lock()
+            .map(|cache| cache.stats())
+            .unwrap_or_default()
     }
 
     pub fn display_list_entries(&self) -> usize {
@@ -5450,7 +5627,7 @@ impl PageRenderer {
 #[derive(Clone, Debug)]
 struct ActiveFontResource {
     name: String,
-    dict: PdfDictionary,
+    dict: Arc<PdfDictionary>,
     cache_key: String,
 }
 
@@ -5469,6 +5646,88 @@ struct ActiveColorSpaceResource {
     source: Arc<PdfObject>,
 }
 
+#[derive(Clone)]
+struct ResolvedPaintColorCacheEntry {
+    color: crate::content::state::Color,
+    alpha_bits: u32,
+    pattern_name: Option<String>,
+    active_resource: Option<ActiveColorSpaceResource>,
+    resource_scope: Arc<PageResources>,
+    rendering_intent: String,
+    pixel: PixelColor,
+}
+
+#[derive(Clone)]
+struct PlateContributionCacheEntry {
+    color: crate::content::state::Color,
+    alpha_bits: u32,
+    operation: String,
+    active_resource: Option<ActiveColorSpaceResource>,
+    resource_scope: Arc<PageResources>,
+    fill_overprint: bool,
+    stroke_overprint: bool,
+    overprint_mode: i32,
+    contributions: Arc<Vec<prepress::PlateContribution>>,
+}
+
+impl PlateContributionCacheEntry {
+    #[allow(clippy::too_many_arguments)]
+    fn matches(
+        &self,
+        color: &crate::content::state::Color,
+        alpha: f32,
+        operation: &str,
+        active_resource: Option<&ActiveColorSpaceResource>,
+        resource_scope: &SharedPageResources,
+        fill_overprint: bool,
+        stroke_overprint: bool,
+        overprint_mode: i32,
+    ) -> bool {
+        self.color == *color
+            && self.alpha_bits == alpha.to_bits()
+            && self.operation == operation
+            && same_active_color_space_resource(self.active_resource.as_ref(), active_resource)
+            && Arc::ptr_eq(&self.resource_scope, &resource_scope.0)
+            && self.fill_overprint == fill_overprint
+            && self.stroke_overprint == stroke_overprint
+            && self.overprint_mode == overprint_mode
+    }
+}
+
+impl ResolvedPaintColorCacheEntry {
+    fn matches(
+        &self,
+        color: &crate::content::state::Color,
+        alpha: f32,
+        pattern_name: Option<&str>,
+        active_resource: Option<&ActiveColorSpaceResource>,
+        resource_scope: &SharedPageResources,
+        rendering_intent: &str,
+    ) -> bool {
+        self.color == *color
+            && self.alpha_bits == alpha.to_bits()
+            && self.pattern_name.as_deref() == pattern_name
+            && same_active_color_space_resource(self.active_resource.as_ref(), active_resource)
+            && Arc::ptr_eq(&self.resource_scope, &resource_scope.0)
+            && self.rendering_intent == rendering_intent
+    }
+}
+
+fn same_active_color_space_resource(
+    left: Option<&ActiveColorSpaceResource>,
+    right: Option<&ActiveColorSpaceResource>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.name == right.name
+                && Arc::ptr_eq(&left.object, &right.object)
+                && Arc::ptr_eq(&left.source, &right.source)
+        }
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct ActiveResourceSnapshot {
     font: Option<ActiveFontResource>,
@@ -5478,13 +5737,48 @@ struct ActiveResourceSnapshot {
     stroke_pattern: Option<ActivePatternResource>,
 }
 
+#[derive(Clone)]
+struct SharedPageResources(Arc<PageResources>);
+
+impl From<PageResources> for SharedPageResources {
+    fn from(resources: PageResources) -> Self {
+        Self(Arc::new(resources))
+    }
+}
+
+impl From<Arc<PageResources>> for SharedPageResources {
+    fn from(resources: Arc<PageResources>) -> Self {
+        Self(resources)
+    }
+}
+
+impl std::ops::Deref for SharedPageResources {
+    type Target = PageResources;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl std::ops::DerefMut for SharedPageResources {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl AsRef<PageResources> for SharedPageResources {
+    fn as_ref(&self) -> &PageResources {
+        self.0.as_ref()
+    }
+}
+
 struct RenderState<'a> {
     function_cache: Arc<Mutex<crate::render::function::FunctionCache>>,
     engine: &'a ContentEngine,
     page_number: usize,
     buf: PixelBuffer,
     viewport: Viewport,
-    resources: PageResources,
+    resources: SharedPageResources,
     gs: GraphicsState,
     /// Immutable original page scope, distinct from nested program scopes and
     /// from already-selected (object-bound) graphics-state resources.
@@ -5511,13 +5805,22 @@ struct RenderState<'a> {
     font_resolver_cache_order: VecDeque<String>,
     font_resolver_cache_bytes: usize,
     font_resolver_cache_stats: RenderArtifactCacheStats,
+    prepared_text_cache: Arc<Mutex<PreparedTextCache>>,
+    /// Font-wide metadata parsed once per page render. Text streams commonly
+    /// contain hundreds of `Tj`/`TJ` operators that reference the same font;
+    /// reparsing sfnt tables for every operator dominated retained text pages.
+    prepared_font_metadata: HashMap<String, PreparedFontMetadata>,
     type1_program_cache: Type3ProgramCache<crate::fonts::type1::Type1Font>,
     // Dictionaries can be replaced in-place when scopes change; allocation
     // addresses are not identities. Confirm the complete dictionary on reuse.
-    font_resource_key_cache: HashMap<String, (PdfDictionary, String)>,
+    font_resource_key_cache: HashMap<String, (Arc<PdfDictionary>, String)>,
     active_font_resource: Option<ActiveFontResource>,
     active_fill_color_space_resource: Option<ActiveColorSpaceResource>,
     active_stroke_color_space_resource: Option<ActiveColorSpaceResource>,
+    resolved_fill_color_cache: Option<ResolvedPaintColorCacheEntry>,
+    resolved_stroke_color_cache: Option<ResolvedPaintColorCacheEntry>,
+    fill_plate_contribution_cache: Option<PlateContributionCacheEntry>,
+    stroke_plate_contribution_cache: Option<PlateContributionCacheEntry>,
     active_fill_pattern_resource: Option<ActivePatternResource>,
     active_stroke_pattern_resource: Option<ActivePatternResource>,
     active_resource_stack: Vec<ActiveResourceSnapshot>,
@@ -5720,6 +6023,7 @@ struct GlyphAtlasPlacement {
 struct GlyphMaskCacheEntry {
     mask: Arc<RasterizedGlyphMask>,
     atlas: Option<GlyphAtlasPlacement>,
+    last_used: u64,
 }
 
 impl GlyphMaskCacheEntry {
@@ -5954,7 +6258,7 @@ impl GlyphMaskAtlas {
 #[derive(Default)]
 struct GlyphMaskCache {
     entries: HashMap<GlyphMaskCacheKey, GlyphMaskCacheEntry>,
-    order: VecDeque<GlyphMaskCacheKey>,
+    next_usage: u64,
     bytes: usize,
     atlas: GlyphMaskAtlas,
     stats: RenderArtifactCacheStats,
@@ -5966,10 +6270,13 @@ impl GlyphMaskCache {
 
     #[cfg(test)]
     fn get(&mut self, key: &GlyphMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
-        let hit = self.entries.get(key).map(|entry| entry.mask.clone());
+        let usage = self.next_usage();
+        let hit = self.entries.get_mut(key).map(|entry| {
+            entry.last_used = usage;
+            entry.mask.clone()
+        });
         if hit.is_some() {
             self.stats.hits = self.stats.hits.saturating_add(1);
-            self.touch(key);
         } else {
             self.stats.misses = self.stats.misses.saturating_add(1);
         }
@@ -5986,7 +6293,7 @@ impl GlyphMaskCache {
 
     fn clear(&mut self) {
         self.entries.clear();
-        self.order.clear();
+        self.next_usage = 0;
         self.bytes = 0;
         self.atlas.clear();
         self.stats = RenderArtifactCacheStats::default();
@@ -6005,9 +6312,9 @@ impl GlyphMaskCache {
     }
 
     fn oldest_entry_bytes(&self) -> Option<usize> {
-        self.order
-            .front()
-            .and_then(|key| self.entries.get(key))
+        self.entries
+            .values()
+            .min_by_key(|entry| entry.last_used)
             .map(GlyphMaskCacheEntry::approximate_bytes)
     }
 
@@ -6020,13 +6327,16 @@ impl GlyphMaskCache {
         color: PixelColor,
         subpixel_rgb: bool,
     ) -> bool {
-        let Some(entry) = self.entries.get(key).cloned() else {
+        let usage = self.next_usage();
+        let Some((mask, placement)) = self.entries.get_mut(key).map(|entry| {
+            entry.last_used = usage;
+            (entry.mask.clone(), entry.atlas.clone())
+        }) else {
             self.stats.misses = self.stats.misses.saturating_add(1);
             return false;
         };
         self.stats.hits = self.stats.hits.saturating_add(1);
-        self.touch(key);
-        if let Some(placement) = entry.atlas.as_ref() {
+        if let Some(placement) = placement.as_ref() {
             if self
                 .atlas
                 .paint(placement, buf, dx, dy, color, subpixel_rgb)
@@ -6035,9 +6345,9 @@ impl GlyphMaskCache {
             }
         }
         if subpixel_rgb {
-            entry.mask.paint_subpixel_rgb(buf, dx, dy, color);
+            mask.paint_subpixel_rgb(buf, dx, dy, color);
         } else {
-            entry.mask.paint(buf, dx, dy, color);
+            mask.paint(buf, dx, dy, color);
         }
         true
     }
@@ -6053,7 +6363,6 @@ impl GlyphMaskCache {
             if let Some(placement) = old.atlas.as_ref() {
                 self.atlas.remove_placement(placement);
             }
-            self.remove_ordered(&key);
         }
         while self.entries.len() >= Self::MAX_ENTRIES
             || self.bytes().saturating_add(bytes) > Self::MAX_BYTES
@@ -6071,40 +6380,50 @@ impl GlyphMaskCache {
                 .saturating_sub(self.bytes())
                 .saturating_sub(bytes);
             let atlas = self.atlas.try_insert(&mask, atlas_extra_budget);
-            let entry = GlyphMaskCacheEntry { mask, atlas };
+            let entry = GlyphMaskCacheEntry {
+                mask,
+                atlas,
+                last_used: self.next_usage(),
+            };
             let entry_bytes = entry.approximate_bytes();
-            self.order.push_back(key.clone());
             self.bytes = self.bytes.saturating_add(entry_bytes);
             self.entries.insert(key, entry);
         }
     }
 
-    fn absorb_from(&mut self, mut other: Self) {
+    fn absorb_from(&mut self, other: Self) {
         merge_artifact_cache_counts(&mut self.stats, other.stats());
         merge_artifact_cache_counts(&mut self.atlas.stats, other.atlas.stats());
-        for key in std::mem::take(&mut other.order) {
-            if let Some(entry) = other.entries.remove(&key) {
-                self.insert(key, entry.mask);
-            }
-        }
         for (key, entry) in other.entries {
             self.insert(key, entry.mask);
         }
     }
 
-    fn touch(&mut self, key: &GlyphMaskCacheKey) {
-        self.remove_ordered(key);
-        self.order.push_back(key.clone());
-    }
-
-    fn remove_ordered(&mut self, key: &GlyphMaskCacheKey) {
-        if let Some(pos) = self.order.iter().position(|item| item == key) {
-            self.order.remove(pos);
+    fn next_usage(&mut self) -> u64 {
+        if self.next_usage == u64::MAX {
+            let mut ordered: Vec<_> = self
+                .entries
+                .iter_mut()
+                .map(|(key, entry)| (key.clone(), entry))
+                .collect();
+            ordered.sort_unstable_by_key(|(_, entry)| entry.last_used);
+            for (index, (_, entry)) in ordered.into_iter().enumerate() {
+                entry.last_used = index as u64;
+            }
+            self.next_usage = self.entries.len() as u64;
         }
+        let usage = self.next_usage;
+        self.next_usage = self.next_usage.saturating_add(1);
+        usage
     }
 
     fn evict_one(&mut self) -> bool {
-        while let Some(victim) = self.order.pop_front() {
+        let victim = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| key.clone());
+        if let Some(victim) = victim {
             if let Some(removed) = self.entries.remove(&victim) {
                 self.bytes = self.bytes.saturating_sub(removed.approximate_bytes());
                 if let Some(placement) = removed.atlas.as_ref() {
@@ -7195,7 +7514,7 @@ impl<'a> RenderState<'a> {
             buf,
             viewport,
             page_resources: Arc::clone(&resources),
-            resources: resources.as_ref().clone(),
+            resources: SharedPageResources::from(Arc::clone(&resources)),
             gs,
             initial_rendering_intent,
             clip_stack: Vec::new(),
@@ -7222,11 +7541,17 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order: std::mem::take(&mut cache.font_resolver_cache_order),
             font_resolver_cache_bytes,
             font_resolver_cache_stats,
+            prepared_text_cache: Arc::clone(&cache.prepared_text_cache),
+            prepared_font_metadata: HashMap::new(),
             type1_program_cache: std::mem::take(&mut cache.type1_program_cache),
             font_resource_key_cache: HashMap::new(),
             active_font_resource: None,
             active_fill_color_space_resource: None,
             active_stroke_color_space_resource: None,
+            resolved_fill_color_cache: None,
+            resolved_stroke_color_cache: None,
+            fill_plate_contribution_cache: None,
+            stroke_plate_contribution_cache: None,
             active_fill_pattern_resource: None,
             active_stroke_pattern_resource: None,
             active_resource_stack: Vec::new(),
@@ -7722,6 +8047,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order: self.font_resolver_cache_order,
             font_resolver_cache_bytes: self.font_resolver_cache_bytes,
             font_resolver_cache_stats: self.font_resolver_cache_stats,
+            prepared_text_cache: self.prepared_text_cache,
             type1_program_cache: self.type1_program_cache,
             type3_geometry_cache: self.type3_geometry_cache,
             type3_charproc_cache: self.type3_charproc_cache,
@@ -7800,6 +8126,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order,
             font_resolver_cache_bytes,
             font_resolver_cache_stats,
+            prepared_text_cache,
             type1_program_cache,
             type3_geometry_cache,
             type3_charproc_cache,
@@ -7890,6 +8217,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order,
             font_resolver_cache_bytes,
             font_resolver_cache_stats,
+            prepared_text_cache,
             type1_program_cache,
             type3_geometry_cache,
             type3_charproc_cache,
@@ -9372,7 +9700,9 @@ impl<'a> RenderState<'a> {
             }
         };
         let mut retained_resources =
-            content_resource_scope(resources.as_ref(), &self.page_resources);
+            content_resource_scope(resources.as_ref(), &self.page_resources)
+                .as_ref()
+                .clone();
         for active in [
             self.active_fill_color_space_resource.as_ref(),
             self.active_stroke_color_space_resource.as_ref(),
@@ -9415,7 +9745,7 @@ impl<'a> RenderState<'a> {
             // in the Form remains authoritative when encountered.
             retained_resources
                 .fonts
-                .insert(font.name.clone(), font.dict.clone());
+                .insert(font.name.clone(), font.dict.as_ref().clone());
             retained_ops.insert(
                 0,
                 ContentOperation::new(
@@ -10734,21 +11064,75 @@ impl<'a> RenderState<'a> {
     }
 
     fn fill_pixel_color(&mut self) -> PixelColor {
-        if self.is_pattern_fill() && self.gs.fill_pattern_name.is_none() {
-            return crate::render::color::RenderColor::transparent().to_pixel_color();
+        if self.is_pattern_fill() {
+            if self.gs.fill_pattern_name.is_none() {
+                return crate::render::color::RenderColor::transparent().to_pixel_color();
+            }
+            let fill_color = self.gs.fill_color.clone();
+            let alpha = self.gs.fill_alpha as f32;
+            return self.resolve_paint_color(&fill_color, alpha, false, "fill");
         }
         let fill_color = self.gs.fill_color.clone();
         let alpha = self.gs.fill_alpha as f32;
-        self.resolve_paint_color(&fill_color, alpha, false, "fill")
+        if let Some(entry) = self.resolved_fill_color_cache.as_ref() {
+            if entry.matches(
+                &fill_color,
+                alpha,
+                self.gs.fill_pattern_name.as_deref(),
+                self.active_fill_color_space_resource.as_ref(),
+                &self.resources,
+                &self.gs.rendering_intent,
+            ) {
+                return entry.pixel;
+            }
+        }
+        let pixel = self.resolve_paint_color(&fill_color, alpha, false, "fill");
+        self.resolved_fill_color_cache = Some(ResolvedPaintColorCacheEntry {
+            color: fill_color,
+            alpha_bits: alpha.to_bits(),
+            pattern_name: self.gs.fill_pattern_name.clone(),
+            active_resource: self.active_fill_color_space_resource.clone(),
+            resource_scope: Arc::clone(&self.resources.0),
+            rendering_intent: self.gs.rendering_intent.clone(),
+            pixel,
+        });
+        pixel
     }
 
     fn stroke_pixel_color(&mut self) -> PixelColor {
-        if self.is_pattern_stroke() && self.gs.stroke_pattern_name.is_none() {
-            return crate::render::color::RenderColor::transparent().to_pixel_color();
+        if self.is_pattern_stroke() {
+            if self.gs.stroke_pattern_name.is_none() {
+                return crate::render::color::RenderColor::transparent().to_pixel_color();
+            }
+            let stroke_color = self.gs.stroke_color.clone();
+            let alpha = self.gs.stroke_alpha as f32;
+            return self.resolve_paint_color(&stroke_color, alpha, true, "stroke");
         }
         let stroke_color = self.gs.stroke_color.clone();
         let alpha = self.gs.stroke_alpha as f32;
-        self.resolve_paint_color(&stroke_color, alpha, true, "stroke")
+        if let Some(entry) = self.resolved_stroke_color_cache.as_ref() {
+            if entry.matches(
+                &stroke_color,
+                alpha,
+                self.gs.stroke_pattern_name.as_deref(),
+                self.active_stroke_color_space_resource.as_ref(),
+                &self.resources,
+                &self.gs.rendering_intent,
+            ) {
+                return entry.pixel;
+            }
+        }
+        let pixel = self.resolve_paint_color(&stroke_color, alpha, true, "stroke");
+        self.resolved_stroke_color_cache = Some(ResolvedPaintColorCacheEntry {
+            color: stroke_color,
+            alpha_bits: alpha.to_bits(),
+            pattern_name: self.gs.stroke_pattern_name.clone(),
+            active_resource: self.active_stroke_color_space_resource.clone(),
+            resource_scope: Arc::clone(&self.resources.0),
+            rendering_intent: self.gs.rendering_intent.clone(),
+            pixel,
+        });
+        pixel
     }
 
     fn record_plate_contribution(
@@ -10760,7 +11144,39 @@ impl<'a> RenderState<'a> {
         let ColorSpace::Named(name) = &color.space else {
             return;
         };
-        let bound = if operation.contains("stroke") {
+        let is_stroke = operation.contains("stroke");
+        let active_resource = if is_stroke {
+            self.active_stroke_color_space_resource.clone()
+        } else {
+            self.active_fill_color_space_resource.clone()
+        };
+        let fill_overprint = self.fill_overprint_model_enabled();
+        let stroke_overprint = self.stroke_overprint_model_enabled();
+        let overprint_mode = self.active_overprint_mode();
+        let cached = if is_stroke {
+            self.stroke_plate_contribution_cache.as_ref()
+        } else {
+            self.fill_plate_contribution_cache.as_ref()
+        };
+        if let Some(entry) = cached {
+            if entry.matches(
+                color,
+                alpha,
+                operation,
+                active_resource.as_ref(),
+                &self.resources,
+                fill_overprint,
+                stroke_overprint,
+                overprint_mode,
+            ) {
+                let contributions = Arc::clone(&entry.contributions);
+                self.separation_framebuffer
+                    .record_all(contributions.iter().cloned());
+                return;
+            }
+        }
+
+        let bound = if is_stroke {
             self.current_stroke_color_space_object(name)
         } else {
             self.current_fill_color_space_object(name)
@@ -10768,13 +11184,49 @@ impl<'a> RenderState<'a> {
         let Some(space_obj) = bound else {
             return;
         };
-        self.record_plate_contribution_for_space_obj(
-            &space_obj,
-            &color.components,
-            alpha,
-            Some(format!("page {} color space /{}", self.page_number, name)),
+        let object = Some(format!("page {} color space /{}", self.page_number, name));
+        let reader = self.engine.document().reader();
+        let overprint = prepress::OverprintStateModel::for_paint(
+            fill_overprint,
+            stroke_overprint,
+            overprint_mode,
             operation,
+            prepress::color_space_label(&space_obj, reader),
+            color.components.as_slice(),
+            alpha,
+            object.clone(),
         );
+        let contributions = Arc::new(
+            prepress::plate_contributions_for_color_space_with_overprint_and_resources(
+                &space_obj,
+                color.components.as_slice(),
+                alpha,
+                reader,
+                object,
+                operation,
+                Some(self.page_number),
+                &overprint,
+                self.function_resources(),
+            ),
+        );
+        self.separation_framebuffer
+            .record_all(contributions.iter().cloned());
+        let entry = PlateContributionCacheEntry {
+            color: color.clone(),
+            alpha_bits: alpha.to_bits(),
+            operation: operation.to_string(),
+            active_resource,
+            resource_scope: Arc::clone(&self.resources.0),
+            fill_overprint,
+            stroke_overprint,
+            overprint_mode,
+            contributions,
+        };
+        if is_stroke {
+            self.stroke_plate_contribution_cache = Some(entry);
+        } else {
+            self.fill_plate_contribution_cache = Some(entry);
+        }
     }
 
     fn record_plate_contribution_for_space_obj(
@@ -11622,7 +12074,9 @@ impl<'a> RenderState<'a> {
         };
 
         let mut g_resources = match PageResources::from_content_owner(&g_dict, reader) {
-            Ok(resources) => content_resource_scope(resources.as_ref(), &self.page_resources),
+            Ok(resources) => content_resource_scope(resources.as_ref(), &self.page_resources)
+                .as_ref()
+                .clone(),
             Err(err) => {
                 self.record_fatal_render_error(format!("SMask /G invalid /Resources: {err}"));
                 return;
@@ -11878,7 +12332,7 @@ impl<'a> RenderState<'a> {
             page_number: self.page_number,
             buf: mask_buf,
             viewport: mask_viewport.clone(),
-            resources: g_resources,
+            resources: g_resources.into(),
             page_resources: Arc::clone(&self.page_resources),
             gs: mask_gs,
             initial_rendering_intent: self.initial_rendering_intent.clone(),
@@ -11903,11 +12357,17 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order: self.font_resolver_cache_order.clone(),
             font_resolver_cache_bytes: self.font_resolver_cache_bytes,
             font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            prepared_text_cache: Arc::clone(&self.prepared_text_cache),
+            prepared_font_metadata: self.prepared_font_metadata.clone(),
             type1_program_cache: self.type1_program_cache.clone(),
             font_resource_key_cache: self.font_resource_key_cache.clone(),
             active_font_resource: self.active_font_resource.clone(),
             active_fill_color_space_resource: self.active_fill_color_space_resource.clone(),
             active_stroke_color_space_resource: self.active_stroke_color_space_resource.clone(),
+            resolved_fill_color_cache: None,
+            resolved_stroke_color_cache: None,
+            fill_plate_contribution_cache: None,
+            stroke_plate_contribution_cache: None,
             active_fill_pattern_resource: self.active_fill_pattern_resource.clone(),
             active_stroke_pattern_resource: self.active_stroke_pattern_resource.clone(),
             active_resource_stack: Vec::new(),
@@ -13476,11 +13936,17 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_order: self.font_resolver_cache_order.clone(),
             font_resolver_cache_bytes: self.font_resolver_cache_bytes,
             font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            prepared_text_cache: Arc::clone(&self.prepared_text_cache),
+            prepared_font_metadata: self.prepared_font_metadata.clone(),
             type1_program_cache: self.type1_program_cache.clone(),
             font_resource_key_cache: self.font_resource_key_cache.clone(),
             active_font_resource: self.active_font_resource.clone(),
             active_fill_color_space_resource: self.active_fill_color_space_resource.clone(),
             active_stroke_color_space_resource: self.active_stroke_color_space_resource.clone(),
+            resolved_fill_color_cache: None,
+            resolved_stroke_color_cache: None,
+            fill_plate_contribution_cache: None,
+            stroke_plate_contribution_cache: None,
             active_fill_pattern_resource: self.active_fill_pattern_resource.clone(),
             active_stroke_pattern_resource: self.active_stroke_pattern_resource.clone(),
             active_resource_stack: Vec::new(),
@@ -14477,7 +14943,7 @@ impl<'a> RenderState<'a> {
 
         self.gs.ctm = tile_ctm.to_array();
         self.base_ctm = tile_ctm;
-        self.resources = program.resources.clone();
+        self.resources = program.resources.clone().into();
         if let Some((space, color, binding)) = forced_color {
             self.gs.fill_color_space = space.clone();
             self.gs.fill_color = color.clone();
@@ -14782,65 +15248,93 @@ impl<'a> RenderState<'a> {
             return;
         }
         let (font_dict, font_cache_key) = self.current_text_font_resource(&font_name);
-        let decoded = if let Some(font_dict) = font_dict.as_ref() {
-            let resolver = self.get_font_resolver(&font_cache_key, font_dict);
-            match try_decode_text_bytes_with_resolver(
-                bytes,
-                font_dict,
-                &resolver,
-                self.engine.document().reader(),
-            ) {
-                Ok(decoded) => decoded,
-                Err(reason) => {
-                    self.record_fatal_render_error(reason);
-                    return;
-                }
-            }
+        let cached_decoded = self
+            .prepared_text_cache
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get(&font_cache_key, bytes));
+        let decoded = if let Some(decoded) = cached_decoded {
+            decoded
         } else {
-            match crate::render::text_decode::try_decode_text_bytes(
-                bytes,
-                &font_name,
-                &self.resources,
-                self.engine.document().reader(),
-            ) {
-                Ok(decoded) => decoded,
-                Err(reason) => {
-                    self.record_fatal_render_error(reason);
-                    return;
+            let decoded = if let Some(font_dict) = font_dict.as_ref() {
+                let resolver = self.get_font_resolver(&font_cache_key, font_dict);
+                match try_decode_text_bytes_with_resolver(
+                    bytes,
+                    font_dict,
+                    &resolver,
+                    self.engine.document().reader(),
+                ) {
+                    Ok(decoded) => decoded,
+                    Err(reason) => {
+                        self.record_fatal_render_error(reason);
+                        return;
+                    }
                 }
+            } else {
+                match crate::render::text_decode::try_decode_text_bytes(
+                    bytes,
+                    &font_name,
+                    &self.resources,
+                    self.engine.document().reader(),
+                ) {
+                    Ok(decoded) => decoded,
+                    Err(reason) => {
+                        self.record_fatal_render_error(reason);
+                        return;
+                    }
+                }
+            };
+            let decoded = Arc::new(decoded);
+            if let Ok(mut cache) = self.prepared_text_cache.lock() {
+                cache.insert(font_cache_key.clone(), bytes.to_vec(), Arc::clone(&decoded));
             }
+            decoded
         };
         let font_subtype = font_dict
             .as_ref()
-            .map(detect_font_subtype)
+            .map(|dict| detect_font_subtype(dict.as_ref()))
             .unwrap_or(FontSubtype::Unknown);
         let is_type3 = font_subtype == FontSubtype::Type3;
         let (font_bytes, substitution_event_index, exact_font_refusal) = if is_type3 {
             (None, None, None)
         } else {
-            self.get_font_bytes(&font_name, &font_cache_key, font_dict.as_ref())
+            self.get_font_bytes(&font_name, &font_cache_key, font_dict.as_deref())
         };
         let variation = font_dict
             .as_ref()
-            .map(|font_dict| self.font_variation_request_from_dict(font_dict))
+            .map(|font_dict| self.font_variation_request_from_dict(font_dict.as_ref()))
             .unwrap_or_else(VariationRequest::none);
-        let font_hash = font_bytes
+        let prepared_font = font_bytes
             .as_ref()
             .filter(|bytes| !bytes.is_empty())
-            .map(|bytes| font_resource_glyph_cache_hash(bytes.as_slice(), &font_cache_key));
-        let upem = font_bytes
-            .as_ref()
-            .and_then(|bytes| Self::get_upem(bytes.as_slice()))
-            .map(f64::from)
-            .filter(|value| *value > 0.0)
-            .unwrap_or(1000.0);
-        let light_hinting_supported = font_bytes
-            .as_ref()
             .map(|bytes| {
-                ttf_parser::Face::parse(bytes.as_slice(), 0).is_ok()
-                    || crate::fonts::type1::Type1Font::is_type1(bytes.as_slice())
-            })
-            .unwrap_or(false);
+                if let Some(metadata) = self.prepared_font_metadata.get(&font_cache_key).copied() {
+                    metadata
+                } else {
+                    let metadata = PreparedFontMetadata {
+                        glyph_cache_hash: font_resource_glyph_cache_hash(
+                            bytes.as_slice(),
+                            &font_cache_key,
+                        ),
+                        upem: Self::get_upem(bytes.as_slice())
+                            .map(f64::from)
+                            .filter(|value| *value > 0.0)
+                            .unwrap_or(1000.0),
+                        light_hinting_supported: ttf_parser::Face::parse(bytes.as_slice(), 0)
+                            .is_ok()
+                            || crate::fonts::type1::Type1Font::is_type1(bytes.as_slice()),
+                    };
+                    self.prepared_font_metadata
+                        .insert(font_cache_key.clone(), metadata);
+                    metadata
+                }
+            });
+        let font_hash = prepared_font.map(|metadata| metadata.glyph_cache_hash);
+        let prepared_font = prepared_font.unwrap_or(PreparedFontMetadata {
+            glyph_cache_hash: 0,
+            upem: 1000.0,
+            light_hinting_supported: false,
+        });
 
         if let Some(refusal) = exact_font_refusal {
             if decoded.iter().any(|glyph| {
@@ -14866,25 +15360,29 @@ impl<'a> RenderState<'a> {
         if let (Some(event_index), Some(font_bytes)) =
             (substitution_event_index, font_bytes.as_ref())
         {
-            let glyph_coverage =
-                font_substitution_glyph_coverage(font_bytes.as_slice(), &variation, &decoded);
+            let glyph_coverage = font_substitution_glyph_coverage(
+                font_bytes.as_slice(),
+                &variation,
+                decoded.as_slice(),
+            );
             if let Some(event) = self.font_substitution_log.event_mut(event_index) {
                 event.set_glyph_coverage(glyph_coverage);
             }
         }
 
-        for (glyph_index, glyph) in decoded.into_iter().enumerate() {
+        let mut prepared_text_paint = None;
+        for (glyph_index, glyph) in decoded.iter().enumerate() {
             if glyph_index % 32 == 0 && self.cancel.is_cancelled() {
                 return;
             }
             let mut ttf_advance = None;
             let text_mode = self.gs.text.rendering_mode;
-            let glyph_affects_surface = should_paint_decoded_glyph(&glyph)
+            let glyph_affects_surface = should_paint_decoded_glyph(glyph)
                 && (text_rendering_mode_paints(text_mode) || text_rendering_mode_clips(text_mode));
             if paint && glyph_affects_surface {
                 if is_type3 {
                     if let Some(font_dict) = font_dict.as_ref() {
-                        ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
+                        ttf_advance = self.render_type3_glyph(&font_name, font_dict, glyph);
                     }
                     if ttf_advance.is_none() {
                         self.record_fatal_render_error(format!(
@@ -14895,6 +15393,32 @@ impl<'a> RenderState<'a> {
                 } else if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash)
                 {
                     if !font_bytes.is_empty() {
+                        let (fill_color, stroke_color) = match prepared_text_paint {
+                            Some(colors) => colors,
+                            None => {
+                                let colors = (self.fill_pixel_color(), self.stroke_pixel_color());
+                                prepared_text_paint = Some(colors);
+                                colors
+                            }
+                        };
+                        let fill_mode = matches!(text_mode, 0 | 2 | 4 | 6);
+                        let stroke_mode = matches!(text_mode, 1 | 2 | 5 | 6);
+                        if fill_mode {
+                            let fill_color_state = self.gs.fill_color.clone();
+                            self.record_plate_contribution(
+                                &fill_color_state,
+                                self.gs.fill_alpha as f32,
+                                "text_fill",
+                            );
+                        }
+                        if stroke_mode {
+                            let stroke_color_state = self.gs.stroke_color.clone();
+                            self.record_plate_contribution(
+                                &stroke_color_state,
+                                self.gs.stroke_alpha as f32,
+                                "text_stroke",
+                            );
+                        }
                         ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
                             font_name: &font_name,
                             font_program_cache_key: &font_cache_key,
@@ -14906,10 +15430,12 @@ impl<'a> RenderState<'a> {
                             font_bytes: font_bytes.as_slice(),
                             font_hash,
                             variation: &variation,
-                            upem,
-                            light_hinting_supported,
+                            upem: prepared_font.upem,
+                            light_hinting_supported: prepared_font.light_hinting_supported,
                             offset_x: glyph.vertical_origin.map(|(vx, _)| -vx).unwrap_or(0.0),
                             offset_y: glyph.vertical_origin.map(|(_, vy)| vy).unwrap_or(0.0),
+                            fill_color,
+                            stroke_color,
                         });
                     }
                 }
@@ -14917,18 +15443,18 @@ impl<'a> RenderState<'a> {
                 if is_type3 {
                     if let Some(font_dict) = font_dict.as_ref() {
                         ttf_advance =
-                            self.type3_glyph_advance_without_paint(&font_name, font_dict, &glyph);
+                            self.type3_glyph_advance_without_paint(&font_name, font_dict, glyph);
                     }
                 } else {
                     ttf_advance = font_bytes.as_deref().and_then(|bytes| {
-                        strict_glyph_horizontal_advance(&glyph, bytes.as_slice(), &variation)
+                        strict_glyph_horizontal_advance(glyph, bytes.as_slice(), &variation)
                     });
                 }
             }
             let advance = match decoded_text_horizontal_advance(
                 self.exactness_policy,
                 &font_name,
-                &glyph,
+                glyph,
                 ttf_advance,
                 font_bytes.as_deref().map(Vec::as_slice),
                 &variation,
@@ -14940,7 +15466,7 @@ impl<'a> RenderState<'a> {
                     return;
                 }
             };
-            if let Err(reason) = self.advance_decoded_text(advance, &glyph) {
+            if let Err(reason) = self.advance_decoded_text(advance, glyph) {
                 self.record_fatal_render_error(reason);
                 return;
             }
@@ -14968,29 +15494,66 @@ impl<'a> RenderState<'a> {
     }
 
     fn render_glyph_with_cache(&mut self, request: GlyphRenderRequest<'_>) -> Option<f64> {
-        let glyph_id = crate::render::color_glyph::resolve_request_glyph_id(
-            request.font_bytes,
-            request.is_gid,
+        let variation_hash = request.variation.cache_hash();
+        let cached = self.glyph_cache.get_matching_render_class(
+            request.font_hash,
+            variation_hash,
             request.code,
-            request.ch,
-            request.glyph_name,
-            request.variation,
+            request.is_gid,
         );
-        let color_mode = glyph_id
-            .map(|gid| crate::render::color_glyph::color_glyph_kind(request.font_bytes, gid))
-            .unwrap_or(crate::render::color_glyph::ColorGlyphKind::None)
-            .cache_mode();
-        let cache_key = GlyphCacheKey {
-            font_hash: request.font_hash,
-            variation_hash: request.variation.cache_hash(),
-            code: request.code,
-            is_gid: request.is_gid,
-            color_mode,
-        };
-        let cached = self.glyph_cache.get(&cache_key).cloned();
-        let cached = match cached {
-            Some(cached) => cached,
+        let (cache_key, cached, glyph_id, color_mode) = match cached {
+            Some((cached, color_mode)) => {
+                // Ordinary outline glyphs never need their cmap/color tables
+                // reparsed after the outline cache has answered. Color glyphs
+                // retain their class in the cache key and resolve the gid only
+                // for their specialized paint path.
+                let glyph_id = (color_mode != 0)
+                    .then(|| {
+                        crate::render::color_glyph::resolve_request_glyph_id(
+                            request.font_bytes,
+                            request.is_gid,
+                            request.code,
+                            request.ch,
+                            request.glyph_name,
+                            request.variation,
+                        )
+                    })
+                    .flatten();
+                (
+                    GlyphCacheKey {
+                        font_hash: request.font_hash,
+                        variation_hash,
+                        code: request.code,
+                        is_gid: request.is_gid,
+                        color_mode,
+                    },
+                    cached,
+                    glyph_id,
+                    color_mode,
+                )
+            }
             None => {
+                let glyph_id = crate::render::color_glyph::resolve_request_glyph_id(
+                    request.font_bytes,
+                    request.is_gid,
+                    request.code,
+                    request.ch,
+                    request.glyph_name,
+                    request.variation,
+                );
+                let color_mode = glyph_id
+                    .map(|gid| {
+                        crate::render::color_glyph::color_glyph_kind(request.font_bytes, gid)
+                    })
+                    .unwrap_or(crate::render::color_glyph::ColorGlyphKind::None)
+                    .cache_mode();
+                let cache_key = GlyphCacheKey {
+                    font_hash: request.font_hash,
+                    variation_hash,
+                    code: request.code,
+                    is_gid: request.is_gid,
+                    color_mode,
+                };
                 let type1_program = if !request.is_gid
                     && request.glyph_name.is_some()
                     && crate::fonts::type1::Type1Font::is_type1(request.font_bytes)
@@ -15020,7 +15583,7 @@ impl<'a> RenderState<'a> {
                 };
                 let cached = CachedGlyph::from_path(path, advance_width);
                 self.glyph_cache.insert(cache_key.clone(), cached.clone());
-                cached
+                (cache_key, cached, glyph_id, color_mode)
             }
         };
 
@@ -15081,27 +15644,10 @@ impl<'a> RenderState<'a> {
             return Some(advance_width);
         }
 
-        let fill_color = self.fill_pixel_color();
-        let stroke_color = self.stroke_pixel_color();
+        let fill_color = request.fill_color;
+        let stroke_color = request.stroke_color;
         let fill_mode = matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6);
-        let stroke_mode = matches!(self.gs.text.rendering_mode, 1 | 2 | 5 | 6);
-        if fill_mode {
-            let fill_color_state = self.gs.fill_color.clone();
-            self.record_plate_contribution(
-                &fill_color_state,
-                self.gs.fill_alpha as f32,
-                "text_fill",
-            );
-        }
-        if stroke_mode {
-            let stroke_color_state = self.gs.stroke_color.clone();
-            self.record_plate_contribution(
-                &stroke_color_state,
-                self.gs.stroke_alpha as f32,
-                "text_stroke",
-            );
-        }
-        let color_fill_painted = if fill_mode {
+        let color_fill_painted = if fill_mode && color_mode != 0 {
             glyph_id
                 .map(|gid| {
                     self.paint_color_glyph_fill(
@@ -15246,28 +15792,34 @@ impl<'a> RenderState<'a> {
             let cache_key = self.font_resource_cache_key_for_contract(name, &dict);
             ActiveFontResource {
                 name: name.to_string(),
-                dict,
+                dict: Arc::new(dict),
                 cache_key,
             }
         });
     }
 
-    fn current_text_font_resource(&mut self, font_name: &str) -> (Option<PdfDictionary>, String) {
+    fn current_text_font_resource(
+        &mut self,
+        font_name: &str,
+    ) -> (Option<Arc<PdfDictionary>>, String) {
         if let Some(active) = self.active_font_resource.as_ref() {
             if active.name == font_name {
-                return (Some(active.dict.clone()), active.cache_key.clone());
+                return (Some(Arc::clone(&active.dict)), active.cache_key.clone());
             }
         }
         if let Some(font_dict) = self.resources.fonts.get(font_name) {
             if let Some((cached_dict, cached_key)) = self.font_resource_key_cache.get(font_name) {
-                if cached_dict == font_dict {
-                    return (Some(font_dict.clone()), cached_key.clone());
+                if cached_dict.as_ref() == font_dict {
+                    return (Some(Arc::clone(cached_dict)), cached_key.clone());
                 }
             }
             let computed = self.font_resource_cache_key_for_contract(font_name, font_dict);
-            self.font_resource_key_cache
-                .insert(font_name.to_string(), (font_dict.clone(), computed.clone()));
-            return (Some(font_dict.clone()), computed);
+            let shared = Arc::new(font_dict.clone());
+            self.font_resource_key_cache.insert(
+                font_name.to_string(),
+                (Arc::clone(&shared), computed.clone()),
+            );
+            return (Some(shared), computed);
         }
         (None, format!("{font_name}:missing"))
     }
@@ -15488,10 +16040,10 @@ impl<'a> RenderState<'a> {
         let subpixel_rgb = self.text_subpixel_enabled();
         let key = GlyphMaskCacheKey {
             glyph: glyph_key.clone(),
-            a: quantize_glyph_mask_value(normalized_t.a),
-            b: quantize_glyph_mask_value(normalized_t.b),
-            c: quantize_glyph_mask_value(normalized_t.c),
-            d: quantize_glyph_mask_value(normalized_t.d),
+            a: glyph_mask_linear_transform_key(normalized_t.a),
+            b: glyph_mask_linear_transform_key(normalized_t.b),
+            c: glyph_mask_linear_transform_key(normalized_t.c),
+            d: glyph_mask_linear_transform_key(normalized_t.d),
             frac_e: quantize_glyph_mask_fraction(normalized_t.e),
             frac_f: quantize_glyph_mask_fraction(normalized_t.f),
             hinting: glyph_hinting.should_apply(),
@@ -16308,7 +16860,7 @@ impl<'a> RenderState<'a> {
         let inherited_type3_stroke_color = self.stroke_pixel_color();
 
         self.form_depth += 1;
-        self.resources = type3_resources;
+        self.resources = type3_resources.into();
         self.gs.ctm = glyph_ctm.to_array();
         self.base_ctm = glyph_ctm;
         self.sync_blend_mode();
@@ -16408,10 +16960,11 @@ impl<'a> RenderState<'a> {
         }
         let resources =
             PageResources::from_content_owner(font_dict, self.engine.document().reader())?;
-        Ok(content_resource_scope(
-            resources.as_ref(),
-            &self.page_resources,
-        ))
+        Ok(
+            content_resource_scope(resources.as_ref(), &self.page_resources)
+                .as_ref()
+                .clone(),
+        )
     }
 
     fn compile_type3_resource_charproc_retained_plan(
@@ -16509,7 +17062,7 @@ impl<'a> RenderState<'a> {
             &[u8::from(self.active_font_resource.is_some())],
         );
         if let Some(font) = &self.active_font_resource {
-            hash_pdf_dictionary(&mut active_hash, &font.dict, 0);
+            hash_pdf_dictionary(&mut active_hash, font.dict.as_ref(), 0);
         }
         for space in [
             &self.active_fill_color_space_resource,
@@ -17106,10 +17659,10 @@ impl<'a> RenderState<'a> {
             dx,
             dy,
             [
-                quantize_glyph_mask_value(normalized_t.a),
-                quantize_glyph_mask_value(normalized_t.b),
-                quantize_glyph_mask_value(normalized_t.c),
-                quantize_glyph_mask_value(normalized_t.d),
+                glyph_mask_linear_transform_key(normalized_t.a),
+                glyph_mask_linear_transform_key(normalized_t.b),
+                glyph_mask_linear_transform_key(normalized_t.c),
+                glyph_mask_linear_transform_key(normalized_t.d),
                 quantize_glyph_mask_fraction(normalized_t.e),
                 quantize_glyph_mask_fraction(normalized_t.f),
             ],
@@ -17523,6 +18076,13 @@ fn smask_transfer_function_cache_label(smask_dict: &PdfDictionary) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PreparedFontMetadata {
+    glyph_cache_hash: u64,
+    upem: f64,
+    light_hinting_supported: bool,
+}
+
 struct GlyphRenderRequest<'a> {
     font_name: &'a str,
     font_program_cache_key: &'a str,
@@ -17539,6 +18099,8 @@ struct GlyphRenderRequest<'a> {
     light_hinting_supported: bool,
     offset_x: f64,
     offset_y: f64,
+    fill_color: PixelColor,
+    stroke_color: PixelColor,
 }
 
 const TYPE3_MAX_CHARPROC_BYTES: usize = 1_048_576;
@@ -20559,10 +21121,10 @@ fn paint_cached_path_fill(
             FillRule::EvenOdd => 1,
         },
         flatness: quantize_glyph_mask_value(flatness),
-        a: quantize_glyph_mask_value(normalized_t.a),
-        b: quantize_glyph_mask_value(normalized_t.b),
-        c: quantize_glyph_mask_value(normalized_t.c),
-        d: quantize_glyph_mask_value(normalized_t.d),
+        a: glyph_mask_linear_transform_key(normalized_t.a),
+        b: glyph_mask_linear_transform_key(normalized_t.b),
+        c: glyph_mask_linear_transform_key(normalized_t.c),
+        d: glyph_mask_linear_transform_key(normalized_t.d),
         frac_e: quantize_glyph_mask_fraction(normalized_t.e),
         frac_f: quantize_glyph_mask_fraction(normalized_t.f),
         binary_alpha,
@@ -20651,10 +21213,10 @@ fn paint_cached_path_stroke(
         cap: line_cap_cache_id(cap),
         join: line_join_cache_id(join),
         miter_limit: quantize_glyph_mask_value(miter_limit),
-        a: quantize_glyph_mask_value(normalized_t.a),
-        b: quantize_glyph_mask_value(normalized_t.b),
-        c: quantize_glyph_mask_value(normalized_t.c),
-        d: quantize_glyph_mask_value(normalized_t.d),
+        a: glyph_mask_linear_transform_key(normalized_t.a),
+        b: glyph_mask_linear_transform_key(normalized_t.b),
+        c: glyph_mask_linear_transform_key(normalized_t.c),
+        d: glyph_mask_linear_transform_key(normalized_t.d),
         frac_e: quantize_glyph_mask_fraction(normalized_t.e),
         frac_f: quantize_glyph_mask_fraction(normalized_t.f),
         binary_alpha,
@@ -20840,8 +21402,27 @@ fn quantize_glyph_mask_value(value: f64) -> i64 {
     }
 }
 
+/// Preserve the complete finite linear transform in glyph/path mask keys.
+///
+/// Font-space outlines commonly use a 1000- or 2048-unit em, so their device
+/// transform coefficients are small (for example, 7.97 pt at 72 DPI is about
+/// 0.00797). The former 1/64 quantization collapsed that scale and 20 pt
+/// (0.02) to the same key, causing the first rasterized glyph size to be reused
+/// at later sizes. Exact finite bits retain cache hits for identical text
+/// matrices while making every geometrically distinct linear transform safe.
+fn glyph_mask_linear_transform_key(value: f64) -> i64 {
+    if value == 0.0 {
+        0
+    } else {
+        value.to_bits() as i64
+    }
+}
+
 fn quantize_glyph_mask_fraction(value: f64) -> i64 {
-    const SCALE: f64 = 2.0;
+    // PDF text often lands between device pixels. A 1/64-pixel phase matches
+    // the conventional raster subpixel grid without merging visibly distinct
+    // half-pixel placements as the former two-phase key did.
+    const SCALE: f64 = 64.0;
     if !value.is_finite() {
         0
     } else {
@@ -23276,7 +23857,7 @@ fn scaled_image_cache_key(
     high_quality: bool,
 ) -> String {
     format!(
-        "{base_key}:scaled:{}:{}:{}x{}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+        "{base_key}:scaled:{}:{}:{}x{}:{:016x}:{:016x}:{:016x}:{:016x}:{}:{:016x}:{:016x}:{}:{:016x}:{:016x}:{}",
         target.paint.x_origin,
         target.paint.y_origin,
         target.paint.width,
@@ -23285,6 +23866,18 @@ fn scaled_image_cache_key(
         stable_f64_cache_bits(target.device_y_min),
         stable_f64_cache_bits(target.device_width),
         stable_f64_cache_bits(target.device_height),
+        match target.device_x_source.axis {
+            crate::render::image_painter::OrthogonalSourceAxis::X => "x",
+            crate::render::image_painter::OrthogonalSourceAxis::Y => "y",
+        },
+        stable_f64_cache_bits(target.device_x_source.scale),
+        stable_f64_cache_bits(target.device_x_source.offset),
+        match target.device_y_source.axis {
+            crate::render::image_painter::OrthogonalSourceAxis::X => "x",
+            crate::render::image_painter::OrthogonalSourceAxis::Y => "y",
+        },
+        stable_f64_cache_bits(target.device_y_source.scale),
+        stable_f64_cache_bits(target.device_y_source.offset),
         if high_quality { "hq" } else { "compat" }
     )
 }
@@ -26973,8 +27566,13 @@ fn extract_form_matrix_resolved(
 
 /// An explicit content-program dictionary is a complete namespace. Legacy
 /// omitted Form/AP/Type3 scopes fall back to the original page, not the caller.
-fn content_resource_scope(local: Option<&PageResources>, page: &PageResources) -> PageResources {
-    local.unwrap_or(page).clone()
+fn content_resource_scope(
+    local: Option<&PageResources>,
+    page: &Arc<PageResources>,
+) -> SharedPageResources {
+    local
+        .map(|resources| SharedPageResources::from(resources.clone()))
+        .unwrap_or_else(|| SharedPageResources::from(Arc::clone(page)))
 }
 
 #[cfg(test)]
@@ -27187,7 +27785,7 @@ mod tests {
     fn install_outer_active_resource_stack(state: &mut RenderState<'_>) {
         let font = ActiveFontResource {
             name: "OuterFont".to_string(),
-            dict: PdfDictionary::empty(),
+            dict: Arc::new(PdfDictionary::empty()),
             cache_key: "outer-font".to_string(),
         };
         state.active_font_resource = Some(font.clone());
@@ -27914,6 +28512,8 @@ mod tests {
             light_hinting_supported: true,
             offset_x: 0.0,
             offset_y: 0.0,
+            fill_color: BLACK,
+            stroke_color: BLACK,
         };
         let op = crate::render::color_glyph::ColrPaintOp {
             glyph_id: glyph_id.0,
@@ -31427,10 +32027,13 @@ mod tests {
             .properties_references
             .insert("FormLayer".to_string(), (6, 0));
 
-        let mut overlaid = page_resources.clone();
+        let page_resources = Arc::new(page_resources);
+        let mut overlaid = page_resources.as_ref().clone();
         let restore = std::mem::replace(
             &mut overlaid,
-            content_resource_scope(Some(&form_resources), &page_resources),
+            content_resource_scope(Some(&form_resources), &page_resources)
+                .as_ref()
+                .clone(),
         );
         assert!(!overlaid.properties_references.contains_key("PageLayer"));
         assert_eq!(
@@ -36747,13 +37350,13 @@ mod tests {
             ContentEngine::open_bytes(simple_vector_pdf("")).expect("open blank Type3-stack PDF");
         let mut state = blank_render_state(&engine);
         install_outer_active_resource_stack(&mut state);
-        state.resources = missing_image_xobject_resources();
+        state.resources = missing_image_xobject_resources().into();
         let font_dict = PdfDictionary::empty();
         let charproc = Type3CharProc {
             ops: retained_inner_ops_with_unbalanced_save(),
             advance_width: None,
             glyph_bbox: Some([0.0, 0.0, 1.0, 1.0]),
-            resources: Some(state.resources.clone()),
+            resources: Some(state.resources.as_ref().clone()),
         };
 
         let rendered = state.render_type3_charproc_full_with_ctm(
@@ -41763,6 +42366,43 @@ mod tests {
     }
 
     #[test]
+    fn glyph_mask_transform_key_distinguishes_real_world_font_sizes() {
+        let body = font_size_scale(7.9701, 1000.0);
+        let title = font_size_scale(17.2154, 1000.0);
+        let display = font_size_scale(20.0, 1000.0);
+
+        assert_ne!(
+            glyph_mask_linear_transform_key(body),
+            glyph_mask_linear_transform_key(title),
+            "body text must not reuse a title-sized raster mask"
+        );
+        assert_ne!(
+            glyph_mask_linear_transform_key(body),
+            glyph_mask_linear_transform_key(display),
+            "7.97 pt and 20 pt Type 1 glyphs must have distinct mask keys"
+        );
+        assert_eq!(
+            glyph_mask_linear_transform_key(body),
+            glyph_mask_linear_transform_key(body),
+            "identical linear transforms must retain cache hits"
+        );
+    }
+
+    #[test]
+    fn glyph_mask_phase_key_preserves_subpixel_placement() {
+        assert_ne!(
+            quantize_glyph_mask_fraction(0.10),
+            quantize_glyph_mask_fraction(0.40),
+            "visibly different subpixel phases must not share a raster mask"
+        );
+        assert_eq!(
+            quantize_glyph_mask_fraction(0.125),
+            quantize_glyph_mask_fraction(1.125),
+            "whole-pixel translation belongs outside the cached mask phase"
+        );
+    }
+
+    #[test]
     fn glyph_mask_cache_evicts_lru_without_clearing_hot_masks() {
         fn mask_key(code: u16) -> GlyphMaskCacheKey {
             GlyphMaskCacheKey {
@@ -43053,6 +43693,7 @@ mod tests {
         form_res.xobjects.insert("X1".into(), (20, 0)); // overrides X1
         form_res.xobjects.insert("X3".into(), (30, 0)); // new
 
+        let page_res = Arc::new(page_res);
         let merged = content_resource_scope(Some(&form_res), &page_res);
         assert_eq!(merged.xobjects["X1"], (20, 0), "Form X1 overrides page X1");
         assert!(!merged.xobjects.contains_key("X2"), "page X2 must not leak");
@@ -43065,6 +43706,7 @@ mod tests {
         page_res.xobjects.insert("Im1".into(), (5, 0));
         page_res.fonts.insert("F1".into(), PdfDictionary::empty());
         page_res.font_references.insert("F1".into(), (6, 0));
+        let page_res = Arc::new(page_res);
         let merged = content_resource_scope(None, &page_res);
         assert_eq!(merged.xobjects["Im1"], (5, 0));
         assert!(merged.fonts.contains_key("F1"));
@@ -43089,6 +43731,7 @@ mod tests {
             .insert("F1".into(), dict_with(&[("Tag", PdfObject::Integer(2))]));
         form_res.font_references.insert("F1".into(), (20, 0));
 
+        let page_res = Arc::new(page_res);
         let merged = content_resource_scope(Some(&form_res), &page_res);
         assert_eq!(
             merged.fonts["F1"].get_integer("Tag"),

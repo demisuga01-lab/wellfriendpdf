@@ -3647,6 +3647,13 @@ struct VerifySigArgs {
     /// Emit machine-readable JSON
     #[arg(long)]
     json: bool,
+    /// Validate only the AcroForm signature field with this exact `/T` name.
+    /// Other signatures remain untouched and are omitted from this command's
+    /// policy verdict. This is useful when validating a signature just added
+    /// to a document that already contains independent certification or usage-
+    /// rights signatures.
+    #[arg(long = "field-name", value_name = "NAME")]
+    field_name: Option<String>,
     /// DER or PEM certificate to trust as a root or pinned signer. Repeatable.
     #[arg(long = "trust-anchor")]
     trust_anchors: Vec<PathBuf>,
@@ -11503,13 +11510,16 @@ fn run_verify_sig(args: VerifySigArgs, mode: SignatureCliMode) -> Result<(), Box
 
     let engine = open_engine(&args.pdf, &args.password)?;
     let options = verify_options_from_args(&args)?;
-    let reports = if let Some(path) = &args.evidence_out {
+    let mut reports = if let Some(path) = &args.evidence_out {
         let outcome = engine.verify_signatures_with_options_and_evidence(&options)?;
         write_evidence_bundle(path, &outcome.evidence_bundle, &options)?;
         outcome.reports
     } else {
         engine.verify_signatures_with_options(&options)?
     };
+    if let Some(field_name) = args.field_name.as_deref() {
+        reports.retain(|report| report.field_name.as_deref() == Some(field_name));
+    }
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&reports)?);

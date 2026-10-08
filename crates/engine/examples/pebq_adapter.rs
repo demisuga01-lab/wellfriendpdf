@@ -62,7 +62,7 @@ fn write_ppm(path: &Path, width: u32, height: u32, rgb: &[u8]) -> io::Result<()>
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(f64::total_cmp);
     let middle = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         (values[middle - 1] + values[middle]) / 2.0
     } else {
         values[middle]
@@ -187,6 +187,19 @@ fn execute(
             "width": raw.width,
             "height": raw.height,
             "raster_fnv1a64": raster_hash,
+            "cache_telemetry": {
+                "glyph_outline": cache.glyph_cache_stats(),
+                "glyph_mask": cache.glyph_mask_cache_stats(),
+                "path_fill_mask": cache.path_fill_mask_cache_stats(),
+                "path_stroke_mask": cache.path_stroke_mask_cache_stats(),
+                "path_clip_node": cache.path_clip_node_cache_stats(),
+                "font_bytes": cache.font_bytes_cache_stats(),
+                "font_resolver": cache.font_resolver_cache_stats(),
+                "prepared_text": cache.prepared_text_cache_stats(),
+                "display_list": cache.display_list_cache_stats(),
+                "render_plan": cache.render_plan_cache_stats(),
+                "scaled_image": cache.scaled_image_cache_stats(),
+            },
             "peak_rss_kib": peak_rss_kib(),
             "request_ms": elapsed_ms(request_start),
         }))

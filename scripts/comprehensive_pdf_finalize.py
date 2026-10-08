@@ -426,11 +426,13 @@ def render_section(root: Path) -> list[str]:
     if visual_manifest.exists():
         visual = json.loads(visual_manifest.read_text("utf-8"))
         samples = visual.get("samples", []) if isinstance(visual, dict) else []
+        complete_quality_documents = sum(row.get("status") == "pass" for row in summaries)
+        omitted_quality_documents = len(summaries) - complete_quality_documents
         lines += [
             "### Distribution-selected visual evidence",
             "",
             "These sheets are selected reproducibly from successful three-reference page pairs: worst, lower-tail, median, and upper-tail by mean thumbnail SSIM. "
-            "They supplement rather than replace the all-page metrics and do not include the 15 documents with terminal Wellfriend render failures.",
+            f"They supplement rather than replace the all-page metrics. The selection excludes {omitted_quality_documents} documents without a complete three-reference quality pass.",
             "",
         ]
         for sample in samples:
@@ -588,7 +590,6 @@ def main() -> int:
         "- Conversion quality: container/schema validity and token agreement with Poppler extraction. Agreement is not ground-truth semantic accuracy.",
         "- Rendering timing: open once, render every page to RGB8 PPM frames, drain without retaining rasters.",
         "- Rendering fidelity: every rendered page receives thumbnail metrics; first/middle/last pages receive full-resolution metrics.",
-        "- Editing: save, qpdf reopen, Wellfriend re-extraction, replacement postcondition, and before/after rendering.",
         "",
     ]
     lines += environment_section(args.root)
@@ -607,7 +608,8 @@ def main() -> int:
     lines += conversion_quality_section(conversions)
     lines += pdfa_section(pdfa_validation, pdfa_conversion)
     lines += render_section(args.root)
-    lines += editing_section(editing)
+    if editing:
+        lines += editing_section(editing)
     lines += failure_section(all_operation_rows, editing)
     lines += [
         "## Evidence files",

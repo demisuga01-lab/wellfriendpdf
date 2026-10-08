@@ -79,7 +79,7 @@ fn password_open_materializes_an_explicit_unencrypted_working_revision() {
         &crate::EncryptParams {
             user_password: crate::crypto::secret_bytes(b"restricted-reader".to_vec()),
             owner_password: crate::crypto::secret_bytes(b"restricted-owner".to_vec()),
-            permissions: -1 & !(1 << 3),
+            permissions: !(1 << 3),
             ..Default::default()
         },
     )
@@ -96,7 +96,7 @@ fn password_open_materializes_an_explicit_unencrypted_working_revision() {
     let restricted_status = command(&mut restricted_owner, json!({"op":"status"}));
     assert_eq!(
         restricted_status["source_security"]["permissions"],
-        -1 & !(1 << 3)
+        !(1 << 3)
     );
     assert_eq!(
         restricted_status["source_security"]["modification_permitted"],
@@ -108,7 +108,7 @@ fn password_open_materializes_an_explicit_unencrypted_working_revision() {
         &crate::EncryptParams {
             user_password: crate::crypto::secret_bytes(Vec::new()),
             owner_password: crate::crypto::secret_bytes(b"legacy-owner".to_vec()),
-            permissions: -1 & !(1 << 3),
+            permissions: !(1 << 3),
             algorithm: crate::EncryptAlgorithm::Aes128,
             ..Default::default()
         },

@@ -4375,6 +4375,17 @@ fn write_existing_annotation_visual(
         return;
     }
     let rect = rect_from_dict(dict, reader).unwrap_or_else(|| ImageRect::new(0.0, 0.0, 0.0, 0.0));
+
+    // A normal appearance is the annotation author's exact paint program and
+    // takes precedence over a synthesized subtype approximation.  Replaying
+    // it as a Form XObject preserves its blend mode, opacity, resources and
+    // geometry.  The synthetic paths below are only the fallback for
+    // annotations that do not supply a usable normal appearance.
+    if selected_normal_appearance_reference(reader, dict).is_some() {
+        write_static_annotation_appearance(reader, dict, rect, out, resources);
+        return;
+    }
+
     let color = color_from_annotation(dict, reader);
     let opacity = dict
         .get("CA")

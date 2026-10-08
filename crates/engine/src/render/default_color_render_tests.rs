@@ -410,7 +410,7 @@ mod default_colour_rendering {
             "/DomainPalette cs 0 sc /DomainPalette CS 0 SC q",
         );
         let original = state.active_fill_color_space_resource.clone().unwrap();
-        state.resources = PageResources::default();
+        state.resources = PageResources::default().into();
         assert_eq!(state.fill_pixel_color(), expected);
         assert_eq!(state.stroke_pixel_color(), expected);
         raw(&mut state, "0 g 0 G Q");
@@ -487,7 +487,7 @@ mod default_colour_rendering {
         assert_eq!(adapter.state.fill_pixel_color(), expected);
         assert_eq!(adapter.state.stroke_pixel_color(), expected);
         adapter.forced_vector_color = Some(adapter.state.gs.fill_color.clone());
-        adapter.state.resources = PageResources::default();
+        adapter.state.resources = PageResources::default().into();
         assert_eq!(adapter.effective_vector_color(WHITE), expected);
         adapter.state.check_fatal_render_error().unwrap();
     }
@@ -626,7 +626,7 @@ mod default_colour_rendering {
         let engine = fixture();
         let mut state = state(&engine);
         raw(&mut state, "0.4 g q");
-        state.resources = PageResources::default();
+        state.resources = PageResources::default().into();
         assert_eq!(state.fill_pixel_color(), GREEN);
         raw(&mut state, "0.4 g");
         assert_ne!(state.fill_pixel_color(), GREEN);

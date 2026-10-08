@@ -2593,7 +2593,10 @@ fn stage_signature(
 }
 
 /// Reopen a generated signed PDF and validate it with the Signature Validation/25 engine.
-fn post_sign_validate(signed: &[u8]) -> PostSignValidationReport {
+fn post_sign_validate(
+    signed: &[u8],
+    expected_contents_span: [usize; 2],
+) -> PostSignValidationReport {
     let mut report = PostSignValidationReport::default();
     let Ok(doc) = crate::document::PdfDocument::open_bytes(signed.to_vec()) else {
         return report;
@@ -2602,7 +2605,14 @@ fn post_sign_validate(signed: &[u8]) -> PostSignValidationReport {
     let Ok(reports) = verify_signatures(&doc) else {
         return report;
     };
-    if let Some(rep) = reports.last() {
+    // Existing PDFs can already contain signatures, including invalid or
+    // unsigned placeholders.  Validate the signature object just staged by
+    // binding to its unique raw `/Contents` span instead of relying on discovery
+    // order.
+    if let Some(rep) = reports
+        .iter()
+        .find(|candidate| candidate.contents_span == Some(expected_contents_span))
+    {
         report.byte_range_exact = rep.checks.byte_range_contents_gap_matches;
         report.cms_parsed = rep.checks.contents_present;
         report.signature_valid = matches!(rep.validity, SignatureValidity::Valid);
@@ -2748,7 +2758,16 @@ pub fn sign_incremental(
             .map(|prefix| prefix == doc.reader().file_bytes())
             .unwrap_or(false);
 
-        let post_sign = post_sign_validate(&out);
+        let post_sign = post_sign_validate(
+            &out,
+            [
+                staged.contents_hex_start.saturating_sub(1),
+                staged
+                    .contents_hex_start
+                    .saturating_add(reserved.saturating_mul(2))
+                    .saturating_add(1),
+            ],
+        );
         if !post_sign.signature_valid {
             return Err(WellfriendError::MalformedPdf(
                 "post-sign validation failed: the generated signature is not mathematically valid over the signed bytes"

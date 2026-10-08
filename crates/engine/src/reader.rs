@@ -573,32 +573,38 @@ impl PdfReader {
 
         let startxref = match find_startxref(&data) {
             Ok(startxref) => {
-                if let Err(primary) =
-                    read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited)
-                {
-                    xref.clear();
-                    trailer = None;
-                    if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
-                        return Err(primary);
+                match read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited) {
+                    Ok(()) => startxref,
+                    Err(primary) => {
+                        xref.clear();
+                        trailer = None;
+                        let recovered = recover_xref_chain(&data, &mut xref, &mut trailer)
+                            .or_else(|_| {
+                                rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer)
+                                    .map(|_| startxref)
+                            })
+                            .map_err(|_| primary)?;
+                        repair_diagnostics.push(
+                            ParserDiagnostic::new(
+                                ParserSeverity::RecoverableError,
+                                ParserCategory::Repair,
+                                "xref_chain_rebuilt_from_object_scan",
+                                "xref chain could not be trusted and was rebuilt from a bounded indirect-object scan",
+                            )
+                            .at_offset(startxref)
+                            .with_recovery("discarded damaged xref chain and used recovered object offsets")
+                            .incomplete(),
+                        );
+                        recovered
                     }
-                    repair_diagnostics.push(
-                        ParserDiagnostic::new(
-                            ParserSeverity::RecoverableError,
-                            ParserCategory::Repair,
-                            "xref_chain_rebuilt_from_object_scan",
-                            "xref chain could not be trusted and was rebuilt from a bounded indirect-object scan",
-                        )
-                        .at_offset(startxref)
-                        .with_recovery("discarded damaged xref chain and used recovered object offsets")
-                        .incomplete(),
-                    );
                 }
-                startxref
             }
             Err(primary) => {
-                if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
-                    return Err(primary);
-                }
+                let recovered = recover_xref_chain(&data, &mut xref, &mut trailer)
+                    .or_else(|_| {
+                        rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).map(|_| 0)
+                    })
+                    .map_err(|_| primary)?;
                 repair_diagnostics.push(
                     ParserDiagnostic::new(
                         ParserSeverity::RecoverableError,
@@ -609,7 +615,7 @@ impl PdfReader {
                     .with_recovery("built xref table from indirect-object headers")
                     .incomplete(),
                 );
-                0
+                recovered
             }
         };
         let repaired_offsets = repair_uncompressed_xref_offsets(&data, &mut xref);
@@ -674,32 +680,38 @@ impl PdfReader {
 
         let startxref = match find_startxref(&data) {
             Ok(startxref) => {
-                if let Err(primary) =
-                    read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited)
-                {
-                    xref.clear();
-                    trailer = None;
-                    if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
-                        return Err(primary);
+                match read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited) {
+                    Ok(()) => startxref,
+                    Err(primary) => {
+                        xref.clear();
+                        trailer = None;
+                        let recovered = recover_xref_chain(&data, &mut xref, &mut trailer)
+                            .or_else(|_| {
+                                rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer)
+                                    .map(|_| startxref)
+                            })
+                            .map_err(|_| primary)?;
+                        repair_diagnostics.push(
+                            ParserDiagnostic::new(
+                                ParserSeverity::RecoverableError,
+                                ParserCategory::Repair,
+                                "xref_chain_rebuilt_from_object_scan",
+                                "xref chain could not be trusted and was rebuilt from a bounded indirect-object scan",
+                            )
+                            .at_offset(startxref)
+                            .with_recovery("discarded damaged xref chain and used recovered object offsets")
+                            .incomplete(),
+                        );
+                        recovered
                     }
-                    repair_diagnostics.push(
-                        ParserDiagnostic::new(
-                            ParserSeverity::RecoverableError,
-                            ParserCategory::Repair,
-                            "xref_chain_rebuilt_from_object_scan",
-                            "xref chain could not be trusted and was rebuilt from a bounded indirect-object scan",
-                        )
-                        .at_offset(startxref)
-                        .with_recovery("discarded damaged xref chain and used recovered object offsets")
-                        .incomplete(),
-                    );
                 }
-                startxref
             }
             Err(primary) => {
-                if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
-                    return Err(primary);
-                }
+                let recovered = recover_xref_chain(&data, &mut xref, &mut trailer)
+                    .or_else(|_| {
+                        rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).map(|_| 0)
+                    })
+                    .map_err(|_| primary)?;
                 repair_diagnostics.push(
                     ParserDiagnostic::new(
                         ParserSeverity::RecoverableError,
@@ -710,7 +722,7 @@ impl PdfReader {
                     .with_recovery("built xref table from indirect-object headers")
                     .incomplete(),
                 );
-                0
+                recovered
             }
         };
         let repaired_offsets = repair_uncompressed_xref_offsets(&data, &mut xref);
@@ -1826,6 +1838,85 @@ fn repair_uncompressed_xref_offsets(
         }
     }
     repaired_count
+}
+
+/// Recover the newest complete xref chain when `startxref` itself is damaged.
+///
+/// Hybrid-reference PDFs end in a classic xref table whose `/XRefStm` points
+/// at a supplementary xref stream.  Looking only for `/Type /XRef` objects can
+/// therefore select that incomplete supplement and omit ordinary objects such
+/// as the catalog.  Collect both classic tables and xref-stream objects, try
+/// them newest-first, and let the normal chain reader combine `/Prev` and
+/// `/XRefStm` sections with its usual newest-revision precedence.
+fn recover_xref_chain(
+    data: &[u8],
+    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    trailer: &mut Option<PdfDictionary>,
+) -> Result<usize> {
+    let stream_spans = stream_data_spans(data);
+    let mut candidates = Vec::new();
+
+    let mut cursor = 0usize;
+    while cursor < data.len() {
+        let Some(relative) = find_marker_accelerated(&data[cursor..], b"xref") else {
+            break;
+        };
+        let offset = cursor + relative;
+        let boundary_before = offset == 0 || !data[offset - 1].is_ascii_alphanumeric();
+        let boundary_after = data
+            .get(offset + 4)
+            .copied()
+            .is_none_or(|byte| !byte.is_ascii_alphanumeric());
+        if boundary_before && boundary_after && !offset_in_spans(offset, &stream_spans) {
+            candidates.push(offset);
+        }
+        cursor = offset + 4;
+    }
+
+    for offset in scan_indirect_object_headers(data).into_values() {
+        let Ok(mut parser) = PdfParser::new(data, offset) else {
+            continue;
+        };
+        let Ok(parsed) = parser.parse_indirect_object() else {
+            continue;
+        };
+        if matches!(
+            parsed.object,
+            PdfObject::Stream { ref dict, .. } if dict.get_name("Type") == Some("XRef")
+        ) {
+            candidates.push(offset);
+        }
+    }
+    candidates.sort_unstable_by(|left, right| right.cmp(left));
+    candidates.dedup();
+
+    for offset in candidates {
+        let mut recovered_xref = HashMap::new();
+        let mut recovered_trailer = None;
+        let mut visited = HashSet::new();
+        if read_xref_chain(
+            data,
+            offset,
+            &mut recovered_xref,
+            &mut recovered_trailer,
+            &mut visited,
+        )
+        .is_ok()
+            && recovered_trailer.as_ref().is_some_and(|candidate| {
+                candidate
+                    .get_reference("Root")
+                    .is_some_and(|root| recovered_xref.contains_key(&root))
+            })
+        {
+            *xref = recovered_xref;
+            *trailer = recovered_trailer;
+            return Ok(offset);
+        }
+    }
+
+    Err(WellfriendError::MalformedPdf(
+        "could not locate a recoverable xref chain".to_string(),
+    ))
 }
 
 fn rebuild_xref_from_object_scan(

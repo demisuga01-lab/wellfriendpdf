@@ -719,6 +719,7 @@ pub struct SeparationFramebuffer {
     page_number: Option<usize>,
     tile_identity: Option<String>,
     memory_budget_bytes: usize,
+    plane_names: BTreeSet<String>,
     contributions: Vec<PlateContribution>,
     nchannel_samples: Vec<NChannelSample>,
     diagnostics: Vec<String>,
@@ -749,6 +750,7 @@ impl SeparationFramebuffer {
             page_number,
             tile_identity,
             memory_budget_bytes,
+            plane_names: BTreeSet::new(),
             contributions: Vec::new(),
             nchannel_samples: Vec::new(),
             diagnostics: Vec::new(),
@@ -757,15 +759,14 @@ impl SeparationFramebuffer {
     }
 
     pub fn record(&mut self, contribution: PlateContribution) {
-        let mut names = self.plane_names();
-        names.insert(contribution.plane_name.clone());
-        if names.len() > MAX_PREPRESS_PLATES {
+        let plane_count = self.plane_names.len().saturating_add(usize::from(
+            !self.plane_names.contains(&contribution.plane_name),
+        ));
+        if plane_count > MAX_PREPRESS_PLATES {
             self.report_only_degraded = true;
             self.diagnostics.push(format!(
                 "plate count {} exceeds cap {}; contribution for {} kept report-only",
-                names.len(),
-                MAX_PREPRESS_PLATES,
-                contribution.plane_name
+                plane_count, MAX_PREPRESS_PLATES, contribution.plane_name
             ));
             return;
         }
@@ -779,6 +780,7 @@ impl SeparationFramebuffer {
             ));
             return;
         }
+        self.plane_names.insert(contribution.plane_name.clone());
         self.nchannel_samples
             .push(nchannel_sample_from_contribution(&contribution));
         self.contributions.push(contribution);
@@ -852,13 +854,6 @@ impl SeparationFramebuffer {
                 .collect(),
             diagnostics: self.diagnostics.clone(),
         }
-    }
-
-    fn plane_names(&self) -> BTreeSet<String> {
-        self.contributions
-            .iter()
-            .map(|contribution| contribution.plane_name.clone())
-            .collect()
     }
 
     fn operation_kinds(&self) -> Vec<String> {

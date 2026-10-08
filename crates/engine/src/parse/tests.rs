@@ -453,6 +453,15 @@ fn body_reading_order_densified_ids_preserved() {
     assert_eq!(doc.body[1].reading_order, 1);
 }
 
+#[test]
+fn unknown_zero_page_blocks_are_normalized_to_the_first_selected_page() {
+    let doc = assemble_default(&[blk(0, 0, 0, ClassifiedType::Paragraph, "orphan")]);
+    assert_eq!(doc.pages.len(), 1);
+    assert_eq!(doc.pages[0].number, 1);
+    assert_eq!(doc.pages[0].block_ids, vec![0]);
+    assert_eq!(doc.body[0].page, 1);
+}
+
 // ── JSON shape + schema version ───────────────────────────────────────────────
 
 #[test]

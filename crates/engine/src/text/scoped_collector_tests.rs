@@ -205,6 +205,20 @@ fn outer_actual_text_is_not_lost_when_inner_actual_text_is_empty() {
 }
 
 #[test]
+fn bdc_recovers_the_final_tag_and_property_pair_after_a_stray_prefix_name() {
+    let engine = fixture(
+        "/S /Span << /ActualText (logical) /MCID 7 >> BDC /Outer Do EMC",
+        TEXT,
+        "",
+        "",
+        "",
+    );
+    let chunks = engine.collect_page_scoped_text_chunks(1).unwrap();
+    assert_eq!(logical(&chunks), "logical");
+    assert_eq!(chunks[0].mcid, Some(7));
+}
+
+#[test]
 fn form_mcids_do_not_attach_to_equal_page_mcid() {
     let engine = fixture(
         "/Span << /MCID 4 >> BDC BT /F1 10 Tf (A) Tj ET EMC /Outer Do",

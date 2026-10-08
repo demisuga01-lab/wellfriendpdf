@@ -533,7 +533,11 @@ pub fn add_page_numbers_pdf(input: Vec<u8>, options: PageNumberOptions) -> Resul
             .replace("{total}", &total.to_string());
         let text_width = approximate_text_width(&text, options.font_size);
         let (x, y) = position_text(
-            page.media_box,
+            // Number the visible page, not the physical media.  A perfectly
+            // valid PDF may crop away a substantial border; using MediaBox can
+            // therefore report success while painting the number outside the
+            // viewer-visible area.
+            page.crop_box,
             text_width,
             options.font_size,
             options.position,

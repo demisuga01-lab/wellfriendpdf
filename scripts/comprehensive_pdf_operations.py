@@ -13,6 +13,7 @@ import argparse
 import collections
 import hashlib
 import html.parser
+import io
 import json
 import os
 import random
@@ -151,6 +152,7 @@ def validate_pdf(
     )
     encrypted = "File is not encrypted" not in encrypted_probe.stdout
     linearized = None
+    linearization_probe: dict[str, Any] | None = None
     if expect_linearized:
         probe = subprocess.run(
             ["qpdf", "--check-linearization", str(path)],
@@ -158,7 +160,15 @@ def validate_pdf(
             text=True,
             check=False,
         )
-        linearized = probe.returncode == 0 and "not linearized" not in probe.stdout.lower()
+        probe_text = (probe.stdout + probe.stderr).lower()
+        # qpdf uses exit 3 for a recognized linearized file with non-fatal
+        # compatibility warnings. Preserve those warnings in the probe record,
+        # but do not conflate them with an exit-2/not-linearized result.
+        linearized = probe.returncode in (0, 3) and "not linearized" not in probe_text
+        linearization_probe = {
+            "exit_code": probe.returncode,
+            "output_tail": tail(probe.stderr + probe.stdout),
+        }
     valid = checked.returncode in (0, 3) and pages is not None
     if expected_pages is not None:
         valid = valid and pages == expected_pages
@@ -176,6 +186,7 @@ def validate_pdf(
         "encrypted": encrypted,
         "expected_encrypted": expect_encrypted,
         "linearized": linearized,
+        "linearization_probe": linearization_probe,
         "valid": valid,
     }
 
@@ -196,6 +207,69 @@ def raster_fingerprint(path: Path, page: int, password: str | None = None) -> di
         "width": int(match.group(1)),
         "height": int(match.group(2)),
         "sha256": hashlib.sha256(completed.stdout).hexdigest(),
+    }
+
+
+def raster_equivalence(
+    left_path: Path,
+    right_path: Path,
+    page: int = 1,
+    password: str | None = None,
+) -> dict[str, Any]:
+    """Compare two externally rendered pages with an anti-aliasing tolerance.
+
+    Replaying an annotation appearance as page content can change sub-byte edge
+    coverage even when geometry, colour, blend mode, and visible output are
+    preserved. Exact PPM hashes remain recorded by ``raster_fingerprint``; this
+    companion check rejects substantive changes while tolerating <= 8-level
+    rasterizer rounding at a tiny number of edge pixels.
+    """
+    try:
+        from PIL import Image, ImageChops
+    except ImportError:
+        return {"equivalent": False, "reason": "pillow_unavailable"}
+
+    images = []
+    for path in (left_path, right_path):
+        command = ["mutool", "draw", "-q", "-r", "144", "-F", "ppm", "-o", "-"]
+        if password:
+            command += ["-p", password]
+        command += [str(path), str(page)]
+        completed = subprocess.run(command, capture_output=True, check=False, timeout=300)
+        if completed.returncode != 0:
+            return {
+                "equivalent": False,
+                "reason": "render_failed",
+                "exit_code": completed.returncode,
+                "stderr_tail": tail(completed.stderr.decode("utf-8", "replace")),
+            }
+        images.append(Image.open(io.BytesIO(completed.stdout)).convert("RGB"))
+
+    left, right = images
+    if left.size != right.size:
+        return {
+            "equivalent": False,
+            "same_size": False,
+            "left_size": left.size,
+            "right_size": right.size,
+        }
+    diff = ImageChops.difference(left, right)
+    histogram = diff.histogram()
+    total_samples = left.size[0] * left.size[1] * 3
+    absolute_sum = sum((index % 256) * count for index, count in enumerate(histogram))
+    extrema = diff.getextrema()
+    max_channel_delta = max(high for _low, high in extrema)
+    changed_pixels_threshold8 = sum(1 for pixel in diff.getdata() if max(pixel) > 8)
+    mean_absolute_error = absolute_sum / max(1, total_samples)
+    equivalent = changed_pixels_threshold8 == 0 and mean_absolute_error <= 0.02
+    return {
+        "equivalent": equivalent,
+        "same_size": True,
+        "width": left.size[0],
+        "height": left.size[1],
+        "changed_pixels_threshold8": changed_pixels_threshold8,
+        "max_channel_delta": max_channel_delta,
+        "mean_absolute_error": round(mean_absolute_error, 9),
     }
 
 
@@ -244,6 +318,10 @@ def structural_visual_checks(
                 and source_first.get("height") == output_first.get("width")
             ) or source_first.get("width") == source_first.get("height")
             result["visual_postcondition"] = result["visual_postcondition"] and result["dimensions_swapped_or_square"]
+    elif operation == "flatten":
+        equivalence = raster_equivalence(source, outputs, 1, password)
+        result["appearance_equivalence"] = equivalence
+        result["visual_postcondition"] = bool(equivalence.get("equivalent"))
     else:
         result["visual_postcondition"] = source_first.get("sha256") == output_first.get("sha256")
     return result
@@ -765,7 +843,7 @@ def run_structural(args: argparse.Namespace, entries: list[dict[str, Any]], stre
                         quality["valid"] = quality["valid"] and bool(visual.get("visual_postcondition"))
                     if operation == "sign" and outputs.exists():
                         verify = execute(
-                            [str(args.wellfriend), "signature-verify", str(outputs), "--trust-anchor", str(cert), "--revocation", "not-checked", "--json"],
+                            [str(args.wellfriend), "signature-verify", str(outputs), "--field-name", "WFBenchmarkSignature", "--trust-anchor", str(cert), "--revocation", "not-checked", "--json"],
                             timeout_for(entry),
                         )
                         quality["signature_verification"] = verify
@@ -883,6 +961,10 @@ def run_conversions(args: argparse.Namespace, entries: list[dict[str, Any]], str
                         continue
                     command, output, kind, stdout_path = conversion_task(operation, tool, source, tmp, args.wellfriend)
                     run = execute(command, timeout_for(entry, 3.0 if operation in {"docx", "pptx", "xlsx"} else 1.5), stdout_path=stdout_path)
+                    if tool == "wellfriend" and operation in {"png-first-page", "jpeg-first-page"} and not output.exists():
+                        generated = sorted(output.parent.glob(f"page-*.{kind}"))
+                        if len(generated) == 1:
+                            output = generated[0]
                     quality = validate_artifact(output, kind, reference)
                     row = common_row("conversion", operation, tool, entry, command, args.corpus)
                     row.update({"run": run, "quality": quality, "reference_extraction": reference_run, "status": classify(run, quality)})
