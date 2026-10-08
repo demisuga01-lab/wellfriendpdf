@@ -742,7 +742,7 @@ fn validate_ext_g_state_identity_transfer(
     }
     match value {
         PdfObject::Name(_) | PdfObject::Array(_) => Err(format!(
-            "{label} /{key} must be /Identity or four /Identity names"
+            "{label} /{key} must be /Identity, /Default, or four /Identity names"
         )),
         other => Err(format!(
             "{label} /{key} resolved to {}, expected Name or Array",
@@ -753,10 +753,12 @@ fn validate_ext_g_state_identity_transfer(
 
 fn ext_g_state_transfer_value_is_identity(value: &PdfObject) -> bool {
     match value {
-        // /Default delegates to the output device and is not proof of an
-        // identity transfer. Rendering accepts only an explicit /Identity so
-        // an unknown device transfer cannot silently change appearance.
-        PdfObject::Name(name) => name == "Identity",
+        // /Default delegates to the output device. The screen raster contract
+        // installs no device-specific transfer curve, so its device default is
+        // the identity mapping. A caller that needs a calibrated output-device
+        // transfer must use a separate output contract rather than changing
+        // the deterministic screen renderer globally.
+        PdfObject::Name(name) => matches!(name.as_str(), "Identity" | "Default"),
         PdfObject::Array(items) if items.len() == 4 => items
             .iter()
             .all(|item| matches!(item.as_name(), Some("Identity"))),
@@ -1612,7 +1614,7 @@ mod tests {
     }
 
     #[test]
-    fn text_ext_gstate_accepts_valid_default_transfer_without_weakening_render_validation() {
+    fn screen_and_text_extgstate_accept_valid_default_transfer() {
         let mut ext = PdfDictionary::empty();
         ext.insert("TR2", PdfObject::Name("Default".to_string()));
         ext.insert("ca", PdfObject::Real(0.25));
@@ -1633,10 +1635,12 @@ mod tests {
         assert_eq!(text_state.text.font_size, 12.0);
 
         let mut render_state = GraphicsState::new();
-        let err = render_state
+        render_state
             .try_apply_ext_g_state(&ext, "ExtGState /GS1")
-            .expect_err("render validation must continue to fail closed");
-        assert!(err.contains("/TR2 must be /Identity"), "{err}");
+            .expect("the deterministic screen device default is identity");
+        assert_eq!(render_state.fill_alpha, 0.25);
+        assert_eq!(render_state.text.font_name, "FArabic");
+        assert_eq!(render_state.text.font_size, 12.0);
     }
 
     #[test]
@@ -1752,11 +1756,6 @@ mod tests {
                 "/TK resolved to Integer, expected Boolean",
             ),
             (
-                "TR",
-                PdfObject::Name("Default".to_string()),
-                "/TR must be /Identity or four /Identity names",
-            ),
-            (
                 "TR2",
                 PdfObject::Array(vec![
                     PdfObject::Name("Identity".to_string()),
@@ -1764,7 +1763,7 @@ mod tests {
                     PdfObject::Name("Identity".to_string()),
                     PdfObject::Name("Identity".to_string()),
                 ]),
-                "/TR2 must be /Identity or four /Identity names",
+                "/TR2 must be /Identity, /Default, or four /Identity names",
             ),
             (
                 "Type",
