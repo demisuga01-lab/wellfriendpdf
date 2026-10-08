@@ -155,6 +155,14 @@ pub struct ClipMask {
     solid: Option<bool>,
     partial_coverage: bool,
     run_cache: Arc<OnceLock<ClipRunCache>>,
+    dense_bounds: Arc<OnceLock<Option<(i32, i32, i32, i32)>>>,
+    dense_fingerprint: Arc<OnceLock<u64>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DenseClipMetadata {
+    pub fingerprint: u64,
+    pub bounds: Option<(i32, i32, i32, i32)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -213,6 +221,8 @@ impl ClipMask {
             solid: Some(true),
             partial_coverage: false,
             run_cache: Arc::new(OnceLock::new()),
+            dense_bounds: Arc::new(OnceLock::new()),
+            dense_fingerprint: Arc::new(OnceLock::new()),
         }
     }
 
@@ -226,6 +236,8 @@ impl ClipMask {
             solid: Some(false),
             partial_coverage: false,
             run_cache: Arc::new(OnceLock::new()),
+            dense_bounds: Arc::new(OnceLock::new()),
+            dense_fingerprint: Arc::new(OnceLock::new()),
         }
     }
 
@@ -281,6 +293,8 @@ impl ClipMask {
             solid: None,
             partial_coverage: false,
             run_cache: Arc::new(lock),
+            dense_bounds: Arc::new(OnceLock::new()),
+            dense_fingerprint: Arc::new(OnceLock::new()),
         }
     }
 
@@ -298,10 +312,25 @@ impl ClipMask {
         let mut all_visible = true;
         let mut all_empty = true;
         let mut partial_coverage = false;
-        for value in &mask {
-            all_visible &= *value == 255;
-            all_empty &= *value == 0;
-            partial_coverage |= *value != 0 && *value != 255;
+        let mut x0 = i32::MAX;
+        let mut y0 = i32::MAX;
+        let mut x1 = i32::MIN;
+        let mut y1 = i32::MIN;
+        let width_usize = width as usize;
+        for (y, row) in mask.chunks_exact(width_usize).enumerate() {
+            for (x, value) in row.iter().copied().enumerate() {
+                all_visible &= value == 255;
+                all_empty &= value == 0;
+                partial_coverage |= value != 0 && value != 255;
+                if value != 0 {
+                    let x = x as i32;
+                    let y = y as i32;
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
         }
 
         let solid = if all_visible {
@@ -315,6 +344,12 @@ impl ClipMask {
             mask.clear();
         }
 
+        let dense_bounds = OnceLock::new();
+        if solid.is_none() && partial_coverage {
+            let bounds = (x1 > x0 && y1 > y0).then_some((x0, y0, x1, y1));
+            let _ = dense_bounds.set(bounds);
+        }
+
         Self {
             width,
             height,
@@ -322,6 +357,8 @@ impl ClipMask {
             solid,
             partial_coverage: solid.is_none() && partial_coverage,
             run_cache: Arc::new(OnceLock::new()),
+            dense_bounds: Arc::new(dense_bounds),
+            dense_fingerprint: Arc::new(OnceLock::new()),
         }
     }
 
@@ -355,6 +392,8 @@ impl ClipMask {
 
     fn invalidate_run_cache(&mut self) {
         self.run_cache = Arc::new(OnceLock::new());
+        self.dense_bounds = Arc::new(OnceLock::new());
+        self.dense_fingerprint = Arc::new(OnceLock::new());
     }
 
     fn dense_len(&self) -> usize {
@@ -452,6 +491,60 @@ impl ClipMask {
     pub(crate) fn shared_partial_alpha_bytes(&self) -> Option<Arc<Vec<u8>>> {
         (self.partial_coverage && self.mask.len() == self.dense_len())
             .then(|| Arc::clone(&self.mask))
+    }
+
+    pub(crate) fn dense_metadata_with_fingerprint(
+        &self,
+        fingerprint_hint: Option<u64>,
+    ) -> Option<DenseClipMetadata> {
+        if !self.partial_coverage || self.mask.len() != self.dense_len() {
+            return None;
+        }
+        let bounds = *self.dense_bounds.get_or_init(|| {
+            let mut x0 = i32::MAX;
+            let mut y0 = i32::MAX;
+            let mut x1 = i32::MIN;
+            let mut y1 = i32::MIN;
+            let width = self.width as usize;
+            for (index, value) in self.mask.iter().copied().enumerate() {
+                if value != 0 {
+                    let x = (index % width) as i32;
+                    let y = (index / width) as i32;
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+            (x1 > x0 && y1 > y0).then_some((x0, y0, x1, y1))
+        });
+        let fingerprint = fingerprint_hint.unwrap_or_else(|| {
+            *self.dense_fingerprint.get_or_init(|| {
+                let mut hash = Self::dense_hash_seed(self.width, self.height);
+                for value in self.mask.iter().copied() {
+                    Self::dense_hash_mix(&mut hash, value);
+                }
+                hash
+            })
+        });
+        Some(DenseClipMetadata {
+            fingerprint,
+            bounds,
+        })
+    }
+
+    fn dense_hash_seed(width: u32, height: u32) -> u64 {
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in width.to_le_bytes().into_iter().chain(height.to_le_bytes()) {
+            Self::dense_hash_mix(&mut hash, byte);
+        }
+        hash
+    }
+
+    #[inline]
+    fn dense_hash_mix(hash: &mut u64, byte: u8) {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(0x100000001b3);
     }
 
     fn compressed_runs(&self) -> &ClipRunCache {
@@ -1041,11 +1134,17 @@ impl ClipMask {
         width: u32,
         height: u32,
         bytes: Arc<Vec<u8>>,
+        fingerprint: u64,
+        bounds: Option<(i32, i32, i32, i32)>,
     ) -> Self {
         debug_assert_eq!(
             bytes.len(),
             (width as usize).saturating_mul(height as usize)
         );
+        let dense_bounds = OnceLock::new();
+        let dense_fingerprint = OnceLock::new();
+        let _ = dense_bounds.set(bounds);
+        let _ = dense_fingerprint.set(fingerprint);
         Self {
             width,
             height,
@@ -1053,6 +1152,8 @@ impl ClipMask {
             solid: None,
             partial_coverage: true,
             run_cache: Arc::new(OnceLock::new()),
+            dense_bounds: Arc::new(dense_bounds),
+            dense_fingerprint: Arc::new(dense_fingerprint),
         }
     }
 
@@ -1571,6 +1672,13 @@ impl AlphaMask {
 }
 
 fn integral_axis_aligned_rectangle(flat: &FlatPath) -> Option<(i32, i32, i32, i32)> {
+    // A coordinate this close to a device-pixel boundary cannot change an
+    // 8-bit coverage sample: 255 * epsilon is far below half an alpha step.
+    // PDF producers commonly serialize an intended integral transform with
+    // enough decimal truncation to introduce errors around 1e-5 pixels. Keep
+    // those rectangles structural instead of allocating a dense page mask.
+    const DEVICE_PIXEL_SNAP_EPSILON: f64 = 1.0e-4;
+
     if flat.subpaths.len() != 1 {
         return None;
     }
@@ -1601,8 +1709,8 @@ fn integral_axis_aligned_rectangle(flat: &FlatPath) -> Option<(i32, i32, i32, i3
         }
         let rounded_x = x.round();
         let rounded_y = y.round();
-        if (x - rounded_x).abs() > 1e-9
-            || (y - rounded_y).abs() > 1e-9
+        if (x - rounded_x).abs() > DEVICE_PIXEL_SNAP_EPSILON
+            || (y - rounded_y).abs() > DEVICE_PIXEL_SNAP_EPSILON
             || rounded_x < i32::MIN as f64
             || rounded_x > i32::MAX as f64
             || rounded_y < i32::MIN as f64
@@ -11102,6 +11210,22 @@ mod tests {
         assert!(!Arc::ptr_eq(&original.mask, &cloned.mask));
         assert_eq!(original.opacity_byte(0, 0), 0);
         assert_eq!(cloned.opacity_byte(0, 0), 255);
+    }
+
+    #[test]
+    fn flattened_decimal_noise_keeps_structural_rectangle_clip() {
+        let mut flat = FlatPath::default();
+        flat.subpaths.push(vec![
+            (0.000_02, -0.000_01),
+            (720.000_02, -0.000_01),
+            (720.000_02, 405.000_01),
+            (0.000_02, 405.000_01),
+        ]);
+        flat.closed.push(true);
+
+        let clip = ClipMask::from_path(&flat, 720, 405, FillRule::NonZero);
+        assert!(clip.is_all_visible());
+        assert!(clip.mask.is_empty());
     }
 
     #[test]

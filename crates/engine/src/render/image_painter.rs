@@ -430,42 +430,77 @@ impl ImagePainter {
         for (destination_y, y_span) in y_spans.iter().enumerate() {
             accumulated.fill(0.0);
             normalization.fill(0.0);
-            for source_y in y_span.first..y_span.end {
-                let y_weight = box_pixel_weight(source_y, y_span.start, y_span.finish);
-                if y_weight <= 0.0 {
-                    continue;
+            if target.device_x_source.axis == OrthogonalSourceAxis::X {
+                for source_y in y_span.first..y_span.end {
+                    let y_weight = box_pixel_weight(source_y, y_span.start, y_span.finish);
+                    if y_weight <= 0.0 {
+                        continue;
+                    }
+                    for (destination_x, x_span) in x_spans.iter().enumerate() {
+                        let output_base = destination_x * 3;
+
+                        for source_x in x_span.first..x_span.end {
+                            let x_weight = box_pixel_weight(source_x, x_span.start, x_span.finish);
+                            if x_weight <= 0.0 {
+                                continue;
+                            }
+                            let weight = x_weight * y_weight;
+                            normalization[destination_x] += weight;
+                            let source_base = (source_y * source_width + source_x)
+                                .checked_mul(image.channels as usize)?;
+                            if image.channels == 1 {
+                                let gray = *image.pixels.get(source_base)? as f64;
+                                accumulated[output_base] += gray * weight;
+                                accumulated[output_base + 1] += gray * weight;
+                                accumulated[output_base + 2] += gray * weight;
+                            } else {
+                                accumulated[output_base] +=
+                                    *image.pixels.get(source_base)? as f64 * weight;
+                                accumulated[output_base + 1] +=
+                                    *image.pixels.get(source_base + 1)? as f64 * weight;
+                                accumulated[output_base + 2] +=
+                                    *image.pixels.get(source_base + 2)? as f64 * weight;
+                            }
+                        }
+                    }
                 }
+            } else {
+                // A quarter-turn maps destination X to source Y and
+                // destination Y to source X. Iterate each footprint in source
+                // row-major order, matching the general affine sampler's
+                // accumulation order exactly at byte-rounding boundaries.
                 for (destination_x, x_span) in x_spans.iter().enumerate() {
                     let output_base = destination_x * 3;
-
-                    for source_x_axis in x_span.first..x_span.end {
-                        let x_weight = box_pixel_weight(source_x_axis, x_span.start, x_span.finish);
+                    for source_y in x_span.first..x_span.end {
+                        let x_weight = box_pixel_weight(source_y, x_span.start, x_span.finish);
                         if x_weight <= 0.0 {
                             continue;
                         }
-                        let (source_x, source_y) = match target.device_x_source.axis {
-                            OrthogonalSourceAxis::X => (source_x_axis, source_y),
-                            OrthogonalSourceAxis::Y => (source_y, source_x_axis),
-                        };
-                        if source_x >= source_width || source_y >= source_height {
-                            continue;
-                        }
-                        let weight = x_weight * y_weight;
-                        normalization[destination_x] += weight;
-                        let source_base = (source_y * source_width + source_x)
-                            .checked_mul(image.channels as usize)?;
-                        if image.channels == 1 {
-                            let gray = *image.pixels.get(source_base)? as f64;
-                            accumulated[output_base] += gray * weight;
-                            accumulated[output_base + 1] += gray * weight;
-                            accumulated[output_base + 2] += gray * weight;
-                        } else {
-                            accumulated[output_base] +=
-                                *image.pixels.get(source_base)? as f64 * weight;
-                            accumulated[output_base + 1] +=
-                                *image.pixels.get(source_base + 1)? as f64 * weight;
-                            accumulated[output_base + 2] +=
-                                *image.pixels.get(source_base + 2)? as f64 * weight;
+                        for source_x in y_span.first..y_span.end {
+                            let y_weight = box_pixel_weight(source_x, y_span.start, y_span.finish);
+                            if y_weight <= 0.0
+                                || source_x >= source_width
+                                || source_y >= source_height
+                            {
+                                continue;
+                            }
+                            let weight = x_weight * y_weight;
+                            normalization[destination_x] += weight;
+                            let source_base = (source_y * source_width + source_x)
+                                .checked_mul(image.channels as usize)?;
+                            if image.channels == 1 {
+                                let gray = *image.pixels.get(source_base)? as f64;
+                                accumulated[output_base] += gray * weight;
+                                accumulated[output_base + 1] += gray * weight;
+                                accumulated[output_base + 2] += gray * weight;
+                            } else {
+                                accumulated[output_base] +=
+                                    *image.pixels.get(source_base)? as f64 * weight;
+                                accumulated[output_base + 1] +=
+                                    *image.pixels.get(source_base + 1)? as f64 * weight;
+                                accumulated[output_base + 2] +=
+                                    *image.pixels.get(source_base + 2)? as f64 * weight;
+                            }
                         }
                     }
                 }
@@ -1141,10 +1176,10 @@ impl ImagePainter {
         let cy = (v * h).clamp(0.0, h);
         let half_w = (footprint_x.max(1e-6) * 0.5).min(w * 0.5);
         let half_h = (footprint_y.max(1e-6) * 0.5).min(h * 0.5);
-        let x0 = (cx - half_w).clamp(0.0, w);
-        let x1 = (cx + half_w).clamp(0.0, w);
-        let y0 = (cy - half_h).clamp(0.0, h);
-        let y1 = (cy + half_h).clamp(0.0, h);
+        let x0 = snap_source_box_edge((cx - half_w).clamp(0.0, w), w);
+        let x1 = snap_source_box_edge((cx + half_w).clamp(0.0, w), w);
+        let y0 = snap_source_box_edge((cy - half_h).clamp(0.0, h), h);
+        let y1 = snap_source_box_edge((cy + half_h).clamp(0.0, h), h);
 
         if x1 <= x0 || y1 <= y0 {
             return Self::nearest_sample(image, u, v);
@@ -1277,8 +1312,8 @@ fn orthogonal_source_box_span(
     let extent = source_extent as f64;
     let first_edge = (mapping.scale * device_start + mapping.offset) * extent;
     let second_edge = (mapping.scale * device_finish + mapping.offset) * extent;
-    let start = first_edge.min(second_edge).clamp(0.0, extent);
-    let finish = first_edge.max(second_edge).clamp(0.0, extent);
+    let start = snap_source_box_edge(first_edge.min(second_edge).clamp(0.0, extent), extent);
+    let finish = snap_source_box_edge(first_edge.max(second_edge).clamp(0.0, extent), extent);
     if finish <= start {
         return None;
     }
@@ -1290,6 +1325,17 @@ fn orthogonal_source_box_span(
         first,
         end,
     })
+}
+
+#[inline]
+fn snap_source_box_edge(value: f64, extent: f64) -> f64 {
+    let integer = value.round();
+    let tolerance = 1e-9_f64.max(f64::EPSILON * extent.max(1.0) * 16.0);
+    if (value - integer).abs() <= tolerance {
+        integer.clamp(0.0, extent)
+    } else {
+        value
+    }
 }
 
 #[inline]

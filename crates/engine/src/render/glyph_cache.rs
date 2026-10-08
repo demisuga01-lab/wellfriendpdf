@@ -235,19 +235,6 @@ impl GlyphCache {
         stats
     }
 
-    /// Merge warmed glyph outlines from a nested render state back into the
-    /// parent cache using the parent's LRU and byte budget.
-    ///
-    /// Form XObjects, Type3 charprocs, soft masks, and transparency groups are
-    /// rendered through child states. Without this merge, repeated glyphs inside
-    /// those scopes repeatedly rebuild outlines even during warm display-list
-    /// replay. The merge keeps the parent cache authoritative and bounded.
-    pub(crate) fn absorb_from(&mut self, other: GlyphCache) {
-        for (key, (glyph, _, _)) in other.entries {
-            self.insert(key, glyph);
-        }
-    }
-
     /// Compute a quick FNV-1a hash of the first 256 bytes of font data.
     pub fn hash_font_bytes(bytes: &[u8]) -> u64 {
         const FNV_PRIME: u64 = 0x00000100000001B3;

@@ -127,6 +127,7 @@ pub enum ClipState {
         fingerprint: u64,
         width: u32,
         height: u32,
+        bounds: Option<ClipBounds>,
         bytes: Arc<Vec<u8>>,
     },
     /// Composite of two clip states (structural sharing).
@@ -291,6 +292,48 @@ impl ClipBounds {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DenseAlphaSummary {
+    saw_nonzero: bool,
+    saw_partial: bool,
+    bounds: Option<ClipBounds>,
+}
+
+impl DenseAlphaSummary {
+    fn new() -> Self {
+        Self {
+            saw_nonzero: false,
+            saw_partial: false,
+            bounds: None,
+        }
+    }
+
+    #[inline]
+    fn observe(&mut self, x: i32, y: i32, alpha: u8) {
+        if alpha == 0 {
+            return;
+        }
+        self.saw_nonzero = true;
+        self.saw_partial |= alpha != 255;
+        match &mut self.bounds {
+            Some(bounds) => {
+                bounds.x0 = bounds.x0.min(x);
+                bounds.y0 = bounds.y0.min(y);
+                bounds.x1 = bounds.x1.max(x + 1);
+                bounds.y1 = bounds.y1.max(y + 1);
+            }
+            None => {
+                self.bounds = Some(ClipBounds {
+                    x0: x,
+                    y0: y,
+                    x1: x + 1,
+                    y1: y + 1,
+                });
+            }
+        }
+    }
+}
+
 impl ClipState {
     /// Materialize a concrete `ClipMask` from this DAG state.
     pub fn to_clip_mask(&self, width: u32, height: u32) -> ClipMask {
@@ -311,12 +354,20 @@ impl ClipState {
                 ClipMask::from_visible_runs(width, height, (**runs).clone())
             }
             ClipState::DenseMask {
+                fingerprint,
                 width: mask_width,
                 height: mask_height,
+                bounds,
                 bytes,
                 ..
             } if *mask_width == width && *mask_height == height => {
-                ClipMask::from_shared_partial_alpha_bytes(width, height, Arc::clone(bytes))
+                ClipMask::from_shared_partial_alpha_bytes(
+                    width,
+                    height,
+                    Arc::clone(bytes),
+                    *fingerprint,
+                    bounds.map(|bounds| (bounds.x0, bounds.y0, bounds.x1, bounds.y1)),
+                )
             }
             ClipState::DenseMask {
                 width: mask_width,
@@ -445,11 +496,44 @@ impl ClipState {
     /// coverage clips keep their alpha bytes so antialiased coverage survives
     /// save/restore without relying on an already-materialized cache entry.
     pub fn from_clip_mask(mask: &ClipMask) -> Self {
+        Self::from_clip_mask_with_fingerprint(mask, None)
+    }
+
+    fn from_clip_mask_with_fingerprint(mask: &ClipMask, fingerprint_hint: Option<u64>) -> Self {
         if mask.is_all_visible() {
             return ClipState::Full;
         }
         if mask.is_empty() {
             return ClipState::Empty;
+        }
+        // Partial-alpha masks already carry an exact dense plane. Handle them
+        // before visible-bounds/rectangle detection: asking a dense mask for
+        // run geometry materializes and scans a page-sized run cache that can
+        // never classify as a solid rectangle.
+        if mask.has_partial_coverage() {
+            let bytes = mask
+                .shared_partial_alpha_bytes()
+                .unwrap_or_else(|| Arc::new(Self::extract_alpha_bytes(mask)));
+            let metadata = mask
+                .dense_metadata_with_fingerprint(fingerprint_hint)
+                .unwrap_or_else(|| {
+                    let (fingerprint, bounds) =
+                        Self::dense_metadata(&bytes, mask.width, mask.height);
+                    crate::render::buffer::DenseClipMetadata {
+                        fingerprint,
+                        bounds: bounds.map(|bounds| (bounds.x0, bounds.y0, bounds.x1, bounds.y1)),
+                    }
+                });
+            let bounds = metadata
+                .bounds
+                .map(|(x0, y0, x1, y1)| ClipBounds { x0, y0, x1, y1 });
+            return ClipState::DenseMask {
+                fingerprint: metadata.fingerprint,
+                width: mask.width,
+                height: mask.height,
+                bounds,
+                bytes,
+            };
         }
         if let Some((x0, y0, x1, y1)) = mask.visible_bounds() {
             let w = x1 - x0;
@@ -457,18 +541,6 @@ impl ClipState {
             if Self::mask_is_solid_rect(mask, x0, y0, x1, y1) {
                 return ClipState::Rectangle { x: x0, y: y0, w, h };
             }
-        }
-        if mask.has_partial_coverage() {
-            let bytes = mask
-                .shared_partial_alpha_bytes()
-                .unwrap_or_else(|| Arc::new(Self::extract_alpha_bytes(mask)));
-            let fingerprint = Self::fingerprint_bytes(&bytes, mask.width, mask.height);
-            return ClipState::DenseMask {
-                fingerprint,
-                width: mask.width,
-                height: mask.height,
-                bytes,
-            };
         }
 
         let rows = Self::extract_runs(mask);
@@ -518,12 +590,7 @@ impl ClipState {
             ClipState::Rectangle { x, y, w, h } => ClipBounds::from_xywh(*x, *y, *w, *h),
             ClipState::SparseSpans { rows, .. } => Self::rows_bounds(rows),
             ClipState::RleMask { runs, .. } => Self::rows_bounds(runs),
-            ClipState::DenseMask {
-                width,
-                height,
-                bytes,
-                ..
-            } => Self::dense_bounds(bytes, *width, *height),
+            ClipState::DenseMask { bounds, .. } => *bounds,
             ClipState::Composite { lhs, rhs, .. } => match (lhs.bounds, rhs.bounds) {
                 (Some(left), Some(right)) => left.intersect(right),
                 (Some(bounds), None) | (None, Some(bounds)) => Some(bounds),
@@ -715,7 +782,7 @@ impl ClipState {
                 bytes[row_start + local_x as usize] = alpha;
             }
         }
-        Some(Self::state_from_alpha_bytes(width, height, bytes))
+        Some(Self::state_from_alpha_bytes(width, height, bytes, None))
     }
 
     fn dense_bytes(&self) -> Option<(u32, u32, &[u8])> {
@@ -740,12 +807,36 @@ impl ClipState {
         if left_bytes.len() != expected_len || right_bytes.len() != expected_len {
             return None;
         }
-        let bytes = left_bytes
-            .iter()
-            .zip(right_bytes.iter())
-            .map(|(left, right)| (*left).min(*right))
-            .collect::<Vec<_>>();
-        Some(Self::state_from_alpha_bytes(width, height, bytes))
+        let mut bytes = Vec::with_capacity(expected_len);
+        let mut summary = DenseAlphaSummary::new();
+        let width_usize = width as usize;
+        for (y, (left_row, right_row)) in left_bytes
+            .chunks_exact(width_usize)
+            .zip(right_bytes.chunks_exact(width_usize))
+            .enumerate()
+        {
+            for (x, (left, right)) in left_row.iter().zip(right_row.iter()).enumerate() {
+                let alpha = (*left).min(*right);
+                bytes.push(alpha);
+                summary.observe(x as i32, y as i32, alpha);
+            }
+        }
+        let fingerprint = Self::fingerprint_with_tag(
+            0x31,
+            [
+                lhs.fingerprint(),
+                rhs.fingerprint(),
+                u64::from(width),
+                u64::from(height),
+            ],
+        );
+        Some(Self::state_from_classified_alpha_bytes(
+            width,
+            height,
+            bytes,
+            fingerprint,
+            summary,
+        ))
     }
 
     fn intersect_dense_with_rect_state(
@@ -773,13 +864,36 @@ impl ClipState {
 
         let width_usize = width as usize;
         let mut out = vec![0; expected_len];
+        let mut summary = DenseAlphaSummary::new();
         for row in y0 as usize..y1 as usize {
             let start = row.checked_mul(width_usize)?.checked_add(x0 as usize)?;
             let end = row.checked_mul(width_usize)?.checked_add(x1 as usize)?;
-            out.get_mut(start..end)?
-                .copy_from_slice(bytes.get(start..end)?);
+            let output = out.get_mut(start..end)?;
+            let input = bytes.get(start..end)?;
+            output.copy_from_slice(input);
+            for (offset, alpha) in input.iter().copied().enumerate() {
+                summary.observe(x0 + offset as i32, row as i32, alpha);
+            }
         }
-        Some(Self::state_from_alpha_bytes(width, height, out))
+        let fingerprint = Self::fingerprint_with_tag(
+            0x32,
+            [
+                state.fingerprint(),
+                x as u64,
+                y as u64,
+                w as u64,
+                h as u64,
+                u64::from(width),
+                u64::from(height),
+            ],
+        );
+        Some(Self::state_from_classified_alpha_bytes(
+            width,
+            height,
+            out,
+            fingerprint,
+            summary,
+        ))
     }
 
     fn intersect_dense_with_rows_state(dense: &Self, rows_state: &Self) -> Option<Self> {
@@ -795,6 +909,7 @@ impl ClipState {
 
         let width_usize = width as usize;
         let mut out = vec![0; expected_len];
+        let mut summary = DenseAlphaSummary::new();
         for y in 0..height as usize {
             let row_start = y.checked_mul(width_usize)?;
             let Some(row) = rows.get(y) else {
@@ -808,11 +923,30 @@ impl ClipState {
                 }
                 let copy_start = row_start.checked_add(start)?;
                 let copy_end = row_start.checked_add(end)?;
-                out.get_mut(copy_start..copy_end)?
-                    .copy_from_slice(bytes.get(copy_start..copy_end)?);
+                let output = out.get_mut(copy_start..copy_end)?;
+                let input = bytes.get(copy_start..copy_end)?;
+                output.copy_from_slice(input);
+                for (offset, alpha) in input.iter().copied().enumerate() {
+                    summary.observe(start as i32 + offset as i32, y as i32, alpha);
+                }
             }
         }
-        Some(Self::state_from_alpha_bytes(width, height, out))
+        let fingerprint = Self::fingerprint_with_tag(
+            0x33,
+            [
+                dense.fingerprint(),
+                rows_state.fingerprint(),
+                u64::from(width),
+                u64::from(height),
+            ],
+        );
+        Some(Self::state_from_classified_alpha_bytes(
+            width,
+            height,
+            out,
+            fingerprint,
+            summary,
+        ))
     }
 
     fn intersect_binary_row_states(lhs: &Self, rhs: &Self) -> Option<Self> {
@@ -865,7 +999,12 @@ impl ClipState {
         Some(Self::state_from_binary_rows(width, height, out))
     }
 
-    fn state_from_alpha_bytes(width: u32, height: u32, bytes: Vec<u8>) -> Self {
+    fn state_from_alpha_bytes(
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+        fingerprint_hint: Option<u64>,
+    ) -> Self {
         let Some(expected_len) = (width as usize).checked_mul(height as usize) else {
             return ClipState::Empty;
         };
@@ -876,10 +1015,35 @@ impl ClipState {
         let mut all_empty = true;
         let mut all_full = true;
         let mut partial = false;
-        for byte in &bytes {
-            all_empty &= *byte == 0;
-            all_full &= *byte == 255;
-            partial |= *byte != 0 && *byte != 255;
+        let mut hash = fingerprint_hint.unwrap_or_else(|| {
+            let mut hash = 0xcbf29ce484222325;
+            for byte in width.to_le_bytes().into_iter().chain(height.to_le_bytes()) {
+                Self::mix_byte(&mut hash, byte);
+            }
+            hash
+        });
+        let mut x0 = i32::MAX;
+        let mut y0 = i32::MAX;
+        let mut x1 = i32::MIN;
+        let mut y1 = i32::MIN;
+        let width_usize = width as usize;
+        for (y, row) in bytes.chunks_exact(width_usize).enumerate() {
+            for (x, byte) in row.iter().copied().enumerate() {
+                all_empty &= byte == 0;
+                all_full &= byte == 255;
+                partial |= byte != 0 && byte != 255;
+                if fingerprint_hint.is_none() {
+                    Self::mix_byte(&mut hash, byte);
+                }
+                if byte != 0 {
+                    let x = x as i32;
+                    let y = y as i32;
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
         }
         if all_empty {
             return ClipState::Empty;
@@ -895,13 +1059,73 @@ impl ClipState {
             );
         }
 
-        let fingerprint = Self::fingerprint_bytes(&bytes, width, height);
+        let bounds = (x1 > x0 && y1 > y0).then_some(ClipBounds { x0, y0, x1, y1 });
+        ClipState::DenseMask {
+            fingerprint: hash,
+            width,
+            height,
+            bounds,
+            bytes: Arc::new(bytes),
+        }
+    }
+
+    fn state_from_classified_alpha_bytes(
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+        fingerprint: u64,
+        summary: DenseAlphaSummary,
+    ) -> Self {
+        let expected_len = (width as usize).checked_mul(height as usize).unwrap_or(0);
+        if expected_len == 0 || bytes.len() != expected_len || !summary.saw_nonzero {
+            return ClipState::Empty;
+        }
+        if !summary.saw_partial {
+            return Self::state_from_binary_rows(
+                width,
+                height,
+                Self::rows_from_alpha_bytes(width, height, &bytes),
+            );
+        }
         ClipState::DenseMask {
             fingerprint,
             width,
             height,
+            bounds: summary.bounds,
             bytes: Arc::new(bytes),
         }
+    }
+
+    fn dense_metadata(bytes: &[u8], width: u32, height: u32) -> (u64, Option<ClipBounds>) {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in width.to_le_bytes() {
+            Self::mix_byte(&mut hash, byte);
+        }
+        for byte in height.to_le_bytes() {
+            Self::mix_byte(&mut hash, byte);
+        }
+        let mut x0 = i32::MAX;
+        let mut y0 = i32::MAX;
+        let mut x1 = i32::MIN;
+        let mut y1 = i32::MIN;
+        let width_usize = width as usize;
+        if width_usize != 0 {
+            for (y, row) in bytes.chunks_exact(width_usize).enumerate() {
+                for (x, byte) in row.iter().copied().enumerate() {
+                    Self::mix_byte(&mut hash, byte);
+                    if byte != 0 {
+                        let x = x as i32;
+                        let y = y as i32;
+                        x0 = x0.min(x);
+                        y0 = y0.min(y);
+                        x1 = x1.max(x + 1);
+                        y1 = y1.max(y + 1);
+                    }
+                }
+            }
+        }
+        let bounds = (x1 > x0 && y1 > y0).then_some(ClipBounds { x0, y0, x1, y1 });
+        (hash, bounds)
     }
 
     fn rows_from_alpha_bytes(width: u32, height: u32, bytes: &[u8]) -> ClipRows {
@@ -1119,35 +1343,6 @@ impl ClipState {
         }
     }
 
-    fn dense_bounds(bytes: &[u8], width: u32, height: u32) -> Option<ClipBounds> {
-        let mut x0 = i32::MAX;
-        let mut y0 = i32::MAX;
-        let mut x1 = i32::MIN;
-        let mut y1 = i32::MIN;
-        let width_usize = width as usize;
-        for y in 0..height as usize {
-            let row_start = y.saturating_mul(width_usize);
-            let row_end = row_start.saturating_add(width_usize);
-            let Some(row) = bytes.get(row_start..row_end) else {
-                break;
-            };
-            for (x, value) in row.iter().enumerate() {
-                if *value == 0 {
-                    continue;
-                }
-                x0 = x0.min(x as i32);
-                y0 = y0.min(y as i32);
-                x1 = x1.max(x as i32 + 1);
-                y1 = y1.max(y as i32 + 1);
-            }
-        }
-        if x1 <= x0 || y1 <= y0 {
-            None
-        } else {
-            Some(ClipBounds { x0, y0, x1, y1 })
-        }
-    }
-
     fn rows_memory_charge(rows: ClipRowsRef<'_>) -> usize {
         rows.iter()
             .map(|row| std::mem::size_of::<Vec<(i32, i32)>>() + row.len() * 8)
@@ -1191,20 +1386,6 @@ impl ClipState {
                 }
             }
             Self::mix_byte(&mut hash, 0xFF);
-        }
-        hash
-    }
-
-    fn fingerprint_bytes(bytes: &[u8], width: u32, height: u32) -> u64 {
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for b in width.to_le_bytes() {
-            Self::mix_byte(&mut hash, b);
-        }
-        for b in height.to_le_bytes() {
-            Self::mix_byte(&mut hash, b);
-        }
-        for b in bytes {
-            Self::mix_byte(&mut hash, *b);
         }
         hash
     }
@@ -1358,6 +1539,18 @@ impl ClipDag {
     /// Intern a `ClipMask` by classifying it into a `ClipState` first.
     pub fn intern_mask(&mut self, mask: &ClipMask) -> Arc<ClipNode> {
         let state = ClipState::from_clip_mask(mask);
+        self.intern(state)
+    }
+
+    /// Intern a mask with a deterministic producer fingerprint. This avoids
+    /// hashing a page-sized dense alpha plane when the path/program identity
+    /// has already been computed by the caller.
+    pub(crate) fn intern_mask_with_fingerprint(
+        &mut self,
+        mask: &ClipMask,
+        fingerprint: u64,
+    ) -> Arc<ClipNode> {
+        let state = ClipState::from_clip_mask_with_fingerprint(mask, Some(fingerprint));
         self.intern(state)
     }
 

@@ -1517,6 +1517,12 @@ pub(crate) fn axis_aligned_integer_rect(
     ctm: &Transform2D,
     viewport: &Viewport,
 ) -> Option<(i32, i32, i32, i32)> {
+    // Decimal PDF matrices often place an intended integral device edge a few
+    // ten-thousandths of a pixel away from the integer. This tolerance stays
+    // well below half an 8-bit coverage step, so snapping cannot change the
+    // quantized edge alpha while avoiding a page-sized clip mask.
+    const DEVICE_PIXEL_SNAP_EPSILON: f64 = 1.0e-4;
+
     if !ctm.is_axis_aligned() || path.segments.len() != 5 {
         return None;
     }
@@ -1561,7 +1567,7 @@ pub(crate) fn axis_aligned_integer_rect(
     if max_x <= min_x || max_y <= min_y {
         return None;
     }
-    let eps = 1e-7;
+    let eps = DEVICE_PIXEL_SNAP_EPSILON;
     if px_points.iter().any(|(x, y)| {
         ((*x - min_x).abs() > eps && (*x - max_x).abs() > eps)
             || ((*y - min_y).abs() > eps && (*y - max_y).abs() > eps)
@@ -4747,6 +4753,19 @@ mod tests {
         assert_eq!(buf.get_pixel(10, 75), BLUE);
         assert_eq!(buf.get_pixel(29, 89), BLUE);
         assert_eq!(buf.get_pixel(30, 89), WHITE);
+    }
+
+    #[test]
+    fn decimal_matrix_noise_keeps_integer_rect_fast_path() {
+        let vp = Viewport::new([0.0, 0.0, 720.0, 405.0], 72);
+        let ctm = Transform2D::new(0.001968504, 0.0, 0.0, 0.001968504, 0.0, 0.0);
+        let mut path = Path::new();
+        path.rect(0.0, 0.0, 365_760.0, 205_740.0);
+
+        assert_eq!(
+            axis_aligned_integer_rect(&path, &ctm, &vp),
+            Some((0, 0, 720, 405))
+        );
     }
 
     #[test]

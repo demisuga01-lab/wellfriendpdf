@@ -753,13 +753,13 @@ fn validate_ext_g_state_identity_transfer(
 
 fn ext_g_state_transfer_value_is_identity(value: &PdfObject) -> bool {
     match value {
-        // /Default requests the device's default transfer. The standard screen
-        // preview path has no calibrated device transfer installed, therefore
-        // its defined default is the identity mapping.
-        PdfObject::Name(name) => matches!(name.as_str(), "Identity" | "Default"),
+        // /Default delegates to the output device and is not proof of an
+        // identity transfer. Rendering accepts only an explicit /Identity so
+        // an unknown device transfer cannot silently change appearance.
+        PdfObject::Name(name) => name == "Identity",
         PdfObject::Array(items) if items.len() == 4 => items
             .iter()
-            .all(|item| matches!(item.as_name(), Some("Identity" | "Default"))),
+            .all(|item| matches!(item.as_name(), Some("Identity"))),
         _ => false,
     }
 }

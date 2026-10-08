@@ -408,7 +408,10 @@ fn invalid_palettes_decode_maps_and_base_families_are_rejected() {
     let reader = reader();
     for space in [
         indexed_space(name("DeviceRGB"), 0, vec![0, 0]),
-        indexed_space(name("DeviceRGB"), 0, vec![0; 4]),
+        // A complete surplus RGB entry is malformed. Fewer than three bytes
+        // are only tolerated by the image compatibility route as producer
+        // padding because they cannot encode another addressable entry.
+        indexed_space(name("DeviceRGB"), 0, vec![0; 6]),
         indexed_space(name("DeviceGray"), 256, vec![0; 257]),
         indexed_space(name("Pattern"), 0, vec![0]),
         indexed_space(rgb_palette(), 0, vec![0]),

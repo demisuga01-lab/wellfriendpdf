@@ -39,7 +39,8 @@ use crate::render::contract::{
 #[cfg(test)]
 use crate::render::display_list::RetainedTextArrayItem;
 use crate::render::display_list::{
-    build_display_list, build_display_list_cancellable, DisplayList, DisplayOp, DrawState,
+    build_display_list, build_display_list_cancellable,
+    build_display_list_with_initial_graphics_state, DisplayList, DisplayOp, DrawState,
     RenderBounds, RenderCache, RenderCacheKey, RenderTile, RetainedInlineImage, RetainedTextOp,
 };
 use crate::render::document_view::ObjectIdentity;
@@ -275,6 +276,7 @@ impl<T: Type3ProgramCacheValue> Type3ProgramCache<T> {
         }
     }
 
+    #[cfg(test)]
     fn absorb_from(&mut self, mut other: Self) {
         merge_artifact_cache_counts(&mut self.stats, other.stats);
         for key in std::mem::take(&mut other.order) {
@@ -379,6 +381,7 @@ impl<T: Type3ProgramCacheValue> Type3ProgramCache<T> {
     }
 }
 
+#[cfg(test)]
 fn merge_artifact_cache_counts(dst: &mut RenderArtifactCacheStats, src: RenderArtifactCacheStats) {
     dst.hits = dst.hits.saturating_add(src.hits);
     dst.misses = dst.misses.saturating_add(src.misses);
@@ -6258,6 +6261,11 @@ impl GlyphMaskAtlas {
 #[derive(Default)]
 struct GlyphMaskCache {
     entries: HashMap<GlyphMaskCacheKey, GlyphMaskCacheEntry>,
+    // Append-only recency journal. Entries may be stale after a later touch;
+    // eviction skips them by comparing the recorded generation with the live
+    // entry. This makes the hot eviction path amortized O(1) instead of
+    // scanning every cached glyph for every new mask.
+    usage_order: VecDeque<(u64, GlyphMaskCacheKey)>,
     next_usage: u64,
     bytes: usize,
     atlas: GlyphMaskAtlas,
@@ -6276,6 +6284,7 @@ impl GlyphMaskCache {
             entry.mask.clone()
         });
         if hit.is_some() {
+            self.record_usage(usage, key.clone());
             self.stats.hits = self.stats.hits.saturating_add(1);
         } else {
             self.stats.misses = self.stats.misses.saturating_add(1);
@@ -6293,6 +6302,7 @@ impl GlyphMaskCache {
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.usage_order.clear();
         self.next_usage = 0;
         self.bytes = 0;
         self.atlas.clear();
@@ -6335,6 +6345,7 @@ impl GlyphMaskCache {
             self.stats.misses = self.stats.misses.saturating_add(1);
             return false;
         };
+        self.record_usage(usage, key.clone());
         self.stats.hits = self.stats.hits.saturating_add(1);
         if let Some(placement) = placement.as_ref() {
             if self
@@ -6380,22 +6391,16 @@ impl GlyphMaskCache {
                 .saturating_sub(self.bytes())
                 .saturating_sub(bytes);
             let atlas = self.atlas.try_insert(&mask, atlas_extra_budget);
+            let usage = self.next_usage();
             let entry = GlyphMaskCacheEntry {
                 mask,
                 atlas,
-                last_used: self.next_usage(),
+                last_used: usage,
             };
             let entry_bytes = entry.approximate_bytes();
             self.bytes = self.bytes.saturating_add(entry_bytes);
-            self.entries.insert(key, entry);
-        }
-    }
-
-    fn absorb_from(&mut self, other: Self) {
-        merge_artifact_cache_counts(&mut self.stats, other.stats());
-        merge_artifact_cache_counts(&mut self.atlas.stats, other.atlas.stats());
-        for (key, entry) in other.entries {
-            self.insert(key, entry.mask);
+            self.entries.insert(key.clone(), entry);
+            self.record_usage(usage, key);
         }
     }
 
@@ -6411,6 +6416,7 @@ impl GlyphMaskCache {
                 entry.last_used = index as u64;
             }
             self.next_usage = self.entries.len() as u64;
+            self.rebuild_usage_order();
         }
         let usage = self.next_usage;
         self.next_usage = self.next_usage.saturating_add(1);
@@ -6418,21 +6424,45 @@ impl GlyphMaskCache {
     }
 
     fn evict_one(&mut self) -> bool {
-        let victim = self
-            .entries
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(key, _)| key.clone());
-        if let Some(victim) = victim {
-            if let Some(removed) = self.entries.remove(&victim) {
-                self.bytes = self.bytes.saturating_sub(removed.approximate_bytes());
-                if let Some(placement) = removed.atlas.as_ref() {
-                    self.atlas.remove_placement(placement);
-                }
-                return true;
+        while let Some((usage, candidate)) = self.usage_order.pop_front() {
+            let is_current = self
+                .entries
+                .get(&candidate)
+                .is_some_and(|entry| entry.last_used == usage);
+            if !is_current {
+                continue;
             }
+            let Some(removed) = self.entries.remove(&candidate) else {
+                continue;
+            };
+            self.bytes = self.bytes.saturating_sub(removed.approximate_bytes());
+            if let Some(placement) = removed.atlas.as_ref() {
+                self.atlas.remove_placement(placement);
+            }
+            return true;
         }
         false
+    }
+
+    fn record_usage(&mut self, usage: u64, key: GlyphMaskCacheKey) {
+        self.usage_order.push_back((usage, key));
+        // A frequently reused small working set can otherwise leave an
+        // unbounded number of stale journal records. Rebuild from live entries
+        // at a generous multiple of the cache capacity; the occasional sort is
+        // amortized across many constant-time touches.
+        if self.usage_order.len() > Self::MAX_ENTRIES.saturating_mul(8) {
+            self.rebuild_usage_order();
+        }
+    }
+
+    fn rebuild_usage_order(&mut self) {
+        let mut ordered: Vec<_> = self
+            .entries
+            .iter()
+            .map(|(key, entry)| (entry.last_used, key.clone()))
+            .collect();
+        ordered.sort_unstable_by_key(|(usage, _)| *usage);
+        self.usage_order = ordered.into();
     }
 }
 
@@ -7102,18 +7132,6 @@ impl PathClipNodeCache {
         self.stats = RenderArtifactCacheStats::default();
     }
 
-    fn absorb_from(&mut self, mut other: Self) {
-        merge_artifact_cache_counts(&mut self.stats, other.stats);
-        for key in std::mem::take(&mut other.order) {
-            if let Some(node) = other.entries.remove(&key) {
-                self.insert(key, node);
-            }
-        }
-        for (key, node) in other.entries {
-            self.insert(key, node);
-        }
-    }
-
     fn len(&self) -> usize {
         self.entries.len()
     }
@@ -7362,7 +7380,10 @@ impl FontReplacementSelection {
 fn restore_buffer_clip_from_node(buf: &mut PixelBuffer, saved: &ClipNode) {
     let mask = match &saved.state {
         ClipState::Full => None,
-        _ => Some(saved.materialize(buf.width, buf.height).as_ref().clone()),
+        ClipState::Composite { .. } => {
+            Some(saved.materialize(buf.width, buf.height).as_ref().clone())
+        }
+        state => Some(state.to_clip_mask(buf.width, buf.height)),
     };
     buf.restore_clip(mask);
 }
@@ -9285,249 +9306,74 @@ impl<'a> RenderState<'a> {
     }
 
     fn absorb_child_render_caches(&mut self, child: &mut RenderState<'a>) {
-        self.glyph_cache.absorb_from(std::mem::replace(
-            &mut child.glyph_cache,
-            GlyphCache::with_default_capacity(),
-        ));
+        // Child rendering is synchronous: the parent cannot read or mutate its
+        // caches until the child returns. The child therefore owns the one
+        // authoritative cache set. Move it back wholesale instead of cloning,
+        // re-hashing and re-measuring every cache entry at each transparency
+        // group or soft-mask boundary.
+        self.glyph_cache =
+            std::mem::replace(&mut child.glyph_cache, GlyphCache::with_default_capacity());
+        self.glyph_mask_cache = std::mem::take(&mut child.glyph_mask_cache);
+        self.type3_mask_cache = std::mem::take(&mut child.type3_mask_cache);
+        self.type3_rendered_cache = std::mem::take(&mut child.type3_rendered_cache);
+        self.path_fill_mask_cache = std::mem::take(&mut child.path_fill_mask_cache);
+        self.path_stroke_mask_cache = std::mem::take(&mut child.path_stroke_mask_cache);
+        self.path_clip_node_cache = std::mem::take(&mut child.path_clip_node_cache);
+        self.font_bytes_cache = std::mem::take(&mut child.font_bytes_cache);
+        self.font_bytes_cache_order = std::mem::take(&mut child.font_bytes_cache_order);
+        self.font_bytes_cache_bytes = std::mem::take(&mut child.font_bytes_cache_bytes);
+        self.font_bytes_cache_stats = std::mem::take(&mut child.font_bytes_cache_stats);
+        self.font_resolver_cache = std::mem::take(&mut child.font_resolver_cache);
+        self.font_resolver_cache_order = std::mem::take(&mut child.font_resolver_cache_order);
+        self.font_resolver_cache_bytes = std::mem::take(&mut child.font_resolver_cache_bytes);
+        self.font_resolver_cache_stats = std::mem::take(&mut child.font_resolver_cache_stats);
+        self.prepared_font_metadata = std::mem::take(&mut child.prepared_font_metadata);
+        self.font_resource_key_cache = std::mem::take(&mut child.font_resource_key_cache);
+        self.type1_program_cache = std::mem::take(&mut child.type1_program_cache);
+        self.type3_geometry_cache = std::mem::take(&mut child.type3_geometry_cache);
+        self.type3_charproc_cache = std::mem::take(&mut child.type3_charproc_cache);
+        self.type3_retained_charproc_cache =
+            std::mem::take(&mut child.type3_retained_charproc_cache);
+        self.image_xobject_cache = std::mem::take(&mut child.image_xobject_cache);
+        self.image_xobject_cache_order = std::mem::take(&mut child.image_xobject_cache_order);
+        self.image_xobject_cache_bytes = std::mem::take(&mut child.image_xobject_cache_bytes);
+        self.image_xobject_cache_stats = std::mem::take(&mut child.image_xobject_cache_stats);
+        self.scaled_image_cache = std::mem::take(&mut child.scaled_image_cache);
+        self.scaled_image_cache_order = std::mem::take(&mut child.scaled_image_cache_order);
+        self.scaled_image_cache_bytes = std::mem::take(&mut child.scaled_image_cache_bytes);
+        self.scaled_image_cache_stats = std::mem::take(&mut child.scaled_image_cache_stats);
+        self.smask_group_cache = std::mem::take(&mut child.smask_group_cache);
+        self.smask_group_cache_order = std::mem::take(&mut child.smask_group_cache_order);
+        self.smask_group_cache_bytes = std::mem::take(&mut child.smask_group_cache_bytes);
+        self.smask_group_cache_stats = std::mem::take(&mut child.smask_group_cache_stats);
+        self.shading_mesh_cache = std::mem::take(&mut child.shading_mesh_cache);
+        self.shading_mesh_cache_order = std::mem::take(&mut child.shading_mesh_cache_order);
+        self.shading_mesh_cache_bytes = std::mem::take(&mut child.shading_mesh_cache_bytes);
+        self.shading_mesh_cache_stats = std::mem::take(&mut child.shading_mesh_cache_stats);
+        self.form_xobject_program_cache = std::mem::take(&mut child.form_xobject_program_cache);
+        self.form_xobject_program_cache_order =
+            std::mem::take(&mut child.form_xobject_program_cache_order);
+        self.form_xobject_program_cache_bytes =
+            std::mem::take(&mut child.form_xobject_program_cache_bytes);
+        self.form_xobject_program_cache_stats =
+            std::mem::take(&mut child.form_xobject_program_cache_stats);
+        self.tiling_pattern_program_cache = std::mem::take(&mut child.tiling_pattern_program_cache);
+        self.tiling_pattern_program_cache_order =
+            std::mem::take(&mut child.tiling_pattern_program_cache_order);
+        self.tiling_pattern_program_cache_bytes =
+            std::mem::take(&mut child.tiling_pattern_program_cache_bytes);
+        self.tiling_pattern_program_cache_stats =
+            std::mem::take(&mut child.tiling_pattern_program_cache_stats);
+        self.annotation_appearance_program_cache =
+            std::mem::take(&mut child.annotation_appearance_program_cache);
+        self.annotation_appearance_program_cache_order =
+            std::mem::take(&mut child.annotation_appearance_program_cache_order);
+        self.annotation_appearance_program_cache_bytes =
+            std::mem::take(&mut child.annotation_appearance_program_cache_bytes);
+        self.annotation_appearance_program_cache_stats =
+            std::mem::take(&mut child.annotation_appearance_program_cache_stats);
+        self.offscreen_buffer_pool = std::mem::take(&mut child.offscreen_buffer_pool);
 
-        self.glyph_mask_cache
-            .absorb_from(std::mem::take(&mut child.glyph_mask_cache));
-
-        merge_artifact_cache_counts(
-            &mut self.type3_mask_cache.stats,
-            child.type3_mask_cache.stats(),
-        );
-        for (key, mask) in std::mem::take(&mut child.type3_mask_cache.entries) {
-            self.type3_mask_cache.insert(key, mask);
-        }
-        child.type3_mask_cache.bytes = 0;
-
-        merge_artifact_cache_counts(
-            &mut self.type3_rendered_cache.stats,
-            child.type3_rendered_cache.stats(),
-        );
-        for (key, glyph) in std::mem::take(&mut child.type3_rendered_cache.entries) {
-            self.type3_rendered_cache.insert(key, glyph);
-        }
-        child.type3_rendered_cache.bytes = 0;
-
-        merge_artifact_cache_counts(
-            &mut self.path_fill_mask_cache.stats,
-            child.path_fill_mask_cache.stats(),
-        );
-        for (key, mask) in std::mem::take(&mut child.path_fill_mask_cache.entries) {
-            self.path_fill_mask_cache.insert(key, mask);
-        }
-        child.path_fill_mask_cache.bytes = 0;
-
-        merge_artifact_cache_counts(
-            &mut self.path_stroke_mask_cache.stats,
-            child.path_stroke_mask_cache.stats(),
-        );
-        for (key, mask) in std::mem::take(&mut child.path_stroke_mask_cache.entries) {
-            self.path_stroke_mask_cache.insert(key, mask);
-        }
-        child.path_stroke_mask_cache.bytes = 0;
-
-        self.path_clip_node_cache
-            .absorb_from(std::mem::take(&mut child.path_clip_node_cache));
-
-        for (key, bytes) in child.font_bytes_cache.drain() {
-            insert_font_bytes_cache_entry(
-                &mut self.font_bytes_cache,
-                &mut self.font_bytes_cache_order,
-                &mut self.font_bytes_cache_bytes,
-                &mut self.font_bytes_cache_stats,
-                key,
-                bytes,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.font_bytes_cache_stats,
-            child.font_bytes_cache_stats,
-        );
-        child.font_bytes_cache_bytes = 0;
-        child.font_bytes_cache_stats = RenderArtifactCacheStats::default();
-        for (key, resolver) in child.font_resolver_cache.drain() {
-            insert_font_resolver_cache_entry(
-                &mut self.font_resolver_cache,
-                &mut self.font_resolver_cache_order,
-                &mut self.font_resolver_cache_bytes,
-                &mut self.font_resolver_cache_stats,
-                key,
-                resolver,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.font_resolver_cache_stats,
-            child.font_resolver_cache_stats,
-        );
-        child.font_resolver_cache_bytes = 0;
-        child.font_resolver_cache_stats = RenderArtifactCacheStats::default();
-        self.font_resource_key_cache
-            .extend(child.font_resource_key_cache.drain());
-        self.type1_program_cache
-            .absorb_from(std::mem::take(&mut child.type1_program_cache));
-        self.type3_geometry_cache
-            .absorb_from(std::mem::take(&mut child.type3_geometry_cache));
-        self.type3_charproc_cache
-            .absorb_from(std::mem::take(&mut child.type3_charproc_cache));
-        self.type3_retained_charproc_cache
-            .absorb_from(std::mem::take(&mut child.type3_retained_charproc_cache));
-        let smask_cache_budget = CacheByteBudget {
-            max_bytes: self.cache_budget(SMASK_GROUP_CACHE_MAX_BYTES),
-            max_entry_bytes: self.cache_entry_budget(SMASK_GROUP_CACHE_MAX_ENTRY_BYTES),
-        };
-        for (key, mask) in std::mem::take(&mut child.smask_group_cache) {
-            insert_smask_group_cache_entry(
-                &mut self.smask_group_cache,
-                &mut self.smask_group_cache_order,
-                &mut self.smask_group_cache_bytes,
-                &mut self.smask_group_cache_stats,
-                key,
-                mask,
-                smask_cache_budget,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.smask_group_cache_stats,
-            child.smask_group_cache_stats,
-        );
-        child.smask_group_cache_stats = RenderArtifactCacheStats::default();
-        child.smask_group_cache_order.clear();
-        child.smask_group_cache_bytes = 0;
-        let program_cache_budget = CacheByteBudget {
-            max_bytes: self.cache_budget(PROGRAM_CACHE_MAX_BYTES),
-            max_entry_bytes: self.cache_entry_budget(PROGRAM_CACHE_MAX_ENTRY_BYTES),
-        };
-        for (key, program) in std::mem::take(&mut child.form_xobject_program_cache) {
-            insert_program_cache_entry(
-                &mut self.form_xobject_program_cache,
-                &mut self.form_xobject_program_cache_order,
-                &mut self.form_xobject_program_cache_bytes,
-                &mut self.form_xobject_program_cache_stats,
-                key,
-                program,
-                program_cache_budget,
-                form_xobject_program_cache_entry_bytes,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.form_xobject_program_cache_stats,
-            child.form_xobject_program_cache_stats,
-        );
-        child.form_xobject_program_cache_stats = RenderArtifactCacheStats::default();
-        child.form_xobject_program_cache_order.clear();
-        child.form_xobject_program_cache_bytes = 0;
-        for (key, program) in std::mem::take(&mut child.annotation_appearance_program_cache) {
-            insert_program_cache_entry(
-                &mut self.annotation_appearance_program_cache,
-                &mut self.annotation_appearance_program_cache_order,
-                &mut self.annotation_appearance_program_cache_bytes,
-                &mut self.annotation_appearance_program_cache_stats,
-                key,
-                program,
-                program_cache_budget,
-                form_xobject_program_cache_entry_bytes,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.annotation_appearance_program_cache_stats,
-            child.annotation_appearance_program_cache_stats,
-        );
-        child.annotation_appearance_program_cache_stats = RenderArtifactCacheStats::default();
-        child.annotation_appearance_program_cache_order.clear();
-        child.annotation_appearance_program_cache_bytes = 0;
-        for (key, program) in std::mem::take(&mut child.tiling_pattern_program_cache) {
-            insert_program_cache_entry(
-                &mut self.tiling_pattern_program_cache,
-                &mut self.tiling_pattern_program_cache_order,
-                &mut self.tiling_pattern_program_cache_bytes,
-                &mut self.tiling_pattern_program_cache_stats,
-                key,
-                program,
-                program_cache_budget,
-                tiling_pattern_program_cache_entry_bytes,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.tiling_pattern_program_cache_stats,
-            child.tiling_pattern_program_cache_stats,
-        );
-        child.tiling_pattern_program_cache_stats = RenderArtifactCacheStats::default();
-        child.tiling_pattern_program_cache_order.clear();
-        child.tiling_pattern_program_cache_bytes = 0;
-
-        let image_cache_max_bytes = self.cache_budget(RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES);
-        for (key, raw) in std::mem::take(&mut child.image_xobject_cache) {
-            let raw_bytes = raw.byte_count();
-            insert_image_xobject_cache_entry(
-                &mut self.image_xobject_cache,
-                &mut self.image_xobject_cache_order,
-                &mut self.image_xobject_cache_bytes,
-                key,
-                raw,
-                raw_bytes,
-                image_cache_max_bytes,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.image_xobject_cache_stats,
-            child.image_xobject_cache_stats,
-        );
-        child.image_xobject_cache_stats = RenderArtifactCacheStats::default();
-        child.image_xobject_cache_order.clear();
-        child.image_xobject_cache_bytes = 0;
-
-        let scaled_cache_max_bytes = self.cache_budget(SCALED_IMAGE_CACHE_MAX_BYTES);
-        let scaled_cache_max_entry_bytes =
-            self.cache_entry_budget(SCALED_IMAGE_CACHE_MAX_ENTRY_BYTES);
-        for (key, raw) in std::mem::take(&mut child.scaled_image_cache) {
-            insert_scaled_image_cache_entry(
-                &mut self.scaled_image_cache,
-                &mut self.scaled_image_cache_order,
-                &mut self.scaled_image_cache_bytes,
-                key,
-                raw,
-                scaled_cache_max_bytes,
-                scaled_cache_max_entry_bytes,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.scaled_image_cache_stats,
-            child.scaled_image_cache_stats,
-        );
-        child.scaled_image_cache_stats = RenderArtifactCacheStats::default();
-        child.scaled_image_cache_order.clear();
-        child.scaled_image_cache_bytes = 0;
-
-        let shading_cache_max_bytes = self.cache_budget(SHADING_MESH_CACHE_MAX_BYTES);
-        let shading_cache_max_entry_bytes =
-            self.cache_entry_budget(SHADING_MESH_CACHE_MAX_ENTRY_BYTES);
-        for (key, bytes) in std::mem::take(&mut child.shading_mesh_cache) {
-            insert_shading_mesh_cache_entry(
-                &mut self.shading_mesh_cache,
-                &mut self.shading_mesh_cache_order,
-                &mut self.shading_mesh_cache_bytes,
-                key,
-                bytes,
-                shading_cache_max_bytes,
-                shading_cache_max_entry_bytes,
-            );
-        }
-        merge_artifact_cache_counts(
-            &mut self.shading_mesh_cache_stats,
-            child.shading_mesh_cache_stats,
-        );
-        child.shading_mesh_cache_stats = RenderArtifactCacheStats::default();
-        child.shading_mesh_cache_order.clear();
-        child.shading_mesh_cache_bytes = 0;
-
-        for pooled in child.offscreen_buffer_pool.drain(..) {
-            self.recycle_offscreen_buffer(pooled);
-        }
-
-        // Merge font substitution events from child state.
         self.font_substitution_log
             .absorb(std::mem::take(&mut child.font_substitution_log));
     }
@@ -9596,14 +9442,15 @@ impl<'a> RenderState<'a> {
             &self.render_contract_fingerprint,
             parent_resource_fingerprint,
         );
-        // A Form inherits the caller's graphics state. In particular, valid
-        // content may show text without issuing another `Tf`. Bind that state
-        // into the retained-program identity: otherwise a plan compiled while
-        // F1 is active can be incorrectly reused while F2 is active.
-        let cache_key = match self.active_font_resource.as_ref() {
-            Some(font) => format!("{cache_key}:inherited-font:{}", font.cache_key),
-            None => format!("{cache_key}:inherited-font:none"),
-        };
+        // A Form inherits the caller's complete graphics state. Bind the
+        // prepared program to that state so line style, alpha, colour source,
+        // rendering intent, and font selection cannot leak across occurrences.
+        let mut inherited_program_state = self.gs.clone();
+        inherited_program_state.ctm = crate::content::state::IDENTITY_MATRIX;
+        let cache_key = format!(
+            "{cache_key}:inherited-state:{:016x}",
+            self.inherited_paint_context_fingerprint_for(&inherited_program_state)
+        );
         if let Some(cached) = self.form_xobject_program_cache.get(&cache_key) {
             touch_program_cache_key(&mut self.form_xobject_program_cache_order, &cache_key);
             self.form_xobject_program_cache_stats.hits =
@@ -9736,8 +9583,7 @@ impl<'a> RenderState<'a> {
             .color_spaces
             .entry("DefaultGray".into())
             .or_insert_with(|| PdfObject::Name("DeviceGray".into()));
-        let mut retained_ops =
-            operations_with_inherited_color_state(&ops, &self.gs, &retained_resources);
+        let mut retained_ops = ops.clone();
         if let Some(font) = self.active_font_resource.as_ref() {
             // Display-list compilation must resolve the inherited font just as
             // direct interpretation does. Prepending a synthetic Tf is safe:
@@ -9758,9 +9604,13 @@ impl<'a> RenderState<'a> {
             );
         }
         let is_transparency_group = is_transparency_group(&form_dict);
-        let (retained_plan, retained_plan_refusal) = retained_plan_cache_fields(
-            self.compile_form_xobject_retained_plan(name, &retained_ops, &retained_resources),
-        );
+        let (retained_plan, retained_plan_refusal) =
+            retained_plan_cache_fields(self.compile_form_xobject_retained_plan(
+                name,
+                &retained_ops,
+                &retained_resources,
+                &self.gs,
+            ));
         let form_matrix = if let Some(matrix) = resolved_matrix {
             matrix
         } else {
@@ -9870,8 +9720,18 @@ impl<'a> RenderState<'a> {
         name: &str,
         ops: &[ContentOperation],
         resources: &PageResources,
+        inherited_state: &GraphicsState,
     ) -> std::result::Result<Arc<RenderPlan>, String> {
-        let result = self.compile_supported_retained_replay_plan(ops, resources);
+        let mut local_state = inherited_state.clone();
+        // The Form matrix and caller CTM are applied at replay. Compile path
+        // geometry in Form-local coordinates while retaining every other
+        // inherited graphics-state property.
+        local_state.ctm = crate::content::state::IDENTITY_MATRIX;
+        let result = self.compile_supported_retained_replay_plan_with_state(
+            ops,
+            resources,
+            Some(&local_state),
+        );
         if let Err(err) = &result {
             log::debug!("Form XObject '{name}': retained plan unavailable: {err}");
         }
@@ -9907,7 +9767,24 @@ impl<'a> RenderState<'a> {
         ops: &[ContentOperation],
         resources: &PageResources,
     ) -> std::result::Result<Arc<RenderPlan>, String> {
-        let list = build_display_list(ops, self.viewport.clone(), resources);
+        self.compile_supported_retained_replay_plan_with_state(ops, resources, None)
+    }
+
+    fn compile_supported_retained_replay_plan_with_state(
+        &self,
+        ops: &[ContentOperation],
+        resources: &PageResources,
+        initial_state: Option<&GraphicsState>,
+    ) -> std::result::Result<Arc<RenderPlan>, String> {
+        let list = match initial_state {
+            Some(state) => build_display_list_with_initial_graphics_state(
+                ops,
+                self.viewport.clone(),
+                resources,
+                state,
+            ),
+            None => build_display_list(ops, self.viewport.clone(), resources),
+        };
         if !list.is_fully_supported() {
             return Err(unsupported_display_list_reasons(&list));
         }
@@ -11579,7 +11456,11 @@ impl<'a> RenderState<'a> {
             }
             let flat = flatten_path(path, ctm, &self.viewport, self.gs.path_flatness_tolerance());
             let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
-            let node = self.clip_dag.intern_mask(&clip);
+            let mut fingerprint = DefaultHasher::new();
+            key.hash(&mut fingerprint);
+            let node = self
+                .clip_dag
+                .intern_mask_with_fingerprint(&clip, fingerprint.finish());
             self.path_clip_node_cache.insert(key, Arc::clone(&node));
             self.apply_clip_node(node);
             return;
@@ -12349,18 +12230,18 @@ impl<'a> RenderState<'a> {
             path_fill_mask_cache: child_path_fill_mask_cache,
             path_stroke_mask_cache: child_path_stroke_mask_cache,
             path_clip_node_cache: child_path_clip_node_cache,
-            font_bytes_cache: self.font_bytes_cache.clone(),
-            font_bytes_cache_order: self.font_bytes_cache_order.clone(),
-            font_bytes_cache_bytes: self.font_bytes_cache_bytes,
-            font_bytes_cache_stats: RenderArtifactCacheStats::default(),
-            font_resolver_cache: self.font_resolver_cache.clone(),
-            font_resolver_cache_order: self.font_resolver_cache_order.clone(),
-            font_resolver_cache_bytes: self.font_resolver_cache_bytes,
-            font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            font_bytes_cache: std::mem::take(&mut self.font_bytes_cache),
+            font_bytes_cache_order: std::mem::take(&mut self.font_bytes_cache_order),
+            font_bytes_cache_bytes: std::mem::take(&mut self.font_bytes_cache_bytes),
+            font_bytes_cache_stats: std::mem::take(&mut self.font_bytes_cache_stats),
+            font_resolver_cache: std::mem::take(&mut self.font_resolver_cache),
+            font_resolver_cache_order: std::mem::take(&mut self.font_resolver_cache_order),
+            font_resolver_cache_bytes: std::mem::take(&mut self.font_resolver_cache_bytes),
+            font_resolver_cache_stats: std::mem::take(&mut self.font_resolver_cache_stats),
             prepared_text_cache: Arc::clone(&self.prepared_text_cache),
-            prepared_font_metadata: self.prepared_font_metadata.clone(),
-            type1_program_cache: self.type1_program_cache.clone(),
-            font_resource_key_cache: self.font_resource_key_cache.clone(),
+            prepared_font_metadata: std::mem::take(&mut self.prepared_font_metadata),
+            type1_program_cache: std::mem::take(&mut self.type1_program_cache),
+            font_resource_key_cache: std::mem::take(&mut self.font_resource_key_cache),
             active_font_resource: self.active_font_resource.clone(),
             active_fill_color_space_resource: self.active_fill_color_space_resource.clone(),
             active_stroke_color_space_resource: self.active_stroke_color_space_resource.clone(),
@@ -12371,40 +12252,57 @@ impl<'a> RenderState<'a> {
             active_fill_pattern_resource: self.active_fill_pattern_resource.clone(),
             active_stroke_pattern_resource: self.active_stroke_pattern_resource.clone(),
             active_resource_stack: Vec::new(),
-            type3_geometry_cache: self.type3_geometry_cache.clone(),
-            type3_charproc_cache: self.type3_charproc_cache.clone(),
-            type3_retained_charproc_cache: self.type3_retained_charproc_cache.clone(),
-            image_xobject_cache: self.image_xobject_cache.clone(),
-            image_xobject_cache_order: self.image_xobject_cache_order.clone(),
-            image_xobject_cache_bytes: self.image_xobject_cache_bytes,
-            image_xobject_cache_stats: RenderArtifactCacheStats::default(),
-            scaled_image_cache: self.scaled_image_cache.clone(),
-            scaled_image_cache_order: self.scaled_image_cache_order.clone(),
-            scaled_image_cache_bytes: self.scaled_image_cache_bytes,
-            scaled_image_cache_stats: RenderArtifactCacheStats::default(),
-            smask_group_cache: self.smask_group_cache.clone(),
-            smask_group_cache_order: self.smask_group_cache_order.clone(),
-            smask_group_cache_bytes: self.smask_group_cache_bytes,
-            smask_group_cache_stats: RenderArtifactCacheStats::default(),
-            shading_mesh_cache: self.shading_mesh_cache.clone(),
-            shading_mesh_cache_order: self.shading_mesh_cache_order.clone(),
-            shading_mesh_cache_bytes: self.shading_mesh_cache_bytes,
-            shading_mesh_cache_stats: RenderArtifactCacheStats::default(),
-            form_xobject_program_cache: self.form_xobject_program_cache.clone(),
-            form_xobject_program_cache_order: self.form_xobject_program_cache_order.clone(),
-            form_xobject_program_cache_bytes: self.form_xobject_program_cache_bytes,
-            form_xobject_program_cache_stats: RenderArtifactCacheStats::default(),
-            tiling_pattern_program_cache: self.tiling_pattern_program_cache.clone(),
-            tiling_pattern_program_cache_order: self.tiling_pattern_program_cache_order.clone(),
-            tiling_pattern_program_cache_bytes: self.tiling_pattern_program_cache_bytes,
-            tiling_pattern_program_cache_stats: RenderArtifactCacheStats::default(),
-            annotation_appearance_program_cache: self.annotation_appearance_program_cache.clone(),
-            annotation_appearance_program_cache_order: self
-                .annotation_appearance_program_cache_order
-                .clone(),
-            annotation_appearance_program_cache_bytes: self
-                .annotation_appearance_program_cache_bytes,
-            annotation_appearance_program_cache_stats: RenderArtifactCacheStats::default(),
+            type3_geometry_cache: std::mem::take(&mut self.type3_geometry_cache),
+            type3_charproc_cache: std::mem::take(&mut self.type3_charproc_cache),
+            type3_retained_charproc_cache: std::mem::take(&mut self.type3_retained_charproc_cache),
+            image_xobject_cache: std::mem::take(&mut self.image_xobject_cache),
+            image_xobject_cache_order: std::mem::take(&mut self.image_xobject_cache_order),
+            image_xobject_cache_bytes: std::mem::take(&mut self.image_xobject_cache_bytes),
+            image_xobject_cache_stats: std::mem::take(&mut self.image_xobject_cache_stats),
+            scaled_image_cache: std::mem::take(&mut self.scaled_image_cache),
+            scaled_image_cache_order: std::mem::take(&mut self.scaled_image_cache_order),
+            scaled_image_cache_bytes: std::mem::take(&mut self.scaled_image_cache_bytes),
+            scaled_image_cache_stats: std::mem::take(&mut self.scaled_image_cache_stats),
+            smask_group_cache: std::mem::take(&mut self.smask_group_cache),
+            smask_group_cache_order: std::mem::take(&mut self.smask_group_cache_order),
+            smask_group_cache_bytes: std::mem::take(&mut self.smask_group_cache_bytes),
+            smask_group_cache_stats: std::mem::take(&mut self.smask_group_cache_stats),
+            shading_mesh_cache: std::mem::take(&mut self.shading_mesh_cache),
+            shading_mesh_cache_order: std::mem::take(&mut self.shading_mesh_cache_order),
+            shading_mesh_cache_bytes: std::mem::take(&mut self.shading_mesh_cache_bytes),
+            shading_mesh_cache_stats: std::mem::take(&mut self.shading_mesh_cache_stats),
+            form_xobject_program_cache: std::mem::take(&mut self.form_xobject_program_cache),
+            form_xobject_program_cache_order: std::mem::take(
+                &mut self.form_xobject_program_cache_order,
+            ),
+            form_xobject_program_cache_bytes: std::mem::take(
+                &mut self.form_xobject_program_cache_bytes,
+            ),
+            form_xobject_program_cache_stats: std::mem::take(
+                &mut self.form_xobject_program_cache_stats,
+            ),
+            tiling_pattern_program_cache: std::mem::take(&mut self.tiling_pattern_program_cache),
+            tiling_pattern_program_cache_order: std::mem::take(
+                &mut self.tiling_pattern_program_cache_order,
+            ),
+            tiling_pattern_program_cache_bytes: std::mem::take(
+                &mut self.tiling_pattern_program_cache_bytes,
+            ),
+            tiling_pattern_program_cache_stats: std::mem::take(
+                &mut self.tiling_pattern_program_cache_stats,
+            ),
+            annotation_appearance_program_cache: std::mem::take(
+                &mut self.annotation_appearance_program_cache,
+            ),
+            annotation_appearance_program_cache_order: std::mem::take(
+                &mut self.annotation_appearance_program_cache_order,
+            ),
+            annotation_appearance_program_cache_bytes: std::mem::take(
+                &mut self.annotation_appearance_program_cache_bytes,
+            ),
+            annotation_appearance_program_cache_stats: std::mem::take(
+                &mut self.annotation_appearance_program_cache_stats,
+            ),
             offscreen_buffer_pool: child_offscreen_buffer_pool,
             clip_dag: mask_clip_dag,
             current_clip: mask_current_clip,
@@ -13928,18 +13826,18 @@ impl<'a> RenderState<'a> {
             path_fill_mask_cache: child_path_fill_mask_cache,
             path_stroke_mask_cache: child_path_stroke_mask_cache,
             path_clip_node_cache: child_path_clip_node_cache,
-            font_bytes_cache: self.font_bytes_cache.clone(),
-            font_bytes_cache_order: self.font_bytes_cache_order.clone(),
-            font_bytes_cache_bytes: self.font_bytes_cache_bytes,
-            font_bytes_cache_stats: RenderArtifactCacheStats::default(),
-            font_resolver_cache: self.font_resolver_cache.clone(),
-            font_resolver_cache_order: self.font_resolver_cache_order.clone(),
-            font_resolver_cache_bytes: self.font_resolver_cache_bytes,
-            font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            font_bytes_cache: std::mem::take(&mut self.font_bytes_cache),
+            font_bytes_cache_order: std::mem::take(&mut self.font_bytes_cache_order),
+            font_bytes_cache_bytes: std::mem::take(&mut self.font_bytes_cache_bytes),
+            font_bytes_cache_stats: std::mem::take(&mut self.font_bytes_cache_stats),
+            font_resolver_cache: std::mem::take(&mut self.font_resolver_cache),
+            font_resolver_cache_order: std::mem::take(&mut self.font_resolver_cache_order),
+            font_resolver_cache_bytes: std::mem::take(&mut self.font_resolver_cache_bytes),
+            font_resolver_cache_stats: std::mem::take(&mut self.font_resolver_cache_stats),
             prepared_text_cache: Arc::clone(&self.prepared_text_cache),
-            prepared_font_metadata: self.prepared_font_metadata.clone(),
-            type1_program_cache: self.type1_program_cache.clone(),
-            font_resource_key_cache: self.font_resource_key_cache.clone(),
+            prepared_font_metadata: std::mem::take(&mut self.prepared_font_metadata),
+            type1_program_cache: std::mem::take(&mut self.type1_program_cache),
+            font_resource_key_cache: std::mem::take(&mut self.font_resource_key_cache),
             active_font_resource: self.active_font_resource.clone(),
             active_fill_color_space_resource: self.active_fill_color_space_resource.clone(),
             active_stroke_color_space_resource: self.active_stroke_color_space_resource.clone(),
@@ -13950,40 +13848,57 @@ impl<'a> RenderState<'a> {
             active_fill_pattern_resource: self.active_fill_pattern_resource.clone(),
             active_stroke_pattern_resource: self.active_stroke_pattern_resource.clone(),
             active_resource_stack: Vec::new(),
-            type3_geometry_cache: self.type3_geometry_cache.clone(),
-            type3_charproc_cache: self.type3_charproc_cache.clone(),
-            type3_retained_charproc_cache: self.type3_retained_charproc_cache.clone(),
-            image_xobject_cache: self.image_xobject_cache.clone(),
-            image_xobject_cache_order: self.image_xobject_cache_order.clone(),
-            image_xobject_cache_bytes: self.image_xobject_cache_bytes,
-            image_xobject_cache_stats: RenderArtifactCacheStats::default(),
-            scaled_image_cache: self.scaled_image_cache.clone(),
-            scaled_image_cache_order: self.scaled_image_cache_order.clone(),
-            scaled_image_cache_bytes: self.scaled_image_cache_bytes,
-            scaled_image_cache_stats: RenderArtifactCacheStats::default(),
-            smask_group_cache: self.smask_group_cache.clone(),
-            smask_group_cache_order: self.smask_group_cache_order.clone(),
-            smask_group_cache_bytes: self.smask_group_cache_bytes,
-            smask_group_cache_stats: RenderArtifactCacheStats::default(),
-            shading_mesh_cache: self.shading_mesh_cache.clone(),
-            shading_mesh_cache_order: self.shading_mesh_cache_order.clone(),
-            shading_mesh_cache_bytes: self.shading_mesh_cache_bytes,
-            shading_mesh_cache_stats: RenderArtifactCacheStats::default(),
-            form_xobject_program_cache: self.form_xobject_program_cache.clone(),
-            form_xobject_program_cache_order: self.form_xobject_program_cache_order.clone(),
-            form_xobject_program_cache_bytes: self.form_xobject_program_cache_bytes,
-            form_xobject_program_cache_stats: RenderArtifactCacheStats::default(),
-            tiling_pattern_program_cache: self.tiling_pattern_program_cache.clone(),
-            tiling_pattern_program_cache_order: self.tiling_pattern_program_cache_order.clone(),
-            tiling_pattern_program_cache_bytes: self.tiling_pattern_program_cache_bytes,
-            tiling_pattern_program_cache_stats: RenderArtifactCacheStats::default(),
-            annotation_appearance_program_cache: self.annotation_appearance_program_cache.clone(),
-            annotation_appearance_program_cache_order: self
-                .annotation_appearance_program_cache_order
-                .clone(),
-            annotation_appearance_program_cache_bytes: self
-                .annotation_appearance_program_cache_bytes,
-            annotation_appearance_program_cache_stats: RenderArtifactCacheStats::default(),
+            type3_geometry_cache: std::mem::take(&mut self.type3_geometry_cache),
+            type3_charproc_cache: std::mem::take(&mut self.type3_charproc_cache),
+            type3_retained_charproc_cache: std::mem::take(&mut self.type3_retained_charproc_cache),
+            image_xobject_cache: std::mem::take(&mut self.image_xobject_cache),
+            image_xobject_cache_order: std::mem::take(&mut self.image_xobject_cache_order),
+            image_xobject_cache_bytes: std::mem::take(&mut self.image_xobject_cache_bytes),
+            image_xobject_cache_stats: std::mem::take(&mut self.image_xobject_cache_stats),
+            scaled_image_cache: std::mem::take(&mut self.scaled_image_cache),
+            scaled_image_cache_order: std::mem::take(&mut self.scaled_image_cache_order),
+            scaled_image_cache_bytes: std::mem::take(&mut self.scaled_image_cache_bytes),
+            scaled_image_cache_stats: std::mem::take(&mut self.scaled_image_cache_stats),
+            smask_group_cache: std::mem::take(&mut self.smask_group_cache),
+            smask_group_cache_order: std::mem::take(&mut self.smask_group_cache_order),
+            smask_group_cache_bytes: std::mem::take(&mut self.smask_group_cache_bytes),
+            smask_group_cache_stats: std::mem::take(&mut self.smask_group_cache_stats),
+            shading_mesh_cache: std::mem::take(&mut self.shading_mesh_cache),
+            shading_mesh_cache_order: std::mem::take(&mut self.shading_mesh_cache_order),
+            shading_mesh_cache_bytes: std::mem::take(&mut self.shading_mesh_cache_bytes),
+            shading_mesh_cache_stats: std::mem::take(&mut self.shading_mesh_cache_stats),
+            form_xobject_program_cache: std::mem::take(&mut self.form_xobject_program_cache),
+            form_xobject_program_cache_order: std::mem::take(
+                &mut self.form_xobject_program_cache_order,
+            ),
+            form_xobject_program_cache_bytes: std::mem::take(
+                &mut self.form_xobject_program_cache_bytes,
+            ),
+            form_xobject_program_cache_stats: std::mem::take(
+                &mut self.form_xobject_program_cache_stats,
+            ),
+            tiling_pattern_program_cache: std::mem::take(&mut self.tiling_pattern_program_cache),
+            tiling_pattern_program_cache_order: std::mem::take(
+                &mut self.tiling_pattern_program_cache_order,
+            ),
+            tiling_pattern_program_cache_bytes: std::mem::take(
+                &mut self.tiling_pattern_program_cache_bytes,
+            ),
+            tiling_pattern_program_cache_stats: std::mem::take(
+                &mut self.tiling_pattern_program_cache_stats,
+            ),
+            annotation_appearance_program_cache: std::mem::take(
+                &mut self.annotation_appearance_program_cache,
+            ),
+            annotation_appearance_program_cache_order: std::mem::take(
+                &mut self.annotation_appearance_program_cache_order,
+            ),
+            annotation_appearance_program_cache_bytes: std::mem::take(
+                &mut self.annotation_appearance_program_cache_bytes,
+            ),
+            annotation_appearance_program_cache_stats: std::mem::take(
+                &mut self.annotation_appearance_program_cache_stats,
+            ),
             offscreen_buffer_pool: child_offscreen_buffer_pool,
             clip_dag: group_clip_dag,
             current_clip: group_current_clip,
@@ -14065,13 +13980,15 @@ impl<'a> RenderState<'a> {
         if let Some(plan) = retained_plan {
             let viewport = group_state.viewport.clone();
             let vector_ctm_base = group_state.base_ctm;
+            let inherited_fill = group_state.fill_pixel_color();
+            let inherited_stroke = group_state.stroke_pixel_color();
             let mut adapter = RenderStatePlanAdapter {
                 state: &mut group_state,
                 viewport_ref: &viewport,
                 vector_ctm_base: Some(vector_ctm_base),
                 forced_vector_color: None,
-                forced_vector_fill_pixel_color: None,
-                forced_vector_stroke_pixel_color: None,
+                forced_vector_fill_pixel_color: Some(inherited_fill),
+                forced_vector_stroke_pixel_color: Some(inherited_stroke),
                 ignore_bounds: true,
             };
             if let Err(err) = plan.execute_full(&mut adapter) {
@@ -14377,13 +14294,15 @@ impl<'a> RenderState<'a> {
         if let Some(plan) = program.retained_plan.as_ref() {
             let viewport = self.viewport.clone();
             let vector_ctm_base = self.base_ctm;
+            let inherited_fill = self.fill_pixel_color();
+            let inherited_stroke = self.stroke_pixel_color();
             let mut adapter = RenderStatePlanAdapter {
                 state: self,
                 viewport_ref: &viewport,
                 vector_ctm_base: Some(vector_ctm_base),
                 forced_vector_color: None,
-                forced_vector_fill_pixel_color: None,
-                forced_vector_stroke_pixel_color: None,
+                forced_vector_fill_pixel_color: Some(inherited_fill),
+                forced_vector_stroke_pixel_color: Some(inherited_stroke),
                 ignore_bounds: true,
             };
             if let Err(err) = plan.execute_full(&mut adapter) {
@@ -17056,6 +16975,10 @@ impl<'a> RenderState<'a> {
     }
 
     fn inherited_paint_context_fingerprint(&self) -> u64 {
+        self.inherited_paint_context_fingerprint_for(&self.gs)
+    }
+
+    fn inherited_paint_context_fingerprint_for(&self, graphics_state: &GraphicsState) -> u64 {
         let mut active_hash = 0xcbf29ce484222325;
         fnv1a_update(
             &mut active_hash,
@@ -17084,7 +17007,7 @@ impl<'a> RenderState<'a> {
             }
             fnv1a_update(&mut active_hash, &[u8::from(pattern.is_some())]);
         }
-        fnv1a_update(&mut active_hash, format!("{:?}", self.gs).as_bytes());
+        fnv1a_update(&mut active_hash, format!("{graphics_state:?}").as_bytes());
         active_hash
     }
 
@@ -33785,6 +33708,12 @@ mod tests {
                 fingerprint,
                 width,
                 height,
+                bounds: Some(crate::render::clip_dag::ClipBounds {
+                    x0: 0,
+                    y0: 0,
+                    x1: width as i32,
+                    y1: height as i32,
+                }),
                 bytes: Arc::new(vec![255; pixels]),
             }))
         }

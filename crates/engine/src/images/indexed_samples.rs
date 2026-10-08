@@ -80,6 +80,7 @@ impl PreparedPalette {
         object: &PdfObject,
         source_space: Option<&PdfObject>,
         reader: &PdfReader,
+        allow_partial_entry_padding: bool,
     ) -> Result<Self> {
         let bound = indexed(object, reader)?;
         let source = indexed(source_space.unwrap_or(object), reader)?;
@@ -107,11 +108,18 @@ impl PreparedPalette {
                 lookup.len()
             )));
         }
-        // ISO 32000 addresses exactly `(hival + 1) * base-components` bytes.
-        // Several established producers append a padding byte to an otherwise
-        // complete lookup string. Ignore only the bounded trailing suffix;
-        // undersized tables remain malformed and every indexed read stays
-        // within the spec-defined prefix.
+        let padding = lookup.len() - expected;
+        if padding != 0 && (!allow_partial_entry_padding || padding >= channels) {
+            return Err(invalid(format!(
+                "Indexed ColorSpace lookup table has {} bytes, expected exactly {expected} or less than one base-colour entry of image padding",
+                lookup.len()
+            )));
+        }
+        // Some image producers pad a lookup by fewer bytes than one complete
+        // base-colour entry. Such a suffix cannot encode another addressable
+        // palette entry, so the compatibility image route may ignore it.
+        // Paint conversion remains exact and a complete surplus entry remains
+        // malformed instead of being silently truncated.
         lookup.truncate(expected);
         let mut target_dict = PdfDictionary::empty();
         target_dict.insert("ColorSpace", target_base.clone());
@@ -212,7 +220,7 @@ pub(crate) fn resolve_color_with_resources(
     if !index.is_finite() || !alpha.is_finite() {
         return Err(invalid("Indexed paint index/alpha is not finite"));
     }
-    let palette = PreparedPalette::new(space, source_space, reader)?;
+    let palette = PreparedPalette::new(space, source_space, reader, false)?;
     // ISO 32000 defines Indexed selection by rounding to the nearest integer
     // and clipping to 0..hival. Callers that require a continuous colour
     // function (notably shadings) must reject fractional results before this
@@ -231,7 +239,7 @@ fn palette(
         .get("ColorSpace")
         .or_else(|| dict.get("CS"))
         .ok_or_else(|| invalid("Indexed image has no ColorSpace"))?;
-    let prepared = PreparedPalette::new(object, source_space, reader)?;
+    let prepared = PreparedPalette::new(object, source_space, reader, true)?;
     let family = default_colorspace::family(&prepared.target_base)
         .ok_or_else(|| invalid("Indexed base has no family"))?;
     if family == "ICCBased" {

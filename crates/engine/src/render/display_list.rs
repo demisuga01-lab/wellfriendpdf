@@ -1645,6 +1645,23 @@ pub fn build_display_list_cancellable(
     build_display_list_with_optional_cancellation(ops, viewport, resources, Some(cancel))
 }
 
+pub(crate) fn build_display_list_with_initial_graphics_state(
+    ops: &[ContentOperation],
+    viewport: Viewport,
+    resources: &PageResources,
+    initial_state: &GraphicsState,
+) -> DisplayList {
+    let stats = classify_content(ops, resources, None)
+        .expect("uncancellable display-list classification cannot be cancelled");
+    let mut builder = DisplayListBuilder::new(viewport, resources);
+    builder.gs = initial_state.clone();
+    builder.stats = stats;
+    builder
+        .dispatch_all(ops, None)
+        .expect("uncancellable display-list construction cannot be cancelled");
+    builder.finish()
+}
+
 fn build_display_list_with_optional_cancellation(
     ops: &[ContentOperation],
     viewport: Viewport,
