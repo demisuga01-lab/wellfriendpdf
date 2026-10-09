@@ -1,0 +1,2571 @@
+{
+  "corpus": {
+    "bytes": 2186337598,
+    "documents": 150
+  },
+  "evidence": {
+    "operations/conversion.jsonl": {
+      "bytes": 4757981,
+      "sha256": "a3967acf4f12f08ec12b04718cf04433dfc807da0fcb21a758f209307c0240d6"
+    },
+    "operations/pdfa-conversion.jsonl": {
+      "bytes": 1194444,
+      "sha256": "1d9f57c76b335738b908cf0e580cac89a10f942cba7dc117e4157a07e744e558"
+    },
+    "operations/pdfa-validation.jsonl": {
+      "bytes": 804677,
+      "sha256": "cbe0924c2f67dda933cb742f8ace6131d4471c6e88ea89b6744061fdc138ebd0"
+    },
+    "operations/structural.jsonl": {
+      "bytes": 17802410,
+      "sha256": "c12acbac8dc85b530c000b7055864145a114858aa8c4ed35faa3f6332ad679a7"
+    },
+    "parsing/summary.json": {
+      "bytes": 5097,
+      "sha256": "60849fd01f8ee185881b729c227e5918c6949e57d27f0cddd8b736d67ba9cb20"
+    },
+    "render/page-inventory.json": {
+      "bytes": 81103,
+      "sha256": "68a5cc67caa00306ae5513d105f34e05f4356d4c9fc29b2ae402d007e0373455"
+    },
+    "render/render-quality.jsonl": {
+      "bytes": 26358379,
+      "sha256": "0c186029f3716f01d28f4e898dfdbf181370474537d1ad2677c0f9c303a5f1b1"
+    },
+    "render/render-timing.jsonl": {
+      "bytes": 329604,
+      "sha256": "3889b653e6294b4f8285eb49eaa089e5af41ae6971b15b5f1303ea03edbb9b74"
+    }
+  },
+  "facilities": {
+    "canonicalize": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 2236.47148,
+          "p05": 23.274982,
+          "p50": 67.919515,
+          "p90": 300.116628,
+          "p95": 572.988731,
+          "p99": 1994.854584
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 11450.829337,
+          "p05": 44.978751,
+          "p50": 363.592693,
+          "p90": 2636.279909,
+          "p95": 3735.095097,
+          "p99": 6431.361519
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 16631.85648,
+          "p05": 45.310336,
+          "p50": 214.847514,
+          "p90": 1260.277143,
+          "p95": 3661.614622,
+          "p99": 14962.541836
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "crop": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 7427.879317,
+          "p05": 38.340247,
+          "p50": 124.029206,
+          "p90": 711.454263,
+          "p95": 1523.956361,
+          "p99": 6215.108745
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "docx": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 625898.941405,
+          "p05": 95.319044,
+          "p50": 1212.570306,
+          "p90": 15397.095655,
+          "p95": 55662.00773,
+          "p99": 536557.029287
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 1.0,
+          "p05": 0.360843,
+          "p50": 0.924338,
+          "p90": 0.983065,
+          "p95": 0.990005,
+          "p99": 1.0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "eps-first-page": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 2244.92198,
+          "p05": 49.015549,
+          "p50": 113.770556,
+          "p90": 577.734089,
+          "p95": 903.261684,
+          "p99": 1840.242232
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 122045.515341,
+          "p05": 587.121378,
+          "p50": 3131.299155,
+          "p90": 7952.059536,
+          "p95": 12093.423028,
+          "p99": 38939.218688
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "extract-pages": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 141,
+          "max": 120.567855,
+          "p05": 16.160398,
+          "p50": 29.728668,
+          "p90": 48.386526,
+          "p95": 55.1316,
+          "p99": 97.016397
+        },
+        "statuses": {
+          "fail": 9,
+          "pass": 141
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 13161.393389,
+          "p05": 93.693596,
+          "p50": 630.286074,
+          "p90": 2193.560377,
+          "p95": 3325.530361,
+          "p99": 12062.315668
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 1417.043073,
+          "p05": 26.217442,
+          "p50": 49.394809,
+          "p90": 133.939234,
+          "p95": 254.876971,
+          "p99": 929.312205
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 4233.577103,
+          "p05": 33.10193,
+          "p50": 77.374838,
+          "p90": 321.504395,
+          "p95": 804.587244,
+          "p99": 3390.314623
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "flatten": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 2948.50805,
+          "p05": 36.313147,
+          "p50": 85.636635,
+          "p90": 301.056934,
+          "p95": 864.830435,
+          "p99": 2630.137681
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 5896.097188,
+          "p05": 35.997296,
+          "p50": 115.841416,
+          "p90": 560.294052,
+          "p95": 1116.392043,
+          "p99": 4438.063787
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "html": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 11156.803039,
+          "p05": 57.378853,
+          "p50": 183.266096,
+          "p90": 747.358938,
+          "p95": 1447.250522,
+          "p99": 9632.19886
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 0.999065,
+          "p05": 0.597691,
+          "p50": 0.960763,
+          "p90": 0.991848,
+          "p95": 0.994075,
+          "p99": 0.998909
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 11790.747534,
+          "p05": 55.937291,
+          "p50": 198.757808,
+          "p90": 1249.816448,
+          "p95": 1898.323018,
+          "p99": 8362.436463
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 0.978419,
+          "p05": 0.011338,
+          "p50": 0.886217,
+          "p90": 0.9522,
+          "p95": 0.960144,
+          "p99": 0.974186
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 89235.224402,
+          "p05": 90.8409,
+          "p50": 491.017256,
+          "p90": 3398.327392,
+          "p95": 9858.023151,
+          "p99": 87036.000284
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 0.994812,
+          "p05": 0.360656,
+          "p50": 0.918116,
+          "p90": 0.975706,
+          "p95": 0.98564,
+          "p99": 0.991972
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "jpeg-first-page": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 932.341564,
+          "p05": 87.457782,
+          "p50": 143.496058,
+          "p90": 255.689346,
+          "p95": 327.360279,
+          "p99": 637.312205
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 5165.540835,
+          "p05": 169.693335,
+          "p50": 327.951591,
+          "p90": 1095.959073,
+          "p95": 1412.030043,
+          "p99": 3087.968339
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "json": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 91872.985173,
+          "p05": 104.056236,
+          "p50": 493.434836,
+          "p90": 3565.556311,
+          "p95": 9810.182858,
+          "p99": 90644.67352
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 0.511153,
+          "p05": 0.090496,
+          "p50": 0.418431,
+          "p90": 0.461154,
+          "p95": 0.480843,
+          "p99": 0.50921
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "linearize": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 5157.86855,
+          "p05": 44.176091,
+          "p50": 118.496824,
+          "p90": 451.497356,
+          "p95": 1044.903464,
+          "p99": 3823.847388
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 9991.366236,
+          "p05": 42.606971,
+          "p50": 189.908538,
+          "p90": 888.755043,
+          "p95": 2371.686016,
+          "p99": 9036.733141
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "lock": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 6570.454611,
+          "p05": 49.718224,
+          "p50": 125.60166,
+          "p90": 648.958784,
+          "p95": 1456.042847,
+          "p99": 5770.448258
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 5531.14582,
+          "p05": 54.236446,
+          "p50": 150.358986,
+          "p90": 661.77369,
+          "p95": 1167.816844,
+          "p99": 4384.96026
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 9356.467275,
+          "p05": 74.401835,
+          "p50": 203.282339,
+          "p90": 1020.76576,
+          "p95": 2173.269135,
+          "p99": 9341.071561
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "markdown": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 87113.966609,
+          "p05": 84.702404,
+          "p50": 521.595542,
+          "p90": 3644.771054,
+          "p95": 9689.517537,
+          "p99": 83238.892614
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 1.0,
+          "p05": 0.360843,
+          "p50": 0.921787,
+          "p90": 0.982152,
+          "p95": 0.987429,
+          "p99": 1.0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "merge": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 143,
+          "max": 7108.098795,
+          "p05": 30.079133,
+          "p50": 142.837842,
+          "p90": 686.917788,
+          "p95": 1460.91601,
+          "p99": 6923.103112
+        },
+        "statuses": {
+          "fail": 7,
+          "pass": 143
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 58064.178599,
+          "p05": 65.982867,
+          "p50": 733.769807,
+          "p90": 4997.151304,
+          "p95": 12083.913276,
+          "p99": 47834.536639
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 3866.496385,
+          "p05": 40.449791,
+          "p50": 107.545401,
+          "p90": 421.621628,
+          "p95": 1062.486548,
+          "p99": 2845.138142
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 17311.863779,
+          "p05": 41.09013,
+          "p50": 213.755145,
+          "p90": 952.170755,
+          "p95": 3654.58398,
+          "p99": 14408.119645
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "metadata": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 10633.055719,
+          "p05": 23.099776,
+          "p50": 107.393652,
+          "p90": 775.299086,
+          "p95": 2577.703943,
+          "p99": 10390.882834
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "nup": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 3999.763569,
+          "p05": 330.64363,
+          "p50": 694.933071,
+          "p90": 2159.563173,
+          "p95": 2338.782429,
+          "p99": 3882.891074
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "optimize": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 149,
+          "max": 66341.08879,
+          "p05": 28.961122,
+          "p50": 103.000816,
+          "p90": 949.984672,
+          "p95": 5885.336002,
+          "p99": 61255.534905
+        },
+        "statuses": {
+          "pass": 149,
+          "timeout": 1
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 47407.924065,
+          "p05": 60.415701,
+          "p50": 1497.487105,
+          "p90": 12001.787323,
+          "p95": 15557.528531,
+          "p99": 45349.946072
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 8446.066642,
+          "p05": 38.734079,
+          "p50": 167.387671,
+          "p90": 1206.469902,
+          "p95": 2163.103668,
+          "p99": 7493.988046
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "organize": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 141,
+          "max": 123.007994,
+          "p05": 17.520457,
+          "p50": 30.863043,
+          "p90": 56.396832,
+          "p95": 63.914822,
+          "p99": 91.912265
+        },
+        "statuses": {
+          "fail": 9,
+          "pass": 141
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 15258.37979,
+          "p05": 144.962873,
+          "p50": 683.996242,
+          "p90": 2208.589115,
+          "p95": 3143.91243,
+          "p99": 13557.316957
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 1631.318441,
+          "p05": 28.598987,
+          "p50": 56.18819,
+          "p90": 179.5836,
+          "p95": 380.252843,
+          "p99": 1555.806434
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 4103.92393,
+          "p05": 32.398757,
+          "p50": 80.926439,
+          "p90": 293.121492,
+          "p95": 924.324279,
+          "p99": 3725.637257
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "page-numbers": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 8423.407805,
+          "p05": 38.538167,
+          "p50": 155.610296,
+          "p90": 945.474915,
+          "p95": 1725.487861,
+          "p99": 7670.69619
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "pdfa-2b-conversion": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 7,
+          "max": 1461.224713,
+          "p05": 16.540889,
+          "p50": 149.662524,
+          "p90": 1461.224713,
+          "p95": 1461.224713,
+          "p99": 1461.224713
+        },
+        "statuses": {
+          "pass": 7,
+          "typed_refusal": 143
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 15,
+          "passed": 7,
+          "qualified_assessed": 7,
+          "qualified_passed": 7,
+          "rejected_noncompliant": 8
+        }
+      }
+    },
+    "pdfa-2b-validation": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 8540.297737,
+          "p05": 57.582115,
+          "p50": 179.044739,
+          "p90": 777.016173,
+          "p95": 1699.352964,
+          "p99": 7553.609725
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "png-first-page": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 478.885913,
+          "p05": 71.281995,
+          "p50": 111.671878,
+          "p90": 235.407372,
+          "p95": 342.701381,
+          "p99": 468.473905
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 2238.461322,
+          "p05": 213.700938,
+          "p50": 330.86912,
+          "p90": 538.878896,
+          "p95": 737.593882,
+          "p99": 1727.219466
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 4219.851089,
+          "p05": 183.389524,
+          "p50": 367.03736,
+          "p90": 1217.347353,
+          "p95": 1572.350157,
+          "p99": 3067.427105
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "postscript-first-page": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 1773.574805,
+          "p05": 47.122717,
+          "p50": 109.765777,
+          "p90": 622.137842,
+          "p95": 1321.528263,
+          "p99": 1770.292578
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 124749.179569,
+          "p05": 500.898898,
+          "p50": 2228.031922,
+          "p90": 7104.873805,
+          "p95": 12650.901258,
+          "p99": 38361.701151
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "pptx": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 603236.773441,
+          "p05": 93.969812,
+          "p50": 1233.871582,
+          "p90": 16148.45429,
+          "p95": 53456.901284,
+          "p99": 525166.121298
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 1.0,
+          "p05": 0.360843,
+          "p50": 0.924338,
+          "p90": 0.983671,
+          "p95": 0.989874,
+          "p99": 1.0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "repair": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 2375.863273,
+          "p05": 24.741792,
+          "p50": 73.131391,
+          "p90": 348.548914,
+          "p95": 1177.296976,
+          "p99": 2282.069752
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 34872.356906,
+          "p05": 65.500455,
+          "p50": 435.012714,
+          "p90": 2896.186313,
+          "p95": 10296.599895,
+          "p99": 29027.420593
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 4458.004668,
+          "p05": 35.763575,
+          "p50": 116.557958,
+          "p90": 574.603858,
+          "p95": 757.795516,
+          "p99": 3540.520577
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "resize": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 4049.191857,
+          "p05": 203.716713,
+          "p50": 397.765102,
+          "p90": 1246.946136,
+          "p95": 1658.041462,
+          "p99": 3742.317166
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "rotate": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 3062.444321,
+          "p05": 35.655227,
+          "p50": 86.157572,
+          "p90": 287.902328,
+          "p95": 726.354817,
+          "p99": 2566.258688
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 24874.893384,
+          "p05": 35.628591,
+          "p50": 137.321525,
+          "p90": 744.78868,
+          "p95": 2434.940757,
+          "p99": 21613.09135
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "sanitize": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 14906.265816,
+          "p05": 50.571212,
+          "p50": 201.596073,
+          "p90": 1225.600662,
+          "p95": 3226.290371,
+          "p99": 12103.063445
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "sign": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 5268.58063,
+          "p05": 71.678301,
+          "p50": 141.612347,
+          "p90": 381.018007,
+          "p95": 1098.54836,
+          "p99": 4692.656232
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 15642.651501,
+          "p05": 49.136109,
+          "p50": 219.168465,
+          "p90": 959.753495,
+          "p95": 3542.300005,
+          "p99": 14443.671962
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "split": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 141,
+          "max": 215.052426,
+          "p05": 31.122001,
+          "p50": 53.061966,
+          "p90": 88.947858,
+          "p95": 108.384434,
+          "p99": 190.927741
+        },
+        "statuses": {
+          "fail": 9,
+          "pass": 141
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 147,
+          "max": 12078.044218,
+          "p05": 53.03697,
+          "p50": 338.998458,
+          "p90": 1458.53167,
+          "p95": 2173.564791,
+          "p99": 7663.183678
+        },
+        "statuses": {
+          "fail": 3,
+          "pass": 147
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 1105.68808,
+          "p05": 28.287151,
+          "p50": 52.20938,
+          "p90": 132.048923,
+          "p95": 276.636834,
+          "p99": 1064.373303
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 3678.68958,
+          "p05": 32.158785,
+          "p50": 84.315316,
+          "p90": 297.590948,
+          "p95": 716.311845,
+          "p99": 3211.071763
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "svg-first-page": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 1808.323174,
+          "p05": 38.143932,
+          "p50": 73.135317,
+          "p90": 479.994518,
+          "p95": 1112.604693,
+          "p99": 1612.534143
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 127353.419324,
+          "p05": 377.688529,
+          "p50": 2393.396579,
+          "p90": 7586.460796,
+          "p95": 13130.542438,
+          "p99": 37650.381945
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "tables-json": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 126528.429572,
+          "p05": 73.780738,
+          "p50": 447.706725,
+          "p90": 1881.227854,
+          "p95": 5820.155806,
+          "p99": 55759.718546
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "text": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 149,
+          "max": 7640.462146,
+          "p05": 54.199895,
+          "p50": 166.311825,
+          "p90": 729.38288,
+          "p95": 1167.057037,
+          "p99": 7001.161219
+        },
+        "statuses": {
+          "fail": 1,
+          "pass": 149
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 1.0,
+          "p05": 0.868778,
+          "p50": 0.972429,
+          "p90": 0.999615,
+          "p95": 1.0,
+          "p99": 1.0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 29320.31372,
+          "p05": 52.623189,
+          "p50": 188.969072,
+          "p90": 1322.15249,
+          "p95": 1754.785649,
+          "p99": 24260.500589
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 1.0,
+          "p05": 1.0,
+          "p50": 1.0,
+          "p90": 1.0,
+          "p95": 1.0,
+          "p99": 1.0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 17715.963383,
+          "p05": 51.289057,
+          "p50": 262.259501,
+          "p90": 940.326045,
+          "p95": 2298.743146,
+          "p99": 15855.532706
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 1.0,
+          "p05": 0.702986,
+          "p50": 0.950251,
+          "p90": 0.997623,
+          "p95": 1.0,
+          "p99": 1.0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "unlock": {
+      "mupdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 7571.061239,
+          "p05": 94.700482,
+          "p50": 199.292104,
+          "p90": 747.138445,
+          "p95": 1533.236615,
+          "p99": 6316.668892
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 5935.339989,
+          "p05": 57.95032,
+          "p50": 141.900985,
+          "p90": 655.84374,
+          "p95": 1466.268291,
+          "p99": 5658.992127
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 7890.872307,
+          "p05": 60.094891,
+          "p50": 175.106124,
+          "p90": 764.841183,
+          "p95": 1795.930821,
+          "p99": 6550.134834
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "watermark": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 8878.644832,
+          "p05": 38.705467,
+          "p50": 154.659687,
+          "p90": 928.929117,
+          "p95": 1737.824599,
+          "p99": 8167.628276
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    },
+    "xlsx": {
+      "mupdf": {
+        "total": 0
+      },
+      "pdfium": {
+        "total": 0
+      },
+      "poppler": {
+        "total": 0
+      },
+      "qpdf": {
+        "total": 0
+      },
+      "wellfriend": {
+        "qualified_timing_ms": {
+          "count": 150,
+          "max": 92791.505457,
+          "p05": 106.630469,
+          "p50": 487.86381,
+          "p90": 3228.063414,
+          "p95": 9571.476097,
+          "p99": 88237.337947
+        },
+        "statuses": {
+          "pass": 150
+        },
+        "token_f1": {
+          "count": 149,
+          "max": 1.0,
+          "p05": 0.360843,
+          "p50": 0.924132,
+          "p90": 0.983671,
+          "p95": 0.989931,
+          "p99": 1.0
+        },
+        "total": 150,
+        "verapdf_compliant": {
+          "assessed": 0,
+          "passed": 0,
+          "qualified_assessed": 0,
+          "qualified_passed": 0,
+          "rejected_noncompliant": 0
+        }
+      }
+    }
+  },
+  "facility_source_commit": "fbd455829e7c726bf2457116e1723da058b26af3",
+  "generated_at_utc": "2026-10-09T01:31:45.582543+00:00",
+  "parsing": {
+    "fresh_process": {
+      "mupdf": {
+        "count": 150,
+        "max": 1582.416875,
+        "mean": 86.32124,
+        "median_absolute_deviation": 14.212846,
+        "p05": 15.406393,
+        "p50": 30.374809,
+        "p90": 112.886969,
+        "p95": 316.522504,
+        "p99": 1368.583579
+      },
+      "pdfium": {
+        "count": 150,
+        "max": 937.510636,
+        "mean": 50.026222,
+        "median_absolute_deviation": 8.663679,
+        "p05": 9.551547,
+        "p50": 18.864397,
+        "p90": 75.861458,
+        "p95": 164.20297,
+        "p99": 799.64686
+      },
+      "poppler": {
+        "count": 150,
+        "max": 891.95847,
+        "mean": 77.940636,
+        "median_absolute_deviation": 13.930106,
+        "p05": 35.393229,
+        "p50": 55.280168,
+        "p90": 98.689894,
+        "p95": 188.289383,
+        "p99": 719.105359
+      },
+      "qpdf": {
+        "count": 150,
+        "max": 674.400621,
+        "mean": 62.694279,
+        "median_absolute_deviation": 15.143914,
+        "p05": 16.716144,
+        "p50": 41.001099,
+        "p90": 98.838195,
+        "p95": 173.011244,
+        "p99": 564.69523
+      },
+      "wellfriendpdf": {
+        "count": 150,
+        "max": 759.65765,
+        "mean": 41.699709,
+        "median_absolute_deviation": 7.553154,
+        "p05": 9.281637,
+        "p50": 18.618063,
+        "p90": 69.828886,
+        "p95": 149.457967,
+        "p99": 549.571762
+      }
+    },
+    "qualified": {
+      "mupdf": 150,
+      "pdfium": 150,
+      "poppler": 150,
+      "qpdf": 150,
+      "wellfriendpdf": 150
+    },
+    "resident": {
+      "mupdf": {
+        "count": 150,
+        "max": 820.542079,
+        "mean": 22.19512,
+        "median_absolute_deviation": 2.206297,
+        "p05": 0.571854,
+        "p50": 3.021493,
+        "p90": 11.695688,
+        "p95": 113.760382,
+        "p99": 454.79292
+      },
+      "pdfium": {
+        "count": 150,
+        "max": 41.649324,
+        "mean": 1.149168,
+        "median_absolute_deviation": 0.296127,
+        "p05": 0.198556,
+        "p50": 0.723762,
+        "p90": 1.332374,
+        "p95": 2.15471,
+        "p99": 6.149673
+      },
+      "poppler": {
+        "count": 150,
+        "max": 22.931371,
+        "mean": 3.77427,
+        "median_absolute_deviation": 0.791446,
+        "p05": 1.992393,
+        "p50": 3.1794,
+        "p90": 5.669349,
+        "p95": 6.196261,
+        "p99": 13.400598
+      },
+      "qpdf": {
+        "count": 150,
+        "max": 61.639223,
+        "mean": 8.801932,
+        "median_absolute_deviation": 3.869779,
+        "p05": 0.658109,
+        "p50": 5.037921,
+        "p90": 20.270437,
+        "p95": 30.486336,
+        "p99": 59.186585
+      },
+      "wellfriendpdf": {
+        "count": 150,
+        "max": 50.899794,
+        "mean": 1.850536,
+        "median_absolute_deviation": 0.752857,
+        "p05": 0.209386,
+        "p50": 1.145787,
+        "p90": 2.626069,
+        "p95": 3.488612,
+        "p99": 11.582785
+      }
+    }
+  },
+  "rendering": {
+    "document_timing_ms": {
+      "mupdf": {
+        "count": 150,
+        "max": 88210.119441,
+        "p05": 78.524062,
+        "p50": 889.337016,
+        "p90": 4010.866939,
+        "p95": 11804.359604,
+        "p99": 80484.381509
+      },
+      "pdfium": {
+        "count": 150,
+        "max": 185995.947929,
+        "p05": 62.164046,
+        "p50": 1078.924894,
+        "p90": 7158.147581,
+        "p95": 21137.280441,
+        "p99": 166584.056278
+      },
+      "poppler": {
+        "count": 150,
+        "max": 152191.379533,
+        "p05": 101.472788,
+        "p50": 1809.665095,
+        "p90": 8928.459158,
+        "p95": 28582.817271,
+        "p99": 139079.791145
+      },
+      "wellfriend": {
+        "count": 150,
+        "max": 373962.675293,
+        "p05": 198.071366,
+        "p50": 5323.719298,
+        "p90": 27374.628066,
+        "p95": 84881.119576,
+        "p99": 342587.750541
+      }
+    },
+    "expected_pages": 9214,
+    "per_page_timing_ms": {
+      "mupdf": {
+        "count": 150,
+        "max": 264.6491350727273,
+        "p05": 12.818331735294118,
+        "p50": 47.8850496,
+        "p90": 114.4733588888889,
+        "p95": 142.98892445454547,
+        "p99": 182.701867875
+      },
+      "pdfium": {
+        "count": 150,
+        "max": 365.35623418840584,
+        "p05": 14.1644875,
+        "p50": 42.81196765384615,
+        "p90": 179.5848585,
+        "p95": 209.2798477272727,
+        "p99": 340.78605070588236
+      },
+      "poppler": {
+        "count": 150,
+        "max": 817.9966183166667,
+        "p05": 31.3664504375,
+        "p50": 86.47917493416928,
+        "p90": 170.81541133333334,
+        "p95": 220.2763479230769,
+        "p99": 485.9452607727273
+      },
+      "wellfriend": {
+        "count": 150,
+        "max": 1478.1451297647059,
+        "p05": 90.92369594,
+        "p50": 231.23268825242718,
+        "p90": 742.3589753333333,
+        "p95": 832.558252090909,
+        "p99": 1057.556775735849
+      }
+    },
+    "quality": {
+      "mupdf": {
+        "full_resolution_ssim": {
+          "count": 428,
+          "max": 0.99995488,
+          "p05": 0.86288581,
+          "p50": 0.96424901,
+          "p90": 0.98723907,
+          "p95": 0.99273604,
+          "p99": 0.99953587
+        },
+        "pages": 9214,
+        "thumbnail_psnr_db": {
+          "count": 9188,
+          "max": 87.776228,
+          "p05": 37.642378,
+          "p50": 47.720563,
+          "p90": 51.650509,
+          "p95": 52.323157,
+          "p99": 58.040332
+        },
+        "thumbnail_ssim": {
+          "count": 9214,
+          "max": 1.0,
+          "p05": 0.98363938,
+          "p50": 0.99832144,
+          "p90": 0.99933201,
+          "p95": 0.99942962,
+          "p99": 0.99993158
+        }
+      },
+      "pdfium": {
+        "full_resolution_ssim": {
+          "count": 428,
+          "max": 0.99999946,
+          "p05": 0.76803669,
+          "p50": 0.93997555,
+          "p90": 0.98489998,
+          "p95": 0.99869814,
+          "p99": 0.99999611
+        },
+        "pages": 9214,
+        "thumbnail_psnr_db": {
+          "count": 9169,
+          "max": 87.776228,
+          "p05": 35.539175,
+          "p50": 54.439741,
+          "p90": 59.866344,
+          "p95": 62.751957,
+          "p99": 66.772523
+        },
+        "thumbnail_ssim": {
+          "count": 9214,
+          "max": 1.0,
+          "p05": 0.97947604,
+          "p50": 0.99966263,
+          "p90": 0.99990763,
+          "p95": 0.99994628,
+          "p99": 0.99999279
+        }
+      },
+      "poppler": {
+        "full_resolution_ssim": {
+          "count": 272,
+          "max": 0.99888856,
+          "p05": 0.61802136,
+          "p50": 0.79369589,
+          "p90": 0.95628021,
+          "p95": 0.97078759,
+          "p99": 0.99809374
+        },
+        "pages": 9214,
+        "thumbnail_psnr_db": {
+          "count": 9206,
+          "max": 76.636795,
+          "p05": 28.178018,
+          "p50": 37.168834,
+          "p90": 41.141292,
+          "p95": 43.471285,
+          "p99": 49.599914
+        },
+        "thumbnail_ssim": {
+          "count": 9214,
+          "max": 1.0,
+          "p05": 0.91055723,
+          "p50": 0.98595601,
+          "p90": 0.99362325,
+          "p95": 0.99612988,
+          "p99": 0.99920374
+        }
+      }
+    }
+  },
+  "schema_version": "wellfriendpdf.final-benchmark.v1",
+  "source_commit": "1fd74f722222b12f5278e1b8dd886943770d6c0d"
+}

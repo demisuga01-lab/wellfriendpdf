@@ -158,14 +158,35 @@ def operation_cell(rows: list[dict[str, Any]], operation: str, tool: str) -> tup
         for row in selected
         if isinstance(row.get("quality", {}).get("verapdf_compliant"), bool)
     ]
-    if compliant:
-        result += f"<br>veraPDF compliant {sum(compliant)}/{len(compliant)}"
+    qualified_compliant = [
+        row.get("quality", {}).get("verapdf_compliant")
+        for row in passed
+        if isinstance(row.get("quality", {}).get("verapdf_compliant"), bool)
+    ]
+    rejected_noncompliant = sum(
+        row.get("status") != "pass"
+        and row.get("quality", {}).get("verapdf_compliant") is False
+        for row in selected
+    )
+    if qualified_compliant:
+        result += (
+            f"<br>veraPDF verified {sum(qualified_compliant)}/"
+            f"{len(qualified_compliant)} qualified outputs"
+        )
+        if rejected_noncompliant:
+            result += f"; {rejected_noncompliant} refused artifacts rejected"
     return result, {
         "total": len(selected),
         "statuses": dict(statuses),
         "qualified_timing_ms": timings,
         "token_f1": f1,
-        "verapdf_compliant": {"assessed": len(compliant), "passed": sum(compliant)},
+        "verapdf_compliant": {
+            "assessed": len(compliant),
+            "passed": sum(compliant),
+            "qualified_assessed": len(qualified_compliant),
+            "qualified_passed": sum(qualified_compliant),
+            "rejected_noncompliant": rejected_noncompliant,
+        },
     }
 
 
@@ -304,6 +325,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary-output", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--facility-source-commit", required=True)
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text("utf-8"))
@@ -355,6 +377,7 @@ def main() -> int:
         "schema_version": "wellfriendpdf.final-benchmark.v1",
         "generated_at_utc": generated,
         "source_commit": args.source_commit,
+        "facility_source_commit": args.facility_source_commit,
         "corpus": {"documents": len(files), "bytes": total_bytes},
         "parsing": parser_summary,
         "facilities": facility_summary,
@@ -367,7 +390,9 @@ def main() -> int:
     lines = [
         "# Final 150-document benchmark",
         "",
-        f"Revision `{args.source_commit}` is measured on {len(files)} real PDFs ({total_bytes / 1024**3:.3f} GiB, {expected_pages:,} pages) on one Linux VPS. "
+        f"Renderer revision `{args.source_commit}` and parser/document-facility revision "
+        f"`{args.facility_source_commit}` are measured on {len(files)} real PDFs "
+        f"({total_bytes / 1024**3:.3f} GiB, {expected_pages:,} pages) on one Linux VPS. "
         "Every tool receives the same corpus and operation contract. A facility passes only when its output reopens and its operation-specific structural, semantic, security, or visual postconditions hold; unsupported operations remain unsupported.",
         "",
         "## Parsing and document facilities",
@@ -384,7 +409,18 @@ def main() -> int:
         "",
         *table(["Benchmark", *[LABELS[tool] for tool in TOOLS]], renderer_table),
         "",
-        "The generated comparison sheets are inspected at source resolution before publication. Raw-result hashes, exact distributions, and tool-level outcomes are recorded in `summary.json`; the JSONL evidence remains the authoritative per-file record.",
+        "The comparison sheets below are inspected at source resolution before publication. They show the lowest-agreement page, a lower-tail page, the median page, and an upper-tail page selected from the measured distribution.",
+        "",
+        "![Lowest-agreement visual sample](render/visual/01-worst.webp)",
+        "",
+        "![Lower-tail visual sample](render/visual/02-lower-tail.webp)",
+        "",
+        "![Median visual sample](render/visual/03-median.webp)",
+        "",
+        "![Upper-tail visual sample](render/visual/04-upper-tail.webp)",
+        "",
+        "Exact distributions and tool-level outcomes are recorded in [summary.json](summary.json). "
+        "The compressed per-file JSONL records are the authoritative evidence; [SHA256SUMS](evidence/SHA256SUMS) binds every published artifact.",
         "",
         f"Generated: `{generated}`.",
     ]

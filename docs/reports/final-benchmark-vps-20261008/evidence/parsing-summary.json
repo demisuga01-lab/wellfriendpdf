@@ -1,0 +1,203 @@
+{
+  "adapter_sha256": {
+    "mupdf": "55f6961d911b559488462b37d687faf71b3805ea5f66f7e5adf958c7dc8bd59f",
+    "pdfium": "ed0f75e9d1df4a7ad42aa2a8c28f10daedcba4264767b882970ec63e126deb5f",
+    "poppler": "932fcaa6b6edf72f1b016449d54a7ee3e57671a1cd9eebaba08af375a956deee",
+    "qpdf": "fdcbb4c6de1e9d0456facd8737adddecb0b40ef1af15049a599793f596a600f9",
+    "wellfriendpdf": "53c4ac24342a7caeeb833c47728535b786806e15aa667309e36241c721679dc8"
+  },
+  "contract": "document open plus resolved page count",
+  "corpus_manifest_sha256": "c5c357d38acd2a46e271ce42998abfc414811d9741ffd72c964ce2ced59e931d",
+  "cpu": 2,
+  "document_count": 150,
+  "finished_at_utc": "2026-10-08T01:53:32Z",
+  "fresh_process_ms": {
+    "mupdf": {
+      "count": 150,
+      "max": 1582.416875,
+      "mean": 86.32124,
+      "median_absolute_deviation": 14.212846,
+      "p05": 15.406393,
+      "p50": 30.374809,
+      "p90": 112.886969,
+      "p95": 316.522504,
+      "p99": 1368.583579
+    },
+    "pdfium": {
+      "count": 150,
+      "max": 937.510636,
+      "mean": 50.026222,
+      "median_absolute_deviation": 8.663679,
+      "p05": 9.551547,
+      "p50": 18.864397,
+      "p90": 75.861458,
+      "p95": 164.20297,
+      "p99": 799.64686
+    },
+    "poppler": {
+      "count": 150,
+      "max": 891.95847,
+      "mean": 77.940636,
+      "median_absolute_deviation": 13.930106,
+      "p05": 35.393229,
+      "p50": 55.280168,
+      "p90": 98.689894,
+      "p95": 188.289383,
+      "p99": 719.105359
+    },
+    "qpdf": {
+      "count": 150,
+      "max": 674.400621,
+      "mean": 62.694279,
+      "median_absolute_deviation": 15.143914,
+      "p05": 16.716144,
+      "p50": 41.001099,
+      "p90": 98.838195,
+      "p95": 173.011244,
+      "p99": 564.69523
+    },
+    "wellfriendpdf": {
+      "count": 150,
+      "max": 759.65765,
+      "mean": 41.699709,
+      "median_absolute_deviation": 7.553154,
+      "p05": 9.281637,
+      "p50": 18.618063,
+      "p90": 69.828886,
+      "p95": 149.457967,
+      "p99": 549.571762
+    }
+  },
+  "fresh_repetitions": 1,
+  "hostname": "v72937",
+  "persistent_document_medians_ms": {
+    "mupdf": {
+      "count": 150,
+      "max": 820.542079,
+      "mean": 22.19512,
+      "median_absolute_deviation": 2.206297,
+      "p05": 0.571854,
+      "p50": 3.021493,
+      "p90": 11.695688,
+      "p95": 113.760382,
+      "p99": 454.79292
+    },
+    "pdfium": {
+      "count": 150,
+      "max": 41.649324,
+      "mean": 1.149168,
+      "median_absolute_deviation": 0.296127,
+      "p05": 0.198556,
+      "p50": 0.723762,
+      "p90": 1.332374,
+      "p95": 2.15471,
+      "p99": 6.149673
+    },
+    "poppler": {
+      "count": 150,
+      "max": 22.931371,
+      "mean": 3.77427,
+      "median_absolute_deviation": 0.791446,
+      "p05": 1.992393,
+      "p50": 3.1794,
+      "p90": 5.669349,
+      "p95": 6.196261,
+      "p99": 13.400598
+    },
+    "qpdf": {
+      "count": 150,
+      "max": 61.639223,
+      "mean": 8.801932,
+      "median_absolute_deviation": 3.869779,
+      "p05": 0.658109,
+      "p50": 5.037921,
+      "p90": 20.270437,
+      "p95": 30.486336,
+      "p99": 59.186585
+    },
+    "wellfriendpdf": {
+      "count": 150,
+      "max": 50.899794,
+      "mean": 1.850536,
+      "median_absolute_deviation": 0.752857,
+      "p05": 0.209386,
+      "p50": 1.145787,
+      "p90": 2.626069,
+      "p95": 3.488612,
+      "p99": 11.582785
+    }
+  },
+  "persistent_raw_observations_ms": {
+    "mupdf": {
+      "count": 450,
+      "max": 1068.61542,
+      "mean": 24.637493,
+      "median_absolute_deviation": 2.206217,
+      "p05": 0.505444,
+      "p50": 3.021493,
+      "p90": 22.786744,
+      "p95": 122.522997,
+      "p99": 581.087973
+    },
+    "pdfium": {
+      "count": 450,
+      "max": 43.929068,
+      "mean": 1.167702,
+      "median_absolute_deviation": 0.300394,
+      "p05": 0.199105,
+      "p50": 0.726462,
+      "p90": 1.535094,
+      "p95": 2.280187,
+      "p99": 6.313628
+    },
+    "poppler": {
+      "count": 450,
+      "max": 25.306146,
+      "mean": 3.844858,
+      "median_absolute_deviation": 0.83992,
+      "p05": 1.853973,
+      "p50": 3.216137,
+      "p90": 5.832595,
+      "p95": 6.668744,
+      "p99": 13.831722
+    },
+    "qpdf": {
+      "count": 450,
+      "max": 73.847248,
+      "mean": 8.836265,
+      "median_absolute_deviation": 3.864066,
+      "p05": 0.658109,
+      "p50": 5.025222,
+      "p90": 20.889468,
+      "p95": 32.166025,
+      "p99": 52.434025
+    },
+    "wellfriendpdf": {
+      "count": 450,
+      "max": 57.603854,
+      "mean": 1.868912,
+      "median_absolute_deviation": 0.797084,
+      "p05": 0.198767,
+      "p50": 1.160994,
+      "p90": 2.887444,
+      "p95": 4.70002,
+      "p99": 11.988786
+    }
+  },
+  "persistent_repetitions": 3,
+  "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+  "qualification": {
+    "disagreements": [],
+    "qualified_documents": {
+      "mupdf": 150,
+      "pdfium": 150,
+      "poppler": 150,
+      "qpdf": 150,
+      "wellfriendpdf": 150
+    },
+    "repetition_failures": []
+  },
+  "schema": "wellfriendpdf.pebq.parse-only.v1",
+  "started_at_utc": "2026-10-08T01:50:53Z",
+  "warmup_passes": 1
+}

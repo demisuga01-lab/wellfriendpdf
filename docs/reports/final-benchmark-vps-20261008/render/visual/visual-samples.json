@@ -1,0 +1,225 @@
+{
+  "contract": "same-page four-engine comparison; 72 DPI RGB; normalized thumbnail metrics",
+  "samples": [
+    {
+      "selection": "worst",
+      "image": "01-worst.webp",
+      "relative_path": "arxiv_cs.CL_2609.28471v1-9281117ce61b.pdf",
+      "page_number": 5,
+      "page_count": 11,
+      "mean_thumbnail_ssim": 0.8984211133333333,
+      "metrics": {
+        "pdfium": {
+          "same_shape": true,
+          "mae": 2.915582,
+          "rmse": 10.898545,
+          "psnr_db": 27.383433,
+          "changed_pixel_threshold8_percentage": 6.40191,
+          "max_channel_delta": 94,
+          "ssim": 0.9111849
+        },
+        "poppler": {
+          "same_shape": true,
+          "mae": 4.929109,
+          "rmse": 13.927677,
+          "psnr_db": 25.25323,
+          "changed_pixel_threshold8_percentage": 16.829427,
+          "max_channel_delta": 99,
+          "ssim": 0.88303218
+        },
+        "mupdf": {
+          "same_shape": true,
+          "mae": 3.586118,
+          "rmse": 12.82766,
+          "psnr_db": 25.967855,
+          "changed_pixel_threshold8_percentage": 6.705729,
+          "max_channel_delta": 107,
+          "ssim": 0.90104626
+        }
+      },
+      "dimensions": {
+        "wellfriend": {
+          "width": 612,
+          "height": 792
+        },
+        "pdfium": {
+          "width": 612,
+          "height": 792
+        },
+        "poppler": {
+          "width": 612,
+          "height": 792
+        },
+        "mupdf": {
+          "width": 612,
+          "height": 792
+        }
+      }
+    },
+    {
+      "selection": "lower-tail",
+      "image": "02-lower-tail.webp",
+      "relative_path": "arxiv_stat.AP_2609.28407v1-97f25e5ab3ec.pdf",
+      "page_number": 9,
+      "page_count": 37,
+      "mean_thumbnail_ssim": 0.9512115766666667,
+      "metrics": {
+        "pdfium": {
+          "same_shape": true,
+          "mae": 1.165039,
+          "rmse": 2.567442,
+          "psnr_db": 39.940789,
+          "changed_pixel_threshold8_percentage": 1.41059,
+          "max_channel_delta": 46,
+          "ssim": 0.98080965
+        },
+        "poppler": {
+          "same_shape": true,
+          "mae": 6.032661,
+          "rmse": 10.863202,
+          "psnr_db": 27.411647,
+          "changed_pixel_threshold8_percentage": 29.752604,
+          "max_channel_delta": 53,
+          "ssim": 0.88267689
+        },
+        "mupdf": {
+          "same_shape": true,
+          "mae": 0.767325,
+          "rmse": 1.599821,
+          "psnr_db": 44.049378,
+          "changed_pixel_threshold8_percentage": 0.173611,
+          "max_channel_delta": 13,
+          "ssim": 0.99014819
+        }
+      },
+      "dimensions": {
+        "wellfriend": {
+          "width": 612,
+          "height": 792
+        },
+        "pdfium": {
+          "width": 612,
+          "height": 792
+        },
+        "poppler": {
+          "width": 612,
+          "height": 792
+        },
+        "mupdf": {
+          "width": 612,
+          "height": 792
+        }
+      }
+    },
+    {
+      "selection": "median",
+      "image": "03-median.webp",
+      "relative_path": "arxiv_math.ST_2609.28464v1-63a6cfacb244.pdf",
+      "page_number": 9,
+      "page_count": 39,
+      "mean_thumbnail_ssim": 0.97803852,
+      "metrics": {
+        "pdfium": {
+          "same_shape": true,
+          "mae": 0.610315,
+          "rmse": 1.604708,
+          "psnr_db": 44.022885,
+          "changed_pixel_threshold8_percentage": 0.271267,
+          "max_channel_delta": 46,
+          "ssim": 0.99503175
+        },
+        "poppler": {
+          "same_shape": true,
+          "mae": 2.701172,
+          "rmse": 6.535372,
+          "psnr_db": 31.825398,
+          "changed_pixel_threshold8_percentage": 13.12934,
+          "max_channel_delta": 44,
+          "ssim": 0.94478579
+        },
+        "mupdf": {
+          "same_shape": true,
+          "mae": 0.417173,
+          "rmse": 1.515807,
+          "psnr_db": 44.517926,
+          "changed_pixel_threshold8_percentage": 0.444878,
+          "max_channel_delta": 31,
+          "ssim": 0.99429802
+        }
+      },
+      "dimensions": {
+        "wellfriend": {
+          "width": 612,
+          "height": 792
+        },
+        "pdfium": {
+          "width": 612,
+          "height": 792
+        },
+        "poppler": {
+          "width": 612,
+          "height": 792
+        },
+        "mupdf": {
+          "width": 612,
+          "height": 792
+        }
+      }
+    },
+    {
+      "selection": "upper-tail",
+      "image": "04-upper-tail.webp",
+      "relative_path": "internetarchive_nasa-techdocs_nasa_techdoc_19710025723-ec5a3942ca93.pdf",
+      "page_number": 7,
+      "page_count": 45,
+      "mean_thumbnail_ssim": 0.99719396,
+      "metrics": {
+        "pdfium": {
+          "same_shape": true,
+          "mae": 0.230577,
+          "rmse": 0.825418,
+          "psnr_db": 49.797323,
+          "changed_pixel_threshold8_percentage": 0.0,
+          "max_channel_delta": 8,
+          "ssim": 0.99797357
+        },
+        "poppler": {
+          "same_shape": true,
+          "mae": 0.40115,
+          "rmse": 1.342134,
+          "psnr_db": 45.574886,
+          "changed_pixel_threshold8_percentage": 0.412326,
+          "max_channel_delta": 14,
+          "ssim": 0.99440487
+        },
+        "mupdf": {
+          "same_shape": true,
+          "mae": 0.140516,
+          "rmse": 0.520937,
+          "psnr_db": 53.795091,
+          "changed_pixel_threshold8_percentage": 0.0,
+          "max_channel_delta": 6,
+          "ssim": 0.99920344
+        }
+      },
+      "dimensions": {
+        "wellfriend": {
+          "width": 582,
+          "height": 761
+        },
+        "pdfium": {
+          "width": 582,
+          "height": 761
+        },
+        "poppler": {
+          "width": 581,
+          "height": 760
+        },
+        "mupdf": {
+          "width": 582,
+          "height": 761
+        }
+      }
+    }
+  ]
+}
