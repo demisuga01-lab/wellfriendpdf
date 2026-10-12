@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -587,8 +587,11 @@ struct ViewMaterializationCounters {
 /// their digest, length, xref identities, and lazily observed page identities.
 #[derive(Clone)]
 pub struct CanonicalDocument {
-    fingerprint: [u8; 32],
-    revision: RevisionId,
+    /// Source bytes are hashed on first identity request, not at open: many
+    /// operations (merge, rotate, page count) never consult the digest, and
+    /// hashing would otherwise force a full read of path-backed inputs.
+    document: Arc<PdfDocument>,
+    digest: Arc<OnceLock<[u8; 32]>>,
     original_byte_len: usize,
     object_identities: Arc<Vec<ObjectIdentity>>,
     pages: Arc<Mutex<HashMap<usize, PageIdentity>>>,
@@ -599,7 +602,7 @@ impl std::fmt::Debug for CanonicalDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CanonicalDocument")
             .field("fingerprint", &self.fingerprint_hex())
-            .field("revision", &self.revision)
+            .field("revision", &self.revision())
             .field("original_byte_len", &self.original_byte_len)
             .field("object_count", &self.object_identities.len())
             .finish()
@@ -607,12 +610,7 @@ impl std::fmt::Debug for CanonicalDocument {
 }
 
 impl CanonicalDocument {
-    pub(crate) fn from_document(document: &PdfDocument) -> Self {
-        let bytes = document.reader().file_bytes();
-        let digest: [u8; 32] = Sha256::digest(bytes).into();
-        let revision = RevisionId(u64::from_le_bytes([
-            digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
-        ]));
+    pub(crate) fn from_document(document: &Arc<PdfDocument>) -> Self {
         let object_identities = document
             .reader()
             .object_ids()
@@ -625,17 +623,25 @@ impl CanonicalDocument {
             })
             .collect();
         Self {
-            fingerprint: digest,
-            revision,
-            original_byte_len: bytes.len(),
+            document: Arc::clone(document),
+            digest: Arc::new(OnceLock::new()),
+            original_byte_len: document.reader().file_size(),
             object_identities: Arc::new(object_identities),
             pages: Arc::new(Mutex::new(HashMap::new())),
             counters: Arc::new(ViewMaterializationCounters::default()),
         }
     }
 
+    fn digest(&self) -> &[u8; 32] {
+        self.digest
+            .get_or_init(|| Sha256::digest(self.document.reader().file_bytes()).into())
+    }
+
     pub fn revision(&self) -> RevisionId {
-        self.revision
+        let digest = self.digest();
+        RevisionId(u64::from_le_bytes([
+            digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+        ]))
     }
 
     pub fn original_byte_len(&self) -> usize {
@@ -643,11 +649,11 @@ impl CanonicalDocument {
     }
 
     pub fn fingerprint(&self) -> [u8; 32] {
-        self.fingerprint
+        *self.digest()
     }
 
     pub fn fingerprint_hex(&self) -> String {
-        self.fingerprint
+        self.digest()
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
@@ -672,14 +678,16 @@ impl CanonicalDocument {
             .entry(page.page_number)
             .or_insert_with(|| PageIdentity {
                 page_number: page.page_number,
+                // `object_identities` is built from the sorted reader ID list,
+                // so the (number, generation) lookup is a binary search.
                 object: self
                     .object_identities
-                    .iter()
-                    .copied()
-                    .find(|identity| {
-                        identity.number == page.object_number
-                            && identity.generation == page.generation_number
-                    })
+                    .binary_search_by_key(
+                        &(page.object_number, page.generation_number),
+                        |identity| (identity.number, identity.generation),
+                    )
+                    .ok()
+                    .map(|index| self.object_identities[index])
                     .unwrap_or(ObjectIdentity {
                         id: ObjectIdentityId(page.object_number),
                         number: page.object_number,

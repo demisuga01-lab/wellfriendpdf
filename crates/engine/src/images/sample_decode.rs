@@ -89,6 +89,69 @@ impl<'a> PackedSamples<'a> {
         }
         Ok(())
     }
+
+    /// Decoder that maps samples through per-component tables for bit depths
+    /// up to 8. Each entry is `map.component_value(component, sample / max)`,
+    /// computed with the same expression as [`Self::decode_pixel`]; an entry
+    /// whose mapping fails is kept as a failure and reported only when used.
+    pub(crate) fn table_decoder<'m>(&'m self, map: &'m DecodeMap) -> TableDecoder<'m, 'a> {
+        let tables = (self.bits <= 8 && map.0.len() == self.channels).then(|| {
+            (0..self.channels)
+                .map(|component| {
+                    (0..=self.max_sample as u16)
+                        .map(|sample| {
+                            map.component_value(component, f64::from(sample) / self.max_sample)
+                                .ok()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        });
+        TableDecoder {
+            samples: self,
+            map,
+            tables,
+        }
+    }
+}
+
+pub(crate) struct TableDecoder<'m, 'a> {
+    samples: &'m PackedSamples<'a>,
+    map: &'m DecodeMap,
+    tables: Option<Vec<Vec<Option<f64>>>>,
+}
+
+impl TableDecoder<'_, '_> {
+    pub(crate) fn decode_pixel(&self, index: usize, out: &mut [f64]) -> Result<()> {
+        let Some(tables) = &self.tables else {
+            return self.samples.decode_pixel(index, self.map, out);
+        };
+        let samples = self.samples;
+        if index >= samples.pixels || out.len() != samples.channels {
+            return Err(invalid("packed image pixel/component range mismatch"));
+        }
+        let row = index / samples.width;
+        let column = index % samples.width;
+        let mask = (1u16 << samples.bits) - 1;
+        for (component, value) in out.iter_mut().enumerate() {
+            let bit = (column * samples.channels + component) * samples.bits;
+            let offset = row * samples.row_bytes + bit / 8;
+            let shift = 8 - samples.bits - (bit % 8);
+            let sample = (u16::from(samples.data[offset]) >> shift) & mask;
+            *value = match tables[component][usize::from(sample)] {
+                Some(value) => value,
+                None => samples.map_error(self.map, component, sample)?,
+            };
+        }
+        Ok(())
+    }
+}
+
+impl PackedSamples<'_> {
+    /// Recompute a failed table entry to return its original error.
+    fn map_error(&self, map: &DecodeMap, component: usize, sample: u16) -> Result<f64> {
+        map.component_value(component, f64::from(sample) / self.max_sample)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +268,7 @@ pub(crate) fn convert_component_image<'a>(
                 &[(0.0, ((1u32 << bits) - 1) as f64)],
                 Some(reader),
             )?;
+            let decoder = samples.table_decoder(&map);
             super::indexed_samples::convert_indices(
                 samples.pixel_count(),
                 dict,
@@ -213,7 +277,7 @@ pub(crate) fn convert_component_image<'a>(
                 source_space,
                 |index| {
                     let mut value = [0.0];
-                    samples.decode_pixel(index, &map, &mut value)?;
+                    decoder.decode_pixel(index, &mut value)?;
                     Ok(value[0])
                 },
             )?
@@ -231,6 +295,7 @@ pub(crate) fn convert_component_image<'a>(
                 )?
             };
             let map = DecodeMap::from_dictionary(dict, &defaults, Some(reader))?;
+            let decoder = samples.table_decoder(&map);
             crate::render::icc_conversion::convert_image_values(
                 samples.pixel_count(),
                 channels,
@@ -238,7 +303,7 @@ pub(crate) fn convert_component_image<'a>(
                 reader,
                 options,
                 source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
-                |index, out| samples.decode_pixel(index, &map, out),
+                |index, out| decoder.decode_pixel(index, out),
             )?
         }
         "Lab" => {
@@ -263,11 +328,12 @@ pub(crate) fn convert_component_image<'a>(
             }
             let mut output = Vec::with_capacity(length);
             let mut values = [0.0; 3];
+            let decoder = samples.table_decoder(&map);
             for index in 0..samples.pixel_count() {
                 if index % 4096 == 0 {
                     crate::cancel::check_current_cancel("Lab image conversion")?;
                 }
-                samples.decode_pixel(index, &map, &mut values)?;
+                decoder.decode_pixel(index, &mut values)?;
                 for (value, (lo, hi)) in values.iter_mut().zip(ranges) {
                     *value = value.clamp(lo, hi);
                 }

@@ -177,15 +177,9 @@ impl SmaskLoader {
             )));
         }
         ensure_smask_buffer_len("mask", mask.pixels.len(), pixel_count)?;
-        let rgb: Vec<u8> = match main.channels {
-            1 => {
-                ensure_smask_buffer_len("main image", main.pixels.len(), pixel_count)?;
-                main.pixels.iter().flat_map(|&g| [g, g, g]).collect()
-            }
-            3 => {
-                ensure_smask_buffer_len("main image", main.pixels.len(), pixel_count * 3)?;
-                main.pixels.clone()
-            }
+        match main.channels {
+            1 => ensure_smask_buffer_len("main image", main.pixels.len(), pixel_count)?,
+            3 => ensure_smask_buffer_len("main image", main.pixels.len(), pixel_count * 3)?,
             4 => {
                 return Err(WellfriendError::UnsupportedFeature(
                     "image SMask combine does not support a pre-alpha main image".to_string(),
@@ -197,15 +191,22 @@ impl SmaskLoader {
                     channels
                 )))
             }
-        };
+        }
 
+        let channels = main.channels as usize;
         let mut rgba = Vec::with_capacity(pixel_count * 4);
-        for i in 0..pixel_count {
-            let rgb_offset = i * 3;
-            let r = rgb[rgb_offset];
-            let g = rgb[rgb_offset + 1];
-            let b = rgb[rgb_offset + 2];
-            let a = mask.pixels[i];
+        for (i, &a) in mask.pixels[..pixel_count].iter().enumerate() {
+            let (r, g, b) = if channels == 1 {
+                let gray = main.pixels[i];
+                (gray, gray, gray)
+            } else {
+                let offset = i * 3;
+                (
+                    main.pixels[offset],
+                    main.pixels[offset + 1],
+                    main.pixels[offset + 2],
+                )
+            };
             let (r, g, b) = match matte {
                 Some(matte) => (
                     unmatte_channel(r, matte[0], a),
@@ -214,10 +215,7 @@ impl SmaskLoader {
                 ),
                 None => (r, g, b),
             };
-            rgba.push(r);
-            rgba.push(g);
-            rgba.push(b);
-            rgba.push(a);
+            rgba.extend_from_slice(&[r, g, b, a]);
         }
 
         Ok(RawImage {

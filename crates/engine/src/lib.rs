@@ -615,7 +615,8 @@ pub use standards_engine::{
     STANDARDS_ENGINE_SCHEMA_VERSION,
 };
 pub use structural::{
-    crop_pages, encrypt, linearize::linearize, optimize, repair, rotate_pages, OptimizeReport,
+    crop_pages, crop_pages_to, encrypt, linearize::linearize, optimize, repair, rotate_pages,
+    rotate_pages_to, OptimizeReport,
     Rotation,
 };
 pub use table_intelligence::{
@@ -693,7 +694,8 @@ pub use versioning::{
     ContentChunk, ResourceDedupGroup, ResourceDedupReport,
 };
 pub use writer::{
-    build_merged, build_subset, rewrite_document, rewrite_document_objects,
+    build_merged, build_merged_to, build_subset, build_subset_to, merge_paths_to_file,
+    rewrite_document, rewrite_document_to, AtomicFile, rewrite_document_objects,
     rewrite_document_with_mode, rewrite_references, serialize_object, write_document_linearized,
     write_document_roundtrip, OutputObject, PdfWriter, WriterMode,
 };

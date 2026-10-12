@@ -1443,9 +1443,10 @@ pub struct ContentEngine {
 
 impl ContentEngine {
     fn from_document(doc: PdfDocument) -> Self {
+        let doc = Arc::new(doc);
         let canonical = CanonicalDocument::from_document(&doc);
         Self {
-            doc: Arc::new(doc),
+            doc,
             canonical,
             registered_fonts: RegisteredFontProvider::default(),
             page_artifacts: Arc::new(RwLock::new(PageArtifactCache::default())),
@@ -3498,6 +3499,19 @@ impl ContentEngine {
         ImageEncoder::encode(&raw, &format, quality)
     }
 
+    /// PNG bytes for package media (DOCX/PPTX). Same decode as
+    /// [`Self::extract_image_bytes`] with [`ImageOutputFormat::Png`], encoded
+    /// with [`ImageEncoder::encode_png_compact`] so bilevel scans stay 1-bit.
+    pub(crate) fn extract_image_png_for_package(&self, image: &ImageReference) -> Result<Vec<u8>> {
+        if let Ok(Some((bytes, _ext))) =
+            ImageEncoder::keep_original(image, self.document().reader(), &ImageOutputFormat::Png)
+        {
+            return Ok(bytes);
+        }
+        let raw = self.decode_image(image)?;
+        ImageEncoder::encode_png_compact(&raw)
+    }
+
     /// Create a PixelBuffer sized to render the given page at the given DPI.
     pub fn create_page_buffer(&self, page_number: usize, dpi: u32) -> Result<PixelBuffer> {
         self.create_page_buffer_with_mode(page_number, dpi, RenderMode::Compat)
@@ -4174,6 +4188,19 @@ impl ContentEngine {
     pub fn extract_single_page(&self, page_number: usize) -> Result<Vec<u8>> {
         self.validate_page(page_number)?;
         crate::writer::build_subset(&self.doc, &[page_number])
+    }
+
+    /// [`Self::extract_pages`] streamed into `output`; identical bytes.
+    /// Returns their length.
+    pub fn extract_pages_to(
+        &self,
+        page_indices: &[usize],
+        output: impl std::io::Write,
+    ) -> Result<u64> {
+        for &p in page_indices {
+            self.validate_page(p)?;
+        }
+        crate::writer::build_subset_to(&self.doc, page_indices, output)
     }
 
     /// Gather document metadata and structural facts (the `info` tool —

@@ -645,6 +645,19 @@ fn parse_i64_token(token: &[u8]) -> Result<i64> {
         .map_err(|err| WellfriendError::ParseError(format!("invalid integer: {err}")))
 }
 
+/// Check the bytes that follow a stream body: optional EOL, `endstream`, then
+/// whitespace/comments and `endobj`, exactly as `parse_indirect_object` would
+/// consume them. Returns the offset just past `endobj` when they match.
+pub(crate) fn stream_object_trailer_end(tail: &[u8]) -> Option<usize> {
+    let after_raw = skip_eol(tail, 0);
+    if !bytes_at(tail, after_raw, b"endstream") {
+        return None;
+    }
+    let mut parser = PdfParser::new(tail, after_raw + b"endstream".len()).ok()?;
+    parser.skip_ws_and_comments();
+    parser.consume_keyword(b"endobj").then_some(parser.pos)
+}
+
 fn skip_eol(data: &[u8], pos: usize) -> usize {
     match data.get(pos).copied() {
         Some(b'\r') => {

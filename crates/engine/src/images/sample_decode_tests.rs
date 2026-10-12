@@ -492,3 +492,45 @@ fn explicit_icc_decode_does_not_require_unused_original_default_domains() {
     .unwrap();
     assert_eq!(image.pixels, vec![96, 96, 96, 255]);
 }
+
+#[test]
+fn table_decoder_matches_direct_decode_for_every_sample() {
+    for bits in [1u8, 2, 4, 8] {
+        for ranges in [
+            vec![(0.0, 1.0), (1.0, 0.0)],
+            vec![(-128.0, 127.0), (0.0, 255.0)],
+        ] {
+            let max = (1u32 << bits) - 1;
+            // Two components; enumerate every sample value in both positions.
+            let values: Vec<u32> = (0..=max).collect();
+            let width = values.len() as u32;
+            let mut bitstream = Vec::new();
+            let mut acc = 0u32;
+            let mut filled = 0u32;
+            for &v in &values {
+                for sample in [v, max - v] {
+                    acc = (acc << bits) | sample;
+                    filled += u32::from(bits);
+                    while filled >= 8 {
+                        bitstream.push((acc >> (filled - 8)) as u8);
+                        filled -= 8;
+                        acc &= (1 << filled) - 1;
+                    }
+                }
+            }
+            if filled > 0 {
+                bitstream.push((acc << (8 - filled)) as u8);
+            }
+            let samples = PackedSamples::new(&bitstream, width, 1, 2, bits).unwrap();
+            let decode = map(&ranges);
+            let decoder = samples.table_decoder(&decode);
+            for index in 0..samples.pixel_count() {
+                let mut direct = [0.0; 2];
+                let mut table = [0.0; 2];
+                samples.decode_pixel(index, &decode, &mut direct).unwrap();
+                decoder.decode_pixel(index, &mut table).unwrap();
+                assert_eq!(direct.map(f64::to_bits), table.map(f64::to_bits));
+            }
+        }
+    }
+}

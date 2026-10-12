@@ -131,37 +131,54 @@ pub fn export_pdf_pages_to_images(
         .to_string()
         .len()
         .max(3);
-    let mut results = Vec::with_capacity(selected.len());
-    let mut render_cache = RenderDocumentCache::new();
-    for page in selected {
-        let path = out_dir.join(format!(
-            "{stem}-{page:0width$}.{}",
-            format.extension(),
-            width = width
-        ));
-        match render_page_image_with_cache(engine, page, dpi, format, quality, &mut render_cache) {
-            Ok((bytes, image_width, image_height)) => {
-                fs::write(&path, bytes)?;
-                results.push(RasterPageResult {
-                    page,
-                    path: Some(path),
-                    width: image_width,
-                    height: image_height,
-                    ok: true,
-                    error: None,
-                });
-            }
-            Err(err) => results.push(RasterPageResult {
-                page,
-                path: Some(path),
-                width: 0,
-                height: 0,
-                ok: false,
-                error: Some(err.to_string()),
-            }),
-        }
-    }
-    Ok(results)
+    // Pages are independent and the retained render caches are output-
+    // transparent (a cached mask is rasterized from its key), so pages render
+    // on the rayon pool with one cache per worker and results are collected in
+    // the requested order. With a single available CPU this is sequential.
+    use rayon::prelude::*;
+    selected
+        .par_iter()
+        .map_init(
+            RenderDocumentCache::new,
+            |render_cache, &page| -> Result<RasterPageResult> {
+                let path = out_dir.join(format!(
+                    "{stem}-{page:0width$}.{}",
+                    format.extension(),
+                    width = width
+                ));
+                Ok(
+                    match render_page_image_with_cache(
+                        engine,
+                        page,
+                        dpi,
+                        format,
+                        quality,
+                        render_cache,
+                    ) {
+                        Ok((bytes, image_width, image_height)) => {
+                            fs::write(&path, bytes)?;
+                            RasterPageResult {
+                                page,
+                                path: Some(path),
+                                width: image_width,
+                                height: image_height,
+                                ok: true,
+                                error: None,
+                            }
+                        }
+                        Err(err) => RasterPageResult {
+                            page,
+                            path: Some(path),
+                            width: 0,
+                            height: 0,
+                            ok: false,
+                            error: Some(err.to_string()),
+                        },
+                    },
+                )
+            },
+        )
+        .collect()
 }
 
 /// Page-size policy for image-to-PDF conversion.

@@ -722,6 +722,136 @@ impl RenderDocumentCache {
         }
     }
 
+    /// Component names accepted by [`Self::diagnostic_reset`].
+    #[doc(hidden)]
+    pub const DIAGNOSTIC_COMPONENTS: &'static [&'static str] = &["function", "glyph", "glyph_mask", "type3", "type1_program", "path_fill", "path_stroke", "path_clip", "font_bytes", "font_resolver", "prepared_text", "image_xobject", "scaled_image", "smask_group", "shading_mesh", "form_xobject", "tiling_pattern", "annotation", "offscreen_pool", "display_list", "render_plan", "final_raster", "transparent_group", "dependency"];
+
+    /// Diagnostics only: reset one named group of retained state to exactly
+    /// what a newly constructed cache holds. Used to locate retained state
+    /// whose reuse changes rendered output. Returns false for unknown names.
+    #[doc(hidden)]
+    pub fn diagnostic_reset(&mut self, component: &str) -> bool {
+        let fresh = Self::new_with_final_raster_cache_policy(self.final_raster_cache_policy);
+        match component {
+            "function" => {
+                self.function_cache = fresh.function_cache;
+            }
+            "glyph" => {
+                self.glyph_cache = fresh.glyph_cache;
+            }
+            "glyph_mask" => {
+                self.glyph_mask_cache = fresh.glyph_mask_cache;
+            }
+            "type3" => {
+                self.type3_mask_cache = fresh.type3_mask_cache;
+                self.type3_rendered_cache = fresh.type3_rendered_cache;
+                self.type3_geometry_cache = fresh.type3_geometry_cache;
+                self.type3_charproc_cache = fresh.type3_charproc_cache;
+                self.type3_retained_charproc_cache = fresh.type3_retained_charproc_cache;
+            }
+            "type1_program" => {
+                self.type1_program_cache = fresh.type1_program_cache;
+            }
+            "path_fill" => {
+                self.path_fill_mask_cache = fresh.path_fill_mask_cache;
+            }
+            "path_stroke" => {
+                self.path_stroke_mask_cache = fresh.path_stroke_mask_cache;
+            }
+            "path_clip" => {
+                self.path_clip_node_cache = fresh.path_clip_node_cache;
+            }
+            "font_bytes" => {
+                self.font_bytes_cache = fresh.font_bytes_cache;
+                self.font_bytes_cache_order = fresh.font_bytes_cache_order;
+                self.font_bytes_cache_bytes = fresh.font_bytes_cache_bytes;
+                self.font_bytes_cache_stats = fresh.font_bytes_cache_stats;
+            }
+            "font_resolver" => {
+                self.font_resolver_cache = fresh.font_resolver_cache;
+                self.font_resolver_cache_order = fresh.font_resolver_cache_order;
+                self.font_resolver_cache_bytes = fresh.font_resolver_cache_bytes;
+                self.font_resolver_cache_stats = fresh.font_resolver_cache_stats;
+            }
+            "prepared_text" => {
+                self.prepared_text_cache = fresh.prepared_text_cache;
+            }
+            "image_xobject" => {
+                self.image_xobject_cache = fresh.image_xobject_cache;
+                self.image_xobject_cache_order = fresh.image_xobject_cache_order;
+                self.image_xobject_cache_bytes = fresh.image_xobject_cache_bytes;
+                self.image_xobject_cache_stats = fresh.image_xobject_cache_stats;
+            }
+            "scaled_image" => {
+                self.scaled_image_cache = fresh.scaled_image_cache;
+                self.scaled_image_cache_order = fresh.scaled_image_cache_order;
+                self.scaled_image_cache_bytes = fresh.scaled_image_cache_bytes;
+                self.scaled_image_cache_stats = fresh.scaled_image_cache_stats;
+            }
+            "smask_group" => {
+                self.smask_group_cache = fresh.smask_group_cache;
+                self.smask_group_cache_order = fresh.smask_group_cache_order;
+                self.smask_group_cache_bytes = fresh.smask_group_cache_bytes;
+                self.smask_group_cache_stats = fresh.smask_group_cache_stats;
+            }
+            "shading_mesh" => {
+                self.shading_mesh_cache = fresh.shading_mesh_cache;
+                self.shading_mesh_cache_order = fresh.shading_mesh_cache_order;
+                self.shading_mesh_cache_bytes = fresh.shading_mesh_cache_bytes;
+                self.shading_mesh_cache_stats = fresh.shading_mesh_cache_stats;
+            }
+            "form_xobject" => {
+                self.form_xobject_program_cache = fresh.form_xobject_program_cache;
+                self.form_xobject_program_cache_order = fresh.form_xobject_program_cache_order;
+                self.form_xobject_program_cache_bytes = fresh.form_xobject_program_cache_bytes;
+                self.form_xobject_program_cache_stats = fresh.form_xobject_program_cache_stats;
+            }
+            "tiling_pattern" => {
+                self.tiling_pattern_program_cache = fresh.tiling_pattern_program_cache;
+                self.tiling_pattern_program_cache_order = fresh.tiling_pattern_program_cache_order;
+                self.tiling_pattern_program_cache_bytes = fresh.tiling_pattern_program_cache_bytes;
+                self.tiling_pattern_program_cache_stats = fresh.tiling_pattern_program_cache_stats;
+            }
+            "annotation" => {
+                self.annotation_appearance_program_cache = fresh.annotation_appearance_program_cache;
+                self.annotation_appearance_program_cache_order = fresh.annotation_appearance_program_cache_order;
+                self.annotation_appearance_program_cache_bytes = fresh.annotation_appearance_program_cache_bytes;
+                self.annotation_appearance_program_cache_stats = fresh.annotation_appearance_program_cache_stats;
+            }
+            "offscreen_pool" => {
+                self.offscreen_buffer_pool = fresh.offscreen_buffer_pool;
+            }
+            "display_list" => {
+                self.display_list_cache = fresh.display_list_cache;
+                self.display_list_cache_order = fresh.display_list_cache_order;
+                self.display_list_cache_bytes = fresh.display_list_cache_bytes;
+                self.display_list_cache_stats = fresh.display_list_cache_stats;
+            }
+            "render_plan" => {
+                self.render_plan_cache = fresh.render_plan_cache;
+                self.render_plan_cache_order = fresh.render_plan_cache_order;
+                self.render_plan_cache_bytes = fresh.render_plan_cache_bytes;
+                self.render_plan_cache_stats = fresh.render_plan_cache_stats;
+            }
+            "final_raster" => {
+                self.display_list_raster_cache = fresh.display_list_raster_cache;
+            }
+            "transparent_group" => {
+                self.transparent_page_group_cache = fresh.transparent_page_group_cache;
+                self.transparent_page_group_cache_order = fresh.transparent_page_group_cache_order;
+            }
+            "dependency" => {
+                self.document_revision = fresh.document_revision;
+                self.dependency_graph = fresh.dependency_graph;
+                self.page_dependency_complete = fresh.page_dependency_complete;
+                self.source_identities = fresh.source_identities;
+                self.source_cache_markers = fresh.source_cache_markers;
+            }
+            _ => return false,
+        }
+        true
+    }
+
     pub fn clear(&mut self) {
         let final_raster_cache_policy = self.final_raster_cache_policy;
         self.function_cache =
@@ -21043,13 +21173,13 @@ fn paint_cached_path_fill(
             FillRule::NonZero => 0,
             FillRule::EvenOdd => 1,
         },
-        flatness: quantize_glyph_mask_value(flatness),
+        flatness: exact_mask_key(flatness),
         a: glyph_mask_linear_transform_key(normalized_t.a),
         b: glyph_mask_linear_transform_key(normalized_t.b),
         c: glyph_mask_linear_transform_key(normalized_t.c),
         d: glyph_mask_linear_transform_key(normalized_t.d),
-        frac_e: quantize_glyph_mask_fraction(normalized_t.e),
-        frac_f: quantize_glyph_mask_fraction(normalized_t.f),
+        frac_e: exact_mask_key(normalized_t.e),
+        frac_f: exact_mask_key(normalized_t.f),
         binary_alpha,
     };
     let dx = if origin_x <= i32::MIN as f64 {
@@ -21131,17 +21261,17 @@ fn paint_cached_path_stroke(
     };
     let key = PathStrokeMaskCacheKey {
         path_hash: hash_path_for_fill_cache(path),
-        width: quantize_glyph_mask_value(stroke_width * device_t.scale_factor()),
-        flatness: quantize_glyph_mask_value(flatness),
+        width: exact_mask_key(stroke_width * device_t.scale_factor()),
+        flatness: exact_mask_key(flatness),
         cap: line_cap_cache_id(cap),
         join: line_join_cache_id(join),
-        miter_limit: quantize_glyph_mask_value(miter_limit),
+        miter_limit: exact_mask_key(miter_limit),
         a: glyph_mask_linear_transform_key(normalized_t.a),
         b: glyph_mask_linear_transform_key(normalized_t.b),
         c: glyph_mask_linear_transform_key(normalized_t.c),
         d: glyph_mask_linear_transform_key(normalized_t.d),
-        frac_e: quantize_glyph_mask_fraction(normalized_t.e),
-        frac_f: quantize_glyph_mask_fraction(normalized_t.f),
+        frac_e: exact_mask_key(normalized_t.e),
+        frac_f: exact_mask_key(normalized_t.f),
         binary_alpha,
     };
     let dx = if origin_x <= i32::MIN as f64 {
@@ -21312,16 +21442,15 @@ fn hash_path_for_fill_cache(path: &Path) -> u64 {
     hasher.finish()
 }
 
-fn quantize_glyph_mask_value(value: f64) -> i64 {
-    const SCALE: f64 = 64.0;
-    if !value.is_finite() {
+/// Exact-bits cache key for a value that the mask is rasterized from. Path
+/// masks are keyed by every parameter they are computed from, so a cache hit is
+/// always the mask a fresh rasterization would produce and output never
+/// depends on which earlier paint populated the cache.
+fn exact_mask_key(value: f64) -> i64 {
+    if value == 0.0 {
         0
-    } else if value <= i64::MIN as f64 / SCALE {
-        i64::MIN
-    } else if value >= i64::MAX as f64 / SCALE {
-        i64::MAX
     } else {
-        (value * SCALE).round() as i64
+        value.to_bits() as i64
     }
 }
 

@@ -1172,13 +1172,13 @@ fn cpu_paint_cached_path_fill(
             FillRule::NonZero => 0,
             FillRule::EvenOdd => 1,
         },
-        flatness: cpu_quantize_mask_value(flatness),
-        a: cpu_quantize_mask_value(normalized_t.a),
-        b: cpu_quantize_mask_value(normalized_t.b),
-        c: cpu_quantize_mask_value(normalized_t.c),
-        d: cpu_quantize_mask_value(normalized_t.d),
-        frac_e: cpu_quantize_mask_fraction(normalized_t.e),
-        frac_f: cpu_quantize_mask_fraction(normalized_t.f),
+        flatness: cpu_exact_mask_key(flatness),
+        a: cpu_exact_mask_key(normalized_t.a),
+        b: cpu_exact_mask_key(normalized_t.b),
+        c: cpu_exact_mask_key(normalized_t.c),
+        d: cpu_exact_mask_key(normalized_t.d),
+        frac_e: cpu_exact_mask_key(normalized_t.e),
+        frac_f: cpu_exact_mask_key(normalized_t.f),
     };
     let dx = cpu_floor_to_i32(origin_x);
     let dy = cpu_floor_to_i32(origin_y);
@@ -1231,17 +1231,17 @@ fn cpu_paint_cached_path_stroke(
     };
     let key = CpuPathStrokeMaskCacheKey {
         path_hash: cpu_hash_path_for_mask_cache(path),
-        width: cpu_quantize_mask_value(stroke_width * device_t.scale_factor()),
-        flatness: cpu_quantize_mask_value(flatness),
+        width: cpu_exact_mask_key(stroke_width * device_t.scale_factor()),
+        flatness: cpu_exact_mask_key(flatness),
         cap: cpu_line_cap_id(cap),
         join: cpu_line_join_id(join),
-        miter_limit: cpu_quantize_mask_value(miter_limit),
-        a: cpu_quantize_mask_value(normalized_t.a),
-        b: cpu_quantize_mask_value(normalized_t.b),
-        c: cpu_quantize_mask_value(normalized_t.c),
-        d: cpu_quantize_mask_value(normalized_t.d),
-        frac_e: cpu_quantize_mask_fraction(normalized_t.e),
-        frac_f: cpu_quantize_mask_fraction(normalized_t.f),
+        miter_limit: cpu_exact_mask_key(miter_limit),
+        a: cpu_exact_mask_key(normalized_t.a),
+        b: cpu_exact_mask_key(normalized_t.b),
+        c: cpu_exact_mask_key(normalized_t.c),
+        d: cpu_exact_mask_key(normalized_t.d),
+        frac_e: cpu_exact_mask_key(normalized_t.e),
+        frac_f: cpu_exact_mask_key(normalized_t.f),
     };
     let dx = cpu_floor_to_i32(origin_x);
     let dy = cpu_floor_to_i32(origin_y);
@@ -1345,25 +1345,15 @@ fn cpu_hash_path_for_mask_cache(path: &Path) -> u64 {
     hasher.finish()
 }
 
-fn cpu_quantize_mask_value(value: f64) -> i64 {
-    const SCALE: f64 = 64.0;
-    if !value.is_finite() {
-        0
-    } else if value <= i64::MIN as f64 / SCALE {
-        i64::MIN
-    } else if value >= i64::MAX as f64 / SCALE {
-        i64::MAX
-    } else {
-        (value * SCALE).round() as i64
-    }
-}
-
-fn cpu_quantize_mask_fraction(value: f64) -> i64 {
-    const SCALE: f64 = 2.0;
-    if !value.is_finite() {
+/// Exact-bits key for a value a cached CPU path mask is rasterized from. The
+/// masks are rasterized from the unquantized request, so keying every input
+/// exactly makes a cache hit identical to a fresh rasterization; output then
+/// never depends on which earlier paint populated the cache.
+fn cpu_exact_mask_key(value: f64) -> i64 {
+    if value == 0.0 {
         0
     } else {
-        (value.fract() * SCALE).round() as i64
+        value.to_bits() as i64
     }
 }
 

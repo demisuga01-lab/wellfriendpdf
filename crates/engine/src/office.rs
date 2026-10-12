@@ -20,7 +20,6 @@ use crate::authoring::{
 use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, ExtractionProfile};
 use crate::error::{Result, WellfriendError};
-use crate::images::encoder::ImageOutputFormat;
 use crate::parse::{Block, BlockKind, Document, InlineSpan, InlineText, ParseOptions};
 use crate::versioning::resource_digest;
 use crate::PageRegion;
@@ -1083,8 +1082,7 @@ fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Ve
             .into_iter()
             .filter(|img| !img.image.is_mask && !img.image.is_smask)
         {
-            let Ok(bytes) = engine.extract_image_bytes(&image.image, ImageOutputFormat::Png, None)
-            else {
+            let Ok(bytes) = engine.extract_image_png_for_package(&image.image) else {
                 continue;
             };
             let width_points = (image.bbox[2] - image.bbox[0]).abs().clamp(72.0, 432.0);
@@ -2136,10 +2134,7 @@ fn pptx_slide_xml(
                     .into_iter()
                     .filter(|img| !img.image.is_mask && !img.image.is_smask)
                 {
-                    if let Ok(bytes) =
-                        ctx.engine
-                            .extract_image_bytes(&image.image, ImageOutputFormat::Png, None)
-                    {
+                    if let Ok(bytes) = ctx.engine.extract_image_png_for_package(&image.image) {
                         let rel_id = format!("rId{}", rels.len() + 1);
                         let media_name = format!("ppt/media/image{}.png", *media_index);
                         *media_index += 1;

@@ -1916,13 +1916,32 @@ impl ImageDecoder {
             return Ok(());
         }
 
-        for (idx, sample) in pixels.iter_mut().enumerate() {
-            let ch = idx % channels;
-            let low = values[ch * 2];
-            let high = values[ch * 2 + 1];
-            let unit = f64::from(*sample) / 255.0;
-            let decoded = (low + unit * (high - low)).clamp(0.0, 1.0);
-            *sample = (decoded * 255.0).round() as u8;
+        // Samples are 8-bit, so each channel's mapping is a 256-entry table
+        // computed with the exact per-sample formula.
+        let tables: Vec<[u8; 256]> = values
+            .chunks_exact(2)
+            .map(|range| {
+                let (low, high) = (range[0], range[1]);
+                let mut table = [0u8; 256];
+                for (value, slot) in table.iter_mut().enumerate() {
+                    let unit = value as f64 / 255.0;
+                    let decoded = (low + unit * (high - low)).clamp(0.0, 1.0);
+                    *slot = (decoded * 255.0).round() as u8;
+                }
+                table
+            })
+            .collect();
+        if channels == 1 {
+            let table = &tables[0];
+            for sample in pixels.iter_mut() {
+                *sample = table[usize::from(*sample)];
+            }
+        } else {
+            for pixel in pixels.chunks_mut(channels) {
+                for (sample, table) in pixel.iter_mut().zip(&tables) {
+                    *sample = table[usize::from(*sample)];
+                }
+            }
         }
         Ok(())
     }

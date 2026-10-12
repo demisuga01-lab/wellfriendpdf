@@ -4013,6 +4013,34 @@ fn merge_pdfs(
     Ok(bytes)
 }
 
+/// Merge PDF files (all pages, in order) straight into `output`, streaming
+/// stream bodies instead of building the merged file in memory. `output` may
+/// name one of the inputs. Returns `(bytes_written, pages)`.
+#[pyfunction]
+#[pyo3(signature = (inputs, output, passwords=None))]
+fn merge_pdfs_to_path(
+    inputs: Vec<PathBuf>,
+    output: PathBuf,
+    passwords: Option<Vec<String>>,
+) -> PyResult<(u64, usize)> {
+    if inputs.is_empty() {
+        return Err(PyValueError::new_err("inputs must not be empty"));
+    }
+    let specs: Vec<(&std::path::Path, Option<&[u8]>)> = inputs
+        .iter()
+        .enumerate()
+        .map(|(idx, path)| {
+            let password = passwords
+                .as_ref()
+                .and_then(|values| values.get(idx))
+                .filter(|value| !value.is_empty())
+                .map(String::as_bytes);
+            (path.as_path(), password)
+        })
+        .collect();
+    run_wellfriendpdf(|| wellfriendpdf_engine::merge_paths_to_file(&specs, &output))
+}
+
 #[pyfunction]
 #[pyo3(signature = (pdf, pages, output=None, password=None))]
 fn extract_pages(
@@ -4051,6 +4079,58 @@ fn rotate_pdf(
         run_wellfriendpdf(|| wellfriendpdf_engine::rotate_pages(&engine, &selected, rotation))?;
     write_optional(&output, &bytes)?;
     Ok(bytes)
+}
+
+/// [`rotate_pdf`] streamed to `output` (which may be `pdf`); returns bytes
+/// written. The output appears only after the rotation completes.
+#[pyfunction]
+#[pyo3(signature = (pdf, angle, output, pages="all", relative=false, password=None))]
+fn rotate_pdf_to_path(
+    pdf: PathBuf,
+    angle: i32,
+    output: PathBuf,
+    pages: &str,
+    relative: bool,
+    password: Option<&str>,
+) -> PyResult<u64> {
+    let engine = open_engine_path(&pdf, password)?;
+    let total = run_wellfriendpdf(|| engine.page_count())?;
+    let selected = parse_pages_spec_py(pages, total)?;
+    let rotation = if relative {
+        wellfriendpdf_engine::Rotation::Relative(angle)
+    } else {
+        wellfriendpdf_engine::Rotation::Absolute(angle)
+    };
+    run_wellfriendpdf(|| {
+        let mut file = wellfriendpdf_engine::AtomicFile::create(&output)?;
+        let written =
+            wellfriendpdf_engine::rotate_pages_to(&engine, &selected, rotation, file.writer())?;
+        drop(engine);
+        file.commit()?;
+        Ok(written)
+    })
+}
+
+/// [`extract_pages`] streamed to `output` (which may be `pdf`); returns bytes
+/// written. The output appears only after extraction completes.
+#[pyfunction]
+#[pyo3(signature = (pdf, pages, output, password=None))]
+fn extract_pages_to_path(
+    pdf: PathBuf,
+    pages: &str,
+    output: PathBuf,
+    password: Option<&str>,
+) -> PyResult<u64> {
+    let engine = open_engine_path(&pdf, password)?;
+    let total = run_wellfriendpdf(|| engine.page_count())?;
+    let selected = parse_pages_spec_py(pages, total)?;
+    run_wellfriendpdf(|| {
+        let mut file = wellfriendpdf_engine::AtomicFile::create(&output)?;
+        let written = engine.extract_pages_to(&selected, file.writer())?;
+        drop(engine);
+        file.commit()?;
+        Ok(written)
+    })
 }
 
 #[pyfunction]
@@ -5092,6 +5172,9 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(merge_pdfs, module)?)?;
+    module.add_function(wrap_pyfunction!(merge_pdfs_to_path, module)?)?;
+    module.add_function(wrap_pyfunction!(rotate_pdf_to_path, module)?)?;
+    module.add_function(wrap_pyfunction!(extract_pages_to_path, module)?)?;
     module.add_function(wrap_pyfunction!(extract_pages, module)?)?;
     module.add_function(wrap_pyfunction!(rotate_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(decrypt_pdf, module)?)?;

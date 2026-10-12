@@ -17,7 +17,7 @@ use crate::engine::ContentEngine;
 use crate::error::{Result, WellfriendError};
 use crate::object::PdfObject;
 use crate::writer::{
-    rewrite_document, rewrite_document_objects, rewrite_document_with_mode, PdfWriter, WriterMode,
+    rewrite_document, rewrite_document_objects, rewrite_document_to, rewrite_document_with_mode, PdfWriter, WriterMode,
 };
 
 /// Normalize a rotation angle to one of {0, 90, 180, 270} (degrees clockwise).
@@ -58,6 +58,29 @@ pub fn rotate_pages(
     pages: &[usize],
     rotation: Rotation,
 ) -> Result<Vec<u8>> {
+    let wanted = rotation_targets(engine, pages, rotation)?;
+    rewrite_document(engine.document().reader(), |orig_num, obj| {
+        apply_rotation(&wanted, orig_num, obj)
+    })
+}
+
+/// [`rotate_pages`] streamed into `output`; the bytes written are identical.
+/// Returns their length.
+pub fn rotate_pages_to(
+    engine: &ContentEngine,
+    pages: &[usize],
+    rotation: Rotation,
+    output: impl std::io::Write,
+) -> Result<u64> {
+    let wanted = rotation_targets(engine, pages, rotation)?;
+    rewrite_document_to(
+        engine.document().reader(),
+        |orig_num, obj| apply_rotation(&wanted, orig_num, obj),
+        output,
+    )
+}
+
+fn selected_pages(engine: &ContentEngine, pages: &[usize], operation: &str) -> Result<Vec<usize>> {
     let total = engine.page_count()?;
     let targets: Vec<usize> = if pages.is_empty() {
         (1..=total).collect()
@@ -72,15 +95,22 @@ pub fn rotate_pages(
         p
     };
     if targets.is_empty() {
-        return Err(WellfriendError::MalformedPdf(
-            "rotate: no valid pages selected".to_string(),
-        ));
+        return Err(WellfriendError::MalformedPdf(format!(
+            "{operation}: no valid pages selected"
+        )));
     }
+    Ok(targets)
+}
 
-    // Map ORIGINAL page object-number -> desired /Rotate. The mutate hook keys
-    // off the original number, which is what rewrite_document passes.
+/// Map ORIGINAL page object-number -> desired /Rotate. The mutate hook keys
+/// off the original number, which is what rewrite_document passes.
+fn rotation_targets(
+    engine: &ContentEngine,
+    pages: &[usize],
+    rotation: Rotation,
+) -> Result<HashMap<u32, i32>> {
     let mut wanted: HashMap<u32, i32> = HashMap::new();
-    for &page_no in &targets {
+    for page_no in selected_pages(engine, pages, "rotate")? {
         let page = engine.get_page(page_no)?;
         let current = page.rotate.rem_euclid(360);
         let new_angle = match rotation {
@@ -89,31 +119,52 @@ pub fn rotate_pages(
         };
         wanted.insert(page.object_number, new_angle);
     }
+    Ok(wanted)
+}
 
-    rewrite_document(engine.document().reader(), |orig_num, obj| {
-        let Some(&angle) = wanted.get(&orig_num) else {
-            return;
-        };
-        if let PdfObject::Dictionary(dict) = obj {
-            // Only touch actual page objects (defensive: an object number could
-            // in theory be reused, though the writer's identity copy preserves it).
-            if dict.get_name("Type") == Some("Page") {
-                if angle == 0 {
-                    // Normalize to "no /Rotate" rather than writing /Rotate 0.
-                    // The writer has no remove, so write 0 explicitly only if the
-                    // source had one; simplest correct behavior: always set it,
-                    // which is spec-valid (0 is the default and harmless).
-                    dict.insert("Rotate", PdfObject::Integer(0));
-                } else {
-                    dict.insert("Rotate", PdfObject::Integer(angle as i64));
-                }
-            }
+fn apply_rotation(wanted: &HashMap<u32, i32>, orig_num: u32, obj: &mut PdfObject) {
+    let Some(&angle) = wanted.get(&orig_num) else {
+        return;
+    };
+    if let PdfObject::Dictionary(dict) = obj {
+        // Only touch actual page objects (defensive: an object number could
+        // in theory be reused, though the writer's identity copy preserves it).
+        // Angle 0 is written explicitly: it is the spec default and harmless.
+        if dict.get_name("Type") == Some("Page") {
+            dict.insert("Rotate", PdfObject::Integer(angle as i64));
         }
-    })
+    }
 }
 
 /// Set `/CropBox` on selected pages while preserving the source object graph.
 pub fn crop_pages(engine: &ContentEngine, pages: &[usize], crop: ImageRect) -> Result<Vec<u8>> {
+    let wanted = crop_targets(engine, pages, crop)?;
+    rewrite_document(engine.document().reader(), |orig_num, obj| {
+        apply_crop(&wanted, orig_num, obj)
+    })
+}
+
+/// [`crop_pages`] streamed into `output`; the bytes written are identical.
+/// Returns their length.
+pub fn crop_pages_to(
+    engine: &ContentEngine,
+    pages: &[usize],
+    crop: ImageRect,
+    output: impl std::io::Write,
+) -> Result<u64> {
+    let wanted = crop_targets(engine, pages, crop)?;
+    rewrite_document_to(
+        engine.document().reader(),
+        |orig_num, obj| apply_crop(&wanted, orig_num, obj),
+        output,
+    )
+}
+
+fn crop_targets(
+    engine: &ContentEngine,
+    pages: &[usize],
+    crop: ImageRect,
+) -> Result<HashMap<u32, ImageRect>> {
     if !crop.x.is_finite()
         || !crop.y.is_finite()
         || !crop.width.is_finite()
@@ -125,49 +176,31 @@ pub fn crop_pages(engine: &ContentEngine, pages: &[usize], crop: ImageRect) -> R
             "crop: rectangle must be positive finite points".to_string(),
         ));
     }
-    let total = engine.page_count()?;
-    let targets: Vec<usize> = if pages.is_empty() {
-        (1..=total).collect()
-    } else {
-        let mut p: Vec<usize> = pages
-            .iter()
-            .copied()
-            .filter(|&n| n >= 1 && n <= total)
-            .collect();
-        p.sort_unstable();
-        p.dedup();
-        p
-    };
-    if targets.is_empty() {
-        return Err(WellfriendError::MalformedPdf(
-            "crop: no valid pages selected".to_string(),
-        ));
-    }
-
     let mut wanted: HashMap<u32, ImageRect> = HashMap::new();
-    for &page_no in &targets {
+    for page_no in selected_pages(engine, pages, "crop")? {
         let page = engine.get_page(page_no)?;
         wanted.insert(page.object_number, crop);
     }
+    Ok(wanted)
+}
 
-    rewrite_document(engine.document().reader(), |orig_num, obj| {
-        let Some(rect) = wanted.get(&orig_num).copied() else {
-            return;
-        };
-        if let PdfObject::Dictionary(dict) = obj {
-            if dict.get_name("Type") == Some("Page") {
-                dict.insert(
-                    "CropBox",
-                    PdfObject::Array(vec![
-                        pdf_number(rect.x),
-                        pdf_number(rect.y),
-                        pdf_number(rect.x + rect.width),
-                        pdf_number(rect.y + rect.height),
-                    ]),
-                );
-            }
+fn apply_crop(wanted: &HashMap<u32, ImageRect>, orig_num: u32, obj: &mut PdfObject) {
+    let Some(rect) = wanted.get(&orig_num).copied() else {
+        return;
+    };
+    if let PdfObject::Dictionary(dict) = obj {
+        if dict.get_name("Type") == Some("Page") {
+            dict.insert(
+                "CropBox",
+                PdfObject::Array(vec![
+                    pdf_number(rect.x),
+                    pdf_number(rect.y),
+                    pdf_number(rect.x + rect.width),
+                    pdf_number(rect.y + rect.height),
+                ]),
+            );
         }
-    })
+    }
 }
 
 /// Result of an [`optimize`] pass, for reporting.

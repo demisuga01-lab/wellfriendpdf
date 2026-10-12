@@ -461,6 +461,7 @@ fn classify_ops_for_vector_output(
             reason: "default colour spaces require scope-bound native rendering",
         };
     }
+    let mut text_metric_cache = TextMetricCache::default();
     let mut image_do_ops: Vec<ImageDoClassification> = Vec::new();
     let mut inline_image_count = 0usize;
     let mut form_do_names: Vec<String> = Vec::new();
@@ -995,7 +996,13 @@ fn classify_ops_for_vector_output(
                     }
                 }
                 if let Err(reason) =
-                    text_operator_has_vector_metric_source(op, &gs, resources, reader)
+                    text_operator_has_vector_metric_source(
+                        op,
+                        &gs,
+                        resources,
+                        reader,
+                        &mut text_metric_cache,
+                    )
                 {
                     return VectorFallbackDecision::WholePageRaster { reason };
                 }
@@ -1129,11 +1136,35 @@ fn postscript_paint_channel_is_native(alpha: f64, blend_mode: BlendMode) -> bool
     (alpha - 1.0).abs() <= f64::EPSILON && blend_mode == BlendMode::Normal
 }
 
+/// Per-scope memo for [`text_operator_has_vector_metric_source`]. One
+/// classifier call sees a single resource dictionary (Form XObjects recurse
+/// with their own call), so font programs and resolvers can be resolved once
+/// per font name, and a glyph whose checks already passed with the same font
+/// and requirements need not be re-outlined.
+#[derive(Default)]
+struct TextMetricCache {
+    font_bytes: std::collections::HashMap<String, Option<std::sync::Arc<[u8]>>>,
+    resolvers: std::collections::HashMap<String, std::sync::Arc<crate::fonts::FontResolver>>,
+    verified: std::collections::HashSet<VerifiedGlyph>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct VerifiedGlyph {
+    font_name: String,
+    code: u16,
+    is_gid: bool,
+    unicode: char,
+    glyph_name: Option<String>,
+    needs_advance: bool,
+    needs_outline: bool,
+}
+
 fn text_operator_has_vector_metric_source(
     op: &ContentOperation,
     gs: &GraphicsState,
     resources: &PageResources,
     reader: Option<&PdfReader>,
+    cache: &mut TextMetricCache,
 ) -> std::result::Result<(), &'static str> {
     const REASON: &str = "text metrics unavailable for vector output";
     const OUTLINE_REASON: &str = "text glyph outline unavailable for vector output";
@@ -1145,10 +1176,37 @@ fn text_operator_has_vector_metric_source(
     if strings.is_empty() {
         return Ok(());
     }
-    let font_bytes = get_font_bytes(&gs.text.font_name, resources, reader);
+    let font_name = &gs.text.font_name;
+    let font_bytes = match cache.font_bytes.get(font_name) {
+        Some(cached) => cached.clone(),
+        None => {
+            let resolved =
+                get_font_bytes(font_name, resources, reader).map(std::sync::Arc::<[u8]>::from);
+            cache.font_bytes.insert(font_name.clone(), resolved.clone());
+            resolved
+        }
+    };
+    let font_dict = resources.fonts.get(font_name);
+    let resolver = font_dict.map(|font_dict| {
+        cache
+            .resolvers
+            .entry(font_name.clone())
+            .or_insert_with(|| {
+                std::sync::Arc::new(crate::fonts::FontResolver::new(font_dict, reader))
+            })
+            .clone()
+    });
+    let needs_outline = !matches!(gs.text.rendering_mode, 3);
     for bytes in strings {
-        let glyphs = try_decode_text_bytes(bytes, &gs.text.font_name, resources, reader)
-            .map_err(|_| REASON)?;
+        let glyphs = match (font_dict, resolver.as_ref()) {
+            (Some(font_dict), Some(resolver)) => {
+                crate::render::text_decode::try_decode_text_bytes_with_resolver(
+                    bytes, font_dict, resolver, reader,
+                )
+            }
+            _ => try_decode_text_bytes(bytes, font_name, resources, reader),
+        }
+        .map_err(|_| REASON)?;
         for glyph in glyphs {
             if glyph.is_vertical {
                 if glyph
@@ -1158,7 +1216,25 @@ fn text_operator_has_vector_metric_source(
                 {
                     return Err(REASON);
                 }
-            } else if glyph.width.filter(|advance| advance.is_finite()).is_none() {
+            }
+            let needs_advance =
+                !glyph.is_vertical && glyph.width.filter(|advance| advance.is_finite()).is_none();
+            if !needs_advance && !needs_outline {
+                continue;
+            }
+            let key = VerifiedGlyph {
+                font_name: font_name.clone(),
+                code: glyph.code,
+                is_gid: glyph.is_gid,
+                unicode: glyph.unicode,
+                glyph_name: glyph.glyph_name.clone(),
+                needs_advance,
+                needs_outline,
+            };
+            if cache.verified.contains(&key) {
+                continue;
+            }
+            if needs_advance {
                 let Some(font_bytes) = font_bytes.as_deref().filter(|bytes| !bytes.is_empty())
                 else {
                     return Err(REASON);
@@ -1167,7 +1243,7 @@ fn text_operator_has_vector_metric_source(
                     return Err(REASON);
                 }
             }
-            if !matches!(gs.text.rendering_mode, 3) {
+            if needs_outline {
                 let Some(font_bytes) = font_bytes.as_deref().filter(|bytes| !bytes.is_empty())
                 else {
                     return Err(OUTLINE_REASON);
@@ -1176,6 +1252,7 @@ fn text_operator_has_vector_metric_source(
                     return Err(OUTLINE_REASON);
                 }
             }
+            cache.verified.insert(key);
         }
     }
     Ok(())

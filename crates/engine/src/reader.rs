@@ -29,7 +29,11 @@ const STREAMING_INITIAL_XREF_READ: usize = 64 * 1024;
 const STREAMING_XREF_READ_LIMIT: usize = 64 * 1024 * 1024;
 const STREAMING_FULL_READ_FALLBACK_LIMIT: u64 = 128 * 1024 * 1024;
 const STREAMING_STREAM_HEADER_READ_LIMIT: usize = 1024 * 1024;
-const DEFAULT_OBJECT_STREAM_CACHE_LIMIT: usize = 32;
+const DEFAULT_OBJECT_STREAM_CACHE_LIMIT: usize = 4096;
+/// Estimated heap retained by parsed object streams. With the object bound this
+/// keeps whole-document traversals (structure trees, closures) from re-decoding
+/// streams, without letting large hostile streams grow the cache unboundedly.
+const MAX_CACHED_OBJECT_STREAM_BYTES: usize = 256 * 1024 * 1024;
 const MAX_XREF_CHAIN_DEPTH: usize = 256;
 const MAX_XREF_ENTRIES: usize = MAX_FALLBACK_XREF_OBJECTS;
 const MAX_OBJECT_STREAM_OBJECTS: usize = 200_000;
@@ -213,11 +217,13 @@ fn estimate_object_heap_bytes(object: &PdfObject, stop_after: usize) -> usize {
 }
 
 struct BoundedObjectStreamCache {
-    streams: HashMap<u32, ParsedObjectStream>,
+    streams: HashMap<u32, (ParsedObjectStream, usize)>,
     order: VecDeque<u32>,
     max_streams: usize,
     total_objects: usize,
     max_objects: usize,
+    total_bytes: usize,
+    max_bytes: usize,
 }
 
 impl BoundedObjectStreamCache {
@@ -228,6 +234,8 @@ impl BoundedObjectStreamCache {
             max_streams: max_streams.max(1),
             total_objects: 0,
             max_objects: MAX_CACHED_OBJECT_STREAM_OBJECTS,
+            total_bytes: 0,
+            max_bytes: MAX_CACHED_OBJECT_STREAM_BYTES,
         }
     }
 
@@ -236,30 +244,46 @@ impl BoundedObjectStreamCache {
     }
 
     fn get(&self, stream_obj: &u32) -> Option<&ParsedObjectStream> {
-        self.streams.get(stream_obj)
+        self.streams.get(stream_obj).map(|(objects, _)| objects)
     }
 
     fn insert(&mut self, stream_obj: u32, objects: ParsedObjectStream) {
         if objects.len() > self.max_objects {
             return;
         }
-        if let Some(previous) = self.streams.remove(&stream_obj) {
+        let mut bytes = objects.len().saturating_mul(
+            std::mem::size_of::<u32>() + std::mem::size_of::<(u32, PdfObject)>(),
+        );
+        for (_, object) in objects.values() {
+            if bytes > self.max_bytes {
+                break;
+            }
+            bytes = bytes.saturating_add(estimate_object_heap_bytes(object, self.max_bytes));
+        }
+        if bytes > self.max_bytes {
+            return;
+        }
+        if let Some((previous, previous_bytes)) = self.streams.remove(&stream_obj) {
             self.total_objects = self.total_objects.saturating_sub(previous.len());
+            self.total_bytes = self.total_bytes.saturating_sub(previous_bytes);
             self.order.retain(|cached| *cached != stream_obj);
         }
         while self.streams.len() >= self.max_streams
             || self.total_objects.saturating_add(objects.len()) > self.max_objects
+            || self.total_bytes.saturating_add(bytes) > self.max_bytes
         {
             let Some(victim) = self.order.pop_front() else {
                 break;
             };
-            if let Some(removed) = self.streams.remove(&victim) {
+            if let Some((removed, removed_bytes)) = self.streams.remove(&victim) {
                 self.total_objects = self.total_objects.saturating_sub(removed.len());
+                self.total_bytes = self.total_bytes.saturating_sub(removed_bytes);
             }
         }
         self.order.push_back(stream_obj);
         self.total_objects = self.total_objects.saturating_add(objects.len());
-        self.streams.insert(stream_obj, objects);
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+        self.streams.insert(stream_obj, (objects, bytes));
     }
 }
 
@@ -431,15 +455,29 @@ impl Read for PdfRangeReader<'_> {
             return Ok(0);
         }
         let len = self.remaining.min(buf.len());
-        let bytes = self
-            .source
-            .read_at(self.offset, len)
-            .map_err(|err| std::io::Error::other(err.to_string()))?;
-        buf[..bytes.len()].copy_from_slice(&bytes);
-        self.offset += bytes.len();
-        self.remaining -= bytes.len();
-        Ok(bytes.len())
+        let end = self
+            .offset
+            .checked_add(len)
+            .filter(|end| *end <= self.source.len())
+            .ok_or_else(|| std::io::Error::other("stream range exceeds input length"))?;
+        match self.source {
+            PdfSource::Memory(data) => buf[..len].copy_from_slice(&data[self.offset..end]),
+            PdfSource::File(source) => {
+                read_exact_at(&source.file, &mut buf[..len], self.offset as u64)?
+            }
+        }
+        self.offset = end;
+        self.remaining -= len;
+        Ok(len)
     }
+}
+
+struct LargeStreamLayout {
+    number: u32,
+    generation: u16,
+    dict: PdfDictionary,
+    stream_start: usize,
+    length: usize,
 }
 
 pub struct PdfReader {
@@ -468,6 +506,10 @@ pub struct PdfReader {
     startxref: usize,
     repair_diagnostics: Vec<ParserDiagnostic>,
     diagnostics: OnceLock<Vec<ParserDiagnostic>>,
+    /// Sorted, deduplicated physical offsets of uncompressed objects plus
+    /// `startxref`. Built once on first boundary lookup so successor queries
+    /// are a binary search instead of a scan over every xref entry.
+    object_boundaries: OnceLock<Box<[usize]>>,
 }
 
 impl PdfReader {
@@ -554,6 +596,7 @@ impl PdfReader {
             startxref,
             repair_diagnostics,
             diagnostics: OnceLock::new(),
+            object_boundaries: OnceLock::new(),
         })
     }
 
@@ -662,6 +705,7 @@ impl PdfReader {
             startxref,
             repair_diagnostics,
             diagnostics: OnceLock::new(),
+            object_boundaries: OnceLock::new(),
         })
     }
 
@@ -769,6 +813,7 @@ impl PdfReader {
             startxref,
             repair_diagnostics,
             diagnostics: OnceLock::new(),
+            object_boundaries: OnceLock::new(),
         })
     }
 
@@ -807,6 +852,7 @@ impl PdfReader {
             startxref,
             repair_diagnostics,
             diagnostics: OnceLock::new(),
+            object_boundaries: OnceLock::new(),
         })
     }
 
@@ -1169,9 +1215,138 @@ impl PdfReader {
             return parser.parse_indirect_object();
         }
 
+        if let Some(parsed) = self.parse_large_file_stream_at(offset)? {
+            return Ok(parsed);
+        }
         let bytes = self.read_object_window(offset)?;
         let mut parser = PdfParser::with_resolver(&bytes, 0, Some(self))?;
         parser.parse_indirect_object()
+    }
+
+    /// Locate a large stream object without reading its body: parse only the
+    /// header, then verify the `endstream ... endobj` trailer at the declared
+    /// length inside the object's window. Any deviation (non-stream, missing or
+    /// invalid Length, trailer mismatch, small object) returns `None` so the
+    /// general window parser handles the object with its usual recovery.
+    fn large_stream_layout(
+        &self,
+        offset: usize,
+        min_object_bytes: usize,
+    ) -> Result<Option<LargeStreamLayout>> {
+        const TRAILER_PROBE_BYTES: usize = 4096;
+        const INITIAL_HEADER_PROBE_BYTES: usize = 16 * 1024;
+        if offset > self.source.len() {
+            return Ok(None);
+        }
+        let end = self
+            .next_object_boundary(offset)
+            .unwrap_or_else(|| self.source.len())
+            .min(self.source.len());
+        if end <= offset || end - offset < min_object_bytes {
+            return Ok(None);
+        }
+        // Most stream dictionaries are small: probe a short prefix first and
+        // only widen to the streaming header limit when the dictionary does
+        // not fit, so the body is not read twice.
+        let window = end - offset;
+        let mut header = None;
+        for limit in [INITIAL_HEADER_PROBE_BYTES, STREAMING_STREAM_HEADER_READ_LIMIT] {
+            let header_len = window.min(limit);
+            let header_bytes = self.source.read_at(offset, header_len)?;
+            let mut parser = PdfParser::with_resolver(&header_bytes, 0, Some(self))?;
+            if let Ok(parsed) = parser.parse_indirect_stream_header() {
+                // The EOL after `stream` must have been fully observed;
+                // otherwise the body start could be misplaced at the probe end.
+                if header_len == window || parsed.stream_start.saturating_add(2) <= header_len {
+                    header = Some(parsed);
+                    break;
+                }
+            }
+            if header_len == window {
+                break;
+            }
+        }
+        let Some(header) = header else {
+            return Ok(None);
+        };
+        let Some(length) = header.length.and_then(|length| usize::try_from(length).ok()) else {
+            return Ok(None);
+        };
+        let Some(stream_start) = offset.checked_add(header.stream_start) else {
+            return Ok(None);
+        };
+        let Some(stream_end) = stream_start.checked_add(length) else {
+            return Ok(None);
+        };
+        if stream_end > end {
+            return Ok(None);
+        }
+        let probe_len = (end - stream_end).min(TRAILER_PROBE_BYTES);
+        let tail = self.source.read_at(stream_end, probe_len)?;
+        let Some(trailer_end) = crate::parser::stream_object_trailer_end(&tail) else {
+            return Ok(None);
+        };
+        // `endobj` must be followed by a delimiter that the probe actually
+        // observed, unless the probe reached the object window's end.
+        if trailer_end == tail.len() && stream_end + probe_len < end {
+            return Ok(None);
+        }
+        Ok(Some(LargeStreamLayout {
+            number: header.number,
+            generation: header.generation,
+            dict: header.dict,
+            stream_start,
+            length,
+        }))
+    }
+
+    /// File-backed fast path for large stream objects: read the body straight
+    /// into its final buffer instead of reading the whole object window and
+    /// then copying the body out of it.
+    fn parse_large_file_stream_at(
+        &self,
+        offset: usize,
+    ) -> Result<Option<crate::parser::IndirectObject>> {
+        const MIN_FAST_PATH_OBJECT_BYTES: usize = 256 * 1024;
+        let Some(layout) = self.large_stream_layout(offset, MIN_FAST_PATH_OBJECT_BYTES)? else {
+            return Ok(None);
+        };
+        let raw = self.source.read_at(layout.stream_start, layout.length)?;
+        Ok(Some(crate::parser::IndirectObject {
+            number: layout.number,
+            generation: layout.generation,
+            object: PdfObject::Stream {
+                dict: layout.dict,
+                raw,
+            },
+        }))
+    }
+
+    /// Dictionary of a large, unencrypted, uncompressed stream object without
+    /// reading its body. Writers that copy such streams verbatim use this to
+    /// discover references now and fetch the body only when serializing it.
+    /// Returns `None` whenever the general object path must be used instead.
+    pub(crate) fn large_stream_dictionary(
+        &self,
+        number: u32,
+        generation: u16,
+    ) -> Result<Option<PdfDictionary>> {
+        if self.encryption.is_some() {
+            return Ok(None);
+        }
+        let Some(XrefEntry::Uncompressed { offset }) = self.xref.get(&(number, generation)) else {
+            return Ok(None);
+        };
+        // Deferring a body costs one short header read now; anything this
+        // large is worth not retaining until serialization.
+        const MIN_DEFERRED_OBJECT_BYTES: usize = 16 * 1024;
+        let Some(layout) = self.large_stream_layout(*offset, MIN_DEFERRED_OBJECT_BYTES)? else {
+            return Ok(None);
+        };
+        if layout.number != number || layout.generation != generation {
+            return Ok(None);
+        }
+        Ok(Some(layout.dict))
     }
 
     fn read_object_window(&self, offset: usize) -> Result<Vec<u8>> {
@@ -1193,16 +1368,22 @@ impl PdfReader {
     }
 
     fn next_object_boundary(&self, offset: usize) -> Option<usize> {
-        self.xref
-            .values()
-            .filter_map(|entry| match entry {
-                XrefEntry::Uncompressed { offset: candidate } if *candidate > offset => {
-                    Some(*candidate)
-                }
-                _ => None,
-            })
-            .chain((self.startxref > offset).then_some(self.startxref))
-            .min()
+        let boundaries = self.object_boundaries.get_or_init(|| {
+            let mut offsets: Vec<usize> = self
+                .xref
+                .values()
+                .filter_map(|entry| match entry {
+                    XrefEntry::Uncompressed { offset } => Some(*offset),
+                    _ => None,
+                })
+                .chain(std::iter::once(self.startxref))
+                .collect();
+            offsets.sort_unstable();
+            offsets.dedup();
+            offsets.into_boxed_slice()
+        });
+        let index = boundaries.partition_point(|candidate| *candidate <= offset);
+        boundaries.get(index).copied()
     }
 
     /// Recursively decrypt the strings and stream bytes inside a freshly-parsed
@@ -2207,6 +2388,9 @@ fn read_classic_xref(
                 "xref subsection declares {count} entries beyond the remaining limit"
             )));
         }
+        // Each entry occupies at least 18 bytes, so the reservation never
+        // exceeds what the remaining input could actually contain.
+        xref.reserve((count as usize).min(data.len().saturating_sub(pos) / 18));
         for i in 0..count {
             let source_number = start.checked_add(i).ok_or_else(|| {
                 WellfriendError::MalformedPdf("xref object number overflows".to_string())
@@ -2217,7 +2401,7 @@ fn read_classic_xref(
             let byte_offset = read_u64_token(data, &mut pos)?;
             let generation = read_u64_token(data, &mut pos)?;
             let status = read_token(data, &mut pos)?;
-            let entry = match status.as_slice() {
+            let entry = match status {
                 b"n" => XrefEntry::Uncompressed {
                     offset: usize::try_from(byte_offset).map_err(|_| {
                         WellfriendError::MalformedPdf(
@@ -2233,7 +2417,7 @@ fn read_classic_xref(
                     )));
                 }
             };
-            let generation = match status.as_slice() {
+            let generation = match status {
                 b"f" => u16::try_from(generation).unwrap_or(u16::MAX),
                 _ => u16::try_from(generation).map_err(|_| {
                     WellfriendError::MalformedPdf("xref generation does not fit in u16".to_string())
@@ -2513,12 +2697,16 @@ fn insert_xref_entry(
     generation: u16,
     entry: XrefEntry,
 ) -> Result<()> {
-    if !xref.contains_key(&(object_number, generation)) && xref.len() >= MAX_XREF_ENTRIES {
-        return Err(WellfriendError::ResourceLimit(format!(
-            "xref contains more than {MAX_XREF_ENTRIES} entries"
-        )));
+    let len = xref.len();
+    if let std::collections::hash_map::Entry::Vacant(slot) = xref.entry((object_number, generation))
+    {
+        if len >= MAX_XREF_ENTRIES {
+            return Err(WellfriendError::ResourceLimit(format!(
+                "xref contains more than {MAX_XREF_ENTRIES} entries"
+            )));
+        }
+        slot.insert(entry);
     }
-    xref.entry((object_number, generation)).or_insert(entry);
     Ok(())
 }
 
@@ -2697,15 +2885,36 @@ fn find_startxref_from_source(source: &PdfSource) -> Result<usize> {
     }
 }
 
+/// Same accepted syntax as `u64::from_str` (optional `+`, ASCII digits, no
+/// overflow), parsed in place without allocating the token.
 fn read_u64_token(data: &[u8], pos: &mut usize) -> Result<u64> {
     let token = read_token(data, pos)?;
-    let text = std::str::from_utf8(&token)
-        .map_err(|err| WellfriendError::ParseError(format!("invalid integer token: {err}")))?;
-    text.parse::<u64>()
-        .map_err(|err| WellfriendError::ParseError(format!("invalid unsigned integer: {err}")))
+    let digits = token.strip_prefix(b"+").unwrap_or(token);
+    if digits.is_empty() {
+        return Err(WellfriendError::ParseError(
+            "invalid unsigned integer: cannot parse integer from empty string".to_string(),
+        ));
+    }
+    let mut value = 0u64;
+    for &byte in digits {
+        if !byte.is_ascii_digit() {
+            return Err(WellfriendError::ParseError(
+                "invalid unsigned integer: invalid digit found in string".to_string(),
+            ));
+        }
+        value = value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(u64::from(byte - b'0')))
+            .ok_or_else(|| {
+                WellfriendError::ParseError(
+                    "invalid unsigned integer: number too large to fit in target type".to_string(),
+                )
+            })?;
+    }
+    Ok(value)
 }
 
-fn read_token(data: &[u8], pos: &mut usize) -> Result<Vec<u8>> {
+fn read_token<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8]> {
     *pos = skip_ws_and_comments(data, *pos);
     let start = *pos;
     while let Some(byte) = data.get(*pos).copied() {
@@ -2719,7 +2928,7 @@ fn read_token(data: &[u8], pos: &mut usize) -> Result<Vec<u8>> {
             "expected token while reading PDF bytes".to_string(),
         ));
     }
-    Ok(data[start..*pos].to_vec())
+    Ok(&data[start..*pos])
 }
 
 fn skip_ws_and_comments(data: &[u8], mut pos: usize) -> usize {

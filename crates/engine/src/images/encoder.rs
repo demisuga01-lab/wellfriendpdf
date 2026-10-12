@@ -66,6 +66,49 @@ impl ImageEncoder {
         Ok(out)
     }
 
+    /// PNG for embedding in packages (Office media): a grayscale image whose
+    /// samples are all 0 or 255 is written at bit depth 1, which decodes to the
+    /// same pixels while compressing an eighth of the data. Every other image
+    /// is encoded exactly as [`Self::encode_png`].
+    pub fn encode_png_compact(image: &RawImage) -> Result<Vec<u8>> {
+        use png::{BitDepth, ColorType, Encoder};
+
+        let bilevel = image.channels == 1
+            && image.pixels.len() == image.width as usize * image.height as usize
+            && image.pixels.iter().all(|&sample| sample == 0 || sample == 255);
+        if !bilevel {
+            return Self::encode_png(image);
+        }
+        let width = image.width as usize;
+        let row_bytes = width.div_ceil(8);
+        let mut packed = vec![0u8; row_bytes * image.height as usize];
+        for (row, packed_row) in image
+            .pixels
+            .chunks_exact(width.max(1))
+            .zip(packed.chunks_exact_mut(row_bytes.max(1)))
+        {
+            for (x, &sample) in row.iter().enumerate() {
+                if sample == 255 {
+                    packed_row[x / 8] |= 0x80 >> (x % 8);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        {
+            let mut encoder = Encoder::new(&mut out, image.width, image.height);
+            encoder.set_color(ColorType::Grayscale);
+            encoder.set_depth(BitDepth::One);
+            encoder.set_compression(png::Compression::Default);
+            let mut writer = encoder
+                .write_header()
+                .map_err(|e| WellfriendError::MalformedPdf(format!("PNG header error: {e}")))?;
+            writer
+                .write_image_data(&packed)
+                .map_err(|e| WellfriendError::MalformedPdf(format!("PNG encode error: {e}")))?;
+        }
+        Ok(out)
+    }
+
     /// Encode a RawImage as PNG with fast compression.
     pub fn encode_png_fast(image: &RawImage) -> Result<Vec<u8>> {
         use png::{BitDepth, ColorType, Compression, Encoder};

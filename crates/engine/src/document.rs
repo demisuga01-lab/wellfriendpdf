@@ -9,6 +9,7 @@ use crate::object::{PdfDictionary, PdfObject};
 const MAX_PAGE_TREE_DEPTH: usize = 256;
 const MAX_PAGE_TREE_NODES: usize = 200_000;
 const MAX_DOCUMENT_PAGES: usize = 200_000;
+const INDEXED_PAGE_LOOKUPS_BEFORE_FULL_TRAVERSAL: usize = 32;
 use crate::pubsec::PubSecKeyProvider;
 use crate::reader::{ContentStreamRange, PdfReader};
 
@@ -158,6 +159,27 @@ impl PdfDocument {
             .cloned()
         {
             return Ok(page);
+        }
+        // Each indexed lookup walks from the page-tree root, so visiting many
+        // distinct pages one by one is quadratic on flat trees. Once a caller
+        // has requested enough distinct pages, build the full projection once
+        // and serve every later lookup from it.
+        if self
+            .page_lookup_cache
+            .read()
+            .expect("page lookup cache lock poisoned")
+            .len()
+            >= INDEXED_PAGE_LOOKUPS_BEFORE_FULL_TRAVERSAL
+        {
+            return self
+                .cached_pages()?
+                .get(page_number - 1)
+                .cloned()
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf(format!(
+                        "page {page_number} is absent from the page tree"
+                    ))
+                });
         }
 
         let page = match self.collect_page(page_number)? {

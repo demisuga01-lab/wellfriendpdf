@@ -3420,6 +3420,90 @@ pub unsafe extern "C" fn wellfriendpdf_document_rotate_pdf(
     })
 }
 
+/// [`wellfriendpdf_document_rotate_pdf`] streamed to `output_path`. The file
+/// appears only after the rotation completes. `bytes_out`, if non-null,
+/// receives the size written. On platforms that forbid replacing an open file
+/// (Windows), `output_path` must not name this document's source file.
+///
+/// # Safety
+///
+/// `document` must be valid. `pages` must point to `pages_len` readable entries
+/// unless `pages_len` is zero. `output_path` must be a NUL-terminated UTF-8
+/// string. `bytes_out` and `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_rotate_pdf_to_path(
+    document: *const WellfriendDocument,
+    pages: *const usize,
+    pages_len: usize,
+    angle: c_int,
+    relative: c_int,
+    output_path: *const c_char,
+    bytes_out: *mut u64,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let pages = unsafe { read_pages(pages, pages_len) }?;
+        let output = unsafe { required_c_string(output_path, "output_path") }?;
+        let rotation = if relative != 0 {
+            wellfriendpdf_engine::Rotation::Relative(angle)
+        } else {
+            wellfriendpdf_engine::Rotation::Absolute(angle)
+        };
+        let written = wellfriendpdf((|| -> wellfriendpdf_engine::Result<u64> {
+            let mut file = wellfriendpdf_engine::AtomicFile::create(std::path::Path::new(&output))?;
+            let written =
+                wellfriendpdf_engine::rotate_pages_to(&doc.engine, &pages, rotation, file.writer())?;
+            file.commit()?;
+            Ok(written)
+        })())?;
+        if !bytes_out.is_null() {
+            unsafe { *bytes_out = written };
+        }
+        Ok(())
+    })
+}
+
+/// [`wellfriendpdf_document_extract_pages_pdf`] streamed to `output_path`.
+/// The file appears only after extraction completes. `bytes_out`, if
+/// non-null, receives the size written. On platforms that forbid replacing an
+/// open file (Windows), `output_path` must not name this document's source.
+///
+/// # Safety
+///
+/// `document` must be valid. `pages` must point to `pages_len` readable entries
+/// unless `pages_len` is zero. `output_path` must be a NUL-terminated UTF-8
+/// string. `bytes_out` and `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_extract_pages_to_path(
+    document: *const WellfriendDocument,
+    pages: *const usize,
+    pages_len: usize,
+    output_path: *const c_char,
+    bytes_out: *mut u64,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let mut pages = unsafe { read_pages(pages, pages_len) }?;
+        if pages.is_empty() {
+            let total = wellfriendpdf(doc.engine.page_count())?;
+            pages = (1..=total).collect();
+        }
+        let output = unsafe { required_c_string(output_path, "output_path") }?;
+        let written = wellfriendpdf((|| -> wellfriendpdf_engine::Result<u64> {
+            let mut file = wellfriendpdf_engine::AtomicFile::create(std::path::Path::new(&output))?;
+            let written = doc.engine.extract_pages_to(&pages, file.writer())?;
+            file.commit()?;
+            Ok(written)
+        })())?;
+        if !bytes_out.is_null() {
+            unsafe { *bytes_out = written };
+        }
+        Ok(())
+    })
+}
+
 /// Optimizes a document and returns a new PDF.
 ///
 /// # Safety
@@ -5138,6 +5222,66 @@ pub unsafe extern "C" fn wellfriendpdf_merge_pdfs_from_bytes(
         let out = wellfriendpdf(wellfriendpdf_engine::build_merged(&specs))?;
         unsafe {
             *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Merges the PDF files at `paths` (all pages, in order) and streams the result
+/// to `output_path`. Inputs are read lazily and the output is written to a
+/// sibling temporary file renamed into place, so memory stays bounded by one
+/// stream and `output_path` may name an input. `passwords` may be null, or
+/// point to `count` entries where a null entry means no password. On success
+/// `bytes_out`/`pages_out` (each optional) receive the written size and page
+/// count.
+///
+/// # Safety
+///
+/// `paths` must point to `count` NUL-terminated UTF-8 strings; `passwords`, if
+/// non-null, to `count` nullable NUL-terminated strings; `output_path` must be
+/// a NUL-terminated UTF-8 string. `bytes_out`, `pages_out` and `error_out`, if
+/// non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_merge_pdf_files_to_path(
+    paths: *const *const c_char,
+    passwords: *const *const c_char,
+    count: usize,
+    output_path: *const c_char,
+    bytes_out: *mut u64,
+    pages_out: *mut usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if count == 0 {
+            return Err("at least one input PDF is required".into());
+        }
+        if paths.is_null() {
+            return Err("paths pointer is null".into());
+        }
+        let output = unsafe { required_c_string(output_path, "output_path") }?;
+        let mut owned = Vec::with_capacity(count);
+        for idx in 0..count {
+            let path = unsafe { required_c_string(*paths.add(idx), "path") }?;
+            let password = if passwords.is_null() {
+                None
+            } else {
+                unsafe { optional_c_string(*passwords.add(idx)) }?
+            };
+            owned.push((std::path::PathBuf::from(path), password));
+        }
+        let inputs: Vec<(&std::path::Path, Option<&[u8]>)> = owned
+            .iter()
+            .map(|(path, password)| (path.as_path(), password.as_deref().map(str::as_bytes)))
+            .collect();
+        let (bytes, pages) = wellfriendpdf(wellfriendpdf_engine::merge_paths_to_file(
+            &inputs,
+            std::path::Path::new(&output),
+        ))?;
+        if !bytes_out.is_null() {
+            unsafe { *bytes_out = bytes };
+        }
+        if !pages_out.is_null() {
+            unsafe { *pages_out = pages };
         }
         Ok(())
     })

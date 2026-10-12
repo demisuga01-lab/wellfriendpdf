@@ -8661,7 +8661,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     let mut zip = ZipWriter::new(out_file);
     let zip_opts = FileOptions::<()>::default()
         .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(6));
+        .compression_level(Some(1));
 
     let mut rendered_count = 0usize;
     let mut contract_sidecars = 0usize;
@@ -10466,7 +10466,7 @@ fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     let mut zip = ZipWriter::new(out_file);
     let zip_opts = FileOptions::<()>::default()
         .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(6));
+        .compression_level(Some(1));
 
     let mut rendered = 0usize;
     let mut rasterized_fallback = 0usize;
@@ -10595,7 +10595,7 @@ fn run_render_eps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     let mut zip = ZipWriter::new(out_file);
     let zip_opts = FileOptions::<()>::default()
         .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(6));
+        .compression_level(Some(1));
 
     let mut rendered = 0usize;
     let mut rasterized_fallback = 0usize;
@@ -12612,7 +12612,7 @@ fn parse_validate_fail_on(
 }
 
 fn run_merge(args: MergeArgs) -> Result<(), Box<dyn Error>> {
-    use wellfriendpdf_engine::{build_merged, ContentEngine};
+    use wellfriendpdf_engine::{build_merged_to, ContentEngine};
 
     // Split positional passwords (comma-separated) and match by input index.
     let passwords: Vec<String> = args
@@ -12644,23 +12644,30 @@ fn run_merge(args: MergeArgs) -> Result<(), Box<dyn Error>> {
         inputs.push((engine.document(), all));
     }
 
-    let bytes = build_merged(&inputs)?;
-    std::fs::write(&args.output, &bytes)?;
+    // Inputs are read lazily while serializing, so the output (which may name
+    // an input) becomes visible only after the merge completes and the inputs
+    // are closed.
+    let mut file = wellfriendpdf_engine::AtomicFile::create(&args.output)?;
+    let written = build_merged_to(&inputs, file.writer())?;
+    let input_count = engines.len();
+    drop(inputs);
+    drop(engines);
+    file.commit()?;
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "merge",
                 "output": args.output.display().to_string(),
-                "inputs": engines.len(),
+                "inputs": input_count,
                 "pages": total_pages,
-                "bytes": bytes.len(),
+                "bytes": written,
             })
         );
     } else {
         eprintln!(
             "Merged {} file(s), {} page(s) -> {}",
-            engines.len(),
+            input_count,
             total_pages,
             args.output.display()
         );
@@ -12691,9 +12698,10 @@ fn run_split(args: SplitArgs) -> Result<(), Box<dyn Error>> {
 
     let mut written = 0usize;
     for page in first..=last {
-        let bytes = engine.extract_single_page(page)?;
         let path = expand_split_pattern(&args.output, page);
-        std::fs::write(&path, &bytes)?;
+        let mut file = wellfriendpdf_engine::AtomicFile::create(std::path::Path::new(&path))?;
+        engine.extract_pages_to(&[page], file.writer())?;
+        file.commit()?;
         written += 1;
     }
     if args.json {
@@ -12729,8 +12737,10 @@ fn run_extract_pages(args: ExtractPagesArgs) -> Result<(), Box<dyn Error>> {
         return Err(format!("selection '{}' matched no pages in 1..={total}", args.pages).into());
     }
 
-    let bytes = engine.extract_pages(&pages)?;
-    std::fs::write(&args.output, &bytes)?;
+    let mut file = wellfriendpdf_engine::AtomicFile::create(&args.output)?;
+    let written = engine.extract_pages_to(&pages, file.writer())?;
+    drop(engine);
+    file.commit()?;
     if args.json {
         println!(
             "{}",
@@ -12738,7 +12748,7 @@ fn run_extract_pages(args: ExtractPagesArgs) -> Result<(), Box<dyn Error>> {
                 "op": "extract-pages",
                 "output": args.output.display().to_string(),
                 "pages": pages,
-                "bytes": bytes.len(),
+                "bytes": written,
             })
         );
     } else {
@@ -12970,8 +12980,10 @@ fn run_rotate(args: RotateArgs) -> Result<(), Box<dyn Error>> {
     } else {
         Rotation::Absolute(args.angle)
     };
-    let bytes = wellfriendpdf_engine::rotate_pages(&engine, &pages, rotation)?;
-    std::fs::write(&args.output, &bytes)?;
+    let mut file = wellfriendpdf_engine::AtomicFile::create(&args.output)?;
+    wellfriendpdf_engine::rotate_pages_to(&engine, &pages, rotation, file.writer())?;
+    drop(engine);
+    file.commit()?;
     if args.json {
         println!(
             "{}",

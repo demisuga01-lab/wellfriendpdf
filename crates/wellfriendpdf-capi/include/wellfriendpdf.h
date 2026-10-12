@@ -822,6 +822,28 @@ WELLFRIENDPDF_API int wellfriendpdf_document_rotate_pdf(
     WellfriendBuffer *out_buffer,
     char **error_out);
 
+/* Streaming variants: write the result to output_path, which appears only
+ * after the operation completes. bytes_out may be NULL. On Windows,
+ * output_path must not name the document's own source file while the
+ * document is open. */
+WELLFRIENDPDF_API int wellfriendpdf_document_rotate_pdf_to_path(
+    const WellfriendDocument *document,
+    const size_t *pages,
+    size_t pages_len,
+    int angle,
+    int relative,
+    const char *output_path,
+    uint64_t *bytes_out,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_extract_pages_to_path(
+    const WellfriendDocument *document,
+    const size_t *pages,
+    size_t pages_len,
+    const char *output_path,
+    uint64_t *bytes_out,
+    char **error_out);
+
 WELLFRIENDPDF_API int wellfriendpdf_document_optimize_pdf(
     const WellfriendDocument *document,
     WellfriendBuffer *out_buffer,
@@ -1122,6 +1144,19 @@ WELLFRIENDPDF_API int wellfriendpdf_merge_pdfs_from_bytes(
     const size_t *lengths,
     size_t count,
     WellfriendBuffer *out_buffer,
+    char **error_out);
+
+/* Merge PDF files (all pages, in order) and stream the result to output_path.
+ * passwords may be NULL or hold count nullable entries. bytes_out/pages_out
+ * may be NULL. output_path may name an input; no partial file is left on
+ * failure. */
+WELLFRIENDPDF_API int wellfriendpdf_merge_pdf_files_to_path(
+    const char *const *paths,
+    const char *const *passwords,
+    size_t count,
+    const char *output_path,
+    uint64_t *bytes_out,
+    size_t *pages_out,
     char **error_out);
 
 /* --- Report surfaces (versioned-JSON envelopes) --------------------------- *

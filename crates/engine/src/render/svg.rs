@@ -175,6 +175,8 @@ fn render_vector_page(
     let mut state = SvgRenderState {
         engine,
         page_resources: resources.clone(),
+        font_bytes_cache: std::collections::HashMap::new(),
+        font_resolver_cache: std::collections::HashMap::new(),
         resources: resources.clone(),
         viewport: viewport.clone(),
         gs: GraphicsState::default(),
@@ -596,6 +598,11 @@ struct SvgRenderState<'a> {
     engine: &'a ContentEngine,
     resources: PageResources,
     page_resources: PageResources,
+    /// Font programs already resolved for the current `resources` scope, by
+    /// font resource name. Cleared whenever `resources` is replaced so a name
+    /// never resolves against a different Form/page resource dictionary.
+    font_bytes_cache: std::collections::HashMap<String, Option<std::sync::Arc<[u8]>>>,
+    font_resolver_cache: std::collections::HashMap<String, std::sync::Arc<crate::fonts::FontResolver>>,
     viewport: Viewport,
     gs: GraphicsState,
     path: Path,
@@ -1546,6 +1553,8 @@ impl SvgRenderState<'_> {
         let saved_clip_len = self.clip_stack.len();
 
         self.resources = program.resources.clone();
+        self.font_bytes_cache.clear();
+        self.font_resolver_cache.clear();
         self.gs = program.inherited_gs.clone();
         self.path = Path::new();
         self.pending_clip = None;
@@ -1603,6 +1612,8 @@ impl SvgRenderState<'_> {
         self.clip_stack.truncate(saved_clip_len);
         self.gs = saved_gs;
         self.resources = saved_resources;
+        self.font_bytes_cache.clear();
+        self.font_resolver_cache.clear();
         self.path = saved_path;
         self.pending_clip = saved_pending_clip;
         self.text_clip_path = saved_text_clip_path;
@@ -1943,6 +1954,8 @@ impl SvgRenderState<'_> {
         let saved_clip_len = self.clip_stack.len();
 
         self.resources = program.resources.clone();
+        self.font_bytes_cache.clear();
+        self.font_resolver_cache.clear();
         self.gs = GraphicsState::default();
         self.gs.ctm = tile_ctm.to_array();
         if let Some(color) = forced_color {
@@ -1995,6 +2008,8 @@ impl SvgRenderState<'_> {
         self.clip_stack.truncate(saved_clip_len);
         self.gs = saved_gs;
         self.resources = saved_resources;
+        self.font_bytes_cache.clear();
+        self.font_resolver_cache.clear();
         self.regional_image_names = saved_image_names;
         self.regional_inline_image_count = saved_inline_count;
         self.regional_form_names = saved_form_names;
@@ -2324,14 +2339,38 @@ impl SvgRenderState<'_> {
             return;
         }
         let reader = self.engine.document().reader();
-        let decoded = match try_decode_text_bytes(bytes, &font_name, &self.resources, reader) {
+        let decoded = match self.resources.fonts.get(&font_name) {
+            Some(font_dict) => {
+                let resolver = self
+                    .font_resolver_cache
+                    .entry(font_name.clone())
+                    .or_insert_with(|| {
+                        std::sync::Arc::new(crate::fonts::FontResolver::new(font_dict, reader))
+                    })
+                    .clone();
+                crate::render::text_decode::try_decode_text_bytes_with_resolver(
+                    bytes, font_dict, &resolver, reader,
+                )
+            }
+            None => try_decode_text_bytes(bytes, &font_name, &self.resources, reader),
+        };
+        let decoded = match decoded {
             Ok(decoded) => decoded,
             Err(reason) => {
                 self.record_fatal_error(WellfriendError::UnsupportedFeature(reason));
                 return;
             }
         };
-        let font_bytes = get_font_bytes(&font_name, &self.resources, reader);
+        let font_bytes = match self.font_bytes_cache.get(&font_name) {
+            Some(cached) => cached.clone(),
+            None => {
+                let resolved =
+                    get_font_bytes(&font_name, &self.resources, reader).map(std::sync::Arc::<[u8]>::from);
+                self.font_bytes_cache
+                    .insert(font_name.clone(), resolved.clone());
+                resolved
+            }
+        };
         let font_program = font_bytes.as_deref().filter(|bytes| !bytes.is_empty());
         let upem = font_program
             .and_then(get_upem)
@@ -2350,13 +2389,13 @@ impl SvgRenderState<'_> {
                     ));
                     return;
                 };
-                if decoded_glyph_strict_outline(&glyph, fb).is_none() {
+                let Some(outline) = decoded_glyph_strict_outline(&glyph, fb) else {
                     self.record_fatal_error(WellfriendError::UnsupportedFeature(
                         "SVG text glyph outline unavailable for vector output".to_string(),
                     ));
                     return;
-                }
-                self.emit_glyph(&glyph, fb, upem);
+                };
+                self.emit_glyph_outline(outline, upem);
             }
             let advance = if glyph.is_vertical {
                 0.0
@@ -2382,10 +2421,7 @@ impl SvgRenderState<'_> {
     }
 
     /// Emit one glyph as an SVG `<path>` outline (text-as-outlines).
-    fn emit_glyph(&mut self, glyph: &DecodedGlyph, font_bytes: &[u8], upem: f64) {
-        let Some(outline) = decoded_glyph_strict_outline(glyph, font_bytes) else {
-            return;
-        };
+    fn emit_glyph_outline(&mut self, outline: Option<Path>, upem: f64) {
         let Some(glyph_path) = outline else {
             return;
         };
@@ -2929,6 +2965,8 @@ mod tests {
         let mut state = SvgRenderState {
             engine: &engine,
             page_resources: resources.clone(),
+            font_bytes_cache: std::collections::HashMap::new(),
+            font_resolver_cache: std::collections::HashMap::new(),
             resources,
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 72),
             gs: GraphicsState::default(),
@@ -2974,6 +3012,8 @@ mod tests {
             engine: &engine,
             resources: PageResources::default(),
             page_resources: PageResources::default(),
+            font_bytes_cache: std::collections::HashMap::new(),
+            font_resolver_cache: std::collections::HashMap::new(),
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 72),
             gs: GraphicsState::default(),
             path: Path::new(),
@@ -3040,6 +3080,8 @@ mod tests {
             engine: &engine,
             resources: PageResources::default(),
             page_resources: PageResources::default(),
+            font_bytes_cache: std::collections::HashMap::new(),
+            font_resolver_cache: std::collections::HashMap::new(),
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 72),
             gs: GraphicsState::default(),
             path: Path::new(),

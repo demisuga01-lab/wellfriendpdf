@@ -114,8 +114,41 @@ impl Type1Font {
 }
 
 pub(crate) fn outline_by_name(font_bytes: &[u8], glyph_name: &str) -> Option<(Option<Path>, f64)> {
-    let font = Type1Font::parse(font_bytes)?;
+    let font = parsed_program(font_bytes)?;
     Some(font.outline_by_name(glyph_name))
+}
+
+/// Parsed programs for recently seen font files on this thread. Vector export
+/// asks for one glyph at a time; without this every glyph re-ran the eexec
+/// decryption and program parse of the whole font. Entries are matched by
+/// exact byte equality, so a hit is the same parse of the same input.
+const PARSED_PROGRAM_CACHE_ENTRIES: usize = 32;
+
+thread_local! {
+    static PARSED_PROGRAMS: std::cell::RefCell<
+        std::collections::VecDeque<(std::sync::Arc<[u8]>, Option<std::sync::Arc<Type1Font>>)>,
+    > = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+fn parsed_program(font_bytes: &[u8]) -> Option<std::sync::Arc<Type1Font>> {
+    if let Some(hit) = PARSED_PROGRAMS.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|(bytes, _)| bytes.as_ref() == font_bytes)
+            .map(|(_, font)| font.clone())
+    }) {
+        return hit;
+    }
+    let parsed = Type1Font::parse(font_bytes).map(std::sync::Arc::new);
+    PARSED_PROGRAMS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= PARSED_PROGRAM_CACHE_ENTRIES {
+            cache.pop_front();
+        }
+        cache.push_back((std::sync::Arc::from(font_bytes), parsed.clone()));
+    });
+    parsed
 }
 
 pub(crate) fn builtin_encoding(font_bytes: &[u8]) -> Option<Vec<String>> {

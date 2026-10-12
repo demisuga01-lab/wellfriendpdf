@@ -427,6 +427,28 @@ impl ImagePainter {
             })
             .collect::<Option<Vec<_>>>()?;
 
+        // Positive horizontal weights per destination column, computed once
+        // with the same expression the inner loop used per source row.
+        let x_weights: Vec<Vec<(usize, f64)>> = if target.device_x_source.axis
+            == OrthogonalSourceAxis::X
+        {
+            x_spans
+                .iter()
+                .map(|x_span| {
+                    (x_span.first..x_span.end)
+                        .map(|source_x| {
+                            (source_x, box_pixel_weight(source_x, x_span.start, x_span.finish))
+                        })
+                        .filter(|&(_, weight)| weight > 0.0)
+                        .collect()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Gray sources add identical products to all three channels, so one
+        // accumulator per column carries the exact same sum.
+        let gray = image.channels == 1;
         for (destination_y, y_span) in y_spans.iter().enumerate() {
             accumulated.fill(0.0);
             normalization.fill(0.0);
@@ -436,23 +458,18 @@ impl ImagePainter {
                     if y_weight <= 0.0 {
                         continue;
                     }
-                    for (destination_x, x_span) in x_spans.iter().enumerate() {
+                    let row_start = source_y * source_width;
+                    for (destination_x, weights) in x_weights.iter().enumerate() {
                         let output_base = destination_x * 3;
 
-                        for source_x in x_span.first..x_span.end {
-                            let x_weight = box_pixel_weight(source_x, x_span.start, x_span.finish);
-                            if x_weight <= 0.0 {
-                                continue;
-                            }
+                        for &(source_x, x_weight) in weights {
                             let weight = x_weight * y_weight;
                             normalization[destination_x] += weight;
-                            let source_base = (source_y * source_width + source_x)
-                                .checked_mul(image.channels as usize)?;
-                            if image.channels == 1 {
+                            let source_base =
+                                (row_start + source_x).checked_mul(image.channels as usize)?;
+                            if gray {
                                 let gray = *image.pixels.get(source_base)? as f64;
                                 accumulated[output_base] += gray * weight;
-                                accumulated[output_base + 1] += gray * weight;
-                                accumulated[output_base + 2] += gray * weight;
                             } else {
                                 accumulated[output_base] +=
                                     *image.pixels.get(source_base)? as f64 * weight;
@@ -513,8 +530,9 @@ impl ImagePainter {
                 }
                 let output_base = output_row + destination_x * 3;
                 for channel in 0..3 {
+                    let source_channel = if gray { 0 } else { channel };
                     pixels[output_base + channel] =
-                        (accumulated[destination_x * 3 + channel] / total_weight)
+                        (accumulated[destination_x * 3 + source_channel] / total_weight)
                             .round()
                             .clamp(0.0, 255.0) as u8;
                 }
@@ -1192,22 +1210,67 @@ impl ImagePainter {
 
         let mut accum = [0.0_f64; 4];
         let mut total = 0.0_f64;
-        for y in iy0..iy1 {
-            let oy = ((y + 1) as f64).min(y1) - (y as f64).max(y0);
-            if oy <= 0.0 {
-                continue;
+        // Gray and RGB samples expand to [g, g, g, 255] / [r, g, b, 255]; the
+        // replicated and constant channels receive exactly the same products
+        // in the same order, so they are accumulated once and copied.
+        let channels = image.channels as usize;
+        let stride = image.row_stride();
+        let in_bounds = iy1 == 0
+            || ix1 == 0
+            || (iy1 - 1)
+                .checked_mul(stride)
+                .and_then(|row| row.checked_add(ix1 * channels))
+                .is_some_and(|end| end <= image.pixels.len());
+        match channels {
+            1 | 3 if in_bounds => {
+                for y in iy0..iy1 {
+                    let oy = ((y + 1) as f64).min(y1) - (y as f64).max(y0);
+                    if oy <= 0.0 {
+                        continue;
+                    }
+                    let row = &image.pixels[y * stride..];
+                    for x in ix0..ix1 {
+                        let ox = ((x + 1) as f64).min(x1) - (x as f64).max(x0);
+                        if ox <= 0.0 {
+                            continue;
+                        }
+                        let weight = ox * oy;
+                        let px = &row[x * channels..x * channels + channels];
+                        if channels == 1 {
+                            accum[0] += px[0] as f64 * weight;
+                        } else {
+                            accum[0] += px[0] as f64 * weight;
+                            accum[1] += px[1] as f64 * weight;
+                            accum[2] += px[2] as f64 * weight;
+                        }
+                        accum[3] += 255.0 * weight;
+                        total += weight;
+                    }
+                }
+                if channels == 1 {
+                    accum[1] = accum[0];
+                    accum[2] = accum[0];
+                }
             }
-            for x in ix0..ix1 {
-                let ox = ((x + 1) as f64).min(x1) - (x as f64).max(x0);
-                if ox <= 0.0 {
-                    continue;
+            _ => {
+                for y in iy0..iy1 {
+                    let oy = ((y + 1) as f64).min(y1) - (y as f64).max(y0);
+                    if oy <= 0.0 {
+                        continue;
+                    }
+                    for x in ix0..ix1 {
+                        let ox = ((x + 1) as f64).min(x1) - (x as f64).max(x0);
+                        if ox <= 0.0 {
+                            continue;
+                        }
+                        let weight = ox * oy;
+                        let px = Self::get_pixel_channels(image, x, y);
+                        for c in 0..4 {
+                            accum[c] += px[c] as f64 * weight;
+                        }
+                        total += weight;
+                    }
                 }
-                let weight = ox * oy;
-                let px = Self::get_pixel_channels(image, x, y);
-                for c in 0..4 {
-                    accum[c] += px[c] as f64 * weight;
-                }
-                total += weight;
             }
         }
 

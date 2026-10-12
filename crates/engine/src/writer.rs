@@ -1237,6 +1237,11 @@ struct DocCopier<'a> {
     /// new output object number → copied object body (references still in old
     /// numbering; rewritten in a final pass once all numbers are assigned).
     copied: BTreeMap<u32, PdfObject>,
+    /// When set, large verbatim-copyable streams are recorded with an empty
+    /// body; `deferred` maps their new number to the source object whose body
+    /// the caller must fetch at serialization time.
+    defer_large_streams: bool,
+    deferred: HashMap<u32, (u32, u16)>,
 }
 
 impl<'a> DocCopier<'a> {
@@ -1246,6 +1251,8 @@ impl<'a> DocCopier<'a> {
             remap: HashMap::new(),
             generations: HashMap::new(),
             copied: BTreeMap::new(),
+            defer_large_streams: false,
+            deferred: HashMap::new(),
         }
     }
 
@@ -1317,14 +1324,34 @@ fn copy_closure(copier: &mut DocCopier, roots: &[(u32, u16)], next_number: &mut 
             continue;
         }
 
-        let object = copier
-            .reader
-            .get_object(old_number, old_generation)
-            .map_err(|err| {
-                WellfriendError::MalformedPdf(format!(
-                    "writer closure cannot copy unreadable dependency {old_number} {old_generation} R: {err}"
-                ))
-            })?;
+        let deferred_dict = if copier.defer_large_streams {
+            copier
+                .reader
+                .large_stream_dictionary(old_number, old_generation)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let object = match deferred_dict {
+            Some(dict) => {
+                copier
+                    .deferred
+                    .insert(new_number, (old_number, old_generation));
+                PdfObject::Stream {
+                    dict,
+                    raw: Vec::new(),
+                }
+            }
+            None => copier
+                .reader
+                .get_object(old_number, old_generation)
+                .map_err(|err| {
+                    WellfriendError::MalformedPdf(format!(
+                        "writer closure cannot copy unreadable dependency {old_number} {old_generation} R: {err}"
+                    ))
+                })?,
+        };
 
         if copier.copied.len() >= MAX_CLOSURE_OBJECTS {
             return Err(WellfriendError::UnsupportedFeature(format!(
@@ -1502,6 +1529,71 @@ fn page_owned_entries(page: &PdfDictionary) -> PdfDictionary {
 /// page content and the resources it needs are copied.
 pub fn build_subset(doc: &PdfDocument, page_indices: &[usize]) -> Result<Vec<u8>> {
     build_merged_internal(&[(doc, page_indices.to_vec())])
+}
+
+/// [`build_subset`] streamed into `output`; the bytes written are identical.
+/// Returns their length.
+pub fn build_subset_to(
+    doc: &PdfDocument,
+    page_indices: &[usize],
+    output: impl std::io::Write,
+) -> Result<u64> {
+    build_merged_to(&[(doc, page_indices.to_vec())], output)
+}
+
+/// Output file that becomes visible only on [`AtomicFile::commit`]: bytes are
+/// written to a sibling temporary file and renamed over the destination. Until
+/// commit the destination is untouched, so lazily read sources may include it;
+/// dropping an uncommitted `AtomicFile` deletes the temporary file. Callers
+/// should close their sources before committing (required for renaming over
+/// an open file on Windows).
+pub struct AtomicFile {
+    partial: std::path::PathBuf,
+    output: std::path::PathBuf,
+    writer: Option<std::io::BufWriter<std::fs::File>>,
+}
+
+impl AtomicFile {
+    pub fn create(output: &std::path::Path) -> Result<Self> {
+        let mut partial = output.as_os_str().to_os_string();
+        partial.push(format!(".wfpartial-{}", std::process::id()));
+        let partial = std::path::PathBuf::from(partial);
+        let file = std::fs::File::create(&partial)?;
+        Ok(Self {
+            partial,
+            output: output.to_path_buf(),
+            writer: Some(std::io::BufWriter::with_capacity(1 << 20, file)),
+        })
+    }
+
+    pub fn writer(&mut self) -> &mut std::io::BufWriter<std::fs::File> {
+        self.writer
+            .as_mut()
+            .expect("AtomicFile writer is present until commit")
+    }
+
+    pub fn commit(mut self) -> Result<()> {
+        let writer = self
+            .writer
+            .take()
+            .expect("AtomicFile writer is present until commit");
+        // Flush and close before renaming (same durability as `fs::write`).
+        drop(
+            writer
+                .into_inner()
+                .map_err(|err| WellfriendError::from(err.into_error()))?,
+        );
+        std::fs::rename(&self.partial, &self.output)?;
+        Ok(())
+    }
+}
+
+impl Drop for AtomicFile {
+    fn drop(&mut self) {
+        // Committed files were renamed away; this only removes leftovers.
+        drop(self.writer.take());
+        let _ = std::fs::remove_file(&self.partial);
+    }
 }
 
 /// Build a new PDF by concatenating pages from several source documents.
@@ -2049,6 +2141,91 @@ fn shift_page_label_number_tree_value(
 }
 
 fn build_merged_internal(inputs: &[(&PdfDocument, Vec<usize>)]) -> Result<Vec<u8>> {
+    let (writer, deferred_bodies) = plan_merged(inputs)?;
+    if deferred_bodies.is_empty() {
+        return writer.write();
+    }
+    let capacity = inputs
+        .iter()
+        .map(|(doc, _)| doc.reader().file_size())
+        .fold(64 * 1024usize, usize::saturating_add);
+    let (out, _) = write_merged_with_deferred_bodies(
+        writer,
+        inputs,
+        &deferred_bodies,
+        Vec::with_capacity(capacity),
+    )?;
+    Ok(out)
+}
+
+/// [`build_merged`] streamed into `output` instead of returned as one buffer.
+/// The bytes written are identical to [`build_merged`]'s result; the return
+/// value is their length.
+pub fn build_merged_to(
+    inputs: &[(&PdfDocument, Vec<usize>)],
+    output: impl std::io::Write,
+) -> Result<u64> {
+    let (writer, deferred_bodies) = plan_merged(inputs)?;
+    let mut output = output;
+    if deferred_bodies.is_empty() {
+        let bytes = writer.write()?;
+        output.write_all(&bytes)?;
+        output.flush()?;
+        return Ok(bytes.len() as u64);
+    }
+    let sink = IoClassicSink {
+        writer: output,
+        scratch: Vec::new(),
+        flushed: 0,
+    };
+    let (mut sink, total) =
+        write_merged_with_deferred_bodies(writer, inputs, &deferred_bodies, sink)?;
+    sink.writer.flush()?;
+    Ok(total)
+}
+
+/// Merge every page of the PDFs at `inputs` (each with an optional password)
+/// and stream the result to `output`. Bytes equal [`build_merged`]'s output.
+/// The result is written to a sibling temporary file and renamed into place,
+/// so `output` may name one of the inputs and a failure leaves no partial
+/// file. Returns `(bytes written, pages merged)`.
+pub fn merge_paths_to_file(
+    inputs: &[(&std::path::Path, Option<&[u8]>)],
+    output: &std::path::Path,
+) -> Result<(u64, usize)> {
+    if inputs.is_empty() {
+        return Err(WellfriendError::invalid_input(
+            "at least one input PDF is required",
+        ));
+    }
+    let mut documents = Vec::with_capacity(inputs.len());
+    for (path, password) in inputs {
+        documents.push(match password {
+            Some(password) => PdfDocument::open_path_with_password(path, password)?,
+            None => PdfDocument::open_path(path)?,
+        });
+    }
+    let mut specs = Vec::with_capacity(documents.len());
+    let mut pages = 0usize;
+    for document in &documents {
+        let count = document.page_count()?;
+        pages += count;
+        specs.push((document, (1..=count).collect::<Vec<_>>()));
+    }
+    let mut file = AtomicFile::create(output)?;
+    let written = build_merged_to(&specs, file.writer())?;
+    drop(specs);
+    drop(documents);
+    file.commit()?;
+    Ok((written, pages))
+}
+
+/// Copy the selected pages' closures and build the merged object set. Large
+/// stream bodies are left empty and listed in the returned map; the caller
+/// fetches them while serializing.
+fn plan_merged(
+    inputs: &[(&PdfDocument, Vec<usize>)],
+) -> Result<(PdfWriter, HashMap<u32, (usize, u32, u16)>)> {
     // Reserve object 1 for the catalog and object 2 for the root /Pages node;
     // page objects and their closures get numbers from 3 upward.
     let catalog_number = 1u32;
@@ -2061,12 +2238,16 @@ fn build_merged_internal(inputs: &[(&PdfDocument, Vec<usize>)]) -> Result<Vec<u8
     // Carry an /Info and /ID from the first document if available.
     let mut info_number: Option<u32> = None;
     let mut file_id: Option<Vec<u8>> = None;
+    // new output number -> (input index, source object) for stream bodies that
+    // are fetched only while serializing (see `DocCopier::defer_large_streams`).
+    let mut deferred_bodies: HashMap<u32, (usize, u32, u16)> = HashMap::new();
 
     for (doc_index, (doc, page_indices)) in inputs.iter().enumerate() {
         let reader = doc.reader();
         let pages = doc.get_pages()?;
 
         let mut copier = DocCopier::new(reader);
+        copier.defer_large_streams = true;
 
         // First, resolve each selected page's inherited attributes and copy its
         // closure (contents + resources + everything they reference).
@@ -2205,6 +2386,9 @@ fn build_merged_internal(inputs: &[(&PdfDocument, Vec<usize>)]) -> Result<Vec<u8
                 object: rewritten,
             });
         }
+        for (new_number, (number, generation)) in copier.deferred {
+            deferred_bodies.insert(new_number, (doc_index, number, generation));
+        }
 
         // Carry /Info and /ID from the first document only.
         if doc_index == 0 {
@@ -2268,7 +2452,60 @@ fn build_merged_internal(inputs: &[(&PdfDocument, Vec<usize>)]) -> Result<Vec<u8
     let writer = PdfWriter::new(all_objects, catalog_number)
         .with_info(info_number)
         .with_id(file_id);
-    writer.write()
+    Ok((writer, deferred_bodies))
+}
+
+/// Serialize a merge whose large stream bodies were deferred: each body is read
+/// from its source just before its object is emitted and released right after,
+/// so peak memory holds one body rather than every copied stream. Output bytes
+/// equal [`PdfWriter::write`] on the fully materialized objects.
+fn write_merged_with_deferred_bodies<S: ClassicSink>(
+    writer: PdfWriter,
+    inputs: &[(&PdfDocument, Vec<usize>)],
+    deferred_bodies: &HashMap<u32, (usize, u32, u16)>,
+    sink: S,
+) -> Result<(S, u64)> {
+    let version = feature_version::header(&writer)?;
+    let PdfWriter {
+        objects: mut all_objects,
+        root,
+        info,
+        id,
+        ..
+    } = writer;
+    all_objects.sort_by_key(|object| object.number);
+    let mut stream_writer = ClassicStreamWriter::with_sink(sink, &version);
+    for (index, output) in all_objects.into_iter().enumerate() {
+        if index % 1024 == 0 {
+            crate::cancel::check_current_cancel("merge serialization")?;
+        }
+        let Some(&(doc_index, number, generation)) = deferred_bodies.get(&output.number) else {
+            stream_writer.push(output.number, &output.object)?;
+            continue;
+        };
+        let PdfObject::Stream { dict, .. } = output.object else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "merge: deferred object {number} {generation} is not a stream"
+            )));
+        };
+        let source = inputs[doc_index].0.reader().get_object(number, generation).map_err(|err| {
+            WellfriendError::MalformedPdf(format!(
+                "writer closure cannot copy unreadable dependency {number} {generation} R: {err}"
+            ))
+        })?;
+        let PdfObject::Stream { raw, .. } = source else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "merge: deferred object {number} {generation} is no longer a stream"
+            )));
+        };
+        stream_writer.push(output.number, &PdfObject::Stream { dict, raw })?;
+    }
+    stream_writer.finish(|size| {
+        PdfWriter::new(Vec::new(), root)
+            .with_info(info)
+            .with_id(id)
+            .build_trailer_dict(size, None)
+    })
 }
 
 /// Round-trip a whole document: copy every in-use object under an identity-ish
@@ -2592,6 +2829,9 @@ pub fn rewrite_document_with_mode(
     mode: WriterMode,
     mut mutate: impl FnMut(u32, &mut PdfObject),
 ) -> Result<Vec<u8>> {
+    if mode == WriterMode::ClassicXref {
+        return rewrite_document_classic_streaming(reader, &mut mutate);
+    }
     let (objects, new_root, info_number) = rewrite_document_objects(reader, &mut mutate)?;
     let writer = PdfWriter::new(objects, new_root)
         .with_info(info_number)
@@ -2608,6 +2848,206 @@ pub fn rewrite_document_objects(
     reader: &PdfReader,
     mutate: &mut impl FnMut(u32, &mut PdfObject),
 ) -> Result<(Vec<OutputObject>, u32, Option<u32>)> {
+    let mut objects: Vec<OutputObject> = Vec::new();
+    let (new_root, info_number) = for_each_rewritten_object(reader, mutate, |object| {
+        objects.push(object);
+        Ok(())
+    })?;
+    Ok((objects, new_root, info_number))
+}
+
+/// Destination of [`ClassicStreamWriter`]. Bytes are serialized into
+/// `buffer()`; `flush_buffer` moves them to the final destination. A `Vec`
+/// is its own buffer, so in-memory output is never copied twice.
+trait ClassicSink {
+    fn buffer(&mut self) -> &mut Vec<u8>;
+    fn flush_buffer(&mut self) -> Result<()>;
+    /// Bytes already moved out of `buffer()`.
+    fn flushed(&self) -> u64;
+}
+
+impl ClassicSink for Vec<u8> {
+    fn buffer(&mut self) -> &mut Vec<u8> {
+        self
+    }
+    fn flush_buffer(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn flushed(&self) -> u64 {
+        0
+    }
+}
+
+/// `io::Write` destination with a reusable serialization buffer.
+struct IoClassicSink<W: std::io::Write> {
+    writer: W,
+    scratch: Vec<u8>,
+    flushed: u64,
+}
+
+impl<W: std::io::Write> ClassicSink for IoClassicSink<W> {
+    fn buffer(&mut self) -> &mut Vec<u8> {
+        &mut self.scratch
+    }
+    fn flush_buffer(&mut self) -> Result<()> {
+        self.writer.write_all(&self.scratch)?;
+        self.flushed += self.scratch.len() as u64;
+        self.scratch.clear();
+        Ok(())
+    }
+    fn flushed(&self) -> u64 {
+        self.flushed
+    }
+}
+
+/// Incremental classic-xref serializer producing exactly the bytes of
+/// [`PdfWriter::write`] in [`WriterMode::ClassicXref`] without encryption.
+/// Objects must be pushed in strictly increasing number order (the writer's
+/// sort order); each can be dropped as soon as it has been pushed.
+struct ClassicStreamWriter<S: ClassicSink> {
+    sink: S,
+    offsets: Vec<Option<u64>>,
+    last_number: u32,
+}
+
+impl ClassicStreamWriter<Vec<u8>> {
+    fn new(version: &str, capacity: usize) -> Self {
+        Self::with_sink(Vec::with_capacity(capacity), version)
+    }
+}
+
+impl<S: ClassicSink> ClassicStreamWriter<S> {
+    fn with_sink(mut sink: S, version: &str) -> Self {
+        let out = sink.buffer();
+        out.extend_from_slice(format!("%PDF-{version}\n").as_bytes());
+        out.extend_from_slice(b"%\xE2\xE3\xCF\xD3\n");
+        Self {
+            sink,
+            offsets: vec![None],
+            last_number: 0,
+        }
+    }
+
+    fn position(&mut self) -> u64 {
+        self.sink.flushed() + self.sink.buffer().len() as u64
+    }
+
+    fn push(&mut self, number: u32, object: &PdfObject) -> Result<()> {
+        if number == 0 {
+            return Err(WellfriendError::MalformedPdf(
+                "writer: object number 0 is reserved for the free-list head".to_string(),
+            ));
+        }
+        if number <= self.last_number {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "writer: duplicate or out-of-order output object number {number}"
+            )));
+        }
+        self.last_number = number;
+        let slot = number as usize;
+        if self.offsets.len() <= slot {
+            self.offsets.resize(slot + 1, None);
+        }
+        self.offsets[slot] = Some(self.position());
+        let out = self.sink.buffer();
+        out.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+        serialize_object(object, out);
+        out.extend_from_slice(b"\nendobj\n");
+        self.sink.flush_buffer()
+    }
+
+    /// Emit the xref table and trailer. `trailer` receives `/Size`.
+    fn finish(mut self, trailer: impl FnOnce(usize) -> PdfDictionary) -> Result<(S, u64)> {
+        let size = self.last_number as usize + 1;
+        self.offsets.truncate(size);
+        let xref_offset = self.position();
+        let out = self.sink.buffer();
+        out.extend_from_slice(b"xref\n");
+        out.extend_from_slice(format!("0 {}\n", size).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for slot in &self.offsets[1..] {
+            match slot {
+                Some(offset) => {
+                    out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes())
+                }
+                None => out.extend_from_slice(b"0000000000 65535 f \n"),
+            }
+        }
+        out.extend_from_slice(b"trailer\n");
+        serialize_dictionary(&trailer(size), out);
+        out.extend_from_slice(b"\nstartxref\n");
+        out.extend_from_slice(format!("{xref_offset}\n").as_bytes());
+        out.extend_from_slice(b"%%EOF\n");
+        self.sink.flush_buffer()?;
+        let total = self.position();
+        Ok((self.sink, total))
+    }
+}
+
+/// Classic-xref [`rewrite_document`] that serializes each rewritten object as
+/// soon as it is read, so source objects (and their stream payloads) are
+/// released immediately instead of the whole graph being retained until the
+/// writer runs. The byte output is identical to collecting the objects and
+/// calling [`PdfWriter::write`] in [`WriterMode::ClassicXref`]: objects arrive
+/// in strictly increasing output-number order, which is the writer's sort
+/// order, and the classic header is fixed at the writer's base version (the
+/// OpenType requirement, 1.6, never exceeds it).
+fn rewrite_document_classic_streaming(
+    reader: &PdfReader,
+    mutate: &mut impl FnMut(u32, &mut PdfObject),
+) -> Result<Vec<u8>> {
+    let header_writer = PdfWriter::new(Vec::new(), 0);
+    let version = feature_version::header(&header_writer)?;
+    let mut writer =
+        ClassicStreamWriter::new(&version, reader.file_size().saturating_add(64 * 1024));
+    let (new_root, info_number) = for_each_rewritten_object(reader, mutate, |object| {
+        writer.push(object.number, &object.object)
+    })?;
+    let (out, _) = writer.finish(|size| {
+        PdfWriter::new(Vec::new(), new_root)
+            .with_info(info_number)
+            .with_id(reader.first_file_id())
+            .build_trailer_dict(size, None)
+    })?;
+    Ok(out)
+}
+
+/// [`rewrite_document`] streamed into `output`; the bytes written are
+/// identical. Returns their length.
+pub fn rewrite_document_to(
+    reader: &PdfReader,
+    mut mutate: impl FnMut(u32, &mut PdfObject),
+    output: impl std::io::Write,
+) -> Result<u64> {
+    let header_writer = PdfWriter::new(Vec::new(), 0);
+    let version = feature_version::header(&header_writer)?;
+    let sink = IoClassicSink {
+        writer: output,
+        scratch: Vec::new(),
+        flushed: 0,
+    };
+    let mut writer = ClassicStreamWriter::with_sink(sink, &version);
+    let (new_root, info_number) = for_each_rewritten_object(reader, &mut mutate, |object| {
+        writer.push(object.number, &object.object)
+    })?;
+    let (mut sink, written) = writer.finish(|size| {
+        PdfWriter::new(Vec::new(), new_root)
+            .with_info(info_number)
+            .with_id(reader.first_file_id())
+            .build_trailer_dict(size, None)
+    })?;
+    sink.writer.flush()?;
+    Ok(written)
+}
+
+/// Shared traversal behind [`rewrite_document_objects`] and the streaming
+/// classic writer: validates generations, assigns the stable source-order
+/// renumbering, and hands each rewritten object to `emit` in output order.
+fn for_each_rewritten_object(
+    reader: &PdfReader,
+    mutate: &mut impl FnMut(u32, &mut PdfObject),
+    mut emit: impl FnMut(OutputObject) -> Result<()>,
+) -> Result<(u32, Option<u32>)> {
     let root = reader.root_reference().ok_or_else(|| {
         WellfriendError::MalformedPdf("cannot round-trip: trailer is missing /Root".to_string())
     })?;
@@ -2643,7 +3083,6 @@ pub fn rewrite_document_objects(
         }
     }
 
-    let mut objects: Vec<OutputObject> = Vec::new();
     for &(number, generation) in &ids {
         let object = reader.get_object(number, generation).map_err(|err| {
             WellfriendError::MalformedPdf(format!(
@@ -2662,10 +3101,10 @@ pub fn rewrite_document_objects(
         let new_number = remap[&number];
         let mut rewritten = rewrite_references(object, &remap);
         mutate(number, &mut rewritten);
-        objects.push(OutputObject {
+        emit(OutputObject {
             number: new_number,
             object: rewritten,
-        });
+        })?;
     }
 
     let new_root = remap[&root.0];
@@ -2673,7 +3112,7 @@ pub fn rewrite_document_objects(
         .info_reference()
         .and_then(|(n, _)| remap.get(&n).copied());
 
-    Ok((objects, new_root, info_number))
+    Ok((new_root, info_number))
 }
 
 fn rewrite_document_objects_with_remap(
