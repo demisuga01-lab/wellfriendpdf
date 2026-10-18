@@ -508,7 +508,7 @@ fn merge_xmp(existing: &str, plan: &XmpPlan) -> Result<String> {
     loop {
         let (resolved, event) = reader.read_resolved_event().map_err(xml_err)?;
         let element_ns = match &resolved {
-            ResolveResult::Bound(ns) => Some(ns.0.to_vec()),
+            ResolveResult::Bound(ns) => Some(ns.0.as_bytes().to_vec()),
             _ => None,
         };
         match event {
@@ -518,7 +518,7 @@ fn merge_xmp(existing: &str, plan: &XmpPlan) -> Result<String> {
                 if skip_depth.is_some() {
                     continue;
                 }
-                let local = start.local_name().as_ref().to_vec();
+                let local = start.local_name().as_ref().as_bytes().to_vec();
                 if description_depth.is_some_and(|d| depth == d + 1)
                     && element_ns
                         .as_deref()
@@ -541,7 +541,7 @@ fn merge_xmp(existing: &str, plan: &XmpPlan) -> Result<String> {
                 if skip_depth.is_some() {
                     continue;
                 }
-                let local = start.local_name().as_ref().to_vec();
+                let local = start.local_name().as_ref().as_bytes().to_vec();
                 if description_depth.is_some_and(|d| depth == d)
                     && element_ns
                         .as_deref()
@@ -571,7 +571,7 @@ fn merge_xmp(existing: &str, plan: &XmpPlan) -> Result<String> {
                     description_depth = None;
                 }
                 let is_rdf = element_ns.as_deref() == Some(NS_RDF.as_bytes())
-                    && end.local_name().as_ref() == b"RDF";
+                    && end.local_name().as_ref() == "RDF";
                 if is_rdf && !inserted {
                     std::io::Write::write_all(writer.get_mut(), new_description(plan).as_bytes())
                         .map_err(xml_err)?;
@@ -598,13 +598,13 @@ fn strip_managed_attributes(
     start: &BytesStart<'_>,
     plan: &XmpPlan,
 ) -> Result<BytesStart<'static>> {
-    let name = String::from_utf8_lossy(start.name().as_ref()).into_owned();
+    let name = start.name().as_ref().to_owned();
     let mut out = BytesStart::new(name);
     for attribute in start.attributes() {
         let attribute = attribute.map_err(xml_err)?;
-        let (resolved, local) = reader.resolve_attribute(attribute.key);
+        let (resolved, local) = reader.resolver().resolve_attribute(attribute.key);
         if let ResolveResult::Bound(ns) = resolved {
-            if plan.removes(ns.0, local.as_ref()) {
+            if plan.removes(ns.0.as_bytes(), local.as_ref().as_bytes()) {
                 continue;
             }
         }

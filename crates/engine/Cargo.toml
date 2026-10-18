@@ -78,7 +78,7 @@ zeroize = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zopfli = { version = "0.8.3", default-features = false, features = ["std", "zlib"] }
 # XMP metadata merge (edit-metadata) and EPUB package/XHTML writing (MIT).
-quick-xml = "=0.37.5"
+quick-xml = "=0.42.0"
 # Rust-native text/Markdown/CSV/JSON/SVG to PDF conversions (all MIT and/or
 # Apache-2.0; csv is Unlicense OR MIT). SVG stays vector through svg2pdf and
 # shares rustybuzz/ttf-parser with the authoring stack (usvg is used through
