@@ -3990,7 +3990,7 @@ fn authored_image_from_raw(raw: RawImage) -> Result<AuthoredImage> {
         2 => {
             let mut samples = Vec::with_capacity(raw.pixel_count());
             let mut alpha = Vec::with_capacity(raw.pixel_count());
-            for px in raw.pixels.chunks_exact(2) {
+            for px in raw.pixels.as_chunks::<2>().0.iter() {
                 samples.push(px[0]);
                 alpha.push(px[1]);
             }
@@ -4008,7 +4008,7 @@ fn authored_image_from_raw(raw: RawImage) -> Result<AuthoredImage> {
         4 => {
             let mut samples = Vec::with_capacity(raw.pixel_count() * 3);
             let mut alpha = Vec::with_capacity(raw.pixel_count());
-            for px in raw.pixels.chunks_exact(4) {
+            for px in raw.pixels.as_chunks::<4>().0.iter() {
                 samples.extend_from_slice(&px[..3]);
                 alpha.push(px[3]);
             }

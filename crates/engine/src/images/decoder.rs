@@ -1910,7 +1910,9 @@ impl ImageDecoder {
         // scalar mapping is the identity for normalized 8-bit samples, so a
         // per-sample floating-point pass can be skipped exactly.
         if values
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .all(|range| range[0] == 0.0 && range[1] == 1.0)
         {
             return Ok(());
@@ -1919,7 +1921,9 @@ impl ImageDecoder {
         // Samples are 8-bit, so each channel's mapping is a 256-entry table
         // computed with the exact per-sample formula.
         let tables: Vec<[u8; 256]> = values
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|range| {
                 let (low, high) = (range[0], range[1]);
                 let mut table = [0u8; 256];
@@ -2466,7 +2470,12 @@ fn normalise_16_bit_samples(raw: &[u8], width: u32, height: u32, channels: u8) -
             channels.max(1)
         )));
     }
-    Ok(raw.chunks_exact(2).map(|chunk| chunk[0]).collect())
+    Ok(raw
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk[0])
+        .collect())
 }
 
 fn unpack_subbyte_rows(

@@ -942,7 +942,9 @@ fn decode_hex_der(text: &str) -> std::result::Result<Vec<u8>, &'static str> {
         return Err("odd number of hex digits");
     }
     Ok(nibbles
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0] << 4) | pair[1])
         .collect())
 }

@@ -345,7 +345,7 @@ impl Plan {
                             .ok_or_else(|| fail("relationship target allocation missing"))
                     })
                     .transpose()?;
-                let found = actual.map(&actual_ref).transpose()?;
+                let found = actual.map(actual_ref).transpose()?;
                 if wanted != found {
                     return Err(fail("saved annotation relationship target differs"));
                 }

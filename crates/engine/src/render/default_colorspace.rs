@@ -186,7 +186,9 @@ fn range_pairs(
         return Err("colour-space Range has the wrong component count".into());
     }
     values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let lo = pair[0]
                 .as_number()

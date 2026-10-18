@@ -689,7 +689,7 @@ fn needs_space(previous: &str, next: &str) -> bool {
     !previous.is_empty()
         && !previous.ends_with(' ')
         && !next.starts_with(' ')
-        && !next.starts_with(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')'))
+        && !next.starts_with(['.', ',', ';', ':', '!', '?', ')'])
 }
 
 fn safe_link(link: &str) -> bool {

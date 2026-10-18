@@ -113,7 +113,7 @@ fn encode_dict(out: &mut Vec<u8>, value: f64) -> Result<()> {
         nibbles.push(15);
     }
     out.push(30);
-    out.extend(nibbles.chunks_exact(2).map(|p| p[0] << 4 | p[1]));
+    out.extend(nibbles.as_chunks::<2>().0.iter().map(|p| p[0] << 4 | p[1]));
     Ok(())
 }
 fn operator(out: &mut Vec<u8>, op: u16) {
@@ -212,7 +212,7 @@ fn hint_arity(op: u16, values: &[f64]) -> Result<()> {
     }
     if matches!(op, 6..=9) {
         let mut absolute = 0.;
-        for pair in values.chunks_exact(2) {
+        for pair in values.as_chunks::<2>().0.iter() {
             absolute += pair[0];
             let upper = absolute + pair[1];
             if !absolute.is_finite() || !upper.is_finite() || upper < absolute {

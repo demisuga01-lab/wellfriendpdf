@@ -411,7 +411,9 @@ fn destination_leaf_is_sorted_by_encoded_key_and_publishes_limits() {
     let leaf = names.get("Dests").and_then(PdfObject::as_dict).unwrap();
     let entries = leaf.get("Names").and_then(PdfObject::as_array).unwrap();
     let keys = entries
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| pair[0].as_string().unwrap().to_vec())
         .collect::<Vec<_>>();
     assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));

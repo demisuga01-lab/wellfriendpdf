@@ -223,7 +223,13 @@ pub(crate) fn apply_ordered_halftone_screen(
     let width = buffer.width as usize;
     let origin_x = page_origin_x as usize;
     let origin_y = page_origin_y as usize;
-    for (index, px) in buffer.rgba_bytes_mut().chunks_exact_mut(4).enumerate() {
+    for (index, px) in buffer
+        .rgba_bytes_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         let x = index % width;
         let y = index / width;
         let threshold = u16::from(BAYER_4X4[(origin_y + y) & 3][(origin_x + x) & 3]) * 16 + 8;
@@ -375,9 +381,9 @@ mod tests {
         let mut buffer = PixelBuffer::new_filled(4, 4, [128, 96, 64, 37]);
         apply_ordered_halftone_screen(&mut buffer, 0, 0);
         let pixels = buffer.rgba_bytes();
-        assert!(pixels.chunks_exact(4).any(|px| px[0] == 0));
-        assert!(pixels.chunks_exact(4).any(|px| px[0] == 255));
-        assert!(pixels.chunks_exact(4).all(|px| px[3] == 37));
+        assert!(pixels.as_chunks::<4>().0.iter().any(|px| px[0] == 0));
+        assert!(pixels.as_chunks::<4>().0.iter().any(|px| px[0] == 255));
+        assert!(pixels.as_chunks::<4>().0.iter().all(|px| px[3] == 37));
     }
 
     #[test]

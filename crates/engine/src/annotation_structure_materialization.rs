@@ -388,7 +388,7 @@ impl Structure {
             if values.len() % 2 != 0 {
                 return Err(fail("odd structural lookup entries"));
             }
-            for pair in values.chunks_exact(2) {
+            for pair in values.as_chunks::<2>().0.iter() {
                 self.collect_value(reader, &pair[1], false, 0)?;
             }
         }
@@ -778,7 +778,7 @@ impl Structure {
                 return Err(fail("odd structure lookup entries"));
             }
             let mut entries = old.to_vec();
-            for pair in entries.chunks_exact_mut(2) {
+            for pair in entries.as_chunks_mut::<2>().0.iter_mut() {
                 pair[1] = self.owner_value(reader, &pair[1], allocated, count, 0)?;
             }
             if entries != old {

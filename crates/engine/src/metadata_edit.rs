@@ -923,11 +923,6 @@ mod tests {
         assert!(merged.contains("<pdf:Producer>Wellfriend</pdf:Producer>"));
         assert!(merged.contains("<?xpacket end=\"w\"?>"));
         let mut reader = NsReader::from_str(&merged);
-        loop {
-            match reader.read_event().unwrap() {
-                Event::Eof => break,
-                _ => {}
-            }
-        }
+        while reader.read_event().unwrap() != Event::Eof {}
     }
 }

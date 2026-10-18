@@ -131,7 +131,12 @@ fn source_origins(tables: &Tables, count: usize) -> Result<Option<Vec<i16>>> {
     let records = usize::from(u16_at(data, 6)?);
     let mut result = vec![default; count];
     let mut previous = None;
-    for (i, record) in bytes(data, 8, records * 4)?.chunks_exact(4).enumerate() {
+    for (i, record) in bytes(data, 8, records * 4)?
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .enumerate()
+    {
         if i % 256 == 0 {
             crate::cancel::check_current_cancel("source vertical origins")?;
         }

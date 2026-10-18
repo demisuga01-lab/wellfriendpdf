@@ -45,7 +45,7 @@ pub(super) fn transform(
     }
     let mut dict = entry.dict.clone();
     let map = |values: &mut [f64]| -> Result<()> {
-        for point in values.chunks_exact_mut(2) {
+        for point in values.as_chunks_mut::<2>().0.iter_mut() {
             point[0] = point[0] * sx + tx;
             point[1] = point[1] * sy + ty;
         }

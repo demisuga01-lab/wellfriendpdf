@@ -183,8 +183,8 @@ fn langsys(w: &mut Writer, data: &[u8], at: usize, features: usize) -> Result<us
     if required != 0xffff && usize::from(required) >= features {
         return Err(fail("required feature outside feature list"));
     }
-    for chunk in source[6..].chunks_exact(2) {
-        if usize::from(u16::from_be_bytes(chunk.try_into().unwrap())) >= features {
+    for chunk in source[6..].as_chunks::<2>().0.iter() {
+        if usize::from(u16::from_be_bytes(*chunk)) >= features {
             return Err(fail("language feature outside feature list"));
         }
     }
@@ -363,8 +363,8 @@ fn freeze_impl(
         };
         let count = usize::from(u16_at(data, feature + 2)?);
         let source = bytes(data, feature, 4 + count * 2)?;
-        for chunk in source[4..].chunks_exact(2) {
-            if usize::from(u16::from_be_bytes(chunk.try_into().unwrap())) >= lookup_count {
+        for chunk in source[4..].as_chunks::<2>().0.iter() {
+            if usize::from(u16::from_be_bytes(*chunk)) >= lookup_count {
                 return Err(fail("feature lookup outside lookup list"));
             }
         }

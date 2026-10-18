@@ -58,7 +58,7 @@ fn psnr_rgba(a: &[u8], b: &[u8]) -> f64 {
     assert_eq!(a.len(), b.len(), "buffers differ in size");
     let mut sum_sq = 0.0f64;
     let mut count = 0.0f64;
-    for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (pa, pb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0.iter()) {
         let comp = |px: &[u8]| -> [f64; 3] {
             let alpha = px[3] as f64 / 255.0;
             [
@@ -95,15 +95,15 @@ fn symmetric_dark_coverage_2px(a: &[u8], b: &[u8], width: u32, height: u32) -> f
     assert_eq!(a.len(), b.len(), "buffers differ in size");
     let width = width as usize;
     let height = height as usize;
-    let dark = |pixel: &[u8]| {
+    let dark = |pixel: &[u8; 4]| {
         let alpha = pixel[3] as u32;
         (0..3).any(|channel| {
             let composited = (pixel[channel] as u32 * alpha + 255 * (255 - alpha) + 127) / 255;
             composited < 230
         })
     };
-    let a_dark: Vec<bool> = a.chunks_exact(4).map(dark).collect();
-    let b_dark: Vec<bool> = b.chunks_exact(4).map(dark).collect();
+    let a_dark: Vec<bool> = a.as_chunks::<4>().0.iter().map(dark).collect();
+    let b_dark: Vec<bool> = b.as_chunks::<4>().0.iter().map(dark).collect();
     let covered = |source: &[bool], target: &[bool]| {
         let total = source.iter().filter(|&&value| value).count();
         if total == 0 {
@@ -228,7 +228,9 @@ fn svg_rasterizes_close_to_wellfriendpdf_raster() {
         let (raster, w, h) = wellfriendpdf_raster_rgba(&e, page);
         // Guard: ensure the page actually has marks, so a high PSNR is meaningful.
         let nonwhite = raster
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[0] < 250 || p[1] < 250 || p[2] < 250)
             .count();
         assert!(

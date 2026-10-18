@@ -799,7 +799,7 @@ fn raw_image_to_rgb(label: &str, raw: RawImage) -> Result<RawImage> {
         4 => {
             let out_len = expected_image_sample_len(raw.width, raw.height, 3)?;
             let mut pixels = Vec::with_capacity(out_len);
-            for px in raw.pixels.chunks_exact(4) {
+            for px in raw.pixels.as_chunks::<4>().0.iter() {
                 pixels.extend_from_slice(&px[..3]);
             }
             Ok(RawImage {
@@ -1179,7 +1179,7 @@ fn gray_alpha_to_rgba(width: u32, height: u32, samples: &[u8]) -> Result<Vec<u8>
     ensure_image_sample_len("PNG grayscale-alpha", width, height, 2, samples.len())?;
     let out_len = expected_image_sample_len(width, height, 4)?;
     let mut out = Vec::with_capacity(out_len);
-    for chunk in samples.chunks_exact(2) {
+    for chunk in samples.as_chunks::<2>().0.iter() {
         out.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
     }
     Ok(out)
@@ -1194,7 +1194,7 @@ fn rgb_to_rgba(width: u32, height: u32, samples: &[u8], channels: u8) -> Result<
     ensure_image_sample_len("RGB image", width, height, 3, samples.len())?;
     let out_len = expected_image_sample_len(width, height, 4)?;
     let mut out = Vec::with_capacity(out_len);
-    for chunk in samples.chunks_exact(3) {
+    for chunk in samples.as_chunks::<3>().0.iter() {
         out.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
     }
     Ok(out)

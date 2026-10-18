@@ -1520,7 +1520,7 @@ fn points_path(points: &str) -> Result<Path> {
     }
     let mut path = Path::new();
     path.move_to(numbers[0], numbers[1]);
-    for pair in numbers[2..].chunks_exact(2) {
+    for pair in numbers[2..].as_chunks::<2>().0.iter() {
         path.line_to(pair[0], pair[1]);
     }
     Ok(path)
@@ -2146,7 +2146,7 @@ fn decode_premul_bgra32(image: RasterGlyphImage<'_>) -> Result<RawImage> {
         .saturating_mul(4);
     ensure_color_glyph_raster_payload_len("BGRA", image, expected)?;
     let mut pixels = Vec::with_capacity(expected);
-    for chunk in image.data[..expected].chunks_exact(4) {
+    for chunk in image.data[..expected].as_chunks::<4>().0.iter() {
         let b = unpremultiply(chunk[0], chunk[3]);
         let g = unpremultiply(chunk[1], chunk[3]);
         let r = unpremultiply(chunk[2], chunk[3]);
@@ -2267,7 +2267,7 @@ fn ensure_color_glyph_raster_payload_len(
 
 fn gray_alpha_to_rgba(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() * 2);
-    for chunk in data.chunks_exact(2) {
+    for chunk in data.as_chunks::<2>().0.iter() {
         out.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
     }
     out

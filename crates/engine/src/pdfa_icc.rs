@@ -90,7 +90,7 @@ fn assemble_profile(
         let offset = if let Some((_, offset)) = written.iter().find(|(p, _)| p == payload) {
             *offset
         } else {
-            while data_offset % 4 != 0 {
+            while !data_offset.is_multiple_of(4) {
                 data.push(0);
                 data_offset += 1;
             }
@@ -104,7 +104,7 @@ fn assemble_profile(
         table.extend_from_slice(&(offset as u32).to_be_bytes());
         table.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     }
-    while data_offset % 4 != 0 {
+    while !data_offset.is_multiple_of(4) {
         data.push(0);
         data_offset += 1;
     }

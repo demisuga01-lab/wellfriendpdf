@@ -454,8 +454,10 @@ fn actual_sample_function_failure_does_not_publish_partial_shading() {
     assert!(result.is_err());
     assert!(paint
         .rgba_bytes()
-        .chunks_exact(4)
-        .all(|pixel| pixel == BACKGROUND));
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == BACKGROUND));
 }
 
 #[test]
@@ -475,8 +477,10 @@ fn shading_scratch_grid_and_rows_obey_local_byte_limit() {
         .is_err());
         assert!(paint
             .rgba_bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel == BACKGROUND));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == BACKGROUND));
     }
     for kind in [5, 6, 7] {
         let (dict, data) = shading(kind, name("DeviceGray"));
@@ -493,8 +497,10 @@ fn shading_scratch_grid_and_rows_obey_local_byte_limit() {
         .is_err());
         assert!(paint
             .rgba_bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel == BACKGROUND));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == BACKGROUND));
     }
 }
 
@@ -702,8 +708,10 @@ fn curved_reused_patch_edges_cover_the_page_without_opacity_seams() {
         assert!(
             paint
                 .rgba_bytes()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [128, 128, 128, 255]),
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [128, 128, 128, 255]),
             "type {kind}"
         );
     }
@@ -937,7 +945,12 @@ fn bbox_bounds_reduce_scratch_allocation_and_empty_boxes_do_not_paint() {
     dict.insert("BBox", numbers(&[2.0, 2.0, 2.0, 3.0]));
     let (paint, result) = render(&dict, &data, None);
     result.unwrap();
-    assert!(paint.rgba_bytes().chunks_exact(4).all(|p| p == BACKGROUND));
+    assert!(paint
+        .rgba_bytes()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|p| *p == BACKGROUND));
 }
 
 #[test]
@@ -953,7 +966,12 @@ fn common_entry_validation_rejects_bad_bbox_background_and_antialias() {
         dict.insert(key, value);
         let (paint, result) = render(&dict, &data, None);
         assert!(result.is_err(), "{key}");
-        assert!(paint.rgba_bytes().chunks_exact(4).all(|p| p == BACKGROUND));
+        assert!(paint
+            .rgba_bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| *p == BACKGROUND));
     }
 }
 
@@ -1051,8 +1069,10 @@ fn analytic_shading_pixels_are_stable_under_coordinate_unit_changes() {
         result.unwrap();
         assert!(reference
             .rgba_bytes()
-            .chunks_exact(4)
-            .any(|p| p != BACKGROUND));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| *p != BACKGROUND));
         for scale in [1e-100, 1e-8, 1e100] {
             let mut dict = base.clone();
             if kind == 1 {
@@ -1100,7 +1120,12 @@ fn radial_negative_radii_and_zero_radius_pair_are_not_painted() {
     dict.insert("Coords", numbers(&[0.0, 0.0, -1.0, 10.0, 0.0, 5.0]));
     let (paint, result) = analytic_paint_with_transform(&dict, Transform2D::identity());
     assert!(result.unwrap_err().contains("nonnegative"));
-    assert!(paint.rgba_bytes().chunks_exact(4).all(|p| p == BACKGROUND));
+    assert!(paint
+        .rgba_bytes()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|p| *p == BACKGROUND));
     dict.insert("Coords", numbers(&[0.5, 0.5, 0.0, 9.5, 0.5, 0.0]));
     dict.insert(
         "Extend",
@@ -1108,7 +1133,12 @@ fn radial_negative_radii_and_zero_radius_pair_are_not_painted() {
     );
     let (paint, result) = analytic_paint_with_transform(&dict, Transform2D::identity());
     result.unwrap();
-    assert!(paint.rgba_bytes().chunks_exact(4).all(|p| p == BACKGROUND));
+    assert!(paint
+        .rgba_bytes()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|p| *p == BACKGROUND));
 }
 
 #[test]
@@ -1121,7 +1151,12 @@ fn analytic_coordinate_failures_return_errors_without_compositing_scratch() {
         ] {
             let (paint, result) = analytic_paint_with_transform(&dict, ctm);
             assert!(result.is_err(), "type {kind}");
-            assert!(paint.rgba_bytes().chunks_exact(4).all(|p| p == BACKGROUND));
+            assert!(paint
+                .rgba_bytes()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| *p == BACKGROUND));
         }
     }
 }

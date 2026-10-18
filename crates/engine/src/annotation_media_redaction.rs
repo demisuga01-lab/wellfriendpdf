@@ -2695,7 +2695,9 @@ fn annotation_appearance_stream(
         .max(border_width);
     let points = |values: &[f64]| -> Vec<(f64, f64)> {
         values
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (pair[0] - x0, pair[1] - y0))
             .collect()
     };
@@ -2965,7 +2967,7 @@ fn append_markup_quads(
     width: f64,
     height: f64,
 ) {
-    let mut chunks = record.quad_points.chunks_exact(8).peekable();
+    let mut chunks = record.quad_points.as_chunks::<8>().0.iter().peekable();
     if chunks.peek().is_none() {
         if record.subtype == "Highlight" {
             content.push_str(&format!(

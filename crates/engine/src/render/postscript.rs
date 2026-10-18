@@ -2465,7 +2465,7 @@ fn regional_rgba_alpha_state(raw: &RawImage) -> Option<RegionalRgbaAlphaState> {
     }
     let mut any_opaque = false;
     let mut any_transparent = false;
-    for pixel in raw.pixels.chunks_exact(4) {
+    for pixel in raw.pixels.as_chunks::<4>().0.iter() {
         match pixel[3] {
             255 => any_opaque = true,
             0 => any_transparent = true,

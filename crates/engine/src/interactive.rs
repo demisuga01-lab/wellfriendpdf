@@ -1045,7 +1045,9 @@ fn quad_points(reader: &PdfReader, object: Option<&PdfObject>) -> Vec<[f64; 8]> 
         return Vec::new();
     };
     values
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|chunk| {
             [
                 chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],

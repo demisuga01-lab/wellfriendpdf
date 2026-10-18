@@ -27341,7 +27341,7 @@ fn operation_matrix(operation: &ContentOperation) -> Option<[f64; 6]> {
 
 fn operation_points(operation: &ContentOperation, indices: &[usize]) -> Option<Vec<(f64, f64)>> {
     let mut points = Vec::with_capacity(indices.len() / 2);
-    for pair in indices.chunks_exact(2) {
+    for pair in indices.as_chunks::<2>().0.iter() {
         let x = operation.number(pair[0])?;
         let y = operation.number(pair[1])?;
         if !x.is_finite() || !y.is_finite() {

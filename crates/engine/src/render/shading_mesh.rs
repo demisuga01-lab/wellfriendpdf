@@ -318,7 +318,9 @@ mod tests {
                 assert!(failure.get().is_none());
                 assert!(buf
                     .rgba_bytes()
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .all(|pixel| pixel[3] == 128));
             }
         }

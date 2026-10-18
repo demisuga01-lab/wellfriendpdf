@@ -445,7 +445,9 @@ fn optimized_inline_scaled_jpeg_retains_original_icc_decode_domain() {
         assert!(image.is_valid());
         assert!(image
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|pixel| (i16::from(pixel[0]) - expected).abs() <= 2 && pixel[3] == 255));
     }
 }

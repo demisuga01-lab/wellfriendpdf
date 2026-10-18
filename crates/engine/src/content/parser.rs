@@ -667,7 +667,9 @@ mod tests {
             .unwrap();
         let params = id
             .operands
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .find(|pair| pair[0].as_name() == Some("DecodeParms"))
             .map(|pair| &pair[1])
             .unwrap();
@@ -689,7 +691,9 @@ mod tests {
             .unwrap();
         let params = id
             .operands
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .find(|pair| pair[0].as_name() == Some("DecodeParms"))
             .map(|pair| &pair[1])
             .unwrap();

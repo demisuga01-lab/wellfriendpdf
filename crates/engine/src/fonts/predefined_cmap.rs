@@ -72,7 +72,9 @@ pub(super) fn decode_unicode_encoding(encoding: u8, code: CharacterCode) -> Opti
         8 => std::str::from_utf8(&bytes).ok()?.to_string(),
         2 | 16 if bytes.len().is_multiple_of(2) => String::from_utf16(
             &bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|p| u16::from_be_bytes([p[0], p[1]]))
                 .collect::<Vec<_>>(),
         )

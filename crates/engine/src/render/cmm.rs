@@ -956,7 +956,7 @@ pub(crate) fn device_cmyk_to_srgb(c: f32, m: f32, y: f32, k: f32) -> [f32; 3] {
 
 pub(crate) fn device_cmyk_bytes_to_rgb(pixels: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(pixels.len() / 4 * 3);
-    for chunk in pixels.chunks_exact(4) {
+    for chunk in pixels.as_chunks::<4>().0.iter() {
         let out = device_cmyk_to_srgb(
             chunk[0] as f32 / 255.0,
             chunk[1] as f32 / 255.0,
@@ -1020,7 +1020,7 @@ pub(crate) fn lab_to_srgb(l: f32, a: f32, b: f32, params: LabParams) -> [f32; 3]
 
 pub(crate) fn lab_bytes_to_rgb(pixels: &[u8], params: LabParams) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(pixels.len());
-    for chunk in pixels.chunks_exact(3) {
+    for chunk in pixels.as_chunks::<3>().0.iter() {
         let l = decode_range(chunk[0], 0.0, 100.0);
         let a = decode_range(chunk[1], params.range[0], params.range[1]);
         let b = decode_range(chunk[2], params.range[2], params.range[3]);
@@ -1070,7 +1070,7 @@ pub(crate) fn cal_rgb_to_srgb(components: [f32; 3], params: CalRgbParams) -> [f3
 
 pub(crate) fn cal_rgb_bytes_to_rgb(pixels: &[u8], params: CalRgbParams) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(pixels.len());
-    for chunk in pixels.chunks_exact(3) {
+    for chunk in pixels.as_chunks::<3>().0.iter() {
         let comps = [
             chunk[0] as f32 / 255.0,
             chunk[1] as f32 / 255.0,

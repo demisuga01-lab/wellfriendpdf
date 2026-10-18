@@ -614,7 +614,7 @@ fn attach_alpha_to_rgb(width: u32, height: u32, rgb: &[u8], alpha: &[u8]) -> Res
         alpha.len(),
     )?;
     let mut rgba = Vec::with_capacity(expected_pixels * 4);
-    for (i, pixel) in rgb.chunks_exact(3).enumerate() {
+    for (i, pixel) in rgb.as_chunks::<3>().0.iter().enumerate() {
         rgba.extend_from_slice(pixel);
         rgba.push(alpha[i]);
     }

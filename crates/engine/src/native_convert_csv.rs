@@ -84,7 +84,7 @@ pub(super) fn resolve_delimiter(option: Option<&str>, sample: &[u8]) -> Result<u
 pub(super) fn detect_delimiter(sample: &[u8]) -> u8 {
     let sample = &sample[..sample.len().min(64 * 1024)];
     let mut best = (b',', 0usize);
-    for candidate in [b',', b';', b'\t', b'|'] {
+    for candidate in *b",;\t|" {
         let mut reader = csv::ReaderBuilder::new()
             .delimiter(candidate)
             .has_headers(false)

@@ -588,7 +588,7 @@ fn decode_hmac_sha256(value: &str) -> Result<[u8; 32]> {
         ));
     }
     let mut decoded = [0u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let nibble = |byte: u8| -> Option<u8> {
             match byte {
                 b'0'..=b'9' => Some(byte - b'0'),
@@ -790,7 +790,13 @@ fn compare(
     let mut changed = 0;
     let mut maximum = 0;
     let mut bounds = [width, height, 0, 0];
-    for (i, (left, right)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+    for (i, (left, right)) in a
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0.iter())
+        .enumerate()
+    {
         if i % 65536 == 0 {
             crate::cancel::check_current_cancel("scoped preview difference")?;
         }

@@ -47,11 +47,17 @@ pub(crate) fn freeze(
     let mut out = Vec::with_capacity(cvt.len());
     let mut changes = Vec::new();
     budget.charge(deltas.values.len())?;
-    for (index, (source, delta)) in cvt.chunks_exact(2).zip(&deltas.values).enumerate() {
+    for (index, (source, delta)) in cvt
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(&deltas.values)
+        .enumerate()
+    {
         if index % 256 == 0 {
             crate::cancel::check_current_cancel("CVT value publication")?;
         }
-        let before = i16::from_be_bytes(source.try_into().unwrap());
+        let before = i16::from_be_bytes(*source);
         let after = i16::try_from(round_i32(f64::from(before) + delta[0])?).map_err(|_| {
             WellfriendError::invalid_input("instanced CVT value exceeds FWORD range")
         })?;

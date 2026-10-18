@@ -374,7 +374,7 @@ fn parse_hex_string(bytes: &[u8], start: usize) -> Result<(String, usize)> {
                 hex.push(b'0');
             }
             let mut out = Vec::with_capacity(hex.len() / 2);
-            for pair in hex.chunks_exact(2) {
+            for pair in hex.as_chunks::<2>().0.iter() {
                 let hi = hex_value(pair[0]).ok_or_else(|| {
                     WellfriendError::MalformedPdf("invalid FDF hex string".to_string())
                 })?;

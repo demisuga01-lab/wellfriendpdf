@@ -221,7 +221,9 @@ fn ps_rasterizes_close_to_wellfriendpdf_raster() {
         // Guard: the page must actually have marks.
         let nonwhite = raster
             .pixels
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .filter(|p| p[0] < 250 || p[1] < 250 || p[2] < 250)
             .count();
         assert!(
