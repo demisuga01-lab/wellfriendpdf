@@ -2506,7 +2506,12 @@ impl PixelBuffer {
         if !scalar_compositor_forced() && wellfriendpdf_render_simd::rgb8_to_opaque_rgba(rgb, dst) {
             return pixels;
         }
-        for (out, src) in dst.chunks_exact_mut(4).zip(rgb.chunks_exact(3)) {
+        for (out, src) in dst
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(rgb.as_chunks::<3>().0.iter())
+        {
             out[0] = src[0];
             out[1] = src[1];
             out[2] = src[2];
@@ -4140,7 +4145,7 @@ impl PixelBuffer {
             self.data.fill(color[0]);
             return;
         }
-        for chunk in self.data.chunks_exact_mut(4) {
+        for chunk in self.data.as_chunks_mut::<4>().0.iter_mut() {
             chunk[0] = color[0];
             chunk[1] = color[1];
             chunk[2] = color[2];
@@ -4716,7 +4721,13 @@ impl PixelBuffer {
         let pixel_count = self.width as usize * self.height as usize;
         let mut out = vec![0; pixel_count * 3];
         if !wellfriendpdf_render_simd::rgba_to_rgb8(&self.data, &mut out) {
-            for (rgba, rgb) in self.data.chunks_exact(4).zip(out.chunks_exact_mut(3)) {
+            for (rgba, rgb) in self
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(out.as_chunks_mut::<3>().0.iter_mut())
+            {
                 rgb.copy_from_slice(&rgba[..3]);
             }
         }
@@ -4736,7 +4747,7 @@ impl PixelBuffer {
         }
 
         let bg_a = background[3] as f32 / 255.0;
-        for chunk in self.data.chunks_exact_mut(4) {
+        for chunk in self.data.as_chunks_mut::<4>().0.iter_mut() {
             let src_a = chunk[3] as f32 / 255.0;
             if src_a >= 1.0 && bg_a >= 1.0 {
                 chunk[3] = 255;
@@ -6186,7 +6197,7 @@ fn flatten_compat_onto_opaque_background(data: &mut [u8], background: PixelColor
     if flatten_compat_onto_opaque_background_wide(data, background) {
         return;
     }
-    for chunk in data.chunks_exact_mut(4) {
+    for chunk in data.as_chunks_mut::<4>().0.iter_mut() {
         let src_a = chunk[3];
         if src_a == 255 {
             continue;
@@ -6272,7 +6283,7 @@ fn flatten_compat_onto_opaque_background_wide(data: &mut [u8], background: Pixel
 }
 
 fn flatten_compat_onto_opaque_background_scalar(data: &mut [u8], background: PixelColor) {
-    for chunk in data.chunks_exact_mut(4) {
+    for chunk in data.as_chunks_mut::<4>().0.iter_mut() {
         let src_a = chunk[3];
         if src_a == 255 {
             continue;
@@ -6655,7 +6666,12 @@ fn blend_rgba_row_separable_src_over_opaque_dst_scalar(
 ) -> u64 {
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     let mut painted = 0u64;
-    for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+    for (src, dst) in src_row
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst_row.as_chunks_mut::<4>().0.iter_mut())
+    {
         let source_alpha = f32::from(src[3]) / 255.0;
         if source_alpha <= 0.0 {
             continue;
@@ -6790,7 +6806,12 @@ fn blend_rgba_row_separable_src_over_general_scalar(
 ) -> u64 {
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     let mut painted = 0u64;
-    for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+    for (src, dst) in src_row
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst_row.as_chunks_mut::<4>().0.iter_mut())
+    {
         let source_alpha = f32::from(src[3]) / 255.0;
         if source_alpha <= 0.0 {
             continue;
@@ -7033,8 +7054,10 @@ fn blend_rgba_row_separable_src_over_opaque_dst_partial_clip_scalar(
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     let mut painted = 0u64;
     for (offset, (src, dst)) in src_row
-        .chunks_exact(4)
-        .zip(dst_row.chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst_row.as_chunks_mut::<4>().0.iter_mut())
         .enumerate()
     {
         let x = x0.saturating_add(offset as i32);
@@ -7185,8 +7208,10 @@ fn blend_rgba_row_separable_src_over_general_partial_clip_scalar(
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     let mut painted = 0u64;
     for (offset, (src, dst)) in src_row
-        .chunks_exact(4)
-        .zip(dst_row.chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst_row.as_chunks_mut::<4>().0.iter_mut())
         .enumerate()
     {
         let x = x0.saturating_add(offset as i32);
@@ -7388,7 +7413,7 @@ fn fuse_rgba_paint_row(
     if out.len() > pixels * 4 {
         out[pixels * 4..].fill(0);
     }
-    for (idx, src) in src_row.chunks_exact(4).take(pixels).enumerate() {
+    for (idx, src) in src_row.as_chunks::<4>().0.iter().take(pixels).enumerate() {
         scratch.alpha[idx] = src[3];
     }
     if let Some(smask) = smask {
@@ -7414,7 +7439,9 @@ fn fuse_rgba_paint_row(
         }
     }
     for (dst, alpha) in out
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
         .take(pixels)
         .zip(scratch.alpha.iter().copied())
     {
@@ -7432,8 +7459,10 @@ fn fuse_rgba_paint_row_scalar(
     out: &mut [u8],
 ) {
     for (idx, (src, dst)) in src_row
-        .chunks_exact(4)
-        .zip(out.chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(out.as_chunks_mut::<4>().0.iter_mut())
         .enumerate()
     {
         dst.copy_from_slice(src);
@@ -7565,7 +7594,12 @@ fn blend_alpha_mask_run_high_quality_normal(
         gamma::to_linear(color[2]),
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
-    for (d, mask) in dst_row.chunks_exact_mut(4).zip(mask_row.iter().copied()) {
+    for (d, mask) in dst_row
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(mask_row.iter().copied())
+    {
         if mask == 0 {
             continue;
         }
@@ -7645,7 +7679,9 @@ fn blend_alpha_mask_run_high_quality_normal_partial_clip(
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
     for (idx, (d, mask)) in dst_row
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
         .zip(mask_row.iter().copied())
         .enumerate()
     {
@@ -7728,7 +7764,12 @@ fn blend_alpha_mask_run_high_quality_blend(
         gamma::to_linear(color[2]),
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
-    for (d, mask) in dst_row.chunks_exact_mut(4).zip(mask_row.iter().copied()) {
+    for (d, mask) in dst_row
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(mask_row.iter().copied())
+    {
         if mask == 0 {
             continue;
         }
@@ -7804,7 +7845,9 @@ fn blend_alpha_mask_run_high_quality_blend_partial_clip(
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
     for (idx, (d, mask)) in dst_row
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
         .zip(mask_row.iter().copied())
         .enumerate()
     {
@@ -7885,7 +7928,9 @@ fn blend_alpha_mask_run_high_quality_masked(
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
     for (idx, (d, mask)) in dst_row
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
         .zip(mask_row.iter().copied())
         .enumerate()
     {
@@ -7957,7 +8002,7 @@ fn blend_solid_run_high_quality_normal(
         return;
     }
     if eff_a >= 1.0 {
-        for d in dst_row.chunks_exact_mut(4) {
+        for d in dst_row.as_chunks_mut::<4>().0.iter_mut() {
             d.copy_from_slice(&[color[0], color[1], color[2], 255]);
         }
         return;
@@ -7968,8 +8013,8 @@ fn blend_solid_run_high_quality_normal(
         gamma::to_linear(color[2]),
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
-        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
-    for d in dst_row.chunks_exact_mut(4) {
+        .fetch_add(dst_row.as_chunks::<4>().0.len() as u64, Ordering::Relaxed);
+    for d in dst_row.as_chunks_mut::<4>().0.iter_mut() {
         let dst_rgb = [
             gamma::to_linear(d[0]),
             gamma::to_linear(d[1]),
@@ -8027,8 +8072,8 @@ fn blend_solid_run_high_quality_normal_partial_clip(
         gamma::to_linear(color[2]),
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
-        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
-    for (idx, d) in dst_row.chunks_exact_mut(4).enumerate() {
+        .fetch_add(dst_row.as_chunks::<4>().0.len() as u64, Ordering::Relaxed);
+    for (idx, d) in dst_row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x0.saturating_add(idx as i32);
         let clip_alpha = f32::from(clip.opacity_byte(x, run.row)) / 255.0;
         let eff_a = (src_alpha * clip_alpha).clamp(0.0, 1.0);
@@ -8101,8 +8146,8 @@ fn blend_solid_run_high_quality_blend(
         gamma::to_linear(color[2]),
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
-        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
-    for d in dst_row.chunks_exact_mut(4) {
+        .fetch_add(dst_row.as_chunks::<4>().0.len() as u64, Ordering::Relaxed);
+    for d in dst_row.as_chunks_mut::<4>().0.iter_mut() {
         let dst_rgb = [
             gamma::to_linear(d[0]),
             gamma::to_linear(d[1]),
@@ -8160,8 +8205,8 @@ fn blend_solid_run_high_quality_blend_partial_clip(
         gamma::to_linear(color[2]),
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
-        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
-    for (idx, d) in dst_row.chunks_exact_mut(4).enumerate() {
+        .fetch_add(dst_row.as_chunks::<4>().0.len() as u64, Ordering::Relaxed);
+    for (idx, d) in dst_row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x0.saturating_add(idx as i32);
         let clip_alpha = f32::from(clip.opacity_byte(x, run.row)) / 255.0;
         let eff_a = (src_alpha * clip_alpha).clamp(0.0, 1.0);
@@ -8226,8 +8271,8 @@ fn blend_solid_run_high_quality_masked(
         gamma::to_linear(color[2]),
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
-        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
-    for (idx, d) in dst_row.chunks_exact_mut(4).enumerate() {
+        .fetch_add(dst_row.as_chunks::<4>().0.len() as u64, Ordering::Relaxed);
+    for (idx, d) in dst_row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x0.saturating_add(idx as i32);
         let smask_alpha = f32::from(smask.get_byte(x, run.row)) / 255.0;
         let clip_alpha = clip
@@ -8295,8 +8340,8 @@ fn blend_solid_run_high_quality_knockout(
         gamma::to_linear(color[2]),
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS
-        .fetch_add(dst_row.chunks_exact(4).count() as u64, Ordering::Relaxed);
-    for (idx, d) in dst_row.chunks_exact_mut(4).enumerate() {
+        .fetch_add(dst_row.as_chunks::<4>().0.len() as u64, Ordering::Relaxed);
+    for (idx, d) in dst_row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x0.saturating_add(idx as i32);
         let eff_a = (src_alpha * masks.alpha_at(x, run.row)).clamp(0.0, 1.0);
         if eff_a <= 0.0 {
@@ -8371,7 +8416,9 @@ fn blend_alpha_mask_run_high_quality_knockout(
     ];
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(pixels as u64, Ordering::Relaxed);
     for (idx, (d, mask)) in dst_row
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
         .zip(mask_row.iter().copied())
         .enumerate()
     {
@@ -8411,7 +8458,7 @@ fn blend_alpha_mask_run_normal_opaque_dst_wide(
     if scalar_compositor_forced() {
         return false;
     }
-    let pixels = slice.chunks_exact(4).count().min(mask_alpha.len());
+    let pixels = slice.as_chunks::<4>().0.len().min(mask_alpha.len());
     if pixels < 2 || color[3] == 0 {
         return color[3] == 0;
     }
@@ -8489,12 +8536,22 @@ fn blend_alpha_mask_run_normal_opaque_dst_scalar(
     mask_alpha: &[u8],
     color: PixelColor,
 ) {
-    let pixels = slice.chunks_exact_mut(4).zip(mask_alpha.iter()).count();
+    let pixels = slice
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(mask_alpha.iter())
+        .count();
     if pixels == 0 || color[3] == 0 {
         return;
     }
     let color_alpha = u16::from(color[3]);
-    for (chunk, mask) in slice.chunks_exact_mut(4).zip(mask_alpha.iter().copied()) {
+    for (chunk, mask) in slice
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(mask_alpha.iter().copied())
+    {
         let alpha = ((color_alpha * u16::from(mask) + 127) / 255).min(255);
         if alpha == 0 {
             continue;
@@ -8556,12 +8613,12 @@ fn fill_opaque_run_arch(slice: &mut [u8], color: PixelColor) -> bool {
 
 fn fill_opaque_run_word_aligned(slice: &mut [u8], color: PixelColor) -> bool {
     if slice.len() < 8 {
-        for chunk in slice.chunks_exact_mut(4) {
+        for chunk in slice.as_chunks_mut::<4>().0.iter_mut() {
             chunk.copy_from_slice(&color);
         }
         return slice.len() >= 4;
     }
-    for chunk in slice.chunks_exact_mut(4) {
+    for chunk in slice.as_chunks_mut::<4>().0.iter_mut() {
         chunk.copy_from_slice(&color);
     }
     true
@@ -8637,7 +8694,12 @@ fn write_opaque_rgb_run_to_data(
         return x_end_exclusive.saturating_sub(x_start) as usize;
     }
     let mut written = 0usize;
-    for (out, src) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(3)) {
+    for (out, src) in dst_row
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row.as_chunks::<3>().0.iter())
+    {
         out[0] = src[0];
         out[1] = src[1];
         out[2] = src[2];
@@ -8852,7 +8914,7 @@ fn blend_separable_src_over_opaque_dst_partial_clip_scalar(
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     let mut painted = 0u64;
     let source_alpha = f32::from(color[3]) / 255.0;
-    for (offset, chunk) in slice.chunks_exact_mut(4).enumerate() {
+    for (offset, chunk) in slice.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x_start.saturating_add(offset as i32);
         let coverage = source_alpha * (f32::from(clip.opacity_byte(x, row)) / 255.0);
         if coverage <= 0.0 {
@@ -8978,7 +9040,7 @@ fn blend_separable_src_over_general_scalar(
     ];
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     let mut painted = 0u64;
-    for dst in slice.chunks_exact_mut(4) {
+    for dst in slice.as_chunks_mut::<4>().0.iter_mut() {
         painted = painted.saturating_add(1);
         let dst_rgb = [
             f32::from(dst[0]) / 255.0,
@@ -9111,7 +9173,7 @@ fn blend_separable_src_over_general_partial_clip_scalar(
     ];
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     let mut painted = 0u64;
-    for (offset, dst) in slice.chunks_exact_mut(4).enumerate() {
+    for (offset, dst) in slice.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x_start.saturating_add(offset as i32);
         let source_alpha = color_alpha * (f32::from(clip.opacity_byte(x, row)) / 255.0);
         if source_alpha <= 0.0 {
@@ -9272,7 +9334,7 @@ fn blend_separable_src_over_opaque_dst_uniform_alpha_scalar(
     ];
     let source_alpha = f32::from(color[3]) / 255.0;
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
-    for chunk in slice.chunks_exact_mut(4) {
+    for chunk in slice.as_chunks_mut::<4>().0.iter_mut() {
         let dst = [
             chunk[0] as f32 / 255.0,
             chunk[1] as f32 / 255.0,
@@ -9495,7 +9557,7 @@ fn blend_separable_opaque_src_over_opaque_dst_scalar(
         color[2] as f32 / 255.0,
     ];
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
-    for chunk in slice.chunks_exact_mut(4) {
+    for chunk in slice.as_chunks_mut::<4>().0.iter_mut() {
         let dst = [
             chunk[0] as f32 / 255.0,
             chunk[1] as f32 / 255.0,
@@ -9722,7 +9784,7 @@ fn blend_normal_compat_run_scalar(slice: &mut [u8], color: PixelColor) {
         color[2] as f32 / 255.0,
     ];
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
-    for chunk in slice.chunks_exact_mut(4) {
+    for chunk in slice.as_chunks_mut::<4>().0.iter_mut() {
         let dst_a = chunk[3] as f32 / 255.0;
         let out_a = src_a + dst_a * (1.0 - src_a);
         if out_a < 1e-6 {
@@ -10060,8 +10122,10 @@ fn composite_normal_compat_row_soft_mask_general_wide(
         return false;
     }
     let pixels = dst_row
-        .chunks_exact(4)
-        .zip(src_row.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(src_row.as_chunks::<4>().0.iter())
         .count()
         .min(mask_row.len());
     let pixel_count = pixels & !3;
@@ -10209,8 +10273,10 @@ fn composite_normal_compat_row_soft_mask_opaque_dst_scalar(
     PIXEL_COMPOSITOR_SCALAR_SOFT_MASK_OPAQUE_DST_PIXELS
         .fetch_add(mask_row.len() as u64, Ordering::Relaxed);
     for ((d, s), &mask) in dst_row
-        .chunks_exact_mut(4)
-        .zip(src_row.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row.as_chunks::<4>().0.iter())
         .zip(mask_row.iter())
     {
         if s[3] == 0 || mask == 0 {
@@ -10246,8 +10312,10 @@ fn composite_normal_compat_row_soft_mask_opaque_dst_wide(
         return false;
     }
     let pixels = dst_row
-        .chunks_exact(4)
-        .zip(src_row.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(src_row.as_chunks::<4>().0.iter())
         .count()
         .min(mask_row.len());
     if composite_normal_compat_row_soft_mask_opaque_dst_arch(
@@ -10361,8 +10429,10 @@ fn composite_normal_compat_row_soft_mask_scalar(
 ) {
     PIXEL_COMPOSITOR_SOFT_MASK_GENERAL_PIXELS.fetch_add(mask_row.len() as u64, Ordering::Relaxed);
     for ((d, s), &mask) in dst_row
-        .chunks_exact_mut(4)
-        .zip(src_row.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row.as_chunks::<4>().0.iter())
         .zip(mask_row.iter())
     {
         if s[3] == 0 || mask == 0 {
@@ -10435,8 +10505,10 @@ fn composite_normal_high_quality_row(dst_row: &mut [u8], src_row: &[u8], group_a
     }
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
     for (d, s) in dst_row[..len]
-        .chunks_exact_mut(4)
-        .zip(src_row[..len].chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row[..len].as_chunks::<4>().0.iter())
     {
         if s[3] == 0 {
             continue;
@@ -10492,8 +10564,10 @@ fn composite_normal_high_quality_row_partial_clip(
     }
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
     for (pixel, (d, s)) in dst_row[..len]
-        .chunks_exact_mut(4)
-        .zip(src_row[..len].chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row[..len].as_chunks::<4>().0.iter())
         .enumerate()
     {
         if s[3] == 0 {
@@ -10550,8 +10624,10 @@ fn composite_high_quality_blend_row(
     }
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
     for (d, s) in dst_row[..len]
-        .chunks_exact_mut(4)
-        .zip(src_row[..len].chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row[..len].as_chunks::<4>().0.iter())
     {
         if s[3] == 0 {
             continue;
@@ -10603,8 +10679,10 @@ fn composite_high_quality_blend_row_partial_clip(
     }
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
     for (pixel, (d, s)) in dst_row[..len]
-        .chunks_exact_mut(4)
-        .zip(src_row[..len].chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row[..len].as_chunks::<4>().0.iter())
         .enumerate()
     {
         if s[3] == 0 {
@@ -10659,8 +10737,10 @@ fn composite_high_quality_masked_row(
     }
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
     for (pixel, (d, s)) in dst_row[..len]
-        .chunks_exact_mut(4)
-        .zip(src_row[..len].chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row[..len].as_chunks::<4>().0.iter())
         .enumerate()
     {
         if s[3] == 0 {
@@ -10720,8 +10800,10 @@ fn composite_high_quality_masked_row_with_backdrop(
     }
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add((len / 4) as u64, Ordering::Relaxed);
     for (pixel, (d, s)) in dst_row[..len]
-        .chunks_exact_mut(4)
-        .zip(src_row[..len].chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row[..len].as_chunks::<4>().0.iter())
         .enumerate()
     {
         if s[3] == 0 {
@@ -10885,10 +10967,20 @@ fn composite_normal_compat_row_general_scalar(
     }
     let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(
-        dst_row.chunks_exact(4).zip(src_row.chunks_exact(4)).count() as u64,
+        dst_row
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(src_row.as_chunks::<4>().0.iter())
+            .count() as u64,
         Ordering::Relaxed,
     );
-    for (d, s) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
+    for (d, s) in dst_row
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row.as_chunks::<4>().0.iter())
+    {
         if s[3] == 0 {
             continue;
         }
@@ -11065,10 +11157,20 @@ fn composite_normal_compat_row_scalar_opaque_dst_uniform_alpha(
     alpha: u16,
 ) {
     PIXEL_COMPOSITOR_SCALAR_UNIFORM_ALPHA_PIXELS.fetch_add(
-        dst_row.chunks_exact(4).zip(src_row.chunks_exact(4)).count() as u64,
+        dst_row
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(src_row.as_chunks::<4>().0.iter())
+            .count() as u64,
         Ordering::Relaxed,
     );
-    for (d, s) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
+    for (d, s) in dst_row
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row.as_chunks::<4>().0.iter())
+    {
         let alpha = scale_alpha_byte(s[3], alpha);
         if alpha == 0 {
             continue;
@@ -11089,10 +11191,20 @@ fn composite_normal_compat_row_scalar_opaque_dst_uniform_alpha(
 
 fn composite_normal_compat_row_scalar_opaque_dst(dst_row: &mut [u8], src_row: &[u8]) {
     PIXEL_COMPOSITOR_SCALAR_OPAQUE_DST_PIXELS.fetch_add(
-        dst_row.chunks_exact(4).zip(src_row.chunks_exact(4)).count() as u64,
+        dst_row
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(src_row.as_chunks::<4>().0.iter())
+            .count() as u64,
         Ordering::Relaxed,
     );
-    for (d, s) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
+    for (d, s) in dst_row
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row.as_chunks::<4>().0.iter())
+    {
         let src_a = u16::from(s[3]);
         if src_a == 0 {
             continue;
@@ -11112,7 +11224,7 @@ fn composite_normal_compat_row_scalar_opaque_dst(dst_row: &mut [u8], src_row: &[
 }
 
 fn row_alpha_is(row: &[u8], alpha: u8) -> bool {
-    row.chunks_exact(4).all(|pixel| pixel[3] == alpha)
+    row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == alpha)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11125,7 +11237,7 @@ enum RowAlphaClass {
 fn row_alpha_class(row: &[u8]) -> RowAlphaClass {
     let mut saw_transparent = false;
     let mut saw_opaque = false;
-    for alpha in row.chunks_exact(4).map(|pixel| pixel[3]) {
+    for alpha in row.as_chunks::<4>().0.iter().map(|pixel| pixel[3]) {
         match alpha {
             0 => saw_transparent = true,
             255 => saw_opaque = true,
@@ -11751,7 +11863,7 @@ mod tests {
         expected.set_smask(smask);
         expected.set_clip(clip);
         expected.set_knockout_backdrop(backdrop);
-        for (x, src) in rgba.chunks_exact(4).enumerate() {
+        for (x, src) in rgba.as_chunks::<4>().0.iter().enumerate() {
             expected.blend_pixel(x as i32, 0, [src[0], src[1], src[2], src[3]], 1.0);
         }
 
@@ -11829,7 +11941,7 @@ mod tests {
         let mut expected =
             PixelBuffer::new_filled_with_mode(4, 1, [45, 110, 170, 191], RenderMode::HighQuality);
         expected.set_smask(smask);
-        for (x, src) in rgba.chunks_exact(4).enumerate() {
+        for (x, src) in rgba.as_chunks::<4>().0.iter().enumerate() {
             expected.blend_pixel(x as i32, 0, [src[0], src[1], src[2], src[3]], 1.0);
         }
 
@@ -11869,7 +11981,7 @@ mod tests {
         expected.blend_mode = BlendMode::Color;
         expected.set_smask(smask);
         expected.set_clip(clip);
-        for (x, src) in rgba.chunks_exact(4).enumerate() {
+        for (x, src) in rgba.as_chunks::<4>().0.iter().enumerate() {
             expected.blend_pixel(x as i32, 0, [src[0], src[1], src[2], src[3]], 1.0);
         }
 
@@ -13535,8 +13647,10 @@ mod tests {
         flatten_compat_onto_opaque_background(&mut data, background);
 
         for (idx, (input, output)) in original
-            .chunks_exact(4)
-            .zip(data.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(data.as_chunks::<4>().0.iter())
             .enumerate()
         {
             let alpha = u16::from(input[3]);
@@ -13556,7 +13670,7 @@ mod tests {
                     255,
                 ]
             };
-            assert_eq!(output, expected, "pixel {idx}");
+            assert_eq!(*output, expected, "pixel {idx}");
         }
     }
 

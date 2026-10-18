@@ -94,8 +94,8 @@ impl PreparedGvar {
                 }
                 let tuple = bytes(source, index * axes * 2, axes * 2)?;
                 let mut peak = Vec::with_capacity(axes);
-                for value in tuple.chunks_exact(2) {
-                    let value = i16::from_be_bytes(value.try_into().unwrap());
+                for value in tuple.as_chunks::<2>().0.iter() {
+                    let value = i16::from_be_bytes(*value);
                     if !(-16384..=16384).contains(&value) {
                         return Err(fail("shared peak outside normalized domain"));
                     }

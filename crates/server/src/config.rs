@@ -607,7 +607,7 @@ fn decode_secret_hex(value: &str) -> Result<Vec<u8>, String> {
         return Err("decoded key would exceed 256 bytes".to_string());
     }
     let mut decoded = Vec::with_capacity(value.len() / 2);
-    for pair in value.as_bytes().chunks_exact(2) {
+    for pair in value.as_bytes().as_chunks::<2>().0.iter() {
         let nibble = |byte: u8| -> Option<u8> {
             match byte {
                 b'0'..=b'9' => Some(byte - b'0'),

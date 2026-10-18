@@ -305,7 +305,7 @@ fn encode_contract_row_scalar_loop(
     reverse_byte_order: bool,
 ) {
     let bytes_per_pixel = format.bytes_per_pixel();
-    for (pixel_index, rgba) in source.chunks_exact(4).enumerate() {
+    for (pixel_index, rgba) in source.as_chunks::<4>().0.iter().enumerate() {
         let offset = pixel_index * bytes_per_pixel;
         let red = rgba[0];
         let green = rgba[1];
@@ -462,14 +462,14 @@ pub(crate) fn apply_contract_color_scheme(contract: &RenderContract, buffer: &mu
     match contract.color_scheme {
         ColorScheme::Light => {}
         ColorScheme::Dark => {
-            for px in buffer.rgba_bytes_mut().chunks_exact_mut(4) {
+            for px in buffer.rgba_bytes_mut().as_chunks_mut::<4>().0.iter_mut() {
                 px[0] = 255u8.saturating_sub(px[0]);
                 px[1] = 255u8.saturating_sub(px[1]);
                 px[2] = 255u8.saturating_sub(px[2]);
             }
         }
         ColorScheme::ForcedMonochrome => {
-            for px in buffer.rgba_bytes_mut().chunks_exact_mut(4) {
+            for px in buffer.rgba_bytes_mut().as_chunks_mut::<4>().0.iter_mut() {
                 let gray = contract_luma_u8(px[0], px[1], px[2]);
                 px[0] = gray;
                 px[1] = gray;
@@ -2291,7 +2291,7 @@ impl ContentEngine {
             ));
         };
         let mut rgb = Vec::with_capacity((buffer.width as usize) * (buffer.height as usize) * 3);
-        for px in buffer.rgba_bytes().chunks_exact(4) {
+        for px in buffer.rgba_bytes().as_chunks::<4>().0.iter() {
             rgb.extend_from_slice(&px[..3]);
         }
         let proofed = crate::render::cmm::proof_srgb_via_output_intent(
@@ -2319,8 +2319,10 @@ impl ContentEngine {
         }
         for (px, proof_rgb) in buffer
             .rgba_bytes_mut()
-            .chunks_exact_mut(4)
-            .zip(proofed.chunks_exact(3))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(proofed.as_chunks::<3>().0.iter())
         {
             px[..3].copy_from_slice(proof_rgb);
         }
@@ -4707,9 +4709,9 @@ mod tests {
         engine
             .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
             .expect("render halftone into caller surface");
-        assert!(surface.chunks_exact(4).any(|px| px[0] == 0));
-        assert!(surface.chunks_exact(4).any(|px| px[0] == 255));
-        assert!(surface.chunks_exact(4).all(|px| px[3] == 255));
+        assert!(surface.as_chunks::<4>().0.iter().any(|px| px[0] == 0));
+        assert!(surface.as_chunks::<4>().0.iter().any(|px| px[0] == 255));
+        assert!(surface.as_chunks::<4>().0.iter().all(|px| px[3] == 255));
     }
 
     #[test]
@@ -5117,7 +5119,9 @@ mod tests {
             let image = buf.to_raw_image_rgba();
             image
                 .pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|px| {
                     px[3] == 255 && px[0] == px[1] && px[1] == px[2] && px[0] > 0 && px[0] < 255
                 })
@@ -5168,7 +5172,9 @@ mod tests {
             let image = buf.to_raw_image_rgba();
             image
                 .pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|px| {
                     px[3] == 255
                         && (px[0] != px[1] || px[1] != px[2])
@@ -5221,7 +5227,9 @@ mod tests {
             let image = buf.to_raw_image_rgba();
             image
                 .pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|px| {
                     px[3] == 255 && px[0] == 255 && px[1] == px[2] && px[1] > 0 && px[1] < 255
                 })

@@ -1167,7 +1167,7 @@ fn hex_decode(text: &str) -> Result<Vec<u8>, ()> {
     }
     let mut bytes = Vec::with_capacity(text.len() / 2);
     let raw = text.as_bytes();
-    for pair in raw.chunks_exact(2) {
+    for pair in raw.as_chunks::<2>().0.iter() {
         let high = hex_value(pair[0]).ok_or(())?;
         let low = hex_value(pair[1]).ok_or(())?;
         bytes.push((high << 4) | low);

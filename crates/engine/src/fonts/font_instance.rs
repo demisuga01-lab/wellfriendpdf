@@ -206,7 +206,12 @@ fn static_kern(data: &[u8], glyphs: u16) -> Result<()> {
         if coverage >> 8 == 0 {
             let pairs = usize::from(u16_at(table, 6)?);
             let mut previous = None;
-            for (i, pair) in slice(table, 14, pairs * 6)?.chunks_exact(6).enumerate() {
+            for (i, pair) in slice(table, 14, pairs * 6)?
+                .as_chunks::<6>()
+                .0
+                .iter()
+                .enumerate()
+            {
                 if i % 256 == 0 {
                     crate::cancel::check_current_cancel("static kern glyph identities")?;
                 }
@@ -239,7 +244,9 @@ fn static_kern(data: &[u8], glyphs: u16) -> Result<()> {
                     return Err(fail("kern class glyph range outside font"));
                 }
                 for (i, entry) in slice(table, owner + 4, count * 2)?
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .enumerate()
                 {
                     if i % 256 == 0 {

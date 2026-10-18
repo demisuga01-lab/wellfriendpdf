@@ -59,10 +59,13 @@ pub use document_index::{
 #[path = "authoring_front_matter.rs"]
 mod front_matter;
 pub use front_matter::{FrontMatterReport, FrontMatterTableOfContentsReport};
+#[path = "authoring_rich.rs"]
+mod rich;
 #[path = "authoring_sections.rs"]
 mod sections;
 #[path = "authoring_structure.rs"]
 mod structure;
+pub use rich::{RichParagraphReport, RichParagraphStyle, RichSpan};
 pub use sections::{
     FlowSection, PageNumberField, PageNumberStyle, RunningText, RunningTextPart, SectionPageMaster,
 };
@@ -901,6 +904,7 @@ pub struct PdfPageBuilder {
     footnotes: Vec<notes::FootnoteFragment>,
     footnote_reserved_height: f64,
     links: Vec<fields::AuthoredLink>,
+    uri_links: Vec<rich::UriLink>,
 }
 
 impl PdfPageBuilder {
@@ -916,6 +920,7 @@ impl PdfPageBuilder {
             footnotes: Vec::new(),
             footnote_reserved_height: 0.0,
             links: Vec::new(),
+            uri_links: Vec::new(),
         }
     }
 
@@ -931,6 +936,7 @@ impl PdfPageBuilder {
             footnotes: Vec::new(),
             footnote_reserved_height: 0.0,
             links: Vec::new(),
+            uri_links: Vec::new(),
         }
     }
 
@@ -3202,6 +3208,17 @@ impl AuthoredObjects {
                     )?),
                 });
             }
+            for link in &page.uri_links {
+                let number = alloc(&mut next);
+                refs.push(number);
+                annotation_objects.push(OutputObject {
+                    number,
+                    object: PdfObject::Dictionary(rich::uri_link_annotation_dict(
+                        link,
+                        page_number,
+                    )?),
+                });
+            }
             annotation_refs.push(refs);
         }
 
@@ -3973,7 +3990,7 @@ fn authored_image_from_raw(raw: RawImage) -> Result<AuthoredImage> {
         2 => {
             let mut samples = Vec::with_capacity(raw.pixel_count());
             let mut alpha = Vec::with_capacity(raw.pixel_count());
-            for px in raw.pixels.chunks_exact(2) {
+            for px in raw.pixels.as_chunks::<2>().0.iter() {
                 samples.push(px[0]);
                 alpha.push(px[1]);
             }
@@ -3991,7 +4008,7 @@ fn authored_image_from_raw(raw: RawImage) -> Result<AuthoredImage> {
         4 => {
             let mut samples = Vec::with_capacity(raw.pixel_count() * 3);
             let mut alpha = Vec::with_capacity(raw.pixel_count());
-            for px in raw.pixels.chunks_exact(4) {
+            for px in raw.pixels.as_chunks::<4>().0.iter() {
                 samples.extend_from_slice(&px[..3]);
                 alpha.push(px[3]);
             }

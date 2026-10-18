@@ -3452,8 +3452,12 @@ pub unsafe extern "C" fn wellfriendpdf_document_rotate_pdf_to_path(
         };
         let written = wellfriendpdf((|| -> wellfriendpdf_engine::Result<u64> {
             let mut file = wellfriendpdf_engine::AtomicFile::create(std::path::Path::new(&output))?;
-            let written =
-                wellfriendpdf_engine::rotate_pages_to(&doc.engine, &pages, rotation, file.writer())?;
+            let written = wellfriendpdf_engine::rotate_pages_to(
+                &doc.engine,
+                &pages,
+                rotation,
+                file.writer(),
+            )?;
             file.commit()?;
             Ok(written)
         })())?;
@@ -3576,6 +3580,72 @@ pub unsafe extern "C" fn wellfriendpdf_document_decrypt_pdf(
             *out_buffer = into_buffer(out);
         }
         Ok(())
+    })
+}
+
+/// Converts an opened document to PDF/A natively and gates the result with the
+/// SDK's PDF/A validator.
+///
+/// `options_json` may be NULL (defaults: `{"level":"2b","system_fonts":true}`).
+/// `report_json_out`, if non-null, receives the JSON report
+/// (`{"ok":true,"level":"2b","validated":true,...}`) on success and on a
+/// validation failure; free it with `wellfriendpdf_string_free`. When the
+/// converted file fails validation, the call returns an error whose message
+/// starts with `PDFA_CONVERSION_FAILED` (or `PDFA1_TRANSPARENCY`) and
+/// `out_buffer` is left untouched: no non-conforming file is returned.
+///
+/// # Safety
+///
+/// `document` must be valid. `options_json`, if non-null, must be a valid
+/// NUL-terminated UTF-8 string. `out_buffer` must be writable and freed with
+/// `wellfriendpdf_buffer_free`. `report_json_out` and `error_out`, if non-null,
+/// must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_pdfa_convert(
+    document: *const WellfriendDocument,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    report_json_out: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let options: wellfriendpdf_engine::PdfAConvertOptions = if options_json.is_null() {
+            wellfriendpdf_engine::PdfAConvertOptions::default()
+        } else {
+            let raw = unsafe { required_c_string(options_json, "options_json") }?;
+            serde_json::from_str(&raw).map_err(|err| format!("invalid options_json: {err}"))?
+        };
+        wellfriendpdf(options.profile())?;
+        let outcome = wellfriendpdf(wellfriendpdf_engine::convert_pdf_to_pdfa(
+            doc.engine.document(),
+            &options,
+        ))?;
+        let report = serde_json::to_string(&outcome.report).map_err(|err| err.to_string())?;
+        if !report_json_out.is_null() {
+            unsafe {
+                *report_json_out = into_c_string(report.clone());
+            }
+        }
+        match outcome.bytes {
+            Some(bytes) => {
+                unsafe {
+                    *out_buffer = into_buffer(bytes);
+                }
+                Ok(())
+            }
+            None => Err(format!(
+                "{}: {report}",
+                outcome
+                    .report
+                    .code
+                    .as_deref()
+                    .unwrap_or(wellfriendpdf_engine::PDFA_CONVERSION_FAILED)
+            )),
+        }
     })
 }
 
@@ -3752,6 +3822,105 @@ pub unsafe extern "C" fn wellfriendpdf_document_to_pptx(
     })
 }
 
+/// Sets document metadata (Info dictionary and XMP, kept consistent) as an
+/// incremental update and returns the new PDF.
+///
+/// `options_json` is a JSON object with any of `title`, `author`, `subject`,
+/// `keywords`, `creator`, `producer`, `creation_date`, `modification_date`
+/// (ISO 8601 or PDF date), `custom` (`{"Key": "value"}`) and
+/// `signature_policy_override`. An empty string removes a field. The original
+/// bytes stay an exact prefix of the output, so existing signature values
+/// remain valid; a DocMDP P=1 certification blocks the edit unless overridden.
+/// `report_json_out`, if non-null, receives the JSON report; free it with
+/// `wellfriendpdf_string_free`.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `options_json` must be a valid
+/// NUL-terminated UTF-8 string. `out_buffer` must be writable and freed with
+/// `wellfriendpdf_buffer_free`. `report_json_out` and `error_out`, if non-null,
+/// must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_edit_metadata(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    report_json_out: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let bytes = unsafe { read_input_bytes(data, len, "data") }?;
+        let options = unsafe { required_c_string(options_json, "options_json") }?;
+        let (pdf, report) = wellfriendpdf(
+            wellfriendpdf_engine::metadata_edit::edit_metadata_json(bytes, &options),
+        )?;
+        if !report_json_out.is_null() {
+            let report = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+            unsafe {
+                *report_json_out = into_c_string(report);
+            }
+        }
+        unsafe {
+            *out_buffer = into_buffer(pdf);
+        }
+        Ok(())
+    })
+}
+
+/// Converts a PDF to an EPUB 3 book and returns an owned buffer.
+///
+/// `options_json` may be NULL for defaults; otherwise a JSON object with
+/// `split` (`"headings"` or `"pages"`), `pages_per_chapter`, `include_images`,
+/// `include_furniture`, `language`, `title` and `password`.
+/// `report_json_out`, if non-null, receives the JSON report (chapters, images,
+/// pages); free it with `wellfriendpdf_string_free`.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `options_json`, if non-null, must
+/// be a valid NUL-terminated UTF-8 string. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`. `report_json_out` and `error_out`,
+/// if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_pdf_to_epub(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    report_json_out: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let bytes = unsafe { read_input_bytes(data, len, "data") }?;
+        let options = if options_json.is_null() {
+            None
+        } else {
+            Some(unsafe { required_c_string(options_json, "options_json") }?)
+        };
+        let (epub, report) = wellfriendpdf(wellfriendpdf_engine::epub::pdf_to_epub_json(
+            bytes,
+            options.as_deref(),
+        ))?;
+        if !report_json_out.is_null() {
+            let report = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+            unsafe {
+                *report_json_out = into_c_string(report);
+            }
+        }
+        unsafe {
+            *out_buffer = into_buffer(epub);
+        }
+        Ok(())
+    })
+}
+
 /// Converts a document to DOCX and returns an owned buffer.
 ///
 /// # Safety
@@ -3911,6 +4080,200 @@ pub unsafe extern "C" fn wellfriendpdf_pptx_to_pdf(
             *out_buffer = into_buffer(out);
         }
         Ok(())
+    })
+}
+
+/// Shared body of the Rust-native `*_to_pdf` C functions.
+unsafe fn native_convert_ffi<T>(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    convert: fn(&[u8], &T) -> wellfriendpdf_engine::Result<Vec<u8>>,
+    prepare: fn(&mut T) -> Result<(), String>,
+) -> Result<(), String>
+where
+    T: Default + for<'de> serde::Deserialize<'de>,
+{
+    if out_buffer.is_null() {
+        return Err("out_buffer pointer is null".into());
+    }
+    let bytes = unsafe { read_input_bytes(data, len, "data") }?;
+    let options_json = if options_json.is_null() {
+        None
+    } else {
+        Some(unsafe { required_c_string(options_json, "options_json") }?)
+    };
+    let mut options = wellfriendpdf(wellfriendpdf_engine::parse_native_options::<T>(
+        options_json.as_deref(),
+    ))?;
+    prepare(&mut options)?;
+    let out = wellfriendpdf(convert(bytes, &options))?;
+    unsafe {
+        *out_buffer = into_buffer(out);
+    }
+    Ok(())
+}
+
+/// Converts plain UTF-8 text to PDF and returns an owned buffer.
+///
+/// `options_json` may be NULL for defaults; otherwise it must be a JSON object
+/// with the `TextToPdfOptions` fields (see `docs/native-conversions.md`). Error messages
+/// start with a stable converter code such as `invalid_options:`.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `options_json`, if non-null, must
+/// be a valid NUL-terminated UTF-8 string. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_text_to_pdf(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || unsafe {
+        native_convert_ffi::<wellfriendpdf_engine::TextToPdfOptions>(
+            data,
+            len,
+            options_json,
+            out_buffer,
+            wellfriendpdf_engine::text_to_pdf,
+            |_| Ok(()),
+        )
+    })
+}
+
+/// Converts CommonMark/GFM Markdown (remote and local images are never read; embed images as data URIs) to PDF and returns an owned buffer.
+///
+/// `options_json` may be NULL for defaults; otherwise it must be a JSON object
+/// with the `MarkdownToPdfOptions` fields (see `docs/native-conversions.md`). Error messages
+/// start with a stable converter code such as `invalid_options:`.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `options_json`, if non-null, must
+/// be a valid NUL-terminated UTF-8 string. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_markdown_to_pdf(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || unsafe {
+        native_convert_ffi::<wellfriendpdf_engine::MarkdownToPdfOptions>(
+            data,
+            len,
+            options_json,
+            out_buffer,
+            wellfriendpdf_engine::markdown_to_pdf,
+            |options| {
+                if options.base_dir.is_some() {
+                    return Err(
+                        "invalid_options: base_dir is not accepted through the C API".into(),
+                    );
+                }
+                Ok(())
+            },
+        )
+    })
+}
+
+/// Converts CSV to PDF and returns an owned buffer.
+///
+/// `options_json` may be NULL for defaults; otherwise it must be a JSON object
+/// with the `CsvToPdfOptions` fields (see `docs/native-conversions.md`). Error messages
+/// start with a stable converter code such as `invalid_options:`.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `options_json`, if non-null, must
+/// be a valid NUL-terminated UTF-8 string. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_csv_to_pdf(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || unsafe {
+        native_convert_ffi::<wellfriendpdf_engine::CsvToPdfOptions>(
+            data,
+            len,
+            options_json,
+            out_buffer,
+            wellfriendpdf_engine::csv_to_pdf,
+            |_| Ok(()),
+        )
+    })
+}
+
+/// Converts JSON to PDF and returns an owned buffer.
+///
+/// `options_json` may be NULL for defaults; otherwise it must be a JSON object
+/// with the `JsonToPdfOptions` fields (see `docs/native-conversions.md`). Error messages
+/// start with a stable converter code such as `invalid_options:`.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `options_json`, if non-null, must
+/// be a valid NUL-terminated UTF-8 string. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_json_to_pdf(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || unsafe {
+        native_convert_ffi::<wellfriendpdf_engine::JsonToPdfOptions>(
+            data,
+            len,
+            options_json,
+            out_buffer,
+            wellfriendpdf_engine::json_to_pdf,
+            |_| Ok(()),
+        )
+    })
+}
+
+/// Converts SVG (external resources are never read) to PDF and returns an owned buffer.
+///
+/// `options_json` may be NULL for defaults; otherwise it must be a JSON object
+/// with the `SvgToPdfOptions` fields (see `docs/native-conversions.md`). Error messages
+/// start with a stable converter code such as `invalid_options:`.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `options_json`, if non-null, must
+/// be a valid NUL-terminated UTF-8 string. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_svg_to_pdf(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || unsafe {
+        native_convert_ffi::<wellfriendpdf_engine::SvgToPdfOptions>(
+            data,
+            len,
+            options_json,
+            out_buffer,
+            wellfriendpdf_engine::svg_to_pdf,
+            |_| Ok(()),
+        )
     })
 }
 

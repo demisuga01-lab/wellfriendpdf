@@ -39,7 +39,7 @@ pub(super) fn validate(face: &Face<'_>) -> Result<usize> {
     }
     let records = bytes(raw, start, axes * 20)?;
     let mut tags = BTreeSet::new();
-    for record in records.chunks_exact(20) {
+    for record in records.as_chunks::<20>().0.iter() {
         crate::cancel::check_current_cancel("font axis definitions")?;
         let limits =
             [4, 8, 12].map(|at| i32::from_be_bytes(record[at..at + 4].try_into().unwrap()));
@@ -82,7 +82,7 @@ fn validate_avar(raw: &[u8], axes: usize) -> Result<()> {
         at += count * 4;
         let mut previous = None;
         let mut anchors = [false; 3];
-        for (index, record) in records.chunks_exact(4).enumerate() {
+        for (index, record) in records.as_chunks::<4>().0.iter().enumerate() {
             if index % 256 == 0 {
                 crate::cancel::check_current_cancel("font axis mapping")?;
             }

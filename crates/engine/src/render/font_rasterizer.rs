@@ -8,7 +8,7 @@ use crate::render::path::{FillRule, GlyphHinting, Path, PathPainter};
 use crate::render::transform::{Transform2D, Viewport};
 use ttf_parser::OutlineBuilder;
 
-mod fallback_fonts {
+pub(crate) mod fallback_fonts {
     pub static LIBERATION_SANS_REGULAR: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/fonts/LiberationSans-Regular.ttf"
@@ -431,7 +431,7 @@ pub(crate) mod cff_support {
                     if stack.len() < 2 || !stack.len().is_multiple_of(2) {
                         return None;
                     }
-                    for chunk in stack.chunks_exact(2) {
+                    for chunk in stack.as_chunks::<2>().0.iter() {
                         x += chunk[0];
                         y += chunk[1];
                         path.line_to(x, y);
@@ -450,7 +450,7 @@ pub(crate) mod cff_support {
                     if stack.len() < 6 || !stack.len().is_multiple_of(6) {
                         return None;
                     }
-                    for chunk in stack.chunks_exact(6) {
+                    for chunk in stack.as_chunks::<6>().0.iter() {
                         type2_rrcurve_to(&mut path, &mut x, &mut y, chunk);
                     }
                     stack.clear();
@@ -508,7 +508,7 @@ pub(crate) mod cff_support {
                         return None;
                     }
                     let line_len = stack.len() - 6;
-                    for chunk in stack[..line_len].chunks_exact(2) {
+                    for chunk in stack[..line_len].as_chunks::<2>().0.iter() {
                         x += chunk[0];
                         y += chunk[1];
                         path.line_to(x, y);
@@ -521,7 +521,7 @@ pub(crate) mod cff_support {
                         return None;
                     }
                     let curve_len = stack.len() - 2;
-                    for chunk in stack[..curve_len].chunks_exact(6) {
+                    for chunk in stack[..curve_len].as_chunks::<6>().0.iter() {
                         type2_rrcurve_to(&mut path, &mut x, &mut y, chunk);
                     }
                     x += stack[curve_len];

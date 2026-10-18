@@ -212,12 +212,12 @@ pub(super) fn decode(code: &[u8]) -> Result<BezPath> {
             22 if stack.len() == 1 => c.move_by(stack[0], 0.)?,
             21 if stack.len() == 2 => c.move_by(stack[0], stack[1])?,
             5 if !stack.is_empty() && stack.len() % 2 == 0 => {
-                for p in stack.chunks_exact(2) {
+                for p in stack.as_chunks::<2>().0.iter() {
                     c.line_by(p[0], p[1])?;
                 }
             }
             8 if !stack.is_empty() && stack.len() % 6 == 0 => {
-                for p in stack.chunks_exact(6) {
+                for p in stack.as_chunks::<6>().0.iter() {
                     c.curve_by(p)?;
                 }
             }

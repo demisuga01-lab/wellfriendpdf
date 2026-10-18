@@ -14,7 +14,12 @@ use wellfriendpdf_engine::{
     render_page_image_with_cache, ContentEngine, RasterImageFormat, RenderDocumentCache,
 };
 
-fn render(engine: &ContentEngine, page: usize, dpi: u32, cache: &mut RenderDocumentCache) -> Vec<u8> {
+fn render(
+    engine: &ContentEngine,
+    page: usize,
+    dpi: u32,
+    cache: &mut RenderDocumentCache,
+) -> Vec<u8> {
     let (png, _, _) =
         render_page_image_with_cache(engine, page, dpi, RasterImageFormat::Png, 90, cache)
             .expect("render page");
@@ -27,12 +32,18 @@ fn main() {
     let dpi: u32 = args[2].parse().expect("dpi");
     match args[3].as_str() {
         "order" => {
-            let order: Vec<usize> = args[4].split(',').map(|p| p.parse().expect("page")).collect();
+            let order: Vec<usize> = args[4]
+                .split(',')
+                .map(|p| p.parse().expect("page"))
+                .collect();
             let mut shared = RenderDocumentCache::new();
             for &page in &order {
                 let warm = render(&engine, page, dpi, &mut shared);
                 let fresh = render(&engine, page, dpi, &mut RenderDocumentCache::new());
-                println!("page {page}: shared {} fresh", if warm == fresh { "==" } else { "!=" });
+                println!(
+                    "page {page}: shared {} fresh",
+                    if warm == fresh { "==" } else { "!=" }
+                );
             }
         }
         "bisect" => {
@@ -43,7 +54,10 @@ fn main() {
             let mut experiments: Vec<(&str, Vec<&str>)> = vec![("all-reset", components.to_vec())];
             experiments.push(("none-reset", Vec::new()));
             for &keep in components {
-                experiments.push((keep, components.iter().copied().filter(|c| *c != keep).collect()));
+                experiments.push((
+                    keep,
+                    components.iter().copied().filter(|c| *c != keep).collect(),
+                ));
             }
             let drops: Vec<String> = components.iter().map(|c| format!("drop:{c}")).collect();
             for (label, &drop) in drops.iter().zip(components) {
@@ -53,10 +67,20 @@ fn main() {
                 let mut cache = RenderDocumentCache::new();
                 render(&engine, warm_page, dpi, &mut cache);
                 for component in &resets {
-                    assert!(cache.diagnostic_reset(component), "unknown component {component}");
+                    assert!(
+                        cache.diagnostic_reset(component),
+                        "unknown component {component}"
+                    );
                 }
                 let output = render(&engine, target, dpi, &mut cache);
-                println!("keep {label:18} target {}", if output == reference { "same" } else { "DIFFERS" });
+                println!(
+                    "keep {label:18} target {}",
+                    if output == reference {
+                        "same"
+                    } else {
+                        "DIFFERS"
+                    }
+                );
             }
         }
         other => panic!("unknown mode {other}"),

@@ -3265,7 +3265,7 @@ fn remove_relocated_authored_rows_from_page(
         }
         let mut data = decoded.data;
         for range in stream_ranges.into_iter().rev() {
-            data.splice(range, [b'\n']);
+            data.splice(range, *b"\n");
         }
         let compressed = crate::filters::flate_encode_cancellable(&data, 6)?;
         dictionary.insert("Filter", PdfObject::Name("FlateDecode".into()));

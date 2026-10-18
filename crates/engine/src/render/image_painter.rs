@@ -429,23 +429,25 @@ impl ImagePainter {
 
         // Positive horizontal weights per destination column, computed once
         // with the same expression the inner loop used per source row.
-        let x_weights: Vec<Vec<(usize, f64)>> = if target.device_x_source.axis
-            == OrthogonalSourceAxis::X
-        {
-            x_spans
-                .iter()
-                .map(|x_span| {
-                    (x_span.first..x_span.end)
-                        .map(|source_x| {
-                            (source_x, box_pixel_weight(source_x, x_span.start, x_span.finish))
-                        })
-                        .filter(|&(_, weight)| weight > 0.0)
-                        .collect()
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let x_weights: Vec<Vec<(usize, f64)>> =
+            if target.device_x_source.axis == OrthogonalSourceAxis::X {
+                x_spans
+                    .iter()
+                    .map(|x_span| {
+                        (x_span.first..x_span.end)
+                            .map(|source_x| {
+                                (
+                                    source_x,
+                                    box_pixel_weight(source_x, x_span.start, x_span.finish),
+                                )
+                            })
+                            .filter(|&(_, weight)| weight > 0.0)
+                            .collect()
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         // Gray sources add identical products to all three channels, so one
         // accumulator per column carries the exact same sum.
         let gray = image.channels == 1;

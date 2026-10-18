@@ -75,7 +75,10 @@ impl ImageEncoder {
 
         let bilevel = image.channels == 1
             && image.pixels.len() == image.width as usize * image.height as usize
-            && image.pixels.iter().all(|&sample| sample == 0 || sample == 255);
+            && image
+                .pixels
+                .iter()
+                .all(|&sample| sample == 0 || sample == 255);
         if !bilevel {
             return Self::encode_png(image);
         }

@@ -463,7 +463,7 @@ impl<'a> Interpreter<'a> {
             }
             5 => {
                 let values = self.take_stack();
-                for pair in values.chunks_exact(2) {
+                for pair in values.as_chunks::<2>().0.iter() {
                     self.line_to(self.x + pair[0], self.y + pair[1]);
                 }
             }
@@ -481,7 +481,7 @@ impl<'a> Interpreter<'a> {
             }
             8 => {
                 let values = self.take_stack();
-                for c in values.chunks_exact(6) {
+                for c in values.as_chunks::<6>().0.iter() {
                     self.curve_to(
                         self.x + c[0],
                         self.y + c[1],
@@ -531,7 +531,7 @@ impl<'a> Interpreter<'a> {
             }
             30 => {
                 let values = self.take_stack();
-                for c in values.chunks_exact(4) {
+                for c in values.as_chunks::<4>().0.iter() {
                     self.curve_to(
                         self.x,
                         self.y + c[0],
@@ -544,7 +544,7 @@ impl<'a> Interpreter<'a> {
             }
             31 => {
                 let values = self.take_stack();
-                for c in values.chunks_exact(4) {
+                for c in values.as_chunks::<4>().0.iter() {
                     self.curve_to(
                         self.x + c[0],
                         self.y,

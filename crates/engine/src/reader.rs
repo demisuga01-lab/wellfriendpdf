@@ -251,9 +251,9 @@ impl BoundedObjectStreamCache {
         if objects.len() > self.max_objects {
             return;
         }
-        let mut bytes = objects.len().saturating_mul(
-            std::mem::size_of::<u32>() + std::mem::size_of::<(u32, PdfObject)>(),
-        );
+        let mut bytes = objects
+            .len()
+            .saturating_mul(std::mem::size_of::<u32>() + std::mem::size_of::<(u32, PdfObject)>());
         for (_, object) in objects.values() {
             if bytes > self.max_bytes {
                 break;
@@ -1250,7 +1250,10 @@ impl PdfReader {
         // not fit, so the body is not read twice.
         let window = end - offset;
         let mut header = None;
-        for limit in [INITIAL_HEADER_PROBE_BYTES, STREAMING_STREAM_HEADER_READ_LIMIT] {
+        for limit in [
+            INITIAL_HEADER_PROBE_BYTES,
+            STREAMING_STREAM_HEADER_READ_LIMIT,
+        ] {
             let header_len = window.min(limit);
             let header_bytes = self.source.read_at(offset, header_len)?;
             let mut parser = PdfParser::with_resolver(&header_bytes, 0, Some(self))?;
@@ -1269,7 +1272,10 @@ impl PdfReader {
         let Some(header) = header else {
             return Ok(None);
         };
-        let Some(length) = header.length.and_then(|length| usize::try_from(length).ok()) else {
+        let Some(length) = header
+            .length
+            .and_then(|length| usize::try_from(length).ok())
+        else {
             return Ok(None);
         };
         let Some(stream_start) = offset.checked_add(header.stream_start) else {

@@ -995,15 +995,13 @@ fn classify_ops_for_vector_output(
                         };
                     }
                 }
-                if let Err(reason) =
-                    text_operator_has_vector_metric_source(
-                        op,
-                        &gs,
-                        resources,
-                        reader,
-                        &mut text_metric_cache,
-                    )
-                {
+                if let Err(reason) = text_operator_has_vector_metric_source(
+                    op,
+                    &gs,
+                    resources,
+                    reader,
+                    &mut text_metric_cache,
+                ) {
                     return VectorFallbackDecision::WholePageRaster { reason };
                 }
             }
@@ -1208,14 +1206,13 @@ fn text_operator_has_vector_metric_source(
         }
         .map_err(|_| REASON)?;
         for glyph in glyphs {
-            if glyph.is_vertical {
-                if glyph
+            if glyph.is_vertical
+                && glyph
                     .vertical_advance
                     .filter(|advance| advance.is_finite())
                     .is_none()
-                {
-                    return Err(REASON);
-                }
+            {
+                return Err(REASON);
             }
             let needs_advance =
                 !glyph.is_vertical && glyph.width.filter(|advance| advance.is_finite()).is_none();
@@ -3200,7 +3197,7 @@ fn vector_type2_function_range(
             return None;
         }
         let mut pairs = Vec::with_capacity(component_count);
-        for chunk in range.chunks_exact(2) {
+        for chunk in range.as_chunks::<2>().0.iter() {
             if chunk[0] > chunk[1] {
                 return None;
             }

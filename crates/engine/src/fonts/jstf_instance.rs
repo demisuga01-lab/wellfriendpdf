@@ -42,7 +42,11 @@ impl Program<'_, '_, '_, '_> {
         let count = usize::from(u16_at(self.data, source)?);
         self.resolver.charge(count + 1)?;
         let mut previous = None;
-        for item in bytes(self.data, source + 2, count * 2)?.chunks_exact(2) {
+        for item in bytes(self.data, source + 2, count * 2)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+        {
             crate::cancel::check_current_cancel("font justification index list")?;
             let index = usize::from(u16_at(item, 0)?);
             if index >= bound || previous.is_some_and(|last| last >= index) {

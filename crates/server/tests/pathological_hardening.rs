@@ -226,9 +226,16 @@ async fn pathological_tiling_pattern_terminates() {
     if status == StatusCode::UNPROCESSABLE_ENTITY {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["error"], "unsupported_feature");
-        assert!(json["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("exceeding exact render limit")));
+        // The renderer budgets tiling work by cell count, clipped pixel
+        // coverage and replay operations; the refusal names which bounded
+        // budget was exceeded and its numeric limit.
+        let message = json["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("tiling pattern requires")
+                && message.contains("exceeding bounded")
+                && message.contains("budget"),
+            "tiling refusal must name the exceeded budget, got: {message}"
+        );
     }
     assert!(
         start.elapsed() < Duration::from_secs(20),

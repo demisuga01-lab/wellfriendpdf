@@ -95,8 +95,10 @@ fn name_serialization_shares_strings_and_has_sorted_record_keys() {
     let roundtrip = Names::parse(&bytes).unwrap();
     assert_eq!(n.records, roundtrip.records);
     let offsets = bytes[6..6 + n.records.len() * 12]
-        .chunks_exact(12)
-        .filter(|record| u16_at(record, 6).unwrap() == 13)
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .filter(|record| u16_at(record.as_slice(), 6).unwrap() == 13)
         .map(|record| u16_at(record, 10).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(offsets[0], offsets[1]);

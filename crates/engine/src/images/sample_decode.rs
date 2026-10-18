@@ -220,7 +220,7 @@ impl DecodeMap {
             return Err(invalid("image Decode component count mismatch"));
         }
         let mut pairs = Vec::with_capacity(defaults.len());
-        for pair in items.chunks_exact(2) {
+        for pair in items.as_chunks::<2>().0.iter() {
             let lo = resolve(&pair[0])?
                 .as_number()
                 .filter(|v| v.is_finite())

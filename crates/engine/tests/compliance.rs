@@ -57,10 +57,17 @@ fn pdfa_validator_reports_missing_archival_requirements() {
 }
 
 #[test]
-fn pdfa_conversion_blocks_unembedded_fonts() {
+fn pdfa_conversion_embeds_unembedded_fonts() {
     let doc = PdfDocument::open_bytes(standard_font_pdf()).unwrap();
-    let err = convert_to_pdfa(&doc, PdfAProfile::PdfA2B).unwrap_err();
-    assert!(err.to_string().contains("source fonts are not embedded"));
+    assert!(!validate_pdfa(&doc, PdfAProfile::PdfA2B).unwrap().compliant);
+    let bytes = convert_to_pdfa(&doc, PdfAProfile::PdfA2B).unwrap();
+    let converted = PdfDocument::open_bytes(bytes).unwrap();
+    let report = validate_pdfa(&converted, PdfAProfile::PdfA2B).unwrap();
+    assert!(report.compliant, "{:?}", report.violations);
+    assert!(!report
+        .violations
+        .iter()
+        .any(|v| v.rule == "pdfa.font.embedded"));
 }
 
 #[test]

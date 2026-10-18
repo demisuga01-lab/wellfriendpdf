@@ -627,8 +627,10 @@ fn compare_reference_raster_v2(
     let mut luma_reference_sum = 0f64;
     let pixel_count = u64::from(width) * u64::from(height);
     for (pixel_index, (actual_pixel, reference_pixel)) in actual
-        .chunks_exact(4)
-        .zip(reference.rgba.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(reference.rgba.as_chunks::<4>().0.iter())
         .enumerate()
     {
         if pixel_index % 65_536 == 0 {
@@ -663,8 +665,10 @@ fn compare_reference_raster_v2(
     let mut variance_reference = 0f64;
     let mut covariance = 0f64;
     for (pixel_index, (actual_pixel, reference_pixel)) in actual
-        .chunks_exact(4)
-        .zip(reference.rgba.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(reference.rgba.as_chunks::<4>().0.iter())
         .enumerate()
     {
         if pixel_index % 65_536 == 0 {
@@ -7570,8 +7574,16 @@ fn build_pdf_function_v2(
                     .all(|v| v.is_finite())
                 || (!encode.is_empty() && encode.len() != usize::from(input_channels) * 2)
                 || (!decode.is_empty() && decode.len() != usize::from(output_channels) * 2)
-                || domain.chunks_exact(2).any(|pair| pair[0] >= pair[1])
-                || range.chunks_exact(2).any(|pair| pair[0] >= pair[1])
+                || domain
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|pair| pair[0] >= pair[1])
+                || range
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|pair| pair[0] >= pair[1])
             {
                 return Err(WellfriendError::invalid_input(
                     "sampled tint transform dimensions, ranges, or BitsPerSample are invalid",
@@ -7700,8 +7712,16 @@ fn build_pdf_function_v2(
                 || !domain.iter().chain(range).all(|v| v.is_finite())
                 || program.is_empty()
                 || program.len() > 16 * 1024 * 1024
-                || domain.chunks_exact(2).any(|pair| pair[0] >= pair[1])
-                || range.chunks_exact(2).any(|pair| pair[0] >= pair[1])
+                || domain
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|pair| pair[0] >= pair[1])
+                || range
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .any(|pair| pair[0] >= pair[1])
                 || !crate::render::function::validate_type4_program(program)
             {
                 return Err(WellfriendError::invalid_input(
@@ -7835,7 +7855,11 @@ fn validate_finite_color_space_v2(descriptor: &UniversalImageColorSpaceV2) -> Re
             }
         }
         UniversalImageColorSpaceV2::IccBased { range, .. }
-            if range.chunks_exact(2).any(|pair| pair[0] >= pair[1]) =>
+            if range
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .any(|pair| pair[0] >= pair[1]) =>
         {
             return Err(WellfriendError::invalid_input(
                 "ICCBased Range minima must be lower than their maxima",

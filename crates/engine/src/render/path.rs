@@ -3902,8 +3902,10 @@ mod tests {
         let mut mismatches = 0usize;
         let mut samples = Vec::new();
         for (pixel, (a, e)) in actual_bytes
-            .chunks_exact(4)
-            .zip(expected_bytes.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(expected_bytes.as_chunks::<4>().0.iter())
             .enumerate()
         {
             if a != e {

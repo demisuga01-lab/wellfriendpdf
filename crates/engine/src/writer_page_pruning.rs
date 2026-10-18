@@ -239,7 +239,7 @@ fn labels(doc: &PdfDocument, removed: &BTreeSet<usize>) -> Result<Option<PdfObje
             if nums.len() % 2 != 0 {
                 return Err(fail("odd page-label Nums"));
             }
-            for pair in nums.chunks_exact(2) {
+            for pair in nums.as_chunks::<2>().0.iter() {
                 if entries.len() >= 200_000 {
                     return Err(fail("page-label entry budget exceeded"));
                 }

@@ -3165,7 +3165,9 @@ fn rewrite_inline_image_group(
 
     let value = |key: &str| -> Option<&Operand> {
         id.operands
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .find(|pair| pair[0].as_name() == Some(key))
             .map(|pair| &pair[1])
     };
@@ -4618,7 +4620,9 @@ fn color_from_annotation(dict: &PdfDictionary, reader: &PdfReader) -> Color {
 fn quad_rects(dict: &PdfDictionary, reader: &PdfReader) -> Vec<ImageRect> {
     number_array_from_key(dict, reader, "QuadPoints")
         .unwrap_or_default()
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|quad| {
             let xs = [quad[0], quad[2], quad[4], quad[6]];
             let ys = [quad[1], quad[3], quad[5], quad[7]];
@@ -4699,7 +4703,7 @@ fn ink_paths(dict: &PdfDictionary, reader: &PdfReader) -> Option<Vec<Vec<(f64, f
     for path_obj in object.as_array()? {
         let path = reader.resolve(path_obj.clone()).ok()?;
         let mut points = Vec::new();
-        for pair in path.as_array()?.chunks_exact(2) {
+        for pair in path.as_array()?.as_chunks::<2>().0.iter() {
             let x = reader.resolve(pair[0].clone()).ok()?.as_number()?;
             let y = reader.resolve(pair[1].clone()).ok()?.as_number()?;
             points.push((x, y));
@@ -4714,7 +4718,9 @@ fn ink_paths(dict: &PdfDictionary, reader: &PdfReader) -> Option<Vec<Vec<(f64, f
 fn vertices(dict: &PdfDictionary, reader: &PdfReader) -> Option<Vec<(f64, f64)>> {
     let values = number_array_from_key(dict, reader, "Vertices")?;
     let points = values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0], pair[1]))
         .collect::<Vec<_>>();
     (points.len() >= 2).then_some(points)
@@ -5764,7 +5770,7 @@ fn edit_image_from_raw(raw: RawImage) -> Result<EditImage> {
     match raw.channels {
         3 => samples = raw.pixels,
         4 => {
-            for px in raw.pixels.chunks_exact(4) {
+            for px in raw.pixels.as_chunks::<4>().0.iter() {
                 samples.extend_from_slice(&px[..3]);
                 alpha.push(px[3]);
             }

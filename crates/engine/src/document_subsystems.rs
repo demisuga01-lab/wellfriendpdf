@@ -2439,7 +2439,7 @@ fn supported_ocr_reconstruct_visible_words(
         let pixel_count = raw.pixel_count();
         let mut rgb = Vec::with_capacity(pixel_count.saturating_mul(3));
         let mut alpha = Vec::with_capacity(pixel_count);
-        for (pixel_index, pixel) in raw.pixels.chunks_exact(4).enumerate() {
+        for (pixel_index, pixel) in raw.pixels.as_chunks::<4>().0.iter().enumerate() {
             if pixel_index % 65_536 == 0 {
                 crate::cancel::check_current_cancel("visible OCR alpha separation")?;
             }
@@ -2954,7 +2954,7 @@ fn import_static_xfa_datasets_pdf(input: &[u8], datasets_xml: &str) -> Result<(V
         ));
     }
     let dataset_reference = packet_items
-        .chunks_exact(2)
+        .as_chunks::<2>().0.iter()
         .find(|pair| {
             form_scalar_name(&pair[0])
                 .is_some_and(|name| name.eq_ignore_ascii_case("datasets"))

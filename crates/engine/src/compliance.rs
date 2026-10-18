@@ -1,10 +1,8 @@
 //! PDF compliance validation and bounded conversion helpers.
 //!
-//! The PDF/A converter is intentionally conservative: it can add the required
-//! XMP metadata, output intent, and strip disallowed actions, but it will not
-//! claim success when source fonts are not embedded. Reconstructing unavailable
-//! font programs requires an explicit substitution policy, so that remains a
-//! reported conversion blocker.
+//! Conversion lives in [`crate::pdfa_convert`]: it embeds substitute fonts,
+//! adds the OutputIntent and XMP metadata, removes forbidden features and only
+//! returns output that passes the validator in this module.
 
 use std::collections::BTreeSet;
 
@@ -28,18 +26,22 @@ pub enum PdfAProfile {
     PdfA2B,
     /// PDF/A-2a: visual archival preservation plus tagged structure.
     PdfA2A,
+    /// PDF/A-2u: PDF/A-2b plus a Unicode mapping for every glyph.
+    PdfA2U,
     /// PDF/A-3b: PDF/A-2b plus associated embedded files.
     PdfA3B,
     /// PDF/A-3a: PDF/A-3b plus tagged structure.
     PdfA3A,
+    /// PDF/A-3u: PDF/A-3b plus a Unicode mapping for every glyph.
+    PdfA3U,
 }
 
 impl PdfAProfile {
     pub fn part(self) -> i32 {
         match self {
             Self::PdfA1B => 1,
-            Self::PdfA2B | Self::PdfA2A => 2,
-            Self::PdfA3B | Self::PdfA3A => 3,
+            Self::PdfA2B | Self::PdfA2A | Self::PdfA2U => 2,
+            Self::PdfA3B | Self::PdfA3A | Self::PdfA3U => 3,
         }
     }
 
@@ -47,7 +49,48 @@ impl PdfAProfile {
         match self {
             Self::PdfA1B | Self::PdfA2B | Self::PdfA3B => "B",
             Self::PdfA2A | Self::PdfA3A => "A",
+            Self::PdfA2U | Self::PdfA3U => "U",
         }
+    }
+
+    /// Short level code used by the CLI/HTTP contract (`1b`, `2b`, `2u`, ...).
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::PdfA1B => "1b",
+            Self::PdfA2B => "2b",
+            Self::PdfA2A => "2a",
+            Self::PdfA2U => "2u",
+            Self::PdfA3B => "3b",
+            Self::PdfA3A => "3a",
+            Self::PdfA3U => "3u",
+        }
+    }
+
+    /// Parse `2b`, `pdfa2b`, `PDF/A-2b`, `pdf-a-2u`, ... (case-insensitive).
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized: String = value
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect();
+        let short = normalized.trim_start_matches("pdfa");
+        Some(match short {
+            "1b" => Self::PdfA1B,
+            "2b" => Self::PdfA2B,
+            "2a" => Self::PdfA2A,
+            "2u" => Self::PdfA2U,
+            "3b" => Self::PdfA3B,
+            "3a" => Self::PdfA3A,
+            "3u" => Self::PdfA3U,
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn requires_unicode(self) -> bool {
+        matches!(
+            self,
+            Self::PdfA2U | Self::PdfA3U | Self::PdfA2A | Self::PdfA3A
+        )
     }
 
     pub fn label(self) -> &'static str {
@@ -57,19 +100,21 @@ impl PdfAProfile {
             Self::PdfA2A => "PDF/A-2a",
             Self::PdfA3B => "PDF/A-3b",
             Self::PdfA3A => "PDF/A-3a",
+            Self::PdfA2U => "PDF/A-2u",
+            Self::PdfA3U => "PDF/A-3u",
         }
     }
 
-    fn is_pdfa1(self) -> bool {
+    pub(crate) fn is_pdfa1(self) -> bool {
         matches!(self, Self::PdfA1B)
     }
 
-    fn is_level_a(self) -> bool {
+    pub(crate) fn is_level_a(self) -> bool {
         matches!(self, Self::PdfA2A | Self::PdfA3A)
     }
 
-    fn allows_embedded_files(self) -> bool {
-        matches!(self, Self::PdfA3B | Self::PdfA3A)
+    pub(crate) fn allows_embedded_files(self) -> bool {
+        matches!(self, Self::PdfA3B | Self::PdfA3A | Self::PdfA3U)
     }
 }
 
@@ -91,7 +136,11 @@ pub struct ComplianceViolation {
 }
 
 impl ComplianceViolation {
-    fn error(rule: &str, location: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn error(
+        rule: &str,
+        location: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             rule: rule.to_string(),
             location: location.into(),
@@ -100,7 +149,11 @@ impl ComplianceViolation {
         }
     }
 
-    fn warning(rule: &str, location: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn warning(
+        rule: &str,
+        location: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             rule: rule.to_string(),
             location: location.into(),
@@ -170,6 +223,7 @@ pub fn validate_pdfa(doc: &PdfDocument, profile: PdfAProfile) -> Result<PdfAVali
     validate_fonts(doc, &mut violations)?;
     validate_disallowed_objects(reader, profile, &mut violations)?;
     validate_embedded_file_rules(reader, profile, &mut violations)?;
+    crate::pdfa_rules::validate_extended_rules(doc, &catalog, profile, &mut violations)?;
     if profile.is_level_a() {
         validate_level_a_structure(&catalog, reader, &mut violations);
     }
@@ -183,75 +237,36 @@ pub fn validate_pdfa(doc: &PdfDocument, profile: PdfAProfile) -> Result<PdfAVali
     })
 }
 
-/// Convert a document to the requested PDF/A profile where the existing font
-/// programs are already embedded.
+/// Convert a document to the requested PDF/A profile.
+///
+/// Delegates to [`crate::pdfa_convert::convert_pdf_to_pdfa`] with bundled
+/// substitute fonts only (no system fonts) so output is reproducible. The
+/// output always passes Wellfriend's PDF/A validator; otherwise an
+/// `UnsupportedFeature` error starting with `PDFA_CONVERSION_FAILED` (or
+/// `PDFA1_TRANSPARENCY`) lists the failing rules.
 pub fn convert_to_pdfa(doc: &PdfDocument, profile: PdfAProfile) -> Result<Vec<u8>> {
-    let report = validate_embedded_fonts(doc)?;
-    if !report.is_empty() {
-        let names = report
-            .iter()
-            .map(|font| font.name.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(WellfriendError::UnsupportedFeature(format!(
-            "PDF/A conversion blocked: source fonts are not embedded ({names})"
-        )));
+    let options = crate::pdfa_convert::PdfAConvertOptions::for_profile(profile);
+    let outcome = crate::pdfa_convert::convert_pdf_to_pdfa(doc, &options)?;
+    match outcome.bytes {
+        Some(bytes) => Ok(bytes),
+        None => {
+            let report = outcome.report;
+            let rules = report
+                .failed_rules
+                .iter()
+                .map(|rule| format!("{} ({})", rule.rule, rule.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(WellfriendError::UnsupportedFeature(format!(
+                "{}: {} [{rules}]",
+                report
+                    .code
+                    .as_deref()
+                    .unwrap_or(crate::pdfa_convert::PDFA_CONVERSION_FAILED),
+                report.message.unwrap_or_default()
+            )))
+        }
     }
-    if doc.reader().is_encrypted() {
-        return Err(WellfriendError::UnsupportedFeature(
-            "PDF/A conversion requires an already-decrypted source document".to_string(),
-        ));
-    }
-
-    let (mut objects, root, info) = rewrite_document_objects(doc.reader(), &mut |_, object| {
-        strip_disallowed_actions(object);
-        ensure_pdfa3_associated_file_relationship(object, profile);
-    })?;
-    drop_copied_structural_artifacts(&mut objects);
-    let mut document_info = DocumentInfo::gather(doc)?;
-    document_info.producer = Some("Wellfriend PDF SDK".to_string());
-    let file_id = pdfa_file_id(doc, profile, &document_info);
-    let next = objects.iter().map(|obj| obj.number).max().unwrap_or(0) + 1;
-    let metadata_number = next;
-    let icc_number = next + 1;
-    let output_intent_number = next + 2;
-    let level_a_structure = profile.is_level_a().then_some((next + 3, next + 4));
-    let info_number = info.unwrap_or(if level_a_structure.is_some() {
-        next + 5
-    } else {
-        next + 3
-    });
-
-    upsert_catalog_compliance(
-        &mut objects,
-        root,
-        metadata_number,
-        output_intent_number,
-        profile,
-        level_a_structure,
-    )?;
-    upsert_info(&mut objects, info_number);
-    objects.push(OutputObject {
-        number: metadata_number,
-        object: xmp_metadata_stream(profile, &document_info),
-    });
-    objects.push(OutputObject {
-        number: icc_number,
-        object: srgb_output_profile_stream(),
-    });
-    objects.push(OutputObject {
-        number: output_intent_number,
-        object: output_intent_dictionary(icc_number),
-    });
-    objects.sort_by_key(|obj| obj.number);
-
-    let (writer_mode, version) = writer_for_profile(profile);
-    PdfWriter::new(objects, root)
-        .with_version(version)
-        .with_info(Some(info_number))
-        .with_id(Some(file_id))
-        .with_mode(writer_mode)
-        .write()
 }
 
 /// Convert and immediately validate with Wellfriend's validator.
@@ -528,7 +543,11 @@ fn validate_output_intent(
         let Ok(profile) = reader.resolve(dest.clone()) else {
             continue;
         };
-        let Some((profile_dict, raw)) = profile.as_stream() else {
+        let decoded = crate::filters::decode_stream(&profile, reader).ok();
+        let Some((profile_dict, raw)) = profile
+            .as_stream()
+            .map(|(dict, raw)| (dict, decoded.as_deref().unwrap_or(raw)))
+        else {
             violations.push(ComplianceViolation::error(
                 "pdfa.output_intent.icc",
                 format!("Catalog/OutputIntents[{idx}]/DestOutputProfile"),
@@ -891,35 +910,15 @@ fn scan_disallowed(
     }
 }
 
-fn validate_embedded_fonts(doc: &PdfDocument) -> Result<Vec<FontInfo>> {
-    Ok(list_fonts(doc)?
-        .into_iter()
-        .filter(|font| !font.embedded)
-        .collect())
-}
-
-fn drop_copied_structural_artifacts(objects: &mut Vec<OutputObject>) {
-    objects.retain(|object| !is_pdf15_structural_artifact(&object.object));
-}
-
-fn is_pdf15_structural_artifact(object: &PdfObject) -> bool {
-    let dict = match object {
-        PdfObject::Dictionary(dict) => Some(dict),
-        PdfObject::Stream { dict, .. } => Some(dict),
-        _ => None,
-    };
-    matches!(
-        dict.and_then(|dict| dict.get_name("Type")),
-        Some("ObjStm" | "XRef")
-    )
-}
-
-fn writer_for_profile(profile: PdfAProfile) -> (WriterMode, &'static str) {
+pub(crate) fn writer_for_profile(profile: PdfAProfile) -> (WriterMode, &'static str) {
     match profile {
         PdfAProfile::PdfA1B => (WriterMode::ClassicXref, "1.4"),
-        PdfAProfile::PdfA2B | PdfAProfile::PdfA2A | PdfAProfile::PdfA3B | PdfAProfile::PdfA3A => {
-            (WriterMode::XrefStreamWithObjStm, "1.7")
-        }
+        PdfAProfile::PdfA2B
+        | PdfAProfile::PdfA2A
+        | PdfAProfile::PdfA2U
+        | PdfAProfile::PdfA3B
+        | PdfAProfile::PdfA3A
+        | PdfAProfile::PdfA3U => (WriterMode::XrefStreamWithObjStm, "1.7"),
     }
 }
 
@@ -938,63 +937,6 @@ fn parse_pdf_version(version: &str) -> (u16, u16) {
         .and_then(|part| part.parse::<u16>().ok())
         .unwrap_or(0);
     (major, minor)
-}
-
-fn upsert_catalog_compliance(
-    objects: &mut Vec<OutputObject>,
-    root: u32,
-    metadata_number: u32,
-    output_intent_number: u32,
-    profile: PdfAProfile,
-    level_a_structure: Option<(u32, u32)>,
-) -> Result<()> {
-    let root_index = objects
-        .iter()
-        .position(|obj| obj.number == root)
-        .ok_or_else(|| {
-            WellfriendError::MalformedPdf("PDF/A conversion: missing catalog".to_string())
-        })?;
-    let mut append_level_a_structure = None;
-    {
-        let root_obj = &mut objects[root_index];
-        let PdfObject::Dictionary(catalog) = &mut root_obj.object else {
-            return Err(WellfriendError::MalformedPdf(
-                "PDF/A conversion: catalog is not a dictionary".to_string(),
-            ));
-        };
-        catalog.insert("Metadata", reference(metadata_number));
-        catalog.insert(
-            "OutputIntents",
-            PdfObject::Array(vec![reference(output_intent_number)]),
-        );
-        if profile.is_level_a() {
-            if !catalog.contains_key("Lang") {
-                catalog.insert("Lang", PdfObject::String(b"en-US".to_vec()));
-            }
-            catalog.insert(
-                "MarkInfo",
-                PdfObject::Dictionary(dict(&[("Marked", PdfObject::Boolean(true))])),
-            );
-            if !catalog.contains_key("StructTreeRoot") {
-                append_level_a_structure = level_a_structure;
-            }
-            if let Some((struct_root_number, _)) = append_level_a_structure {
-                catalog.insert("StructTreeRoot", reference(struct_root_number));
-            }
-        }
-        strip_disallowed_actions(&mut root_obj.object);
-    }
-    if let Some((struct_root_number, document_element_number)) = append_level_a_structure {
-        objects.push(level_a_struct_tree_root(
-            struct_root_number,
-            document_element_number,
-        ));
-        objects.push(level_a_document_struct_elem(
-            struct_root_number,
-            document_element_number,
-        ));
-    }
-    Ok(())
 }
 
 fn level_a_struct_tree_root(struct_root_number: u32, document_element_number: u32) -> OutputObject {
@@ -1025,20 +967,11 @@ fn level_a_document_struct_elem(
     }
 }
 
-fn upsert_info(objects: &mut Vec<OutputObject>, info_number: u32) {
-    if let Some(existing) = objects.iter_mut().find(|obj| obj.number == info_number) {
-        if let PdfObject::Dictionary(info) = &mut existing.object {
-            info.insert("Producer", pdf_text("Wellfriend PDF SDK"));
-        }
-        return;
-    }
-    objects.push(OutputObject {
-        number: info_number,
-        object: PdfObject::Dictionary(dict(&[("Producer", pdf_text("Wellfriend PDF SDK"))])),
-    });
-}
-
-fn pdfa_file_id(doc: &PdfDocument, profile: PdfAProfile, info: &DocumentInfo) -> Vec<u8> {
+pub(crate) fn pdfa_file_id(
+    doc: &PdfDocument,
+    profile: PdfAProfile,
+    info: &DocumentInfo,
+) -> Vec<u8> {
     if let Some(id) = doc.reader().first_file_id() {
         if !id.is_empty() {
             return id;
@@ -1077,141 +1010,6 @@ fn pdfa_file_id(doc: &PdfDocument, profile: PdfAProfile, info: &DocumentInfo) ->
     crate::crypto::md5(&seed).to_vec()
 }
 
-fn strip_disallowed_actions(object: &mut PdfObject) {
-    match object {
-        PdfObject::Dictionary(dict) => {
-            for key in ["JavaScript", "JS", "AA", "OpenAction", "Launch"] {
-                dict.remove(key);
-            }
-            if let Some(PdfObject::Dictionary(names)) = dict.get("Names").cloned() {
-                let mut names = names;
-                names.remove("JavaScript");
-                dict.insert("Names", PdfObject::Dictionary(names));
-            }
-            let keys: Vec<String> = dict.entries().map(|(key, _)| key.clone()).collect();
-            for key in keys {
-                if let Some(mut value) = dict.get(&key).cloned() {
-                    strip_disallowed_actions(&mut value);
-                    dict.insert(key, value);
-                }
-            }
-        }
-        PdfObject::Array(items) => {
-            for item in items {
-                strip_disallowed_actions(item);
-            }
-        }
-        PdfObject::Stream { dict, .. } => {
-            let mut wrapper = PdfObject::Dictionary(dict.clone());
-            strip_disallowed_actions(&mut wrapper);
-            if let PdfObject::Dictionary(clean) = wrapper {
-                *dict = clean;
-            }
-        }
-        _ => {}
-    }
-}
-
-fn ensure_pdfa3_associated_file_relationship(object: &mut PdfObject, profile: PdfAProfile) {
-    if !profile.allows_embedded_files() {
-        return;
-    }
-    match object {
-        PdfObject::Dictionary(dict) => {
-            if is_file_spec_dict(dict) && !dict.contains_key("AFRelationship") {
-                dict.insert("AFRelationship", PdfObject::Name("Unspecified".to_string()));
-            }
-            let keys: Vec<String> = dict.entries().map(|(key, _)| key.clone()).collect();
-            for key in keys {
-                if let Some(mut value) = dict.get(&key).cloned() {
-                    ensure_pdfa3_associated_file_relationship(&mut value, profile);
-                    dict.insert(key, value);
-                }
-            }
-        }
-        PdfObject::Array(items) => {
-            for item in items {
-                ensure_pdfa3_associated_file_relationship(item, profile);
-            }
-        }
-        PdfObject::Stream { dict, .. } => {
-            let mut wrapper = PdfObject::Dictionary(dict.clone());
-            ensure_pdfa3_associated_file_relationship(&mut wrapper, profile);
-            if let PdfObject::Dictionary(clean) = wrapper {
-                *dict = clean;
-            }
-        }
-        _ => {}
-    }
-}
-
-fn xmp_metadata_stream(profile: PdfAProfile, info: &DocumentInfo) -> PdfObject {
-    let title = info.title.as_deref().map(xmp_title).unwrap_or_default();
-    let author = info.author.as_deref().map(xmp_author).unwrap_or_default();
-    let subject = info.subject.as_deref().map(xmp_subject).unwrap_or_default();
-    let keywords = info
-        .keywords
-        .as_deref()
-        .map(|value| format!("      <pdf:Keywords>{}</pdf:Keywords>\n", xml_escape(value)))
-        .unwrap_or_default();
-    let creator = info.creator.as_deref().unwrap_or("Wellfriend PDF SDK");
-    let producer = info.producer.as_deref().unwrap_or("Wellfriend PDF SDK");
-    let xml = format!(
-        r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/">
-  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-    <rdf:Description rdf:about=""
-      xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
-      xmlns:dc="http://purl.org/dc/elements/1.1/"
-      xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-      xmlns:pdf="http://ns.adobe.com/pdf/1.3/">
-      <pdfaid:part>{}</pdfaid:part>
-      <pdfaid:conformance>{}</pdfaid:conformance>
-{}{}{}{}      <pdf:Producer>{}</pdf:Producer>
-      <xmp:CreatorTool>{}</xmp:CreatorTool>
-    </rdf:Description>
-  </rdf:RDF>
-</x:xmpmeta>
-<?xpacket end="w"?>"#,
-        profile.part(),
-        profile.conformance(),
-        title,
-        author,
-        subject,
-        keywords,
-        xml_escape(producer),
-        xml_escape(creator),
-    );
-    PdfObject::Stream {
-        dict: dict(&[
-            ("Type", PdfObject::Name("Metadata".to_string())),
-            ("Subtype", PdfObject::Name("XML".to_string())),
-        ]),
-        raw: xml.into_bytes(),
-    }
-}
-
-fn xmp_title(value: &str) -> String {
-    format!(
-        "      <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>\n",
-        xml_escape(value)
-    )
-}
-
-fn xmp_author(value: &str) -> String {
-    format!(
-        "      <dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>\n",
-        xml_escape(value)
-    )
-}
-
-fn xmp_subject(value: &str) -> String {
-    format!(
-        "      <dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:description>\n",
-        xml_escape(value)
-    )
-}
-
 fn xml_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -1225,131 +1023,6 @@ fn xml_escape(value: &str) -> String {
         }
     }
     out
-}
-
-fn output_intent_dictionary(icc_number: u32) -> PdfObject {
-    PdfObject::Dictionary(dict(&[
-        ("Type", PdfObject::Name("OutputIntent".to_string())),
-        ("S", PdfObject::Name("GTS_PDFA1".to_string())),
-        ("OutputConditionIdentifier", pdf_text("sRGB")),
-        ("Info", pdf_text("Generated sRGB ICC profile")),
-        ("DestOutputProfile", reference(icc_number)),
-    ]))
-}
-
-fn srgb_output_profile_stream() -> PdfObject {
-    PdfObject::Stream {
-        dict: dict(&[
-            ("N", PdfObject::Integer(3)),
-            ("Alternate", PdfObject::Name("DeviceRGB".to_string())),
-        ]),
-        raw: generated_srgb_icc_profile(),
-    }
-}
-
-fn generated_srgb_icc_profile() -> Vec<u8> {
-    const TAG_TABLE_OFFSET: usize = 132;
-    const TAG_DATA_OFFSET: usize = 204;
-    const XYZ_TAG_LEN: u32 = 20;
-    const TRC_TAG_LEN: u32 = 14;
-    const PROFILE_LEN: usize = 312;
-
-    let mut profile = vec![0u8; PROFILE_LEN];
-    write_icc_u32(&mut profile, 0, PROFILE_LEN as u32);
-    write_icc_signature(&mut profile, 4, b"Oxid");
-    write_icc_u32(&mut profile, 8, 0x0210_0000);
-    write_icc_signature(&mut profile, 12, b"mntr");
-    write_icc_signature(&mut profile, 16, b"RGB ");
-    write_icc_signature(&mut profile, 20, b"XYZ ");
-    write_icc_u16(&mut profile, 24, 2026);
-    write_icc_u16(&mut profile, 26, 1);
-    write_icc_u16(&mut profile, 28, 1);
-    write_icc_signature(&mut profile, 36, b"acsp");
-    write_icc_signature(&mut profile, 40, b"APPL");
-    write_icc_signature(&mut profile, 48, b"Oxid");
-    write_icc_signature(&mut profile, 52, b"sRGB");
-    write_icc_s15_fixed(&mut profile, 68, 0.9642);
-    write_icc_s15_fixed(&mut profile, 72, 1.0);
-    write_icc_s15_fixed(&mut profile, 76, 0.8249);
-    write_icc_signature(&mut profile, 80, b"Oxid");
-    write_icc_u32(&mut profile, 128, 6);
-
-    let xyz_tags = [
-        (b"rXYZ", (0.436_074_7, 0.222_504_5, 0.013_932_2)),
-        (b"gXYZ", (0.385_064_9, 0.716_878_6, 0.097_104_5)),
-        (b"bXYZ", (0.143_080_4, 0.060_616_9, 0.714_173_3)),
-    ];
-    let mut tag_table_offset = TAG_TABLE_OFFSET;
-    let mut tag_data_offset = TAG_DATA_OFFSET;
-    for (signature, xyz) in xyz_tags {
-        write_icc_tag_record(
-            &mut profile,
-            tag_table_offset,
-            signature,
-            tag_data_offset as u32,
-            XYZ_TAG_LEN,
-        );
-        write_icc_xyz_type(&mut profile, tag_data_offset, xyz);
-        tag_table_offset += 12;
-        tag_data_offset += XYZ_TAG_LEN as usize;
-    }
-
-    for signature in [b"rTRC", b"gTRC", b"bTRC"] {
-        write_icc_tag_record(
-            &mut profile,
-            tag_table_offset,
-            signature,
-            tag_data_offset as u32,
-            TRC_TAG_LEN,
-        );
-        write_icc_curve_type_gamma(&mut profile, tag_data_offset, 2.2);
-        tag_table_offset += 12;
-        tag_data_offset += 16;
-    }
-
-    profile
-}
-
-fn write_icc_tag_record(
-    profile: &mut [u8],
-    offset: usize,
-    signature: &[u8; 4],
-    data_offset: u32,
-    data_len: u32,
-) {
-    write_icc_signature(profile, offset, signature);
-    write_icc_u32(profile, offset + 4, data_offset);
-    write_icc_u32(profile, offset + 8, data_len);
-}
-
-fn write_icc_xyz_type(profile: &mut [u8], offset: usize, xyz: (f32, f32, f32)) {
-    write_icc_signature(profile, offset, b"XYZ ");
-    write_icc_s15_fixed(profile, offset + 8, xyz.0);
-    write_icc_s15_fixed(profile, offset + 12, xyz.1);
-    write_icc_s15_fixed(profile, offset + 16, xyz.2);
-}
-
-fn write_icc_curve_type_gamma(profile: &mut [u8], offset: usize, gamma: f32) {
-    write_icc_signature(profile, offset, b"curv");
-    write_icc_u32(profile, offset + 8, 1);
-    write_icc_u16(profile, offset + 12, (gamma * 256.0).round() as u16);
-}
-
-fn write_icc_signature(profile: &mut [u8], offset: usize, signature: &[u8; 4]) {
-    profile[offset..offset + 4].copy_from_slice(signature);
-}
-
-fn write_icc_u32(profile: &mut [u8], offset: usize, value: u32) {
-    profile[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-}
-
-fn write_icc_u16(profile: &mut [u8], offset: usize, value: u16) {
-    profile[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
-}
-
-fn write_icc_s15_fixed(profile: &mut [u8], offset: usize, value: f32) {
-    let fixed = (value * 65_536.0).round() as i32;
-    profile[offset..offset + 4].copy_from_slice(&fixed.to_be_bytes());
 }
 
 fn validate_structure_alt_text(
@@ -1482,10 +1155,6 @@ fn standard_structure_tag(tag: &str) -> bool {
             | "Formula"
             | "Form"
     )
-}
-
-fn pdf_text(value: &str) -> PdfObject {
-    PdfObject::String(value.as_bytes().to_vec())
 }
 
 fn reference(number: u32) -> PdfObject {

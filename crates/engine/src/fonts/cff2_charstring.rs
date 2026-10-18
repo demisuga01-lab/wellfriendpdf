@@ -423,7 +423,7 @@ impl State<'_> {
                 }
                 let extra = a.len() % 4;
                 let mut initial = if extra == 1 { a[0] } else { 0.0 };
-                for chunk in a[extra..].chunks_exact(4) {
+                for chunk in a[extra..].as_chunks::<4>().0.iter() {
                     let curve = if op == 26 {
                         [initial, chunk[0], chunk[1], chunk[2], 0.0, chunk[3]]
                     } else {
@@ -444,7 +444,7 @@ impl State<'_> {
                 } else {
                     0.0
                 };
-                for (i, c) in a[..count * 4].chunks_exact(4).enumerate() {
+                for (i, c) in a[..count * 4].as_chunks::<4>().0.iter().enumerate() {
                     let last = if i + 1 == count { extra } else { 0.0 };
                     let horizontal = (op == 31) ^ (i % 2 == 1);
                     let curve = if horizontal {

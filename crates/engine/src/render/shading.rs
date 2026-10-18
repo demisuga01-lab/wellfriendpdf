@@ -279,6 +279,8 @@ fn charge_shading_work(buf: &PixelBuffer, work_budget: &AtomicU64) -> Result<(),
     charge_shading_units(pixels, work_budget)
 }
 
+// `try_update` is newer than the crate's minimum Rust version.
+#[allow(deprecated)]
 fn charge_shading_units(units: u64, work_budget: &AtomicU64) -> Result<(), String> {
     work_budget
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {

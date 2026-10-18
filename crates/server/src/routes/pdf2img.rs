@@ -151,6 +151,8 @@ pub(crate) async fn process_pdf2img(
                     }
                     .map_err(ServerError::from)?;
                     let page_bytes = bytes.len() as u64;
+                    // `try_update` is newer than the crate's minimum Rust version.
+                    #[allow(deprecated)]
                     encoded_bytes
                         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                             current

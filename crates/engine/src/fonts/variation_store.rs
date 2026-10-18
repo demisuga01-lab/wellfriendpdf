@@ -38,7 +38,7 @@ impl RegionList {
         }
         let records = bytes(data, at + 4, count * axes * 6)?;
         let mut values = Vec::with_capacity(count * axes);
-        for (i, record) in records.chunks_exact(6).enumerate() {
+        for (i, record) in records.as_chunks::<6>().0.iter().enumerate() {
             if i % 1024 == 0 {
                 crate::cancel::check_current_cancel("font variation regions")?;
             }
@@ -156,8 +156,12 @@ impl ItemVariationStore {
                 ));
             }
             let mut selected = Vec::with_capacity(region_count);
-            for chunk in bytes(data, at + 6, region_count * 2)?.chunks_exact(2) {
-                let region = usize::from(u16::from_be_bytes(chunk.try_into().unwrap()));
+            for chunk in bytes(data, at + 6, region_count * 2)?
+                .as_chunks::<2>()
+                .0
+                .iter()
+            {
+                let region = usize::from(u16::from_be_bytes(*chunk));
                 if region >= regions.count {
                     return Err(fail("unknown variation region"));
                 }

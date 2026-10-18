@@ -194,8 +194,10 @@ fn generated_tail_has_balanced_definition_and_exact_selected_word_payload() {
     let body = &output[scan.definitions[0].body.clone()];
     assert_eq!(&body[..2], &[0x41, 7]);
     let decoded = body[2..]
-        .chunks_exact(2)
-        .map(|v| i16::from_be_bytes(v.try_into().unwrap()))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|v| i16::from_be_bytes(*v))
         .collect::<Vec<_>>();
     assert_eq!(decoded, values);
     assert!(scan.queries.is_empty());

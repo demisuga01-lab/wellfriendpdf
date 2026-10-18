@@ -1016,8 +1016,10 @@ fn verify_raster_preservation(
                     if before_slice != after_slice {
                         let changed = u64::try_from(
                             before_slice
-                                .chunks_exact(4)
-                                .zip(after_slice.chunks_exact(4))
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
+                                .zip(after_slice.as_chunks::<4>().0.iter())
                                 .filter(|(left, right)| left != right)
                                 .count(),
                         )

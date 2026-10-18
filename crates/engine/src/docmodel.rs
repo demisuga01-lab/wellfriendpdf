@@ -1838,7 +1838,12 @@ pub fn build_document_model(engine: &ContentEngine, pages: &[usize]) -> Result<D
     // Without /StructTreeRoot the semantic extractor can only produce its
     // untagged geometric fallback, whose result is discarded here in favour of
     // `build_geometric`. Skip that whole-document layout pass.
-    if engine.document().get_catalog()?.get("StructTreeRoot").is_none() {
+    if engine
+        .document()
+        .get_catalog()?
+        .get("StructTreeRoot")
+        .is_none()
+    {
         return build_geometric(engine, &page_list);
     }
     let semantic = engine.extract_semantic_document(&page_list)?;

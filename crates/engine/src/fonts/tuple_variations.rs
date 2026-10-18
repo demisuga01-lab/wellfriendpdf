@@ -102,8 +102,8 @@ impl<'a> Cursor<'a> {
     }
     fn tuple(&mut self, axes: usize) -> Result<Vec<i16>> {
         let mut result = Vec::with_capacity(axes);
-        for value in self.take(axes * 2)?.chunks_exact(2) {
-            let value = i16::from_be_bytes(value.try_into().unwrap());
+        for value in self.take(axes * 2)?.as_chunks::<2>().0.iter() {
+            let value = i16::from_be_bytes(*value);
             if !(-16384..=16384).contains(&value) {
                 return Err(fail("tuple coordinate outside normalized domain"));
             }

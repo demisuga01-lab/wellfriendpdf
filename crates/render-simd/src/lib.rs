@@ -764,7 +764,7 @@ fn fill_opaque_run_scalar(slice: &mut [u8], color: [u8; 4]) -> bool {
     if slice.len() < 4 {
         return false;
     }
-    for px in slice.chunks_exact_mut(4) {
+    for px in slice.as_chunks_mut::<4>().0.iter_mut() {
         px.copy_from_slice(&color);
     }
     true
@@ -776,7 +776,7 @@ fn blend_normal_opaque_dst_scalar(slice: &mut [u8], color: [u8; 4]) -> bool {
     }
     let alpha = u16::from(color[3]);
     let inv = 255_u16.saturating_sub(alpha);
-    for px in slice.chunks_exact_mut(4) {
+    for px in slice.as_chunks_mut::<4>().0.iter_mut() {
         for channel in 0..3 {
             let mixed = u16::from(color[channel]) * alpha + u16::from(px[channel]) * inv + 128;
             px[channel] = ((mixed + (mixed >> 8)) >> 8).min(255) as u8;
@@ -799,7 +799,9 @@ fn blend_alpha_mask_opaque_dst_scalar(dst_row: &mut [u8], mask_row: &[u8], color
     }
     let color_alpha = u16::from(color[3]);
     for (dst, mask) in dst_row[..pixels * 4]
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
         .zip(mask_row.iter().copied())
     {
         let alpha = ((color_alpha * u16::from(mask) + 127) / 255).min(255);
@@ -829,7 +831,9 @@ fn blend_alpha_mask_normal_scalar(dst_row: &mut [u8], mask_row: &[u8], color: [u
     }
     let color_alpha = u16::from(color[3]);
     for (dst, mask) in dst_row[..pixels * 4]
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
         .zip(mask_row.iter().copied())
     {
         let src_alpha_byte = ((color_alpha * u16::from(mask) + 127) / 255).min(255) as u8;
@@ -900,7 +904,7 @@ fn blend_separable_opaque_dst_scalar(
     if dst_row.len() < 4 || color[3] != 255 {
         return false;
     }
-    for dst in dst_row.chunks_exact_mut(4) {
+    for dst in dst_row.as_chunks_mut::<4>().0.iter_mut() {
         for channel in 0..3 {
             dst[channel] = blend_separable_channel(color[channel], dst[channel], blend_mode);
         }
@@ -1066,8 +1070,10 @@ fn premultiply_rgba_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (src, dst) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         let alpha = u16::from(src[3]);
         dst[0] = premultiply_channel(src[0], alpha);
@@ -1090,8 +1096,10 @@ fn premultiply_bgra8_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (src, dst) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         let alpha = u16::from(src[3]);
         dst[0] = premultiply_channel(src[2], alpha);
@@ -1114,8 +1122,10 @@ fn unpremultiply_rgba_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (src, dst) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         let alpha = src[3];
         if alpha == 0 {
@@ -1160,8 +1170,10 @@ fn rgba_to_opaque_rgba_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (rgba, dst) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         dst.copy_from_slice(&[rgba[0], rgba[1], rgba[2], 255]);
     }
@@ -1181,7 +1193,7 @@ fn reverse_4byte_words_scalar(slice: &mut [u8]) -> bool {
     if words == 0 {
         return false;
     }
-    for word in slice[..words * 4].chunks_exact_mut(4) {
+    for word in slice[..words * 4].as_chunks_mut::<4>().0.iter_mut() {
         word.reverse();
     }
     true
@@ -1194,16 +1206,20 @@ fn soft_mask_opaque_dst_scalar(
     group_alpha_255: u16,
 ) -> bool {
     let pixels = dst_row
-        .chunks_exact_mut(4)
-        .zip(src_row.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row.as_chunks::<4>().0.iter())
         .zip(mask_row.iter())
         .count();
     if pixels == 0 {
         return false;
     }
     for ((dst, src), mask) in dst_row
-        .chunks_exact_mut(4)
-        .zip(src_row.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row.as_chunks::<4>().0.iter())
         .zip(mask_row.iter().copied())
     {
         let eff = soft_mask_effective_alpha(src[3], mask, group_alpha_255);
@@ -1226,8 +1242,10 @@ fn composite_normal_opaque_dst_scalar(dst_row: &mut [u8], src_row: &[u8]) -> boo
         return false;
     }
     for (dst, src) in dst_row[..pixels * 4]
-        .chunks_exact_mut(4)
-        .zip(src_row[..pixels * 4].chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src_row[..pixels * 4].as_chunks::<4>().0.iter())
     {
         if src[3] == 0 {
             continue;
@@ -1258,7 +1276,7 @@ fn flatten_opaque_background_scalar(data: &mut [u8], background: [u8; 4]) -> boo
     if pixels == 0 || background[3] != 255 {
         return false;
     }
-    for chunk in data[..pixels * 4].chunks_exact_mut(4) {
+    for chunk in data[..pixels * 4].as_chunks_mut::<4>().0.iter_mut() {
         let src_a = chunk[3];
         if src_a == 255 {
             chunk[3] = 255;
@@ -1293,7 +1311,9 @@ fn rgba_to_gray8_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (rgba, gray) in source
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .take(pixels)
         .zip(destination.iter_mut())
     {
@@ -1314,8 +1334,10 @@ fn rgba_to_gray_rgb8_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (rgba, dst) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 3].chunks_exact_mut(3))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 3].as_chunks_mut::<3>().0.iter_mut())
     {
         let gray = rgba_luma_byte(rgba[0], rgba[1], rgba[2]);
         dst.copy_from_slice(&[gray, gray, gray]);
@@ -1339,8 +1361,10 @@ fn rgba_to_gray_rgba8_scalar(
         return false;
     }
     for (rgba, dst) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         let gray = rgba_luma_byte(rgba[0], rgba[1], rgba[2]);
         let alpha = if force_opaque_alpha { 255 } else { rgba[3] };
@@ -1365,8 +1389,10 @@ fn rgba_to_gray_bgra8_scalar(
         return false;
     }
     for (rgba, dst) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         let gray = rgba_luma_byte(rgba[0], rgba[1], rgba[2]);
         let alpha = if force_opaque_alpha { 255 } else { rgba[3] };
@@ -1387,8 +1413,10 @@ fn rgba_to_premultiplied_gray_rgba8_scalar(source: &[u8], destination: &mut [u8]
         return false;
     }
     for (rgba, dst) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         let alpha = u16::from(rgba[3]);
         let gray = premultiply_channel(rgba_luma_byte(rgba[0], rgba[1], rgba[2]), alpha);
@@ -1414,9 +1442,11 @@ fn rgba_to_rgb8_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (rgba, rgb) in source
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .take(pixels)
-        .zip(destination[..pixels * 3].chunks_exact_mut(3))
+        .zip(destination[..pixels * 3].as_chunks_mut::<3>().0.iter_mut())
     {
         rgb.copy_from_slice(&rgba[..3]);
     }
@@ -1435,8 +1465,10 @@ fn rgb8_to_opaque_rgba_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (rgb, rgba) in source[..pixels * 3]
-        .chunks_exact(3)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         rgba.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
     }
@@ -1455,9 +1487,11 @@ fn rgba_to_bgr8_scalar(source: &[u8], destination: &mut [u8]) -> bool {
         return false;
     }
     for (rgba, bgr) in source
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .take(pixels)
-        .zip(destination[..pixels * 3].chunks_exact_mut(3))
+        .zip(destination[..pixels * 3].as_chunks_mut::<3>().0.iter_mut())
     {
         bgr.copy_from_slice(&[rgba[2], rgba[1], rgba[0]]);
     }
@@ -1476,8 +1510,10 @@ fn rgba_to_bgra8_scalar(source: &[u8], destination: &mut [u8], force_opaque_alph
         return false;
     }
     for (rgba, bgra) in source[..pixels * 4]
-        .chunks_exact(4)
-        .zip(destination[..pixels * 4].chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(destination[..pixels * 4].as_chunks_mut::<4>().0.iter_mut())
     {
         bgra.copy_from_slice(&[
             rgba[2],
@@ -2318,7 +2354,7 @@ unsafe fn unpremultiply_rgba_sse2(source: &[u8], destination: &mut [u8]) -> bool
         let raw = unsafe { _mm_loadu_si128(source.as_ptr().add(offset) as *const __m128i) };
         let mut lane = [0u8; 16];
         unsafe { _mm_storeu_si128(lane.as_mut_ptr() as *mut __m128i, raw) };
-        for px in lane.chunks_exact_mut(4) {
+        for px in lane.as_chunks_mut::<4>().0.iter_mut() {
             let alpha = px[3];
             if alpha == 0 {
                 px.copy_from_slice(&[0, 0, 0, 0]);
@@ -4553,7 +4589,7 @@ unsafe fn unpremultiply_rgba_wasm_simd128(source: &[u8], destination: &mut [u8])
         let raw = unsafe { v128_load(source.as_ptr().add(offset) as *const v128) };
         let mut lane = [0u8; 16];
         unsafe { v128_store(lane.as_mut_ptr() as *mut v128, raw) };
-        for px in lane.chunks_exact_mut(4) {
+        for px in lane.as_chunks_mut::<4>().0.iter_mut() {
             let alpha = px[3];
             if alpha == 0 {
                 px.copy_from_slice(&[0, 0, 0, 0]);
@@ -5824,8 +5860,10 @@ macro_rules! guarded_soft_x86 {
             group_alpha_255: u16,
         ) -> bool {
             let pixels = dst_row
-                .chunks_exact(4)
-                .zip(src_row.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(src_row.as_chunks::<4>().0.iter())
                 .count()
                 .min(mask_row.len());
             let mut scalar = cfg!(debug_assertions).then(|| {
@@ -7363,7 +7401,7 @@ mod tests {
         blend_alpha_mask_opaque_dst_scalar(&mut dst2, &masks, color);
         assert_eq!(dst, dst2);
         assert_ne!(dst, before);
-        for px in dst.chunks_exact(4) {
+        for px in dst.as_chunks::<4>().0.iter() {
             assert_eq!(px[3], 255);
         }
     }
@@ -7400,7 +7438,7 @@ mod tests {
         }
         for pixels in [4usize, 5, 8, 9, 16, 17] {
             let mut dst = source_row(pixels);
-            for (index, px) in dst.chunks_exact_mut(4).enumerate() {
+            for (index, px) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 px[3] = [0u8, 17, 64, 127, 203, 255][index % 6];
             }
             let mut expected = dst.clone();
@@ -7456,7 +7494,7 @@ mod tests {
             let mut actual = mixed_alpha_destination(pixels);
             assert!(flatten_opaque_background(&mut actual, background));
             assert_eq!(actual, expected, "pixels={pixels}");
-            for px in actual.chunks_exact(4) {
+            for px in actual.as_chunks::<4>().0.iter() {
                 assert_eq!(px[3], 255);
             }
         }
@@ -7482,7 +7520,7 @@ mod tests {
             let mut actual_opaque = vec![0u8; pixels * 4];
             assert!(rgba_to_opaque_rgba(&source, &mut actual_opaque));
             assert_eq!(actual_opaque, expected_opaque, "opaque pixels={pixels}");
-            for px in actual_opaque.chunks_exact(4) {
+            for px in actual_opaque.as_chunks::<4>().0.iter() {
                 assert_eq!(px[3], 255);
             }
         }
@@ -7519,7 +7557,7 @@ mod tests {
         }
         for pixels in [4usize, 5, 8, 9, 16, 17] {
             let mut source = source_row(pixels);
-            for (index, px) in source.chunks_exact_mut(4).enumerate() {
+            for (index, px) in source.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 px[3] = match index % 5 {
                     0 => 0,
                     1 => 1,
@@ -7561,7 +7599,7 @@ mod tests {
                 assert!(rgba_to_bgra8(&source, &mut actual, opaque));
                 assert_eq!(actual, expected, "pixels={pixels} opaque={opaque}");
                 if opaque {
-                    for px in actual.chunks_exact(4) {
+                    for px in actual.as_chunks::<4>().0.iter() {
                         assert_eq!(px[3], 255);
                     }
                 }
@@ -7598,7 +7636,7 @@ mod tests {
             let mut actual_rgba = vec![0u8; pixels * 4];
             assert!(rgb8_to_opaque_rgba(&expected_rgb, &mut actual_rgba));
             assert_eq!(actual_rgba, expected_rgba, "opaque rgba pixels={pixels}");
-            for px in actual_rgba.chunks_exact(4) {
+            for px in actual_rgba.as_chunks::<4>().0.iter() {
                 assert_eq!(px[3], 255);
             }
         }
@@ -7696,7 +7734,7 @@ mod tests {
             let ok = blend_normal_opaque_dst_scalar(&mut dst, color);
             assert!(ok);
             // Verify alpha channel forced to 255
-            for px in dst.chunks_exact(4) {
+            for px in dst.as_chunks::<4>().0.iter() {
                 assert_eq!(px[3], 255);
             }
             // Verify deterministic rounding: run again and compare
@@ -7730,7 +7768,7 @@ mod tests {
         composite_normal_opaque_dst_scalar(&mut dst2, &src);
         assert_eq!(dst, dst2);
         // Verify alpha channel preservation
-        for px in dst.chunks_exact(4) {
+        for px in dst.as_chunks::<4>().0.iter() {
             assert_eq!(px[3], 255);
         }
     }
@@ -7751,7 +7789,7 @@ mod tests {
             soft_mask_opaque_dst_scalar(&mut dst2, &src, &masks, group_alpha);
             assert_eq!(dst, dst2, "group_alpha={group_alpha}");
             // Alpha forced to 255
-            for px in dst.chunks_exact(4) {
+            for px in dst.as_chunks::<4>().0.iter() {
                 assert_eq!(px[3], 255, "group_alpha={group_alpha}");
             }
         }
@@ -7864,7 +7902,12 @@ mod tests {
             assert!(blend_separable_opaque_dst_scalar(
                 &mut dst, color, blend_mode
             ));
-            for (out, old) in dst.chunks_exact(4).zip(base.chunks_exact(4)) {
+            for (out, old) in dst
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(base.as_chunks::<4>().0.iter())
+            {
                 for channel in 0..3 {
                     assert_eq!(
                         out[channel],
@@ -8153,7 +8196,7 @@ mod tests {
             let ok = unsafe { flatten_opaque_background_wasm_simd128(&mut actual, background) };
             assert!(ok, "pixels={pixels}");
             assert_eq!(actual, expected, "flatten wasm simd128 pixels={pixels}");
-            for px in actual.chunks_exact(4) {
+            for px in actual.as_chunks::<4>().0.iter() {
                 assert_eq!(px[3], 255);
             }
         }

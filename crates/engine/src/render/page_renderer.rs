@@ -724,7 +724,32 @@ impl RenderDocumentCache {
 
     /// Component names accepted by [`Self::diagnostic_reset`].
     #[doc(hidden)]
-    pub const DIAGNOSTIC_COMPONENTS: &'static [&'static str] = &["function", "glyph", "glyph_mask", "type3", "type1_program", "path_fill", "path_stroke", "path_clip", "font_bytes", "font_resolver", "prepared_text", "image_xobject", "scaled_image", "smask_group", "shading_mesh", "form_xobject", "tiling_pattern", "annotation", "offscreen_pool", "display_list", "render_plan", "final_raster", "transparent_group", "dependency"];
+    pub const DIAGNOSTIC_COMPONENTS: &'static [&'static str] = &[
+        "function",
+        "glyph",
+        "glyph_mask",
+        "type3",
+        "type1_program",
+        "path_fill",
+        "path_stroke",
+        "path_clip",
+        "font_bytes",
+        "font_resolver",
+        "prepared_text",
+        "image_xobject",
+        "scaled_image",
+        "smask_group",
+        "shading_mesh",
+        "form_xobject",
+        "tiling_pattern",
+        "annotation",
+        "offscreen_pool",
+        "display_list",
+        "render_plan",
+        "final_raster",
+        "transparent_group",
+        "dependency",
+    ];
 
     /// Diagnostics only: reset one named group of retained state to exactly
     /// what a newly constructed cache holds. Used to locate retained state
@@ -813,10 +838,14 @@ impl RenderDocumentCache {
                 self.tiling_pattern_program_cache_stats = fresh.tiling_pattern_program_cache_stats;
             }
             "annotation" => {
-                self.annotation_appearance_program_cache = fresh.annotation_appearance_program_cache;
-                self.annotation_appearance_program_cache_order = fresh.annotation_appearance_program_cache_order;
-                self.annotation_appearance_program_cache_bytes = fresh.annotation_appearance_program_cache_bytes;
-                self.annotation_appearance_program_cache_stats = fresh.annotation_appearance_program_cache_stats;
+                self.annotation_appearance_program_cache =
+                    fresh.annotation_appearance_program_cache;
+                self.annotation_appearance_program_cache_order =
+                    fresh.annotation_appearance_program_cache_order;
+                self.annotation_appearance_program_cache_bytes =
+                    fresh.annotation_appearance_program_cache_bytes;
+                self.annotation_appearance_program_cache_stats =
+                    fresh.annotation_appearance_program_cache_stats;
             }
             "offscreen_pool" => {
                 self.offscreen_buffer_pool = fresh.offscreen_buffer_pool;
@@ -27312,7 +27341,7 @@ fn operation_matrix(operation: &ContentOperation) -> Option<[f64; 6]> {
 
 fn operation_points(operation: &ContentOperation, indices: &[usize]) -> Option<Vec<(f64, f64)>> {
     let mut points = Vec::with_capacity(indices.len() / 2);
-    for pair in indices.chunks_exact(2) {
+    for pair in indices.as_chunks::<2>().0.iter() {
         let x = operation.number(pair[0])?;
         let y = operation.number(pair[1])?;
         if !x.is_finite() || !y.is_finite() {

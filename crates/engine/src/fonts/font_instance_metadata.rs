@@ -67,7 +67,7 @@ impl Names {
             if n > 256 {
                 return Err(fail("language-tag count exceeds 256"));
             }
-            for record in bytes(data, end + 2, n * 4)?.chunks_exact(4) {
+            for record in bytes(data, end + 2, n * 4)?.as_chunks::<4>().0.iter() {
                 let value = bytes(
                     data,
                     storage + usize::from(u16_at(record, 2)?),
@@ -79,7 +79,9 @@ impl Names {
                 charge_names(&mut materialized, value.len())?;
                 String::from_utf16(
                     &value
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|p| u16::from_be_bytes([p[0], p[1]]))
                         .collect::<Vec<_>>(),
                 )
@@ -94,7 +96,7 @@ impl Names {
             return Err(fail("name storage overlaps record owners"));
         }
         let mut records = BTreeMap::new();
-        for record in data[6..end].chunks_exact(12) {
+        for record in data[6..end].as_chunks::<12>().0.iter() {
             crate::cancel::check_current_cancel("font name capture")?;
             let key = [
                 u16_at(record, 0)?,
@@ -317,7 +319,7 @@ fn stat(
         Ok(coordinates.get(tag).copied().map(f64::from))
     };
     let mut kept = Vec::new();
-    for record in bytes(data, values_at, count * 2)?.chunks_exact(2) {
+    for record in bytes(data, values_at, count * 2)?.as_chunks::<2>().0.iter() {
         crate::cancel::check_current_cancel("STAT value selection")?;
         let offset = usize::from(u16_at(record, 0)?);
         if offset < count * 2 {

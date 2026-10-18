@@ -648,7 +648,8 @@ struct PsRenderState<'a> {
     /// font resource name. Cleared whenever `resources` is replaced so a name
     /// never resolves against a different Form/page resource dictionary.
     font_bytes_cache: std::collections::HashMap<String, Option<std::sync::Arc<[u8]>>>,
-    font_resolver_cache: std::collections::HashMap<String, std::sync::Arc<crate::fonts::FontResolver>>,
+    font_resolver_cache:
+        std::collections::HashMap<String, std::sync::Arc<crate::fonts::FontResolver>>,
     engine: &'a ContentEngine,
     resources: PageResources,
     page_resources: PageResources,
@@ -2464,7 +2465,7 @@ fn regional_rgba_alpha_state(raw: &RawImage) -> Option<RegionalRgbaAlphaState> {
     }
     let mut any_opaque = false;
     let mut any_transparent = false;
-    for pixel in raw.pixels.chunks_exact(4) {
+    for pixel in raw.pixels.as_chunks::<4>().0.iter() {
         match pixel[3] {
             255 => any_opaque = true,
             0 => any_transparent = true,

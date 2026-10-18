@@ -71,7 +71,11 @@ impl Program<'_, '_, '_, '_> {
             let points = usize::from(u16_at(self.data, item)?);
             self.resolver.charge(points)?;
             let mut previous = None;
-            for record in bytes(self.data, item + 2, points * 2)?.chunks_exact(2) {
+            for record in bytes(self.data, item + 2, points * 2)?
+                .as_chunks::<2>()
+                .0
+                .iter()
+            {
                 crate::cancel::check_current_cancel("font attachment points")?;
                 let point = u16_at(record, 0)?;
                 if previous.is_some_and(|n| n >= point) {

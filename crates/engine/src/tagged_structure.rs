@@ -1195,7 +1195,7 @@ fn read_lookup_tree<K: Ord + Clone>(
         if nums.len() % 2 != 0 || out.len().saturating_add(nums.len() / 2) > MAX_NODES {
             return Err(fail("invalid/oversized structural lookup tree values"));
         }
-        for pair in nums.chunks_exact(2) {
+        for pair in nums.as_chunks::<2>().0.iter() {
             budget.key_bytes = budget
                 .key_bytes
                 .saturating_add(pair[0].as_string().map_or(8, |s| s.len()));

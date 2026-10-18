@@ -293,7 +293,7 @@ fn ordered_pairs(dict: &PdfDictionary, key: &str, required: bool) -> Option<Opti
         Some(values)
             if !values.is_empty()
                 && values.len().is_multiple_of(2)
-                && values.chunks_exact(2).all(|p| p[0] <= p[1]) =>
+                && values.as_chunks::<2>().0.iter().all(|p| p[0] <= p[1]) =>
         {
             Some(Some(values))
         }

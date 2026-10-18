@@ -2287,7 +2287,7 @@ impl PackedDisplayList {
         params: &'a [Operand],
         keys: &[&str],
     ) -> Option<&'a Operand> {
-        let mut chunks = params.chunks_exact(2);
+        let mut chunks = params.as_chunks::<2>().0.iter();
         for pair in &mut chunks {
             let Some(name) = pair[0].as_name() else {
                 continue;

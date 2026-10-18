@@ -83,7 +83,12 @@ impl<'s, 't> Resolver<'s, 't> {
         let mut glyphs = Vec::with_capacity(count);
         match u16_at(data, at)? {
             1 => {
-                for (index, record) in bytes(data, at + 4, count * 2)?.chunks_exact(2).enumerate() {
+                for (index, record) in bytes(data, at + 4, count * 2)?
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .enumerate()
+                {
                     if index % 256 == 0 {
                         crate::cancel::check_current_cancel("layout point coverage binding")?;
                     }
@@ -92,7 +97,7 @@ impl<'s, 't> Resolver<'s, 't> {
             }
             2 => {
                 let ranges = usize::from(u16_at(data, at + 2)?);
-                for record in bytes(data, at + 4, ranges * 6)?.chunks_exact(6) {
+                for record in bytes(data, at + 4, ranges * 6)?.as_chunks::<6>().0.iter() {
                     crate::cancel::check_current_cancel("layout point coverage binding")?;
                     glyphs.extend(u16_at(record, 0)?..=u16_at(record, 2)?);
                 }
@@ -255,9 +260,9 @@ pub(super) fn coverage_len(data: &[u8], at: usize) -> Result<(usize, usize)> {
     let mut glyphs = 0usize;
     let length = match u16_at(data, at)? {
         1 => {
-            for item in bytes(data, at + 4, count * 2)?.chunks_exact(2) {
+            for item in bytes(data, at + 4, count * 2)?.as_chunks::<2>().0.iter() {
                 crate::cancel::check_current_cancel("font position coverage")?;
-                let gid = u16::from_be_bytes(item.try_into().unwrap());
+                let gid = u16::from_be_bytes(*item);
                 if previous.is_some_and(|last| last >= gid) {
                     return Err(fail("unordered coverage glyphs"));
                 }
@@ -267,7 +272,7 @@ pub(super) fn coverage_len(data: &[u8], at: usize) -> Result<(usize, usize)> {
             4 + count * 2
         }
         2 => {
-            for item in bytes(data, at + 4, count * 6)?.chunks_exact(6) {
+            for item in bytes(data, at + 4, count * 6)?.as_chunks::<6>().0.iter() {
                 crate::cancel::check_current_cancel("font position coverage ranges")?;
                 let first = u16_at(item, 0)?;
                 let last = u16_at(item, 2)?;
@@ -293,9 +298,9 @@ pub(super) fn class_len(data: &[u8], at: usize, classes: usize) -> Result<usize>
             if usize::from(u16_at(data, at + 2)?) + count > 65536 {
                 return Err(fail("class glyph range overflow"));
             }
-            for item in bytes(data, at + 6, count * 2)?.chunks_exact(2) {
+            for item in bytes(data, at + 6, count * 2)?.as_chunks::<2>().0.iter() {
                 crate::cancel::check_current_cancel("font position classes")?;
-                if usize::from(u16::from_be_bytes(item.try_into().unwrap())) >= classes {
+                if usize::from(u16::from_be_bytes(*item)) >= classes {
                     return Err(fail("class outside positioning matrix"));
                 }
             }
@@ -304,7 +309,7 @@ pub(super) fn class_len(data: &[u8], at: usize, classes: usize) -> Result<usize>
         2 => {
             let count = usize::from(u16_at(data, at + 2)?);
             let mut previous = None;
-            for item in bytes(data, at + 4, count * 6)?.chunks_exact(6) {
+            for item in bytes(data, at + 4, count * 6)?.as_chunks::<6>().0.iter() {
                 crate::cancel::check_current_cancel("font position class ranges")?;
                 let first = u16_at(item, 0)?;
                 let last = u16_at(item, 2)?;
