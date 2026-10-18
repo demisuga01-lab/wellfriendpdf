@@ -995,15 +995,13 @@ fn classify_ops_for_vector_output(
                         };
                     }
                 }
-                if let Err(reason) =
-                    text_operator_has_vector_metric_source(
-                        op,
-                        &gs,
-                        resources,
-                        reader,
-                        &mut text_metric_cache,
-                    )
-                {
+                if let Err(reason) = text_operator_has_vector_metric_source(
+                    op,
+                    &gs,
+                    resources,
+                    reader,
+                    &mut text_metric_cache,
+                ) {
                     return VectorFallbackDecision::WholePageRaster { reason };
                 }
             }

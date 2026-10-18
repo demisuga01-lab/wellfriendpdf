@@ -17,7 +17,8 @@ use crate::engine::ContentEngine;
 use crate::error::{Result, WellfriendError};
 use crate::object::PdfObject;
 use crate::writer::{
-    rewrite_document, rewrite_document_objects, rewrite_document_to, rewrite_document_with_mode, PdfWriter, WriterMode,
+    rewrite_document, rewrite_document_objects, rewrite_document_to, rewrite_document_with_mode,
+    PdfWriter, WriterMode,
 };
 
 /// Normalize a rotation angle to one of {0, 90, 180, 270} (degrees clockwise).

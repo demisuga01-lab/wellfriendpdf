@@ -602,7 +602,8 @@ struct SvgRenderState<'a> {
     /// font resource name. Cleared whenever `resources` is replaced so a name
     /// never resolves against a different Form/page resource dictionary.
     font_bytes_cache: std::collections::HashMap<String, Option<std::sync::Arc<[u8]>>>,
-    font_resolver_cache: std::collections::HashMap<String, std::sync::Arc<crate::fonts::FontResolver>>,
+    font_resolver_cache:
+        std::collections::HashMap<String, std::sync::Arc<crate::fonts::FontResolver>>,
     viewport: Viewport,
     gs: GraphicsState,
     path: Path,
@@ -2364,8 +2365,8 @@ impl SvgRenderState<'_> {
         let font_bytes = match self.font_bytes_cache.get(&font_name) {
             Some(cached) => cached.clone(),
             None => {
-                let resolved =
-                    get_font_bytes(&font_name, &self.resources, reader).map(std::sync::Arc::<[u8]>::from);
+                let resolved = get_font_bytes(&font_name, &self.resources, reader)
+                    .map(std::sync::Arc::<[u8]>::from);
                 self.font_bytes_cache
                     .insert(font_name.clone(), resolved.clone());
                 resolved

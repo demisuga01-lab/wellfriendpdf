@@ -648,7 +648,8 @@ struct PsRenderState<'a> {
     /// font resource name. Cleared whenever `resources` is replaced so a name
     /// never resolves against a different Form/page resource dictionary.
     font_bytes_cache: std::collections::HashMap<String, Option<std::sync::Arc<[u8]>>>,
-    font_resolver_cache: std::collections::HashMap<String, std::sync::Arc<crate::fonts::FontResolver>>,
+    font_resolver_cache:
+        std::collections::HashMap<String, std::sync::Arc<crate::fonts::FontResolver>>,
     engine: &'a ContentEngine,
     resources: PageResources,
     page_resources: PageResources,
