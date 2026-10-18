@@ -2488,11 +2488,15 @@ fn write_merged_with_deferred_bodies<S: ClassicSink>(
                 "merge: deferred object {number} {generation} is not a stream"
             )));
         };
-        let source = inputs[doc_index].0.reader().get_object(number, generation).map_err(|err| {
-            WellfriendError::MalformedPdf(format!(
+        let source = inputs[doc_index]
+            .0
+            .reader()
+            .get_object(number, generation)
+            .map_err(|err| {
+                WellfriendError::MalformedPdf(format!(
                 "writer closure cannot copy unreadable dependency {number} {generation} R: {err}"
             ))
-        })?;
+            })?;
         let PdfObject::Stream { raw, .. } = source else {
             return Err(WellfriendError::MalformedPdf(format!(
                 "merge: deferred object {number} {generation} is no longer a stream"
@@ -2671,6 +2675,36 @@ pub fn write_incremental_update_raw(
     reader: &PdfReader,
     changed_objects: Vec<RawIncrementalObject>,
 ) -> Result<Vec<u8>> {
+    write_incremental_update_raw_with_info(reader, changed_objects, None)
+}
+
+/// [`write_incremental_update`] that also points the appended trailer's
+/// `/Info` at `info` — used when an update creates the document information
+/// dictionary because the original trailer had none.
+pub fn write_incremental_update_with_info(
+    reader: &PdfReader,
+    mut changed_objects: Vec<IncrementalObject>,
+    info: Option<(u32, u16)>,
+) -> Result<Vec<u8>> {
+    feature_version::incremental(reader, &mut changed_objects)?;
+    let mut raw_objects = Vec::with_capacity(changed_objects.len());
+    for obj in changed_objects {
+        let mut body = Vec::new();
+        serialize_object(&obj.object, &mut body);
+        raw_objects.push(RawIncrementalObject {
+            number: obj.number,
+            generation: obj.generation,
+            body,
+        });
+    }
+    write_incremental_update_raw_with_info(reader, raw_objects, info)
+}
+
+fn write_incremental_update_raw_with_info(
+    reader: &PdfReader,
+    changed_objects: Vec<RawIncrementalObject>,
+    info_override: Option<(u32, u16)>,
+) -> Result<Vec<u8>> {
     if reader.is_encrypted() {
         return Err(WellfriendError::UnsupportedFeature(
             "incremental writer: encrypted inputs require encrypted appended objects".to_string(),
@@ -2727,7 +2761,10 @@ pub fn write_incremental_update_raw(
         .map(|obj| i64::from(obj.number))
         .max()
         .unwrap_or(0);
-    let trailer = incremental_trailer_dict(reader, max_changed)?;
+    let mut trailer = incremental_trailer_dict(reader, max_changed)?;
+    if let Some((number, generation)) = info_override {
+        trailer.insert("Info", PdfObject::Reference { number, generation });
+    }
     serialize_dictionary(&trailer, &mut out);
     out.extend_from_slice(b"\nstartxref\n");
     out.extend_from_slice(format!("{xref_offset}\n").as_bytes());

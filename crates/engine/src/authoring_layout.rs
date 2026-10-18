@@ -550,7 +550,7 @@ pub(super) fn wrap_owned_paints(
     Ok(output)
 }
 
-fn validate_size(style: &TextStyle) -> Result<()> {
+pub(super) fn validate_size(style: &TextStyle) -> Result<()> {
     if !style.size.is_finite() || style.size <= 0.0 {
         return Err(WellfriendError::invalid_input(
             "authoring font size must be finite and positive",

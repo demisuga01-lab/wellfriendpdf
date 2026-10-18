@@ -6054,6 +6054,8 @@ fn parse_pdfa_profile(value: Option<&str>) -> PdfAProfile {
         Some("pdfa2a") | Some("pdf/a-2a") | Some("2a") => PdfAProfile::PdfA2A,
         Some("pdfa3b") | Some("pdf/a-3b") | Some("3b") => PdfAProfile::PdfA3B,
         Some("pdfa3a") | Some("pdf/a-3a") | Some("3a") => PdfAProfile::PdfA3A,
+        Some("pdfa2u") | Some("pdf/a-2u") | Some("2u") => PdfAProfile::PdfA2U,
+        Some("pdfa3u") | Some("pdf/a-3u") | Some("3u") => PdfAProfile::PdfA3U,
         _ => PdfAProfile::PdfA2B,
     }
 }

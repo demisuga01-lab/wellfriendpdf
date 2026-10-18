@@ -116,6 +116,11 @@ Wellfriend's authoring/writer machinery. They do not require LibreOffice. Their
 fidelity boundaries and the optional external-renderer decision are documented
 in `docs/office_to_pdf_architecture.md`.
 
+`text-to-pdf`, `markdown-to-pdf`, `csv-to-pdf`, `json-to-pdf` and `svg-to-pdf`
+take `--input`, `--output` and `--options '<json>'`. Each prints one JSON result
+line, `{"ok":true,"pages":N,"bytes":M}`, or `{"ok":false,"code":...,"message":...}`
+with a non-zero exit. See `docs/native-conversions.md`.
+
 These conversions are built on `docs/document_hierarchy.md`; they do not run a
 second table detector and do not change extraction accuracy paths.
 

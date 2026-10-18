@@ -394,6 +394,35 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
             post(routes::parse_ops::extract_fields),
         )
         .route("/api/v1/info", post(routes::parse_ops::info))
+        .route(
+            "/api/v1/text-to-pdf",
+            post(routes::native_convert::text_to_pdf),
+        )
+        .route(
+            "/api/v1/markdown-to-pdf",
+            post(routes::native_convert::markdown_to_pdf),
+        )
+        .route(
+            "/api/v1/csv-to-pdf",
+            post(routes::native_convert::csv_to_pdf),
+        )
+        .route(
+            "/api/v1/json-to-pdf",
+            post(routes::native_convert::json_to_pdf),
+        )
+        .route(
+            "/api/v1/svg-to-pdf",
+            post(routes::native_convert::svg_to_pdf),
+        )
+        .route(
+            "/api/v1/edit-metadata",
+            post(routes::metadata_epub::edit_metadata),
+        )
+        .route(
+            "/api/v1/pdf-to-epub",
+            post(routes::metadata_epub::pdf_to_epub),
+        )
+        .route("/api/v1/pdfa-convert", post(routes::pdfa_convert::handler))
         .merge(job_routes)
         .merge(progressive_routes)
         .layer(TraceLayer::new_for_http())

@@ -10,3 +10,15 @@ members = [
     "crates/wellfriendpdf-ocr-tesseract",
     "crates/wellfriendpdf-py",
 ]
+# Plain `cargo build` / `cargo test` at the root skip the optional Tesseract
+# OCR backend (product OCR is AI-based; the crate stays for open-source users:
+# `cargo build -p wellfriendpdf-ocr-tesseract` or the cli/server `ocr` feature).
+default-members = [
+    "crates/render-simd",
+    "crates/engine",
+    "crates/server",
+    "crates/cli",
+    "crates/wellfriendpdf-capi",
+    "crates/wellfriendpdf-wasm",
+    "crates/wellfriendpdf-py",
+]

@@ -42,7 +42,7 @@ fn long_version() -> &'static str {
     about = "Wellfriend — pure-Rust PDF processing tool",
     version,
     long_version = long_version(),
-    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  wellfriendpdf extract-text input.pdf --structured --format json\n  wellfriendpdf parser-report input.pdf --mode audit\n  wellfriendpdf pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  wellfriendpdf image-to-pdf img1.jpg img2.png --out combined.pdf\n  wellfriendpdf pdf-to-xlsx report.pdf --out report.xlsx\n  wellfriendpdf pdf-to-pptx deck.pdf --out deck.pptx\n  wellfriendpdf pdf-to-docx report.pdf --out report.docx\n  wellfriendpdf xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  wellfriendpdf watermark input.pdf --text CONFIDENTIAL --out out.pdf"
+    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html, text-to-pdf, markdown-to-pdf, csv-to-pdf, json-to-pdf, svg-to-pdf\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  wellfriendpdf extract-text input.pdf --structured --format json\n  wellfriendpdf parser-report input.pdf --mode audit\n  wellfriendpdf pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  wellfriendpdf image-to-pdf img1.jpg img2.png --out combined.pdf\n  wellfriendpdf pdf-to-xlsx report.pdf --out report.xlsx\n  wellfriendpdf pdf-to-pptx deck.pdf --out deck.pptx\n  wellfriendpdf pdf-to-docx report.pdf --out report.docx\n  wellfriendpdf xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  wellfriendpdf watermark input.pdf --text CONFIDENTIAL --out out.pdf"
 )]
 struct Cli {
     /// Public execution mode. Standard is the default; Research enables only
@@ -583,6 +583,20 @@ enum Commands {
     XlsxToPdf(OfficeToPdfArgs),
     /// Convert a PPTX presentation to PDF with Wellfriend's native writer
     PptxToPdf(OfficeToPdfArgs),
+    /// Convert plain UTF-8 text to PDF (selectable text, bundled Unicode fonts)
+    TextToPdf(NativeConvertArgs),
+    /// Convert CommonMark/GFM Markdown to PDF (no remote fetching)
+    MarkdownToPdf(NativeConvertArgs),
+    /// Convert CSV to a paginated PDF table with repeated headers
+    CsvToPdf(NativeConvertArgs),
+    /// Convert JSON to a pretty-printed, structured PDF
+    JsonToPdf(NativeConvertArgs),
+    /// Convert SVG to a vector PDF (no external resources, scripts ignored)
+    SvgToPdf(NativeConvertArgs),
+    /// Set Info + XMP metadata (title, author, dates, custom keys) as an incremental update
+    EditMetadata(EditMetadataArgs),
+    /// Convert PDF content to an EPUB 3 book (chapters, nav, images)
+    PdfToEpub(PdfToEpubArgs),
     /// Analyze whether a PDF has a real text layer
     Analyze(AnalyzeArgs),
     /// Merge several PDFs into one (pdfunite-equivalent)
@@ -665,6 +679,10 @@ enum Commands {
     Validate(ValidateArgs),
     /// Incremental Signing Standards clause-mapped PDF/A validation (ISO 19005)
     PdfaValidate(StandardsValidateArgs),
+    /// Convert a PDF to PDF/A (1b, 2b, 2u, 3b, 3u) natively: embeds substitute
+    /// fonts, adds an sRGB OutputIntent and XMP, removes forbidden features and
+    /// only writes output that passes the PDF/A validator
+    PdfaConvert(PdfaConvertArgs),
     /// Incremental Signing Standards clause-mapped PDF/UA validation (ISO 14289-1)
     PdfuaValidate(StandardsValidateArgs),
     /// Incremental Signing Standards clause-mapped PDF/X validation (ISO 15930)
@@ -3300,6 +3318,79 @@ struct SaveIncrementalArgs {
     json: bool,
 }
 
+/// Shared arguments of the Rust-native `*-to-pdf` converters. On success one
+/// JSON line `{"ok":true,"pages":N,"bytes":M}` is printed to stdout; on failure
+/// `{"ok":false,"code":"...","message":"..."}` is printed and the exit status
+/// is non-zero.
+#[derive(Parser)]
+struct NativeConvertArgs {
+    /// Input file
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output PDF file
+    #[arg(short, long, alias = "out")]
+    output: PathBuf,
+    /// Converter options as one JSON object (see docs/native-conversions.md)
+    #[arg(long)]
+    options: Option<String>,
+}
+
+/// `pdfa-convert` arguments. Prints one JSON line: on success
+/// `{"ok":true,"level":"2b","validated":true,...}`; on failure
+/// `{"ok":false,"code":"PDFA_CONVERSION_FAILED","failed_rules":[...],...}` with
+/// a non-zero exit status and no output file.
+#[derive(Parser)]
+struct PdfaConvertArgs {
+    /// Input PDF
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output PDF/A file
+    #[arg(short, long, alias = "out")]
+    output: PathBuf,
+    /// Options as one JSON object, e.g. '{"level":"2b","system_fonts":false}'
+    #[arg(long)]
+    options: Option<String>,
+    /// Password for an encrypted input (the output is never encrypted)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+/// `edit-metadata`: one JSON result line on stdout (`{"ok":true,...}` or
+/// `{"ok":false,"code","message"}`), non-zero exit on failure. Repeat
+/// `--input` with `--output-dir` for batch mode.
+#[derive(Parser)]
+struct EditMetadataArgs {
+    /// Input PDF (repeat for batch mode)
+    #[arg(short, long, required = true)]
+    input: Vec<PathBuf>,
+    /// Output PDF (single input)
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+    /// Output directory (batch mode; files keep their names)
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+    /// Metadata edit as one JSON object: title, author, subject, keywords,
+    /// creator, producer, creationDate, modificationDate, fields {key: value},
+    /// signaturePolicyOverride. An empty string removes a field.
+    #[arg(long)]
+    options: Option<String>,
+}
+
+/// `pdf-to-epub`: one JSON result line on stdout, non-zero exit on failure.
+#[derive(Parser)]
+struct PdfToEpubArgs {
+    /// Input PDF
+    #[arg(short, long)]
+    input: PathBuf,
+    /// Output EPUB file
+    #[arg(short, long, alias = "out")]
+    output: PathBuf,
+    /// Options JSON: pageRange, split ("headings"|"pages"), pagesPerChapter,
+    /// includeImages, includeFurniture, language, title, password
+    #[arg(long)]
+    options: Option<String>,
+}
+
 #[derive(Parser)]
 struct OfficeToPdfArgs {
     /// Input Office file
@@ -3828,8 +3919,15 @@ struct ValidateArgs {
 
 #[derive(Parser)]
 struct StandardsValidateArgs {
-    /// Path to the PDF file
-    pdf: PathBuf,
+    /// Path to the PDF file (or use --input)
+    pdf: Option<PathBuf>,
+    /// Path to the PDF file (new form; pdfa-validate prints
+    /// `{"ok":true,"compliant":...,"profile":...,"failures":[...]}`)
+    #[arg(long, conflicts_with = "pdf")]
+    input: Option<PathBuf>,
+    /// pdfa-validate options JSON, e.g. '{"profile":"PDF/A-2b"}' (new form)
+    #[arg(long)]
+    options: Option<String>,
     /// Target profile label, e.g. PDF/A-2B, PDF/UA-1, PDF/X-4 (default: detected/claimed)
     #[arg(long)]
     target: Option<String>,
@@ -4154,6 +4252,13 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::DocxToPdf(args) => run_docx_to_pdf(args),
         Commands::XlsxToPdf(args) => run_xlsx_to_pdf(args),
         Commands::PptxToPdf(args) => run_pptx_to_pdf(args),
+        Commands::TextToPdf(args) => run_native_convert(args, NativeConverter::Text),
+        Commands::MarkdownToPdf(args) => run_native_convert(args, NativeConverter::Markdown),
+        Commands::CsvToPdf(args) => run_native_convert(args, NativeConverter::Csv),
+        Commands::JsonToPdf(args) => run_native_convert(args, NativeConverter::Json),
+        Commands::SvgToPdf(args) => run_native_convert(args, NativeConverter::Svg),
+        Commands::EditMetadata(args) => run_edit_metadata(args),
+        Commands::PdfToEpub(args) => run_pdf_to_epub(args),
         Commands::Analyze(args) => run_analyze(args),
         Commands::Merge(args) => run_merge(args),
         Commands::Split(args) => run_split(args),
@@ -4205,6 +4310,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Sanitize(args) => run_sanitize(args),
         Commands::Validate(args) => run_validate(args),
         Commands::PdfaValidate(args) => run_standards_validate(args, StandardsKind::PdfA),
+        Commands::PdfaConvert(args) => run_pdfa_convert(args),
         Commands::PdfuaValidate(args) => run_standards_validate(args, StandardsKind::PdfUa),
         Commands::PdfxValidate(args) => run_standards_validate(args, StandardsKind::PdfX),
         Commands::StandardsValidate(args) => run_standards_validate(args, StandardsKind::All),
@@ -10422,6 +10528,270 @@ fn run_pptx_to_pdf(args: OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
     run_office_to_pdf(args, "pptx-to-pdf", wellfriendpdf_engine::pptx_to_pdf)
 }
 
+#[derive(Clone, Copy)]
+enum NativeConverter {
+    Text,
+    Markdown,
+    Csv,
+    Json,
+    Svg,
+}
+
+fn convert_native(
+    args: &NativeConvertArgs,
+    converter: NativeConverter,
+) -> wellfriendpdf_engine::Result<wellfriendpdf_engine::NativeConversionOutput> {
+    use wellfriendpdf_engine as engine;
+    let options = args.options.as_deref();
+    let input = std::fs::read(&args.input)?;
+    match converter {
+        NativeConverter::Text => engine::text_to_pdf_with_report(
+            &input,
+            &engine::parse_native_options::<engine::TextToPdfOptions>(options)?,
+        ),
+        NativeConverter::Markdown => {
+            let mut parsed = engine::parse_native_options::<engine::MarkdownToPdfOptions>(options)?;
+            if parsed.base_dir.is_none() {
+                // Local images resolve next to the Markdown file only.
+                parsed.base_dir = Some(
+                    args.input
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from(".")),
+                );
+            }
+            engine::markdown_to_pdf_with_report(&input, &parsed)
+        }
+        NativeConverter::Csv => engine::csv_to_pdf_with_report(
+            &input,
+            &engine::parse_native_options::<engine::CsvToPdfOptions>(options)?,
+        ),
+        NativeConverter::Json => engine::json_to_pdf_with_report(
+            &input,
+            &engine::parse_native_options::<engine::JsonToPdfOptions>(options)?,
+        ),
+        NativeConverter::Svg => engine::svg_to_pdf_with_report(
+            &input,
+            &engine::parse_native_options::<engine::SvgToPdfOptions>(options)?,
+        ),
+    }
+}
+
+fn run_native_convert(
+    args: NativeConvertArgs,
+    converter: NativeConverter,
+) -> Result<(), Box<dyn Error>> {
+    let result = convert_native(&args, converter).and_then(|output| {
+        std::fs::write(&args.output, &output.pdf)?;
+        Ok(output.report)
+    });
+    match result {
+        Ok(report) => {
+            for warning in &report.warnings {
+                eprintln!("wellfriendpdf: warning: {warning}");
+            }
+            if report.replaced_characters > 0 {
+                eprintln!(
+                    "wellfriendpdf: warning: {} character(s) without a bundled glyph were replaced with U+FFFD",
+                    report.replaced_characters
+                );
+            }
+            println!(
+                "{}",
+                serde_json::json!({"ok": true, "pages": report.pages, "bytes": report.bytes})
+            );
+            Ok(())
+        }
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": false,
+                    "code": wellfriendpdf_engine::native_contract_code(&error),
+                    "message": error.to_string(),
+                })
+            );
+            Err(Box::new(error))
+        }
+    }
+}
+
+/// Stable executor error codes for `edit-metadata` and `pdf-to-epub`.
+fn contract_code(error: &wellfriendpdf_engine::WellfriendError) -> &'static str {
+    use wellfriendpdf_engine::WellfriendError as E;
+    match error {
+        E::ParseError(message) if message.starts_with("invalid_json:") => "INVALID_JSON",
+        E::ParseError(message) if message.starts_with("invalid_options:") => "INVALID_OPTIONS",
+        E::ParseError(_) | E::MalformedPdf(_) | E::MissingObject { .. } => "INVALID_INPUT",
+        E::EncryptedDocument | E::EncryptedPdf(_) | E::AuthenticationFailure(_) => {
+            "ENCRYPTED_INPUT"
+        }
+        E::UnsupportedFeature(_) => "UNSUPPORTED_INPUT",
+        E::ResourceLimit(_) => "RESOURCE_LIMIT",
+        E::Io(_) | E::Cancelled(_) => "INTERNAL",
+    }
+}
+
+fn contract_failure(code: &str, message: impl std::fmt::Display) -> serde_json::Value {
+    serde_json::json!({"ok": false, "code": code, "message": message.to_string()})
+}
+
+fn json_failure(error: &wellfriendpdf_engine::WellfriendError) -> serde_json::Value {
+    contract_failure(contract_code(error), error)
+}
+
+/// Read a command input; a missing or unreadable input is `INVALID_INPUT`.
+fn read_contract_input(path: &std::path::Path) -> Result<Vec<u8>, serde_json::Value> {
+    std::fs::read(path).map_err(|err| {
+        contract_failure(
+            "INVALID_INPUT",
+            format!("cannot read input {}: {err}", path.display()),
+        )
+    })
+}
+
+/// Edit one file; returns (pages, bytes) or a contract failure object.
+fn edit_metadata_file(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    edit: &wellfriendpdf_engine::metadata_edit::MetadataEdit,
+) -> Result<(usize, usize), serde_json::Value> {
+    let bytes = read_contract_input(input)?;
+    let (pdf, report) = wellfriendpdf_engine::metadata_edit::edit_metadata_pdf(&bytes, edit)
+        .map_err(|error| json_failure(&error))?;
+    std::fs::write(output, &pdf).map_err(|err| {
+        contract_failure(
+            "INTERNAL",
+            format!("cannot write {}: {err}", output.display()),
+        )
+    })?;
+    Ok((report.pages, pdf.len()))
+}
+
+fn contract_exit(value: serde_json::Value) -> Result<(), Box<dyn Error>> {
+    let ok = value["ok"].as_bool().unwrap_or(false);
+    println!("{value}");
+    if ok {
+        Ok(())
+    } else {
+        Err(value["message"]
+            .as_str()
+            .unwrap_or("command failed")
+            .to_string()
+            .into())
+    }
+}
+
+fn run_edit_metadata(args: EditMetadataArgs) -> Result<(), Box<dyn Error>> {
+    use wellfriendpdf_engine::metadata_edit::parse_metadata_edit_options;
+    let Some(options) = args.options.as_deref() else {
+        return contract_exit(contract_failure("INVALID_OPTIONS", "--options is required"));
+    };
+    let edit = match parse_metadata_edit_options(options) {
+        Ok(edit) => edit,
+        Err(error) => return contract_exit(json_failure(&error)),
+    };
+    let batch = args.input.len() > 1 || args.output_dir.is_some();
+    if !batch {
+        let Some(output) = args.output.as_ref() else {
+            return contract_exit(contract_failure(
+                "INVALID_OPTIONS",
+                "--output is required (or use --output-dir)",
+            ));
+        };
+        return contract_exit(match edit_metadata_file(&args.input[0], output, &edit) {
+            Ok((pages, bytes)) => serde_json::json!({"ok": true, "pages": pages, "bytes": bytes}),
+            Err(failure) => failure,
+        });
+    }
+    let Some(dir) = args.output_dir.as_ref() else {
+        return contract_exit(contract_failure(
+            "INVALID_OPTIONS",
+            "several --input files require --output-dir",
+        ));
+    };
+    if let Err(err) = std::fs::create_dir_all(dir) {
+        return contract_exit(contract_failure(
+            "INTERNAL",
+            format!("cannot create {}: {err}", dir.display()),
+        ));
+    }
+    let mut files = Vec::new();
+    let mut first_failure: Option<(String, String)> = None;
+    let mut used_names = std::collections::BTreeSet::new();
+    for input in &args.input {
+        let name = input
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "output.pdf".to_string());
+        let output = dir.join(&name);
+        let result = if used_names.insert(name.clone()) {
+            edit_metadata_file(input, &output, &edit)
+        } else {
+            Err(contract_failure(
+                "INVALID_OPTIONS",
+                format!("duplicate output name {name}"),
+            ))
+        };
+        match result {
+            Ok((pages, bytes)) => files.push(serde_json::json!({
+                "input": input,
+                "output": output,
+                "ok": true,
+                "code": null,
+                "pages": pages,
+                "bytes": bytes,
+            })),
+            Err(failure) => {
+                let code = failure["code"].as_str().unwrap_or("INTERNAL").to_string();
+                let message = failure["message"].as_str().unwrap_or_default().to_string();
+                if first_failure.is_none() {
+                    first_failure = Some((code.clone(), format!("{}: {message}", input.display())));
+                }
+                files.push(serde_json::json!({
+                    "input": input,
+                    "output": output,
+                    "ok": false,
+                    "code": code,
+                    "message": message,
+                }));
+            }
+        }
+    }
+    contract_exit(match first_failure {
+        None => serde_json::json!({"ok": true, "files": files}),
+        Some((code, message)) => serde_json::json!({
+            "ok": false,
+            "code": code,
+            "message": message,
+            "files": files,
+        }),
+    })
+}
+
+fn run_pdf_to_epub(args: PdfToEpubArgs) -> Result<(), Box<dyn Error>> {
+    let result = read_contract_input(&args.input).and_then(|bytes| {
+        let (epub, report) =
+            wellfriendpdf_engine::epub::pdf_to_epub_json(&bytes, args.options.as_deref())
+                .map_err(|error| json_failure(&error))?;
+        std::fs::write(&args.output, &epub).map_err(|err| {
+            contract_failure(
+                "INTERNAL",
+                format!("cannot write {}: {err}", args.output.display()),
+            )
+        })?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "pages": report.pages,
+            "bytes": epub.len(),
+            "chapters": report.chapters.len(),
+            "images": report.images,
+        }))
+    });
+    contract_exit(result.unwrap_or_else(|failure| failure))
+}
+
 fn run_office_to_pdf(
     args: OfficeToPdfArgs,
     op: &str,
@@ -12372,6 +12742,126 @@ fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Failure payload `{"ok":false,"code":...,"message":...}` for the PDF/A
+/// commands; printed on stdout before exiting non-zero.
+fn pdfa_failure(code: &str, message: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({"ok": false, "code": code, "message": message.into()})
+}
+
+fn pdfa_engine_failure(error: &wellfriendpdf_engine::WellfriendError) -> serde_json::Value {
+    let message = error.to_string();
+    let code = if message.contains("invalid_options") {
+        "invalid_options"
+    } else {
+        error.code()
+    };
+    pdfa_failure(code, message)
+}
+
+fn parse_pdfa_options(
+    raw: Option<&str>,
+) -> Result<wellfriendpdf_engine::PdfAConvertOptions, serde_json::Value> {
+    let options: wellfriendpdf_engine::PdfAConvertOptions = match raw {
+        Some(raw) if !raw.trim().is_empty() => serde_json::from_str(raw).map_err(|err| {
+            pdfa_failure("invalid_options", format!("invalid --options JSON: {err}"))
+        })?,
+        _ => wellfriendpdf_engine::PdfAConvertOptions::default(),
+    };
+    options.profile().map_err(|err| pdfa_engine_failure(&err))?;
+    Ok(options)
+}
+
+fn pdfa_convert_json(args: &PdfaConvertArgs) -> Result<serde_json::Value, serde_json::Value> {
+    let options = parse_pdfa_options(args.options.as_deref())?;
+    let engine = open_engine(&args.input, &args.password)
+        .map_err(|err| pdfa_failure("input_error", err.to_string()))?;
+    let outcome = wellfriendpdf_engine::convert_pdf_to_pdfa(engine.document(), &options)
+        .map_err(|err| pdfa_engine_failure(&err))?;
+    for warning in &outcome.report.warnings {
+        eprintln!("wellfriendpdf: warning: {warning}");
+    }
+    let report = serde_json::to_value(&outcome.report)
+        .map_err(|err| pdfa_failure("internal", err.to_string()))?;
+    let Some(bytes) = outcome.bytes else {
+        let mut failure = pdfa_failure(
+            outcome
+                .report
+                .code
+                .as_deref()
+                .unwrap_or(wellfriendpdf_engine::PDFA_CONVERSION_FAILED),
+            outcome.report.message.clone().unwrap_or_default(),
+        );
+        failure["profile"] = serde_json::json!(outcome.report.profile);
+        failure["failed_rules"] = report["failed_rules"].clone();
+        failure["fonts"] = report["fonts"].clone();
+        return Err(failure);
+    };
+    let pages = wellfriendpdf_engine::ContentEngine::open_bytes(bytes.clone())
+        .and_then(|converted| converted.page_count())
+        .map_err(|err| pdfa_engine_failure(&err))?;
+    std::fs::write(&args.output, &bytes).map_err(|err| pdfa_failure("io", err.to_string()))?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "pages": pages,
+        "bytes": bytes.len(),
+        "profile": outcome.report.profile,
+        "level": outcome.report.level,
+        "validated": outcome.report.validated,
+        "fonts_embedded": outcome.report.fixes.fonts_embedded,
+        "report": report,
+    }))
+}
+
+fn run_pdfa_convert(args: PdfaConvertArgs) -> Result<(), Box<dyn Error>> {
+    match pdfa_convert_json(&args) {
+        Ok(success) => {
+            println!("{success}");
+            Ok(())
+        }
+        Err(failure) => {
+            println!("{failure}");
+            Err(Box::new(CliError::new(
+                CliExitCode::Input,
+                failure["code"]
+                    .as_str()
+                    .unwrap_or("PDFA_CONVERSION_FAILED")
+                    .to_string(),
+            )))
+        }
+    }
+}
+
+/// New-form `pdfa-validate --input <pdf> --options '{"profile":"PDF/A-2b"}'`.
+fn pdfa_validate_json(
+    path: &std::path::Path,
+    options: Option<&str>,
+    password: &Option<String>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let options = parse_pdfa_options(options)?;
+    let profile = options.profile().map_err(|err| pdfa_engine_failure(&err))?;
+    let engine =
+        open_engine(path, password).map_err(|err| pdfa_failure("input_error", err.to_string()))?;
+    let report = wellfriendpdf_engine::validate_pdfa_profile(
+        &engine,
+        &wellfriendpdf_engine::StandardsValidationOptions::with_target(
+            &profile.label().to_uppercase(),
+        ),
+    )
+    .map_err(|err| pdfa_engine_failure(&err))?;
+    let failures: Vec<String> = report
+        .rules
+        .iter()
+        .filter(|rule| rule.status.is_failing())
+        .map(|rule| rule.rule_id.clone())
+        .collect();
+    Ok(serde_json::json!({
+        "ok": true,
+        "compliant": failures.is_empty(),
+        "profile": profile.label(),
+        "failures": failures,
+    }))
+}
+
 #[derive(Clone, Copy)]
 enum StandardsKind {
     PdfA,
@@ -12384,7 +12874,28 @@ fn run_standards_validate(
     args: StandardsValidateArgs,
     kind: StandardsKind,
 ) -> Result<(), Box<dyn Error>> {
-    let engine = open_engine(&args.pdf, &args.password)?;
+    let Some(pdf) = args.pdf.clone().or_else(|| args.input.clone()) else {
+        return Err(usage_error("pass the PDF path or --input <pdf>"));
+    };
+    if matches!(kind, StandardsKind::PdfA) && (args.input.is_some() || args.options.is_some()) {
+        return match pdfa_validate_json(&pdf, args.options.as_deref(), &args.password) {
+            Ok(result) => {
+                println!("{result}");
+                Ok(())
+            }
+            Err(failure) => {
+                println!("{failure}");
+                Err(Box::new(CliError::new(
+                    CliExitCode::Input,
+                    failure["code"]
+                        .as_str()
+                        .unwrap_or("input_error")
+                        .to_string(),
+                )))
+            }
+        };
+    }
+    let engine = open_engine(&pdf, &args.password)?;
     let options = match &args.target {
         Some(target) => wellfriendpdf_engine::StandardsValidationOptions::with_target(target),
         None => wellfriendpdf_engine::StandardsValidationOptions::default(),

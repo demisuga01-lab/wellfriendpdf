@@ -8,7 +8,7 @@ use crate::render::path::{FillRule, GlyphHinting, Path, PathPainter};
 use crate::render::transform::{Transform2D, Viewport};
 use ttf_parser::OutlineBuilder;
 
-mod fallback_fonts {
+pub(crate) mod fallback_fonts {
     pub static LIBERATION_SANS_REGULAR: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/fonts/LiberationSans-Regular.ttf"

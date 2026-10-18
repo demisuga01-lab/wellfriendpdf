@@ -19,7 +19,7 @@ aes-gcm = "0.10"
 cbc = "0.1"
 hmac = "0.12"
 hkdf = "0.12"
-sha2 = { version = "0.10", features = ["asm", "oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
 flate2 = "1"
 getrandom = "0.2"
 tempfile = "3"
@@ -77,9 +77,30 @@ subtle = "2"
 zeroize = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zopfli = { version = "0.8.3", default-features = false, features = ["std", "zlib"] }
+# XMP metadata merge (edit-metadata) and EPUB package/XHTML writing (MIT).
+quick-xml = "=0.37.5"
+# Rust-native text/Markdown/CSV/JSON/SVG to PDF conversions (all MIT and/or
+# Apache-2.0; csv is Unlicense OR MIT). SVG stays vector through svg2pdf and
+# shares rustybuzz/ttf-parser with the authoring stack (usvg is used through
+# svg2pdf's re-export); nothing is fetched.
+pulldown-cmark = { version = "=0.13.4", default-features = false }
+csv = "=1.4.0"
+svg2pdf = { version = "=0.13.0", default-features = false, features = ["text", "image"] }
+pdf-writer = "=0.12.1"
+# PDF/A conversion font embedding: glyph subsetting for substituted fonts
+# (MIT OR Apache-2.0). Same version svg2pdf already resolves.
+subsetter = { version = "=0.2.6", default-features = false }
+
+# The SHA-2 assembly backend does not build with the MSVC toolchain; enable it
+# only on non-Windows targets so Linux/macOS keep the accelerated path.
+[target.'cfg(not(windows))'.dependencies]
+sha2 = { version = "0.10", features = ["asm", "oid"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 p12 = "0.6.3"
+# PDF/A conversion: optional system-font lookup for exact/coverage font
+# substitution (MIT). Same version usvg already resolves.
+fontdb = { version = "=0.23.0", default-features = false, features = ["std", "fs", "memmap", "fontconfig"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

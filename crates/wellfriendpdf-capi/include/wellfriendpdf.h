@@ -859,6 +859,19 @@ WELLFRIENDPDF_API int wellfriendpdf_document_decrypt_pdf(
     WellfriendBuffer *out_buffer,
     char **error_out);
 
+/* Converts an opened document to PDF/A (options_json: NULL or
+ * {"level":"1b|2b|2u|3b|3u","system_fonts":true}). The output always passes
+ * the SDK's PDF/A validator; otherwise the call fails with an error starting
+ * with PDFA_CONVERSION_FAILED (or PDFA1_TRANSPARENCY) and out_buffer is not
+ * written. report_json_out (nullable) receives the JSON report; free it with
+ * wellfriendpdf_string_free. */
+WELLFRIENDPDF_API int wellfriendpdf_document_pdfa_convert(
+    const WellfriendDocument *document,
+    const char *options_json,
+    WellfriendBuffer *out_buffer,
+    char **report_json_out,
+    char **error_out);
+
 /* Encrypts an opened document with /Adobe.PubSec for one recipient
  * certificate. The certificate may be PEM or DER. Multi-recipient workflows
  * are available through Rust/CLI/Python; this C ABI entry point is deliberately
@@ -894,6 +907,24 @@ WELLFRIENDPDF_API int wellfriendpdf_document_to_pptx(
     WellfriendBuffer *out_buffer,
     char **error_out);
 
+/* Set Info + XMP metadata as an incremental update. options_json: JSON
+ * object (title, author, subject, keywords, creator, producer,
+ * creation_date, modification_date, custom, signature_policy_override).
+ * report_json_out (optional) receives a JSON report; free with
+ * wellfriendpdf_string_free. Returns 0 on success. */
+WELLFRIENDPDF_API int wellfriendpdf_edit_metadata(const uint8_t *data, uintptr_t len,
+                                const char *options_json,
+                                WellfriendBuffer *out_buffer,
+                                char **report_json_out, char **error_out);
+
+/* Convert a PDF to EPUB 3. options_json may be NULL (split "headings"|
+ * "pages", pages_per_chapter, include_images, include_furniture, language,
+ * title, password). Returns 0 on success. */
+WELLFRIENDPDF_API int wellfriendpdf_pdf_to_epub(const uint8_t *data, uintptr_t len,
+                              const char *options_json,
+                              WellfriendBuffer *out_buffer,
+                              char **report_json_out, char **error_out);
+
 WELLFRIENDPDF_API int wellfriendpdf_document_to_docx(
     const WellfriendDocument *document,
     int include_images,
@@ -924,6 +955,51 @@ WELLFRIENDPDF_API int wellfriendpdf_xlsx_to_pdf(
 WELLFRIENDPDF_API int wellfriendpdf_pptx_to_pdf(
     const uint8_t *data,
     uintptr_t len,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+/* Converts plain UTF-8 text to PDF. options_json may be NULL (defaults) or a JSON
+ * object with the TextToPdfOptions fields. Free out_buffer with wellfriendpdf_buffer_free. */
+WELLFRIENDPDF_API int wellfriendpdf_text_to_pdf(
+    const uint8_t *data,
+    uintptr_t len,
+    const char *options_json,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+/* Converts CommonMark/GFM Markdown to PDF. options_json may be NULL (defaults) or a JSON
+ * object with the MarkdownToPdfOptions fields. Free out_buffer with wellfriendpdf_buffer_free. */
+WELLFRIENDPDF_API int wellfriendpdf_markdown_to_pdf(
+    const uint8_t *data,
+    uintptr_t len,
+    const char *options_json,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+/* Converts CSV to PDF. options_json may be NULL (defaults) or a JSON
+ * object with the CsvToPdfOptions fields. Free out_buffer with wellfriendpdf_buffer_free. */
+WELLFRIENDPDF_API int wellfriendpdf_csv_to_pdf(
+    const uint8_t *data,
+    uintptr_t len,
+    const char *options_json,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+/* Converts JSON to PDF. options_json may be NULL (defaults) or a JSON
+ * object with the JsonToPdfOptions fields. Free out_buffer with wellfriendpdf_buffer_free. */
+WELLFRIENDPDF_API int wellfriendpdf_json_to_pdf(
+    const uint8_t *data,
+    uintptr_t len,
+    const char *options_json,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+/* Converts SVG to PDF. options_json may be NULL (defaults) or a JSON
+ * object with the SvgToPdfOptions fields. Free out_buffer with wellfriendpdf_buffer_free. */
+WELLFRIENDPDF_API int wellfriendpdf_svg_to_pdf(
+    const uint8_t *data,
+    uintptr_t len,
+    const char *options_json,
     WellfriendBuffer *out_buffer,
     char **error_out);
 

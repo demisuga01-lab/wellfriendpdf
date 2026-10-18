@@ -128,6 +128,7 @@ pub mod editable;
 pub mod editing;
 pub mod editing_transactions;
 pub mod engine;
+pub mod epub;
 pub mod error;
 pub mod eval;
 mod ext_gstate_fonts;
@@ -146,6 +147,8 @@ pub mod info;
 pub(crate) mod input_identity;
 pub mod interactive;
 pub mod linked_stories;
+pub mod metadata_edit;
+pub mod native_convert;
 pub mod object;
 pub mod ocr;
 pub mod office;
@@ -154,6 +157,10 @@ pub mod parse;
 pub mod parser;
 pub mod parser_report;
 pub mod pdf_mac;
+pub mod pdfa_convert;
+pub mod pdfa_fonts;
+pub(crate) mod pdfa_icc;
+pub(crate) mod pdfa_rules;
 pub mod prepress;
 pub mod pubsec;
 pub mod reader;
@@ -268,12 +275,12 @@ pub use authoring::{
     FrontMatterTableOfContentsReport, GraphicsStyle, ImageHandle, InsertedFootnoteMarkerInfo,
     Margins, NoteNumberScope, NoteNumberStyle, NumberedFootnote, NumberedFootnotedParagraphReport,
     PageNumberField, PageNumberStyle, PageSize as AuthorPageSize, ParagraphStyle, PathBuilder,
-    PdfBuilder, PdfIndexEntry, PdfMetadata, PdfOutlineEntry, PdfPageBuilder, RunningText,
-    RunningTextPart, SectionPageMaster, StandardFont, TableBuilder, TableCell,
-    TableCellFragmentInfo, TableColumn, TableFlowReport, TableFragmentInfo,
-    TableOfContentsLeaderStyle, TableOfContentsLevelStyle, TableOfContentsPageSide,
-    TableOfContentsReport, TableOfContentsRow, TableOfContentsStyle, TableRow,
-    TableRowPageBreakInfo, TableRowSplitPolicy, TableStyle, TextAlign, TextStyle,
+    PdfBuilder, PdfIndexEntry, PdfMetadata, PdfOutlineEntry, PdfPageBuilder, RichParagraphReport,
+    RichParagraphStyle, RichSpan, RunningText, RunningTextPart, SectionPageMaster, StandardFont,
+    TableBuilder, TableCell, TableCellFragmentInfo, TableColumn, TableFlowReport,
+    TableFragmentInfo, TableOfContentsLeaderStyle, TableOfContentsLevelStyle,
+    TableOfContentsPageSide, TableOfContentsReport, TableOfContentsRow, TableOfContentsStyle,
+    TableRow, TableRowPageBreakInfo, TableRowSplitPolicy, TableStyle, TextAlign, TextStyle,
 };
 pub use cancel::CancelToken;
 pub use chunk::{chunk, estimate_tokens, Chunk, ChunkOptions, ChunkSet, CHUNK_SCHEMA_VERSION};
@@ -452,6 +459,14 @@ pub use interactive::{
     FieldAttributeSource, FormFieldReport, FormReport, FormWidgetReport, InteractiveDiagnostic,
     InteractiveReport, PageBoxReport, PageOperationsReport, RedactionVerificationReport, XfaReport,
 };
+pub use native_convert::{
+    csv_to_pdf, csv_to_pdf_with_report, json_to_pdf, json_to_pdf_with_report, markdown_to_pdf,
+    markdown_to_pdf_with_report, native_contract_code, native_error_code, parse_native_options,
+    svg_to_pdf, svg_to_pdf_with_report, text_to_pdf, text_to_pdf_with_report, CsvOrientation,
+    CsvToPdfOptions, JsonToPdfOptions, LineWrap, MarkdownToPdfOptions, NativeConversionOutput,
+    NativeConversionReport, NativeMargins, NativeOrientation, NativePageSize, SvgPageMode,
+    SvgToPdfOptions, TextToPdfOptions,
+};
 pub use object::{PdfDictionary, PdfObject};
 pub use ocr::preprocess::{
     binarize_otsu, binarize_sauvola, detect_skew, preprocess, Binarization, PreprocessConfig,
@@ -481,6 +496,11 @@ pub use pdf_mac::{
     pdf_mac_report, pdf_mac_report_bytes, pdf_mac_verify_report_bytes, write_standalone_pdf_mac,
     PdfMacReport, PdfMacState, PdfMacWriteReport,
 };
+pub use pdfa_convert::{
+    convert_pdf_to_pdfa, PdfAConversionOutcome, PdfAConvertOptions, PdfAConvertReport,
+    PdfAFailedRule, PdfAFixSummary, PDFA1_TRANSPARENCY, PDFA_CONVERSION_FAILED,
+};
+pub use pdfa_fonts::PdfAFontEmbedding;
 pub use prepress::{
     classify_icc_profile, IccProfileClass, IccProfileInfo, NChannelPixelFormatReport,
     NChannelSample, NchannelPlatePrepressPrepressReport, PlateContribution, PlateKind,
@@ -616,8 +636,7 @@ pub use standards_engine::{
 };
 pub use structural::{
     crop_pages, crop_pages_to, encrypt, linearize::linearize, optimize, repair, rotate_pages,
-    rotate_pages_to, OptimizeReport,
-    Rotation,
+    rotate_pages_to, OptimizeReport, Rotation,
 };
 pub use table_intelligence::{
     merge_table_proposals_deterministic, mock_tableformer_proposal_set,
@@ -695,9 +714,9 @@ pub use versioning::{
 };
 pub use writer::{
     build_merged, build_merged_to, build_subset, build_subset_to, merge_paths_to_file,
-    rewrite_document, rewrite_document_to, AtomicFile, rewrite_document_objects,
-    rewrite_document_with_mode, rewrite_references, serialize_object, write_document_linearized,
-    write_document_roundtrip, OutputObject, PdfWriter, WriterMode,
+    rewrite_document, rewrite_document_objects, rewrite_document_to, rewrite_document_with_mode,
+    rewrite_references, serialize_object, write_document_linearized, write_document_roundtrip,
+    AtomicFile, OutputObject, PdfWriter, WriterMode,
 };
 pub use writer_history::{
     font_reconstruction_report, object_stream_packing_report, pack_object_streams_pdf,

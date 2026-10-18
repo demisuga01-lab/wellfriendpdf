@@ -695,6 +695,8 @@ fn pdfa_profile_from_label(label: &str) -> Option<PdfAProfile> {
         "PDF/A-2A" => Some(PdfAProfile::PdfA2A),
         "PDF/A-3B" => Some(PdfAProfile::PdfA3B),
         "PDF/A-3A" => Some(PdfAProfile::PdfA3A),
+        "PDF/A-2U" => Some(PdfAProfile::PdfA2U),
+        "PDF/A-3U" => Some(PdfAProfile::PdfA3U),
         _ => None,
     }
 }
@@ -742,6 +744,25 @@ fn pdfa_clause_for(rule_id: &str) -> (&'static str, &'static str) {
         ("6.1.3", "Encryption is prohibited")
     } else if r.contains("transparency") {
         ("6.2.8", "Transparency restrictions")
+    } else if r.contains("lzw") || r.contains("filter") {
+        ("6.1.7", "Stream filters (LZW is prohibited)")
+    } else if r.contains("external") || r.contains("xobject") || r.contains("image") {
+        (
+            "6.2.9",
+            "External content, PostScript and alternate XObjects",
+        )
+    } else if r.contains("extgstate") {
+        ("6.2.5", "Graphics state restrictions (transfer functions)")
+    } else if r.contains("annotation") {
+        ("6.3", "Annotation types, flags and appearance streams")
+    } else if r.contains("form") {
+        ("6.4", "Interactive form restrictions")
+    } else if r.contains("unicode") {
+        ("6.2.11.7", "Unicode character maps")
+    } else if r.contains("optional_content") {
+        ("6.9", "Optional content")
+    } else if r.contains("jpx") {
+        ("6.1", "PDF 1.4 feature set (PDF/A-1)")
     } else if r.contains("color") || r.contains("device") {
         ("6.2.3", "Device and ICC colour space rules")
     } else if r.contains("structure") || r.contains("tag") {
@@ -930,7 +951,10 @@ pub fn validate_pdfa_profile(
         standard,
         "No prohibited actions/JavaScript detected.",
     );
-    if matches!(profile, PdfAProfile::PdfA3B | PdfAProfile::PdfA3A) {
+    if matches!(
+        profile,
+        PdfAProfile::PdfA3B | PdfAProfile::PdfA3A | PdfAProfile::PdfA3U
+    ) {
         add_pass_if_clean(
             &mut rules,
             &report.violations,
