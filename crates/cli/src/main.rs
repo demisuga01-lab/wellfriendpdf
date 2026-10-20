@@ -607,6 +607,10 @@ enum Commands {
     ExtractPages(ExtractPagesArgs),
     /// Report document metadata and structural facts (pdfinfo-equivalent)
     Info(InfoArgs),
+    /// Document editor: read one JSON edit command (INSPECT, REPLACE_TEXT,
+    /// REPLACE_IMAGE, EDIT_ANNOTATION, MUTATE_PAGES, ...) on stdin and print
+    /// one JSON result envelope on stdout. Exit code 2 means the edit was refused.
+    PdfEdit,
     /// Emit shared SDK feature, codec, scheduler, corpus, and fuzz capability report
     FeatureReport(FeatureReportArgs),
     /// Emit canonical lazy document-view boundary JSON
@@ -4264,6 +4268,11 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Split(args) => run_split(args),
         Commands::ExtractPages(args) => run_extract_pages(args),
         Commands::Info(args) => run_info(args),
+        Commands::PdfEdit => {
+            let code = wellfriend_pdf_edit::protocol::run_stdin();
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            std::process::exit(code);
+        }
         Commands::FeatureReport(args) => run_feature_report(args),
         Commands::DocumentViewsReport(args) => run_document_views_report(args),
         Commands::BackendPlanArenaReport(args) => run_backend_plan_arena_report(args),

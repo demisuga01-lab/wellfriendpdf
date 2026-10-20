@@ -3545,6 +3545,12 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
                             .is_ok_and(|missing| !missing)
                         })
                 });
+                let source_family = inherited_owner
+                    .and_then(|owner| resources.fonts.get(&owner.5.font_resource))
+                    .and_then(|dict| dict.get_name("BaseFont"))
+                    .and_then(|base| {
+                        crate::pdfa_fonts::matching_full_font(base, &request.replacement_text)
+                    });
                 let font = if logical_only_replacement {
                     get_fallback_font("Symbol")
                 } else {
@@ -3552,6 +3558,7 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
                         .or(inherited_font
                             .as_deref()
                             .filter(|bytes| ttf_parser::Face::parse(bytes, 0).is_ok()))
+                        .or(source_family)
                         .or_else(|| get_fallback_font("Symbol"))
                 }
                 .ok_or_else(|| {
@@ -5129,6 +5136,14 @@ fn edit_zero_width_insertion_inline_source_style(
             .as_deref()
             .filter(|candidate| supports(candidate))
             .or_else(|| font_bytes.filter(|candidate| supports(candidate)))
+            .or_else(|| {
+                source_font
+                    .get_name("BaseFont")
+                    .and_then(|base| {
+                        crate::pdfa_fonts::matching_full_font(base, &request.replacement_text)
+                    })
+                    .filter(|candidate| supports(candidate))
+            })
             .or_else(|| get_fallback_font("Symbol").filter(|candidate| supports(candidate)))
     }
     .ok_or_else(|| {
@@ -10664,8 +10679,9 @@ fn rewrite_source_text_destructively(
 /// Replace selected source codes inside their original text object.  Keeping
 /// clipping text at this source position is essential: PDF text clipping is
 /// committed by `ET` and affects later painting in that same graphics-state
-/// scope.  The trailing TJ adjustment makes the following text position match
-/// the source even when the replacement has a different advance.
+/// scope.  The suffix of the edited run follows the replacement; the trailing
+/// TJ adjustment after it makes the following text position match the source
+/// even when the replacement has a different advance.
 fn rewrite_source_text_inline(
     token: &ContentStringToken,
     resolver: &FontResolver,
@@ -10687,12 +10703,12 @@ fn rewrite_source_text_inline(
         body.extend_from_slice(&serialize_pdf_string(replacement, token.representation));
         body.push(b' ');
     }
-    if compensation.abs() > EPSILON {
-        body.extend_from_slice(fmt_num(compensation).as_bytes());
-        body.push(b' ');
-    }
     if !suffix.is_empty() {
         body.extend_from_slice(&serialize_pdf_string(suffix, token.representation));
+        body.push(b' ');
+    }
+    if compensation.abs() > EPSILON {
+        body.extend_from_slice(fmt_num(compensation).as_bytes());
         body.push(b' ');
     }
     body.extend_from_slice(b"] TJ\n");

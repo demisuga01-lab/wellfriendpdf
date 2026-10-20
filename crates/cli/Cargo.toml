@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 wellfriendpdf-engine = { version = "0.1.0", path = "../engine" }
+wellfriendpdf-edit = { version = "0.22.0", path = "../wellfriendpdf-edit" }
 wellfriendpdf-ocr-tesseract = { version = "0.1.0", path = "../wellfriendpdf-ocr-tesseract", optional = true }
 clap = { version = "4", features = ["derive"] }
 rayon = "1"
