@@ -469,6 +469,12 @@ pub fn inspect_office_package(
         });
     }
     for rel in &relationships {
+        // An external hyperlink is only a click target in the output; nothing
+        // is fetched. Linked images, OLE objects, external workbooks and every
+        // other external relationship stay blocked.
+        if is_hyperlink_relationship(&rel.relationship_type) {
+            continue;
+        }
         if rel.target_mode.eq_ignore_ascii_case("external") || external_target(&rel.target) {
             findings.push(OfficeSecurityFinding {
                 part: rel.owner_part.clone(),
@@ -599,8 +605,14 @@ fn external_target(target: &str) -> bool {
         || lower.starts_with("//")
 }
 
+fn is_hyperlink_relationship(relationship_type: &str) -> bool {
+    relationship_type.trim_end().ends_with("/hyperlink")
+}
+
 fn scan_office_xml_text(part: &str, xml: &str, findings: &mut Vec<OfficeSecurityFinding>) {
     let lower = xml.to_ascii_lowercase();
+    // Relationship parts are checked per relationship above, by type.
+    let relationship_part = part.ends_with(".rels");
     for (needle, category, reason) in [
         (
             "<!doctype",
@@ -636,6 +648,9 @@ fn scan_office_xml_text(part: &str, xml: &str, findings: &mut Vec<OfficeSecurity
         ("vbaproject", "active_content", "VBA macro marker"),
         ("javascript:", "active_content", "JavaScript URI"),
     ] {
+        if relationship_part && category == "external_relationship" {
+            continue;
+        }
         if lower.contains(&needle.to_ascii_lowercase()) {
             findings.push(OfficeSecurityFinding {
                 part: part.to_string(),
