@@ -223,6 +223,53 @@ const CACHE_BYTES: usize = 4 * 1024 * 1024;
 // 4 MiB but evicted one another on every width probe.
 const CACHE_ENTRIES: usize = 4_096;
 
+/// Memoised SHA-256 of an immutable font program, used in shaping cache keys.
+/// Layout shapes every line (and every candidate break) with the same font;
+/// hashing a multi-hundred-kilobyte program on each call made text-to-pdf
+/// spend over 95% of its time in SHA-256 (about 0.1 s per line). A memo entry
+/// is reused only for the same buffer address and length whose table
+/// directory, tail and sampled interior still hash to the recorded
+/// fingerprint, so a different program at a reused address is rehashed.
+fn font_program_digest(font_bytes: &[u8]) -> [u8; 32] {
+    const SAMPLE: usize = 1_024;
+    const WINDOWS: usize = 16;
+    const WINDOW: usize = 64;
+    const ENTRIES: usize = 64;
+    if font_bytes.len() <= 4 * SAMPLE {
+        return Sha256::digest(font_bytes).into();
+    }
+    let mut fingerprint = Sha256::new();
+    fingerprint.update((font_bytes.len() as u64).to_le_bytes());
+    fingerprint.update(&font_bytes[..SAMPLE]);
+    fingerprint.update(&font_bytes[font_bytes.len() - SAMPLE..]);
+    let stride = (font_bytes.len() - WINDOW) / WINDOWS;
+    for index in 0..WINDOWS {
+        let start = index * stride;
+        fingerprint.update(&font_bytes[start..start + WINDOW]);
+    }
+    let fingerprint: [u8; 32] = fingerprint.finalize().into();
+    let address = font_bytes.as_ptr() as usize;
+    let length = font_bytes.len();
+    thread_local! {
+        static FONT_DIGESTS: RefCell<VecDeque<(usize, usize, [u8; 32], [u8; 32])>> =
+            const { RefCell::new(VecDeque::new()) };
+    }
+    FONT_DIGESTS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if let Some(hit) = memo.iter().find(|(entry_address, entry_length, entry_fingerprint, _)| {
+            *entry_address == address && *entry_length == length && *entry_fingerprint == fingerprint
+        }) {
+            return hit.3;
+        }
+        let digest: [u8; 32] = Sha256::digest(font_bytes).into();
+        if memo.len() >= ENTRIES {
+            memo.pop_back();
+        }
+        memo.push_front((address, length, fingerprint, digest));
+        digest
+    })
+}
+
 fn cached_shape(key: &[u8; 32]) -> Option<ShapedRun> {
     SHAPE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -305,7 +352,7 @@ impl TextShaper {
         bidi: &LineBidi,
         settings: &OpenTypeSettings,
     ) -> Result<ShapedRun> {
-        let font_digest: [u8; 32] = Sha256::digest(font_bytes).into();
+        let font_digest = font_program_digest(font_bytes);
         Self::shape_resolved_prehashed(font_bytes, &font_digest, text, bidi, settings)
     }
 
@@ -477,9 +524,9 @@ impl TextShaper {
             ));
         }
         let mut hash = Sha256::new();
-        hash.update(b"paragraph-v4-hard-lines");
+        hash.update(b"paragraph-v5-hard-lines-font-digest");
         hash.update((font_bytes.len() as u64).to_le_bytes());
-        hash.update(font_bytes);
+        hash.update(font_program_digest(font_bytes));
         hash.update([match options.direction {
             None => 0,
             Some(TextDirection::LeftToRight) => 1,

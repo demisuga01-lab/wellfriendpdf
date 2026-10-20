@@ -1212,12 +1212,10 @@ fn validate_simple_width_metrics(
                 idx + 1
             )
         })?;
-        if width < 0.0 {
-            return Err(format!(
-                "simple font malformed /Widths: entry {} is negative",
-                idx + 1
-            ));
-        }
+        // Producers such as Nitro Pro write negative widths for codes the
+        // font never draws. Viewers treat them as a zero advance, and so does
+        // parse_widths, so they no longer make a whole page unrenderable.
+        let _ = width;
     }
     Ok(())
 }
@@ -1449,6 +1447,7 @@ fn parse_widths(
                 .as_number()
                 .or_else(|| resolve_optional(object, reader).ok()?.as_number())
         })
+        .map(|width| width.max(0.0))
         .collect();
     if wanted_len > 0 {
         values.truncate(wanted_len);
@@ -1792,6 +1791,20 @@ mod cid_font_tests {
         );
 
         assert_eq!(parse_widths(&dict, None, 10, 11), vec![250.0, 600.0]);
+    }
+
+    #[test]
+    fn simple_negative_widths_render_as_zero_advance() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        dict.insert("FirstChar", PdfObject::Integer(0));
+        dict.insert("LastChar", PdfObject::Integer(1));
+        dict.insert(
+            "Widths",
+            PdfObject::Array(vec![PdfObject::Integer(-250), PdfObject::Integer(600)]),
+        );
+        assert!(validate_simple_width_metrics(&dict, None).is_ok());
+        assert_eq!(parse_widths(&dict, None, 0, 1), vec![0.0, 600.0]);
     }
 
     #[test]

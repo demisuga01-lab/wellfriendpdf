@@ -1412,6 +1412,33 @@ mod tests {
     }
 
     #[test]
+    fn office_security_allows_external_hyperlinks_only() {
+        let package = |relationship: &str| {
+            let mut bytes = Vec::new();
+            {
+                let cursor = Cursor::new(&mut bytes);
+                let mut zip = zip::ZipWriter::new(cursor);
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                zip.start_file("[Content_Types].xml", options).unwrap();
+                zip.write_all(br#"<?xml version="1.0"?><Types/>"#).unwrap();
+                zip.start_file("word/_rels/document.xml.rels", options).unwrap();
+                zip.write_all(format!("<Relationships>{relationship}</Relationships>").as_bytes()).unwrap();
+                zip.start_file("word/document.xml", options).unwrap();
+                zip.write_all(br#"<w:document/>"#).unwrap();
+                zip.finish().unwrap();
+            }
+            inspect_office_package_for_compression_office(&bytes, OfficeFormat::Docx).unwrap()
+        };
+        let hyperlink = package(r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://wellfriend.dev/" TargetMode="External"/>"#);
+        assert!(hyperlink.safe_for_conversion, "{:?}", hyperlink.findings);
+        let image = package(r#"<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.invalid/a.png" TargetMode="External"/>"#);
+        assert!(!image.safe_for_conversion);
+        let script = package(r#"<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/>"#);
+        assert!(!script.safe_for_conversion);
+    }
+
+    #[test]
     fn office_to_pdf_reports_reopenable_pdf() {
         let engine = ContentEngine::open_bytes(tiny_pdf()).unwrap();
         let docx = pdf_to_docx(&engine, &DocxOptions::default()).unwrap();
