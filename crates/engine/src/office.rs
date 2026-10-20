@@ -2634,7 +2634,10 @@ fn pptx_slides_to_pdf(slides: &[PptxInputSlide]) -> Result<Vec<u8>> {
                         .iter()
                         .filter_map(|line| drawable_text.get(line.visible.clone()))
                         .filter(|line| !line.is_empty())
-                        .map(|line| page.text_width(line, &nominal))
+                        // draw_paragraph lays tabs out on its tab stops; the
+                        // single-line width probe takes none, so a tab is
+                        // measured as four spaces (about one default stop).
+                        .map(|line| page.text_width(&line.replace('\t', "    "), &nominal))
                         .collect::<Result<Vec<_>>>()?
                         .into_iter()
                         .fold(0.0_f64, f64::max);

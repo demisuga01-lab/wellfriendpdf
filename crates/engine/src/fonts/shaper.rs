@@ -231,9 +231,9 @@ const CACHE_ENTRIES: usize = 4_096;
 /// directory, tail and sampled interior still hash to the recorded
 /// fingerprint, so a different program at a reused address is rehashed.
 fn font_program_digest(font_bytes: &[u8]) -> [u8; 32] {
-    const SAMPLE: usize = 4_096;
-    const WINDOWS: usize = 32;
-    const WINDOW: usize = 256;
+    const SAMPLE: usize = 1_024;
+    const WINDOWS: usize = 16;
+    const WINDOW: usize = 64;
     const ENTRIES: usize = 64;
     if font_bytes.len() <= 4 * SAMPLE {
         return Sha256::digest(font_bytes).into();
