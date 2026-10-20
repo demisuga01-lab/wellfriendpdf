@@ -592,7 +592,7 @@ pub fn replace_text_full_font(request: &ReplaceTextRequest) -> Result<serde_json
                 _ => None,
             })
     } else {
-        Some(original.clone())
+        Some((*original).clone())
     };
     let flags = descriptor_font
         .as_ref()

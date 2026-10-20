@@ -570,8 +570,13 @@ pub(super) fn rewrite_positioned(
             "non-finite generated inline prefix position".into(),
         ));
     }
+    let selected_displacement = source_displacement(token, resolver, selected)?;
     let mut endpoint = start.clone();
-    if !endpoint.advance(source_displacement(token, resolver, selected)?) {
+    // Horizontal runs: the suffix is drawn where the replacement ends, and the
+    // source's old end point is restored after it (below), so a replacement
+    // of a different width neither overlaps nor gaps the rest of its run.
+    let flow_suffix = !generated_vertical && !paint_vertical && !suffix.is_empty();
+    if !flow_suffix && !endpoint.advance(selected_displacement) {
         return Err(WellfriendError::UnsupportedFeature(
             "non-finite generated inline endpoint".into(),
         ));
@@ -668,6 +673,11 @@ pub(super) fn rewrite_positioned(
             cross += (glyph.advance * scale + spacing) * hscale;
         }
     }
+    if flow_suffix && !endpoint.advance([cross, 0.0]) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "non-finite generated inline replacement endpoint".into(),
+        ));
+    }
     // Restore Tlm, then move ONLY Tm with numeric TJ operands. The existing
     // horizontal font is needed only when preceding mixed-writing-mode text
     // contributed an x displacement. No glyphs, font asset or source codes are
@@ -731,6 +741,15 @@ pub(super) fn rewrite_positioned(
     );
     if !suffix.is_empty() {
         append_serialized_text_show(&mut body, suffix, token.representation);
+    }
+    if flow_suffix {
+        // Back to the source's old end point after the suffix, in the run's
+        // own font, size and horizontal scaling (restored just above).
+        let shift = selected_displacement[0] - cross;
+        let units = token.font_size * token.horizontal_scaling / 100.0;
+        if shift.abs() > 1e-9 && units.abs() > 1e-9 {
+            body.extend_from_slice(format!("[{}] TJ\n", number(-shift * 1000.0 / units)?).as_bytes());
+        }
     }
     match token.operator.as_str() {
         "Tj" => Ok((token.operation_start, token.operation_end, body)),

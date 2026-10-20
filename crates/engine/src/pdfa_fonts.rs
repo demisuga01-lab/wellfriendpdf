@@ -1012,6 +1012,65 @@ fn system_font_exact(_base: &str) -> Option<Candidate> {
     None
 }
 
+/// The complete program of a source font's own family, for replacement text
+/// its embedded subset cannot draw, so an edit keeps the source typeface.
+/// An installed face with the same PostScript name comes first; otherwise the
+/// bundled Liberation face of the same style, but only for Liberation itself
+/// and the metric-compatible Arial/Helvetica, Times and Courier families.
+/// Never an unrelated family: callers fall back explicitly.
+pub(crate) fn matching_full_font(base_font: &str, text: &str) -> Option<&'static [u8]> {
+    let covers = |bytes: &[u8]| {
+        ttf_parser::Face::parse(bytes, 0).is_ok_and(|face| {
+            text.chars()
+                .filter(|character| !character.is_whitespace())
+                .all(|character| face.glyph_index(character).is_some_and(|glyph| glyph.0 != 0))
+        })
+    };
+    if let Some(program) = system_font_program_exact(base_font).filter(|bytes| covers(bytes)) {
+        return Some(program);
+    }
+    let family = ["bold", "italic", "oblique"]
+        .iter()
+        .fold(normalize_font_key(base_font), |key, style| key.replace(style, ""));
+    let compatible = [
+        "liberationsans",
+        "liberationserif",
+        "liberationmono",
+        "arial",
+        "helvetica",
+        "times",
+        "timesnew",
+        "courier",
+        "couriernew",
+    ];
+    if !compatible.contains(&family.as_str()) {
+        return None;
+    }
+    crate::render::get_fallback_font(base_font).filter(|bytes| covers(bytes))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn system_font_program_exact(base: &str) -> Option<&'static [u8]> {
+    type Cache = std::sync::Mutex<HashMap<String, Option<&'static [u8]>>>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let key = normalize_font_key(base);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok()?.get(&key) {
+        return *hit;
+    }
+    // One process-lifetime copy per installed face, shared by every edit.
+    let program = system_font_exact(base)
+        .filter(|candidate| candidate.index == 0)
+        .map(|candidate| &*Box::leak(candidate.data.to_vec().into_boxed_slice()));
+    cache.lock().ok()?.insert(key, program);
+    program
+}
+
+#[cfg(target_arch = "wasm32")]
+fn system_font_program_exact(_base: &str) -> Option<&'static [u8]> {
+    None
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn system_font_with_coverage(requests: &[GlyphRequest]) -> Option<Candidate> {
     let db = system_database()?;
