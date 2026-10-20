@@ -427,7 +427,7 @@ fn embed_type0(
     }
     let bbox = face.global_bounding_box();
     let length = bytes.len() as i64;
-    let file = add_compressed_stream(document, dictionary! { "Length1" => length }, bytes)?;
+    let file = add_compressed_stream(document, dictionary! { "Length1" => length }, bytes.clone())?;
     let base_name = format!("WFEDIT+{}", name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', ""));
     let mut flags = 32;
     if face.is_monospaced() {

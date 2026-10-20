@@ -30,7 +30,7 @@ enum Command {
     ReplaceText {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::TextRunSelector,
+        selector: crate::TextRunSelector,
         replacement_text: String,
         #[serde(default)]
         text_style: Option<crate::styled_text::TextStyle>,
@@ -40,10 +40,10 @@ enum Command {
     ReflowText {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::TextRunSelector,
+        selector: crate::TextRunSelector,
         replacement_text: String,
-        region: wellfriend_pdf_edit::PdfBox,
-        alignment: wellfriend_pdf_edit::PdfTextAlignment,
+        region: crate::PdfBox,
+        alignment: crate::PdfTextAlignment,
         line_spacing: f64,
         #[serde(default)]
         allow_signature_invalidation: bool,
@@ -58,9 +58,9 @@ enum Command {
     EditPageGeometry {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::PageGeometrySelector,
-        media_box: wellfriend_pdf_edit::PdfBox,
-        crop_box: wellfriend_pdf_edit::PdfBox,
+        selector: crate::PageGeometrySelector,
+        media_box: crate::PdfBox,
+        crop_box: crate::PdfBox,
         rotation: i32,
         #[serde(default)]
         allow_signature_invalidation: bool,
@@ -76,14 +76,14 @@ enum Command {
         input_path: PathBuf,
         output_path: PathBuf,
         replacement_image_path: PathBuf,
-        selector: wellfriend_pdf_edit::ImageSelector,
+        selector: crate::ImageSelector,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     MoveImage {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::ImagePlacementSelector,
+        selector: crate::ImagePlacementSelector,
         destination_x: f64,
         destination_y: f64,
         #[serde(default)]
@@ -92,23 +92,23 @@ enum Command {
     TransformImage {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::ImagePlacementSelector,
-        destination_matrix: wellfriend_pdf_edit::PdfMatrix,
+        selector: crate::ImagePlacementSelector,
+        destination_matrix: crate::PdfMatrix,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     CropImage {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::ImagePlacementSelector,
-        destination_crop: wellfriend_pdf_edit::PdfNormalizedCrop,
+        selector: crate::ImagePlacementSelector,
+        destination_crop: crate::PdfNormalizedCrop,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     SetImageOpacity {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::ImagePlacementSelector,
+        selector: crate::ImagePlacementSelector,
         destination_opacity: f64,
         #[serde(default)]
         allow_signature_invalidation: bool,
@@ -116,45 +116,45 @@ enum Command {
     EditVectorPath {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::VectorPathSelector,
-        mutation: wellfriend_pdf_edit::VectorPathMutation,
+        selector: crate::VectorPathSelector,
+        mutation: crate::VectorPathMutation,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     EditLink {
         input_path: PathBuf,
         output_path: PathBuf,
-        mutation: wellfriend_pdf_edit::LinkMutation,
+        mutation: crate::LinkMutation,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     EditAnnotation {
         input_path: PathBuf,
         output_path: PathBuf,
-        mutation: wellfriend_pdf_edit::AnnotationMutation,
+        mutation: crate::AnnotationMutation,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     EditMetadata {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::PdfMetadataSelector,
-        values: wellfriend_pdf_edit::PdfMetadataSpec,
-        xmp_mode: wellfriend_pdf_edit::PdfXmpMode,
+        selector: crate::PdfMetadataSelector,
+        values: crate::PdfMetadataSpec,
+        xmp_mode: crate::PdfXmpMode,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     EditBookmark {
         input_path: PathBuf,
         output_path: PathBuf,
-        mutation: wellfriend_pdf_edit::BookmarkMutation,
+        mutation: crate::BookmarkMutation,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     EditFormFieldValue {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::FormFieldSelector,
+        selector: crate::FormFieldSelector,
         value: Option<String>,
         #[serde(default)]
         allow_signature_invalidation: bool,
@@ -162,16 +162,16 @@ enum Command {
     EditFormFieldGeometry {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::FormFieldSelector,
-        widget: wellfriend_pdf_edit::FormWidgetSelector,
-        rectangle: wellfriend_pdf_edit::PdfBox,
+        selector: crate::FormFieldSelector,
+        widget: crate::FormWidgetSelector,
+        rectangle: crate::PdfBox,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     EditFormFieldLabel {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::FormFieldSelector,
+        selector: crate::FormFieldSelector,
         label: Option<String>,
         #[serde(default)]
         allow_signature_invalidation: bool,
@@ -179,7 +179,7 @@ enum Command {
     EditFormFieldOptions {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::FormFieldSelector,
+        selector: crate::FormFieldSelector,
         options: Vec<String>,
         value: String,
         #[serde(default)]
@@ -188,20 +188,20 @@ enum Command {
     RepairFormFieldAppearance {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::FormFieldSelector,
+        selector: crate::FormFieldSelector,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
     CreateFormField {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::FormCreationSelector,
+        selector: crate::FormCreationSelector,
         name: String,
         label: Option<String>,
-        kind: wellfriend_pdf_edit::PdfFormFieldKind,
+        kind: crate::PdfFormFieldKind,
         value: Option<String>,
         options: Vec<String>,
-        widgets: Vec<wellfriend_pdf_edit::CreateFormFieldWidget>,
+        widgets: Vec<crate::CreateFormFieldWidget>,
         #[serde(default)]
         required: bool,
         #[serde(default)]
@@ -210,7 +210,7 @@ enum Command {
     DeleteFormField {
         input_path: PathBuf,
         output_path: PathBuf,
-        selector: wellfriend_pdf_edit::FormFieldSelector,
+        selector: crate::FormFieldSelector,
         #[serde(default)]
         allow_signature_invalidation: bool,
     },
