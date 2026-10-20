@@ -9,6 +9,7 @@ members = [
     "crates/wellfriendpdf-wasm",
     "crates/wellfriendpdf-ocr-tesseract",
     "crates/wellfriendpdf-py",
+    "crates/wellfriendpdf-edit",
 ]
 # Plain `cargo build` / `cargo test` at the root skip the optional Tesseract
 # OCR backend (product OCR is AI-based; the crate stays for open-source users:
@@ -21,4 +22,10 @@ default-members = [
     "crates/wellfriendpdf-capi",
     "crates/wellfriendpdf-wasm",
     "crates/wellfriendpdf-py",
+    "crates/wellfriendpdf-edit",
 ]
+
+# The document editor (crates/wellfriendpdf-edit) uses lopdf with the
+# decryption fixes vendored here.
+[patch.crates-io]
+lopdf = { path = "vendor/lopdf-unlock" }
