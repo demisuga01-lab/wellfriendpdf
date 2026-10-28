@@ -12276,23 +12276,16 @@ impl<'a> RenderState<'a> {
             "PageRenderer: SMask /G color space {}",
             smask_group_color_space.label()
         );
-        if is_alpha && smask_group_color_space.supports_non_device_backdrop() {
-            match smask_backdrop_components(&smask_dict) {
-                Ok(Some(_)) => {
-                    self.record_fatal_render_error(format!(
-                        "SMask /G group /CS has unsupported color space {}",
-                        smask_group_color_space.label()
-                    ));
-                    return;
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    self.record_fatal_render_error(format!("SMask /BC backdrop failed: {err}"));
-                    return;
-                }
-            }
-        }
-
+        // For an alpha soft mask the mask value is the group's accumulated
+        // coverage; the group /CS is only its blending/backdrop color space and
+        // never contributes to the extracted alpha. /BC is consulted "only if
+        // the subtype S is Luminosity" (PDF 32000-1 11.6.5.2), so a non-device
+        // group /CS carrying a /BC does not need its backdrop color resolved in
+        // that space: `alpha_smask_uses_opaque_bc_backdrop` decides the backdrop
+        // opacity from /BC presence and the /TR transfer alone. Composite the
+        // mask the same way we already do for device-space alpha groups with a
+        // /BC, rather than dropping the whole masked object. Malformed /BC still
+        // surfaces a typed error from `smask_backdrop_cache_identity` below.
         let backdrop_identity = match smask_backdrop_cache_identity(
             &smask_dict,
             is_alpha,
@@ -13995,6 +13988,7 @@ impl<'a> RenderState<'a> {
                     self.engine.document().reader(),
                 ));
         if group_color_space.requires_inert_active_form_subset()
+            && !group_color_space.composites_acceptably_as_device_rgb()
             && !form_program_is_opaque_normal_group_subset(&program.ops, &group_resources, &self.gs)
         {
             self.record_fatal_render_error(format!(
@@ -23281,8 +23275,25 @@ impl TransparencyGroupColorSpacePolicy {
         )
     }
 
-    fn supports_non_device_backdrop(&self) -> bool {
-        matches!(self, Self::NonDeviceBackdrop { .. })
+    /// True when an *actively compositing* group in this color space can be
+    /// composited in `DeviceRGB` without a meaningful visual difference, so the
+    /// group renders instead of dropping the whole object.
+    ///
+    /// Group blending is defined in the group color space, which the renderer
+    /// does not reproduce for non-`DeviceRGB` spaces. A 3-component `ICCBased`
+    /// profile is an RGB profile and is sRGB-adjacent, and the renderer
+    /// composites everything onto an sRGB-ish RGBA surface anyway, so RGB
+    /// blending matches the intended result closely — and far better than the
+    /// blank region a fail-closed refusal leaves. CMYK, gray, `Lab`, the spot
+    /// and `DeviceN` families, and even calibrated `CalRGB` (whose white point
+    /// and gamma can diverge further) are left to their existing fail-closed
+    /// behavior.
+    fn composites_acceptably_as_device_rgb(&self) -> bool {
+        matches!(
+            self,
+            Self::NonDeviceBackdrop { family, components, .. }
+                if family == "ICCBased" && *components == 3
+        )
     }
 }
 
@@ -32048,6 +32059,42 @@ mod tests {
     }
 
     #[test]
+    fn active_transparency_group_rgb_iccbased_color_space_renders() {
+        // A 3-component (RGB) ICCBased group that actively composites is
+        // sRGB-adjacent, so it renders in DeviceRGB rather than dropping the
+        // object. This is the real corpus content-drop fixed for ICCBased
+        // transparency groups.
+        let pdf = pdf_with_active_transparency_group_iccbased_form_xobject(3);
+        let engine =
+            ContentEngine::open_bytes(pdf).expect("open active ICCBased RGB transparency group PDF");
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("active 3-component ICCBased group should render as DeviceRGB");
+        let engine =
+            ContentEngine::open_bytes(pdf_with_active_transparency_group_iccbased_form_xobject(3))
+                .expect("reopen active ICCBased RGB transparency group PDF");
+        engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect("active 3-component ICCBased group should render in HighQuality");
+    }
+
+    #[test]
+    fn active_transparency_group_cmyk_iccbased_color_space_returns_typed_refusal() {
+        // A 4-component (CMYK) ICCBased group is not RGB-adjacent: its blends
+        // would diverge if composited in RGB, so it must still fail closed.
+        let pdf = pdf_with_active_transparency_group_iccbased_form_xobject(4);
+        let engine = ContentEngine::open_bytes(pdf)
+            .expect("open active ICCBased CMYK transparency group PDF");
+        let error = engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect_err("active 4-component ICCBased group must fail closed");
+        assert!(
+            format!("{error}").contains("requires unsupported active group color-space compositing"),
+            "unexpected ICCBased CMYK group refusal: {error}"
+        );
+    }
+
+    #[test]
     fn transparency_group_device_cmyk_alpha_color_space_returns_typed_refusal() {
         let pdf = pdf_with_transparency_group_form_xobject_group_entries("/CS /DeviceCMYK");
         let engine =
@@ -35665,7 +35712,10 @@ mod tests {
     }
 
     #[test]
-    fn alpha_smask_calibrated_group_color_space_with_backdrop_color_returns_typed_refusal() {
+    fn alpha_smask_calibrated_group_color_space_with_backdrop_color_renders() {
+        // As above: a calibrated (CalRGB) group /CS on an alpha mask is only the
+        // blending space and its /BC is Luminosity-only, so the mask composites
+        // rather than fails closed.
         let content = "q\n/GS1 gs\n0.2 0.6 0.9 rg\n10 10 120 100 re\nf\nQ\n";
         let mask_content = "1 g\n40 30 60 60 re\nf\n";
         let pdf = pdf_with_alpha_smask_group_policy(
@@ -35674,15 +35724,10 @@ mod tests {
             Some("0 0 0"),
             "/CS [/CalRGB << /WhitePoint [1 1 1] /Gamma [1 1 1] >>]",
         );
-        let engine = ContentEngine::open_bytes(pdf).expect("open unsupported SMask /G BC PDF");
-        let error = engine
+        let engine = ContentEngine::open_bytes(pdf).expect("open calibrated SMask /BC PDF");
+        engine
             .render_page_with_mode(1, 72, RenderMode::HighQuality)
-            .expect_err("calibrated SMask group /CS with /BC must still fail typed");
-        let message = format!("{error}");
-        assert!(
-            message.contains("SMask /G group /CS has unsupported color space /CalRGB"),
-            "unexpected SMask group /CS refusal: {message}"
-        );
+            .expect("alpha SMask group with calibrated /CS and /BC should render");
     }
 
     #[test]
@@ -35799,19 +35844,17 @@ mod tests {
     }
 
     #[test]
-    fn alpha_smask_iccbased_group_color_space_with_backdrop_color_returns_typed_refusal() {
+    fn alpha_smask_iccbased_group_color_space_with_backdrop_color_renders() {
+        // An alpha mask ignores the group /CS when forming its coverage, and /BC
+        // is a Luminosity-only entry, so an ICCBased group carrying a /BC must
+        // composite (like its device-space peers) rather than drop the object.
         let content = "q\n/GS1 gs\n0.2 0.6 0.9 rg\n10 10 120 100 re\nf\nQ\n";
         let mask_content = "1 g\n40 30 60 60 re\nf\n";
         let pdf = pdf_with_alpha_smask_iccbased_group_policy(content, mask_content, Some("0 0 0"));
-        let engine = ContentEngine::open_bytes(pdf).expect("open unsupported ICCBased SMask PDF");
-        let error = engine
+        let engine = ContentEngine::open_bytes(pdf).expect("open ICCBased SMask /BC PDF");
+        engine
             .render_page_with_mode(1, 72, RenderMode::HighQuality)
-            .expect_err("ICCBased SMask group /CS with /BC must still fail typed");
-        let message = format!("{error}");
-        assert!(
-            message.contains("SMask /G group /CS has unsupported color space /ICCBased"),
-            "unexpected SMask group /CS refusal: {message}"
-        );
+            .expect("alpha SMask group with ICCBased /CS and /BC should render");
     }
 
     #[test]
@@ -40975,6 +41018,32 @@ mod tests {
             )
             .into_bytes(),
             b"<< /N 3 /Length 0 >>\nstream\nendstream".to_vec(),
+        ];
+        build_test_pdf_from_objects(&objects)
+    }
+
+    fn pdf_with_active_transparency_group_iccbased_form_xobject(n: u8) -> Vec<u8> {
+        // An actively compositing group (constant alpha 0.5) whose group color
+        // space is an N-component ICCBased profile.
+        let page_content = "q\n1 0 0 1 25 25 cm\n/Fm0 Do\nQ\n";
+        let form_content = "q\n/GsHalf gs\n1 0 0 rg\n0 0 50 50 re f\nQ\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /XObject << /Fm0 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                page_content.len(),
+                page_content
+            )
+            .into_bytes(),
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 50 50] /Group << /Type /Group /S /Transparency /CS [/ICCBased 6 0 R] >> /Resources << /ExtGState << /GsHalf << /ca 0.5 /CA 0.5 >> >> >> /Length {} >>\nstream\n{}\nendstream",
+                form_content.len(),
+                form_content
+            )
+            .into_bytes(),
+            format!("<< /N {n} /Length 0 >>\nstream\nendstream").into_bytes(),
         ];
         build_test_pdf_from_objects(&objects)
     }

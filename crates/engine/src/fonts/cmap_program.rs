@@ -5,6 +5,61 @@ use crate::content::tokenizer::{ContentToken as Token, ContentTokenizer};
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) type Result<T> = std::result::Result<T, String>;
 
+/// Build the code space for a freshly parsed (non-inherited) CMap.
+///
+/// A well-formed CMap declares non-overlapping code-space rectangles, and
+/// [`CodeSpace::new`] compiles those into a deterministic byte-length DFA.
+/// Some producers instead emit a self-contradictory declaration where a byte
+/// both completes a short code and begins a longer one — most commonly a
+/// spurious 1-byte `<00> <ff>` range left beside the real 2-byte `<0000>
+/// <ffff>` range. That declaration cannot drive deterministic decoding, and
+/// the two major reference readers resolve the overlap differently, so trusting
+/// it would corrupt text either way. The CMap's own mapping entries, however,
+/// carry an unambiguous byte length per code, so when (and only when) the
+/// declaration is ambiguous, rebuild the code space from the mapped codes: a
+/// font whose codes are all 2-byte decodes as 2-byte, one whose codes are all
+/// 1-byte decodes as 1-byte. This recovers the text both render and editing
+/// would otherwise drop, without weakening the DFA for well-formed CMaps (whose
+/// declaration never trips the ambiguity in the first place). A font whose
+/// mapped codes genuinely overlap by length remains undecodable and keeps the
+/// original typed error.
+fn codespace_from_declaration(
+    spaces: Vec<CodeRange>,
+    cids: &BTreeMap<Code, u16>,
+    notdef: &BTreeMap<Code, u16>,
+    unicode: &BTreeMap<Code, String>,
+) -> Result<CodeSpace> {
+    match CodeSpace::new(spaces) {
+        Ok(space) => Ok(space),
+        Err(err) => {
+            if !err.contains("ambiguous prefix-overlapping") {
+                return Err(err);
+            }
+            let codes = cids
+                .keys()
+                .chain(notdef.keys())
+                .chain(unicode.keys())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            if codes.is_empty() {
+                return Err(err);
+            }
+            let lengths = codes.iter().map(|code| code.len()).collect::<BTreeSet<_>>();
+            if let (1, Some(len)) = (lengths.len(), lengths.iter().next().copied()) {
+                return CodeSpace::fixed(len);
+            }
+            let singletons = codes
+                .iter()
+                .map(|code| CodeRange::new(*code, *code))
+                .collect::<Result<Vec<_>>>()?;
+            // Mixed-length mapped codes may still collide (a 1-byte code value
+            // equal to a 2-byte code's lead byte): that font is genuinely
+            // undecodable byte-by-byte, so surface the original ambiguity.
+            CodeSpace::new(singletons).map_err(|_| err)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
     Cid,
@@ -37,7 +92,9 @@ impl Program {
             .unwrap_or(0)
     }
     /// Legacy repair is limited to omitted record counts/code spaces, not
-    /// malformed tokens, truncated ranges or ambiguous mappings.
+    /// malformed tokens or truncated ranges. A self-contradictory code-space
+    /// *declaration* is recovered separately from the CMap's own mapping
+    /// lengths — see [`codespace_from_declaration`].
     pub fn parse(
         bytes: &[u8],
         kind: Kind,
@@ -363,7 +420,7 @@ impl Program {
         let mut result = match inherited {
             Some(base) => base,
             None => Self {
-                space: CodeSpace::new(spaces)?.into(),
+                space: codespace_from_declaration(spaces, &cids, &notdef, &unicode)?.into(),
                 cids: BTreeMap::new(),
                 notdef: BTreeMap::new(),
                 unicode: BTreeMap::new(),
@@ -391,6 +448,12 @@ impl Program {
             // Those mappings are unambiguous evidence of their encoded length.
             // Extend the bounded DFA with exact singleton ranges rather than
             // rejecting the entire font or guessing a variable-width prefix.
+            // Extending can itself make the space ambiguous — a simple font's
+            // ToUnicode commonly declares a 2-byte <0000> <ffff> rectangle while
+            // every mapped source code is 1-byte, so the 1-byte singletons
+            // overlap the 2-byte range by length. `codespace_from_declaration`
+            // then rebuilds the space from the (single-length) mapped codes
+            // instead of failing, which is what recovers text here.
             let mut repaired_ranges = result.space.ranges().to_vec();
             repaired_ranges.extend(
                 outside_codes
@@ -399,7 +462,8 @@ impl Program {
                     .map(|code| CodeRange::new(code, code))
                     .collect::<Result<Vec<_>>>()?,
             );
-            result.space = CodeSpace::new(repaired_ranges)?.into();
+            result.space =
+                codespace_from_declaration(repaired_ranges, &cids, &notdef, &unicode)?.into();
         }
         for (index, code) in cids
             .keys()
@@ -593,5 +657,68 @@ mod tests {
         assert_eq!(get(0x00E9).as_deref(), Some("é"));
         assert_eq!(get(0xD800), None);
         assert_eq!(get(0xFFFD).as_deref(), Some("\u{FFFD}"));
+    }
+
+    #[test]
+    fn ambiguous_codespace_declaration_recovers_from_two_byte_mappings() {
+        // A spurious 1-byte <00> <ff> range beside the real 2-byte <0000>
+        // <ffff> range makes the declaration self-contradictory (every byte
+        // both completes a 1-byte code and begins a 2-byte code). The cidchar
+        // entry is unambiguously 2-byte, so the code space rebuilds as fixed
+        // 2-byte instead of dropping the font — which previously blocked both
+        // rendering and editing of this text.
+        let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+            2 begincodespacerange <00> <ff> <0000> <ffff> endcodespacerange\n\
+            1 begincidchar <0041> 5 endcidchar\n\
+            endcmap CMapName currentdict /CMap defineresource pop end end";
+        let program = Program::parse(cmap, Kind::Cid, None, false)
+            .expect("ambiguous declaration recovers from 2-byte mappings");
+        assert_eq!(program.space.fixed_length(), Some(2));
+        assert_eq!(program.cid(Code::new(0x0041, 2).unwrap()), 5);
+        let mut at = 0;
+        assert_eq!(
+            program.space.next(&[0x00, 0x41], &mut at).unwrap(),
+            Code::new(0x0041, 2).unwrap()
+        );
+        assert_eq!(at, 2);
+    }
+
+    #[test]
+    fn two_byte_tounicode_codespace_with_one_byte_bfchars_recovers_as_single_byte() {
+        // A simple font's ToUnicode commonly declares a 2-byte <0000> <ffff>
+        // rectangle although every mapped source code is 1-byte. Extending the
+        // 2-byte range with 1-byte singletons makes it ambiguous; the space must
+        // instead rebuild as fixed 1-byte so the text decodes (this is the real
+        // corpus failure that blocked editing these documents).
+        let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+            1 begincodespacerange <0000> <FFFF> endcodespacerange\n\
+            2 beginbfchar <1F> <00660066> <2E> <002E> endbfchar\n\
+            endcmap CMapName currentdict /CMap defineresource pop end end";
+        let program = Program::parse(cmap, Kind::Unicode, None, true)
+            .expect("2-byte ToUnicode codespace with 1-byte bfchars recovers");
+        assert_eq!(program.space.fixed_length(), Some(1));
+        assert_eq!(
+            program.unicode.get(&Code::new(0x1F, 1).unwrap()).map(String::as_str),
+            Some("ff")
+        );
+        assert_eq!(
+            program.unicode.get(&Code::new(0x2E, 1).unwrap()).map(String::as_str),
+            Some(".")
+        );
+    }
+
+    #[test]
+    fn ambiguous_codespace_without_mappings_stays_rejected() {
+        // With no mapping entries to derive a length from, the contradictory
+        // declaration is genuinely undecodable and must still fail typed.
+        let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+            2 begincodespacerange <00> <ff> <0000> <ffff> endcodespacerange\n\
+            endcmap CMapName currentdict /CMap defineresource pop end end";
+        let err = Program::parse(cmap, Kind::Cid, None, false)
+            .expect_err("contradictory code space with no mappings must fail");
+        assert!(
+            err.contains("ambiguous prefix-overlapping"),
+            "unexpected error: {err}"
+        );
     }
 }
