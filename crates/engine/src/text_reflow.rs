@@ -1024,8 +1024,20 @@ fn resolve_source_metrics(
         // it (up to three more lines); the layout constraints still refuse a
         // growth that would run into other content.
         if !in_place && resolved.region.is_none() && resolved.allowed_expansion_region.is_none() {
+            // The downward growth room (three extra lines) is a speculative
+            // default the engine chooses, not a caller constraint. For a source
+            // line near the page's bottom edge it would otherwise fall below the
+            // page box and be refused as infeasible even when the replacement
+            // needs no extra lines, so clamp the growth to the page bottom. A
+            // replacement that genuinely does not fit is still caught by the
+            // overflow check. The other edges equal the source region's, so
+            // containment holds exactly as before.
+            let page_bottom = page_bounds(input, request.page)
+                .map(|page| page[1])
+                .unwrap_or(0.0);
+            let exp_bottom = (bottom - 3.0 * line_height).max(page_bottom);
             resolved.allowed_expansion_region =
-                Some([metrics.left, bottom - 3.0 * line_height, metrics.right, top]);
+                Some([metrics.left, exp_bottom, metrics.right, top]);
         }
         resolved.region = (!in_place).then(|| match resolved.region {
             None => [metrics.left, bottom, metrics.right, top],
@@ -9281,6 +9293,26 @@ mod tests {
         );
         assert!(preview.constraints.infeasible);
         assert!(preview.constraints.solver.starts_with("cassowary-0.3.0"));
+    }
+
+    #[test]
+    fn bottom_edge_source_line_does_not_falsely_refuse_from_auto_growth_room() {
+        // A source line near the page's bottom edge: with no caller region the
+        // engine auto-derives a speculative growth region three lines tall. That
+        // growth falls below the page box here, which previously tripped the
+        // "allowed expansion must contain the source region and remain inside the
+        // page box" infeasibility even though the same-width replacement needs no
+        // extra lines. The auto-derived growth is now clamped to the page box, so
+        // the edit resolves normally.
+        let input = fixture(b"BT /F1 12 Tf 10 8 Td (HELLO) Tj ET\n");
+        let mut req = request("HELLO", "WORLD");
+        req.region = None;
+        let preview = preview_reflow(&input, &req)
+            .expect("bottom-edge line must not refuse from the engine's own growth room");
+        assert!(
+            !preview.constraints.infeasible,
+            "clamped auto-growth must stay feasible for a bottom-edge line"
+        );
     }
 
     #[test]
