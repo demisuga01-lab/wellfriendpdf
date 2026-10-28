@@ -80,6 +80,7 @@ use crate::render::transform::{Transform2D, Viewport};
 use crate::render::vector_fallback::{
     form_program_is_opaque_normal_group_subset, transparency_group_color_space_is_vector_inert,
 };
+use crate::render::RoundByte;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
@@ -628,7 +629,7 @@ pub struct RenderDocumentCache {
     /// recorded for the bound revision. This prevents repeated whole-resource
     /// graph walks on display-list and raster cache hits.
     page_dependency_complete: HashSet<usize>,
-    source_identities: HashMap<(u32, u16), ObjectIdentityId>,
+    source_identities: crate::fast_hash::ObjectMap<ObjectIdentityId>,
     source_cache_markers: HashMap<ObjectIdentityId, Vec<String>>,
     font_substitution_log: FontSubstitutionLog,
 }
@@ -716,7 +717,7 @@ impl RenderDocumentCache {
             document_revision: None,
             dependency_graph: None,
             page_dependency_complete: HashSet::new(),
-            source_identities: HashMap::new(),
+            source_identities: crate::fast_hash::ObjectMap::default(),
             source_cache_markers: HashMap::new(),
             font_substitution_log: FontSubstitutionLog::new(),
         }
@@ -6154,7 +6155,10 @@ impl AnnotationReplayPolicy {
     }
 }
 
-const RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES: usize = 512 * 1024 * 1024;
+/// Decoded images kept for reuse across pages (logos, backgrounds). Scanned
+/// books give every page a unique image, so a large budget only holds memory
+/// per render thread without ever hitting.
+const RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const TRANSPARENT_PAGE_GROUP_CACHE_ENTRIES: usize = 512;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -7525,6 +7529,11 @@ impl FontReplacementSelection {
                 "bundled_fallback",
                 false,
             ),
+            FontProviderSource::InstalledSystemFont => (
+                FontSubstitutionReason::DeterministicSystemMapping,
+                "installed_system_font",
+                false,
+            ),
         };
         Self {
             reason,
@@ -7554,6 +7563,15 @@ fn rendering_intent_graphics_state_name(intent: RenderingIntent) -> &'static str
         RenderingIntent::Perceptual => "Perceptual",
         RenderingIntent::Saturation => "Saturation",
     }
+}
+
+/// Objects skipped by compatibility rendering in this process, for reports.
+static SKIPPED_RENDER_OBJECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Number of objects compatibility rendering has skipped in this process
+/// because they could not be drawn (the page was still produced).
+pub fn skipped_render_object_count() -> u64 {
+    SKIPPED_RENDER_OBJECTS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn exactness_policy_for_render_mode(render_mode: RenderMode) -> ExactnessPolicy {
@@ -7989,13 +8007,39 @@ impl<'a> RenderState<'a> {
         self.cache_budget(default_budget)
     }
 
+    /// A structural safety guard tripped (nesting depth, a cycle, runaway
+    /// recursion). Unlike an object that merely failed to draw, this means
+    /// the page program is hostile or broken, so the page fails closed under
+    /// every exactness policy instead of returning a partial render.
+    fn record_guard_render_error(&mut self, reason: impl Into<String>) {
+        if self.fatal_render_error.is_none() {
+            self.fatal_render_error = Some(reason.into());
+        }
+    }
+
     fn record_fatal_render_error(&mut self, reason: impl Into<String>) {
+        // Compatibility rendering behaves like Poppler and PDFium: the object
+        // that could not be drawn is skipped (each call site returns before
+        // painting it) and the rest of the page keeps rendering. Only an
+        // explicit HighQualityExact contract fails the page closed.
+        if self.exactness_policy == ExactnessPolicy::Compatibility {
+            let reason = reason.into();
+            SKIPPED_RENDER_OBJECTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if std::env::var_os("WF_DEBUG_SKIP").is_some() {
+                eprintln!("render: skipped object: {reason}");
+            }
+            log::warn!("render: skipped object: {reason}");
+            return;
+        }
         if self.fatal_render_error.is_none() {
             self.fatal_render_error = Some(reason.into());
         }
     }
 
     fn current_fill_ext_g_state_paint_refusal(&self, operation: &str) -> Option<String> {
+        if self.exactness_policy == ExactnessPolicy::Compatibility {
+            return None;
+        }
         if self.gs.alpha_source && paint_alpha_visible(self.gs.fill_alpha) {
             Some(format!(
                 "{operation} requires ExtGState /AIS true alpha-source semantics, which are outside the exact active-rendering policy"
@@ -8006,6 +8050,9 @@ impl<'a> RenderState<'a> {
     }
 
     fn current_stroke_ext_g_state_paint_refusal(&self, operation: &str) -> Option<String> {
+        if self.exactness_policy == ExactnessPolicy::Compatibility {
+            return None;
+        }
         if self.gs.alpha_source && paint_alpha_visible(self.gs.stroke_alpha) {
             Some(format!(
                 "{operation} requires ExtGState /AIS true alpha-source semantics, which are outside the exact active-rendering policy"
@@ -8016,6 +8063,9 @@ impl<'a> RenderState<'a> {
     }
 
     fn current_text_ext_g_state_paint_refusal(&self) -> Option<String> {
+        if self.exactness_policy == ExactnessPolicy::Compatibility {
+            return None;
+        }
         let mode = self.gs.text.rendering_mode;
         let fill_paints = matches!(mode, 0 | 2 | 4 | 6) && paint_alpha_visible(self.gs.fill_alpha);
         let stroke_paints =
@@ -9362,13 +9412,30 @@ impl<'a> RenderState<'a> {
                 } else {
                     true
                 };
-                combine_explicit_image_mask(
-                    raw,
-                    mask_raw.as_ref(),
-                    mask_ref.is_mask,
-                    mask_paints_ones,
-                )
-                .map(Some)
+                let mask_raw: &crate::images::decoder::RawImage = mask_raw.as_ref();
+                // The image was decoded reduced for its drawn size: average
+                // the finer mask down to it as coverage rather than enlarging
+                // the image back to the mask's resolution.
+                if (raw.width, raw.height) != (image_ref.width, image_ref.height)
+                    && mask_raw.channels == 1
+                    && mask_raw.bits_per_sample == 8
+                    && mask_raw.is_valid()
+                    && mask_raw.width >= raw.width
+                    && mask_raw.height >= raw.height
+                    && (mask_raw.width, mask_raw.height) != (raw.width, raw.height)
+                {
+                    let mut coverage = crate::images::decoder::box_downscale_exact(
+                        mask_raw, raw.width, raw.height,
+                    );
+                    if mask_ref.is_mask && !mask_paints_ones {
+                        for sample in &mut coverage.pixels {
+                            *sample = 255 - *sample;
+                        }
+                    }
+                    return combine_explicit_image_mask(raw, &coverage, false, true).map(Some);
+                }
+                combine_explicit_image_mask(raw, mask_raw, mask_ref.is_mask, mask_paints_ones)
+                    .map(Some)
             }
             other => Err(WellfriendError::MalformedPdf(format!(
                 "unsupported image Mask value {}",
@@ -9628,7 +9695,7 @@ impl<'a> RenderState<'a> {
             .saturating_add(1);
 
         let reader = self.engine.document().reader();
-        let (form_dict, raw_bytes) = match reader.get_object(obj_num, gen_num) {
+        let (mut form_dict, raw_bytes) = match reader.get_object(obj_num, gen_num) {
             Ok(PdfObject::Stream { dict, raw }) => (dict, raw),
             Ok(_) => {
                 self.record_fatal_render_error(format!(
@@ -9645,6 +9712,11 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
+        // /Group is often an indirect object (pdfTeX, Illustrator). Every group
+        // check reads it as a direct dictionary, so resolve it here; otherwise
+        // a transparency group is drawn as a plain Form and the group alpha set
+        // before `Do` (often 0 to hide it) is lost.
+        resolve_indirect_entry(&mut form_dict, "Group", reader);
 
         if form_dict.get_name("Subtype") != Some("Form") {
             self.record_fatal_render_error(format!(
@@ -10113,11 +10185,13 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
+        let mut form_dict = form_dict.clone();
+        resolve_indirect_entry(&mut form_dict, "Group", reader);
         let program = Arc::new(FormXObjectProgram {
             form_matrix,
             bbox: Some(bbox),
-            is_transparency_group: is_transparency_group(form_dict),
-            dict: form_dict.clone(),
+            is_transparency_group: is_transparency_group(&form_dict),
+            dict: form_dict,
             ops: Arc::new(ops),
             resources,
             retained_plan,
@@ -10253,6 +10327,7 @@ impl<'a> RenderState<'a> {
                     return;
                 }
                 if let Some(reason) = retained_fill_ext_g_state_paint_refusal_for_alpha(
+                    self.exactness_policy,
                     state,
                     "retained fill path",
                     state.fill_color[3],
@@ -10307,6 +10382,7 @@ impl<'a> RenderState<'a> {
                     return;
                 }
                 if let Some(reason) = retained_stroke_ext_g_state_paint_refusal_for_alpha(
+                    self.exactness_policy,
                     state,
                     "retained stroke path",
                     state.stroke_color[3],
@@ -12050,7 +12126,20 @@ impl<'a> RenderState<'a> {
         }
     }
 
-    fn apply_smask(&mut self, smask_dict: PdfDictionary, cache_seed: Option<String>) {
+    fn apply_smask(&mut self, mut smask_dict: PdfDictionary, cache_seed: Option<String>) {
+        // /BC may be stored as an indirect array, or hold indirect numbers.
+        // Resolve it once here, as Poppler's Dict::lookup and PDFium's
+        // GetArrayFor do, so every later reader sees a direct numeric array.
+        if let Some(bc) = smask_dict.get("BC").cloned() {
+            let reader = self.engine.document().reader();
+            if let Ok(PdfObject::Array(items)) = reader.resolve(bc) {
+                let items = items
+                    .into_iter()
+                    .map(|item| reader.resolve(item.clone()).unwrap_or(item))
+                    .collect();
+                smask_dict.insert("BC", PdfObject::Array(items));
+            }
+        }
         // Subtype: /Luminosity (default) converts the rendered mask group's RGB
         // to a luminance value; /Alpha uses the group's own alpha channel.
         let subtype = match smask_dict.get("S") {
@@ -13226,6 +13315,59 @@ impl<'a> RenderState<'a> {
         resolved_color_space: Option<&ResolvedInlineImageColorSpace>,
     ) {
         let label = format!("image XObject /{name}");
+        // /Width, /Height, /BitsPerComponent, /ColorSpace, /Decode and /Filter may
+        // each legally be indirect references (e.g. ABBYY PDF Transformer+ writes
+        // /Height as `143 0 R`). The cached resource dict can still hold them
+        // unresolved; resolve them into an owned dict before parsing so a single
+        // indirect scalar does not blank the whole page. The reader borrow is
+        // confined to this block so later &mut self calls stay valid.
+        let owned_resolved_image_dict;
+        let dict = {
+            let needs_resolve = [
+                "Width",
+                "W",
+                "Height",
+                "H",
+                "BitsPerComponent",
+                "BPC",
+                "ColorSpace",
+                "CS",
+                "Decode",
+                "D",
+                "Filter",
+                "F",
+            ]
+            .iter()
+            .any(|k| matches!(dict.get(k), Some(PdfObject::Reference { .. })));
+            if needs_resolve {
+                let reader = self.engine.document().reader();
+                let mut resolved = dict.clone();
+                for key in [
+                    "Width",
+                    "W",
+                    "Height",
+                    "H",
+                    "BitsPerComponent",
+                    "BPC",
+                    "ColorSpace",
+                    "CS",
+                    "Decode",
+                    "D",
+                    "Filter",
+                    "F",
+                ] {
+                    if let Some(value @ PdfObject::Reference { .. }) = resolved.get(key).cloned() {
+                        if let Ok(resolved_value) = reader.resolve(value) {
+                            resolved.insert(key, resolved_value);
+                        }
+                    }
+                }
+                owned_resolved_image_dict = resolved;
+                &owned_resolved_image_dict
+            } else {
+                dict
+            }
+        };
         let image_is_mask = match image_xobject_optional_bool(dict, "ImageMask", "IM", &label) {
             Ok(is_mask) => is_mask,
             Err(reason) => {
@@ -13379,7 +13521,9 @@ impl<'a> RenderState<'a> {
                 requires_full_image_postprocessing: (dict.contains_key("SMask")
                     && !soft_mask_allows_shared_source_window
                     && !soft_mask_allows_shared_reduction)
-                    || (dict.contains_key("Mask") && !explicit_mask_allows_shared_raw_window),
+                    || (dict.contains_key("Mask")
+                        && !explicit_mask_allows_shared_raw_window
+                        && !explicit_image_mask_allows_reduction(&image_ref, dict)),
                 decode_fingerprint: pdf_dict_entry_fingerprint(dict, "Decode"),
                 decode_params_fingerprint: pdf_decode_params_fingerprint(dict),
                 image_mask_fingerprint: image_mask_fingerprint(dict, image_ref.is_mask),
@@ -13700,14 +13844,14 @@ impl<'a> RenderState<'a> {
     ) {
         // Depth guard: prevent runaway recursion from malformed or cyclic PDFs.
         if self.form_depth >= 8 {
-            self.record_fatal_render_error(format!(
+            self.record_guard_render_error(format!(
                 "Form XObject nesting depth limit (8) exceeded at /{name} (obj {obj_num})"
             ));
             return;
         }
         let form_key = (obj_num, gen_num);
         if self.form_object_stack.contains(&form_key) {
-            self.record_fatal_render_error(format!(
+            self.record_guard_render_error(format!(
                 "Form XObject cycle detected at /{name} (obj {obj_num} {gen_num})"
             ));
             return;
@@ -13839,6 +13983,17 @@ impl<'a> RenderState<'a> {
                 TransparencyGroupColorSpacePolicy::DefaultDeviceRgb,
             ),
         };
+        // Seeding a non-isolated group with its backdrop and removing it again
+        // needs the group's own alpha, which one RGBA buffer cannot track; low
+        // constant alpha inside such groups then came out opaque. When the
+        // group only blends Normally the two compositing models are identical,
+        // so render it from a transparent backdrop, as PDFium does.
+        let isolated = isolated
+            || (!knockout
+                && group_resources_blend_only_normal(
+                    &group_resources,
+                    self.engine.document().reader(),
+                ));
         if group_color_space.requires_inert_active_form_subset()
             && !form_program_is_opaque_normal_group_subset(&program.ops, &group_resources, &self.gs)
         {
@@ -14364,7 +14519,7 @@ impl<'a> RenderState<'a> {
         rect: [f64; 4],
     ) {
         if self.form_depth >= 8 {
-            self.record_fatal_render_error(format!(
+            self.record_guard_render_error(format!(
                 "annotation appearance nesting depth limit (8) exceeded at '{name}'"
             ));
             return;
@@ -14728,7 +14883,7 @@ impl<'a> RenderState<'a> {
         use_stroke_color: bool,
     ) {
         if self.form_depth >= 8 {
-            self.record_fatal_render_error(
+            self.record_guard_render_error(
                 "tiling pattern nesting depth limit reached before exact replay",
             );
             return;
@@ -14804,7 +14959,7 @@ impl<'a> RenderState<'a> {
         let pattern_key =
             tiling_pattern_stack_key(pattern_obj, raw_bytes.len(), bbox, x_step, y_step);
         if self.pattern_stack.iter().any(|key| key == &pattern_key) {
-            self.record_fatal_render_error(format!(
+            self.record_guard_render_error(format!(
                 "recursive tiling pattern resource /{pattern_key} cannot be rendered exactly"
             ));
             return;
@@ -15373,6 +15528,19 @@ impl<'a> RenderState<'a> {
             .map(|dict| detect_font_subtype(dict.as_ref()))
             .unwrap_or(FontSubtype::Unknown);
         let is_type3 = font_subtype == FontSubtype::Type3;
+        // Type 3 /Widths and d0/d1 advances are in glyph space, not thousandths
+        // of an em; the FontMatrix maps them to text space (PDF 32000 9.6.5).
+        // Express them in the 1000-unit convention `advance_text` expects.
+        let type3_width_scale = if is_type3 {
+            font_dict
+                .as_deref()
+                .and_then(|dict| type3_font_matrix(dict).ok())
+                .map(|matrix| matrix.a * 1000.0)
+                .filter(|scale| scale.is_finite() && *scale != 0.0)
+                .unwrap_or(1.0)
+        } else {
+            1.0
+        };
         let (font_bytes, substitution_event_index, exact_font_refusal) = if is_type3 {
             (None, None, None)
         } else {
@@ -15538,10 +15706,15 @@ impl<'a> RenderState<'a> {
                 &variation,
                 is_type3,
             ) {
-                Ok(advance) => advance,
+                Ok(advance) => advance * type3_width_scale,
                 Err(reason) => {
                     self.record_fatal_render_error(reason);
-                    return;
+                    if self.exactness_policy != ExactnessPolicy::Compatibility {
+                        return;
+                    }
+                    // Like Poppler, a glyph with no usable width advances by
+                    // zero and the rest of the string still draws.
+                    0.0
                 }
             };
             if let Err(reason) = self.advance_decoded_text(advance, glyph) {
@@ -16107,6 +16280,20 @@ impl<'a> RenderState<'a> {
         if device_t.scale_factor() <= 0.0 || device_t.scale_factor() > 256.0 {
             return false;
         }
+        // Compatibility rendering positions glyphs the way Poppler does: four
+        // horizontal sub-pixel positions and whole pixels vertically, so a
+        // letter at one size is rasterized at most four times and then reused
+        // from the mask cache. The strict contract keeps exact positions.
+        let (device_x, device_y) = if self.exactness_policy == ExactnessPolicy::Compatibility {
+            ((device_t.e * 4.0).round() / 4.0, device_t.f.round())
+        } else {
+            (device_t.e, device_t.f)
+        };
+        let device_t = Transform2D {
+            e: device_x,
+            f: device_y,
+            ..device_t
+        };
         let origin_x = device_t.e.floor();
         let origin_y = device_t.f.floor();
         let normalized_t = Transform2D {
@@ -16896,7 +17083,7 @@ impl<'a> RenderState<'a> {
         retained_cache_identity: Option<(String, Option<String>)>,
     ) -> bool {
         if self.form_depth >= 8 {
-            self.record_fatal_render_error("Type 3 charproc nesting depth limit reached");
+            self.record_guard_render_error("Type 3 charproc nesting depth limit reached");
             return false;
         }
 
@@ -17840,7 +18027,10 @@ impl<'a> RenderState<'a> {
         }
         // Bare CFF reports a 1000-unit em (FontMatrix 0.001 convention).
         if crate::render::font_rasterizer::cff_support::is_bare_cff(font_bytes) {
-            return Some(crate::render::font_rasterizer::cff_support::units_per_em() as u16);
+            return Some(
+                crate::render::font_rasterizer::cff_support::units_per_em(font_bytes).round()
+                    as u16,
+            );
         }
         if crate::fonts::type1::Type1Font::is_type1(font_bytes) {
             return Some(crate::fonts::type1::units_per_em() as u16);
@@ -18064,6 +18254,18 @@ impl<'a> RenderState<'a> {
             let bytes = font_match.bytes.to_vec();
             if !bytes.is_empty() {
                 return Some((bytes, selection));
+            }
+        }
+        // The installed face of the requested name (the real Arial, Calibri,
+        // MS Mincho...) beats a metric-compatible bundled stand-in. Host
+        // fonts are never part of the exact render contract.
+        if self.exactness_policy != ExactnessPolicy::HighQualityExact {
+            if let Some(font_match) = crate::fonts::InstalledFontProvider.match_font(&request) {
+                let selection = FontReplacementSelection::from_font_match(&font_match);
+                let bytes = font_match.bytes.to_vec();
+                if !bytes.is_empty() {
+                    return Some((bytes, selection));
+                }
             }
         }
         let provider = BundledFontProvider;
@@ -20214,6 +20416,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
         let fill_color =
             self.effective_vector_fill_color(draw_state.fill_color, draw_state.fill_color_explicit);
         if let Some(reason) = retained_fill_ext_g_state_paint_refusal_for_alpha(
+            self.state.exactness_policy,
             draw_state,
             "packed fill path",
             fill_color[3],
@@ -20262,6 +20465,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             draw_state.stroke_color_explicit,
         );
         if let Some(reason) = retained_stroke_ext_g_state_paint_refusal_for_alpha(
+            self.state.exactness_policy,
             draw_state,
             "packed stroke path",
             stroke_color[3],
@@ -20832,12 +21036,17 @@ fn image_xobject_required_positive_u32(
     short_key: &str,
     label: &str,
 ) -> std::result::Result<u32, String> {
+    // Tolerate real-valued /Width and /Height (e.g. ABBYY writes `884.0`) by
+    // rounding, as Poppler/PDFium/MuPDF do, rather than dropping the image.
     let value = dict
-        .get_integer(key)
-        .or_else(|| dict.get_integer(short_key));
+        .get(key)
+        .or_else(|| dict.get(short_key))
+        .and_then(PdfObject::as_number);
     match value {
-        Some(number) if number > 0 => u32::try_from(number)
-            .map_err(|_| format!("{label} /{key} exceeds renderer dimension limit")),
+        Some(number) if number.is_finite() && number.round() >= 1.0 => {
+            u32::try_from(number.round() as i64)
+                .map_err(|_| format!("{label} /{key} exceeds renderer dimension limit"))
+        }
         Some(_) => Err(format!("{label} /{key} must be a positive integer")),
         None if dict.contains_key(key) || dict.contains_key(short_key) => {
             Err(format!("{label} /{key} is not an integer"))
@@ -21109,7 +21318,21 @@ fn native_reduction_target_from_plan(decode_plan: &ImageDecodePlan) -> Option<(u
     if target_width == 0 || target_height == 0 {
         None
     } else {
-        Some((target_width, target_height))
+        // JPEG: ask the codec for at least twice the drawn size. A reduced
+        // decode only slightly larger than the target (or, as jpeg-decoder
+        // may pick, smaller in one axis) leaves a final resample of ~1x, which
+        // aliases fine scanned print; with >= 2x the box filter averages
+        // properly. Measured on newspaper scans: SSIM vs PDFium 0.73 -> 0.98
+        // (and 1.25x still lost 0.07-0.10 on 1915 newsprint).
+        // JPEG 2000: a resolution level is the wavelet low-pass of the full
+        // image and is never smaller than requested, so the drawn size is
+        // enough. Asking for more forfeits the reduction on typical 300-400
+        // dpi scans viewed at screen resolution (and SSIM rose on them).
+        let scale = |length: u32| match decode_plan.capability_report.codec {
+            ImageDecodeCodec::Jpx => length,
+            _ => length.saturating_mul(2),
+        };
+        Some((scale(target_width), scale(target_height)))
     }
 }
 
@@ -21581,6 +21804,16 @@ fn ext_g_state_alpha_is_fully_transparent(value: &PdfObject) -> bool {
         .is_some_and(|alpha| alpha.is_finite() && (0.0..=f64::EPSILON).contains(&alpha))
 }
 
+/// Replace an indirect dictionary entry with the object it refers to, so code
+/// that matches on direct values sees it. Unresolvable references are kept.
+fn resolve_indirect_entry(dict: &mut PdfDictionary, key: &str, reader: &PdfReader) {
+    if let Some(value @ PdfObject::Reference { .. }) = dict.get(key).cloned() {
+        if let Ok(resolved) = reader.resolve(value) {
+            dict.insert(key, resolved);
+        }
+    }
+}
+
 fn is_transparency_group(form_dict: &PdfDictionary) -> bool {
     matches!(
         form_dict.get("Group"),
@@ -21992,7 +22225,7 @@ fn image_smask_allows_shared_reduction(
     let Ok(smask_ref) = image_smask_reference(image_ref, *number, *generation, &smask_dict) else {
         return false;
     };
-    smask_ref.width == image_ref.width
+    let streamed_gray = smask_ref.width == image_ref.width
         && smask_ref.height == image_ref.height
         && smask_ref.bits_per_component == 8
         && matches!(smask_ref.color_space.as_str(), "DeviceGray" | "G")
@@ -22011,7 +22244,37 @@ fn image_smask_allows_shared_reduction(
                     | "A85"
             )
         })
-        && smask_decode_array_is_default(&smask_dict)
+        && smask_decode_array_is_default(&smask_dict);
+    // A JPEG/JPEG 2000 image is only ever reduced, never windowed, so any
+    // other mask (the JBIG2 text masks of scanned MRC pages, 1-bit, a
+    // /Decode inversion) can be decoded whole by the unreduced path's decoder
+    // and box-averaged to the reduced size. A /Matte unblend needs the exact
+    // pre-blended pixels, so it keeps the full decode.
+    streamed_gray
+        || (image_uses_reduction_codec(image_ref)
+            && smask_ref.width > 0
+            && smask_ref.height > 0
+            && !smask_dict.contains_key("Matte"))
+}
+
+/// The image's last filter is DCT or JPX: decode planning may reduce it to
+/// the drawn size, but never decodes a source window of it.
+fn image_uses_reduction_codec(image_ref: &ImageReference) -> bool {
+    image_ref
+        .filter
+        .last()
+        .is_some_and(|filter| matches!(filter.as_str(), "DCTDecode" | "DCT" | "JPXDecode"))
+}
+
+/// A stencil `/Mask` stream on a JPEG/JPEG 2000 image: the image may be
+/// decoded reduced and the finer mask averaged down to it as coverage.
+fn explicit_image_mask_allows_reduction(
+    image_ref: &ImageReference,
+    image_dict: &PdfDictionary,
+) -> bool {
+    image_uses_reduction_codec(image_ref)
+        && !image_dict.contains_key("SMask")
+        && matches!(image_dict.get("Mask"), Some(PdfObject::Reference { .. }))
 }
 
 fn smask_decode_array_is_default(dict: &PdfDictionary) -> bool {
@@ -22174,11 +22437,23 @@ fn combine_explicit_image_mask(
     mask_is_stencil: bool,
     paint_ones: bool,
 ) -> Result<crate::images::decoder::RawImage> {
+    // An explicit /Mask may be stored at a different resolution from the
+    // image (PDF 32000-1 8.9.6.3); both cover the unit square. Bring the
+    // coarser one up to the finer one so a sharp text mask stays sharp.
     if main.width != mask.width || main.height != mask.height {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "explicit image Mask dimensions {}x{} do not match image {}x{}",
-            mask.width, mask.height, main.width, main.height
-        )));
+        let width = main.width.max(mask.width);
+        let height = main.height.max(mask.height);
+        let main = if (main.width, main.height) == (width, height) {
+            main
+        } else {
+            crate::images::decoder::resample_raw_image_nearest(&main, width, height)?
+        };
+        let mask = if (mask.width, mask.height) == (width, height) {
+            mask.clone()
+        } else {
+            crate::images::decoder::resample_raw_image_nearest(mask, width, height)?
+        };
+        return combine_explicit_image_mask(main, &mask, mask_is_stencil, paint_ones);
     }
     let pixel_count =
         usize::try_from(u64::from(main.width) * u64::from(main.height)).map_err(|_| {
@@ -22973,6 +23248,81 @@ fn transparency_group_dict(form_dict: &PdfDictionary) -> Option<&PdfDictionary> 
             Some(group)
         }
         _ => None,
+    }
+}
+
+/// True when no ExtGState reachable from a group's resources (its own and
+/// those of Form XObjects it draws) selects a blend mode other than
+/// Normal/Compatible. With only Normal blending, a non-isolated group composites
+/// exactly like an isolated one (PDF 32000-1 11.4.8), so it can be rendered from
+/// a transparent backdrop. Unknown or unreadable resources answer `false`.
+fn group_resources_blend_only_normal(resources: &PageResources, reader: &PdfReader) -> bool {
+    resources
+        .ext_g_states
+        .values()
+        .all(ext_g_state_blend_is_normal)
+        && resources.xobject_stream_dicts.values().all(|dict| {
+            dict.get_name("Subtype") != Some("Form")
+                || resources_dict_blend_only_normal(dict.get("Resources"), reader, 1)
+        })
+}
+
+fn resources_dict_blend_only_normal(
+    resources: Option<&PdfObject>,
+    reader: &PdfReader,
+    depth: usize,
+) -> bool {
+    const MAX_DEPTH: usize = 8;
+    let Some(resources) = resources else {
+        return true;
+    };
+    if depth > MAX_DEPTH {
+        return false;
+    }
+    let Ok(resources) = reader.resolve(resources.clone()) else {
+        return false;
+    };
+    let Some(resources) = resources.as_dict() else {
+        return true;
+    };
+    let resolve_dict = |object: &PdfObject| match reader.resolve(object.clone()) {
+        Ok(PdfObject::Dictionary(dict)) => Some(dict),
+        Ok(PdfObject::Stream { dict, .. }) => Some(dict),
+        _ => None,
+    };
+    if let Some(states) = resources.get("ExtGState").and_then(&resolve_dict) {
+        for (_, state) in states.iter() {
+            match resolve_dict(state) {
+                Some(state) if ext_g_state_blend_is_normal(&state) => {}
+                _ => return false,
+            }
+        }
+    }
+    if let Some(xobjects) = resources.get("XObject").and_then(&resolve_dict) {
+        for (_, xobject) in xobjects.iter() {
+            let Some(dict) = resolve_dict(xobject) else {
+                return false;
+            };
+            if dict.get_name("Subtype") == Some("Form")
+                && !resources_dict_blend_only_normal(dict.get("Resources"), reader, depth + 1)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn ext_g_state_blend_is_normal(state: &PdfDictionary) -> bool {
+    let is_normal = |name: &str| matches!(name, "Normal" | "Compatible");
+    match state.get("BM") {
+        None => true,
+        Some(PdfObject::Name(name)) => is_normal(name),
+        Some(PdfObject::Array(names)) => names
+            .first()
+            .and_then(PdfObject::as_name)
+            .is_some_and(is_normal),
+        Some(_) => false,
     }
 }
 
@@ -24161,11 +24511,15 @@ fn paint_byte_alpha_visible(alpha: u8) -> bool {
 }
 
 fn retained_fill_ext_g_state_paint_refusal_for_alpha(
+    policy: ExactnessPolicy,
     state: &DrawState,
     operation: &str,
     alpha: u8,
 ) -> Option<String> {
-    if state.alpha_source && paint_byte_alpha_visible(alpha) {
+    if policy == ExactnessPolicy::HighQualityExact
+        && state.alpha_source
+        && paint_byte_alpha_visible(alpha)
+    {
         Some(format!(
             "{operation} requires ExtGState /AIS true alpha-source semantics, which are outside the exact retained-rendering policy"
         ))
@@ -24175,11 +24529,15 @@ fn retained_fill_ext_g_state_paint_refusal_for_alpha(
 }
 
 fn retained_stroke_ext_g_state_paint_refusal_for_alpha(
+    policy: ExactnessPolicy,
     state: &DrawState,
     operation: &str,
     alpha: u8,
 ) -> Option<String> {
-    if state.alpha_source && paint_byte_alpha_visible(alpha) {
+    if policy == ExactnessPolicy::HighQualityExact
+        && state.alpha_source
+        && paint_byte_alpha_visible(alpha)
+    {
         Some(format!(
             "{operation} requires ExtGState /AIS true alpha-source semantics, which are outside the exact retained-rendering policy"
         ))
@@ -24413,7 +24771,7 @@ fn colr_unpremultiply_to_pixel(rgb_premul: [f32; 3], alpha: f32) -> PixelColor {
     if alpha <= 1e-6 {
         return [0, 0, 0, 0];
     }
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     [
         to_byte((rgb_premul[0] / alpha).clamp(0.0, 1.0)),
         to_byte((rgb_premul[1] / alpha).clamp(0.0, 1.0)),
@@ -27821,6 +28179,15 @@ mod tests {
         RenderState::new(buf, viewport, PageResources::default(), engine, 1)
     }
 
+    /// A blank render state under the strict (HighQualityExact) contract,
+    /// where unsupported or malformed input still fails the page closed.
+    /// Compatibility rendering skips such objects instead.
+    fn blank_exact_render_state(engine: &ContentEngine) -> RenderState<'_> {
+        let mut state = blank_render_state(engine);
+        state.exactness_policy = ExactnessPolicy::HighQualityExact;
+        state
+    }
+
     fn retained_inner_ops_with_unbalanced_save() -> Vec<ContentOperation> {
         vec![
             ContentOperation::new("q", Vec::new()),
@@ -28030,7 +28397,7 @@ mod tests {
     #[test]
     fn renderer_inline_image_missing_color_space_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let params = vec![
             Operand::Name("Width".to_string()),
             Operand::Integer(1),
@@ -28054,7 +28421,7 @@ mod tests {
     #[test]
     fn renderer_inline_image_missing_width_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let params = vec![
             Operand::Name("Height".to_string()),
             Operand::Integer(1),
@@ -28078,7 +28445,7 @@ mod tests {
     #[test]
     fn renderer_inline_image_zero_height_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let params = vec![
             Operand::Name("Width".to_string()),
             Operand::Integer(1),
@@ -28104,7 +28471,7 @@ mod tests {
     #[test]
     fn renderer_inline_image_missing_bits_per_component_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let params = vec![
             Operand::Name("Width".to_string()),
             Operand::Integer(1),
@@ -28128,7 +28495,7 @@ mod tests {
     #[test]
     fn renderer_inline_image_unsupported_bits_per_component_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let params = vec![
             Operand::Name("Width".to_string()),
             Operand::Integer(1),
@@ -28155,7 +28522,7 @@ mod tests {
     #[test]
     fn renderer_inline_image_malformed_filter_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let params = vec![
             Operand::Name("Width".to_string()),
             Operand::Integer(1),
@@ -28188,7 +28555,7 @@ mod tests {
             ("Interpolate", "inline image /Interpolate is not boolean"),
         ] {
             let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-            let mut state = blank_render_state(&engine);
+            let mut state = blank_exact_render_state(&engine);
             let params = vec![
                 Operand::Name("Width".to_string()),
                 Operand::Integer(1),
@@ -28258,7 +28625,7 @@ mod tests {
             ),
         ] {
             let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-            let mut state = blank_render_state(&engine);
+            let mut state = blank_exact_render_state(&engine);
 
             state.paint_inline_image(&params, &[128]);
 
@@ -28296,7 +28663,7 @@ mod tests {
     #[test]
     fn renderer_image_xobject_missing_width_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let mut dict = basic_image_xobject_dict();
         dict.remove("Width");
 
@@ -28321,7 +28688,7 @@ mod tests {
             ),
         ] {
             let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-            let mut state = blank_render_state(&engine);
+            let mut state = blank_exact_render_state(&engine);
             let mut dict = basic_image_xobject_dict();
             dict.insert(key, PdfObject::Name("Bad".to_string()));
 
@@ -28340,7 +28707,7 @@ mod tests {
     #[test]
     fn renderer_image_xobject_missing_bits_per_component_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let mut dict = basic_image_xobject_dict();
         dict.remove("BitsPerComponent");
 
@@ -28358,7 +28725,7 @@ mod tests {
     #[test]
     fn renderer_image_xobject_unsupported_bits_per_component_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let mut dict = basic_image_xobject_dict();
         dict.insert("BitsPerComponent", PdfObject::Integer(20));
 
@@ -28377,7 +28744,7 @@ mod tests {
     #[test]
     fn renderer_image_xobject_malformed_filter_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let mut dict = basic_image_xobject_dict();
         dict.remove("BitsPerComponent");
         dict.insert(
@@ -28402,7 +28769,7 @@ mod tests {
     #[test]
     fn renderer_image_xobject_missing_color_space_returns_typed_refusal() {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let mut dict = basic_image_xobject_dict();
         dict.remove("ColorSpace");
 
@@ -30091,11 +30458,31 @@ mod tests {
         let resources = engine.get_page_resources(1).expect("resources");
         let buf = PixelBuffer::new_filled(viewport.width_px, viewport.height_px, WHITE);
         let mut state = RenderState::new(buf, viewport, resources, &engine, 1);
+        // Refusal tests exercise the strict contract; compatibility rendering
+        // skips the refused object and keeps painting.
+        state.exactness_policy = ExactnessPolicy::HighQualityExact;
         state.dispatch_all(&ops);
         match state.check_fatal_render_error() {
             Err(WellfriendError::UnsupportedFeature(reason)) => reason,
             other => panic!("expected direct unsupported render error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn compatibility_rendering_skips_a_bad_image_and_keeps_painting() {
+        // The strict contract refuses the page (see the typed-refusal tests);
+        // compatibility rendering, like Poppler and PDFium, skips only the
+        // image that cannot be decoded.
+        let pdf = pdf_with_bad_dct_image_xobject();
+        let engine = ContentEngine::open_bytes(pdf).expect("open bad image XObject PDF");
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("compatibility rendering skips the undecodable image");
+        let before = skipped_render_object_count();
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("render again");
+        assert!(skipped_render_object_count() > before);
     }
 
     fn simple_nonembedded_font_pdf(base_font: &str) -> Vec<u8> {
@@ -30564,7 +30951,7 @@ mod tests {
         let engine = ContentEngine::open_bytes(inline_ocmd_malformed_policy_pdf())
             .expect("open malformed OCMD policy PDF");
         let error = engine
-            .render_page(1, 72)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed optional-content policy must not fail open");
         let message = error.to_string();
         assert!(
@@ -30573,7 +30960,7 @@ mod tests {
         );
 
         let replay_error = engine
-            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .render_page_display_list_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("retained replay must not fail open on malformed optional content");
         let replay_message = replay_error.to_string();
         assert!(
@@ -31282,7 +31669,7 @@ mod tests {
                 viewport.width_px,
                 viewport.height_px,
                 WHITE,
-                RenderMode::Compat,
+                RenderMode::HighQuality,
             ),
             viewport,
             resources,
@@ -31318,7 +31705,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed transparency group PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed transparency group flag must not default to false");
             assert!(
                 format!("{error}").contains(expected),
@@ -31351,7 +31738,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed transparency group PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("unsupported transparency group /CS must fail closed");
             assert!(
                 format!("{error}").contains(expected),
@@ -31453,7 +31840,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open alpha DeviceCMYK transparency group PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("alpha DeviceCMYK transparency group must fail closed");
         let message = format!("{error}");
         assert!(
@@ -31492,12 +31879,13 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open unsupported retained Form XObject PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("compat Form XObject must fail closed when retained replay is unsupported");
         let message = format!("{error}");
 
         assert!(
-            message.contains("Form XObject retained replay /Fm1 is unsupported"),
+            (message.contains("Form XObject retained replay /Fm1 is unsupported")
+                || message.contains("refuses unsupported Form XObject retained replay /Fm1")),
             "unexpected Form compatibility refusal: {message}"
         );
         assert!(
@@ -31534,12 +31922,13 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open unsupported retained Form group PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("compat Form group must fail closed when retained replay is unsupported");
         let message = format!("{error}");
 
         assert!(
-            message.contains("Form XObject group retained replay /Fm1 is unsupported"),
+            (message.contains("Form XObject group retained replay /Fm1 is unsupported")
+                || message.contains("refuses unsupported Form XObject group retained replay /Fm1")),
             "unexpected Form group compatibility refusal: {message}"
         );
         assert!(
@@ -31630,14 +32019,15 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open unsupported annotation appearance PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err(
                 "compat annotation appearance must fail closed when retained replay is unsupported",
             );
         let message = format!("{error}");
 
         assert!(
-            message.contains("Form XObject retained replay /Annot1 is unsupported"),
+            (message.contains("Form XObject retained replay /Annot1 is unsupported")
+                || message.contains("refuses unsupported Form XObject retained replay /Annot1")),
             "unexpected annotation compatibility refusal: {message}"
         );
         assert!(
@@ -34960,7 +35350,7 @@ mod tests {
         let pdf = pdf_with_alpha_smask(content, mask_content, "/Invalid", None);
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed SMask /BC PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed SMask /BC must not silently use a default backdrop");
         let message = format!("{error}");
         assert!(
@@ -35073,7 +35463,7 @@ mod tests {
         );
         let engine = ContentEngine::open_bytes(pdf).expect("open unsupported SMask /G BC PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("calibrated SMask group /CS with /BC must still fail typed");
         let message = format!("{error}");
         assert!(
@@ -35202,7 +35592,7 @@ mod tests {
         let pdf = pdf_with_alpha_smask_iccbased_group_policy(content, mask_content, Some("0 0 0"));
         let engine = ContentEngine::open_bytes(pdf).expect("open unsupported ICCBased SMask PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("ICCBased SMask group /CS with /BC must still fail typed");
         let message = format!("{error}");
         assert!(
@@ -35279,12 +35669,13 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open unsupported retained SMask /G PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("compat SMask /G must fail closed when retained replay is unsupported");
         let message = format!("{error}");
 
         assert!(
-            message.contains("SMask /G retained replay is unsupported"),
+            (message.contains("SMask /G retained replay is unsupported")
+                || message.contains("refuses unsupported SMask /G retained replay")),
             "unexpected SMask compatibility refusal: {message}"
         );
         assert!(
@@ -35325,7 +35716,7 @@ mod tests {
         let pdf = pdf_with_alpha_smask(content, mask_content, "1", Some(transfer));
         let engine = ContentEngine::open_bytes(pdf).expect("open unsupported SMask /TR PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("unsupported SMask /TR must not silently use identity");
         assert!(
             format!("{error}").contains("unsupported or malformed SMask /TR function"),
@@ -35341,7 +35732,7 @@ mod tests {
         let pdf = pdf_with_alpha_smask(content, mask_content, "1", Some(transfer));
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed SMask /TR PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed SMask /TR must not default missing Domain");
         assert!(
             format!("{error}").contains("unsupported or malformed SMask /TR function"),
@@ -35359,7 +35750,7 @@ mod tests {
             ContentEngine::open_bytes(pdf_with_alpha_smask(content, mask, "1", Some(transfer)))
                 .unwrap();
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("two-output SMask TR is not a scalar transfer");
         assert!(error
             .to_string()
@@ -35445,7 +35836,7 @@ mod tests {
             let pdf = pdf_with_alpha_smask_group_bbox(content, mask_content, "1", None, bbox_entry);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed SMask /G BBox PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("SMask /G with malformed /BBox must not render unbounded");
             assert!(
                 format!("{error}").contains(expected),
@@ -35460,7 +35851,7 @@ mod tests {
             pdf_with_smask_extgstate("<< /Type /ExtGState /SMask << /Type /Mask /S /Alpha >> >>");
         let engine = ContentEngine::open_bytes(pdf).expect("open missing SMask /G PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed SMask must not silently render without a mask");
         assert!(format!("{error}").contains("SMask is missing /G"));
     }
@@ -35472,7 +35863,7 @@ mod tests {
         );
         let engine = ContentEngine::open_bytes(pdf).expect("open unsupported SMask subtype PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("unsupported SMask subtype must not silently fall back to luminosity");
         assert!(format!("{error}").contains("unsupported SMask subtype /UnsupportedSubtype"));
     }
@@ -35482,7 +35873,7 @@ mod tests {
         let pdf = pdf_with_smask_extgstate("<< /Type /ExtGState /SMask << /Type /Mask /S 42 >> >>");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed SMask subtype PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed SMask subtype must not silently default to luminosity");
         assert!(
             format!("{error}").contains("SMask /S resolved to Integer, expected Name"),
@@ -35595,14 +35986,15 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open unsupported retained tiling pattern PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err(
                 "compat tiling pattern must fail closed when retained replay is unsupported",
             );
         let message = format!("{error}");
 
         assert!(
-            message.contains("tiling pattern retained replay is unsupported"),
+            (message.contains("tiling pattern retained replay is unsupported")
+                || message.contains("refuses unsupported tiling pattern retained replay")),
             "unexpected tiling pattern compatibility refusal: {message}"
         );
         assert!(
@@ -35616,7 +36008,7 @@ mod tests {
         let pdf = pdf_with_recursive_tiling_pattern();
         let engine = ContentEngine::open_bytes(pdf).expect("open recursive pattern PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("recursive pattern must not silently approximate to solid color");
         assert!(format!("{error}").contains("recursive tiling pattern"));
     }
@@ -35647,7 +36039,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open invalid uncolored pattern color PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("invalid uncolored pattern color must not be inferred as RGB");
         assert!(
             format!("{error}").contains(
@@ -35662,7 +36054,7 @@ mod tests {
         let pdf = pdf_with_pattern_dictionary("/PatternType 99");
         let engine = ContentEngine::open_bytes(pdf).expect("open unsupported pattern PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("unsupported active pattern type must fail closed");
         assert!(format!("{error}").contains("unsupported PatternType 99"));
     }
@@ -35672,7 +36064,7 @@ mod tests {
         let pdf = pdf_with_pattern_dictionary("/Type /Pattern");
         let engine = ContentEngine::open_bytes(pdf).expect("open missing PatternType PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("missing active PatternType must fail closed");
         assert!(format!("{error}").contains("missing required /PatternType"));
     }
@@ -35684,7 +36076,7 @@ mod tests {
         );
         let engine = ContentEngine::open_bytes(pdf).expect("open dictionary pattern PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("PatternType 1 dictionary without stream must fail closed");
         assert!(format!("{error}").contains("did not resolve to a content stream"));
     }
@@ -35751,7 +36143,7 @@ mod tests {
         ] {
             let pdf = pdf_with_tiling_pattern_stream(dict, "1 0 0 rg\n0 0 10 10 re f\n");
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed pattern PDF");
-            let error = match engine.render_page_with_mode(1, 72, RenderMode::Compat) {
+            let error = match engine.render_page_with_mode(1, 72, RenderMode::HighQuality) {
                 Ok(_) => panic!("malformed tiling pattern must fail: {expected}"),
                 Err(error) => error,
             };
@@ -35777,7 +36169,7 @@ mod tests {
         let pdf = pdf_with_malformed_named_shading_resource();
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed shading PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed shading paint must not silently render a no-op");
         assert!(format!("{error}").contains("shading resource /S1 did not resolve"));
     }
@@ -35877,7 +36269,7 @@ mod tests {
             let pdf = pdf_with_named_shading_dictionary(dict);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed shading PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed active shading must not silently render a no-op");
             assert!(
                 format!("{error}").contains(expected),
@@ -35930,7 +36322,7 @@ mod tests {
             let pdf = pdf_with_pattern_dictionary(dict);
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed shading pattern PDF");
-            let error = match engine.render_page_with_mode(1, 72, RenderMode::Compat) {
+            let error = match engine.render_page_with_mode(1, 72, RenderMode::HighQuality) {
                 Ok(_) => panic!("malformed shading pattern must fail: {expected}"),
                 Err(error) => error,
             };
@@ -35992,7 +36384,7 @@ mod tests {
             let pdf = pdf_with_form_xobject_matrix(matrix);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed Form Matrix PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed Form /Matrix must not default to identity");
             assert!(
                 format!("{error}").contains("Form XObject resource /Fm1 malformed /Matrix"),
@@ -36021,7 +36413,7 @@ mod tests {
             let pdf = pdf_with_form_xobject_bbox(bbox_entry);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed Form BBox PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err(&format!(
                     "malformed Form /BBox must not render unclipped: {bbox_entry:?}"
                 ));
@@ -36037,7 +36429,7 @@ mod tests {
         let pdf = pdf_with_recursive_form_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open recursive Form XObject PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("recursive Form XObject must not silently drop paint");
         assert!(
             format!("{error}").contains("Form XObject cycle detected at /Fm1"),
@@ -36050,7 +36442,7 @@ mod tests {
         let pdf = pdf_with_deep_form_xobject_chain();
         let engine = ContentEngine::open_bytes(pdf).expect("open deep Form XObject PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("over-deep Form XObject chain must not silently drop paint");
         assert!(
             format!("{error}").contains("Form XObject nesting depth limit (8) exceeded at /Fm9"),
@@ -36063,7 +36455,7 @@ mod tests {
         let pdf = pdf_with_bad_dct_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open bad image XObject PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("bad image XObject decode must not silently drop paint");
         assert!(format!("{error}").contains("image XObject /Im1 decode failed"));
     }
@@ -36076,7 +36468,7 @@ mod tests {
         ));
         let engine = ContentEngine::open_bytes(pdf).expect("open missing-BBox appearance PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("selected annotation appearance without /BBox must not disappear");
         assert!(
             format!("{error}").contains("annotation appearance 'Annot1' missing /BBox"),
@@ -36097,7 +36489,7 @@ mod tests {
         let pdf = pdf_with_annotation_appearance_state("/AS [ /Yes ]", &yes, &off);
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed annotation state PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed annotation /AS must not select /Off or a fallback state");
         assert!(
             format!("{error}").contains("annotation 'Annot1' /AS resolved to Array, expected Name"),
@@ -36137,7 +36529,7 @@ mod tests {
             pdf_with_form_objects(vec![annot, appearance.as_bytes().to_vec()], "5 0 R", "", "");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed annotation flags PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed annotation /F must not default to visible flags");
         assert!(
             format!("{error}").contains("annotation 'Annot1' malformed /F"),
@@ -36168,7 +36560,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed annotation subtype PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("visible annotation with malformed /Subtype must not render or skip");
             assert!(
                 format!("{error}").contains(expected),
@@ -36198,7 +36590,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed annotation Rect PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("visible annotation with malformed /Rect must not be skipped");
             assert!(
                 format!("{error}").contains(expected),
@@ -36227,7 +36619,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed QuadPoints annotation PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed text markup geometry must not synthesize a full-rect mark");
             assert!(
                 format!("{error}").contains(expected),
@@ -36274,7 +36666,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed color annotation PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed synthesized annotation paint metadata must not default");
             assert!(
                 format!("{error}").contains(expected),
@@ -36369,7 +36761,7 @@ mod tests {
         let pdf = pdf_with_form_objects(vec![annot], "5 0 R", "", "");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed FreeText PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed FreeText /Q must not default to left alignment");
         assert!(
             format!("{error}").contains("annotation 'Annot1' malformed /Q"),
@@ -36385,7 +36777,7 @@ mod tests {
         let pdf = pdf_with_form_objects(vec![annot], "5 0 R", "", "");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed FreeText contents PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed FreeText /Contents must not be filtered");
         assert!(
             format!("{error}").contains("annotation 'Annot1' malformed /Contents"),
@@ -36415,7 +36807,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed line annotation PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed line annotation geometry must not be skipped");
             assert!(
                 format!("{error}").contains(expected),
@@ -36450,7 +36842,7 @@ mod tests {
             let pdf = pdf_with_form_objects(vec![annot], "5 0 R", "", "");
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed ink annotation PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed ink annotation geometry must not be skipped");
             assert!(
                 format!("{error}").contains(expected),
@@ -36467,7 +36859,7 @@ mod tests {
         ));
         let engine = ContentEngine::open_bytes(pdf).expect("open bad appearance stream PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("selected annotation appearance decode failure must not disappear");
         assert!(
             format!("{error}").contains("annotation appearance 'Annot1' stream decode failed"),
@@ -36480,7 +36872,7 @@ mod tests {
         let pdf = pdf_with_malformed_decode_array_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed Decode image PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed image Decode array must not render with the default mapping");
         assert!(
             format!("{error}").contains("image /Decode has 2 entries, expected"),
@@ -36493,7 +36885,7 @@ mod tests {
         let pdf = pdf_with_unknown_color_space_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open unknown image ColorSpace PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("unknown image ColorSpace must not render raw bytes as RGB/Gray");
         assert!(
             format!("{error}").contains("unsupported image ColorSpace /Bogus"),
@@ -36506,7 +36898,7 @@ mod tests {
         let pdf = pdf_with_malformed_indexed_color_space_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed Indexed image PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed Indexed image ColorSpace must not render raw indices as gray");
         assert!(
             format!("{error}").contains("Indexed image ColorSpace has 3 entries"),
@@ -36519,7 +36911,7 @@ mod tests {
         let pdf = pdf_with_malformed_decode_array_image_mask_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed image-mask Decode PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed image mask Decode array must not default to paint-ones");
         assert!(
             format!("{error}").contains("ImageMask /Decode rejected"),
@@ -36533,7 +36925,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open malformed color-key mask image PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed image Mask array must not render the image unmasked");
         assert!(
             format!("{error}").contains("image Mask color-key array is malformed"),
@@ -36542,16 +36934,13 @@ mod tests {
     }
 
     #[test]
-    fn image_xobject_mask_dimension_mismatch_returns_typed_refusal() {
+    fn image_xobject_mask_at_another_resolution_is_resampled() {
         let pdf = pdf_with_dimension_mismatch_mask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open mismatched mask image PDF");
-        let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
-            .expect_err("dimension-mismatched image Mask must not render the image unmasked");
-        assert!(
-            format!("{error}").contains("explicit image Mask dimensions"),
-            "got {error}"
-        );
+        // An explicit mask may have its own resolution; it is resampled, not refused.
+        engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect("an explicit mask at another resolution is resampled onto the image");
     }
 
     #[test]
@@ -36560,7 +36949,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open malformed explicit-mask Decode PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed explicit image mask Decode must not default to paint-ones");
         assert!(
             format!("{error}").contains("explicit Mask failed"),
@@ -36573,7 +36962,7 @@ mod tests {
         let pdf = pdf_with_missing_width_explicit_mask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing-width mask image PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("explicit image Mask missing /Width must not inherit image width");
         assert!(
             format!("{error}").contains("explicit image Mask /Im1 missing /Width"),
@@ -36586,7 +36975,7 @@ mod tests {
         let pdf = pdf_with_missing_bits_per_component_explicit_mask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing-bpc mask image PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("explicit image Mask missing /BitsPerComponent must not default");
         assert!(
             format!("{error}").contains("explicit image Mask /Im1 missing /BitsPerComponent"),
@@ -36599,7 +36988,7 @@ mod tests {
         let pdf = pdf_with_missing_color_space_explicit_mask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing-color mask image PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("explicit image Mask missing /ColorSpace must not default to DeviceRGB");
         assert!(
             format!("{error}").contains("explicit image Mask /Im1 missing /ColorSpace"),
@@ -36613,7 +37002,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open malformed-filter explicit Mask PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("explicit image Mask malformed /Filter must not be truncated");
         assert!(
             format!("{error}")
@@ -36628,7 +37017,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open malformed-boolean explicit Mask PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("explicit image Mask malformed /ImageMask must not default to false");
         assert!(
             format!("{error}").contains("explicit image Mask /Im1 /ImageMask is not boolean"),
@@ -36809,16 +37198,13 @@ mod tests {
     }
 
     #[test]
-    fn image_xobject_smask_dimension_mismatch_returns_typed_refusal() {
+    fn image_xobject_smask_at_another_resolution_is_resampled() {
         let pdf = pdf_with_dimension_mismatch_smask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open mismatched image SMask PDF");
-        let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
-            .expect_err("dimension-mismatched image SMask must not render the image unmasked");
-        assert!(
-            format!("{error}").contains("image SMask dimensions"),
-            "got {error}"
-        );
+        // A soft mask may have its own resolution; it is resampled, not refused.
+        engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect("a soft mask at another resolution is resampled onto the image");
     }
 
     #[test]
@@ -36826,7 +37212,7 @@ mod tests {
         let pdf = pdf_with_missing_width_smask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing-width image SMask PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("image SMask missing /Width must not inherit image width");
         assert!(
             format!("{error}").contains("image SMask for Im1 missing /Width"),
@@ -36839,7 +37225,7 @@ mod tests {
         let pdf = pdf_with_missing_bits_per_component_smask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing-bpc image SMask PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("image SMask missing /BitsPerComponent must not default");
         assert!(
             format!("{error}").contains("image SMask for Im1 missing /BitsPerComponent"),
@@ -36852,7 +37238,7 @@ mod tests {
         let pdf = pdf_with_missing_color_space_smask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing-color image SMask PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("image SMask missing /ColorSpace must not default to DeviceGray");
         assert!(
             format!("{error}").contains("image SMask for Im1 missing /ColorSpace"),
@@ -36865,7 +37251,7 @@ mod tests {
         let pdf = pdf_with_empty_matte_smask_image_xobject();
         let engine = ContentEngine::open_bytes(pdf).expect("open empty-matte image SMask PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed image SMask /Matte must not be ignored");
         assert!(
             format!("{error}").contains("image SMask /Matte is empty"),
@@ -36878,7 +37264,7 @@ mod tests {
         let pdf = pdf_with_inline_decode_params_without_filter();
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed inline image PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed inline DecodeParms must not silently drop paint");
         assert!(
             format!("{error}").contains("inline DecodeParms rejected"),
@@ -36892,7 +37278,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open malformed inline image-mask Decode PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed inline image mask Decode array must not default to paint-ones");
         assert!(
             format!("{error}").contains("inline image mask /Decode rejected"),
@@ -37076,9 +37462,13 @@ mod tests {
         );
 
         let engine = ContentEngine::open_bytes(pdf).expect("open AIS PDF");
-        let retained =
-            PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
-                .expect_err("retained replay must refuse AIS true visible fill");
+        let retained = PageRenderer::render_page_display_list_with_mode(
+            &engine,
+            1,
+            72,
+            RenderMode::HighQuality,
+        )
+        .expect_err("retained replay must refuse AIS true visible fill");
         let retained = format!("{retained}");
         assert!(
             retained.contains("/AIS true alpha-source"),
@@ -37099,9 +37489,13 @@ mod tests {
         );
 
         let engine = ContentEngine::open_bytes(pdf).expect("open retained TK text PDF");
-        let retained =
-            PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
-                .expect_err("retained replay must refuse TK false visible text");
+        let retained = PageRenderer::render_page_display_list_with_mode(
+            &engine,
+            1,
+            72,
+            RenderMode::HighQuality,
+        )
+        .expect_err("retained replay must refuse TK false visible text");
         let retained = format!("{retained}");
         assert!(
             retained.contains("/TK false disabled-text-knockout"),
@@ -37122,9 +37516,13 @@ mod tests {
         );
 
         let engine = ContentEngine::open_bytes(pdf).expect("open retained AIS text PDF");
-        let retained =
-            PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
-                .expect_err("retained replay must refuse AIS true visible text");
+        let retained = PageRenderer::render_page_display_list_with_mode(
+            &engine,
+            1,
+            72,
+            RenderMode::HighQuality,
+        )
+        .expect_err("retained replay must refuse AIS true visible text");
         let retained = format!("{retained}");
         assert!(
             retained.contains("/AIS true alpha-source"),
@@ -37176,7 +37574,7 @@ mod tests {
     fn direct_retained_restore_underflow_returns_typed_refusal() {
         let engine = ContentEngine::open_bytes(simple_vector_pdf(""))
             .expect("open blank retained-restore PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
 
         state.replay_display_op(&DisplayOp::Restore);
 
@@ -37193,7 +37591,7 @@ mod tests {
     fn page_content_q_side_stack_desync_returns_typed_refusal() {
         let engine = ContentEngine::open_bytes(simple_vector_pdf(""))
             .expect("open blank page-content restore PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         state.gs.push();
 
         state.dispatch(&ContentOperation::new("Q", Vec::new()));
@@ -37216,7 +37614,7 @@ mod tests {
     fn form_cleanup_side_stack_desync_returns_typed_refusal() {
         let engine =
             ContentEngine::open_bytes(simple_vector_pdf("")).expect("open blank Form cleanup PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let saved_gs = state.gs.clone();
         let saved_base_ctm = state.base_ctm;
 
@@ -37235,7 +37633,7 @@ mod tests {
     fn packed_plan_restore_underflow_returns_typed_refusal() {
         let engine =
             ContentEngine::open_bytes(simple_vector_pdf("")).expect("open blank packed-plan PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let viewport = state.viewport.clone();
         let mut adapter = RenderStatePlanAdapter {
             state: &mut state,
@@ -37371,7 +37769,7 @@ mod tests {
     fn form_retained_replay_restores_active_resource_stack_after_inner_refusal() {
         let engine =
             ContentEngine::open_bytes(simple_vector_pdf("")).expect("open blank Form-stack PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         install_outer_active_resource_stack(&mut state);
         let resources = missing_image_xobject_resources();
         let plan = retained_plan_that_fails_after_save(&state, &resources);
@@ -37402,7 +37800,7 @@ mod tests {
     fn tiling_pattern_replay_restores_active_resource_stack_after_inner_refusal() {
         let engine =
             ContentEngine::open_bytes(simple_vector_pdf("")).expect("open blank pattern-stack PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         install_outer_active_resource_stack(&mut state);
         let resources = missing_image_xobject_resources();
         let plan = retained_plan_that_fails_after_save(&state, &resources);
@@ -37435,7 +37833,7 @@ mod tests {
     fn type3_charproc_replay_restores_active_resource_stack_after_inner_refusal() {
         let engine =
             ContentEngine::open_bytes(simple_vector_pdf("")).expect("open blank Type3-stack PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         install_outer_active_resource_stack(&mut state);
         state.resources = missing_image_xobject_resources().into();
         let font_dict = PdfDictionary::empty();
@@ -37472,7 +37870,7 @@ mod tests {
             .expect("open blank packed-resource PDF");
 
         {
-            let mut state = blank_render_state(&engine);
+            let mut state = blank_exact_render_state(&engine);
             let viewport = state.viewport.clone();
             let mut dict = basic_image_xobject_dict();
             dict.insert("ColorSpace", PdfObject::Name("Cs1".to_string()));
@@ -37516,7 +37914,7 @@ mod tests {
         }
 
         {
-            let mut state = blank_render_state(&engine);
+            let mut state = blank_exact_render_state(&engine);
             let viewport = state.viewport.clone();
             let mut adapter = RenderStatePlanAdapter {
                 state: &mut state,
@@ -37546,7 +37944,7 @@ mod tests {
         }
 
         {
-            let mut state = blank_render_state(&engine);
+            let mut state = blank_exact_render_state(&engine);
             let viewport = state.viewport.clone();
             let mut adapter = RenderStatePlanAdapter {
                 state: &mut state,
@@ -37576,7 +37974,7 @@ mod tests {
         }
 
         {
-            let mut state = blank_render_state(&engine);
+            let mut state = blank_exact_render_state(&engine);
             let viewport = state.viewport.clone();
             let mut adapter = RenderStatePlanAdapter {
                 state: &mut state,
@@ -37606,7 +38004,7 @@ mod tests {
         }
 
         {
-            let mut state = blank_render_state(&engine);
+            let mut state = blank_exact_render_state(&engine);
             let viewport = state.viewport.clone();
             let mut adapter = RenderStatePlanAdapter {
                 state: &mut state,
@@ -37641,7 +38039,7 @@ mod tests {
 
         macro_rules! assert_state_refusal {
             ($descriptor:expr, $expected:literal) => {{
-                let mut state = blank_render_state(&engine);
+                let mut state = blank_exact_render_state(&engine);
                 let viewport = state.viewport.clone();
                 let mut adapter = RenderStatePlanAdapter {
                     state: &mut state,
@@ -37726,7 +38124,7 @@ mod tests {
             "packed marked-content Properties /Layer1 missing pre-resolved resource object"
         );
 
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let viewport = state.viewport.clone();
         let mut adapter = RenderStatePlanAdapter {
             state: &mut state,
@@ -37885,7 +38283,7 @@ mod tests {
     fn direct_retained_text_replay_returns_typed_refusal() {
         let engine =
             ContentEngine::open_bytes(simple_vector_pdf("")).expect("open blank retained text PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         let retained = RetainedTextOp::from_content_operation(&ContentOperation::new(
             "Tf",
             vec![Operand::Name("F1".to_string())],
@@ -37925,7 +38323,7 @@ mod tests {
     fn direct_marked_content_visibility_pop_returns_typed_refusal() {
         let engine = ContentEngine::open_bytes(simple_vector_pdf(""))
             .expect("open blank marked-content state PDF");
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
 
         assert!(!state.pop_optional_content_visibility());
         let error = state
@@ -38091,7 +38489,7 @@ mod tests {
             ]
         };
 
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         state.dispatch_all(&[ContentOperation::new("BI", vec![])]);
         let error = state
             .check_fatal_render_error()
@@ -38101,7 +38499,7 @@ mod tests {
             "got {error}"
         );
 
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         state.dispatch_all(&[ContentOperation::new("ID", inline_params())]);
         let error = state
             .check_fatal_render_error()
@@ -38111,7 +38509,7 @@ mod tests {
             "got {error}"
         );
 
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         state.dispatch_all(&[ContentOperation::new(
             "inline_image_data",
             vec![Operand::String(vec![0x80])],
@@ -38125,7 +38523,7 @@ mod tests {
             "got {error}"
         );
 
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         state.dispatch_all(&[
             ContentOperation::new("BI", vec![]),
             ContentOperation::new("ID", inline_params()),
@@ -38139,7 +38537,7 @@ mod tests {
             "got {error}"
         );
 
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         state.dispatch_all(&[
             ContentOperation::new("BI", vec![]),
             ContentOperation::new("ID", inline_params()),
@@ -38154,7 +38552,7 @@ mod tests {
             "got {error}"
         );
 
-        let mut state = blank_render_state(&engine);
+        let mut state = blank_exact_render_state(&engine);
         state.dispatch_all(&[
             ContentOperation::new("BI", vec![]),
             ContentOperation::new("ID", inline_params()),
@@ -38287,14 +38685,15 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open unsupported retained Type3 charproc PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err(
                 "compat Type3 CharProc must fail closed when retained replay is unsupported",
             );
         let message = format!("{error}");
 
         assert!(
-            message.contains("Type 3 CharProc retained replay is unsupported"),
+            (message.contains("Type 3 CharProc retained replay is unsupported")
+                || message.contains("refuses unsupported Type 3 CharProc retained replay")),
             "unexpected Type3 compatibility refusal: {message}"
         );
         assert!(
@@ -38497,7 +38896,7 @@ mod tests {
         let pdf = pdf_with_type3_font_matrix("/FontMatrix [0.001 0 /Bad 0.001 0 0]");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed Type3 FontMatrix PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed Type3 FontMatrix must not default to 0.001 scale");
         assert!(
             format!("{error}").contains("Type 3 font has malformed /FontMatrix"),
@@ -38510,7 +38909,7 @@ mod tests {
         let pdf = pdf_with_recursive_type3_charproc();
         let engine = ContentEngine::open_bytes(pdf).expect("open recursive Type3 PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("recursive Type3 charproc must not silently skip glyph paint");
         assert!(
             format!("{error}").contains("Type 3 charproc nesting depth limit reached"),
@@ -38570,7 +38969,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open malformed resource Separation image PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed Separation image must not render grayscale fallback pixels");
 
         assert!(
@@ -41156,7 +41555,7 @@ mod tests {
         let engine =
             ContentEngine::open_bytes(pdf).expect("open malformed widget appearance-state PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed widget /AS must not synthesize from /V fallback");
         assert!(
             format!("{error}").contains("annotation 'Annot1' malformed /AS"),
@@ -41171,7 +41570,7 @@ mod tests {
         let pdf = pdf_with_form_objects(vec![widget.to_vec()], "5 0 R", "5 0 R", "");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed widget FT PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed widget /FT must not silently skip synthesis");
         assert!(
             format!("{error}").contains("annotation 'Annot1' malformed /FT"),
@@ -41207,7 +41606,7 @@ mod tests {
             let pdf = pdf_with_form_objects(vec![widget], "5 0 R", "5 0 R", acroform_extra);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed widget integer PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed widget field integers must not default");
             assert!(
                 format!("{error}").contains(expected),
@@ -41228,7 +41627,7 @@ mod tests {
         );
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed NeedAppearances PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("malformed /NeedAppearances must not default to false");
         assert!(
             format!("{error}").contains("annotation 'Annot1' malformed AcroForm /NeedAppearances"),
@@ -41296,7 +41695,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed widget MK color PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed widget MK colors must not default or clamp");
             assert!(
                 format!("{error}").contains(expected),
@@ -41339,7 +41738,7 @@ mod tests {
             let engine = ContentEngine::open_bytes(pdf)
                 .expect("open malformed widget default appearance PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed widget DA must not default or clamp text styling");
             assert!(
                 format!("{error}").contains(expected),
@@ -41422,7 +41821,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed widget display text PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
                 .expect_err("malformed widget display text must not be filtered or skipped");
             assert!(
                 format!("{error}").contains(expected),

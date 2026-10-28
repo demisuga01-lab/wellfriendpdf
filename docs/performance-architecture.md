@@ -14,4 +14,4 @@ Wellfriend optimizes the existing canonical engine rather than replacing it with
 - bounded table/math/OCR/form/security workloads;
 - shared memory and queue admission.
 
-Research-only backends provide contracts for GPU/hybrid rendering, learned cost selection, autotuning, model fusion, distributed workers, and validation-backed display-list rewrites. They are not default production paths.
+Optional Standard capabilities (formerly research-only backends) provide contracts for GPU/hybrid rendering, learned cost selection, autotuning, model fusion, distributed workers, and validation-backed display-list rewrites. They are off by default, are enabled only by explicit configuration, and are not default production paths.

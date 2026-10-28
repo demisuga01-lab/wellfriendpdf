@@ -283,7 +283,10 @@ fn image_page_uses_regional_embed() {
         page.has_regional_images,
         "the image XObject must be embedded as a regional image"
     );
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
 }
 
 #[test]

@@ -417,8 +417,9 @@ fn default_alignment() -> String {
     "left".to_string()
 }
 
+/// 0 lets text reflow measure the source paragraph's own leading.
 fn default_line_height() -> f64 {
-    14.0
+    0.0
 }
 
 fn default_max_downstream_blocks() -> usize {
@@ -523,6 +524,10 @@ fn scene_text_reflow_request(
         approve_low_confidence_structure: request.approve_low_confidence_structure,
         signature_policy_override: request.signature_policy_override,
         line_height: request.line_height,
+        font_size: None,
+        prefer_source_font: true,
+        paint_order_policy: Default::default(),
+        break_width_scale: None,
         max_downstream_blocks: request.max_downstream_blocks,
     })
 }
@@ -2530,7 +2535,13 @@ mod tests {
         let report = plan_scene_text_transaction(&input, &request).expect("geometric plan");
 
         assert_eq!(report.applied_mode, Some(TrueEditingMode::GeometricBlock));
-        assert_eq!(report.dirty_regions[0]["region"], serde_json::json!(region));
+        // The region holds the source line, so text starts on its baseline
+        // (150 + 12 pt) instead of at the region's top edge; the column and
+        // bottom edge are the caller's.
+        assert_eq!(
+            report.dirty_regions[0]["region"],
+            serde_json::json!([region[0], region[1], region[2], 162.0])
+        );
         assert!(report.preconditions.iter().any(|item| {
             item["kind"] == "font_policy" && item["policy"] == "rebuild_subset_or_generated_type0"
         }));

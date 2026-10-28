@@ -2,6 +2,7 @@ use crate::content::BlendMode;
 use crate::images::decoder::RawImage;
 use crate::render::cmm;
 use crate::render::path::{FillRule, FlatPath};
+use crate::render::RoundByte;
 use std::{
     cell::Cell,
     sync::{
@@ -317,20 +318,27 @@ impl ClipMask {
         let mut x1 = i32::MIN;
         let mut y1 = i32::MIN;
         let width_usize = width as usize;
+        // Row-wise: the first and last nonzero sample bound the row's
+        // coverage, and everything outside them is zero, so only that span
+        // is classified (with branch-free folds the compiler vectorizes).
         for (y, row) in mask.chunks_exact(width_usize).enumerate() {
-            for (x, value) in row.iter().copied().enumerate() {
-                all_visible &= value == 255;
-                all_empty &= value == 0;
-                partial_coverage |= value != 0 && value != 255;
-                if value != 0 {
-                    let x = x as i32;
-                    let y = y as i32;
-                    x0 = x0.min(x);
-                    y0 = y0.min(y);
-                    x1 = x1.max(x + 1);
-                    y1 = y1.max(y + 1);
-                }
+            let Some(first) = row.iter().position(|&value| value != 0) else {
+                all_visible = false;
+                continue;
+            };
+            let last = row.iter().rposition(|&value| value != 0).unwrap_or(first);
+            let span = &row[first..=last];
+            all_empty = false;
+            if all_visible && (first > 0 || last + 1 < width_usize || !all_opaque(span)) {
+                all_visible = false;
             }
+            if !partial_coverage && any_partial(span) {
+                partial_coverage = true;
+            }
+            x0 = x0.min(first as i32);
+            x1 = x1.max(last as i32 + 1);
+            y0 = y0.min(y as i32);
+            y1 = y1.max(y as i32 + 1);
         }
 
         let solid = if all_visible {
@@ -1124,7 +1132,63 @@ impl ClipMask {
             clip.fill_rect(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0), true);
             return clip;
         }
+        if let Some(rectangle) = axis_aligned_rectangle_bounds(flat) {
+            return Self::rectangle_supersampled(rectangle, width, height);
+        }
         Self::scanline_fill_antialiased(flat, width, height, fill_rule)
+    }
+
+    /// The 4x4-supersampled coverage [`Self::scanline_fill_antialiased`]
+    /// produces for an axis-aligned rectangle, computed directly: a sample is
+    /// inside exactly when its sub-row and its sub-column are, so a pixel's
+    /// count is (covered sub-rows) x (covered sub-columns). Same sample
+    /// positions, edge tests and byte conversion; no edge walking.
+    fn rectangle_supersampled(
+        (x_lo, y_lo, x_hi, y_hi): (f64, f64, f64, f64),
+        width: u32,
+        height: u32,
+    ) -> Self {
+        const SAMPLES: i32 = 4;
+        const SAMPLE_COUNT: u32 = (SAMPLES * SAMPLES) as u32;
+        let Some(total_pixels) = (width as usize).checked_mul(height as usize) else {
+            return Self::empty(width, height);
+        };
+        let first_sample = ceil_i32(x_lo * f64::from(SAMPLES) - 0.5).max(0);
+        let end_sample = ceil_i32(x_hi * f64::from(SAMPLES) - 0.5).min(width as i32 * SAMPLES);
+        let y_first = floor_i32(y_lo).max(0);
+        let y_last = ceil_i32(y_hi).min(height as i32 - 1);
+        if end_sample <= first_sample || y_last < y_first || total_pixels == 0 {
+            return Self::from_alpha_bytes(width, height, Vec::new());
+        }
+        let first_px = first_sample / SAMPLES;
+        let last_px = (end_sample - 1) / SAMPLES;
+        let column_samples: Vec<u32> = (first_px..=last_px)
+            .map(|px| {
+                (end_sample.min((px + 1) * SAMPLES) - first_sample.max(px * SAMPLES)).max(0) as u32
+            })
+            .collect();
+        let mut coverage = vec![0u8; total_pixels];
+        let row_len = width as usize;
+        for y in y_first..=y_last {
+            let rows = (0..SAMPLES)
+                .filter(|sub_y| {
+                    let y_f = y as f64 + (*sub_y as f64 + 0.5) / f64::from(SAMPLES);
+                    y_lo <= y_f && y_f < y_hi
+                })
+                .count() as u32;
+            if rows == 0 {
+                continue;
+            }
+            let row = &mut coverage[y as usize * row_len..(y as usize + 1) * row_len];
+            for (slot, &columns) in row[first_px as usize..=last_px as usize]
+                .iter_mut()
+                .zip(&column_samples)
+            {
+                let count = (rows * columns).min(SAMPLE_COUNT);
+                *slot = ((count * 255 + SAMPLE_COUNT / 2) / SAMPLE_COUNT).min(255) as u8;
+            }
+        }
+        Self::from_alpha_bytes(width, height, coverage)
     }
 
     /// Restore a known partial-coverage mask from an immutable shared plane.
@@ -1165,14 +1229,13 @@ impl ClipMask {
             }
             return;
         }
-        let mut all_visible = true;
-        let mut all_empty = true;
-        let mut partial_coverage = false;
-        for value in self.mask.iter() {
-            all_visible &= *value == 255;
-            all_empty &= *value == 0;
-            partial_coverage |= *value != 0 && *value != 255;
-        }
+        let all_visible = all_opaque(&self.mask);
+        let all_empty = !all_visible
+            && self
+                .mask
+                .chunks(4096)
+                .all(|chunk| chunk.iter().fold(true, |zero, &value| zero & (value == 0)));
+        let partial_coverage = !all_visible && !all_empty && any_partial(&self.mask);
         if all_visible {
             self.solid = Some(true);
         } else if all_empty {
@@ -1631,7 +1694,7 @@ impl AlphaMask {
             for x in 0..buf.width as i32 {
                 let p = buf.get_pixel(x, y);
                 let lum = 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
-                mask.set(x, y, lum.round().clamp(0.0, 255.0) as u8);
+                mask.set(x, y, lum.round_byte());
             }
         }
         mask
@@ -1669,6 +1732,79 @@ impl AlphaMask {
         }
         self.outside_alpha = lut[self.outside_alpha as usize];
     }
+}
+
+/// `(x_lo, y_lo, x_hi, y_hi)` when a single explicitly closed subpath (last
+/// point equal to the first, as the clip rasterizer's edges require) fills
+/// exactly an axis-aligned rectangle under either rule. The rasterizer only
+/// sees non-horizontal edges, so the test is on those: all vertical, on two
+/// x positions, and on each side tiling `[y_lo, y_hi)` exactly once in one
+/// direction (opposite directions on the two sides). Collinear intermediate
+/// points, as producers often write, are accepted; exact endpoint equality
+/// is required, so no arithmetic can blur the decision.
+fn axis_aligned_rectangle_bounds(flat: &FlatPath) -> Option<(f64, f64, f64, f64)> {
+    let [points] = flat.subpaths.as_slice() else {
+        return None;
+    };
+    if points.len() < 5 || points.len() > 33 || points.first() != points.last() {
+        return None;
+    }
+    if points.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+        return None;
+    }
+    // (x, low, high, upward) for each non-horizontal edge.
+    let mut verticals: Vec<(f64, f64, f64, bool)> = Vec::with_capacity(8);
+    for edge in points.windows(2) {
+        let ((x0, y0), (x1, y1)) = (edge[0], edge[1]);
+        if (y0 - y1).abs() < 1e-10 {
+            // Ignored by the rasterizer exactly as here.
+            continue;
+        }
+        if x0 != x1 {
+            return None;
+        }
+        verticals.push((x0, y0.min(y1), y0.max(y1), y1 > y0));
+    }
+    let x_lo = verticals
+        .iter()
+        .map(|edge| edge.0)
+        .fold(f64::INFINITY, f64::min);
+    let x_hi = verticals
+        .iter()
+        .map(|edge| edge.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if verticals.is_empty() || x_lo >= x_hi {
+        return None;
+    }
+    let side = |x: f64| -> Option<(f64, f64, bool)> {
+        let mut edges: Vec<(f64, f64, bool)> = verticals
+            .iter()
+            .filter(|edge| edge.0 == x)
+            .map(|edge| (edge.1, edge.2, edge.3))
+            .collect();
+        edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let upward = edges.first()?.2;
+        let mut end = edges.first()?.0;
+        for &(low, high, direction) in &edges {
+            if direction != upward || low != end {
+                return None;
+            }
+            end = high;
+        }
+        Some((edges.first()?.0, end, upward))
+    };
+    if verticals
+        .iter()
+        .any(|edge| edge.0 != x_lo && edge.0 != x_hi)
+    {
+        return None;
+    }
+    let (left_low, left_high, left_up) = side(x_lo)?;
+    let (right_low, right_high, right_up) = side(x_hi)?;
+    if left_low != right_low || left_high != right_high || left_up == right_up {
+        return None;
+    }
+    Some((x_lo, left_low, x_hi, left_high))
 }
 
 fn integral_axis_aligned_rectangle(flat: &FlatPath) -> Option<(i32, i32, i32, i32)> {
@@ -2695,7 +2831,7 @@ impl PixelBuffer {
             self.data[idx + 1] = gamma::to_srgb(out_rgb[1]);
             self.data[idx + 2] = gamma::to_srgb(out_rgb[2]);
         } else {
-            let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+            let to_byte = |v: f32| (v * 255.0).round_byte();
             self.data[idx] = to_byte(out_rgb[0]);
             self.data[idx + 1] = to_byte(out_rgb[1]);
             self.data[idx + 2] = to_byte(out_rgb[2]);
@@ -3417,7 +3553,7 @@ impl PixelBuffer {
             return;
         }
 
-        let to_byte = |value: f32| (value * 255.0).round().clamp(0.0, 255.0) as u8;
+        let to_byte = |value: f32| (value * 255.0).round_byte();
         for channel in 0..3 {
             let coverage = source_alpha * (channel_coverage[channel] as f32 / 255.0);
             let source = color[channel] as f32 / 255.0;
@@ -4131,7 +4267,7 @@ impl PixelBuffer {
             self.data[idx + 1] = gamma::to_srgb(out_rgb[1]);
             self.data[idx + 2] = gamma::to_srgb(out_rgb[2]);
         } else {
-            let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+            let to_byte = |v: f32| (v * 255.0).round_byte();
             self.data[idx] = to_byte(out_rgb[0]);
             self.data[idx + 1] = to_byte(out_rgb[1]);
             self.data[idx + 2] = to_byte(out_rgb[2]);
@@ -4772,10 +4908,10 @@ impl PixelBuffer {
                     let src = chunk[c] as f32 / 255.0;
                     let bg = background[c] as f32 / 255.0;
                     let out = (src * src_a + bg * bg_a * (1.0 - src_a)) / out_a;
-                    chunk[c] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
+                    chunk[c] = (out * 255.0).round_byte();
                 }
             }
-            chunk[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+            chunk[3] = (out_a * 255.0).round_byte();
         }
     }
 
@@ -4816,16 +4952,7 @@ impl PixelBuffer {
     pub fn into_raw_image(mut self) -> RawImage {
         let pixel_count = self.width as usize * self.height as usize;
         let pixel_buffer_bytes = self.data.len();
-        for pixel in 0..pixel_count {
-            let source = pixel * 4;
-            let destination = pixel * 3;
-            let red = self.data[source];
-            let green = self.data[source + 1];
-            let blue = self.data[source + 2];
-            self.data[destination] = red;
-            self.data[destination + 1] = green;
-            self.data[destination + 2] = blue;
-        }
+        compact_rgba_to_rgb_in_place(&mut self.data, pixel_count);
         self.data.truncate(pixel_count * 3);
         let pixels = std::mem::take(&mut self.data);
         record_pixel_buffer_free(pixel_buffer_bytes);
@@ -6017,7 +6144,7 @@ impl PixelBuffer {
                     let cn = self.data[idx + c] as f32 / 255.0;
                     let c0 = c0_byte as f32 / 255.0;
                     let out = cn + (cn - c0) * factor;
-                    self.data[idx + c] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
+                    self.data[idx + c] = (out * 255.0).round_byte();
                 }
             }
         }
@@ -6074,7 +6201,7 @@ fn blend_lcd_alpha_mask_row_normal(
         color[1] as f32 / 255.0,
         color[2] as f32 / 255.0,
     ];
-    let to_byte = |value: f32| (value * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |value: f32| (value * 255.0).round_byte();
 
     for offset in 0..pixels {
         let green = mask_row_alpha[offset];
@@ -6186,7 +6313,7 @@ fn knockout_rows(
             dst_row[idx] = sp[0];
             dst_row[idx + 1] = sp[1];
             dst_row[idx + 2] = sp[2];
-            dst_row[idx + 3] = (eff * 255.0).round().clamp(0.0, 255.0) as u8;
+            dst_row[idx + 3] = (eff * 255.0).round_byte();
             painted = painted.saturating_add(1);
         }
     }
@@ -6664,7 +6791,7 @@ fn blend_rgba_row_separable_src_over_opaque_dst_scalar(
     src_row: &[u8],
     blend_mode: BlendMode,
 ) -> u64 {
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     let mut painted = 0u64;
     for (src, dst) in src_row
         .as_chunks::<4>()
@@ -6804,7 +6931,7 @@ fn blend_rgba_row_separable_src_over_general_scalar(
     src_row: &[u8],
     blend_mode: BlendMode,
 ) -> u64 {
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     let mut painted = 0u64;
     for (src, dst) in src_row
         .as_chunks::<4>()
@@ -7051,7 +7178,7 @@ fn blend_rgba_row_separable_src_over_opaque_dst_partial_clip_scalar(
     blend_mode: BlendMode,
     clip: &ClipMask,
 ) -> u64 {
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     let mut painted = 0u64;
     for (offset, (src, dst)) in src_row
         .as_chunks::<4>()
@@ -7205,7 +7332,7 @@ fn blend_rgba_row_separable_src_over_general_partial_clip_scalar(
     blend_mode: BlendMode,
     clip: &ClipMask,
 ) -> u64 {
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     let mut painted = 0u64;
     for (offset, (src, dst)) in src_row
         .as_chunks::<4>()
@@ -8911,7 +9038,7 @@ fn blend_separable_src_over_opaque_dst_partial_clip_scalar(
         color[1] as f32 / 255.0,
         color[2] as f32 / 255.0,
     ];
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     let mut painted = 0u64;
     let source_alpha = f32::from(color[3]) / 255.0;
     for (offset, chunk) in slice.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -9038,7 +9165,7 @@ fn blend_separable_src_over_general_scalar(
         f32::from(color[1]) / 255.0,
         f32::from(color[2]) / 255.0,
     ];
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     let mut painted = 0u64;
     for dst in slice.as_chunks_mut::<4>().0.iter_mut() {
         painted = painted.saturating_add(1);
@@ -9171,7 +9298,7 @@ fn blend_separable_src_over_general_partial_clip_scalar(
         f32::from(color[1]) / 255.0,
         f32::from(color[2]) / 255.0,
     ];
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     let mut painted = 0u64;
     for (offset, dst) in slice.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x_start.saturating_add(offset as i32);
@@ -9333,7 +9460,7 @@ fn blend_separable_src_over_opaque_dst_uniform_alpha_scalar(
         color[2] as f32 / 255.0,
     ];
     let source_alpha = f32::from(color[3]) / 255.0;
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     for chunk in slice.as_chunks_mut::<4>().0.iter_mut() {
         let dst = [
             chunk[0] as f32 / 255.0,
@@ -9556,7 +9683,7 @@ fn blend_separable_opaque_src_over_opaque_dst_scalar(
         color[1] as f32 / 255.0,
         color[2] as f32 / 255.0,
     ];
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     for chunk in slice.as_chunks_mut::<4>().0.iter_mut() {
         let dst = [
             chunk[0] as f32 / 255.0,
@@ -9783,7 +9910,7 @@ fn blend_normal_compat_run_scalar(slice: &mut [u8], color: PixelColor) {
         color[1] as f32 / 255.0,
         color[2] as f32 / 255.0,
     ];
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     for chunk in slice.as_chunks_mut::<4>().0.iter_mut() {
         let dst_a = chunk[3] as f32 / 255.0;
         let out_a = src_a + dst_a * (1.0 - src_a);
@@ -10458,7 +10585,7 @@ fn composite_normal_compat_row_soft_mask_scalar(
             let src_channel = s[channel] as f32 / 255.0;
             let dst_channel = d[channel] as f32 / 255.0;
             let out = (src_channel * src_a + dst_channel * dst_a * (1.0 - src_a)) * inv_alpha;
-            d[channel] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
+            d[channel] = (out * 255.0).round_byte();
         }
         d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
     }
@@ -10965,7 +11092,7 @@ fn composite_normal_compat_row_general_scalar(
     if alpha <= 0.0 {
         return;
     }
-    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let to_byte = |v: f32| (v * 255.0).round_byte();
     PIXEL_COMPOSITOR_SCALAR_GENERAL_PIXELS.fetch_add(
         dst_row
             .as_chunks::<4>()
@@ -11281,8 +11408,124 @@ fn mask_row_class(row: &[u8]) -> MaskRowClass {
     }
 }
 
+/// Every sample is 255 (branch-free per chunk so it vectorizes).
+fn all_opaque(samples: &[u8]) -> bool {
+    samples.chunks(4096).all(|chunk| {
+        chunk
+            .iter()
+            .fold(true, |opaque, &value| opaque & (value == 255))
+    })
+}
+
+/// Some sample is strictly between 0 and 255.
+fn any_partial(samples: &[u8]) -> bool {
+    samples.chunks(4096).any(|chunk| {
+        chunk.iter().fold(false, |partial, &value| {
+            partial | (value.wrapping_sub(1) < 254)
+        })
+    })
+}
+
+/// Drop the alpha byte of `pixels` RGBA pixels in place, leaving packed RGB
+/// in the first `3 * pixels` bytes. Pixel `p` moves from `4p` to `3p`, so a
+/// block of up to `p / 3` pixels starting at `p` never overlaps its own
+/// destination; copying such blocks keeps the inner loop vectorizable.
+fn compact_rgba_to_rgb_in_place(data: &mut [u8], pixels: usize) {
+    let pixels = pixels.min(data.len() / 4);
+    let mut pixel = 1;
+    while pixel < pixels.min(3) {
+        data.copy_within(pixel * 4..pixel * 4 + 3, pixel * 3);
+        pixel += 1;
+    }
+    while pixel < pixels {
+        let block = (pixel / 3).clamp(1, 1 << 16).min(pixels - pixel);
+        let (head, tail) = data.split_at_mut(pixel * 4);
+        for (destination, source) in head[pixel * 3..(pixel + block) * 3]
+            .chunks_exact_mut(3)
+            .zip(tail[..block * 4].chunks_exact(4))
+        {
+            destination.copy_from_slice(&source[..3]);
+        }
+        pixel += block;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn analytic_rectangle_clip_matches_supersampled_rasterizer() {
+        use crate::render::path::FlatPath;
+        let rects = [
+            vec![(10.3, 5.6), (40.7, 5.6), (40.7, 30.25), (10.3, 30.25)],
+            // Collinear intermediate points, clockwise, as producers write them.
+            vec![
+                (0.0, 21.83),
+                (0.0, 18.83),
+                (52.8, 18.83),
+                (52.8, 21.83),
+                (52.8, 24.83),
+                (0.0, 24.83),
+            ],
+            vec![(-5.5, -3.2), (70.1, -3.2), (70.1, 80.9), (-5.5, 80.9)],
+            vec![(3.125, 7.875), (3.875, 7.875), (3.875, 9.0), (3.125, 9.0)],
+        ];
+        // Without the repeated first point the rasterizer has no closing
+        // edge, so such a list is not treated as a rectangle.
+        assert!(super::axis_aligned_rectangle_bounds(&FlatPath {
+            subpaths: vec![rects[0].clone()],
+            closed: vec![true],
+        })
+        .is_none());
+        for mut points in rects {
+            points.push(points[0]);
+            let flat = FlatPath {
+                subpaths: vec![points.clone()],
+                closed: vec![true],
+            };
+            assert!(super::axis_aligned_rectangle_bounds(&flat).is_some());
+            for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                let fast = ClipMask::from_path(&flat, 64, 48, rule);
+                let reference = ClipMask::scanline_fill_antialiased(&flat, 64, 48, rule);
+                for y in 0..48 {
+                    for x in 0..64 {
+                        assert_eq!(
+                            fast.opacity_byte(x, y),
+                            reference.opacity_byte(x, y),
+                            "{points:?} at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+        // Doubling back cancels the winding: not a rectangle.
+        let folded = FlatPath {
+            subpaths: vec![vec![
+                (0.0, 0.0),
+                (0.0, 9.0),
+                (0.0, 0.0),
+                (9.0, 0.0),
+                (9.0, 9.0),
+                (9.0, 0.0),
+                (0.0, 0.0),
+            ]],
+            closed: vec![true],
+        };
+        assert!(super::axis_aligned_rectangle_bounds(&folded).is_none());
+    }
+
+    #[test]
+    fn rgba_compaction_matches_per_pixel_copy() {
+        for pixels in [0usize, 1, 2, 3, 4, 7, 100, 4099] {
+            let mut data: Vec<u8> = (0..pixels * 4).map(|i| (i * 7 % 251) as u8).collect();
+            let expected: Vec<u8> = data
+                .chunks_exact(4)
+                .flat_map(|px| px[..3].to_vec())
+                .collect();
+            super::compact_rgba_to_rgb_in_place(&mut data, pixels);
+            assert_eq!(&data[..pixels * 3], expected.as_slice(), "{pixels}");
+        }
+    }
+
     use super::*;
 
     fn mixed_alpha_destination_row(width: u32) -> PixelBuffer {
@@ -12455,7 +12698,7 @@ mod tests {
 
     #[test]
     fn exclusion_channel_matches_scalar_byte_contract() {
-        let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        let to_byte = |v: f32| (v * 255.0).round_byte();
         for src in 0..=255u16 {
             for dst in 0..=255u16 {
                 let expected = to_byte(
@@ -14609,7 +14852,7 @@ mod tests {
                         let src = f32::from(color[channel]) / 255.0;
                         let dst = f32::from(out[channel]) / 255.0;
                         let value = (src * src_a + dst * dst_a * (1.0 - src_a)) * inv_alpha;
-                        out[channel] = (value * 255.0).round().clamp(0.0, 255.0) as u8;
+                        out[channel] = (value * 255.0).round_byte();
                     }
                     out[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
                 }
@@ -15143,16 +15386,7 @@ mod tests {
             }
             let mask = soft_mask.get(x, 0);
             let eff = (sp[3] as f32 / 255.0 * 0.5 * mask * clip_alpha).clamp(0.0, 1.0);
-            expected.set_pixel(
-                x,
-                0,
-                [
-                    sp[0],
-                    sp[1],
-                    sp[2],
-                    (eff * 255.0).round().clamp(0.0, 255.0) as u8,
-                ],
-            );
+            expected.set_pixel(x, 0, [sp[0], sp[1], sp[2], (eff * 255.0).round_byte()]);
         }
 
         let before = pixel_compositor_stats();

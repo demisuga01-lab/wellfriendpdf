@@ -273,6 +273,7 @@ mod default_colour_rendering {
     fn public_render_budget_reaches_shading_scratch_allocation() {
         let engine = fixture();
         let mut state = state(&engine);
+        state.exactness_policy = ExactnessPolicy::HighQualityExact;
         install_palette_domains(&mut state);
         state.apply_resource_budget(RenderResourceBudget {
             max_temporary_bytes: 1,
@@ -854,6 +855,7 @@ mod default_colour_rendering {
     fn malformed_default_is_fatal_not_an_uncalibrated_device_fallback() {
         let engine = fixture();
         let mut state = state(&engine);
+        state.exactness_policy = ExactnessPolicy::HighQualityExact;
         state
             .resources
             .color_spaces
@@ -870,10 +872,12 @@ mod default_colour_rendering {
             "/PatternGray CS 0.4 /P1 SCN 2 w 1 1 8 8 re S",
         ] {
             let mut state = state(&engine);
+            state.exactness_policy = ExactnessPolicy::HighQualityExact;
             raw(&mut state, program);
             assert_eq!(state.buf.get_pixel(1, 5), GREEN);
         }
         let mut invalid = state(&engine);
+        invalid.exactness_policy = ExactnessPolicy::HighQualityExact;
         for op in
             crate::content::ContentParser::parse(b"/PatternGray cs 0.2 0.4 /P1 scn 0 0 10 10 re f")
                 .unwrap()

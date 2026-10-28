@@ -448,7 +448,7 @@ impl<'a> Builder<'a> {
                 )?;
                 let mut previous = domain[0];
                 for &bound in &bounds {
-                    if bound <= previous || bound > domain[1] {
+                    if bound < previous || bound > domain[1] {
                         return None;
                     }
                     previous = bound;

@@ -2855,7 +2855,15 @@ pub fn rewrite_document(
     reader: &PdfReader,
     mutate: impl FnMut(u32, &mut PdfObject),
 ) -> Result<Vec<u8>> {
-    rewrite_document_with_mode(reader, WriterMode::ClassicXref, mutate)
+    // Keep the source's object-stream packing: a classic rewrite of a file
+    // that used object streams writes every small object out uncompressed,
+    // roughly doubling it (qpdf preserves object streams by default).
+    let mode = if reader.uses_object_streams() {
+        WriterMode::XrefStreamWithObjStm
+    } else {
+        WriterMode::ClassicXref
+    };
+    rewrite_document_with_mode(reader, mode, mutate)
 }
 
 /// [`rewrite_document`] with a selectable [`WriterMode`] (classic xref, xref
@@ -3054,8 +3062,16 @@ fn rewrite_document_classic_streaming(
 pub fn rewrite_document_to(
     reader: &PdfReader,
     mut mutate: impl FnMut(u32, &mut PdfObject),
-    output: impl std::io::Write,
+    mut output: impl std::io::Write,
 ) -> Result<u64> {
+    // A source packed into object streams keeps that packing (see
+    // `rewrite_document`); the packed writer builds the file in memory.
+    if reader.uses_object_streams() {
+        let bytes = rewrite_document(reader, mutate)?;
+        output.write_all(&bytes)?;
+        output.flush()?;
+        return Ok(bytes.len() as u64);
+    }
     let header_writer = PdfWriter::new(Vec::new(), 0);
     let version = feature_version::header(&header_writer)?;
     let sink = IoClassicSink {
@@ -3607,6 +3623,7 @@ fn build_linearization_source_plan(
         build_outline_source_objects(root.0, &object_map, &opening_set, &object_pages);
     let outline_set: BTreeSet<u32> = outline_category.iter().copied().collect();
 
+    let catalog_owned = build_catalog_owned_objects(root.0, &object_map);
     let mut assigned = BTreeSet::new();
     let first_page_number = pages[0].object_number;
     let first_group: BTreeSet<u32> = closures[0]
@@ -3665,6 +3682,11 @@ fn build_linearization_source_plan(
                 owned.insert(number);
             }
         }
+        // An object that a catalog-level graph (structure tree, names, page
+        // labels, ...) also reaches is not page-private: Annex F (and qpdf's
+        // own analysis) files it with the other objects in part 9, so it must
+        // not inflate this page's hint-table object count.
+        owned.retain(|number| *number == page_number || !catalog_owned.contains(number));
         let objects = ordered_group_with_first(page_number, &owned);
         assigned.extend(objects.iter().copied());
 
@@ -3792,6 +3814,32 @@ fn build_opening_source_objects(root: u32, object_map: &HashMap<u32, PdfObject>)
     let mut out = vec![root];
     out.extend(closure.into_iter().filter(|number| *number != root));
     out
+}
+
+/// Objects reachable from catalog entries other than the page tree, the
+/// outlines and the document-opening keys (structure tree, names, page labels,
+/// metadata, ...). Page traversal stops at page objects.
+fn build_catalog_owned_objects(root: u32, object_map: &HashMap<u32, PdfObject>) -> BTreeSet<u32> {
+    let mut roots = BTreeSet::new();
+    if let Some(PdfObject::Dictionary(dict)) = object_map.get(&root) {
+        for (key, value) in dict.iter() {
+            if matches!(
+                key.as_str(),
+                "Type"
+                    | "Pages"
+                    | "Outlines"
+                    | "ViewerPreferences"
+                    | "PageMode"
+                    | "Threads"
+                    | "OpenAction"
+                    | "AcroForm"
+            ) {
+                continue;
+            }
+            collect_references_into_set(value, &mut roots);
+        }
+    }
+    dependency_closure_all(&roots, object_map)
 }
 
 fn build_outline_source_objects(

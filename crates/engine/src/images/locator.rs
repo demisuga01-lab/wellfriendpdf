@@ -266,13 +266,20 @@ impl ImageLocator {
         short_key: &str,
         label: &str,
     ) -> Result<u32> {
+        // Per the spec /Width and /Height shall be integers, but some producers
+        // (e.g. ABBYY PDF Transformer+) write them as reals like `884.0`. Poppler,
+        // PDFium and MuPDF all tolerate this by rounding; match that so a single
+        // non-conforming scan dimension does not blank the whole page.
         let value = dict
-            .get_integer(key)
-            .or_else(|| dict.get_integer(short_key));
+            .get(key)
+            .or_else(|| dict.get(short_key))
+            .and_then(PdfObject::as_number);
         match value {
-            Some(number) if number > 0 => u32::try_from(number).map_err(|_| {
-                WellfriendError::MalformedPdf(format!("{label} /{key} exceeds dimension limit"))
-            }),
+            Some(number) if number.is_finite() && number.round() >= 1.0 => {
+                u32::try_from(number.round() as i64).map_err(|_| {
+                    WellfriendError::MalformedPdf(format!("{label} /{key} exceeds dimension limit"))
+                })
+            }
             Some(_) => Err(WellfriendError::MalformedPdf(format!(
                 "{label} /{key} must be a positive integer"
             ))),
@@ -821,7 +828,7 @@ impl ImageLocator {
                 }
             };
 
-            let dict = match &obj {
+            let mut dict = match &obj {
                 PdfObject::Stream { dict, .. } => dict.clone(),
                 _ => {
                     log::debug!("XObject '{}' is not a stream, skipping", name);
@@ -834,13 +841,31 @@ impl ImageLocator {
                     if let Some(PdfObject::Reference { number, .. }) = dict.get("SMask") {
                         soft_mask_objects.insert(*number);
                     }
-                    results.push(Self::image_ref_from_dict(
+                    // Any of these entries may legally be indirect objects.
+                    for key in [
+                        "ColorSpace",
+                        "Width",
+                        "Height",
+                        "BitsPerComponent",
+                        "Filter",
+                    ] {
+                        if let Some(value @ PdfObject::Reference { .. }) = dict.get(key).cloned() {
+                            if let Ok(resolved) = reader.resolve(value) {
+                                dict.insert(key, resolved);
+                            }
+                        }
+                    }
+                    // One unreadable image must not cost the page's other images.
+                    match Self::image_ref_from_dict(
                         page_number,
                         name.clone(),
                         obj_num,
                         gen_num,
                         &dict,
-                    )?);
+                    ) {
+                        Ok(image) => results.push(image),
+                        Err(err) => log::warn!("skipping image XObject /{name}: {err}"),
+                    }
                 }
                 Some("Form") => {
                     log::debug!("XObject '{}' is a Form; walking nested images", name);

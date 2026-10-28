@@ -52,6 +52,7 @@ use crate::render::glyph_outline::{font_size_scale, get_upem};
 use crate::render::line::DashState;
 use crate::render::path::{
     flatten_path, flatten_path_device_transform, stroke_flat_path, FillRule, FlatPath, Path,
+    PathSegment,
 };
 use crate::render::text_decode::{
     decoded_glyph_strict_horizontal_advance, decoded_glyph_strict_outline, get_font_bytes,
@@ -448,6 +449,8 @@ struct SvgSink {
     clip_counter: usize,
     gradient_counter: usize,
     mask_counter: usize,
+    /// Glyph outlines already defined in `defs`, keyed by outline content.
+    glyph_ids: std::collections::HashMap<u64, String>,
 }
 
 impl SvgSink {
@@ -460,7 +463,70 @@ impl SvgSink {
             clip_counter: 0,
             gradient_counter: 0,
             mask_counter: 0,
+            glyph_ids: std::collections::HashMap::new(),
         }
+    }
+
+    /// Id of a `<path>` in `defs` holding this glyph outline (in glyph space,
+    /// curves kept), defining it on first use. `None` for an empty outline.
+    fn glyph_def_id(&mut self, glyph: &Path) -> Option<String> {
+        use std::hash::{Hash, Hasher};
+        if glyph.segments.is_empty() {
+            return None;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for segment in &glyph.segments {
+            match *segment {
+                PathSegment::MoveTo(x, y) => (0u8, x.to_bits(), y.to_bits()).hash(&mut hasher),
+                PathSegment::LineTo(x, y) => (1u8, x.to_bits(), y.to_bits()).hash(&mut hasher),
+                PathSegment::CubicTo {
+                    cp1x,
+                    cp1y,
+                    cp2x,
+                    cp2y,
+                    x,
+                    y,
+                } => {
+                    (
+                        2u8,
+                        cp1x.to_bits(),
+                        cp1y.to_bits(),
+                        cp2x.to_bits(),
+                        cp2y.to_bits(),
+                    )
+                        .hash(&mut hasher);
+                    (x.to_bits(), y.to_bits()).hash(&mut hasher);
+                }
+                PathSegment::ClosePath => 3u8.hash(&mut hasher),
+            }
+        }
+        let key = hasher.finish();
+        if let Some(id) = self.glyph_ids.get(&key) {
+            return Some(id.clone());
+        }
+        let mut d = String::new();
+        for segment in &glyph.segments {
+            match *segment {
+                PathSegment::MoveTo(x, y) => d.push_str(&format!("M{x:.2} {y:.2}")),
+                PathSegment::LineTo(x, y) => d.push_str(&format!("L{x:.2} {y:.2}")),
+                PathSegment::CubicTo {
+                    cp1x,
+                    cp1y,
+                    cp2x,
+                    cp2y,
+                    x,
+                    y,
+                } => d.push_str(&format!(
+                    "C{cp1x:.2} {cp1y:.2} {cp2x:.2} {cp2y:.2} {x:.2} {y:.2}"
+                )),
+                PathSegment::ClosePath => d.push('Z'),
+            }
+        }
+        let id = format!("g{}", self.glyph_ids.len());
+        self.defs
+            .push_str(&format!("<path id=\"{id}\" d=\"{d}\"/>\n"));
+        self.glyph_ids.insert(key, id.clone());
+        Some(id)
     }
 
     fn push_element(&mut self, el: &str) {
@@ -646,6 +712,21 @@ impl SvgRenderState<'_> {
 
     fn ctm(&self) -> Transform2D {
         Transform2D::from(self.gs.ctm)
+    }
+
+    /// Glyph space to SVG device space as one affine matrix: `glyph_ctm`
+    /// followed by the viewport's page-to-pixel mapping (itself affine).
+    fn glyph_device_matrix(&self, glyph_ctm: &Transform2D) -> Option<Transform2D> {
+        let (ox, oy) = self.viewport.page_to_pixel_f64(0.0, 0.0);
+        let (xx, xy) = self.viewport.page_to_pixel_f64(1.0, 0.0);
+        let (yx, yy) = self.viewport.page_to_pixel_f64(0.0, 1.0);
+        let page_to_device = Transform2D::new(xx - ox, xy - oy, yx - ox, yy - oy, ox, oy);
+        let device = glyph_ctm.concat(&page_to_device);
+        device
+            .to_array()
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(device)
     }
 
     fn device_point_with(&self, ctm: Transform2D, x: f64, y: f64) -> (f64, f64) {
@@ -941,13 +1022,30 @@ impl SvgRenderState<'_> {
             raw
         };
 
-        let png = ImageEncoder::encode_png_fast(&raw).map_err(|err| {
+        // Embed at no more than twice the drawn size: a page scan stored at
+        // 300-600 dpi made SVG pages many megabytes. Opaque continuous-tone
+        // images go in as JPEG (as MuPDF does); masks and bilevel art as PNG.
+        let [a, b, c, d, e, f] = placement.transform;
+        let drawn_w = (a * a + b * b).sqrt();
+        let drawn_h = (c * c + d * d).sqrt();
+        let raw = crate::images::decoder::box_downscale_to_fit(
+            raw,
+            (drawn_w * 2.0).ceil().max(1.0) as u32,
+            (drawn_h * 2.0).ceil().max(1.0) as u32,
+        );
+        let bilevel = raw.channels == 1 && raw.pixels.iter().all(|&v| v == 0 || v == 255);
+        let (mime, encoded) = if matches!(raw.channels, 1 | 3) && !bilevel && !is_mask {
+            ("image/jpeg", ImageEncoder::encode_jpeg(&raw, 85))
+        } else {
+            ("image/png", ImageEncoder::encode_png_fast(&raw))
+        };
+        let encoded = encoded.map_err(|err| {
             WellfriendError::UnsupportedFeature(format!(
-                "regional SVG image /{name} PNG encode failed: {err}"
+                "regional SVG image /{name} encode failed: {err}"
             ))
         })?;
 
-        let b64 = base64_encode(&png);
+        let b64 = base64_encode(&encoded);
         let clip = self.clip_attr();
         let opacity = if is_mask {
             String::new()
@@ -956,11 +1054,10 @@ impl SvgRenderState<'_> {
         };
         let bounds = regional_bounds_attr("image-xobject", placement.bounds);
         let blend = self.blend_attr();
-        let [a, b, c, d, e, f] = placement.transform;
         self.sink.push_element(&format!(
-            "<image x=\"0\" y=\"0\" width=\"1\" height=\"1\" \
+            "<image x=\"0\" y=\"0\" width=\"1\" height=\"1\" preserveAspectRatio=\"none\" \
              transform=\"matrix({a:.6} {b:.6} {c:.6} {d:.6} {e:.6} {f:.6})\" \
-             xlink:href=\"data:image/png;base64,{b64}\"{bounds}{opacity}{blend}{clip}/>"
+             xlink:href=\"data:{mime};base64,{b64}\"{bounds}{opacity}{blend}{clip}/>"
         ));
         Ok(())
     }
@@ -2437,6 +2534,36 @@ impl SvgRenderState<'_> {
             .concat(&Transform2D::translation(0.0, self.gs.text.rise))
             .concat(&Transform2D::from(self.gs.text.tm))
             .concat(&self.ctm());
+        // Plain filled text (the common case): define each glyph outline once,
+        // with its curves, and place every occurrence with <use>, as MuPDF does.
+        // Flattening and writing the outline per occurrence made SVG output
+        // many times larger and slower. Clip, stroke and pattern modes keep
+        // the per-glyph path below.
+        if self.gs.text.rendering_mode == 0 && !self.gs.fill_color_space.is_pattern() {
+            if let (Some(device), Some(id)) = (
+                self.glyph_device_matrix(&glyph_ctm),
+                self.sink.glyph_def_id(&glyph_path),
+            ) {
+                let Some((rgb, a)) = self.current_fill_color_or_fatal("SVG text fill color") else {
+                    return;
+                };
+                let op = opacity_attr("fill-opacity", a);
+                let blend = self.blend_attr();
+                let clip = self.clip_attr();
+                let [ma, mb, mc, md, me, mf] = device.to_array();
+                // clip-path on a transformed element would be transformed too,
+                // so a clipped glyph is wrapped in a group carrying the clip.
+                let use_el = format!(
+                    "<use xlink:href=\"#{id}\" transform=\"matrix({ma:.5} {mb:.5} {mc:.5} {md:.5} {me:.2} {mf:.2})\" fill=\"{rgb}\"{op}{blend}/>"
+                );
+                if clip.is_empty() {
+                    self.sink.push_element(&use_el);
+                } else {
+                    self.sink.push_element(&format!("<g{clip}>{use_el}</g>"));
+                }
+                return;
+            }
+        }
         let flat = flatten_path(&glyph_path, &glyph_ctm, &self.viewport, 0.3);
         let d = path_data(&flat);
         if d.is_empty() {

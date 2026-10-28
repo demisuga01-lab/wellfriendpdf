@@ -31,7 +31,9 @@ pub fn get_upem(font_bytes: &[u8]) -> Option<u16> {
         return Some(face.units_per_em());
     }
     if crate::render::font_rasterizer::cff_support::is_bare_cff(font_bytes) {
-        return Some(crate::render::font_rasterizer::cff_support::units_per_em() as u16);
+        return Some(
+            crate::render::font_rasterizer::cff_support::units_per_em(font_bytes).round() as u16,
+        );
     }
     if crate::fonts::type1::Type1Font::is_type1(font_bytes) {
         return Some(crate::fonts::type1::units_per_em() as u16);

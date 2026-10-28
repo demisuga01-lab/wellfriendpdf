@@ -257,7 +257,7 @@ fn validate_type3_shape(
         require_strict_float_array_exact(dict, "Bounds", functions.len().saturating_sub(1))?;
     let mut previous = domain[0];
     for bound in bounds {
-        if bound <= previous || bound > domain[1] {
+        if bound < previous || bound > domain[1] {
             return None;
         }
         previous = bound;

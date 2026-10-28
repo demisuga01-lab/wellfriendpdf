@@ -69,7 +69,7 @@ public sealed class WellfriendPdfSmokeTests
             .WithDeviceTransform(1, 0, 0, 1, 2, 3)
             .WithBackground(12, 34, 56)
             .WithPageBox(RenderContractPageBox.Trim)
-            .WithExecutionMode(RenderContractExecutionMode.Research)
+            .WithExecutionMode(RenderContractExecutionMode.Standard)
             .WithBackend(RenderContractBackendSelection.ScalarReference)
             .WithCompositing(RenderContractCompositingPolicy.HighQuality)
             .WithAnnotations(RenderContractAnnotationPolicy.Exclude)
@@ -87,7 +87,7 @@ public sealed class WellfriendPdfSmokeTests
             .WithRenderingIntent(RenderContractRenderingIntent.Perceptual)
             .WithColorManagement(RenderContractColorManagementPolicy.DeterministicFallback)
             .WithExactness(RenderContractExactnessPolicy.HighQualityExact)
-            .WithDeterminism(RenderContractDeterminismPolicy.BestEffortResearch)
+            .WithDeterminism(RenderContractDeterminismPolicy.BestEffort)
             .WithResourceBudget(maxPixels: 20);
 
         using var parsed = JsonDocument.Parse(built.ToJson());
@@ -99,7 +99,7 @@ public sealed class WellfriendPdfSmokeTests
         Assert.Equal(12, root.GetProperty("background").GetProperty("r").GetByte());
         Assert.Equal(3, root.GetProperty("clip").GetProperty("width").GetInt32());
         Assert.Equal("Trim", root.GetProperty("page_box").GetString());
-        Assert.Equal("Research", root.GetProperty("execution_mode").GetString());
+        Assert.Equal("Standard", root.GetProperty("execution_mode").GetString());
         Assert.Equal("ScalarReference", root.GetProperty("backend").GetString());
         Assert.Equal("HighQuality", root.GetProperty("compositing").GetString());
         Assert.Equal("Exclude", root.GetProperty("annotations").GetString());
@@ -116,7 +116,7 @@ public sealed class WellfriendPdfSmokeTests
         Assert.Equal("Perceptual", root.GetProperty("rendering_intent").GetString());
         Assert.Equal("DeterministicFallback", root.GetProperty("color_management").GetString());
         Assert.Equal("HighQualityExact", root.GetProperty("exactness").GetString());
-        Assert.Equal("BestEffortResearch", root.GetProperty("determinism").GetString());
+        Assert.Equal("BestEffort", root.GetProperty("determinism").GetString());
         Assert.Equal(5UL * 4UL * 3UL, checked((ulong)built.Width * built.Height * RenderContract.BytesPerPixel(built.PixelFormat)));
         Assert.Throws<ArgumentOutOfRangeException>(() => contract.WithPageBox((RenderContractPageBox)999));
     }

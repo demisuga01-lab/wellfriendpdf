@@ -2970,9 +2970,11 @@ impl ContentEngine {
         &self,
         page_number: usize,
     ) -> Result<Vec<crate::analysis::tables::Table>> {
-        let semantic = self.extract_semantic_document(&[page_number])?;
-        if semantic.tagged && !semantic.tables.is_empty() {
-            return Ok(semantic.tables);
+        // An unusable structure tree falls back to geometric detection.
+        if let Ok(semantic) = self.extract_semantic_document(&[page_number]) {
+            if semantic.tagged && !semantic.tables.is_empty() {
+                return Ok(semantic.tables);
+            }
         }
 
         let ops = self.get_page_content(page_number)?;
@@ -3504,6 +3506,43 @@ impl ContentEngine {
     /// PNG bytes for package media (DOCX/PPTX). Same decode as
     /// [`Self::extract_image_bytes`] with [`ImageOutputFormat::Png`], encoded
     /// with [`ImageEncoder::encode_png_compact`] so bilevel scans stay 1-bit.
+    /// An image for an Office package, sized for how it is shown: JPEG sources
+    /// keep their original bytes; anything else is box-downscaled to about
+    /// 200 dpi of its displayed size and written as JPEG (photographic) or PNG
+    /// (transparency or pure black-and-white). Returns the bytes and extension.
+    /// Full-resolution PNGs of scanned pages made DOCX output slow and huge.
+    pub(crate) fn extract_image_for_office(
+        &self,
+        image: &ImageReference,
+        display_width_points: f64,
+        display_height_points: f64,
+    ) -> Result<(Vec<u8>, &'static str)> {
+        if let Ok(Some((bytes, ext))) = ImageEncoder::keep_original(
+            image,
+            self.document().reader(),
+            &ImageOutputFormat::Original,
+        ) {
+            if matches!(ext, "jpg" | "jpeg") {
+                return Ok((bytes, "jpg"));
+            }
+        }
+        let raw = self.decode_image(image)?;
+        const OFFICE_IMAGE_DPI: f64 = 200.0;
+        let max_w = (display_width_points.abs() / 72.0 * OFFICE_IMAGE_DPI)
+            .ceil()
+            .max(16.0) as u32;
+        let max_h = (display_height_points.abs() / 72.0 * OFFICE_IMAGE_DPI)
+            .ceil()
+            .max(16.0) as u32;
+        let raw = crate::images::decoder::box_downscale_to_fit(raw, max_w, max_h);
+        let bilevel = raw.channels == 1 && raw.pixels.iter().all(|&v| v == 0 || v == 255);
+        if raw.channels == 4 || raw.channels == 2 || bilevel {
+            Ok((ImageEncoder::encode_png_compact(&raw)?, "png"))
+        } else {
+            Ok((ImageEncoder::encode_jpeg(&raw, 85)?, "jpg"))
+        }
+    }
+
     pub(crate) fn extract_image_png_for_package(&self, image: &ImageReference) -> Result<Vec<u8>> {
         if let Ok(Some((bytes, _ext))) =
             ImageEncoder::keep_original(image, self.document().reader(), &ImageOutputFormat::Png)
@@ -5308,7 +5347,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_research_hybrid_backend_renders_with_distinct_identity() {
+    fn contract_hybrid_backend_renders_with_distinct_identity() {
         let content = "0 0 1 rg 16 16 96 96 re f\n";
         let objects = [
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -5318,31 +5357,31 @@ mod tests {
                 .into_bytes(),
         ];
         let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
-            .expect("open research hybrid backend fixture");
+            .expect("open hybrid backend fixture");
         let standard_contract = engine
             .default_render_contract(1, 72, RenderMode::Compat)
             .expect("default contract");
         let mut hybrid_contract = standard_contract.clone();
-        hybrid_contract.backend = crate::render::BackendSelection::ResearchHybrid;
+        hybrid_contract.backend = crate::render::BackendSelection::Hybrid;
 
         assert_ne!(
             standard_contract.cache_fingerprint(),
             hybrid_contract.cache_fingerprint(),
-            "ResearchHybrid must keep a separate contract/cache identity"
+            "Hybrid must keep a separate contract/cache identity"
         );
 
         let rendered = engine
             .render_page_with_contract(&hybrid_contract, &CancelToken::none())
-            .expect("research hybrid backend renders through the active CPU hybrid dispatcher");
+            .expect("hybrid backend renders through the active CPU hybrid dispatcher");
         let center = rendered.get_pixel(64, 64);
         assert!(
             center[2] > center[0] && center[2] > center[1] && center[3] == 255,
-            "research hybrid backend should render the blue fixture, got {center:?}"
+            "hybrid backend should render the blue fixture, got {center:?}"
         );
     }
 
     #[test]
-    fn contract_research_execution_mode_renders_with_distinct_identity() {
+    fn contract_legacy_research_execution_mode_maps_to_standard() {
         let content = "0 0.75 0 rg 16 16 96 96 re f\n";
         let objects = [
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -5352,26 +5391,35 @@ mod tests {
                 .into_bytes(),
         ];
         let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
-            .expect("open research execution-mode fixture");
+            .expect("open legacy research execution-mode fixture");
         let standard_contract = engine
             .default_render_contract(1, 72, RenderMode::Compat)
             .expect("default contract");
-        let mut research_contract = standard_contract.clone();
-        research_contract.execution_mode = crate::render::ExecutionMode::Research;
+        // Research mode was merged into Standard: an old serialized contract
+        // that still says `Research` deserializes to Standard with the same
+        // contract/cache identity.
+        let mut legacy = serde_json::to_value(&standard_contract).expect("serialize contract");
+        legacy["execution_mode"] = "Research".into();
+        let research_contract: crate::render::RenderContract =
+            serde_json::from_value(legacy).expect("legacy Research contract deserializes");
 
-        assert_ne!(
+        assert_eq!(
+            research_contract.execution_mode,
+            crate::render::ExecutionMode::Standard
+        );
+        assert_eq!(
             standard_contract.cache_fingerprint(),
             research_contract.cache_fingerprint(),
-            "Research execution mode must keep a separate contract/cache identity"
+            "legacy Research execution mode must share the Standard contract/cache identity"
         );
 
         let rendered = engine
             .render_page_with_contract(&research_contract, &CancelToken::none())
-            .expect("research execution mode renders through the active CPU path");
+            .expect("legacy research execution mode renders through the Standard CPU path");
         let center = rendered.get_pixel(64, 64);
         assert!(
             center[1] > center[0] && center[1] > center[2] && center[3] == 255,
-            "research execution mode should render the green fixture, got {center:?}"
+            "legacy research execution mode should render the green fixture, got {center:?}"
         );
     }
 
@@ -5395,8 +5443,8 @@ mod tests {
         assert_eq!(error.code(), "unsupported_feature");
         assert!(message.contains("render contract fields are unsupported"));
         assert!(message.contains("page_identity=ObjectIdentityId"));
-        assert!(!message.contains("execution_mode=Research"));
-        assert!(!message.contains("backend=ResearchHybrid"));
+        assert!(!message.contains("execution_mode="));
+        assert!(!message.contains("backend=Hybrid"));
         assert!(!message.contains("image_smoothing=Subpixel"));
         assert!(!message.contains("path_smoothing=Subpixel"));
         assert!(!message.contains("subpixel_text=Subpixel"));
@@ -5725,7 +5773,7 @@ mod tests {
             .default_render_contract(1, 72, RenderMode::Compat)
             .expect("default contract");
         let mut best_effort = default_contract.clone();
-        best_effort.determinism = crate::render::DeterminismPolicy::BestEffortResearch;
+        best_effort.determinism = crate::render::DeterminismPolicy::BestEffort;
 
         assert_ne!(
             default_contract.cache_fingerprint(),

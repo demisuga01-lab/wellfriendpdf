@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Iterable
@@ -136,9 +137,8 @@ def run_one(
     # Do not inject the public execution mode by default. Several legacy
     # subcommands also define a local `--mode` flag with command-specific
     # values, and the corpus validator must exercise the real default Standard
-    # path without changing subcommand semantics. Research-mode corpus sweeps
-    # should be added as explicit per-stage command templates once each
-    # subcommand's accepted option shape is normalized.
+    # path without changing subcommand semantics. Standard is the only
+    # execution mode (research mode was merged into Standard).
     argv = [str(binary)]
     argv.extend(part.format(pdf=str(pdf), out=str(out)) for part in STAGES[stage])
     started = time.perf_counter()
@@ -226,6 +226,8 @@ def main() -> int:
     ap.add_argument("--result-dir", type=Path, required=True)
     ap.add_argument("--jsonl", type=Path)
     ap.add_argument("--summary", type=Path)
+    # `research` is a deprecated alias kept so old invocations still run; it is
+    # recorded as `standard`.
     ap.add_argument("--mode", default="standard", choices=["standard", "research"])
     ap.add_argument("--stages", nargs="+", default=["all"], help="stage names or all")
     ap.add_argument("--max-files", type=int)
@@ -233,6 +235,9 @@ def main() -> int:
     ap.add_argument("--timeout-sec", type=float, default=180.0)
     ap.add_argument("--keep-outputs", action="store_true")
     args = ap.parse_args()
+    if args.mode == "research":
+        print("warning: --mode research is deprecated; research mode was merged into standard", file=sys.stderr)
+        args.mode = "standard"
 
     corpus = args.corpus.resolve()
     binary = args.binary.resolve()

@@ -973,9 +973,14 @@ fn parse_render_mode(value: Option<&str>) -> ServerResult<RenderMode> {
 fn parse_execution_mode(value: &str) -> ServerResult<ExecutionMode> {
     match normalized_policy_token(value).as_str() {
         "standard" => Ok(ExecutionMode::Standard),
-        "research" => Ok(ExecutionMode::Research),
+        "research" => {
+            tracing::warn!(
+                "render contract execution_mode 'Research' is deprecated and was mapped to 'Standard'"
+            );
+            Ok(ExecutionMode::Standard)
+        }
         _ => Err(ServerError::InvalidParameter(format!(
-            "execution_mode must be Standard or Research; got '{}'",
+            "execution_mode must be Standard ('Research' is a deprecated alias); got '{}'",
             value
         ))),
     }
@@ -985,9 +990,13 @@ fn parse_backend_selection(value: &str) -> ServerResult<BackendSelection> {
     match normalized_policy_token(value).as_str() {
         "scalar-reference" | "scalarreference" => Ok(BackendSelection::ScalarReference),
         "standard-cpu" | "standardcpu" => Ok(BackendSelection::StandardCpu),
-        "research-hybrid" | "researchhybrid" => Ok(BackendSelection::ResearchHybrid),
+        "hybrid" => Ok(BackendSelection::Hybrid),
+        "research-hybrid" | "researchhybrid" => {
+            tracing::warn!("render contract backend 'ResearchHybrid' is deprecated; use 'Hybrid'");
+            Ok(BackendSelection::Hybrid)
+        }
         _ => Err(ServerError::InvalidParameter(format!(
-            "backend must be ScalarReference, StandardCpu, or ResearchHybrid; got '{}'",
+            "backend must be ScalarReference, StandardCpu, or Hybrid; got '{}'",
             value
         ))),
     }
@@ -1131,9 +1140,15 @@ fn parse_exactness_policy(value: &str) -> ServerResult<Option<ExactnessPolicy>> 
 fn parse_determinism_policy(value: &str) -> ServerResult<DeterminismPolicy> {
     match normalized_policy_token(value).as_str() {
         "required" => Ok(DeterminismPolicy::Required),
-        "best-effort-research" | "besteffortresearch" => Ok(DeterminismPolicy::BestEffortResearch),
+        "best-effort" | "besteffort" => Ok(DeterminismPolicy::BestEffort),
+        "best-effort-research" | "besteffortresearch" => {
+            tracing::warn!(
+                "render contract determinism 'BestEffortResearch' is deprecated; use 'BestEffort'"
+            );
+            Ok(DeterminismPolicy::BestEffort)
+        }
         _ => Err(ServerError::InvalidParameter(format!(
-            "determinism must be Required or BestEffortResearch; got '{}'",
+            "determinism must be Required or BestEffort; got '{}'",
             value
         ))),
     }

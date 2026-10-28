@@ -157,6 +157,7 @@ mod resource_scopes {
                 ContentEngine::open_bytes(fixture_pdf(group, "/Resources <<>>", "/Shared Do"))
                     .unwrap();
             let mut state = state(&engine);
+            state.exactness_policy = ExactnessPolicy::HighQualityExact;
             state.handle_do_form("Outer", 6, 0, None, None);
             assert!(state.check_fatal_render_error().is_err());
             assert_eq!(state.buf.get_pixel(5, 5), WHITE);
@@ -167,6 +168,7 @@ mod resource_scopes {
     fn form_cache_is_page_scoped_not_caller_scoped_and_rejects_bad_resources() {
         let engine = ContentEngine::open_bytes(fixture_pdf(false, "", "/Shared Do")).unwrap();
         let mut state = state(&engine);
+        state.exactness_policy = ExactnessPolicy::HighQualityExact;
         let page = state
             .cached_form_xobject_program("Nested", 7, 0, None, None)
             .unwrap();
@@ -178,6 +180,7 @@ mod resource_scopes {
         for invalid in ["/Resources 42", "/Resources 11 0 R"] {
             let engine = ContentEngine::open_bytes(fixture_pdf(false, invalid, "")).unwrap();
             let mut state = self::state(&engine);
+            state.exactness_policy = ExactnessPolicy::HighQualityExact;
             assert!(state
                 .cached_form_xobject_program("Nested", 7, 0, None, None)
                 .is_none());
@@ -312,6 +315,7 @@ mod resource_scopes {
         ))
         .unwrap();
         let mut state = state(&engine);
+        state.exactness_policy = ExactnessPolicy::HighQualityExact;
         let smask = dict_with(&[
             ("S", PdfObject::Name("Alpha".into())),
             (
@@ -371,6 +375,7 @@ mod resource_scopes {
             ),
         ] {
             let mut state = state(&engine);
+            state.exactness_policy = ExactnessPolicy::HighQualityExact;
             let mut dict = dict_with(&[
                 ("PatternType", PdfObject::Integer(1)),
                 ("PaintType", PdfObject::Integer(1)),
@@ -409,6 +414,7 @@ mod resource_scopes {
     fn appearance_invalid_scope_stays_invalid_on_negative_cache_hit() {
         let engine = ContentEngine::open_bytes(fixture_pdf(false, "/Resources 42", "")).unwrap();
         let mut state = state(&engine);
+        state.exactness_policy = ExactnessPolicy::HighQualityExact;
         let PdfObject::Stream { dict, raw } = engine.document().reader().get_object(7, 0).unwrap()
         else {
             panic!("fixture appearance");

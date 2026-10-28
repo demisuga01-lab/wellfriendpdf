@@ -84,11 +84,13 @@ pub enum AlphaMode {
     Opaque,
 }
 
+/// Render-contract execution mode. Standard is the only mode; the retired
+/// `Research` value is still accepted on input as a deprecated alias.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ExecutionMode {
     #[default]
+    #[serde(alias = "Research", alias = "research", alias = "standard")]
     Standard,
-    Research,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -96,7 +98,10 @@ pub enum BackendSelection {
     ScalarReference,
     #[default]
     StandardCpu,
-    ResearchHybrid,
+    /// Guarded CPU hybrid dispatch with its own contract/decode cache
+    /// identity. Formerly `ResearchHybrid`, which is accepted as an alias.
+    #[serde(alias = "ResearchHybrid")]
+    Hybrid,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -180,7 +185,10 @@ pub enum ExactnessPolicy {
 pub enum DeterminismPolicy {
     #[default]
     Required,
-    BestEffortResearch,
+    /// Best-effort determinism. Formerly `BestEffortResearch`, which is
+    /// accepted as an alias.
+    #[serde(alias = "BestEffortResearch")]
+    BestEffort,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -441,7 +449,7 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         validation: false,
         active_execution: true,
         binding_builder: true,
-        effect: "standard-or-research-policy-identity",
+        effect: "standard-policy-identity",
     },
     RenderContractFieldEffect {
         field: "backend",
@@ -449,7 +457,7 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         validation: false,
         active_execution: true,
         binding_builder: true,
-        effect: "scalar-standard-or-research-hybrid-dispatch",
+        effect: "scalar-standard-or-hybrid-dispatch",
     },
     RenderContractFieldEffect {
         field: "compositing",
@@ -858,6 +866,54 @@ mod tests {
             .validate()
             .expect_err("singular transform must be refused");
         assert!(err.to_string().contains("transform must be invertible"));
+    }
+
+    #[test]
+    fn legacy_research_contract_values_deserialize_to_merged_variants() {
+        let base = contract(3);
+        let mut legacy = serde_json::to_value(&base).expect("serialize contract");
+        legacy["execution_mode"] = "Research".into();
+        legacy["backend"] = "ResearchHybrid".into();
+        legacy["determinism"] = "BestEffortResearch".into();
+        let parsed: RenderContract =
+            serde_json::from_value(legacy).expect("legacy research contract deserializes");
+        assert_eq!(parsed.execution_mode, ExecutionMode::Standard);
+        assert_eq!(parsed.backend, BackendSelection::Hybrid);
+        assert_eq!(parsed.determinism, DeterminismPolicy::BestEffort);
+        parsed.validate().expect("legacy contract stays valid");
+
+        // A legacy `Research` execution mode now shares Standard's identity.
+        let mut research_only = serde_json::to_value(&base).expect("serialize contract");
+        research_only["execution_mode"] = "Research".into();
+        let research_only: RenderContract =
+            serde_json::from_value(research_only).expect("legacy execution mode");
+        assert_eq!(research_only.cache_fingerprint(), base.cache_fingerprint());
+
+        // New names serialize; the legacy names are input-only aliases.
+        let json = serde_json::to_value(&parsed).expect("serialize merged contract");
+        assert_eq!(json["execution_mode"], "Standard");
+        assert_eq!(json["backend"], "Hybrid");
+        assert_eq!(json["determinism"], "BestEffort");
+        for (value, expected) in [
+            ("\"Standard\"", ExecutionMode::Standard),
+            ("\"Research\"", ExecutionMode::Standard),
+            ("\"research\"", ExecutionMode::Standard),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<ExecutionMode>(value).unwrap(),
+                expected
+            );
+        }
+        assert!(serde_json::from_str::<ExecutionMode>("\"Turbo\"").is_err());
+        assert_ne!(
+            base.cache_fingerprint(),
+            RenderContract {
+                backend: BackendSelection::Hybrid,
+                ..base.clone()
+            }
+            .cache_fingerprint(),
+            "Hybrid keeps a distinct contract identity"
+        );
     }
 
     #[test]

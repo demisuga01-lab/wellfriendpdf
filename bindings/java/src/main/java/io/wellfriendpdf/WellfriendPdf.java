@@ -1507,13 +1507,18 @@ public final class WellfriendPdf {
 
         public enum ExecutionMode {
             Standard,
+            /** @deprecated Research mode was merged into Standard; the native engine maps this to Standard. */
+            @Deprecated
             Research
         }
 
         public enum BackendSelection {
             ScalarReference,
             StandardCpu,
-            ResearchHybrid
+            /** @deprecated Use {@link #Hybrid}; the native engine maps this to Hybrid. */
+            @Deprecated
+            ResearchHybrid,
+            Hybrid
         }
 
         public enum SmoothingPolicy {
@@ -1575,7 +1580,10 @@ public final class WellfriendPdf {
 
         public enum DeterminismPolicy {
             Required,
-            BestEffortResearch
+            /** @deprecated Use {@link #BestEffort}; the native engine maps this to BestEffort. */
+            @Deprecated
+            BestEffortResearch,
+            BestEffort
         }
 
         public enum CompositingPolicy {

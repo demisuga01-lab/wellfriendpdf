@@ -8,16 +8,16 @@ The canonical rendering pipeline is:
 4. parse source content instructions;
 5. compile or inspect the immutable display list;
 6. choose a backend render plan from the page capability vector;
-7. execute scalar/SIMD CPU rendering, or an explicitly configured Research
-   backend when available;
+7. execute scalar/SIMD CPU rendering, or an explicitly configured optional
+   accelerator backend when available;
 8. render annotations, forms, optional-content state, OCR/searchable layers,
    and tagged/provenance side effects;
 9. encode requested output or return raw pixel evidence;
 10. record telemetry, failures, deterministic hashes, and resource use.
 
-Standard mode is deterministic and CPU-first. Research mode may add optional
-accelerators, but absence of those accelerators falls back to the Standard
-pipeline with an inactive capability report.
+Standard mode is deterministic and CPU-first. Explicitly enabled optional
+capabilities may add accelerators, but absence of those accelerators falls back
+to the CPU pipeline with an inactive capability report.
 
 The `render-corpus` CLI command added for the renderer-capability campaign runs
 this pipeline in-process across a real corpus and writes JSONL plus aggregate

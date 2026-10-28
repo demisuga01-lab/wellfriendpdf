@@ -21,4 +21,3 @@ jobs:
           test -f LICENSE
           grep -q "MIT License" LICENSE
           grep -q "standard" README.md
-          grep -q "research" README.md

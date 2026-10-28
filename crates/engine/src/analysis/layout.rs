@@ -515,9 +515,9 @@ fn build_line(mut items: Vec<Item>, line_height: f64, page_is_rtl: bool) -> Layo
         y1: 0.0,
     });
 
-    // Word-gap threshold: a gap wider than ~0.25 of the line height inserts a
+    // Word-gap threshold: a gap wider than WORD_GAP_EM of the line font size inserts a
     // space (document-relative, matching the default reader's word_gap_factor).
-    let word_gap = 0.25 * line_height;
+    let word_gap = crate::text::reading_order::WORD_GAP_EM * line_height;
     let mut ltr_text = String::new();
     let mut prev_right: Option<f64> = None;
     for it in &items {

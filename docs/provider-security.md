@@ -9,4 +9,4 @@ Supported secret-reference families:
 - OS secret store;
 - server secret-provider hook.
 
-External providers require explicit network permission, provider configuration, privacy acknowledgement, timeout and rate limits, and cost accounting. Server operators can enforce local-only OCR and prohibit Research.
+External providers require explicit network permission, provider configuration, privacy acknowledgement, timeout and rate limits, and cost accounting. Server operators can enforce local-only OCR and deny external network providers. Merging research mode into Standard did not enable any provider by default.

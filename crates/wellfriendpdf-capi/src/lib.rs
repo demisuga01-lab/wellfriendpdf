@@ -10775,6 +10775,7 @@ mod tests {
         assert!(error.is_null());
 
         let page_box = CString::new("media").unwrap();
+        // Deprecated research spellings are accepted aliases of Hybrid/BestEffort.
         let backend = CString::new("research-hybrid").unwrap();
         let compositing = CString::new("high-quality").unwrap();
         let annotations = CString::new("exclude").unwrap();
@@ -10838,7 +10839,7 @@ mod tests {
         );
         assert_eq!(
             parsed.backend,
-            wellfriendpdf_engine::render::BackendSelection::ResearchHybrid
+            wellfriendpdf_engine::render::BackendSelection::Hybrid
         );
         assert_eq!(
             parsed.compositing,
@@ -10864,6 +10865,10 @@ mod tests {
         assert_eq!(
             parsed.exactness,
             wellfriendpdf_engine::render::ExactnessPolicy::HighQualityExact
+        );
+        assert_eq!(
+            parsed.determinism,
+            wellfriendpdf_engine::render::DeterminismPolicy::BestEffort
         );
 
         unsafe {

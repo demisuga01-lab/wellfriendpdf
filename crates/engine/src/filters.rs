@@ -2023,8 +2023,7 @@ fn decode_params(
     }
 }
 
-#[allow(dead_code)]
-fn flate_decode(data: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn flate_decode(data: &[u8]) -> Result<Vec<u8>> {
     flate_decode_capped(data, MAX_FLATE_DECOMPRESSED_BYTES)
 }
 

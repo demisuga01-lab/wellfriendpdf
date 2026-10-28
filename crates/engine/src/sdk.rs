@@ -90,7 +90,7 @@ fn json_err(err: serde_json::Error) -> crate::WellfriendError {
     crate::WellfriendError::invalid_input(format!("JSON serialization error: {err}"))
 }
 
-/// Execute the deterministic ECBES research kernel over a caller-supplied
+/// Execute the deterministic ECBES edit-synthesis kernel over a caller-supplied
 /// provenance graph and candidate evidence. This does not mutate a PDF or
 /// generate candidates; it verifies influence closure and selects a qualified
 /// construction through the shared versioned report envelope.
@@ -100,9 +100,9 @@ pub fn evidence_constrained_edit_synthesis_json(request_json: &str) -> Result<St
             "edit synthesis request exceeds 32 MiB".into(),
         ));
     }
-    let request: crate::research_edit_synthesis::EvidenceConstrainedEditRequest =
+    let request: crate::edit_synthesis::EvidenceConstrainedEditRequest =
         serde_json::from_str(request_json).map_err(json_err)?;
-    let decision = crate::research_edit_synthesis::synthesize_evidence_constrained_edit(request)?;
+    let decision = crate::edit_synthesis::synthesize_evidence_constrained_edit(request)?;
     envelope("evidence_constrained_edit_synthesis", &decision)
 }
 
@@ -4688,7 +4688,8 @@ pub fn feature_report_json() -> Result<String> {
         },
         "runtime": {
             "schema_version": crate::runtime::RUNTIME_CONFIG_SCHEMA_VERSION,
-            "public_modes": ["standard", "research"],
+            "public_modes": ["standard"],
+            "deprecated_mode_aliases": ["research"],
             "default_mode": "standard",
             "standard_gpu_required": false,
             "minimum_standard": {
@@ -5344,7 +5345,8 @@ pub fn runtime_effective_config_json(config_json: Option<&str>) -> Result<String
     envelope("runtime_effective_config", &effective)
 }
 
-/// Runtime capability report for the two public modes.
+/// Runtime capability report for the single Standard mode and its optional
+/// capabilities (the former research-mode components).
 pub fn runtime_capabilities_json(config_json: Option<&str>) -> Result<String> {
     let cfg = runtime_config_from_json(config_json)?;
     let effective = cfg.effective(

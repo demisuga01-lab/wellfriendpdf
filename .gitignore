@@ -81,3 +81,6 @@ fuzz/artifacts/
 fuzz/Cargo.lock
 fuzz/target/
 fuzz/corpus/
+
+# local build/sync archives
+wellpdfsdk-fix-*.tar.gz

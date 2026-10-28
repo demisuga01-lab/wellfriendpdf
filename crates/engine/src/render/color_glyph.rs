@@ -1,3 +1,4 @@
+use crate::render::RoundByte;
 use std::io::{Cursor, Read};
 
 use crate::error::{Result, WellfriendError};
@@ -940,7 +941,7 @@ impl SvgState {
 fn color_with_alpha(mut color: PixelColor, opacity: f64, graphics_alpha: u8) -> PixelColor {
     let opacity = opacity.clamp(0.0, 1.0);
     let alpha = f64::from(color[3]) * opacity * (f64::from(graphics_alpha) / 255.0);
-    color[3] = alpha.round().clamp(0.0, 255.0) as u8;
+    color[3] = alpha.round_byte();
     color
 }
 

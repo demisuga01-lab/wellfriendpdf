@@ -25,6 +25,7 @@ pub(crate) mod glyph_metric_variations;
 pub(crate) mod gpos_instance;
 pub(crate) mod gvar_instance;
 pub mod hard_break;
+pub mod installed;
 mod instance_coordinates;
 pub(crate) mod jstf_instance;
 pub(crate) mod layout_instance;
@@ -57,6 +58,11 @@ pub mod vertical_fonts;
 pub mod writing_mode;
 pub use writing_mode::WritingMode;
 
+pub use installed::{
+    installed_font_covering, installed_font_faces, installed_font_named, installed_fonts_enabled,
+    set_installed_fonts_enabled, InstalledFontFace, InstalledFontProgram, InstalledFontProvider,
+    InstalledFontStyle,
+};
 pub use provider::{
     BundledFontProvider, FontMatch, FontMatchRequest, FontProvider, FontProviderSource,
     RegisteredFontProvider,

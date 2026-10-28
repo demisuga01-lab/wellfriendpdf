@@ -1337,10 +1337,19 @@ fn decode_jpeg_with_requested_size(
     ensure_decode_budget(width, height, channels)?;
     let max_decoded = expected_len(width, height, channels);
     decoder.set_max_decoding_buffer_size(max_decoded);
-    let pixels = decoder
+    let mut pixels = decoder
         .decode()
         .map_err(|e| WellfriendError::MalformedPdf(format!("JPEG decode failed: {e}")))?;
-    ensure_decoded_len(pixels.len(), width, height, channels, max_decoded)?;
+    fit_decoded_len(&mut pixels, width, height, channels, max_decoded)?;
+    if channels == 4 {
+        // jpeg-decoder returns 255 - v for every 4-component JPEG (plain CMYK
+        // and Adobe YCCK alike). PDF image samples are libjpeg's output, which
+        // Poppler and PDFium pass straight to the colour space and /Decode, so
+        // restore that convention here. Without it CMYK photos render dark.
+        for value in &mut pixels {
+            *value = 255 - *value;
+        }
+    }
     Ok(DecodedJpeg {
         pixels,
         width,
@@ -1444,8 +1453,8 @@ impl ImageDecoder {
         let mut normalised =
             Self::normalise_bit_depth(decompressed, width, height, selected_channels, bpc)?;
         let expected_size = expected_len(width, height, selected_channels);
-        ensure_decoded_len(
-            normalised.len(),
+        fit_decoded_len(
+            &mut normalised,
             width,
             height,
             selected_channels,
@@ -1551,7 +1560,10 @@ impl ImageDecoder {
         if !matches!(filter, "CCITTFaxDecode" | "CCF" | "JBIG2Decode") {
             return Ok(());
         }
-        if matches!(color_space, "DeviceGray" | "G") {
+        // 1-bit samples expanded to 0/255 grey are valid input for any
+        // one-component space; scanners commonly tag JBIG2 pages with a grey
+        // ICC profile. A multi-component ICC profile still fails downstream.
+        if matches!(color_space, "DeviceGray" | "G" | "CalGray" | "ICCBased") {
             return Ok(());
         }
         Err(WellfriendError::UnsupportedFeature(format!(
@@ -1644,8 +1656,8 @@ impl ImageDecoder {
         let mut normalised =
             Self::normalise_bit_depth(decompressed, width, height, raw_channels, bpc)?;
         let expected_raw_size = expected_len(width, height, raw_channels);
-        ensure_decoded_len(
-            normalised.len(),
+        fit_decoded_len(
+            &mut normalised,
             width,
             height,
             raw_channels,
@@ -1666,7 +1678,7 @@ impl ImageDecoder {
             Self::apply_decode_array(&mut normalised, raw_channels, dict)?;
         }
 
-        let (pixels, channels) = match color_space {
+        let (mut pixels, channels) = match color_space {
             "DeviceGray" | "G" => (normalised, 1u8),
             "CalGray" => {
                 let params = cmm::try_cal_gray_params_from_image_dict(dict, reader)
@@ -1703,7 +1715,7 @@ impl ImageDecoder {
         };
 
         let expected_size = expected_len(width, height, channels);
-        ensure_decoded_len(pixels.len(), width, height, channels, expected_size)?;
+        fit_decoded_len(&mut pixels, width, height, channels, expected_size)?;
 
         Ok(RawImage {
             width,
@@ -1723,12 +1735,21 @@ impl ImageDecoder {
         dict: &PdfDictionary,
         color_context: ImageColorContext<'_>,
     ) -> Result<RawImage> {
-        if raw.width != declared_width || raw.height != declared_height {
-            return Err(WellfriendError::MalformedPdf(format!(
-                "{label} monochrome codec dimensions {}x{} do not match declared {}x{}",
-                raw.width, raw.height, declared_width, declared_height
-            )));
-        }
+        // JBIG2/CCITT producers often round the page bitmap up by a pixel or
+        // two; the PDF's /Width and /Height are authoritative, so crop or
+        // edge-extend to them as Poppler and PDFium effectively do.
+        let raw = if raw.width != declared_width || raw.height != declared_height {
+            log::debug!(
+                "{label} monochrome codec dimensions {}x{} differ from declared {}x{}; fitting",
+                raw.width,
+                raw.height,
+                declared_width,
+                declared_height
+            );
+            fit_raw_image_dimensions(raw, declared_width, declared_height)?
+        } else {
+            raw
+        };
         if raw.channels != 1 || raw.bits_per_sample != 8 || !raw.is_valid() {
             return Err(WellfriendError::MalformedPdf(format!(
                 "{label} monochrome codec returned invalid {}-channel {}-bit samples",
@@ -1772,7 +1793,7 @@ impl ImageDecoder {
             let mut pixels = pixels;
             ensure_decode_budget(width, height, channels)?;
             let expected_size = expected_len(width, height, channels);
-            ensure_decoded_len(pixels.len(), width, height, channels, expected_size)?;
+            fit_decoded_len(&mut pixels, width, height, channels, expected_size)?;
             Self::apply_decode_array(&mut pixels, channels, dict)?;
             return Ok(RawImage {
                 width,
@@ -1794,6 +1815,19 @@ impl ImageDecoder {
         label: &str,
         dict: &PdfDictionary,
     ) -> Result<RawImage> {
+        // jpx::decode_with_limits drops to a lower resolution level when the
+        // full image would exceed the decode budget; accept that, as the
+        // explicitly reduced path does.
+        if raw.width < declared_width || raw.height < declared_height {
+            ensure_reduced_jpx_dimensions_within_original(
+                label,
+                declared_width,
+                declared_height,
+                raw.width,
+                raw.height,
+            )?;
+            return Self::finish_jpx_decoded_samples(raw, label, dict);
+        }
         ensure_jpx_dimensions_match(
             label,
             declared_width,
@@ -2029,6 +2063,15 @@ impl ColorSpaceConverter {
                 Ok((cmm::cal_rgb_bytes_to_rgb(&pixels, params), 3))
             }
             "DeviceCMYK" | "CMYK" => {
+                ensure_decode_budget(width, height, 4)?;
+                let mut pixels = pixels;
+                fit_decoded_len(
+                    &mut pixels,
+                    width,
+                    height,
+                    4,
+                    expected_len(width, height, 4),
+                )?;
                 ensure_cmyk_input_len("DeviceCMYK image ColorSpace", width, height, &pixels)?;
                 Ok((Self::cmyk_to_rgb(&pixels), 3))
             }
@@ -2044,7 +2087,8 @@ impl ColorSpaceConverter {
                     .ok_or_else(|| {
                         WellfriendError::MalformedPdf("ICC image dimensions overflow".into())
                     })?;
-                ensure_decoded_len(pixels.len(), width, height, channels, expected)?;
+                let mut pixels = pixels;
+                fit_decoded_len(&mut pixels, width, height, channels, expected)?;
                 crate::render::icc_conversion::convert_image(&pixels, dict, reader, color_options)
             }
             "Indexed" => Self::decode_indexed_with_options(
@@ -3240,20 +3284,26 @@ fn ensure_cmyk_input_len(label: &str, width: u32, height: u32, pixels: &[u8]) ->
 /// into a clean error instead of a multi-gigabyte `Vec` reservation.
 pub(crate) fn ensure_decode_budget(width: u32, height: u32, channels: u8) -> Result<()> {
     let pixels = u64::from(width).saturating_mul(u64::from(height));
-    let cap = crate::engine::max_decode_pixels();
-    if pixels > cap {
+    let channels = u64::from(channels.max(1));
+    // The budget is a ceiling on the *decoded output bytes* (one byte per sample),
+    // not raw pixel count. Gating on bytes means a low-channel image — e.g. a
+    // 1-bit JBIG2 soft mask on a large newspaper scan, expanded to one byte per
+    // sample — is not rejected for its pixel count alone, while a large
+    // multi-channel image is still bounded by the same memory ceiling. The byte
+    // budget is `max_decode_pixels() * 4`, i.e. the memory a maximum-size RGBA
+    // image was always allowed to use, so the effective ceiling is unchanged for
+    // the common RGB/RGBA case and only widens for narrow (mask/grayscale) images.
+    let byte_cap = crate::engine::max_decode_pixels().saturating_mul(4);
+    let decoded_bytes = pixels.saturating_mul(channels);
+    if decoded_bytes > byte_cap {
         return Err(WellfriendError::MalformedPdf(format!(
-            "image {width}x{height} = {pixels} pixels exceeds decode cap of {cap} pixels \
+            "image {width}x{height} x{channels}ch = {decoded_bytes} decoded bytes exceeds decode \
+             cap of {byte_cap} bytes \
              (raise WELLFRIENDPDF_MAX_DECODE_PIXELS if this is a legitimate image)"
         )));
     }
     // Guard the byte product against `usize` overflow (notably on 32-bit / wasm32).
-    let channels = u64::from(channels.max(1));
-    if pixels
-        .checked_mul(channels)
-        .and_then(|bytes| usize::try_from(bytes).ok())
-        .is_none()
-    {
+    if usize::try_from(decoded_bytes).is_err() {
         return Err(WellfriendError::MalformedPdf(format!(
             "image {width}x{height} x{channels} channels overflows addressable memory"
         )));
@@ -3261,19 +3311,167 @@ pub(crate) fn ensure_decode_budget(width: u32, height: u32, channels: u8) -> Res
     Ok(())
 }
 
-fn ensure_decoded_len(
-    actual_size: usize,
+/// Crop or edge-extend an 8-bit interleaved image to `width` x `height`,
+/// keeping its top-left corner fixed.
+pub(crate) fn fit_raw_image_dimensions(raw: RawImage, width: u32, height: u32) -> Result<RawImage> {
+    if raw.width == width && raw.height == height {
+        return Ok(raw);
+    }
+    if !raw.is_valid() || raw.bits_per_sample != 8 {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "image {}x{} with {} bits per sample cannot be fitted to {width}x{height}",
+            raw.width, raw.height, raw.bits_per_sample
+        )));
+    }
+    let channels = usize::from(raw.channels);
+    ensure_decode_budget(width, height, raw.channels)?;
+    let (src_w, src_h) = (raw.width as usize, raw.height as usize);
+    let mut pixels = Vec::with_capacity(expected_len(width, height, raw.channels));
+    for y in 0..height as usize {
+        let sy = y.min(src_h - 1);
+        let row = &raw.pixels[sy * src_w * channels..(sy + 1) * src_w * channels];
+        for x in 0..width as usize {
+            let sx = x.min(src_w - 1);
+            pixels.extend_from_slice(&row[sx * channels..(sx + 1) * channels]);
+        }
+    }
+    Ok(RawImage {
+        width,
+        height,
+        pixels,
+        ..raw
+    })
+}
+
+/// Box-filter an 8-bit interleaved image down so it fits within `max_width` x
+/// `max_height`, keeping its aspect ratio. Images already within the box (or
+/// malformed ones) are returned unchanged.
+pub(crate) fn box_downscale_to_fit(raw: RawImage, max_width: u32, max_height: u32) -> RawImage {
+    if raw.bits_per_sample != 8 || !raw.is_valid() || max_width == 0 || max_height == 0 {
+        return raw;
+    }
+    let factor = (raw.width as f64 / max_width as f64).max(raw.height as f64 / max_height as f64);
+    if factor <= 1.0 {
+        return raw;
+    }
+    let width = ((raw.width as f64 / factor).round() as u32).max(1);
+    let height = ((raw.height as f64 / factor).round() as u32).max(1);
+    box_downscale_exact(&raw, width, height)
+}
+
+/// Integer box average of an 8-bit interleaved image down to exactly
+/// `width` x `height` (each no larger than the source).
+pub(crate) fn box_downscale_exact(raw: &RawImage, width: u32, height: u32) -> RawImage {
+    let channels = usize::from(raw.channels);
+    let (src_w, src_h) = (raw.width as usize, raw.height as usize);
+    let (dst_w, dst_h) = (width as usize, height as usize);
+    let mut pixels = vec![0u8; dst_w * dst_h * channels];
+    // Source column span of every destination column, then per destination
+    // row: sum its source rows into per-sample column totals (a contiguous,
+    // vectorizable add) and total each column span. Same spans and rounding
+    // as averaging each destination box directly.
+    let spans: Vec<(usize, usize)> = (0..dst_w)
+        .map(|x| {
+            let sx0 = x * src_w / dst_w;
+            (sx0, ((x + 1) * src_w / dst_w).max(sx0 + 1).min(src_w))
+        })
+        .collect();
+    let row_len = src_w * channels;
+    let mut columns = vec![0u32; row_len];
+    for y in 0..dst_h {
+        let sy0 = y * src_h / dst_h;
+        let sy1 = ((y + 1) * src_h / dst_h).max(sy0 + 1).min(src_h);
+        columns.fill(0);
+        for sy in sy0..sy1 {
+            let row = &raw.pixels[sy * row_len..(sy + 1) * row_len];
+            for (total, &sample) in columns.iter_mut().zip(row) {
+                *total += u32::from(sample);
+            }
+        }
+        let out_row = &mut pixels[y * dst_w * channels..(y + 1) * dst_w * channels];
+        for (out, &(sx0, sx1)) in out_row.chunks_exact_mut(channels).zip(&spans) {
+            let count = ((sy1 - sy0) * (sx1 - sx0)) as u64;
+            for (channel, value) in out.iter_mut().enumerate() {
+                let sum: u64 = columns[sx0 * channels..sx1 * channels]
+                    .iter()
+                    .skip(channel)
+                    .step_by(channels)
+                    .map(|&total| u64::from(total))
+                    .sum();
+                *value = ((sum + count / 2) / count) as u8;
+            }
+        }
+    }
+    RawImage {
+        width,
+        height,
+        channels: raw.channels,
+        bits_per_sample: 8,
+        pixels,
+    }
+}
+
+/// Nearest-neighbour resample of an 8-bit interleaved image to `width` x
+/// `height`. Soft masks and stencil masks may legally be stored at a different
+/// resolution from the image they mask (PDF 32000-1 11.6.5.2, 8.9.6.3).
+pub(crate) fn resample_raw_image_nearest(
+    raw: &RawImage,
+    width: u32,
+    height: u32,
+) -> Result<RawImage> {
+    if raw.width == 0 || raw.height == 0 || raw.bits_per_sample != 8 || !raw.is_valid() {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "mask {}x{} cannot be resampled to {width}x{height}",
+            raw.width, raw.height
+        )));
+    }
+    let channels = usize::from(raw.channels);
+    ensure_decode_budget(width, height, raw.channels)?;
+    let (src_w, src_h) = (raw.width as usize, raw.height as usize);
+    let mut pixels = Vec::with_capacity(expected_len(width, height, raw.channels));
+    for y in 0..height as usize {
+        let sy = (y * src_h / height as usize).min(src_h - 1);
+        let row = &raw.pixels[sy * src_w * channels..(sy + 1) * src_w * channels];
+        for x in 0..width as usize {
+            let sx = (x * src_w / width as usize).min(src_w - 1);
+            pixels.extend_from_slice(&row[sx * channels..(sx + 1) * channels]);
+        }
+    }
+    Ok(RawImage {
+        width,
+        height,
+        channels: raw.channels,
+        bits_per_sample: 8,
+        pixels,
+    })
+}
+
+/// Bring decoded image data to exactly the size its dictionary declares.
+/// Producers routinely leave trailing bytes after the last row, and truncated
+/// streams are common; PDFium reads only the rows it needs and zero-fills a
+/// short tail (`cpdf_dib.cpp`), Poppler reads exactly the rows it needs. Do the
+/// same instead of refusing the image. Empty data is still an error.
+fn fit_decoded_len(
+    pixels: &mut Vec<u8>,
     width: u32,
     height: u32,
     channels: u8,
     expected_size: usize,
 ) -> Result<()> {
-    if actual_size == expected_size {
+    if pixels.len() == expected_size {
         return Ok(());
     }
-    Err(WellfriendError::MalformedPdf(format!(
-        "image {width}x{height} x{channels} channels decoded {actual_size} bytes, expected {expected_size}"
-    )))
+    if pixels.is_empty() {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "image {width}x{height} x{channels} channels decoded 0 bytes, expected {expected_size}"
+        )));
+    }
+    log::debug!(
+        "image {width}x{height} x{channels} channels decoded {} bytes, expected {expected_size}; fitting",
+        pixels.len()
+    );
+    pixels.resize(expected_size, 0);
+    Ok(())
 }
 
 fn ccitt_decode_params(
@@ -3493,7 +3691,91 @@ mod function_resource_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn box_downscale_exact_matches_direct_box_average() {
+        for (sw, sh, dw, dh, channels) in [
+            (7, 5, 3, 2, 1),
+            (10, 9, 4, 4, 3),
+            (5, 5, 5, 5, 4),
+            (33, 17, 8, 6, 1),
+        ] {
+            let pixels: Vec<u8> = (0..sw * sh * channels)
+                .map(|i| (i * 37 % 256) as u8)
+                .collect();
+            let raw = RawImage {
+                width: sw as u32,
+                height: sh as u32,
+                channels: channels as u8,
+                bits_per_sample: 8,
+                pixels: pixels.clone(),
+            };
+            let out = box_downscale_exact(&raw, dw as u32, dh as u32);
+            for y in 0..dh {
+                let (sy0, sy1) = (
+                    y * sh / dh,
+                    ((y + 1) * sh / dh).max(y * sh / dh + 1).min(sh),
+                );
+                for x in 0..dw {
+                    let (sx0, sx1) = (
+                        x * sw / dw,
+                        ((x + 1) * sw / dw).max(x * sw / dw + 1).min(sw),
+                    );
+                    for c in 0..channels {
+                        let mut sum = 0u64;
+                        for sy in sy0..sy1 {
+                            for sx in sx0..sx1 {
+                                sum += u64::from(pixels[(sy * sw + sx) * channels + c]);
+                            }
+                        }
+                        let count = ((sy1 - sy0) * (sx1 - sx0)) as u64;
+                        assert_eq!(
+                            out.pixels[(y * dw + x) * channels + c],
+                            ((sum + count / 2) / count) as u8
+                        );
+                    }
+                }
+            }
+        }
+    }
     use crate::images::encoder::ImageEncoder;
+
+    fn gray(width: u32, height: u32, pixels: Vec<u8>) -> RawImage {
+        RawImage {
+            width,
+            height,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels,
+        }
+    }
+
+    #[test]
+    fn decoded_buffers_are_fitted_to_the_declared_size() {
+        let mut long = vec![1, 2, 3, 4, 9, 9];
+        fit_decoded_len(&mut long, 2, 2, 1, 4).unwrap();
+        assert_eq!(long, vec![1, 2, 3, 4]);
+        let mut short = vec![1, 2, 3];
+        fit_decoded_len(&mut short, 2, 2, 1, 4).unwrap();
+        assert_eq!(short, vec![1, 2, 3, 0]);
+        assert!(fit_decoded_len(&mut Vec::new(), 2, 2, 1, 4).is_err());
+    }
+
+    #[test]
+    fn monochrome_codec_off_by_one_is_cropped_or_extended() {
+        // 3x2 codec bitmap for a 2x3 declared image: crop width, extend height.
+        let raw = gray(3, 2, vec![10, 20, 30, 40, 50, 60]);
+        let fitted = fit_raw_image_dimensions(raw, 2, 3).unwrap();
+        assert_eq!((fitted.width, fitted.height), (2, 3));
+        assert_eq!(fitted.pixels, vec![10, 20, 40, 50, 40, 50]);
+    }
+
+    #[test]
+    fn masks_resample_to_the_finer_resolution() {
+        let coarse = gray(2, 1, vec![0, 255]);
+        let fine = resample_raw_image_nearest(&coarse, 4, 2).unwrap();
+        assert_eq!(fine.pixels, vec![0, 0, 255, 255, 0, 0, 255, 255]);
+    }
 
     fn reader_with_icc_profile(profile_fields: &str) -> PdfReader {
         let mut pdf = b"%PDF-1.4\n".to_vec();
@@ -3804,9 +4086,9 @@ mod tests {
     }
 
     #[test]
-    fn dct_finish_rejects_short_cmyk_before_conversion() {
+    fn dct_finish_fits_short_cmyk_before_conversion() {
         let dict = PdfDictionary::empty();
-        let error = ImageDecoder::finish_dct_decoded_image(
+        let image = ImageDecoder::finish_dct_decoded_image(
             vec![0, 0, 0],
             1,
             1,
@@ -3815,13 +4097,8 @@ mod tests {
             &dict,
             ImageColorContext::default(),
         )
-        .expect_err("DCT CMYK finalizer must not drop trailing malformed samples");
-
-        assert!(matches!(error, WellfriendError::MalformedPdf(_)));
-        assert!(
-            format!("{error}").contains("image 1x1 x4 channels decoded 3 bytes, expected 4"),
-            "unexpected DCT CMYK length error: {error}"
-        );
+        .expect("short DCT CMYK samples are zero-filled");
+        assert_eq!((image.width, image.height, image.channels), (1, 1, 3));
     }
 
     #[test]
@@ -4229,20 +4506,20 @@ mod tests {
     }
 
     #[test]
-    fn color_space_converter_rejects_short_device_cmyk_input() {
+    fn color_space_converter_fits_short_device_cmyk_input() {
         let reader =
             crate::reader::PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf())
                 .unwrap();
         let dict = PdfDictionary::empty();
 
-        let error = ColorSpaceConverter::convert(vec![0, 0, 0], 1, 1, "DeviceCMYK", &dict, &reader)
-            .expect_err("DeviceCMYK conversion must not drop trailing malformed samples");
-        assert!(matches!(error, WellfriendError::MalformedPdf(_)));
+        // The missing K sample is zero-filled (no black), as PDFium does.
+        let (rgb, channels) =
+            ColorSpaceConverter::convert(vec![0, 0, 0], 1, 1, "DeviceCMYK", &dict, &reader)
+                .expect("short DeviceCMYK samples are zero-filled");
+        assert_eq!(channels, 3);
+        assert_eq!(rgb, vec![255, 255, 255]);
         assert!(
-            format!("{error}").contains(
-                "DeviceCMYK image ColorSpace decoded 3 bytes, expected 4 for 1x1 x4 channels"
-            ),
-            "unexpected DeviceCMYK converter length error: {error}"
+            ColorSpaceConverter::convert(Vec::new(), 1, 1, "DeviceCMYK", &dict, &reader).is_err()
         );
     }
 
@@ -4615,16 +4892,17 @@ mod tests {
     }
 
     #[test]
-    fn build_raw_image_rejects_mismatched_buffers() {
+    fn build_raw_image_fits_mismatched_buffers() {
+        // Like PDFium: a short stream is zero-filled, trailing bytes are ignored.
         let dict = PdfDictionary::empty();
         let short = ImageDecoder::build_raw_image_pub(vec![255], 2, 1, 8, "DeviceRGB", &dict)
-            .expect_err("short RGB image data must not be padded");
-        assert!(format!("{short}").contains("decoded 1 bytes, expected 6"));
+            .expect("short RGB image data is zero-filled");
+        assert_eq!(short.pixels, vec![255, 0, 0, 0, 0, 0]);
 
         let long =
             ImageDecoder::build_raw_image_pub(vec![1, 2, 3, 4], 1, 1, 8, "DeviceGray", &dict)
-                .expect_err("long grayscale image data must not be truncated");
-        assert!(format!("{long}").contains("decoded 4 bytes, expected 1"));
+                .expect("trailing grayscale bytes are ignored");
+        assert_eq!(long.pixels, vec![1]);
     }
 
     #[test]

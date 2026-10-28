@@ -563,6 +563,9 @@ public enum RenderContractAlphaMode
 public enum RenderContractExecutionMode
 {
     Standard,
+
+    /// <summary>Deprecated: research mode was merged into Standard. The native engine maps this value to Standard.</summary>
+    [System.Obsolete("Research mode was merged into Standard; use Standard.")]
     Research,
 }
 
@@ -570,7 +573,13 @@ public enum RenderContractBackendSelection
 {
     ScalarReference,
     StandardCpu,
+
+    /// <summary>Deprecated spelling of <see cref="Hybrid"/>; the native engine maps it to Hybrid.</summary>
+    [System.Obsolete("Use Hybrid.")]
     ResearchHybrid,
+
+    /// <summary>Guarded CPU hybrid dispatch with its own contract/cache identity.</summary>
+    Hybrid,
 }
 
 public enum RenderContractSmoothingPolicy
@@ -643,7 +652,12 @@ public enum RenderContractExactnessPolicy
 public enum RenderContractDeterminismPolicy
 {
     Required,
+
+    /// <summary>Deprecated spelling of <see cref="BestEffort"/>; the native engine maps it to BestEffort.</summary>
+    [System.Obsolete("Use BestEffort.")]
     BestEffortResearch,
+
+    BestEffort,
 }
 
 public enum RenderContractCompositingPolicy

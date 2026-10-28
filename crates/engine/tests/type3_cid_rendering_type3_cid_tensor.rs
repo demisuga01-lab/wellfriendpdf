@@ -64,9 +64,11 @@ fn render(pdf: Vec<u8>) -> PixelBuffer {
         .expect("type3_cid_rendering PDF renders")
 }
 
+/// Strict (HighQualityExact) rendering fails the page closed; compatibility
+/// rendering skips the glyph instead.
 fn render_error(pdf: Vec<u8>) -> WellfriendError {
     let engine = ContentEngine::open_bytes(pdf).expect("type3_cid_rendering PDF opens");
-    match engine.render_page(1, 72) {
+    match engine.render_page_with_mode(1, 72, wellfriendpdf_engine::RenderMode::HighQuality) {
         Ok(_) => panic!("type3_cid_rendering PDF must fail closed"),
         Err(error) => error,
     }

@@ -124,6 +124,7 @@ pub mod document_security;
 pub mod document_subsystems;
 pub mod ecbes_universal;
 pub mod edit_contracts;
+pub mod edit_synthesis;
 pub mod editable;
 pub mod editing;
 pub mod editing_transactions;
@@ -133,6 +134,7 @@ pub mod error;
 pub mod eval;
 mod ext_gstate_fonts;
 pub mod extract;
+mod fast_hash;
 pub mod filters;
 pub mod fonts;
 pub mod fonts_report;
@@ -165,7 +167,13 @@ pub mod prepress;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
-pub mod research_edit_synthesis;
+/// Deprecated path of [`edit_synthesis`] (ECBES). Research mode was merged
+/// into Standard and the module was renamed; this alias keeps old imports
+/// compiling.
+#[deprecated(note = "renamed to wellfriendpdf_engine::edit_synthesis")]
+pub mod research_edit_synthesis {
+    pub use crate::edit_synthesis::*;
+}
 pub mod runtime;
 pub mod scan_review;
 pub mod sdk;
@@ -188,6 +196,7 @@ pub mod structural;
 pub mod table_intelligence;
 pub mod tagged_structure;
 pub mod text;
+pub mod text_editor;
 pub mod text_reflow;
 pub mod typed_tables;
 pub mod universal_editing;
@@ -664,6 +673,10 @@ pub use text::{
     TextSemanticDocument, TextSemanticLine, TextSemanticOptions, TextSemanticPage,
     TextSemanticParagraph, TextSemanticSpan, TextSemanticWord, TextStructureContext,
     TextStructureEntry, TextStructurePageSummary, TextTraversalLimits,
+};
+pub use text_editor::{
+    Caret, CaretMove, EditorGlyph, EditorLine, EditorParagraph, PageTextLayout, TextEditOutcome,
+    TextEditSession,
 };
 pub use text_reflow::{
     analyze_geometric_region, analyze_semantic_layout, apply_reflow_document, apply_reflow_region,

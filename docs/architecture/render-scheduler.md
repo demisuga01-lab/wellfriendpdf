@@ -1,6 +1,6 @@
 # Render scheduler
 
-Rendering is scheduled through bounded Standard/Research resource policy. Work
+Rendering is scheduled through bounded Standard resource policy. Work
 is classified before admission so one expensive rendering or OCR job cannot
 exhaust unrelated metadata, parsing, editing, or standards work.
 

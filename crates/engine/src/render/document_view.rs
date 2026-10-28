@@ -592,6 +592,7 @@ pub struct CanonicalDocument {
     /// hashing would otherwise force a full read of path-backed inputs.
     document: Arc<PdfDocument>,
     digest: Arc<OnceLock<[u8; 32]>>,
+    revision: Arc<OnceLock<u64>>,
     original_byte_len: usize,
     object_identities: Arc<Vec<ObjectIdentity>>,
     pages: Arc<Mutex<HashMap<usize, PageIdentity>>>,
@@ -625,6 +626,7 @@ impl CanonicalDocument {
         Self {
             document: Arc::clone(document),
             digest: Arc::new(OnceLock::new()),
+            revision: Arc::new(OnceLock::new()),
             original_byte_len: document.reader().file_size(),
             object_identities: Arc::new(object_identities),
             pages: Arc::new(Mutex::new(HashMap::new())),
@@ -637,11 +639,15 @@ impl CanonicalDocument {
             .get_or_init(|| Sha256::digest(self.document.reader().file_bytes()).into())
     }
 
+    /// In-process cache identity. A fast content hash, not the SHA-256
+    /// [`Self::fingerprint`]: cache binding runs on every render and must not
+    /// hash (or, for path-backed input, read) the whole file.
     pub fn revision(&self) -> RevisionId {
-        let digest = self.digest();
-        RevisionId(u64::from_le_bytes([
-            digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
-        ]))
+        RevisionId(
+            *self
+                .revision
+                .get_or_init(|| self.document.reader().content_revision()),
+        )
     }
 
     pub fn original_byte_len(&self) -> usize {

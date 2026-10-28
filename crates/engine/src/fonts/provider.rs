@@ -89,6 +89,8 @@ pub enum FontProviderSource {
     UserRegistered,
     /// A configured deterministic system-font mapping was used.
     DeterministicSystemMapping,
+    /// A font installed on the host matched the requested name.
+    InstalledSystemFont,
 }
 
 /// A resolved font-program match.

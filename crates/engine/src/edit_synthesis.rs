@@ -1,6 +1,6 @@
 //! Evidence-Constrained Bidirectional Edit Synthesis (ECBES).
 //!
-//! This module is the deterministic research kernel for selecting between
+//! This module is the deterministic Standard kernel for selecting between
 //! competing PDF edit constructions. It does not infer edits or mutate PDF
 //! bytes. Existing source writers, layout engines, renderers, extractors and
 //! validators produce candidates and evidence; ECBES computes the bounded
@@ -653,7 +653,7 @@ pub fn synthesize_edit_plan(
     })
 }
 
-/// Full research entry point. Influence-closure evidence is computed here and
+/// Full entry point. Influence-closure evidence is computed here and
 /// replaces any caller assertion of the same obligation. A candidate may cover
 /// more graph nodes conservatively, but it may not omit any node in the exact
 /// transitive cone or name a node outside the graph.

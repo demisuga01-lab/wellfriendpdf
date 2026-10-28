@@ -45,9 +45,10 @@ fn long_version() -> &'static str {
     after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html, text-to-pdf, markdown-to-pdf, csv-to-pdf, json-to-pdf, svg-to-pdf\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  wellfriendpdf extract-text input.pdf --structured --format json\n  wellfriendpdf parser-report input.pdf --mode audit\n  wellfriendpdf pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  wellfriendpdf image-to-pdf img1.jpg img2.png --out combined.pdf\n  wellfriendpdf pdf-to-xlsx report.pdf --out report.xlsx\n  wellfriendpdf pdf-to-pptx deck.pdf --out deck.pptx\n  wellfriendpdf pdf-to-docx report.pdf --out report.docx\n  wellfriendpdf xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  wellfriendpdf watermark input.pdf --text CONFIDENTIAL --out out.pdf"
 )]
 struct Cli {
-    /// Public execution mode. Standard is the default; Research enables only
-    /// operator-configured optional accelerators/providers and falls back safely.
-    #[arg(long, global = true, value_name = "standard|research")]
+    /// Public execution mode. Standard is the only mode; optional capabilities
+    /// (GPU, hosted/cloud providers, advanced solvers) are enabled through the
+    /// runtime configuration. `research` is a deprecated alias of `standard`.
+    #[arg(long, global = true, value_name = "standard")]
     mode: Option<String>,
     /// Runtime configuration file (JSON or the documented TOML-like subset).
     #[arg(long = "runtime-config-file", global = true, value_name = "PATH")]
@@ -223,7 +224,7 @@ fn classify_error(err: &(dyn Error + 'static)) -> CliExitCode {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
-    /// Report runtime capabilities for Standard and Research modes
+    /// Report runtime capabilities for Standard mode and its optional capabilities
     Capabilities(RuntimeReportArgs),
     /// Validate or display the effective runtime configuration
     RuntimeConfig(RuntimeConfigArgs),
@@ -629,6 +630,11 @@ enum Commands {
     CodecIsolationReport(CodecIsolationReportArgs),
     /// List the fonts used in a PDF (pdffonts-equivalent)
     Fonts(FontsArgs),
+    /// List fonts installed on this host that rendering and editing may use
+    InstalledFonts(InstalledFontsArgs),
+    /// Emit a page's editor text layout (glyph quads, lines, paragraphs) as JSON,
+    /// or resolve a click/caret against it
+    TextLayout(TextLayoutArgs),
     /// List or extract embedded file attachments (pdfdetach-equivalent)
     Detach(DetachArgs),
     /// Convert a PDF to HTML or XML (pdftohtml-equivalent)
@@ -2596,6 +2602,9 @@ struct AnnotationsFlattenArgs {
         default_value = "annotations-flattened.pdf"
     )]
     output: PathBuf,
+    /// Leave AcroForm field widgets interactive (flatten other annotations only)
+    #[arg(long)]
+    keep_form_fields: bool,
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
@@ -2723,7 +2732,8 @@ struct PagesNupArgs {
     /// Page range: all, 1, 2-5, or 1,3,7
     #[arg(short, long, default_value = "all")]
     pages: String,
-    /// Rasterization DPI used for source pages
+    /// Rasterization DPI, used only for pages that cannot be placed as vector
+    /// Form XObjects
     #[arg(long, default_value = "144")]
     dpi: u32,
     /// Output file
@@ -2972,8 +2982,9 @@ struct RenderArgs {
     /// Contract exactness policy: auto, compatibility, or high-quality-exact.
     #[arg(long, default_value = "auto", value_parser = ["auto", "compatibility", "high-quality-exact"])]
     exactness: String,
-    /// Contract determinism policy: required or best-effort-research.
-    #[arg(long, default_value = "required", value_parser = ["required", "best-effort-research"])]
+    /// Contract determinism policy: required or best-effort
+    /// (`best-effort-research` is a deprecated alias of `best-effort`).
+    #[arg(long, default_value = "required", value_parser = ["required", "best-effort", "best-effort-research"])]
     determinism: String,
     /// Render annotations in contract mode: include or exclude.
     #[arg(long, default_value = "include", value_parser = ["include", "exclude"])]
@@ -3676,6 +3687,43 @@ struct FontsArgs {
 }
 
 #[derive(Parser)]
+struct InstalledFontsArgs {
+    /// Only faces whose family or PostScript name contains this (case-insensitive)
+    #[arg(long)]
+    filter: Option<String>,
+    /// Resolve this PDF font name (subset tag allowed) to the installed face used for it
+    #[arg(long)]
+    resolve: Option<String>,
+    /// Find the installed face that draws all of this text
+    #[arg(long)]
+    covering: Option<String>,
+    /// Emit JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct TextLayoutArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Page number (1-based)
+    #[arg(short, long, default_value = "1")]
+    page: usize,
+    /// Render resolution for --click pixel coordinates and device quads
+    #[arg(long, default_value = "72")]
+    dpi: u32,
+    /// Resolve a click at pixel X,Y (at --dpi) to a caret offset, word, line and paragraph
+    #[arg(long)]
+    click: Option<String>,
+    /// Include every glyph in the JSON (lines and paragraphs are always included)
+    #[arg(long)]
+    glyphs: bool,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
 struct DetachArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -4009,7 +4057,35 @@ struct CanonicalizeArgs {
     password: Option<String>,
 }
 
+/// A one-shot CLI process allocates and frees large image and page buffers.
+/// glibc serves each one above 128 KiB with a fresh `mmap` and unmaps it on
+/// free, so every new buffer page-faults again; keeping them in the heap
+/// lets later buffers reuse already-faulted pages (about a third fewer page
+/// faults on scanned pages). The process exits soon after, so the retained
+/// memory is not a concern.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_allocator_for_one_shot_process() {
+    extern "C" {
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    const M_TRIM_THRESHOLD: i32 = -1;
+    const M_TOP_PAD: i32 = -2;
+    const M_MMAP_THRESHOLD: i32 = -3;
+    // SAFETY: mallopt only adjusts glibc allocator tunables; it is called
+    // before any other thread exists. 32 MiB is the largest mmap threshold
+    // glibc accepts on 64-bit targets.
+    unsafe {
+        mallopt(M_MMAP_THRESHOLD, 32 * 1024 * 1024);
+        mallopt(M_TRIM_THRESHOLD, 1024 * 1024 * 1024);
+        mallopt(M_TOP_PAD, 64 * 1024 * 1024);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_allocator_for_one_shot_process() {}
+
 fn main() -> ExitCode {
+    tune_allocator_for_one_shot_process();
     match std::thread::Builder::new()
         .name("wellfriendpdf-cli".to_string())
         .stack_size(32 * 1024 * 1024)
@@ -4031,8 +4107,15 @@ fn main() -> ExitCode {
 fn run_cli() -> ExitCode {
     let cli = Cli::parse();
 
+    // Keep the panic's message and location (but not the default hook's noisy
+    // output) so an internal error can be reported and fixed.
+    static LAST_PANIC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     let default_panic_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    std::panic::set_hook(Box::new(|info| {
+        if let Ok(mut last) = LAST_PANIC.lock() {
+            last.get_or_insert_with(|| info.to_string());
+        }
+    }));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(cli)));
     std::panic::set_hook(default_panic_hook);
 
@@ -4044,8 +4127,13 @@ fn run_cli() -> ExitCode {
             ExitCode::from(code.code())
         }
         Err(_) => {
+            let detail = LAST_PANIC
+                .lock()
+                .ok()
+                .and_then(|mut last| last.take())
+                .unwrap_or_default();
             eprintln!(
-                "wellfriendpdf: internal error: command panicked; this is a bug, not a PDF-level error"
+                "wellfriendpdf: internal error: command panicked; this is a bug, not a PDF-level error: {detail}"
             );
             ExitCode::from(CliExitCode::Internal.code())
         }
@@ -4284,6 +4372,8 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::ParserReport(args) => run_parser_report(args),
         Commands::CodecIsolationReport(args) => run_codec_isolation_report(args),
         Commands::Fonts(args) => run_fonts(args),
+        Commands::InstalledFonts(args) => run_installed_fonts(args),
+        Commands::TextLayout(args) => run_text_layout(args),
         Commands::Detach(args) => run_detach(args),
         Commands::ToHtml(args) => run_to_html(args),
         Commands::VerifySig(args) => run_verify_sig(args, SignatureCliMode::LegacyInspect),
@@ -4349,36 +4439,48 @@ fn runtime_config_json_from_cli(cli: &Cli) -> Result<Option<String>, Box<dyn Err
     if let Some(env_cfg) = wellfriendpdf_engine::RuntimeConfig::from_env()? {
         cfg = env_cfg;
     }
-    if let Some(mode) = &cli.mode {
-        match mode.parse::<wellfriendpdf_engine::ExecutionMode>() {
-            Ok(parsed) => cfg.mode = parsed,
-            Err(err) if cli_mode_value_is_command_local(&cli.command, mode) => {
-                let _ = err;
-            }
-            Err(err) => return Err(Box::new(err)),
-        }
+    if let Some(mode) = cli
+        .mode
+        .as_ref()
+        .filter(|mode| !cli_mode_value_is_command_local(&cli.command, mode))
+    {
+        cfg.set_mode_str(mode)?;
+    }
+    if cfg
+        .deprecations
+        .iter()
+        .any(|d| d == wellfriendpdf_engine::RESEARCH_MODE_DEPRECATION)
+    {
+        eprintln!(
+            "warning: execution mode 'research' is deprecated and was merged into 'standard'; enable optional capabilities in the runtime config instead"
+        );
     }
     cfg.validate()?;
     Ok(Some(serde_json::to_string(&cfg)?))
 }
 
-fn cli_mode_value_is_command_local(command: &Commands, mode: &str) -> bool {
-    let value = mode.to_ascii_lowercase();
-    match command {
-        Commands::ParserReport(_) => matches!(value.as_str(), "strict" | "repair" | "audit"),
-        Commands::LayoutAnalyze(_)
-        | Commands::ReflowPreview(_)
-        | Commands::OverflowReport(_)
-        | Commands::ReflowConstraints(_)
-        | Commands::ReflowConfidence(_)
-        | Commands::ReflowRegion(_)
-        | Commands::ReflowDocument(_)
-        | Commands::ReflowOperationReport(_) => matches!(
-            value.as_str(),
-            "operator_preserving" | "geometric_block" | "semantic_document"
-        ),
-        _ => false,
-    }
+/// Subcommands that declare their own `--mode` share the argument id with the
+/// global execution `--mode`, so clap also reports their value (including its
+/// default) as `cli.mode`. For those commands the value always belongs to the
+/// subcommand; each one validates it itself.
+fn cli_mode_value_is_command_local(command: &Commands, _mode: &str) -> bool {
+    matches!(
+        command,
+        Commands::ParserReport(_)
+            | Commands::LayoutAnalyze(_)
+            | Commands::ReflowPreview(_)
+            | Commands::OverflowReport(_)
+            | Commands::ReflowConstraints(_)
+            | Commands::ReflowConfidence(_)
+            | Commands::ReflowRegion(_)
+            | Commands::ReflowDocument(_)
+            | Commands::ReflowOperationReport(_)
+            | Commands::EditText(_)
+            | Commands::XfaFlatten(_)
+            | Commands::XfaSanitize(_)
+            | Commands::Chunk(_)
+            | Commands::Canonicalize(_)
+    )
 }
 
 fn run_runtime_capabilities(
@@ -7358,7 +7460,13 @@ fn run_annotations_report(args: AnnotationsReportArgs) -> Result<(), Box<dyn Err
 fn run_annotations_flatten(args: AnnotationsFlattenArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let mut editor = wellfriendpdf_engine::PdfEditor::open_bytes(input)?;
+    // Form-field widgets are annotations too: flatten them with the rest, as
+    // MuPDF (pdf_bake_document) and PDFium (FPDFPage_Flatten) do, unless asked
+    // to keep the form interactive.
     editor.flatten_annotations();
+    if !args.keep_form_fields {
+        editor.flatten_forms();
+    }
     let bytes = editor.save_to_bytes(wellfriendpdf_engine::EditMode::FullRewrite)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
@@ -7368,6 +7476,7 @@ fn run_annotations_flatten(args: AnnotationsFlattenArgs) -> Result<(), Box<dyn E
                 "op": "annotations-flatten",
                 "output": args.output.display().to_string(),
                 "bytes": bytes.len(),
+                "form_fields_flattened": !args.keep_form_fields,
                 "diagnostics": ["annotations.flatten.common_appearance_subset"]
             })
         );
@@ -8380,11 +8489,13 @@ fn parse_render_determinism_cli(
 ) -> Result<wellfriendpdf_engine::render::DeterminismPolicy, Box<dyn Error>> {
     match name.to_ascii_lowercase().replace('_', "-").as_str() {
         "required" => Ok(wellfriendpdf_engine::render::DeterminismPolicy::Required),
+        "best-effort" => Ok(wellfriendpdf_engine::render::DeterminismPolicy::BestEffort),
         "best-effort-research" => {
-            Ok(wellfriendpdf_engine::render::DeterminismPolicy::BestEffortResearch)
+            eprintln!("warning: --determinism best-effort-research is deprecated; use best-effort");
+            Ok(wellfriendpdf_engine::render::DeterminismPolicy::BestEffort)
         }
         other => Err(usage_error(format!(
-            "unknown --determinism '{other}'; use required or best-effort-research"
+            "unknown --determinism '{other}'; use required or best-effort"
         ))),
     }
 }
@@ -8620,7 +8731,9 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     let render_mode = RenderMode::from_name(&args.render_quality)
         .ok_or_else(|| format!("unknown render quality '{}'", args.render_quality))?;
 
-    const PARALLEL_RENDER_PAGE_THRESHOLD: usize = 32;
+    // Render pages in parallel for any multi-page document; a one-shot render
+    // never reuses finished page rasters, so caches keep resources only.
+    const PARALLEL_RENDER_PAGE_THRESHOLD: usize = 2;
     let quality = args.quality;
     let encode_page = |page_num: usize,
                        document_cache: &mut RenderDocumentCache|
@@ -8731,12 +8844,13 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         if page_nums.len() >= PARALLEL_RENDER_PAGE_THRESHOLD {
             page_nums
                 .par_iter()
-                .map_init(RenderDocumentCache::new, |document_cache, &page_num| {
-                    (page_num, encode_page(page_num, document_cache))
-                })
+                .map_init(
+                    RenderDocumentCache::resources_only,
+                    |document_cache, &page_num| (page_num, encode_page(page_num, document_cache)),
+                )
                 .collect()
         } else {
-            let mut document_cache = RenderDocumentCache::new();
+            let mut document_cache = RenderDocumentCache::resources_only();
             page_nums
                 .iter()
                 .map(|&page_num| (page_num, encode_page(page_num, &mut document_cache)))
@@ -8753,10 +8867,13 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 .map(|error| (*page_num, error.clone()))
         })
         .collect::<Vec<_>>();
-    if !render_failures.is_empty() {
-        for (page_num, error) in &render_failures {
-            eprintln!("Warning: skipped page {}: {}", page_num, error);
-        }
+    for (page_num, error) in &render_failures {
+        eprintln!("Warning: skipped page {}: {}", page_num, error);
+    }
+    // Like Poppler, PDFium and MuPDF, one bad page must not cost the whole
+    // document: write every page that rendered and list the rest. Only a
+    // render where no page succeeded is an error.
+    if render_failures.len() == requested_count {
         let details = render_failures
             .iter()
             .take(8)
@@ -8764,14 +8881,11 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             .collect::<Vec<_>>()
             .join("; ");
         return Err(format!(
-            "render incomplete: produced 0/{requested_count} requested pages; no output was written; {details}"
+            "render failed: produced 0/{requested_count} requested pages; no output was written; {details}"
         )
         .into());
     }
 
-    // Do not create or truncate the destination until every requested page has
-    // rendered successfully. A non-zero render exit must never leave behind an
-    // archive that looks usable but silently omits rejected pages.
     let out_file = std::fs::File::create(&args.output)?;
     let mut zip = ZipWriter::new(out_file);
     let zip_opts = FileOptions::<()>::default()
@@ -8782,13 +8896,18 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     let mut contract_sidecars = 0usize;
     let mut font_substitution_sidecars = 0usize;
     for (page_num, output) in rendered_pages {
-        let output = output.map_err(|error| {
-            std::io::Error::other(format!(
-                "validated page {page_num} unexpectedly lost its render output: {error}"
-            ))
-        })?;
+        let Ok(output) = output else {
+            continue;
+        };
+        // PNG, JPEG and WebP are already compressed; deflating them again
+        // costs time for no size gain.
+        let page_opts = if matches!(output.extension, "png" | "jpg" | "jpeg" | "webp") {
+            FileOptions::<()>::default().compression_method(CompressionMethod::Stored)
+        } else {
+            zip_opts
+        };
         let filename = format!("page-{:03}.{}", page_num, output.extension);
-        zip.start_file(&filename, zip_opts)?;
+        zip.start_file(&filename, page_opts)?;
         zip.write_all(&output.bytes)?;
         if let Some(contract_json) = output.contract_json {
             let filename = format!("page-{:03}.contract.json", page_num);
@@ -8832,6 +8951,11 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 "dpi": dpi,
                 "pages_requested": page_nums.len(),
                 "pages_rendered": rendered_count,
+                "objects_skipped": wellfriendpdf_engine::render::skipped_render_object_count(),
+                "pages_failed": render_failures
+                    .iter()
+                    .map(|(page, error)| serde_json::json!({"page": page, "error": error}))
+                    .collect::<Vec<_>>(),
                 "render_contract": use_contract,
                 "contract_json_input": args.contract_json.is_some(),
                 "contract_json_sidecars": contract_sidecars,
@@ -11681,6 +11805,127 @@ fn page_size_label(s: &wellfriendpdf_engine::PageSize) -> String {
     }
 }
 
+fn run_installed_fonts(args: InstalledFontsArgs) -> Result<(), Box<dyn Error>> {
+    let started = std::time::Instant::now();
+    let faces = wellfriendpdf_engine::fonts::installed_font_faces();
+    let scan_seconds = started.elapsed().as_secs_f64();
+    let needle = args.filter.as_deref().map(str::to_lowercase);
+    let listed: Vec<_> = faces
+        .iter()
+        .filter(|face| {
+            needle.as_deref().is_none_or(|needle| {
+                face.family.to_lowercase().contains(needle)
+                    || face.post_script_name.to_lowercase().contains(needle)
+            })
+        })
+        .collect();
+    let resolved = args.resolve.as_deref().map(|name| {
+        wellfriendpdf_engine::fonts::installed_font_named(name, false, false, false)
+            .map(|program| program.face)
+    });
+    let covering = args.covering.as_deref().map(|text| {
+        wellfriendpdf_engine::fonts::installed_font_covering(
+            text,
+            &wellfriendpdf_engine::fonts::InstalledFontStyle::default(),
+        )
+        .map(|program| program.face)
+    });
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "enabled": wellfriendpdf_engine::fonts::installed_fonts_enabled(),
+                "faces_total": faces.len(),
+                "scan_seconds": scan_seconds,
+                "faces": listed,
+                "resolved": resolved,
+                "covering": covering,
+            }))?
+        );
+        return Ok(());
+    }
+    for face in &listed {
+        println!(
+            "{:<40} {:<44} w{:<4} {}{}",
+            face.family,
+            face.post_script_name,
+            face.weight,
+            if face.italic { "italic " } else { "" },
+            face.path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default()
+        );
+    }
+    eprintln!(
+        "{} of {} installed faces ({scan_seconds:.3}s scan)",
+        listed.len(),
+        faces.len()
+    );
+    if let Some(resolved) = resolved {
+        println!(
+            "resolve {}: {}",
+            args.resolve.as_deref().unwrap_or_default(),
+            resolved.map_or("none".to_string(), |face| face.post_script_name)
+        );
+    }
+    if let Some(covering) = covering {
+        println!(
+            "covering: {}",
+            covering.map_or("none".to_string(), |face| face.post_script_name)
+        );
+    }
+    Ok(())
+}
+
+fn run_text_layout(args: TextLayoutArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let layout = wellfriendpdf_engine::PageTextLayout::build(&engine, args.page)?;
+    let click = match args.click.as_deref() {
+        None => None,
+        Some(value) => {
+            let (x, y) = value
+                .split_once(',')
+                .ok_or_else(|| usage_error("--click expects X,Y in pixels"))?;
+            let pixel = [x.trim().parse::<f64>()?, y.trim().parse::<f64>()?];
+            let offset = layout.hit_test_device(pixel, args.dpi);
+            Some(serde_json::json!({
+                "pixel": pixel,
+                "page_point": layout.from_device(pixel, args.dpi),
+                "offset": offset,
+                "caret": offset.and_then(|offset| layout.caret(offset)),
+                "word": offset.map(|offset| {
+                    let range = layout.word_range(offset);
+                    serde_json::json!({"range": range, "text": layout.text_in(range)})
+                }),
+                "line": offset.map(|offset| layout.line_range(offset)),
+                "paragraph": offset.map(|offset| {
+                    let range = layout.paragraph_range(offset);
+                    serde_json::json!({"range": range, "text": layout.text_in(range)})
+                }),
+            }))
+        }
+    };
+    let mut value = serde_json::json!({
+        "page": layout.page,
+        "text": layout.text,
+        "editable": layout.editable,
+        "glyph_count": layout.glyphs.len(),
+        "lines": layout.lines,
+        "paragraphs": layout.paragraphs,
+        "page_box": layout.page_box,
+        "rotation": layout.rotation,
+        "device_transform": layout.device_transform(args.dpi),
+        "dpi": args.dpi,
+        "click": click,
+    });
+    if args.glyphs {
+        value["glyphs"] = serde_json::to_value(&layout.glyphs)?;
+    }
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
 fn run_fonts(args: FontsArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let fonts = engine.list_fonts()?;
@@ -13626,7 +13871,13 @@ fn run_optimize(args: OptimizeArgs) -> Result<(), Box<dyn Error>> {
         .map(|m| m.len() as usize)
         .unwrap_or(0);
     let engine = open_engine(&args.pdf, &args.password)?;
-    let (bytes, report) = wellfriendpdf_engine::optimize(&engine)?;
+    let (mut bytes, report) = wellfriendpdf_engine::optimize(&engine)?;
+    // Optimizing must never grow a file: when the rewrite is not smaller,
+    // keep the original bytes (decrypted copies excepted, which must be rewritten).
+    let kept_original = args.password.is_none() && input_size > 0 && bytes.len() >= input_size;
+    if kept_original {
+        bytes = std::fs::read(&args.pdf)?;
+    }
     std::fs::write(&args.output, &bytes)?;
     let saved = input_size.saturating_sub(bytes.len());
     if args.json {
@@ -13638,6 +13889,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<(), Box<dyn Error>> {
                 "input_bytes": input_size,
                 "output_bytes": bytes.len(),
                 "saved_bytes": saved,
+                "kept_original": kept_original,
                 "streams_recompressed": report.streams_recompressed,
             })
         );
@@ -13948,6 +14200,51 @@ mod tests {
     }
 
     #[test]
+    fn subcommand_local_mode_never_reaches_execution_mode() {
+        for argv in [
+            &[
+                "wellfriendpdf",
+                "edit-text",
+                "in.pdf",
+                "--query",
+                "a",
+                "--replacement",
+                "b",
+            ][..],
+            &["wellfriendpdf", "xfa-flatten", "in.pdf"][..],
+            &["wellfriendpdf", "chunk", "in.pdf"][..],
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("command line parses");
+            assert!(
+                super::runtime_config_json_from_cli(&cli).is_ok(),
+                "{argv:?} must not treat its own --mode as the execution mode"
+            );
+        }
+    }
+
+    #[test]
+    fn global_research_mode_is_a_deprecated_alias_of_standard() {
+        let cli = Cli::try_parse_from(["wellfriendpdf", "--mode", "research", "capabilities"])
+            .expect("command line parses");
+        let json = super::runtime_config_json_from_cli(&cli)
+            .expect("research alias is accepted")
+            .expect("runtime config JSON");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("runtime JSON");
+        assert_eq!(value["mode"], "standard");
+        assert!(value["deprecations"]
+            .as_array()
+            .expect("deprecations recorded")
+            .iter()
+            .any(|d| d == wellfriendpdf_engine::RESEARCH_MODE_DEPRECATION));
+        assert_eq!(value["resources"]["allow_gpu"], false);
+        assert_eq!(value["providers"]["allow_hosted_api"], false);
+
+        let cli = Cli::try_parse_from(["wellfriendpdf", "--mode", "turbo", "capabilities"])
+            .expect("command line parses");
+        assert!(super::runtime_config_json_from_cli(&cli).is_err());
+    }
+
+    #[test]
     fn display_truncation_is_utf8_boundary_safe() {
         assert_eq!(truncate("abcdef", 4), "abc\u{2026}");
         assert_eq!(truncate("aé日z", 3), "aé\u{2026}");
@@ -14016,9 +14313,14 @@ mod tests {
             Some(wellfriendpdf_engine::render::ExactnessPolicy::HighQualityExact)
         );
         assert_eq!(
-            parse_render_determinism_cli("best-effort-research").unwrap(),
-            wellfriendpdf_engine::render::DeterminismPolicy::BestEffortResearch
+            parse_render_determinism_cli("best-effort").unwrap(),
+            wellfriendpdf_engine::render::DeterminismPolicy::BestEffort
         );
+        assert_eq!(
+            parse_render_determinism_cli("best-effort-research").unwrap(),
+            wellfriendpdf_engine::render::DeterminismPolicy::BestEffort
+        );
+        assert!(parse_render_determinism_cli("best-effort-turbo").is_err());
         assert!(parse_render_contract_color_cli("1,2").is_err());
         assert!(parse_render_device_transform_cli("1,2,3").is_err());
         assert!(parse_render_alpha_mode_cli("unknown").is_err());

@@ -250,10 +250,33 @@ pub fn optimize(engine: &ContentEngine) -> Result<(Vec<u8>, OptimizeReport)> {
     let result =
         rewrite_document_with_mode(reader, WriterMode::XrefStreamWithObjStm, |_orig, obj| {
             if let PdfObject::Stream { dict, raw } = obj {
-                let has_filter = dict.contains_key("Filter");
-                // Never touch streams that already carry a filter (incl. image
+                if raw.is_empty() {
+                    return;
+                }
+                // A plain FlateDecode stream (no predictor parameters) can be
+                // re-deflated losslessly at the highest level, as qpdf's
+                // --recompress-flate does; keep it only when it shrinks.
+                let plain_flate = match dict.get("Filter") {
+                    Some(PdfObject::Name(name)) => name == "FlateDecode",
+                    Some(PdfObject::Array(items)) => {
+                        items.len() == 1 && items[0].as_name() == Some("FlateDecode")
+                    }
+                    _ => false,
+                } && !dict.contains_key("DecodeParms");
+                if plain_flate {
+                    if let Ok(decoded) = crate::filters::flate_decode(raw) {
+                        let compressed = crate::filters::flate_encode(&decoded, 9);
+                        if compressed.len() < raw.len() {
+                            *raw = compressed;
+                            dict.insert("Length", PdfObject::Integer(raw.len() as i64));
+                            recompressed += 1;
+                        }
+                    }
+                    return;
+                }
+                // Never touch streams that carry any other filter (incl. image
                 // codecs) — re-deriving their decode chain is out of scope here.
-                if has_filter || raw.is_empty() {
+                if dict.contains_key("Filter") {
                     return;
                 }
                 let compressed = crate::filters::flate_encode(raw, 9);
@@ -294,10 +317,16 @@ pub fn encrypt(engine: &ContentEngine, params: &EncryptParams) -> Result<Vec<u8>
     let mut noop = |_n: u32, _o: &mut PdfObject| {};
     let (objects, new_root, info_number) = rewrite_document_objects(reader, &mut noop)?;
 
+    let mode = if reader.uses_object_streams() {
+        WriterMode::XrefStreamWithObjStm
+    } else {
+        WriterMode::ClassicXref
+    };
     let writer = PdfWriter::new(objects, new_root)
         .with_info(info_number)
         .with_id(Some(file_id))
-        .with_encryption(state);
+        .with_encryption(state)
+        .with_mode(mode);
     writer.write()
 }
 

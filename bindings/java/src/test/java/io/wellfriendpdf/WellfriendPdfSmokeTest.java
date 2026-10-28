@@ -812,7 +812,7 @@ public final class WellfriendPdfSmokeTest {
             .withDeviceTransform(1, 0, 0, 1, 2, 3)
             .withBackground(12, 34, 56)
             .withPageBox(WellfriendPdf.RenderContract.PageBox.Trim)
-            .withExecutionMode(WellfriendPdf.RenderContract.ExecutionMode.Research)
+            .withExecutionMode(WellfriendPdf.RenderContract.ExecutionMode.Standard)
             .withBackend(WellfriendPdf.RenderContract.BackendSelection.ScalarReference)
             .withCompositing(WellfriendPdf.RenderContract.CompositingPolicy.HighQuality)
             .withAnnotations(WellfriendPdf.RenderContract.AnnotationPolicy.Exclude)
@@ -830,7 +830,7 @@ public final class WellfriendPdfSmokeTest {
             .withRenderingIntent(WellfriendPdf.RenderContract.RenderingIntent.Perceptual)
             .withColorManagement(WellfriendPdf.RenderContract.ColorManagementPolicy.DeterministicFallback)
             .withExactness(WellfriendPdf.RenderContract.ExactnessPolicy.HighQualityExact)
-            .withDeterminism(WellfriendPdf.RenderContract.DeterminismPolicy.BestEffortResearch)
+            .withDeterminism(WellfriendPdf.RenderContract.DeterminismPolicy.BestEffort)
             .withResourceBudget(20L, null, null, null);
         String json = built.toJson();
         assertTrue(json.contains("\"pixel_format\":\"Rgb8\""), "typed Java contract pixel format");
@@ -841,7 +841,7 @@ public final class WellfriendPdfSmokeTest {
         assertTrue(json.contains("\"clip\":{\"x\":1,\"y\":2,\"width\":3,\"height\":4}"),
             "typed Java contract clip");
         assertTrue(json.contains("\"page_box\":\"Trim\""), "typed Java contract page box");
-        assertTrue(json.contains("\"execution_mode\":\"Research\""), "typed Java contract execution mode");
+        assertTrue(json.contains("\"execution_mode\":\"Standard\""), "typed Java contract execution mode");
         assertTrue(json.contains("\"backend\":\"ScalarReference\""), "typed Java contract backend");
         assertTrue(json.contains("\"compositing\":\"HighQuality\""), "typed Java contract compositing");
         assertTrue(json.contains("\"annotations\":\"Exclude\""), "typed Java contract annotations");
@@ -859,7 +859,7 @@ public final class WellfriendPdfSmokeTest {
         assertTrue(json.contains("\"color_management\":\"DeterministicFallback\""),
             "typed Java contract color management");
         assertTrue(json.contains("\"exactness\":\"HighQualityExact\""), "typed Java contract exactness");
-        assertTrue(json.contains("\"determinism\":\"BestEffortResearch\""), "typed Java contract determinism");
+        assertTrue(json.contains("\"determinism\":\"BestEffort\""), "typed Java contract determinism");
         assertTrue(built.surfaceByteLength() == 60, "typed Java contract surface byte length");
         try {
             WellfriendPdf.RenderContract.fromJson(json.replace("\"page_box\":\"Trim\"", "\"page_box\":\"Bogus\""));

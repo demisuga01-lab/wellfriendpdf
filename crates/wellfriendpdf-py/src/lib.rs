@@ -4708,7 +4708,8 @@ fn feature_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
     parse_json_str(py, &json)
 }
 
-/// Runtime capability report for Standard and Research modes.
+/// Runtime capability report for Standard mode and its optional capabilities
+/// (the former research-mode components; `research` is a deprecated alias).
 #[pyfunction]
 #[pyo3(signature = (config_json=None))]
 fn runtime_capabilities(py: Python<'_>, config_json: Option<&str>) -> PyResult<Py<PyAny>> {

@@ -42,6 +42,12 @@ impl TextLine {
     }
 }
 
+/// Gap between two text runs on one line, in ems of the smaller font size,
+/// above which the runs are separate words. Justified LaTeX lines set word
+/// spaces as low as ~0.2 em (Times' own space is 0.25 em), while gaps inside
+/// a word stay under ~0.03 em, so 0.12 em separates the two with margin.
+pub const WORD_GAP_EM: f64 = 0.12;
+
 #[derive(Debug, Clone)]
 pub struct ReadingOrderReconstructor {
     /// Chunks whose y values differ by less than this factor x font_size are
@@ -71,7 +77,7 @@ impl Default for ReadingOrderReconstructor {
     fn default() -> Self {
         Self {
             line_y_tolerance_factor: 0.5,
-            word_gap_factor: 0.25,
+            word_gap_factor: WORD_GAP_EM,
             wide_gap_factor: 2.0,
             column_gap_min_points: 40.0,
             detect_columns: true,
@@ -841,6 +847,25 @@ mod tests {
             "wide gap should produce two spaces, got: {:?}",
             lines[0].text
         );
+    }
+
+    #[test]
+    fn justified_word_gap_below_a_quarter_em_still_inserts_a_space() {
+        // pdfTeX sets justified Times word spaces as low as ~0.2 em; such a
+        // gap must still separate words ("Llion also", not "Llionalso").
+        let r = ReadingOrderReconstructor::new();
+        let mut ca = chunk("Llion", 50.0, 700.0, 10.0);
+        ca.width = 25.0;
+        let cb = chunk("also", 50.0 + 25.0 + 2.0, 700.0, 10.0);
+        let lines = r.reconstruct(vec![ca, cb]);
+        assert_eq!(lines[0].text, "Llion also");
+
+        // A kern-sized gap inside a word does not.
+        let mut ca = chunk("exper", 50.0, 700.0, 10.0);
+        ca.width = 25.0;
+        let cb = chunk("imented", 50.0 + 25.0 + 0.3, 700.0, 10.0);
+        let lines = r.reconstruct(vec![ca, cb]);
+        assert_eq!(lines[0].text, "experimented");
     }
 
     #[test]

@@ -21,5 +21,5 @@ same supported-boundary semantics.
 
 Cache identity includes page number, DPI, render mode, tile rectangle,
 optional-content visibility, prepress colour state, source revision, and the
-effective Standard/Research configuration. Omitting any render-affecting input
+effective Standard configuration (including enabled optional capabilities). Omitting any render-affecting input
 is a correctness bug, not a cache optimization.

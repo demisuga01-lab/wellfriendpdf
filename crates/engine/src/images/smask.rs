@@ -131,15 +131,39 @@ impl SmaskLoader {
                 target_height,
                 reader,
                 limits,
-            ),
+            )
+            .or_else(|error| match error {
+                // Not plain 8-bit gray samples (JBIG2, CCITT, 1-bit, DCT...):
+                // decode the mask whole and box-average it to the reduced
+                // image's size, so the image keeps its cheaper decode.
+                WellfriendError::UnsupportedFeature(_) => {
+                    ImageDecoder::decode_with_limits(&smask_image_ref, reader, limits).map(|full| {
+                        if full.channels == 1
+                            && full.bits_per_sample == 8
+                            && full.width >= target_width
+                            && full.height >= target_height
+                            && (full.width, full.height) != (target_width, target_height)
+                        {
+                            crate::images::decoder::box_downscale_exact(
+                                &full,
+                                target_width,
+                                target_height,
+                            )
+                        } else {
+                            full
+                        }
+                    })
+                }
+                other => Err(other),
+            }),
             (None, None) => ImageDecoder::decode_with_limits(&smask_image_ref, reader, limits),
         }
         .map_err(|err| {
-                WellfriendError::MalformedPdf(format!(
-                    "image SMask decode failed for {}: {err}",
-                    main_image.xobject_name
-                ))
-            })?;
+            WellfriendError::MalformedPdf(format!(
+                "image SMask decode failed for {}: {err}",
+                main_image.xobject_name
+            ))
+        })?;
 
         Self::combine_rgba_with_matte(main_raw, smask_raw, matte).map(Some)
     }
@@ -152,15 +176,23 @@ impl SmaskLoader {
     /// Combine a main image with a grayscale alpha mask into RGBA, optionally
     /// undoing producer-side matte preblending from an image SMask `/Matte`.
     pub fn combine_rgba_with_matte(
-        main: RawImage,
-        mask: RawImage,
+        mut main: RawImage,
+        mut mask: RawImage,
         matte: Option<[u8; 3]>,
     ) -> Result<RawImage> {
+        // A soft mask may have its own resolution (PDF 32000-1 11.6.5.2); both
+        // map onto the same unit square. Scanned books pair a sharp JBIG2 text
+        // mask with a low-resolution colour background, so bring the coarser
+        // one up to the finer one's size rather than blurring the mask.
         if main.width != mask.width || main.height != mask.height {
-            return Err(WellfriendError::MalformedPdf(format!(
-                "image SMask dimensions {}x{} do not match image {}x{}",
-                mask.width, mask.height, main.width, main.height
-            )));
+            let width = main.width.max(mask.width);
+            let height = main.height.max(mask.height);
+            if (main.width, main.height) != (width, height) {
+                main = crate::images::decoder::resample_raw_image_nearest(&main, width, height)?;
+            }
+            if (mask.width, mask.height) != (width, height) {
+                mask = crate::images::decoder::resample_raw_image_nearest(&mask, width, height)?;
+            }
         }
 
         let pixel_count =
@@ -176,10 +208,10 @@ impl SmaskLoader {
                 mask.channels
             )));
         }
-        ensure_smask_buffer_len("mask", mask.pixels.len(), pixel_count)?;
+        fit_smask_buffer_len("mask", &mut mask.pixels, pixel_count)?;
         match main.channels {
-            1 => ensure_smask_buffer_len("main image", main.pixels.len(), pixel_count)?,
-            3 => ensure_smask_buffer_len("main image", main.pixels.len(), pixel_count * 3)?,
+            1 => fit_smask_buffer_len("main image", &mut main.pixels, pixel_count)?,
+            3 => fit_smask_buffer_len("main image", &mut main.pixels, pixel_count * 3)?,
             4 => {
                 return Err(WellfriendError::UnsupportedFeature(
                     "image SMask combine does not support a pre-alpha main image".to_string(),
@@ -397,13 +429,24 @@ fn smask_source_window_is_compatible(
         && matches!(smask_image.bits_per_component, 1 | 2 | 4 | 8 | 16)
 }
 
-fn ensure_smask_buffer_len(role: &str, actual: usize, expected: usize) -> Result<()> {
-    if actual == expected {
+/// Fit a decoded main-image or alpha buffer to the declared pixel count:
+/// drop trailing bytes and zero-fill a short tail, as PDFium does, rather than
+/// refusing the whole image. Empty data is still an error.
+fn fit_smask_buffer_len(role: &str, pixels: &mut Vec<u8>, expected: usize) -> Result<()> {
+    if pixels.len() == expected {
         return Ok(());
     }
-    Err(WellfriendError::MalformedPdf(format!(
-        "image SMask {role} decoded {actual} bytes, expected {expected}"
-    )))
+    if pixels.is_empty() {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "image SMask {role} decoded 0 bytes, expected {expected}"
+        )));
+    }
+    log::debug!(
+        "image SMask {role} decoded {} bytes, expected {expected}; fitting",
+        pixels.len()
+    );
+    pixels.resize(expected, 0);
+    Ok(())
 }
 
 fn smask_matte_rgb(dict: &PdfDictionary, main_color_space: &str) -> Result<Option<[u8; 3]>> {
@@ -432,7 +475,16 @@ fn smask_matte_rgb(dict: &PdfDictionary, main_color_space: &str) -> Result<Optio
             "image SMask /Matte is empty".to_string(),
         ));
     }
-    let Some(color) = ColorSpaceHandler::try_from_components(main_color_space, &comps, 1.0) else {
+    // /Matte is in the image's colour space. ICC-based and calibrated spaces
+    // are approximated by the device space with the same component count;
+    // the matte only un-blends edge pixels, so this is visually exact enough.
+    let device_space = match (main_color_space, comps.len()) {
+        ("ICCBased" | "CalGray", 1) => "DeviceGray",
+        ("ICCBased" | "CalRGB", 3) => "DeviceRGB",
+        ("ICCBased", 4) => "DeviceCMYK",
+        (other, _) => other,
+    };
+    let Some(color) = ColorSpaceHandler::try_from_components(device_space, &comps, 1.0) else {
         return Err(WellfriendError::UnsupportedFeature(format!(
             "image SMask /Matte uses unsupported color space /{main_color_space}"
         )));
@@ -447,15 +499,20 @@ fn smask_required_positive_u32(
     short_key: &str,
     label: &str,
 ) -> Result<u32> {
+    // Tolerate real-valued /Width and /Height (e.g. ABBYY writes `884.0`) by
+    // rounding, as Poppler/PDFium/MuPDF do, rather than dropping the soft mask.
     let value = dict
-        .get_integer(key)
-        .or_else(|| dict.get_integer(short_key));
+        .get(key)
+        .or_else(|| dict.get(short_key))
+        .and_then(PdfObject::as_number);
     match value {
-        Some(number) if number > 0 => u32::try_from(number).map_err(|_| {
-            WellfriendError::MalformedPdf(format!(
-                "{label} /{key} exceeds renderer dimension limit"
-            ))
-        }),
+        Some(number) if number.is_finite() && number.round() >= 1.0 => {
+            u32::try_from(number.round() as i64).map_err(|_| {
+                WellfriendError::MalformedPdf(format!(
+                    "{label} /{key} exceeds renderer dimension limit"
+                ))
+            })
+        }
         Some(_) => Err(WellfriendError::MalformedPdf(format!(
             "{label} /{key} must be a positive integer"
         ))),
@@ -622,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn combine_rgba_rejects_short_mask_buffer() {
+    fn combine_rgba_fits_short_and_long_mask_buffers() {
         let main = RawImage {
             width: 2,
             height: 1,
@@ -630,16 +687,29 @@ mod tests {
             bits_per_sample: 8,
             pixels: vec![0, 0, 0, 50, 50, 50],
         };
-        let mask = RawImage {
+        let short_mask = RawImage {
             width: 2,
             height: 1,
             channels: 1,
             bits_per_sample: 8,
             pixels: vec![128],
         };
-        let error = SmaskLoader::combine_rgba(main, mask)
-            .expect_err("short SMask alpha buffer must not be padded");
-        assert!(format!("{error}").contains("image SMask mask decoded 1 bytes, expected 2"));
+        let combined = SmaskLoader::combine_rgba(main.clone(), short_mask)
+            .expect("short SMask alpha buffer is zero-filled like PDFium");
+        assert_eq!(combined.pixels[3], 128);
+        assert_eq!(combined.pixels[7], 0);
+
+        let long_mask = RawImage {
+            width: 2,
+            height: 1,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels: vec![128, 255, 7, 7],
+        };
+        let combined = SmaskLoader::combine_rgba(main, long_mask)
+            .expect("trailing SMask bytes are ignored like Poppler and PDFium");
+        assert_eq!(combined.pixels.len(), 8);
+        assert_eq!(combined.pixels[7], 255);
     }
 
     #[test]
@@ -931,9 +1001,12 @@ mod tests {
             ]),
         );
 
-        let error =
-            smask_matte_rgb(&dict, "CalRGB").expect_err("unsupported matte color must fail");
+        let error = smask_matte_rgb(&dict, "Lab").expect_err("unsupported matte color must fail");
         assert!(format!("{error}").contains("image SMask /Matte uses unsupported color space"));
+        // ICC-based and calibrated spaces use the device space with the same
+        // number of components.
+        assert_eq!(smask_matte_rgb(&dict, "ICCBased").unwrap(), Some([0, 0, 0]));
+        assert_eq!(smask_matte_rgb(&dict, "CalRGB").unwrap(), Some([0, 0, 0]));
     }
 
     #[test]

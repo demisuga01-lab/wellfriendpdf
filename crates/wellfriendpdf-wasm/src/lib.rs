@@ -10,6 +10,8 @@ mod story_session;
 
 #[cfg(target_arch = "wasm32")]
 mod image_fragments;
+#[cfg(target_arch = "wasm32")]
+mod text_editor;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {

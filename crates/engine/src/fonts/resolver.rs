@@ -871,7 +871,9 @@ pub fn lookup_cid_width(cid: u32, desc_dict: &PdfDictionary) -> f64 {
                 for (offset, width_obj) in widths.iter().enumerate() {
                     if c1.saturating_add(offset as u32) == cid {
                         if let Some(width) = width_obj.as_number() {
-                            return width;
+                            // Negative advances (OCR producer artifacts) render as
+                            // a zero advance, matching the simple-font path.
+                            return width.max(0.0);
                         }
                     }
                 }
@@ -895,7 +897,7 @@ pub fn lookup_cid_width(cid: u32, desc_dict: &PdfDictionary) -> f64 {
                 idx += 1;
 
                 if cid >= c1 && cid <= c2 {
-                    return width;
+                    return width.max(0.0);
                 }
             }
         }
@@ -1225,11 +1227,10 @@ fn validate_cid_horizontal_metrics(
     reader: Option<&PdfReader>,
 ) -> std::result::Result<(), String> {
     if let Some(dw) = desc_dict.get("DW") {
-        let value = finite_metric_number(dw, reader)
+        // A non-finite /DW cannot be laid out, but a negative one is tolerated
+        // (see the /W negative-width note below) rather than dropping the font.
+        finite_metric_number(dw, reader)
             .ok_or_else(|| "CID font malformed /DW: expected finite number".to_string())?;
-        if value < 0.0 {
-            return Err("CID font malformed /DW: width is negative".to_string());
-        }
     }
     let Some(w_obj) = desc_dict.get("W") else {
         return Ok(());
@@ -1252,18 +1253,18 @@ fn validate_cid_horizontal_metrics(
         match entry {
             PdfObject::Array(values) => {
                 for (offset, width_obj) in values.iter().enumerate() {
-                    let width = finite_metric_number(width_obj, reader).ok_or_else(|| {
+                    // The spec asks for non-negative glyph widths, but OCR
+                    // producers (ABBYY, used by many IA scans) emit negative /W
+                    // entries on their invisible text layer. Poppler/PDFium/MuPDF
+                    // keep the font and use the declared metric rather than
+                    // dropping every glyph in it; match that. Only a non-finite
+                    // value (NaN/inf) is still rejected, since it cannot be laid out.
+                    finite_metric_number(width_obj, reader).ok_or_else(|| {
                         format!(
                             "CID font malformed /W: array width entry {} is not finite",
                             offset + 1
                         )
                     })?;
-                    if width < 0.0 {
-                        return Err(format!(
-                            "CID font malformed /W: array width entry {} is negative",
-                            offset + 1
-                        ));
-                    }
                 }
                 idx += 1;
             }
@@ -1277,12 +1278,11 @@ fn validate_cid_horizontal_metrics(
                 if idx >= widths.len() {
                     return Err("CID font malformed /W: missing range width".to_string());
                 }
-                let width = finite_metric_number(&widths[idx], reader).ok_or_else(|| {
+                // Negative range widths tolerated for the same reason as the
+                // array form above; only non-finite values are rejected.
+                finite_metric_number(&widths[idx], reader).ok_or_else(|| {
                     "CID font malformed /W: range width is not finite".to_string()
                 })?;
-                if width < 0.0 {
-                    return Err("CID font malformed /W: range width is negative".to_string());
-                }
                 idx += 1;
             }
         }

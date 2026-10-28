@@ -22,6 +22,7 @@ use crate::render::buffer::{PixelBuffer, PixelColor};
 use crate::render::cmm::ColorTransformOptions;
 use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::transform::{Transform2D, Viewport};
+use crate::render::RoundByte;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -694,7 +695,7 @@ fn quantize_shading_channel(value: f32, dither_offset: f32, dither: bool) -> u8 
     } else {
         scaled
     };
-    adjusted.round().clamp(0.0, 255.0) as u8
+    adjusted.round_byte()
 }
 
 #[inline]
@@ -708,7 +709,7 @@ fn quantize_shading_color(color: RenderColor, x: i32, y: i32, dither: bool) -> P
         quantize_shading_channel(color.r, offset, dither),
         quantize_shading_channel(color.g, offset, dither),
         quantize_shading_channel(color.b, offset, dither),
-        (color.a.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8,
+        (color.a.clamp(0.0, 1.0) * 255.0).round_byte(),
     ]
 }
 

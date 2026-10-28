@@ -109,12 +109,15 @@ pub struct ServerConfig {
     /// system temp dir (or the `WELLFRIENDPDF_JOB_RESULT_DIR` env override). Tests set
     /// this to a unique dir so on-disk cleanup can be verified in isolation.
     pub job_result_dir: Option<String>,
-    /// Canonical engine runtime configuration. Publicly exposes only Standard
-    /// and Research; host policy may still force Standard.
+    /// Canonical engine runtime configuration. Standard is the only mode;
+    /// optional capabilities are enabled by explicit runtime-config switches.
     pub runtime_config: wellfriendpdf_engine::RuntimeConfig,
-    /// Administrative policy: disallow Research even if a request asks for it.
+    /// Deprecated no-op (`WELLFRIENDPDF_FORCE_STANDARD`): Standard is the only
+    /// mode. Still parsed so existing deployments start; logs a warning.
     pub force_standard: bool,
-    /// Administrative policy: allow Research when explicitly configured.
+    /// Deprecated no-op (`WELLFRIENDPDF_ALLOW_RESEARCH`): research mode was
+    /// merged into Standard. Still parsed so existing deployments start; logs
+    /// a warning.
     pub allow_research: bool,
     /// Administrative policy: permit externally hosted OCR/document providers.
     pub allow_external_network_providers: bool,
@@ -464,8 +467,9 @@ impl ServerConfig {
         } else if let Ok(mode) = std::env::var("WELLFRIENDPDF_MODE")
             .or_else(|_| std::env::var("WELLFRIENDPDF_RUNTIME_MODE"))
         {
-            if let Ok(mode) = mode.parse::<wellfriendpdf_engine::ExecutionMode>() {
-                cfg.runtime_config = wellfriendpdf_engine::RuntimeConfig::from_mode(mode);
+            // `research` is accepted as a deprecated alias of `standard`.
+            if let Ok(runtime) = wellfriendpdf_engine::RuntimeConfig::from_mode_str(&mode) {
+                cfg.runtime_config = runtime;
             }
         }
 
@@ -564,6 +568,46 @@ impl ServerConfig {
             .iter()
             .find(|entry| entry.key_id == key_id)
             .map(|entry| entry.key.clone())
+    }
+
+    /// Startup warnings for deprecated research-mode configuration. The server
+    /// still starts; these settings are ignored or mapped to Standard.
+    pub fn deprecation_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.force_standard {
+            warnings.push(
+                "WELLFRIENDPDF_FORCE_STANDARD is deprecated and ignored: Standard is the only execution mode"
+                    .to_string(),
+            );
+        }
+        if self.allow_research {
+            warnings.push(
+                "WELLFRIENDPDF_ALLOW_RESEARCH is deprecated and ignored: research mode was merged into Standard; enable optional capabilities explicitly in the runtime config"
+                    .to_string(),
+            );
+        }
+        if self
+            .runtime_config
+            .deprecations
+            .iter()
+            .any(|d| d == wellfriendpdf_engine::RESEARCH_MODE_DEPRECATION)
+        {
+            warnings.push(
+                "runtime mode 'research' is deprecated and was mapped to 'standard'".to_string(),
+            );
+        }
+        if self
+            .runtime_config
+            .deprecations
+            .iter()
+            .any(|d| d == wellfriendpdf_engine::RESEARCH_CONFIG_SECTION_DEPRECATION)
+        {
+            warnings.push(
+                "runtime config section 'research' is deprecated; rename it to 'advanced'"
+                    .to_string(),
+            );
+        }
+        warnings
     }
 
     pub fn runtime_policy(&self) -> wellfriendpdf_engine::HostRuntimePolicy {

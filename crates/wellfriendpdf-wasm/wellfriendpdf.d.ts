@@ -174,8 +174,10 @@ export type RenderContractPixelFormat = "Rgba8" | "Bgra8" | "Rgb8" | "Bgr8" | "G
 export type RenderContractAlphaMode = "Premultiplied" | "Straight" | "Opaque" | "premultiplied" | "straight" | "opaque";
 export type RenderContractBudgetValue = bigint | number;
 export type RenderContractPageBox = "Media" | "Crop" | "Bleed" | "Trim" | "Art" | "media" | "crop" | "bleed" | "trim" | "art";
-export type RenderContractExecutionMode = "Standard" | "Research" | "standard" | "research";
-export type RenderContractBackendSelection = "ScalarReference" | "StandardCpu" | "ResearchHybrid" | "scalar-reference" | "standard-cpu" | "research-hybrid";
+/** Standard is the only execution mode; "Research"/"research" are deprecated aliases mapped to Standard. */
+export type RenderContractExecutionMode = "Standard" | "standard" | "Research" | "research";
+/** "ResearchHybrid"/"research-hybrid" are deprecated aliases of "Hybrid". */
+export type RenderContractBackendSelection = "ScalarReference" | "StandardCpu" | "Hybrid" | "scalar-reference" | "standard-cpu" | "hybrid" | "ResearchHybrid" | "research-hybrid";
 export type RenderContractCompositingPolicy = "Compatibility" | "HighQuality" | "compatibility" | "high-quality";
 export type RenderContractIncludePolicy = "Include" | "Exclude" | "include" | "exclude";
 export type RenderContractSmoothingPolicy = "Disabled" | "Antialiased" | "Subpixel" | "disabled" | "antialiased" | "subpixel";
@@ -186,7 +188,8 @@ export type RenderContractOverprintPolicy = "Disabled" | "Preview" | "PreserveSe
 export type RenderContractRenderingIntent = "RelativeColorimetric" | "AbsoluteColorimetric" | "Perceptual" | "Saturation" | "relative-colorimetric" | "absolute-colorimetric" | "perceptual" | "saturation";
 export type RenderContractColorManagementPolicy = "PortableQcms" | "NativeLittleCms" | "DeterministicFallback" | "portable-qcms" | "native-little-cms" | "deterministic-fallback";
 export type RenderContractExactnessPolicy = "Compatibility" | "HighQualityExact" | "compatibility" | "high-quality-exact";
-export type RenderContractDeterminismPolicy = "Required" | "BestEffortResearch" | "required" | "best-effort-research";
+/** "BestEffortResearch"/"best-effort-research" are deprecated aliases of "BestEffort". */
+export type RenderContractDeterminismPolicy = "Required" | "BestEffort" | "required" | "best-effort" | "BestEffortResearch" | "best-effort-research";
 
 export class WellfriendRenderContract {
   static fromJson(json: string): WellfriendRenderContract;

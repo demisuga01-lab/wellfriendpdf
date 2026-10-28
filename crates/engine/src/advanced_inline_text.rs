@@ -155,14 +155,30 @@ impl PositionSnapshot {
 #[derive(Debug, Clone)]
 struct SavedPosition {
     leading: Option<f64>,
+    ctm: GeometryCtm,
     position: Option<PositionSnapshot>,
     in_text: bool,
     font_known: bool,
 }
 
+/// The CTM tracked only to place glyphs. Its `Debug` output is constant:
+/// scanner-state fingerprints compare inherited text state, and the same Form
+/// shown at different positions still inherits the same text state.
+#[derive(Clone, Copy)]
+struct GeometryCtm(Matrix);
+
+impl std::fmt::Debug for GeometryCtm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GeometryCtm")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PositionState {
     leading: Option<f64>,
+    /// Current transformation matrix of this content stream (page space for
+    /// page content), so source glyphs can be placed on the page.
+    ctm: GeometryCtm,
     position: Option<PositionSnapshot>,
     in_text: bool,
     font_known: bool,
@@ -173,6 +189,7 @@ impl Default for PositionState {
     fn default() -> Self {
         Self {
             leading: Some(0.0),
+            ctm: GeometryCtm(IDENTITY_MATRIX),
             position: None,
             in_text: false,
             font_known: true,
@@ -209,6 +226,7 @@ impl PositionState {
         }
         Ok(Self {
             leading: self.leading,
+            ctm: self.ctm,
             position: None,
             in_text: false,
             font_known: self.font_known,
@@ -273,6 +291,7 @@ impl PositionState {
                 }
                 self.stack.push(SavedPosition {
                     leading: self.leading,
+                    ctm: self.ctm,
                     position: self.position.clone(),
                     in_text: self.in_text,
                     font_known: self.font_known,
@@ -281,6 +300,7 @@ impl PositionState {
             "Q" => {
                 if let Some(saved) = self.stack.pop() {
                     self.leading = saved.leading;
+                    self.ctm = saved.ctm;
                     self.font_known = saved.font_known;
                     // ISO 32000-2 erratum 368: q/Q inside a text object also
                     // save/restore Tm and Tlm. Crossing a BT/ET boundary has no
@@ -310,6 +330,11 @@ impl PositionState {
                     Ok(Some(_)) => self.font_known = true,
                     Ok(None) => {}
                     Err(()) => self.font_known = false,
+                }
+            }
+            "cm" => {
+                if let Some(matrix) = numbers::<6>(operands) {
+                    self.ctm = GeometryCtm(concat_matrix(&matrix, &self.ctm.0));
                 }
             }
             "TL" => self.leading = numbers::<1>(operands).map(|v| v[0]),
@@ -367,6 +392,7 @@ impl PositionState {
                                 ));
                             };
                             token.source_position = self.position.clone();
+                            token.source_ctm = self.ctm.0;
                             token.generated_basis = match self
                                 .basis_stack
                                 .iter()
@@ -748,7 +774,9 @@ pub(super) fn rewrite_positioned(
         let shift = selected_displacement[0] - cross;
         let units = token.font_size * token.horizontal_scaling / 100.0;
         if shift.abs() > 1e-9 && units.abs() > 1e-9 {
-            body.extend_from_slice(format!("[{}] TJ\n", number(-shift * 1000.0 / units)?).as_bytes());
+            body.extend_from_slice(
+                format!("[{}] TJ\n", number(-shift * 1000.0 / units)?).as_bytes(),
+            );
         }
     }
     match token.operator.as_str() {

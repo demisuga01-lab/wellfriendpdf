@@ -288,7 +288,13 @@ impl Program {
                             at += 1;
                             target
                         };
-                        let target = unicode_string(&target)?;
+                        // One undecodable destination (e.g. a lone surrogate
+                        // inside Tesseract's identity range <0000> <FFFF>)
+                        // leaves that code unmapped, as in MuPDF and PDFium,
+                        // instead of discarding the whole ToUnicode map.
+                        let Ok(target) = unicode_string(&target) else {
+                            continue;
+                        };
                         unicode_bytes = unicode_bytes.saturating_add(target.len());
                         if unicode_bytes > 64 * 1024 * 1024 {
                             return Err("ToUnicode decoded text budget".into());
@@ -566,4 +572,26 @@ fn increment(bytes: &[u8], delta: u32) -> Result<Vec<u8>> {
         return Err("ToUnicode destination increment overflow".into());
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tesseract_identity_to_unicode_range_skips_lone_surrogates() {
+        // Tesseract's GlyphLessFont OCR layer maps every code to itself; the
+        // range crosses the UTF-16 surrogate block, which must not discard
+        // the whole map.
+        let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+            1 begincodespacerange <0000> <FFFF> endcodespacerange\n\
+            1 beginbfrange <0000> <FFFF> <0000> endbfrange\n\
+            endcmap CMapName currentdict /CMap defineresource pop end end";
+        let program = Program::parse(cmap, Kind::Unicode, None, false).expect("identity ToUnicode");
+        let get = |value: u32| program.unicode.get(&Code::new(value, 2).unwrap()).cloned();
+        assert_eq!(get(0x0041).as_deref(), Some("A"));
+        assert_eq!(get(0x00E9).as_deref(), Some("é"));
+        assert_eq!(get(0xD800), None);
+        assert_eq!(get(0xFFFD).as_deref(), Some("\u{FFFD}"));
+    }
 }

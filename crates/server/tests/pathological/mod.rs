@@ -151,9 +151,10 @@ pub fn deeply_nested_forms_pdf(depth: u32) -> Vec<u8> {
     // invokes Form k+1 via /Fm(k+1), except the last which just paints.
     for k in 0..depth {
         let obj_num = 5 + k;
+        // The invoked name must match the resource key below (/Fm{k+1}) so
+        // the chain really nests `depth` levels and reaches the depth guard.
         let content: Vec<u8> = if k + 1 < depth {
-            let child = 5 + k + 1;
-            format!("q /Fm{} Do Q\n", child).into_bytes()
+            format!("q /Fm{} Do Q\n", k + 1).into_bytes()
         } else {
             b"0 0 10 10 re f\n".to_vec()
         };

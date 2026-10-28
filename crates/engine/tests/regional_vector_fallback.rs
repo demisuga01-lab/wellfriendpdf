@@ -2828,22 +2828,16 @@ fn svg_multicomponent_devicen_group_color_space_opaque_transparency_group_form_x
 }
 
 #[test]
-fn svg_calibrated_group_color_space_alpha_transparency_group_form_xobject_returns_typed_refusal() {
+fn svg_calibrated_group_color_space_alpha_transparency_group_form_xobject_keeps_the_page() {
     let engine = ContentEngine::open_bytes(pdf_with_alpha_transparency_group_form_xobject(
         "<< /S /Transparency /CS [/CalRGB << /WhitePoint [0.9505 1 1.089] /Gamma [1 1 1] >>] >>",
     ))
     .unwrap();
-    let error = match engine.render_page_svg(1, 72) {
-        Ok(_) => panic!("alpha-bearing calibrated group must fail typed, not replay natively"),
-        Err(error) => error,
-    };
-    let message = format!("{error}");
-    assert!(
-        message.contains(
-            "group color space /CalRGB requires unsupported active group color-space compositing"
-        ),
-        "{message}"
-    );
+    // The group cannot be composited in its calibrated space; compatibility
+    // output skips it rather than failing the export.
+    engine
+        .render_page_svg(1, 72)
+        .expect("compatibility SVG export keeps the page");
 }
 
 #[test]
@@ -2858,7 +2852,8 @@ fn svg_device_group_color_space_alpha_transparency_group_form_xobject_stays_whol
         "alpha inside a DeviceRGB transparency-group Form must keep whole-page SVG raster fallback"
     );
     assert!(
-        page.svg.contains("data:image/png;base64,"),
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
         "semantic DeviceRGB alpha-group SVG fallback should embed raster output"
     );
 }
@@ -2875,7 +2870,8 @@ fn svg_inherited_alpha_isolated_transparency_group_form_xobject_stays_whole_page
         "inherited alpha must make isolated transparency-group semantics non-inert"
     );
     assert!(
-        page.svg.contains("data:image/png;base64,"),
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
         "inherited-alpha isolated group SVG fallback should embed raster output"
     );
 }
@@ -2892,7 +2888,8 @@ fn svg_alpha_isolated_transparency_group_form_xobject_stays_whole_page_fallback(
         "alpha inside isolated transparency-group Form must keep whole-page SVG raster fallback"
     );
     assert!(
-        page.svg.contains("data:image/png;base64,"),
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
         "semantic alpha-group SVG fallback should embed raster output"
     );
 }
@@ -3963,7 +3960,8 @@ fn svg_output_inline_image_uses_regional_embed() {
         .svg
         .contains("data-wellfriend-region-bounds=\"40.000 30.000 20.000 10.000\""));
     assert!(
-        page.svg.contains("data:image/png;base64,"),
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
         "inline image should be embedded as bounded PNG"
     );
     assert!(
@@ -4030,7 +4028,10 @@ fn svg_output_inline_image_resource_color_space_uses_regional_embed() {
         "inline image with resource-named DeviceRGB color space should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4075,7 +4076,10 @@ fn svg_output_inline_image_resource_calrgb_color_space_uses_regional_embed() {
         "inline image with resource-named CalRGB color space should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4103,7 +4107,10 @@ fn svg_output_inline_image_resource_indexed_color_space_uses_regional_embed() {
         "inline image with 8-bit resource-named Indexed color space should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4132,7 +4139,10 @@ fn svg_output_inline_image_resource_indexed_1bit_color_space_uses_regional_embed
         "inline image with 1-bit resource-named Indexed color space should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4161,7 +4171,10 @@ fn svg_output_inline_image_resource_calrgb_dct_color_space_uses_regional_embed()
         "DCT inline image with resource-named CalRGB color space should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4190,7 +4203,10 @@ fn svg_output_inline_image_resource_indexed_dct_color_space_uses_regional_embed(
         "DCT inline image with resource-named Indexed color space should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4219,7 +4235,10 @@ fn svg_output_inline_image_resource_iccbased_color_space_uses_regional_embed() {
         "inline image with resource-named ICCBased color space should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4248,7 +4267,10 @@ fn svg_output_inline_image_resource_iccbased_dct_color_space_uses_regional_embed
         "DCT inline image with resource-named ICCBased color space should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4277,7 +4299,10 @@ fn svg_output_inline_image_resource_separation_color_space_uses_regional_embed()
         "opaque resource-named Separation inline image should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4311,7 +4336,10 @@ fn svg_output_inline_image_resource_separation_dct_color_space_uses_regional_emb
         "DCT resource-named Separation inline image should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4341,7 +4369,10 @@ fn svg_output_inline_image_resource_devicen_single_dct_color_space_uses_regional
         "DCT resource-named one-colorant DeviceN inline image should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4370,7 +4401,10 @@ fn svg_output_inline_image_resource_devicen_color_space_uses_regional_embed() {
         "opaque resource-named DeviceN inline image should stay regional SVG"
     );
     assert!(page.has_regional_images);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
 }
 
@@ -4422,7 +4456,8 @@ fn svg_output_inline_image_mask_uses_regional_embed() {
     );
     assert!(page.has_regional_images);
     assert!(
-        page.svg.contains("data:image/png;base64,"),
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
         "inline image mask should be embedded as bounded PNG"
     );
     assert!(
@@ -4581,7 +4616,8 @@ fn svg_output_image_xobject_mask_uses_regional_embed() {
     );
     assert!(page.has_regional_images);
     assert!(
-        page.svg.contains("data:image/png;base64,"),
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
         "Image XObject mask should be embedded as bounded PNG"
     );
     assert!(
@@ -4740,8 +4776,9 @@ fn svg_output_rotated_image_xobject_uses_affine_regional_embed() {
     );
     assert!(page.has_regional_images);
     assert!(
-        page.svg.contains("data:image/png;base64,"),
-        "rotated image should be embedded as bounded PNG"
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
+        "rotated image should be embedded as a bounded raster"
     );
     assert!(
         page.svg.contains("transform=\"matrix("),
@@ -4793,7 +4830,10 @@ fn svg_output_image_xobject_resource_color_space_uses_regional_embed() {
     assert!(page
         .svg
         .contains("data-wellfriend-region-bounds=\"40.000 30.000 20.000 10.000\""));
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
     assert!(page.svg.contains("<path"));
     let blue_path = page
         .svg
@@ -4825,7 +4865,10 @@ fn svg_alpha_image_xobject_uses_native_opacity() {
     assert!(page.has_regional_images);
     assert!(page.svg.contains("<image"), "{}", page.svg);
     assert!(page.svg.contains("opacity=\"0.500\""), "{}", page.svg);
-    assert!(page.svg.contains("data:image/png;base64,"));
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,"))
+    );
 }
 
 #[test]
@@ -5398,31 +5441,25 @@ fn ps_output_uncolored_tiling_pattern_stroke_replays_native_tiles_with_caller_co
 }
 
 #[test]
-fn svg_output_uncolored_tiling_pattern_color_setting_tile_is_typed_refusal() {
+fn svg_output_uncolored_tiling_pattern_color_setting_tile_keeps_the_page() {
+    // Compatibility output keeps the page: the raster fallback skips the tile
+    // it cannot replay instead of failing the whole export.
     let engine =
         ContentEngine::open_bytes(pdf_with_uncolored_tiling_pattern_color_setting_tile()).unwrap();
-    let error = match engine.render_page_svg(1, 72) {
-        Ok(_) => panic!("PaintType 2 tiles that set colour must fail closed"),
-        Err(error) => error,
-    };
-    assert!(
-        format!("{error}").contains("forced vector color space"),
-        "unexpected refusal: {error}"
-    );
+    engine
+        .render_page_svg(1, 72)
+        .expect("compatibility SVG export keeps the page");
 }
 
 #[test]
-fn ps_output_uncolored_tiling_pattern_color_setting_tile_is_typed_refusal() {
+fn ps_output_uncolored_tiling_pattern_color_setting_tile_keeps_the_page() {
+    // Compatibility output keeps the page: the raster fallback skips the tile
+    // it cannot replay instead of failing the whole export.
     let engine =
         ContentEngine::open_bytes(pdf_with_uncolored_tiling_pattern_color_setting_tile()).unwrap();
-    let error = match engine.render_page_ps(1, 72) {
-        Ok(_) => panic!("PaintType 2 tiles that set colour must fail closed"),
-        Err(error) => error,
-    };
-    assert!(
-        format!("{error}").contains("forced vector color space"),
-        "unexpected refusal: {error}"
-    );
+    engine
+        .render_page_ps(1, 72)
+        .expect("compatibility PostScript export keeps the page");
 }
 
 #[test]
@@ -5441,7 +5478,12 @@ fn svg_output_colored_tiling_pattern_image_resource_tile_replays_bounded_image()
         "{}",
         page.svg
     );
-    assert!(page.svg.contains("data:image/png;base64,"), "{}", page.svg);
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
+        "{}",
+        page.svg
+    );
     assert!(page.svg.contains("fill=\"#0000FF\""), "{}", page.svg);
     assert!(page.svg.contains("fill=\"#00FF00\""), "{}", page.svg);
 }
@@ -6194,7 +6236,12 @@ fn svg_output_resource_separation_nonlinear_tint_axial_shading_stays_whole_page_
         page.is_rasterized,
         "nonlinear Separation tint transforms must not be flattened into endpoint SVG gradients"
     );
-    assert!(page.svg.contains("data:image/png;base64,"), "{}", page.svg);
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
+        "{}",
+        page.svg
+    );
     assert!(!page.svg.contains("<linearGradient"), "{}", page.svg);
 }
 
@@ -6241,7 +6288,12 @@ fn svg_output_resource_devicen_multi_input_axial_shading_stays_whole_page_raster
         page.is_rasterized,
         "multi-input DeviceN tint transforms must not be flattened into endpoint SVG gradients"
     );
-    assert!(page.svg.contains("data:image/png;base64,"), "{}", page.svg);
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
+        "{}",
+        page.svg
+    );
     assert!(!page.svg.contains("<linearGradient"), "{}", page.svg);
 }
 
@@ -6268,7 +6320,12 @@ fn svg_output_resource_devicen_nonlinear_tint_axial_shading_stays_whole_page_ras
         page.is_rasterized,
         "nonlinear DeviceN tint transforms must not be flattened into endpoint SVG gradients"
     );
-    assert!(page.svg.contains("data:image/png;base64,"), "{}", page.svg);
+    assert!(
+        (page.svg.contains("data:image/png;base64,")
+            || page.svg.contains("data:image/jpeg;base64,")),
+        "{}",
+        page.svg
+    );
     assert!(!page.svg.contains("<linearGradient"), "{}", page.svg);
 }
 
@@ -7051,8 +7108,10 @@ fn svg_output_safe_extgstate_font_stays_vector_and_applies_font_size() {
         "safe ExtGState Font should not force SVG rasterization"
     );
     assert!(page.svg.contains("<path"), "{}", page.svg);
+    // Glyph outlines are defined once and placed with <use>; an 18 pt size on
+    // a 2048-unit em gives a scale of 18 / 2048 = 0.00879.
     assert!(
-        page.svg.contains("d=\"M19.85 60.00") && page.svg.contains("L11.48 47.62"),
+        page.svg.contains("<use xlink:href=\"#g0\" transform=\"matrix(0.00879 0.00000 0.00000 -0.00879 10.00 60.00)\""),
         "ExtGState font size should emit 18pt text outlines: {}",
         page.svg
     );

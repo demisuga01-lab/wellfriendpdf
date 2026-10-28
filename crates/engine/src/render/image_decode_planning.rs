@@ -213,7 +213,7 @@ impl ImageDecodeTargetFormat {
         match backend {
             BackendSelection::ScalarReference
             | BackendSelection::StandardCpu
-            | BackendSelection::ResearchHybrid => Self::RawImage8Interleaved,
+            | BackendSelection::Hybrid => Self::RawImage8Interleaved,
         }
     }
 
@@ -231,8 +231,9 @@ pub(crate) enum ImageDecodeBackendIdentity {
     StandardCpu,
     /// Active scalar-reference contract path, sharing raw output but not cache identity.
     ScalarReference,
-    /// Reserved for research/hybrid backends once they own distinct decode output.
-    ResearchHybrid,
+    /// Hybrid backend (formerly `ResearchHybrid`); shares raw output but keeps
+    /// a distinct cache identity until it owns distinct decode output.
+    Hybrid,
 }
 
 impl ImageDecodeBackendIdentity {
@@ -240,7 +241,7 @@ impl ImageDecodeBackendIdentity {
         match self {
             Self::StandardCpu => "standard-cpu",
             Self::ScalarReference => "scalar-reference",
-            Self::ResearchHybrid => "research-hybrid",
+            Self::Hybrid => "hybrid",
         }
     }
 }
@@ -250,7 +251,7 @@ impl From<BackendSelection> for ImageDecodeBackendIdentity {
         match value {
             BackendSelection::ScalarReference => Self::ScalarReference,
             BackendSelection::StandardCpu => Self::StandardCpu,
-            BackendSelection::ResearchHybrid => Self::ResearchHybrid,
+            BackendSelection::Hybrid => Self::Hybrid,
         }
     }
 }
@@ -3016,21 +3017,21 @@ mod tests {
             base,
             false,
             ImageDecodePlanIdentity::for_backend(
-                BackendSelection::ResearchHybrid,
+                BackendSelection::Hybrid,
                 "test-default-render-contract",
             ),
         );
         let hybrid_key = hybrid_plan.cache_key.to_cache_string();
         assert_ne!(
             baseline, hybrid_key,
-            "cache keys must not collide between StandardCpu and ResearchHybrid decode output"
+            "cache keys must not collide between StandardCpu and Hybrid decode output"
         );
         assert_ne!(
             scalar_key, hybrid_key,
             "cache keys must not collide between backend identities"
         );
         assert!(
-            hybrid_key.contains(":fmt:raw-image-8-interleaved:backend:research-hybrid:"),
+            hybrid_key.contains(":fmt:raw-image-8-interleaved:backend:hybrid:"),
             "{hybrid_key}"
         );
     }

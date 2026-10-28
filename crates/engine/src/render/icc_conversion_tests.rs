@@ -266,9 +266,23 @@ fn inline_decoder_and_shared_colour_converter_use_the_same_alternate_route() {
     ).unwrap();
     assert_eq!(image.channels, 4);
     assert_eq!(image.pixels, vec![0, 255, 0, 255]);
+    // A short sample buffer is zero-filled to the declared size (as PDFium
+    // does) rather than refusing the image; empty data still fails.
     assert!(
         crate::images::decoder::ColorSpaceConverter::convert_with_options(
             vec![255],
+            2,
+            1,
+            "ICCBased",
+            &dict,
+            &reader,
+            options()
+        )
+        .is_ok()
+    );
+    assert!(
+        crate::images::decoder::ColorSpaceConverter::convert_with_options(
+            Vec::new(),
             2,
             1,
             "ICCBased",

@@ -1,0 +1,62 @@
+{
+  "configuration": {
+    "cpu": 2,
+    "document_count": 100,
+    "dpi": 144,
+    "final_raster_cache": "disabled",
+    "iterations": 3,
+    "seed": 20261003
+  },
+  "determinism": {
+    "checked_engine_documents": 400,
+    "failures": [],
+    "qualified_engine_documents": 400
+  },
+  "document_medians_ms": {
+    "mupdf": {
+      "count": 100,
+      "max": 82.233495,
+      "mean": 17.98494,
+      "median_absolute_deviation": 2.899906,
+      "p05": 10.211021,
+      "p50": 14.314821,
+      "p90": 28.546397,
+      "p95": 34.324982,
+      "p99": 45.86306
+    },
+    "pdfium": {
+      "count": 100,
+      "max": 212.789223,
+      "mean": 30.825829,
+      "median_absolute_deviation": 3.58484,
+      "p05": 15.695341,
+      "p50": 23.754239,
+      "p90": 36.831134,
+      "p95": 72.795264,
+      "p99": 200.247785
+    },
+    "poppler": {
+      "count": 100,
+      "max": 236.042088,
+      "mean": 54.492869,
+      "median_absolute_deviation": 9.046973,
+      "p05": 29.207745,
+      "p50": 46.582081,
+      "p90": 75.747723,
+      "p95": 107.362443,
+      "p99": 205.693341
+    },
+    "wellfriendpdf": {
+      "count": 100,
+      "max": 239.445804,
+      "mean": 88.192012,
+      "median_absolute_deviation": 22.861974,
+      "p05": 37.161741,
+      "p50": 85.802,
+      "p90": 128.806614,
+      "p95": 159.531565,
+      "p99": 218.646204
+    }
+  },
+  "schema": "wellfriendpdf.pebq.retained-resources.v1"
+}

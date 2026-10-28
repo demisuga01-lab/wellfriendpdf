@@ -78,13 +78,51 @@ pub fn decode(data: &[u8]) -> Result<RawImage> {
 }
 
 pub(crate) fn decode_with_limits(data: &[u8], limits: &DecodeLimits) -> Result<RawImage> {
+    let data = &*repair_jp2c_length(data);
     validate_jpx_limits(data, limits)?;
-    decode_with_settings(data, DecodeSettings::default(), limits)
+    // Very high-resolution scans (1,000+ dpi pages run past 200 megapixels)
+    // exceed the decode budget at full size. JPEG 2000 stores lower
+    // resolution levels, so decode the largest one that fits instead of
+    // refusing the page; callers draw the image into the same unit square.
+    let settings = match reduced_target_within_limits(data, limits) {
+        Some(target) => DecodeSettings {
+            target_resolution: Some(target),
+            ..DecodeSettings::default()
+        },
+        None => DecodeSettings::default(),
+    };
+    decode_with_settings(data, settings, limits)
+}
+
+/// A target resolution that keeps the decoded image inside `limits`, when the
+/// full-resolution image would not fit. Halves both sides per step, matching
+/// JPEG 2000 resolution levels.
+fn reduced_target_within_limits(data: &[u8], limits: &DecodeLimits) -> Option<(u32, u32)> {
+    let image = Image::new(data, &DecodeSettings::default()).ok()?;
+    let (width, height) = (u64::from(image.width()), u64::from(image.height()));
+    let channels =
+        u64::from(image.color_space().num_channels().max(1)) + u64::from(image.has_alpha());
+    let fits = |w: u64, h: u64| {
+        w * h <= limits.max_image_pixels && w * h * channels <= limits.max_image_decoded_bytes
+    };
+    if fits(width, height) {
+        return None;
+    }
+    let (mut w, mut h) = (width, height);
+    for _ in 0..limits.max_jpx_resolution_levels.min(16) {
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
+        if fits(w, h) {
+            return Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?));
+        }
+    }
+    None
 }
 
 /// Inspect JPX dimensions, bit depth, color family, channel count, and alpha
 /// state without decoding pixels.
 pub fn inspect_metadata(data: &[u8]) -> Result<JpxMetadata> {
+    let data = &*repair_jp2c_length(data);
     let image = Image::new(data, &DecodeSettings::default())
         .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
     metadata_from_image(&image)
@@ -95,7 +133,12 @@ pub(crate) fn decode_with_target_resolution(
     target_resolution: Option<(u32, u32)>,
     limits: &DecodeLimits,
 ) -> Result<DecodedJpx> {
+    let data = &*repair_jp2c_length(data);
     validate_jpx_limits(data, limits)?;
+    // With no requested size, still drop to a resolution level that fits the
+    // decode budget rather than refusing an oversized scan.
+    let target_resolution =
+        target_resolution.or_else(|| reduced_target_within_limits(data, limits));
     let original = Image::new(data, &DecodeSettings::default())
         .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
     let original_width = original.width();
@@ -351,21 +394,19 @@ fn validate_jpx_limits(data: &[u8], limits: &DecodeLimits) -> Result<()> {
                         limits.max_jpx_components
                     )));
                 }
+                // The full-resolution pixel and byte budget is not enforced
+                // here: an oversized scan is decoded at a lower resolution
+                // level, and `validate_decoded_shape` checks the size actually
+                // decoded before any pixels are produced.
                 let pixels = u64::from(width)
                     .checked_mul(u64::from(height))
                     .ok_or_else(|| {
                         WellfriendError::ResourceLimit("JPXDecode pixel count overflows".into())
                     })?;
-                if pixels > limits.max_image_pixels {
-                    return Err(WellfriendError::ResourceLimit(format!(
-                        "JPXDecode pixel count {pixels} exceeds limit {}",
-                        limits.max_image_pixels
-                    )));
-                }
                 let decoded_bytes = pixels.checked_mul(count as u64).ok_or_else(|| {
                     WellfriendError::ResourceLimit("JPXDecode byte count overflows".into())
                 })?;
-                if decoded_bytes > limits.max_image_decoded_bytes {
+                if decoded_bytes > u64::MAX / 2 {
                     return Err(WellfriendError::ResourceLimit(format!(
                         "JPXDecode output {decoded_bytes} bytes exceeds limit {}",
                         limits.max_image_decoded_bytes
@@ -405,6 +446,58 @@ fn validate_resolution_levels(decompositions: u8, limits: &DecodeLimits) -> Resu
     Ok(())
 }
 
+/// Some scanners write the whole file's length into the final `jp2c` box
+/// header, so the box claims bytes past the end of the stream. The codestream
+/// runs to the end of the data either way; rewrite that one length field so
+/// the container parses. Anything else is returned unchanged.
+fn repair_jp2c_length(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    use std::borrow::Cow;
+    if !data.starts_with(&[0, 0, 0, 12, b'j', b'P', b' ', b' ']) {
+        return Cow::Borrowed(data);
+    }
+    let mut offset = 0usize;
+    while offset + 8 <= data.len() {
+        let Some(short_len) = be_u32_opt(data, offset) else {
+            break;
+        };
+        let kind = &data[offset + 4..offset + 8];
+        let length = match short_len {
+            0 => data.len() - offset,
+            1 => match data
+                .get(offset + 8..offset + 16)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u64::from_be_bytes)
+                .and_then(|len| usize::try_from(len).ok())
+            {
+                Some(len) => len,
+                None => break,
+            },
+            len => len as usize,
+        };
+        if kind == b"jp2c" {
+            let fits = offset
+                .checked_add(length)
+                .is_some_and(|end| end <= data.len());
+            if short_len > 1 && !fits && u32::try_from(data.len() - offset).is_ok() {
+                let mut repaired = data.to_vec();
+                let actual = (data.len() - offset) as u32;
+                repaired[offset..offset + 4].copy_from_slice(&actual.to_be_bytes());
+                return Cow::Owned(repaired);
+            }
+            break;
+        }
+        if length < 8
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > data.len())
+        {
+            break;
+        }
+        offset += length;
+    }
+    Cow::Borrowed(data)
+}
+
 fn jpx_codestream(data: &[u8]) -> Option<&[u8]> {
     if data.starts_with(&[0xff, 0x4f]) {
         return Some(data);
@@ -424,11 +517,18 @@ fn jpx_codestream(data: &[u8]) -> Option<&[u8]> {
         } else {
             (8usize, short_len)
         };
-        if length < header || offset.checked_add(length)? > data.len() {
+        if length < header {
             return None;
         }
         if kind == b"jp2c" {
-            return Some(&data[offset + header..offset + length]);
+            // Some scanners write the whole file's length into the codestream
+            // box; the codestream simply runs to the end of the data, so clamp
+            // instead of rejecting the image.
+            let end = offset.checked_add(length)?.min(data.len());
+            return data.get(offset + header..end);
+        }
+        if offset.checked_add(length)? > data.len() {
+            return None;
         }
         offset += length;
     }
@@ -655,6 +755,28 @@ mod tests {
         }
         data.extend_from_slice(&[0x00, 0x01, 0x07, 0x01, 0x01, 0xff, 0xd9]);
         data
+    }
+
+    #[test]
+    fn overlong_final_codestream_box_is_clamped_to_the_data() {
+        // A scanner wrote the whole file length into the jp2c box header.
+        let codestream = siz_codestream(4, 4, 4, 4);
+        let mut data = vec![0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0d, 0x0a, 0x87, 0x0a];
+        let jp2c_len = (data.len() + 8 + codestream.len() + 100) as u32;
+        data.extend_from_slice(&jp2c_len.to_be_bytes());
+        data.extend_from_slice(b"jp2c");
+        data.extend_from_slice(&codestream);
+        assert_eq!(jpx_codestream(&data), Some(&codestream[..]));
+        let repaired = repair_jp2c_length(&data);
+        assert_eq!(
+            u32::from_be_bytes(repaired[12..16].try_into().unwrap()) as usize,
+            8 + codestream.len()
+        );
+        // A well-formed container is left untouched.
+        assert!(matches!(
+            repair_jp2c_length(&repaired),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]

@@ -1097,7 +1097,11 @@ fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Ve
             .into_iter()
             .filter(|img| !img.image.is_mask && !img.image.is_smask)
         {
-            let Ok(bytes) = engine.extract_image_png_for_package(&image.image) else {
+            let Ok((bytes, ext)) = engine.extract_image_for_office(
+                &image.image,
+                image.bbox[2] - image.bbox[0],
+                image.bbox[3] - image.bbox[1],
+            ) else {
                 continue;
             };
             let width_points = (image.bbox[2] - image.bbox[0]).abs().clamp(72.0, 432.0);
@@ -1109,7 +1113,7 @@ fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Ve
             out.push(DocxImagePart {
                 page: page.number,
                 rel_id: format!("rIdImage{stable_suffix}"),
-                name: format!("image-{stable_suffix}.png"),
+                name: format!("image-{stable_suffix}.{ext}"),
                 bytes,
                 width_emu: points_to_emu(width_points),
                 height_emu: points_to_emu(height_points),
@@ -1148,7 +1152,9 @@ fn collect_docx_hyperlinks(document: &Document) -> Vec<DocxHyperlinkPart> {
 }
 
 fn docx_content_types<'a>(media: impl IntoIterator<Item = &'a str>) -> String {
-    let has_png = media.into_iter().any(|name| name.ends_with(".png"));
+    let media: Vec<&str> = media.into_iter().collect();
+    let has_png = media.iter().any(|name| name.ends_with(".png"));
+    let has_jpg = media.iter().any(|name| name.ends_with(".jpg"));
     let mut out = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -1158,6 +1164,10 @@ fn docx_content_types<'a>(media: impl IntoIterator<Item = &'a str>) -> String {
     );
     if has_png {
         out.push_str(r#"<Default Extension="png" ContentType="image/png"/>"#);
+        out.push('\n');
+    }
+    if has_jpg {
+        out.push_str(r#"<Default Extension="jpg" ContentType="image/jpeg"/>"#);
         out.push('\n');
     }
     out.push_str(

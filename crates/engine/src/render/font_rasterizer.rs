@@ -240,11 +240,34 @@ pub(crate) mod cff_support {
         parse(font_bytes).is_some()
     }
 
-    /// The effective units-per-em for a bare CFF font. CFF charstrings use the
-    /// FontMatrix (default 0.001 → a 1000-unit em); we normalise everything to
-    /// 1000 so the renderer's existing `/1000` advance math applies unchanged.
-    pub(crate) fn units_per_em() -> f64 {
-        1000.0
+    /// The effective units-per-em for a bare CFF font, taken from the Top DICT
+    /// FontMatrix (operator 12 7). The default matrix [0.001 0 0 0.001 0 0]
+    /// gives the usual 1000-unit em; fonts converted from TrueType often carry
+    /// 1/2048, and treating those as 1000 draws every glyph 2.048x too large.
+    /// Outlines stay in font units; callers scale them by `size / upem`.
+    pub(crate) fn units_per_em(font_bytes: &[u8]) -> f64 {
+        parse(font_bytes)
+            .map(|table| table_units_per_em(&table))
+            .unwrap_or(1000.0)
+    }
+
+    fn table_units_per_em(table: &ttf_parser::cff::Table<'_>) -> f64 {
+        let scale = f64::from(table.matrix().sy.abs().max(table.matrix().sx.abs()));
+        if scale.is_finite() && scale > 1.0e-5 && scale < 1.0 {
+            // The matrix is stored as f32 (0.001 reads back as 999.99995 units);
+            // units per em are whole numbers.
+            (1.0 / scale).round()
+        } else {
+            1000.0
+        }
+    }
+
+    /// Advance width of a glyph in 1000-unit text space, converted from the
+    /// font's own units through its FontMatrix.
+    fn advance_1000(table: &ttf_parser::cff::Table<'_>, glyph_id: GlyphId) -> Option<f64> {
+        table
+            .glyph_width(glyph_id)
+            .map(|width| f64::from(width) * 1000.0 / table_units_per_em(table))
     }
 
     /// Extract a glyph outline and advance width (in 1000-unit em) for a glyph
@@ -253,13 +276,10 @@ pub(crate) mod cff_support {
     pub(crate) fn outline_by_gid(font_bytes: &[u8], gid: u16) -> Option<(Option<Path>, f64)> {
         let table = parse(font_bytes)?;
         let glyph_id = GlyphId(cid_keyed_gid_for_cid(font_bytes, gid).unwrap_or(gid));
-        let advance = table
-            .glyph_width(glyph_id)
-            .map(f64::from)
-            // CID-keyed CFF returns None for glyph_width; the descendant font's
-            // /W array (handled by the caller) supplies the real advance, so a
-            // neutral 1000 here is only a fallback.
-            .unwrap_or(1000.0);
+        // CID-keyed CFF returns None for glyph_width; the descendant font's
+        // /W array (handled by the caller) supplies the real advance, so a
+        // neutral 1000 here is only a fallback.
+        let advance = advance_1000(&table, glyph_id).unwrap_or(1000.0);
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
@@ -269,7 +289,7 @@ pub(crate) mod cff_support {
     ) -> Option<(Option<Path>, f64)> {
         let table = parse(font_bytes)?;
         let glyph_id = GlyphId(cid_keyed_gid_for_cid(font_bytes, gid).unwrap_or(gid));
-        let advance = table.glyph_width(glyph_id).map(f64::from)?;
+        let advance = advance_1000(&table, glyph_id)?;
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
@@ -291,7 +311,7 @@ pub(crate) mod cff_support {
     pub(crate) fn outline_by_code(font_bytes: &[u8], code: u8) -> Option<(Option<Path>, f64)> {
         let table = parse(font_bytes)?;
         let glyph_id = table.glyph_index(code).unwrap_or(GlyphId(0));
-        let advance = table.glyph_width(glyph_id).map(f64::from).unwrap_or(1000.0);
+        let advance = advance_1000(&table, glyph_id).unwrap_or(1000.0);
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
@@ -301,7 +321,7 @@ pub(crate) mod cff_support {
     ) -> Option<(Option<Path>, f64)> {
         let table = parse(font_bytes)?;
         let glyph_id = table.glyph_index(code)?;
-        let advance = table.glyph_width(glyph_id).map(f64::from)?;
+        let advance = advance_1000(&table, glyph_id)?;
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
@@ -315,7 +335,7 @@ pub(crate) mod cff_support {
     ) -> Option<(Option<Path>, f64)> {
         let table = parse(font_bytes)?;
         let glyph_id = glyph_index_by_name(&table, font_bytes, glyph_name)?;
-        let advance = table.glyph_width(glyph_id).map(f64::from).unwrap_or(1000.0);
+        let advance = advance_1000(&table, glyph_id).unwrap_or(1000.0);
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
@@ -325,7 +345,7 @@ pub(crate) mod cff_support {
     ) -> Option<(Option<Path>, f64)> {
         let table = parse(font_bytes)?;
         let glyph_id = glyph_index_by_name(&table, font_bytes, glyph_name)?;
-        let advance = table.glyph_width(glyph_id).map(f64::from)?;
+        let advance = advance_1000(&table, glyph_id)?;
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
@@ -1316,7 +1336,7 @@ pub(crate) mod cff_support {
         } else {
             let table = parse(font_bytes)?;
             let glyph_id = GlyphId(0);
-            let advance = table.glyph_width(glyph_id).map(f64::from).unwrap_or(1000.0);
+            let advance = advance_1000(&table, glyph_id).unwrap_or(1000.0);
             let mut builder = GlyphToPath::new();
             match table.outline(glyph_id, &mut builder) {
                 Ok(_) => Some((Some(builder.into_path()), advance)),
@@ -1956,7 +1976,8 @@ mod tests {
 
     #[test]
     fn bare_cff_reports_1000_unit_em() {
-        assert_eq!(cff_support::units_per_em(), 1000.0);
+        assert_eq!(cff_support::units_per_em(SAMPLE_CFF), 1000.0);
+        assert_eq!(cff_support::units_per_em(b"not a font at all"), 1000.0);
     }
 
     #[test]

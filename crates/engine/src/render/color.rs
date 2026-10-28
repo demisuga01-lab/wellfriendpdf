@@ -1,6 +1,7 @@
 use crate::content::state::{Color as GsColor, ColorSpace as GsColorSpace};
 use crate::render::buffer::PixelColor;
 use crate::render::cmm::{self, CalGrayParams, CalRgbParams, LabParams};
+use crate::render::RoundByte;
 
 /// Final device-space RGBA color used for pixel blending.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,10 +45,10 @@ impl RenderColor {
     /// Convert to PixelColor ([u8; 4]) for PixelBuffer.
     pub fn to_pixel_color(self) -> PixelColor {
         [
-            (self.r * 255.0).round().clamp(0.0, 255.0) as u8,
-            (self.g * 255.0).round().clamp(0.0, 255.0) as u8,
-            (self.b * 255.0).round().clamp(0.0, 255.0) as u8,
-            (self.a * 255.0).round().clamp(0.0, 255.0) as u8,
+            (self.r * 255.0).round_byte(),
+            (self.g * 255.0).round_byte(),
+            (self.b * 255.0).round_byte(),
+            (self.a * 255.0).round_byte(),
         ]
     }
 

@@ -306,8 +306,25 @@ pub struct GeometricReflowRequest {
     pub approve_low_confidence_structure: bool,
     #[serde(default)]
     pub signature_policy_override: bool,
+    /// Baseline pitch in points; 0 (the default) measures it from the source.
     #[serde(default = "default_line_height")]
     pub line_height: f64,
+    /// Point size of the generated text; unset measures it from the source.
+    #[serde(default)]
+    pub font_size: Option<f64>,
+    /// Under the default font policy, keep the source font for every
+    /// grapheme it can encode before generating a substitute Type0 font.
+    #[serde(default = "default_prefer_source_font")]
+    pub prefer_source_font: bool,
+    /// Where generated text goes in paint order when the selection spans
+    /// several text objects. The default requires a single object.
+    #[serde(default)]
+    pub paint_order_policy: crate::advanced_editing::GeneratedPaintOrderPolicy,
+    /// Real source-font width / line-breaker width, measured on the source
+    /// paragraph. The breaker shapes with a fallback font; scaling its width
+    /// makes lines wrap where the kept source font will actually end them.
+    #[serde(default)]
+    pub break_width_scale: Option<f64>,
     #[serde(default = "default_max_downstream_blocks")]
     pub max_downstream_blocks: usize,
 }
@@ -734,6 +751,7 @@ pub fn undo_reflow_from_replay(
     edited: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<(Vec<u8>, ReflowUndoReport)> {
+    let request = &resolve_source_metrics(input, request);
     let mut session = ReflowMutationSession::new(input.to_vec())?;
     if request.requested_mode == TrueEditingMode::SemanticDocument {
         session.apply_semantic(request)?;
@@ -772,8 +790,361 @@ fn default_alignment() -> String {
     "left".to_string()
 }
 
+/// `0.0` means "measure from the source paragraph" (see
+/// [`resolve_source_metrics`]); 14 pt is used only when nothing can be measured.
 fn default_line_height() -> f64 {
-    14.0
+    0.0
+}
+
+const FALLBACK_LINE_HEIGHT: f64 = 14.0;
+
+/// Geometry of the source paragraph a reflow replaces, measured from the
+/// page's positioned text runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SourceParagraphMetrics {
+    /// Effective (page-space) font size: `Tf` size times the text and CTM scale.
+    font_size: f64,
+    /// Median distance between consecutive baselines, when there are 2+ lines.
+    leading: Option<f64>,
+    first_baseline: f64,
+    last_baseline: f64,
+    /// Left edge of the body lines (the first line may be indented).
+    left: f64,
+    right: f64,
+    lines: usize,
+    /// Real width / line-breaker width of the source lines, when measurable.
+    break_width_scale: Option<f64>,
+}
+
+/// Locate `source_text` among the page's text runs (ignoring whitespace) and
+/// measure its size, leading and position. Returns `None` when the text is not
+/// found exactly once or is not horizontal.
+fn measure_source_paragraph(
+    input: &[u8],
+    page: usize,
+    source_text: &str,
+) -> Option<SourceParagraphMetrics> {
+    let needle = source_text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    if needle.is_empty() {
+        return None;
+    }
+    let engine = crate::ContentEngine::open_bytes(input.to_vec()).ok()?;
+    let chunks = engine.collect_page_text_chunks(page).ok()?;
+    let mut compact = String::new();
+    let mut owners = Vec::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        for ch in chunk.text.chars().filter(|ch| !ch.is_whitespace()) {
+            compact.push(ch);
+            owners.push(index);
+        }
+    }
+    let start = compact.find(&needle)?;
+    if compact[start + needle.len()..].contains(&needle) {
+        return None;
+    }
+    let first = compact[..start].chars().count();
+    let count = needle.chars().count();
+    let mut selected = owners[first..first + count].to_vec();
+    selected.dedup();
+    let selected = selected
+        .into_iter()
+        .map(|index| &chunks[index])
+        .collect::<Vec<_>>();
+    if selected.iter().any(|chunk| chunk.is_vertical) {
+        return None;
+    }
+    let mut sizes = selected
+        .iter()
+        .map(|chunk| chunk.font_size)
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .collect::<Vec<_>>();
+    if sizes.is_empty() {
+        return None;
+    }
+    sizes.sort_by(f64::total_cmp);
+    let font_size = sizes[sizes.len() / 2];
+    // Group runs into lines by baseline, top line first, keeping each
+    // line's text for the line-breaker calibration below.
+    let mut lines: Vec<(f64, f64, f64)> = Vec::new(); // (baseline, left, right)
+    let mut line_texts: Vec<String> = Vec::new();
+    for chunk in &selected {
+        match lines
+            .iter_mut()
+            .position(|(baseline, _, _)| (*baseline - chunk.y).abs() < font_size * 0.3)
+        {
+            Some(index) => {
+                let line = &mut lines[index];
+                line.1 = line.1.min(chunk.x);
+                line.2 = line.2.max(chunk.right());
+                line_texts[index].push_str(&chunk.text);
+            }
+            None => {
+                lines.push((chunk.y, chunk.x, chunk.right()));
+                line_texts.push(chunk.text.clone());
+            }
+        }
+    }
+    // Real width over the breaker's measured width for the same lines.
+    let (real, measured) = lines
+        .iter()
+        .zip(&line_texts)
+        .fold((0.0, 0.0), |acc, (line, text)| {
+            let measured = line_break_text_sized(
+                text.trim(),
+                1.0e6,
+                1.0e6,
+                font_size * 1.2,
+                font_size,
+                None,
+                None,
+                false,
+            )
+            .ok()
+            .and_then(|layout| layout.lines.first().map(|l| l.advance))
+            .unwrap_or(0.0);
+            (acc.0 + (line.2 - line.1), acc.1 + measured)
+        });
+    let break_width_scale = (real > 0.0 && measured > 0.0)
+        .then(|| real / measured)
+        .filter(|scale| (0.5..=2.0).contains(scale));
+    lines.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut pitches = lines
+        .windows(2)
+        .map(|pair| pair[0].0 - pair[1].0)
+        .filter(|pitch| *pitch > font_size * 0.5)
+        .collect::<Vec<_>>();
+    pitches.sort_by(f64::total_cmp);
+    let leading = (!pitches.is_empty()).then(|| pitches[pitches.len() / 2]);
+    let body = if lines.len() > 1 {
+        &lines[1..]
+    } else {
+        &lines[..]
+    };
+    let first_baseline = lines[0].0;
+    let last_baseline = lines[lines.len() - 1].0;
+    let left = body.iter().map(|line| line.1).fold(f64::INFINITY, f64::min);
+    let source_right = lines
+        .iter()
+        .map(|line| line.2)
+        .fold(f64::NEG_INFINITY, f64::max);
+    // A short (or one-line) selection is narrower than its paragraph. Take
+    // the column's right edge from nearby lines that share its left edge, so
+    // a slightly longer replacement still fits on the line.
+    let pitch = leading.unwrap_or(font_size * 1.2);
+    let mut nearby: Vec<(f64, f64, f64)> = Vec::new(); // (baseline, left, right)
+    for chunk in chunks.iter().filter(|chunk| !chunk.is_vertical) {
+        if chunk.y > first_baseline + 3.0 * pitch || chunk.y < last_baseline - 3.0 * pitch {
+            continue;
+        }
+        match nearby
+            .iter_mut()
+            .find(|(baseline, _, _)| (baseline - chunk.y).abs() < font_size * 0.3)
+        {
+            Some(line) => {
+                line.1 = line.1.min(chunk.x);
+                line.2 = line.2.max(chunk.right());
+            }
+            None => nearby.push((chunk.y, chunk.x, chunk.right())),
+        }
+    }
+    let column_lines = nearby
+        .iter()
+        .filter(|(_, line_left, _)| (line_left - left).abs() < font_size)
+        .collect::<Vec<_>>();
+    let mut right = column_lines
+        .iter()
+        .map(|(_, _, line_right)| *line_right)
+        .fold(source_right, f64::max);
+    // A lone line has no column to measure: allow the page width minus a
+    // right margin equal to its left margin. Collision checks still refuse a
+    // layout that would run into other content.
+    if column_lines.len() <= 1 {
+        if let Ok(page_info) = engine.get_page(page) {
+            let [x0, _, x1, _] = page_info.crop_box;
+            let (x0, x1) = (x0.min(x1), x0.max(x1));
+            right = right.max(x1 - (left - x0).max(0.0));
+        }
+    }
+    Some(SourceParagraphMetrics {
+        font_size,
+        leading,
+        first_baseline,
+        last_baseline,
+        left,
+        right,
+        lines: lines.len(),
+        break_width_scale,
+    })
+}
+
+/// Fill in what the caller left unset from the source paragraph itself, so a
+/// rewritten paragraph keeps its size, leading, left edge and first baseline:
+///
+/// * `font_size` defaults to the source's effective size,
+/// * `line_height` (0 = unset) to the measured baseline pitch,
+/// * the region is anchored so the first generated baseline (`top - size`)
+///   lands on the source's first baseline and the left edge on its body lines.
+///
+/// Generated lines sit at `region_top - size - k * line_height`, so a region
+/// with `top = first_baseline + size` and room for `n` pitches holds `n` lines.
+fn resolve_source_metrics(
+    input: &[u8],
+    request: &GeometricReflowRequest,
+) -> GeometricReflowRequest {
+    let mut resolved = request.clone();
+    let complete = resolved.font_size.is_some_and(|size| size > 0.0)
+        && resolved.line_height > 0.0
+        && resolved.region.is_some();
+    let metrics = if complete {
+        None
+    } else {
+        measure_source_paragraph(input, request.page, &request.source_text)
+    };
+    if let Some(metrics) = metrics {
+        let font_size = *resolved.font_size.get_or_insert(metrics.font_size);
+        // Calibrate line breaking to the source font only when it is kept.
+        if resolved.break_width_scale.is_none()
+            && (resolved.prefer_source_font || resolved.font_policy == "preserve_original_per_run")
+        {
+            resolved.break_width_scale = metrics.break_width_scale;
+        }
+        if !(resolved.line_height > 0.0) {
+            resolved.line_height = metrics.leading.unwrap_or(font_size * 1.2);
+        }
+        let line_height = resolved.line_height;
+        let top = metrics.first_baseline + font_size;
+        let bottom = top - metrics.lines as f64 * line_height - 0.5;
+        // An exact source range without a region asks for an in-place
+        // replacement at the source operators, never a relocation.
+        let in_place = resolved.region.is_none() && request.target_logical_scalar_range.is_some();
+        // Like Acrobat, a rewritten paragraph may grow into free space below
+        // it (up to three more lines); the layout constraints still refuse a
+        // growth that would run into other content.
+        if !in_place && resolved.region.is_none() && resolved.allowed_expansion_region.is_none() {
+            resolved.allowed_expansion_region =
+                Some([metrics.left, bottom - 3.0 * line_height, metrics.right, top]);
+        }
+        resolved.region = (!in_place).then(|| match resolved.region {
+            None => [metrics.left, bottom, metrics.right, top],
+            // Keep a caller's column, but start the text on the source's own
+            // first baseline instead of the region's top edge.
+            Some(region)
+                if metrics.first_baseline <= region[3] && metrics.first_baseline >= region[1] =>
+            {
+                [
+                    region[0].max(metrics.left.min(region[2])),
+                    region[1].min(bottom),
+                    region[2],
+                    top,
+                ]
+            }
+            Some(region) => region,
+        });
+    }
+    if !(resolved.line_height > 0.0) {
+        resolved.line_height = resolved
+            .font_size
+            .filter(|size| *size > 0.0)
+            .map(|size| size * 1.2)
+            .unwrap_or(FALLBACK_LINE_HEIGHT);
+    }
+    // A paragraph spanning several lines (several text-show operators) has no
+    // single source instruction; select it as an exact range of the page's
+    // logical text instead, so callers can pass the paragraph as they see it.
+    if resolved.target_logical_scalar_range.is_none() {
+        if let Some((range, exact)) = paragraph_source_range(input, &resolved) {
+            resolved.target_logical_scalar_range = Some(range);
+            resolved.source_text = exact;
+            // The lines of one paragraph are one unit: unless the caller chose,
+            // the rewritten paragraph takes its first line's place in paint order.
+            if resolved.paint_order_policy
+                == crate::advanced_editing::GeneratedPaintOrderPolicy::RequireSingleSourceTextObject
+            {
+                resolved.paint_order_policy =
+                    crate::advanced_editing::GeneratedPaintOrderPolicy::AnchorAfterFirstSourceTextObject;
+            }
+        }
+    }
+    resolved
+}
+
+/// Locate `source_text` in the page's logical text, ignoring whitespace
+/// differences (line breaks between drawn lines), when no single text
+/// operator holds it. Returns the unique scalar range and the exact logical
+/// text it covers.
+fn paragraph_source_range(
+    input: &[u8],
+    request: &GeometricReflowRequest,
+) -> Option<([usize; 2], String)> {
+    let needle = request
+        .source_text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<Vec<_>>();
+    if needle.is_empty() {
+        return None;
+    }
+    let single_operator = operator_text_provenance(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+    )
+    .is_ok_and(|report| !report.source_instructions.is_empty());
+    if single_operator {
+        return None;
+    }
+    let model = prepared_multi_run_text_range(
+        input,
+        request.page,
+        &request.source_text,
+        &request.replacement_text,
+    )
+    .ok()?;
+    let chars = model.logical_text.chars().collect::<Vec<_>>();
+    let (compact, positions): (Vec<char>, Vec<usize>) = chars
+        .iter()
+        .enumerate()
+        .filter(|(_, ch)| !ch.is_whitespace())
+        .map(|(index, ch)| (*ch, index))
+        .unzip();
+    let mut matches = compact
+        .windows(needle.len())
+        .enumerate()
+        .filter(|(_, window)| *window == needle.as_slice())
+        .map(|(start, _)| start);
+    let start = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let first = positions[start];
+    let last = positions[start + needle.len() - 1] + 1;
+    Some(([first, last], chars[first..last].iter().collect()))
+}
+
+/// Width to give the line breaker for a region `width` wide: the breaker
+/// measures with a fallback font, so divide by the measured source-font ratio.
+fn breaking_width(request: &GeometricReflowRequest, width: f64) -> f64 {
+    request
+        .break_width_scale
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .map_or(width, |scale| width / scale)
+}
+
+/// Point size of generated text: the requested or measured source size,
+/// otherwise the historical `line_height / 1.2`.
+fn reflow_font_size(request: &GeometricReflowRequest) -> f64 {
+    request
+        .font_size
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .unwrap_or(request.line_height / 1.2)
+}
+
+fn default_prefer_source_font() -> bool {
+    true
 }
 
 fn default_max_downstream_blocks() -> usize {
@@ -1322,11 +1693,12 @@ fn line_break_with_ordered_local_expansion(
     request: &GeometricReflowRequest,
     source_region: [f64; 4],
 ) -> Result<LineBreakingResult> {
-    let mut initial = line_break_text(
+    let mut initial = line_break_text_sized(
         &request.replacement_text,
-        source_region[2] - source_region[0],
+        breaking_width(request, source_region[2] - source_region[0]),
         source_region[3] - source_region[1],
         request.line_height,
+        reflow_font_size(request),
         request.language.as_deref(),
         request.direction.as_deref(),
         request.hyphenation,
@@ -1337,11 +1709,12 @@ fn line_break_with_ordered_local_expansion(
     let Some(expansion) = allowed_expansion_for_request(input, request, source_region)? else {
         return Ok(initial);
     };
-    let mut expanded = line_break_text(
+    let mut expanded = line_break_text_sized(
         &request.replacement_text,
-        expansion[2] - expansion[0],
+        breaking_width(request, expansion[2] - expansion[0]),
         expansion[3] - expansion[1],
         request.line_height,
+        reflow_font_size(request),
         request.language.as_deref(),
         request.direction.as_deref(),
         request.hyphenation,
@@ -2293,6 +2666,31 @@ pub fn line_break_text(
     direction: Option<&str>,
     hyphenation: bool,
 ) -> Result<LineBreakingResult> {
+    line_break_text_sized(
+        text,
+        region_width,
+        region_height,
+        line_height,
+        line_height / 1.2,
+        language,
+        direction,
+        hyphenation,
+    )
+}
+
+/// [`line_break_text`] with an explicit point size, so a paragraph whose
+/// leading is not 1.2x its size is broken at the size it will be drawn at.
+#[allow(clippy::too_many_arguments)]
+pub fn line_break_text_sized(
+    text: &str,
+    region_width: f64,
+    region_height: f64,
+    line_height: f64,
+    font_size: f64,
+    language: Option<&str>,
+    direction: Option<&str>,
+    hyphenation: bool,
+) -> Result<LineBreakingResult> {
     if !region_width.is_finite()
         || !region_height.is_finite()
         || !line_height.is_finite()
@@ -2305,7 +2703,11 @@ pub fn line_break_text(
         ));
     }
     let direction = direction_label(direction);
-    let font_size = line_height / 1.2;
+    let font_size = if font_size.is_finite() && font_size > 0.0 {
+        font_size
+    } else {
+        line_height / 1.2
+    };
     let shape_options = crate::fonts::ShapeOptions {
         direction: Some(if direction == "right_to_left" {
             crate::fonts::TextDirection::RightToLeft
@@ -2462,6 +2864,7 @@ pub fn analyze_geometric_region(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<GeometricTextRegion> {
+    let request = &resolve_source_metrics(input, request);
     let text_scene_nodes = source_text_scene_node_ids(input, request.page, 16)?;
     let region = region_for_request(input, request)?;
     let page_box = page_bounds(input, request.page)?;
@@ -2640,6 +3043,7 @@ pub fn paragraph_style_model(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<ParagraphStyleModel> {
+    let request = &resolve_source_metrics(input, request);
     let region = analyze_geometric_region(input, request)?;
     paragraph_style_model_from_region(input, request, &region)
 }
@@ -2974,6 +3378,7 @@ pub fn preview_reflow(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<ReflowTransactionReport> {
+    let request = &resolve_source_metrics(input, request);
     crate::input_identity::with_input_identity(input, || {
         preview_reflow_internal(input, request, true)
     })
@@ -3573,8 +3978,8 @@ fn source_reflow_options(
         // The canonical advanced editing writer uses this as the glyph-scale source
         // for Type0 text positioning. text reflow's line-height is deliberately
         // preserved independently of this point size.
-        font_size: request.line_height / 1.2,
-        line_spacing: 1.2,
+        font_size: reflow_font_size(request),
+        line_spacing: request.line_height / reflow_font_size(request),
         max_lines_or_columns: max_lines,
         overflow_policy: TextOverflowPolicy::Error,
         signature_policy_override: request.signature_policy_override,
@@ -3586,7 +3991,7 @@ fn source_reflow_options(
         target_stream_object: request.target_stream_object,
         target_stream_generation: request.target_stream_generation,
         target_decoded_byte_range: request.target_decoded_byte_range,
-        paint_order_policy: crate::advanced_editing::GeneratedPaintOrderPolicy::default(),
+        paint_order_policy: request.paint_order_policy,
         placement_policy: crate::advanced_editing::GeneratedTextPlacementPolicy::default(),
         paint_partitions: Vec::new(),
     })
@@ -3861,8 +4266,31 @@ pub fn apply_reflow_region(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<(Vec<u8>, ReflowTransactionReport)> {
+    let request = &resolve_source_metrics(input, request);
     crate::input_identity::with_input_identity(input, || {
-        apply_source_linked_reflow(input, request, TrueEditingMode::GeometricBlock)
+        // Keep the source typeface whenever it can draw the replacement: try
+        // the per-run serializer, which reuses the source font's own codes and
+        // only shapes a substitute for graphemes it cannot encode, before the
+        // generated Type0 font. A local, single-region edit is all it handles.
+        let local_only = request.next_region.is_none()
+            && request.next_column.is_none()
+            && !request.allow_page_creation;
+        if local_only && request.prefer_source_font && request.font_policy == default_font_policy()
+        {
+            let mut preserving = request.clone();
+            preserving.font_policy = "preserve_original_per_run".to_string();
+            if let Ok(result) =
+                apply_source_linked_reflow(input, &preserving, TrueEditingMode::GeometricBlock)
+            {
+                return Ok(result);
+            }
+        }
+        // A generated substitute font has the line breaker's own metrics.
+        let mut generated = request.clone();
+        if generated.font_policy != "preserve_original_per_run" {
+            generated.break_width_scale = None;
+        }
+        apply_source_linked_reflow(input, &generated, TrueEditingMode::GeometricBlock)
     })
 }
 
@@ -4311,11 +4739,12 @@ fn apply_single_paragraph_existing_target_flow(
                 .to_string(),
         ));
     }
-    let layout = line_break_text(
+    let layout = line_break_text_sized(
         &request.replacement_text,
-        source_region[2] - source_region[0],
+        breaking_width(request, source_region[2] - source_region[0]),
         source_region[3] - source_region[1],
         request.line_height,
+        reflow_font_size(request),
         request.language.as_deref(),
         request.direction.as_deref(),
         request.hyphenation,
@@ -4380,8 +4809,8 @@ fn apply_single_paragraph_existing_target_flow(
         // canonical reader. Per-line rectangles let advanced editing emit both
         // fragments in logical order while preserving their distinct
         // geometric target regions.
-        let font_size = request.line_height / 1.2;
-        let line_advance = font_size * 1.2;
+        let font_size = reflow_font_size(request);
+        let line_advance = request.line_height;
         let positioned_lines = layout
             .lines
             .iter()
@@ -4801,11 +5230,12 @@ fn apply_single_paragraph_page_creation(
     let width = region[2] - region[0];
     let height = region[3] - region[1];
     crate::cancel::check_current_cancel("text reflow page-flow line breaking")?;
-    let line_breaking = line_break_text(
+    let line_breaking = line_break_text_sized(
         &request.replacement_text,
-        width,
+        breaking_width(request, width),
         height,
         request.line_height,
+        reflow_font_size(request),
         request.language.as_deref(),
         request.direction.as_deref(),
         request.hyphenation,
@@ -5068,6 +5498,7 @@ pub fn apply_reflow_document(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<(Vec<u8>, ReflowTransactionReport)> {
+    let request = &resolve_source_metrics(input, request);
     crate::input_identity::with_input_identity(input, || {
         apply_reflow_document_inner(input, request)
     })
@@ -7346,6 +7777,7 @@ pub fn no_overlay_no_clipping_report(
     input: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<Value> {
+    let request = &resolve_source_metrics(input, request);
     let preview = preview_reflow(input, request)?;
     Ok(json!({
         "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
@@ -7368,6 +7800,7 @@ pub fn no_overlay_no_clipping_report(
 /// This does not mutate a document or promise that an unavailable downstream
 /// stage can apply; callers receive the exact currently planned/refused state.
 pub fn query_overflow(input: &[u8], request: &GeometricReflowRequest) -> Result<Value> {
+    let request = &resolve_source_metrics(input, request);
     if request.source_text == request.replacement_text {
         let preview = no_change_preview_reflow(input, request)?;
         return Ok(json!({
@@ -7406,6 +7839,7 @@ pub fn query_overflow(input: &[u8], request: &GeometricReflowRequest) -> Result<
 
 /// Query the bounded hard/soft Cassowary report produced for a reflow request.
 pub fn query_constraints(input: &[u8], request: &GeometricReflowRequest) -> Result<Value> {
+    let request = &resolve_source_metrics(input, request);
     if request.source_text == request.replacement_text {
         let preview = no_change_preview_reflow(input, request)?;
         return Ok(json!({
@@ -7434,6 +7868,7 @@ pub fn query_constraints(input: &[u8], request: &GeometricReflowRequest) -> Resu
 
 /// Query central confidence/review enforcement for a proposed reflow.
 pub fn query_confidence(input: &[u8], request: &GeometricReflowRequest) -> Result<Value> {
+    let request = &resolve_source_metrics(input, request);
     if request.source_text == request.replacement_text {
         let preview = no_change_preview_reflow(input, request)?;
         return Ok(json!({
@@ -7492,6 +7927,7 @@ pub fn validate_reflow_output(
     output: &[u8],
     request: &GeometricReflowRequest,
 ) -> Result<Value> {
+    let request = &resolve_source_metrics(input, request);
     let output_reopened = ContentEngine::open_bytes(output.to_vec()).is_ok();
     let proof = unaffected_content_proof(
         input,
@@ -7513,6 +7949,7 @@ pub fn validate_reflow_output(
 }
 
 pub fn transaction_undo_report(input: &[u8], request: &GeometricReflowRequest) -> Result<Value> {
+    let request = &resolve_source_metrics(input, request);
     let preview = preview_reflow(input, request)?;
     if let Some(refusal) = preview.refusal {
         return Ok(json!({
@@ -7971,8 +8408,57 @@ mod tests {
             approve_low_confidence_structure: false,
             signature_policy_override: false,
             line_height: 14.0,
+            // Pinned to the historical line_height / 1.2 so layout tests keep
+            // their tuned regions; measured sizing has its own tests.
+            font_size: Some(14.0 / 1.2),
+            // Layout tests exercise the generated Type0 writer directly.
+            prefer_source_font: false,
+            paint_order_policy: Default::default(),
+            break_width_scale: None,
             max_downstream_blocks: 4,
         }
+    }
+
+    #[test]
+    fn default_policy_keeps_the_source_font_when_it_can_encode_the_text() {
+        let input = fixture(b"BT /F1 12 Tf 10 150 Td (HELLO) Tj ET\n");
+        let mut req = request("HELLO", "HOLE");
+        req.prefer_source_font = true;
+        let (_output, report) = apply_reflow_region(&input, &req).expect("source-font reflow");
+        assert_eq!(
+            report.validation_evidence["source_rewrite"]["detail"]["operation"],
+            "replace_preserving_per_segment_styles"
+        );
+    }
+
+    #[test]
+    fn unset_size_leading_and_region_are_measured_from_the_source_paragraph() {
+        let input = fixture(
+            b"BT /F1 11 Tf 15 TL 72 700 Td (Revenue grew by eight) Tj T* (percent this year.) Tj ET\n",
+        );
+        let mut req = request("percent this year.", "percent this quarter.");
+        req.region = None;
+        req.line_height = 0.0;
+        req.font_size = None;
+        let resolved = resolve_source_metrics(&input, &req);
+        assert_eq!(resolved.font_size, Some(11.0));
+        assert!(
+            (resolved.line_height - 13.2).abs() < 1e-6,
+            "one line: 1.2 x size"
+        );
+        let region = resolved.region.expect("region anchored on the source line");
+        // First generated baseline = region top - size = the source baseline.
+        assert!((region[3] - 11.0 - 685.0).abs() < 1e-6, "region {region:?}");
+        assert!((region[0] - 72.0).abs() < 1e-6, "region {region:?}");
+
+        // Selecting both lines measures their 15 pt leading.
+        let mut both = request("Revenue grew by eight percent this year.", "x");
+        both.region = None;
+        both.line_height = 0.0;
+        both.font_size = None;
+        let resolved = resolve_source_metrics(&input, &both);
+        assert!((resolved.line_height - 15.0).abs() < 1e-6);
+        assert!((resolved.region.expect("region")[3] - 11.0 - 700.0).abs() < 1e-6);
     }
 
     #[test]
@@ -8097,8 +8583,16 @@ mod tests {
             model.logical_text[..byte_end].chars().count(),
         ]);
 
+        // Without an approved region the text may only stay in the source line's
+        // own box, which cannot hold a forced second line: still refused.
         let error = apply_reflow_region(&input, &req).expect_err("missing approved region");
-        assert!(error.to_string().contains("region_not_resolved"));
+        let error = error.to_string();
+        assert!(
+            error.contains("region_not_resolved")
+                || error.contains("overflow")
+                || error.contains("infeasible"),
+            "got {error}"
+        );
     }
 
     #[test]

@@ -1245,7 +1245,7 @@ fn build_seg_line(mut chunks: Vec<&TextChunk>, line_h: f64) -> SegLine {
     let rtl_n = chunks.iter().filter(|c| c.is_rtl).count();
     let is_rtl = rtl_n * 2 > chunks.len();
 
-    let word_gap = 0.25 * line_h;
+    let word_gap = crate::text::reading_order::WORD_GAP_EM * line_h;
     let mut text = String::new();
     let mut prev_right: Option<f64> = None;
     for c in &chunks {
@@ -1846,11 +1846,24 @@ pub fn build_document_model(engine: &ContentEngine, pages: &[usize]) -> Result<D
     {
         return build_geometric(engine, &page_list);
     }
-    let semantic = engine.extract_semantic_document(&page_list)?;
-    if semantic.tagged {
-        Ok(build_tagged(&semantic, page_list.len()))
-    } else {
-        build_geometric(engine, &page_list)
+    // A structure tree that is malformed or too large to walk within the
+    // traversal budget does not make the document unreadable: fall back to
+    // layout analysis, as for an untagged file.
+    match engine.extract_semantic_document(&page_list) {
+        Ok(semantic) if semantic.tagged => Ok(build_tagged(&semantic, page_list.len())),
+        Ok(_) => build_geometric(engine, &page_list),
+        Err(err)
+            if matches!(
+                err,
+                crate::error::WellfriendError::MalformedPdf(_)
+                    | crate::error::WellfriendError::ResourceLimit(_)
+                    | crate::error::WellfriendError::UnsupportedFeature(_)
+            ) =>
+        {
+            log::warn!("structure tree unusable ({err}); using layout analysis");
+            build_geometric(engine, &page_list)
+        }
+        Err(err) => Err(err),
     }
 }
 
@@ -2710,6 +2723,13 @@ fn build_tagged(doc: &SemanticDocument, page_count: usize) -> DocumentModel {
             if matches!(ctype, ClassifiedType::Figure | ClassifiedType::Table) {
                 *last_figure_id = Some(id);
             }
+            // The block's text (or table/list items) already covers every
+            // descendant; walking into them again would repeat that text.
+            // Figures only use alt/actual text, so a nested caption is still
+            // looked for below.
+            if !matches!(ctype, ClassifiedType::Figure) {
+                return;
+            }
         }
         for child in &el.children {
             walk(child, blocks, next_id, order, table_iter, last_figure_id);
@@ -2769,15 +2789,50 @@ fn map_tag(tag: &str, el: &SemanticElement) -> Option<(ClassifiedType, Vec<ListI
         "Table" => Some((ClassifiedType::Table, Vec::new())),
         "TOC" | "TOCI" | "Artifact" | "Lbl" | "LBody" | "TR" | "TH" | "TD" | "THead" | "TBody"
         | "TFoot" => None,
-        // Span/unknown with text => paragraph; empty => skipped.
+        // A grouping element (Part, Sect, Div, Art, Form, ...) that holds
+        // block-level children is a container: its children become the blocks.
+        // Otherwise Span/unknown with text => paragraph; empty => skipped.
         _ => {
-            if el.combined_text().trim().is_empty() {
+            if el
+                .children
+                .iter()
+                .any(|child| !is_inline_tag(&child.element_type))
+                || el.combined_text().trim().is_empty()
+            {
                 None
             } else {
                 Some((ClassifiedType::Paragraph, Vec::new()))
             }
         }
     }
+}
+
+/// Structure types that sit inside a block's text line rather than forming a
+/// block of their own (PDF 32000-1 14.8.4.4 inline-level elements, plus Lbl).
+fn is_inline_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "Span"
+            | "Link"
+            | "Annot"
+            | "Ruby"
+            | "RB"
+            | "RT"
+            | "RP"
+            | "Warichu"
+            | "WT"
+            | "WP"
+            | "Code"
+            | "Reference"
+            | "BibEntry"
+            | "Quote"
+            | "Note"
+            | "Lbl"
+            | "Em"
+            | "Strong"
+            | "Sub"
+            | "Formula"
+    )
 }
 
 fn list_items_from_element(el: &SemanticElement) -> Vec<ListItem> {

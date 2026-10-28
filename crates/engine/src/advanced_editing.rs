@@ -34,6 +34,8 @@ mod cff_tests;
 #[cfg(test)]
 #[path = "advanced_coverage_tests.rs"]
 mod coverage_tests;
+#[path = "advanced_editor_layout.rs"]
+pub(crate) mod editor_layout;
 #[path = "advanced_form_text.rs"]
 pub mod form_text;
 #[cfg(test)]
@@ -662,7 +664,7 @@ pub fn analyze_advanced_text_reflow(
     }
 
     let font = font_bytes
-        .or_else(|| get_fallback_font("Symbol"))
+        .or_else(|| crate::fonts::installed::generated_text_font(text))
         .ok_or_else(|| {
             WellfriendError::UnsupportedFeature(
                 "advanced_editing bundled fallback font unavailable".to_string(),
@@ -1503,7 +1505,7 @@ fn edit_advanced_text_pdf_internal(
         ));
     }
     let font = font_bytes
-        .or_else(|| get_fallback_font("Symbol"))
+        .or_else(|| crate::fonts::installed::generated_text_font(new_text))
         .ok_or_else(|| {
             WellfriendError::UnsupportedFeature(
                 "advanced_editing bundled shaping font unavailable".to_string(),
@@ -3545,12 +3547,19 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
                             .is_ok_and(|missing| !missing)
                         })
                 });
-                let source_family = inherited_owner
+                let source_base = inherited_owner
                     .and_then(|owner| resources.fonts.get(&owner.5.font_resource))
-                    .and_then(|dict| dict.get_name("BaseFont"))
-                    .and_then(|base| {
-                        crate::pdfa_fonts::matching_full_font(base, &request.replacement_text)
-                    });
+                    .and_then(|dict| dict.get_name("BaseFont"));
+                let source_family = source_base.and_then(|base| {
+                    crate::pdfa_fonts::matching_full_font(base, &request.replacement_text).or_else(
+                        || {
+                            crate::fonts::installed::similar_installed_font(
+                                base,
+                                &request.replacement_text,
+                            )
+                        },
+                    )
+                });
                 let font = if logical_only_replacement {
                     get_fallback_font("Symbol")
                 } else {
@@ -3889,7 +3898,7 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
         }
         if requires_generated_style_font {
             let font = font_bytes
-                .or_else(|| get_fallback_font("Symbol"))
+                .or_else(|| crate::fonts::installed::generated_text_font(&request.replacement_text))
                 .ok_or_else(|| {
                     WellfriendError::UnsupportedFeature(
                         "advanced_editing preserve_per_segment shaping font unavailable"
@@ -4233,7 +4242,7 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
         }));
     }
     let font = font_bytes
-        .or_else(|| get_fallback_font("Symbol"))
+        .or_else(|| crate::fonts::installed::generated_text_font(&request.replacement_text))
         .ok_or_else(|| {
             WellfriendError::UnsupportedFeature(
                 "advanced_editing_closeout bundled shaping font unavailable".to_string(),
@@ -5137,14 +5146,23 @@ fn edit_zero_width_insertion_inline_source_style(
             .filter(|candidate| supports(candidate))
             .or_else(|| font_bytes.filter(|candidate| supports(candidate)))
             .or_else(|| {
-                source_font
-                    .get_name("BaseFont")
-                    .and_then(|base| {
-                        crate::pdfa_fonts::matching_full_font(base, &request.replacement_text)
-                    })
-                    .filter(|candidate| supports(candidate))
+                source_font.get_name("BaseFont").and_then(|base| {
+                    crate::pdfa_fonts::matching_full_font(base, &request.replacement_text)
+                        .filter(|candidate| supports(candidate))
+                        .or_else(|| {
+                            crate::fonts::installed::similar_installed_font(
+                                base,
+                                &request.replacement_text,
+                            )
+                            .filter(|candidate| supports(candidate))
+                        })
+                })
             })
             .or_else(|| get_fallback_font("Symbol").filter(|candidate| supports(candidate)))
+            .or_else(|| {
+                crate::fonts::installed::generated_text_font(&request.replacement_text)
+                    .filter(|candidate| supports(candidate))
+            })
     }
     .ok_or_else(|| {
         WellfriendError::UnsupportedFeature(
@@ -9168,6 +9186,8 @@ struct ContentStringToken {
     unresolved_actual_text: bool,
     flow_relocatable: bool,
     source_position: Option<inline_text::PositionSnapshot>,
+    /// CTM in force when the string was shown (identity until observed).
+    source_ctm: crate::content::state::Matrix,
     generated_basis: inline_text::SourceBasis,
 }
 
@@ -11449,6 +11469,7 @@ fn scan_text_program_tokens(
                         operator: operator.clone(),
                         element: None,
                         source_position: None,
+                        source_ctm: crate::content::state::IDENTITY_MATRIX,
                         generated_basis: inline_text::SourceBasis::Absent,
                         text_render_mode: render_mode,
                         marked_depth,
@@ -11520,6 +11541,7 @@ fn scan_text_program_tokens(
                             operator: operator.clone(),
                             element: Some(element),
                             source_position: None,
+                            source_ctm: crate::content::state::IDENTITY_MATRIX,
                             generated_basis: inline_text::SourceBasis::Absent,
                             text_render_mode: render_mode,
                             marked_depth,

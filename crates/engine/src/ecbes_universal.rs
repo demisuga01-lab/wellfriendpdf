@@ -9,7 +9,7 @@
 //! still required outside that known cone.
 
 use crate::document_subsystems::{DocumentSubsystemsAction, DocumentSubsystemsSubsystem};
-use crate::research_edit_synthesis::{
+use crate::edit_synthesis::{
     EditCandidate, EditCostVector, EditFidelityClass, EditInfluenceGraph, EditSynthesisPolicy,
     EvidenceConstrainedEditDecision, EvidenceConstrainedEditRequest, EvidenceProducerIdentity,
     InfluenceEdge, InfluenceEdgeKind, ProofEvidence, ProofObligationKind, ProofStatus,
@@ -1390,7 +1390,7 @@ pub fn execute_ecbes_universal_edit(
     for item in &mut materialized {
         item.edit_candidate.influence_nodes = cone_nodes.clone();
     }
-    let decision = crate::research_edit_synthesis::synthesize_evidence_constrained_edit(
+    let decision = crate::edit_synthesis::synthesize_evidence_constrained_edit(
         EvidenceConstrainedEditRequest {
             max_influence_nodes: graph.nodes.len().max(1),
             graph,

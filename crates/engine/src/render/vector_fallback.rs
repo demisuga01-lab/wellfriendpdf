@@ -3016,7 +3016,7 @@ fn parse_type3_stitching_function(
     input_bounds.push(domain[0]);
     let mut previous = domain[0];
     for bound in bounds {
-        if bound <= previous || bound > domain[1] || !bound.is_finite() {
+        if bound < previous || bound > domain[1] || !bound.is_finite() {
             return None;
         }
         input_bounds.push(bound);

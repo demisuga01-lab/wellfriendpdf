@@ -617,12 +617,320 @@ pub fn scale_pdf_pages(engine: &ContentEngine, options: ScalePagesOptions) -> Re
     builder.to_bytes()
 }
 
-/// Create a visual n-up PDF from selected pages.
+/// Create an n-up PDF from selected pages.
 ///
-/// Source pages are rasterized into cells. The output is safe and deterministic,
-/// but interactive structures are intentionally not preserved because arbitrary
-/// widget/link destination relinking across imposed pages is not safe yet.
+/// Each source page is placed as a Form XObject (its own content and
+/// resources) scaled into its cell, as PDFium's `FPDF_ImportNPagesToOne` and
+/// qpdf's `placeFormXObject` do, so text stays searchable and the file stays
+/// small. Pages whose content cannot be wrapped safely fall back to the raster
+/// imposition. Interactive structures (annotations, widgets, link targets) are
+/// not carried onto the imposed sheets.
 pub fn n_up_pdf(engine: &ContentEngine, pages: &[usize], options: NUpOptions) -> Result<Vec<u8>> {
+    if options.columns == 0 || options.rows == 0 {
+        return Err(WellfriendError::MalformedPdf(
+            "n-up: rows and columns must be positive".to_string(),
+        ));
+    }
+    match n_up_pdf_vector(engine, pages, options) {
+        Ok(Some(bytes)) => Ok(bytes),
+        Ok(None) => n_up_pdf_raster(engine, pages, options),
+        Err(err) => {
+            log::warn!("n-up: vector imposition failed ({err}); rasterizing pages instead");
+            n_up_pdf_raster(engine, pages, options)
+        }
+    }
+}
+
+/// Vector n-up. Returns `Ok(None)` when a page cannot be wrapped as a Form
+/// XObject without changing it (for example a content stream shared between
+/// pages with different resources).
+fn n_up_pdf_vector(
+    engine: &ContentEngine,
+    pages: &[usize],
+    options: NUpOptions,
+) -> Result<Option<Vec<u8>>> {
+    use crate::object::{PdfDictionary, PdfObject};
+    use crate::writer::{rewrite_document_objects, OutputObject, PdfWriter};
+    use std::collections::{BTreeMap, HashMap};
+
+    const FORM_MARKER: &str = "WellfriendNUpForm";
+    const PAGES_MARKER: &str = "WellfriendNUpPages";
+
+    let per_sheet = options.columns.saturating_mul(options.rows);
+    if per_sheet == 0 || per_sheet > 64 {
+        return Err(WellfriendError::ResourceLimit(
+            "n-up: rows*columns must be between 1 and 64".to_string(),
+        ));
+    }
+    let total = engine.page_count()?;
+    let selected = normalize_pages(total, pages)?;
+    // Work on a copy that holds only the selected pages, in order.
+    let subset = ContentEngine::open_bytes(build_subset(engine.document(), &selected)?)?;
+    let reader = subset.document().reader();
+    let count = subset.page_count()?;
+
+    struct Placed {
+        content: Option<(u32, Vec<(u32, u16)>)>,
+        resources: PdfDictionary,
+        bbox: [f64; 4],
+        rotate: i32,
+    }
+    let mut placed = Vec::with_capacity(count);
+    let mut owners: HashMap<u32, usize> = HashMap::new();
+    for page_no in 1..=count {
+        let page = subset.get_page(page_no)?;
+        let content = page
+            .contents
+            .first()
+            .map(|&(first, _)| (first, page.contents.clone()));
+        for &(number, _) in &page.contents {
+            if owners.insert(number, page_no).is_some() {
+                return Ok(None);
+            }
+        }
+        placed.push(Placed {
+            content,
+            resources: page.resources.clone(),
+            bbox: page.crop_box,
+            rotate: page.rotate.rem_euclid(360),
+        });
+    }
+    // Content of pages with several streams is joined into the first stream.
+    let mut joined: HashMap<u32, Vec<u8>> = HashMap::new();
+    for item in &placed {
+        let Some((first, streams)) = &item.content else {
+            continue;
+        };
+        if streams.len() > 1 {
+            let mut data = Vec::new();
+            for &(number, generation) in streams {
+                let stream = reader.get_object(number, generation)?;
+                data.extend_from_slice(
+                    &crate::filters::decode_stream_lossless(&stream, reader)?.data,
+                );
+                data.push(b'\n');
+            }
+            joined.insert(*first, crate::filters::flate_encode(&data, 6));
+        }
+    }
+    let forms: HashMap<u32, usize> = placed
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| item.content.as_ref().map(|(first, _)| (*first, index)))
+        .collect();
+    let pages_root = reader
+        .root_reference()
+        .and_then(|(number, generation)| reader.get_object(number, generation).ok())
+        .and_then(|catalog| {
+            catalog
+                .as_dict()
+                .and_then(|dict| dict.get("Pages"))
+                .cloned()
+        })
+        .and_then(|pages| pages.as_reference())
+        .ok_or_else(|| WellfriendError::MalformedPdf("n-up: catalog has no /Pages".to_string()))?
+        .0;
+
+    let mut mutate = |number: u32, object: &mut PdfObject| {
+        if number == pages_root {
+            if let PdfObject::Dictionary(dict) = object {
+                dict.insert(PAGES_MARKER, PdfObject::Boolean(true));
+            }
+            return;
+        }
+        let Some(&index) = forms.get(&number) else {
+            return;
+        };
+        let item = &placed[index];
+        if let PdfObject::Stream { dict, raw } = object {
+            if let Some(data) = joined.remove(&number) {
+                *raw = data;
+                dict.remove("DecodeParms");
+                dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+            }
+            dict.insert("Length", PdfObject::Integer(raw.len() as i64));
+            dict.insert("Type", PdfObject::Name("XObject".to_string()));
+            dict.insert("Subtype", PdfObject::Name("Form".to_string()));
+            dict.insert(
+                "BBox",
+                PdfObject::Array(item.bbox.iter().copied().map(PdfObject::Real).collect()),
+            );
+            dict.insert("Resources", PdfObject::Dictionary(item.resources.clone()));
+            dict.insert(FORM_MARKER, PdfObject::Integer(index as i64));
+        }
+    };
+    let (mut objects, root, info) = rewrite_document_objects(reader, &mut mutate)?;
+
+    // Find the renumbered forms and page tree root by their markers.
+    let mut form_numbers = vec![None; placed.len()];
+    let mut new_pages_root = None;
+    for object in &mut objects {
+        match &mut object.object {
+            PdfObject::Stream { dict, .. } => {
+                if let Some(index) = dict.remove(FORM_MARKER).and_then(|v| v.as_integer()) {
+                    form_numbers[index as usize] = Some(object.number);
+                }
+            }
+            PdfObject::Dictionary(dict) => {
+                if dict.remove(PAGES_MARKER).is_some() {
+                    new_pages_root = Some(object.number);
+                }
+            }
+            _ => {}
+        }
+    }
+    let new_pages_root = new_pages_root
+        .ok_or_else(|| WellfriendError::MalformedPdf("n-up: lost the page tree".to_string()))?;
+    let mut next = objects
+        .iter()
+        .map(|object| object.number)
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    let displayed = |item: &Placed| {
+        let w = (item.bbox[2] - item.bbox[0]).abs().max(1.0);
+        let h = (item.bbox[3] - item.bbox[1]).abs().max(1.0);
+        if item.rotate % 180 == 90 {
+            (h, w)
+        } else {
+            (w, h)
+        }
+    };
+    let (sheet_w, sheet_h) = displayed(&placed[0]);
+    let cell_w = sheet_w / options.columns as f64;
+    let cell_h = sheet_h / options.rows as f64;
+    let mut kids = Vec::new();
+    for (sheet, chunk) in placed.chunks(per_sheet).enumerate() {
+        let mut ops = String::new();
+        let mut xobjects = BTreeMap::new();
+        for (slot, item) in chunk.iter().enumerate() {
+            let index = sheet * per_sheet + slot;
+            let Some(form) = form_numbers[index] else {
+                continue;
+            };
+            let [x0, y0, x1, y1] = item.bbox;
+            // Map the page box to an upright origin-based box (PDF /Rotate is
+            // clockwise), then scale it into the cell and centre it.
+            let [a, b, c, d, e, f] = match item.rotate {
+                90 => [0.0, -1.0, 1.0, 0.0, -y0, x1],
+                180 => [-1.0, 0.0, 0.0, -1.0, x1, y1],
+                270 => [0.0, 1.0, -1.0, 0.0, y1, -x0],
+                _ => [1.0, 0.0, 0.0, 1.0, -x0, -y0],
+            };
+            let (w, h) = displayed(item);
+            let scale = (cell_w / w).min(cell_h / h);
+            let col = slot % options.columns;
+            let row = slot / options.columns;
+            let tx = col as f64 * cell_w + (cell_w - w * scale) / 2.0;
+            let ty = sheet_h - (row + 1) as f64 * cell_h + (cell_h - h * scale) / 2.0;
+            let name = format!("P{slot}");
+            ops.push_str(&format!(
+                "q {} {} {} {} {} {} cm /{name} Do Q\n",
+                pdf_num(a * scale),
+                pdf_num(b * scale),
+                pdf_num(c * scale),
+                pdf_num(d * scale),
+                pdf_num(e * scale + tx),
+                pdf_num(f * scale + ty),
+            ));
+            xobjects.insert(
+                name,
+                PdfObject::Reference {
+                    number: form,
+                    generation: 0,
+                },
+            );
+        }
+        let content_number = next;
+        let page_number = next + 1;
+        next += 2;
+        let raw = crate::filters::flate_encode(ops.as_bytes(), 6);
+        let mut content_dict = PdfDictionary::empty();
+        content_dict.insert("Length", PdfObject::Integer(raw.len() as i64));
+        content_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+        objects.push(OutputObject {
+            number: content_number,
+            object: PdfObject::Stream {
+                dict: content_dict,
+                raw,
+            },
+        });
+        let mut resources = PdfDictionary::empty();
+        resources.insert(
+            "XObject",
+            PdfObject::Dictionary(PdfDictionary::new(xobjects)),
+        );
+        let mut page = PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".to_string()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: new_pages_root,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Real(sheet_w),
+                PdfObject::Real(sheet_h),
+            ]),
+        );
+        page.insert("Resources", PdfObject::Dictionary(resources));
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: content_number,
+                generation: 0,
+            },
+        );
+        objects.push(OutputObject {
+            number: page_number,
+            object: PdfObject::Dictionary(page),
+        });
+        kids.push(PdfObject::Reference {
+            number: page_number,
+            generation: 0,
+        });
+    }
+    let sheets = kids.len() as i64;
+    for object in &mut objects {
+        if object.number == new_pages_root {
+            if let PdfObject::Dictionary(dict) = &mut object.object {
+                dict.insert("Kids", PdfObject::Array(kids.clone()));
+                dict.insert("Count", PdfObject::Integer(sheets));
+            }
+        }
+    }
+    // The source page dictionaries stay in the file but are no longer in the
+    // page tree, so viewers see only the imposed sheets.
+    let writer = PdfWriter::new(objects, root)
+        .with_info(info)
+        .with_id(reader.first_file_id());
+    Ok(Some(writer.write()?))
+}
+
+fn pdf_num(value: f64) -> String {
+    let value = if value.abs() < 1e-9 { 0.0 } else { value };
+    let text = format!("{value:.4}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text.is_empty() || text == "-0" {
+        "0".to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+/// Raster n-up: source pages are rasterized into cells. Used when a page
+/// cannot be wrapped as a Form XObject.
+fn n_up_pdf_raster(
+    engine: &ContentEngine,
+    pages: &[usize],
+    options: NUpOptions,
+) -> Result<Vec<u8>> {
     if options.columns == 0 || options.rows == 0 {
         return Err(WellfriendError::MalformedPdf(
             "n-up: rows and columns must be positive".to_string(),

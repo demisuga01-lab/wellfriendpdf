@@ -25,23 +25,65 @@ pub const RECOMMENDED_STANDARD_RAM_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const MINIMUM_STANDARD_SOFT_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const MINIMUM_STANDARD_HARD_MEMORY_BYTES: u64 = 4_700 * 1024 * 1024;
 
-/// The only public runtime modes.
+/// Decision/deprecation marker recorded when a caller still asks for the
+/// retired `research` execution mode. The request is accepted and mapped to
+/// [`ExecutionMode::Standard`]; every former research component is now an
+/// optional Standard capability behind its own explicit switch.
+pub const RESEARCH_MODE_DEPRECATION: &str = "research_mode_deprecated_merged_into_standard";
+
+/// Deprecation marker recorded when a runtime config still uses the retired
+/// `research` section/key instead of `advanced`.
+pub const RESEARCH_CONFIG_SECTION_DEPRECATION: &str =
+    "research_config_section_deprecated_renamed_to_advanced";
+
+/// Deprecation marker recorded when a host policy still sets the retired
+/// `force_standard` / `allow_research` switches. Both are ignored.
+pub const RESEARCH_POLICY_SWITCH_DEPRECATION: &str =
+    "host_policy_research_switches_deprecated_ignored";
+
+/// The single public runtime mode.
+///
+/// WellfriendPDF used to expose a separate `research` mode. It has been merged
+/// into Standard: the former research components are ordinary optional
+/// Standard capabilities controlled by explicit switches in
+/// [`AdvancedConfig`], [`ResourceLimits`], [`RenderingConfig`] and
+/// [`ProviderRegistryConfig`]. The string `research` is still accepted by
+/// [`FromStr`] and serde as a deprecated alias of `standard`.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionMode {
     #[default]
+    #[serde(alias = "research")]
     Standard,
-    Research,
 }
 
 impl ExecutionMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Standard => "standard",
-            Self::Research => "research",
         }
+    }
+
+    /// Parse a mode string, reporting whether it used a deprecated alias.
+    ///
+    /// Returns the mode plus [`RESEARCH_MODE_DEPRECATION`] when the input was
+    /// the retired `research` mode.
+    pub fn parse_with_deprecation(value: &str) -> Result<(Self, Option<&'static str>)> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "standard" => Ok((Self::Standard, None)),
+            "research" => Ok((Self::Standard, Some(RESEARCH_MODE_DEPRECATION))),
+            other => Err(WellfriendError::invalid_input(format!(
+                "unknown execution mode '{other}'; expected 'standard' \
+                 ('research' is a deprecated alias of 'standard')"
+            ))),
+        }
+    }
+
+    /// True when `value` names the deprecated `research` mode alias.
+    pub fn is_deprecated_alias(value: &str) -> bool {
+        value.trim().eq_ignore_ascii_case("research")
     }
 }
 
@@ -54,14 +96,11 @@ impl fmt::Display for ExecutionMode {
 impl FromStr for ExecutionMode {
     type Err = WellfriendError;
 
+    /// Accepts `standard`, and `research` as a deprecated alias of `standard`.
+    /// Use [`ExecutionMode::parse_with_deprecation`] or
+    /// [`RuntimeConfig::set_mode_str`] to also record the deprecation.
     fn from_str(value: &str) -> Result<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "standard" => Ok(Self::Standard),
-            "research" => Ok(Self::Research),
-            other => Err(WellfriendError::invalid_input(format!(
-                "unknown execution mode '{other}'; expected 'standard' or 'research'"
-            ))),
-        }
+        Self::parse_with_deprecation(value).map(|(mode, _)| mode)
     }
 }
 
@@ -319,7 +358,10 @@ pub enum OcrRoutingPolicy {
     PrivacyRestricted,
     ScriptAware,
     PageQualityAware,
-    ResearchFusion,
+    /// Multi-provider result fusion. Formerly `research_fusion`; that name is
+    /// still accepted as a deprecated serde alias.
+    #[serde(alias = "research_fusion")]
+    ModelFusion,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -448,20 +490,34 @@ impl Default for ObservabilityConfig {
     }
 }
 
+/// Optional advanced Standard capabilities (formerly the research-mode
+/// switches). Every switch defaults to off and is honored in Standard mode when
+/// an operator turns it on explicitly; each one still falls back to the
+/// deterministic CPU path when its hardware/provider/policy prerequisites are
+/// missing. Serialized as `advanced`; the legacy `research` key is accepted.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResearchConfig {
+#[serde(default)]
+pub struct AdvancedConfig {
     pub experimental_renderer: bool,
+    /// GPU hybrid rendering. Also requires `resources.allow_gpu` and a GPU.
     pub gpu_rendering: bool,
     pub model_fusion: bool,
+    /// Distributed workers. Also requires `resources.allow_external_processes`.
     pub distributed_workers: bool,
     pub learned_cost_selection: bool,
     pub hardware_autotuning: bool,
     pub display_optimization_validation: bool,
     pub experimental_solvers: bool,
-    pub research_instrumentation: bool,
+    #[serde(alias = "research_instrumentation")]
+    pub instrumentation: bool,
 }
 
+/// Deprecated name of [`AdvancedConfig`].
+#[deprecated(note = "research mode was merged into Standard; use AdvancedConfig")]
+pub type ResearchConfig = AdvancedConfig;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RuntimeConfigWire")]
 pub struct RuntimeConfig {
     pub schema_version: u32,
     pub mode: ExecutionMode,
@@ -473,7 +529,81 @@ pub struct RuntimeConfig {
     pub ocr: OcrRuntimeConfig,
     pub providers: ProviderRegistryConfig,
     pub observability: ObservabilityConfig,
-    pub research: ResearchConfig,
+    /// Optional advanced Standard capabilities (formerly `research`).
+    pub advanced: AdvancedConfig,
+    /// Deprecated inputs that were accepted and normalized (for example the
+    /// retired `research` mode). Surfaced as decisions by
+    /// [`RuntimeConfig::effective`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deprecations: Vec<String>,
+}
+
+/// Mode input accepted on the wire; `research` is kept only so it can be
+/// recorded as a deprecation before mapping to Standard.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExecutionModeInput {
+    Standard,
+    Research,
+}
+
+/// Deserialization shape for [`RuntimeConfig`] that tolerates the retired
+/// research-mode spellings and records them as deprecations.
+#[derive(Deserialize)]
+struct RuntimeConfigWire {
+    schema_version: u32,
+    mode: ExecutionModeInput,
+    resources: ResourceLimits,
+    concurrency: ConcurrencyConfig,
+    caches: CacheConfig,
+    temporary_storage: TemporaryStorageConfig,
+    rendering: RenderingConfig,
+    ocr: OcrRuntimeConfig,
+    providers: ProviderRegistryConfig,
+    observability: ObservabilityConfig,
+    #[serde(default)]
+    advanced: Option<AdvancedConfig>,
+    #[serde(default)]
+    research: Option<AdvancedConfig>,
+    #[serde(default)]
+    deprecations: Vec<String>,
+}
+
+impl From<RuntimeConfigWire> for RuntimeConfig {
+    fn from(wire: RuntimeConfigWire) -> Self {
+        let mut deprecations = wire.deprecations;
+        if matches!(wire.mode, ExecutionModeInput::Research) {
+            push_unique(&mut deprecations, RESEARCH_MODE_DEPRECATION);
+        }
+        let advanced = match (wire.advanced, wire.research) {
+            (Some(advanced), _) => advanced,
+            (None, Some(research)) => {
+                push_unique(&mut deprecations, RESEARCH_CONFIG_SECTION_DEPRECATION);
+                research
+            }
+            (None, None) => AdvancedConfig::default(),
+        };
+        Self {
+            schema_version: wire.schema_version,
+            mode: ExecutionMode::Standard,
+            resources: wire.resources,
+            concurrency: wire.concurrency,
+            caches: wire.caches,
+            temporary_storage: wire.temporary_storage,
+            rendering: wire.rendering,
+            ocr: wire.ocr,
+            providers: wire.providers,
+            observability: wire.observability,
+            advanced,
+            deprecations,
+        }
+    }
+}
+
+fn push_unique(list: &mut Vec<String>, value: &str) {
+    if !list.iter().any(|existing| existing == value) {
+        list.push(value.to_string());
+    }
 }
 
 impl Default for RuntimeConfig {
@@ -495,33 +625,49 @@ impl RuntimeConfig {
             ocr: OcrRuntimeConfig::default(),
             providers: ProviderRegistryConfig::default(),
             observability: ObservabilityConfig::default(),
-            research: ResearchConfig::default(),
+            advanced: AdvancedConfig::default(),
+            deprecations: Vec::new(),
         }
     }
 
+    /// Deprecated: research mode was merged into Standard.
+    ///
+    /// Returns [`RuntimeConfig::standard`] with the research-mode deprecation
+    /// recorded. It deliberately does NOT enable GPU, external processes,
+    /// hosted APIs or cloud providers any more; enable the specific optional
+    /// capability switches explicitly instead.
+    #[deprecated(
+        note = "research mode was merged into Standard; use RuntimeConfig::standard() and enable optional capabilities explicitly"
+    )]
     pub fn research() -> Self {
         let mut cfg = Self::standard();
-        cfg.mode = ExecutionMode::Research;
-        cfg.resources.allow_gpu = true;
-        cfg.resources.allow_external_processes = true;
-        cfg.rendering.experimental_gpu_backend = true;
-        cfg.providers.allow_hosted_api = true;
-        cfg.providers.allow_cloud_document_intelligence = true;
-        cfg.research.experimental_renderer = true;
-        cfg.research.model_fusion = true;
-        cfg.research.learned_cost_selection = true;
-        cfg.research.hardware_autotuning = true;
-        cfg.research.display_optimization_validation = true;
-        cfg.research.experimental_solvers = true;
-        cfg.research.research_instrumentation = true;
+        push_unique(&mut cfg.deprecations, RESEARCH_MODE_DEPRECATION);
         cfg
     }
 
     pub fn from_mode(mode: ExecutionMode) -> Self {
         match mode {
             ExecutionMode::Standard => Self::standard(),
-            ExecutionMode::Research => Self::research(),
         }
+    }
+
+    /// Set the mode from a user-supplied string, recording a deprecation when
+    /// the retired `research` alias is used.
+    pub fn set_mode_str(&mut self, value: &str) -> Result<()> {
+        let (mode, deprecation) = ExecutionMode::parse_with_deprecation(value)?;
+        self.mode = mode;
+        if let Some(deprecation) = deprecation {
+            push_unique(&mut self.deprecations, deprecation);
+        }
+        Ok(())
+    }
+
+    /// Build a config for a mode string (`standard`, or the deprecated
+    /// `research` alias, which yields Standard plus a recorded deprecation).
+    pub fn from_mode_str(value: &str) -> Result<Self> {
+        let mut cfg = Self::standard();
+        cfg.set_mode_str(value)?;
+        Ok(cfg)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -530,15 +676,6 @@ impl RuntimeConfig {
                 "unsupported runtime config schema_version {}; expected {}",
                 self.schema_version, RUNTIME_CONFIG_SCHEMA_VERSION
             )));
-        }
-        if matches!(self.mode, ExecutionMode::Standard)
-            && (self.research.gpu_rendering
-                || self.research.model_fusion
-                || self.research.distributed_workers)
-        {
-            return Err(WellfriendError::invalid_input(
-                "research-only switches require mode='research'",
-            ));
         }
         if !self.resources.allow_external_network {
             for provider in &self.ocr.providers {
@@ -593,14 +730,10 @@ impl RuntimeConfig {
         let mut cfg = if let Ok(raw) = std::env::var("WELLFRIENDPDF_RUNTIME_CONFIG_JSON") {
             Self::from_json_str(&raw)?
         } else {
-            Self::from_mode(
-                mode.as_deref()
-                    .unwrap_or("standard")
-                    .parse::<ExecutionMode>()?,
-            )
+            Self::standard()
         };
         if let Some(mode) = mode {
-            cfg.mode = mode.parse()?;
+            cfg.set_mode_str(&mode)?;
         }
         if let Ok(value) = std::env::var("WELLFRIENDPDF_MEMORY_SOFT_BYTES") {
             cfg.resources.soft_memory_bytes = Some(parse_u64_env(&value, "soft memory")?);
@@ -641,16 +774,18 @@ impl RuntimeConfig {
         self.validate()?;
         let mut effective = self.clone();
         let mut decisions = Vec::new();
-        if policy.force_standard {
-            if effective.mode == ExecutionMode::Research {
-                decisions.push("host_policy_forced_standard".to_string());
-            }
-            effective.mode = ExecutionMode::Standard;
+        // Research mode was merged into Standard: surface any deprecated input
+        // that was normalized, and treat the retired policy switches as no-ops.
+        for deprecation in &self.deprecations {
+            push_unique(&mut decisions, deprecation);
         }
-        if effective.mode == ExecutionMode::Research && !policy.allow_research {
-            decisions.push("research_inactive_policy".to_string());
-            effective.mode = ExecutionMode::Standard;
+        if policy.force_standard
+            || policy.allow_research
+            || !policy.allowed_tenants_for_research.is_empty()
+        {
+            push_unique(&mut decisions, RESEARCH_POLICY_SWITCH_DEPRECATION);
         }
+        effective.mode = ExecutionMode::Standard;
         if policy.local_only_ocr {
             effective.resources.allow_external_network = false;
             effective.providers.allow_hosted_api = false;
@@ -736,7 +871,7 @@ impl RuntimeConfig {
                         WellfriendError::invalid_input("schema_version must be an integer")
                     })?;
                 }
-                ("", "mode") => cfg.mode = value.parse()?,
+                ("", "mode") => cfg.set_mode_str(value)?,
                 ("resources", "soft_memory_bytes") => {
                     cfg.resources.soft_memory_bytes = Some(parse_u64_env(value, "soft memory")?);
                     cfg.resources.memory_policy = LimitPolicy::Fixed;
@@ -756,18 +891,30 @@ impl RuntimeConfig {
                     cfg.resources.allow_external_network = parse_bool(value);
                 }
                 ("resources", "allow_gpu") => cfg.resources.allow_gpu = parse_bool(value),
+                ("resources", "allow_external_processes") => {
+                    cfg.resources.allow_external_processes = parse_bool(value);
+                }
+                ("rendering", "experimental_gpu_backend") => {
+                    cfg.rendering.experimental_gpu_backend = parse_bool(value);
+                }
+                ("providers", "allow_hosted_api") => {
+                    cfg.providers.allow_hosted_api = parse_bool(value);
+                }
+                ("providers", "allow_cloud_document_intelligence") => {
+                    cfg.providers.allow_cloud_document_intelligence = parse_bool(value);
+                }
                 ("ocr", "runtime") => cfg.ocr.runtime = parse_ocr_runtime(value)?,
                 ("ocr", "provider") => {
                     let kind = parse_provider_kind(value)?;
                     cfg.ocr.providers = vec![OcrProviderConfig::new(value, kind)];
                     cfg.ocr.runtime = kind.family();
                 }
-                ("research", "experimental_renderer") => {
-                    cfg.research.experimental_renderer = parse_bool(value);
-                }
-                ("research", "model_fusion") => cfg.research.model_fusion = parse_bool(value),
-                ("research", "distributed_workers") => {
-                    cfg.research.distributed_workers = parse_bool(value);
+                ("advanced" | "research", advanced_key)
+                    if set_advanced_switch(&mut cfg.advanced, advanced_key, parse_bool(value)) =>
+                {
+                    if section == "research" {
+                        push_unique(&mut cfg.deprecations, RESEARCH_CONFIG_SECTION_DEPRECATION);
+                    }
                 }
                 _ => {
                     return Err(WellfriendError::invalid_input(format!(
@@ -787,6 +934,24 @@ fn parse_bool(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "true" | "1" | "yes" | "on"
     )
+}
+
+/// Set one `[advanced]` switch by key. Returns false for unknown keys.
+fn set_advanced_switch(advanced: &mut AdvancedConfig, key: &str, value: bool) -> bool {
+    let slot = match key {
+        "experimental_renderer" => &mut advanced.experimental_renderer,
+        "gpu_rendering" => &mut advanced.gpu_rendering,
+        "model_fusion" => &mut advanced.model_fusion,
+        "distributed_workers" => &mut advanced.distributed_workers,
+        "learned_cost_selection" => &mut advanced.learned_cost_selection,
+        "hardware_autotuning" => &mut advanced.hardware_autotuning,
+        "display_optimization_validation" => &mut advanced.display_optimization_validation,
+        "experimental_solvers" => &mut advanced.experimental_solvers,
+        "instrumentation" | "research_instrumentation" => &mut advanced.instrumentation,
+        _ => return false,
+    };
+    *slot = value;
+    true
 }
 
 fn parse_u64_env(value: &str, name: &str) -> Result<u64> {
@@ -885,13 +1050,22 @@ impl HostRuntimeProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostRuntimePolicy {
+    /// Deprecated no-op: Standard is the only mode. Still parsed for
+    /// compatibility; setting it records a deprecation decision.
+    #[serde(default)]
     pub force_standard: bool,
+    /// Deprecated no-op: research mode was merged into Standard and its
+    /// components are controlled by their own explicit switches. Still parsed
+    /// for compatibility; setting it records a deprecation decision.
+    #[serde(default)]
     pub allow_research: bool,
     pub allow_external_network_providers: bool,
     pub local_only_ocr: bool,
     pub max_memory_bytes: Option<u64>,
     pub max_cpu_workers: Option<u16>,
     pub max_provider_cost_micros: Option<u64>,
+    /// Deprecated no-op kept for serialized-policy compatibility.
+    #[serde(default)]
     pub allowed_tenants_for_research: Vec<String>,
 }
 
@@ -989,12 +1163,13 @@ fn tune_for_host(config: &mut RuntimeConfig, host: HostRuntimeProfile) {
         };
         config.resources.max_concurrent_documents = Some((scaled / 2).max(1));
     }
-    if config.mode == ExecutionMode::Standard {
-        config.resources.allow_gpu = false;
+    // GPU work is an optional Standard capability: it stays off unless the
+    // operator allowed GPU use explicitly and a GPU is actually present. The
+    // deterministic CPU renderer is always the fallback. The requested
+    // `advanced.gpu_rendering` switch is kept so the capability report can say
+    // why it is inactive.
+    if !config.resources.allow_gpu || !host.gpu_present {
         config.rendering.experimental_gpu_backend = false;
-    } else if !host.gpu_present {
-        config.rendering.experimental_gpu_backend = false;
-        config.research.gpu_rendering = false;
     }
 }
 
@@ -1024,6 +1199,9 @@ pub struct RuntimeCapability {
 pub struct RuntimeCapabilityReport {
     pub schema_version: u32,
     pub public_modes: Vec<ExecutionMode>,
+    /// Mode names still accepted as deprecated aliases of Standard.
+    #[serde(default)]
+    pub deprecated_mode_aliases: Vec<String>,
     pub default_mode: ExecutionMode,
     pub standard_feature_complete_under_supported_boundaries: bool,
     pub gpu_required_for_standard: bool,
@@ -1149,7 +1327,7 @@ pub fn runtime_capabilities_for(
             name: "versioned_render_contract_v1".to_string(),
             state: CapabilityState::Active,
             mode: ExecutionMode::Standard,
-            reason: "canonical_revision_aware_contract_is_active_for_full_page_rgba_rendering_binding_json_adapters_research_execution_mode_contract_identity_scalar_reference_CPU_backend_selection_research_hybrid_CPU_dispatch_identity_subpixel_smoothing_policy_execution_and_source_owned_field_effect_matrix_covering_every_schema_v1_contract_field; unsupported_policy_combinations_are_rejected_rather_than_silently_ignored".to_string(),
+            reason: "canonical_revision_aware_contract_is_active_for_full_page_rgba_rendering_binding_json_adapters_standard_execution_mode_contract_identity_with_deprecated_research_alias_scalar_reference_CPU_backend_selection_hybrid_CPU_dispatch_identity_subpixel_smoothing_policy_execution_and_source_owned_field_effect_matrix_covering_every_schema_v1_contract_field; unsupported_policy_combinations_are_rejected_rather_than_silently_ignored".to_string(),
         },
         RuntimeCapability {
             name: "caller_owned_render_surfaces".to_string(),
@@ -1213,7 +1391,7 @@ pub fn runtime_capabilities_for(
                 CapabilityState::InactivePolicy
             },
             mode: ExecutionMode::Standard,
-            reason: "runtime-dispatched_CPU_SIMD_and_wasm32_simd128_cover_verified_opaque_source_over_alpha_fill_rows_clip_mask_fusion_rows_image_glyph_mask_clip_smask_fusion_rows_solid_rgba_clip_smask_fusion_rows_mixed_source_group_alpha_opaque_destination_mixed_destination_source_over_f32x4_alpha_mask_opaque_and_mixed_destination_soft_mask_group_alpha_soft_mask_mixed_destination_f32x4_common_separable_blend_kernels_and_translucent_solid_partial_clip_separable_mixed_alpha_f32x4_rows_separable_solid_mixed_destination_f32x4_rows_separable_rgba_mixed_destination_f32x4_rows_and_separable_rgba_mixed_destination_partial_clip_f32x4_rows_opaque_background_flatten_rows_with_true_lanes_for_Multiply_Screen_Overlay_Darken_Lighten_ColorDodge_ColorBurn_HardLight_SoftLight_Difference_Exclusion_copy_RGBA_opaque_RGBA_premultiply_RGBA_premultiply_BGRA_unpremultiply_RGBA_reverse_4byte_word_rows_RGBA_to_RGB8_BGR8_BGRA8_RGB8_to_opaque_RGBA_image_rows_Gray8_gray_RGB_RGBA_BGRA_and_premultiplied_gray_RGBA_BGRA_expansion_rows_with_exact_scalar_fallbacks_for_unsupported_or_declined_kernels; render_contract_BackendSelection_ScalarReference_installs_a_scoped_scalar_compositor_guard_that_declines_SIMD_and_portable_wide_rows_for_that_render; BackendSelection_ResearchHybrid_uses_the_active_guarded_CPU_hybrid_dispatcher_with_separate_contract_and_decode_cache_identity".to_string(),
+            reason: "runtime-dispatched_CPU_SIMD_and_wasm32_simd128_cover_verified_opaque_source_over_alpha_fill_rows_clip_mask_fusion_rows_image_glyph_mask_clip_smask_fusion_rows_solid_rgba_clip_smask_fusion_rows_mixed_source_group_alpha_opaque_destination_mixed_destination_source_over_f32x4_alpha_mask_opaque_and_mixed_destination_soft_mask_group_alpha_soft_mask_mixed_destination_f32x4_common_separable_blend_kernels_and_translucent_solid_partial_clip_separable_mixed_alpha_f32x4_rows_separable_solid_mixed_destination_f32x4_rows_separable_rgba_mixed_destination_f32x4_rows_and_separable_rgba_mixed_destination_partial_clip_f32x4_rows_opaque_background_flatten_rows_with_true_lanes_for_Multiply_Screen_Overlay_Darken_Lighten_ColorDodge_ColorBurn_HardLight_SoftLight_Difference_Exclusion_copy_RGBA_opaque_RGBA_premultiply_RGBA_premultiply_BGRA_unpremultiply_RGBA_reverse_4byte_word_rows_RGBA_to_RGB8_BGR8_BGRA8_RGB8_to_opaque_RGBA_image_rows_Gray8_gray_RGB_RGBA_BGRA_and_premultiplied_gray_RGBA_BGRA_expansion_rows_with_exact_scalar_fallbacks_for_unsupported_or_declined_kernels; render_contract_BackendSelection_ScalarReference_installs_a_scoped_scalar_compositor_guard_that_declines_SIMD_and_portable_wide_rows_for_that_render; BackendSelection_Hybrid_uses_the_active_guarded_CPU_hybrid_dispatcher_with_separate_contract_and_decode_cache_identity".to_string(),
         },
         RuntimeCapability {
             name: "image_decode_capability_reporting".to_string(),
@@ -1234,48 +1412,79 @@ pub fn runtime_capabilities_for(
             reason: "runtime_capabilities_expose_renderer_thread_permit_rows_cache_ownership_rows_serial_mutation_policy_cancel_token_obsolete_publication_guards_and_document_boundary_cache_invalidation; external_runtime_thread_cache_matrix_validation_deferred".to_string(),
         },
     ];
-    for name in [
-        "gpu_hybrid_rendering",
-        "model_ensembles",
-        "distributed_workers",
-        "learned_cost_selection",
-        "hardware_autotuning",
-        "translation_validated_display_optimization",
-        "experimental_solvers",
-    ] {
-        let active = config.mode == ExecutionMode::Research
-            && policy.allow_research
-            && match name {
-                "gpu_hybrid_rendering" => host.gpu_present && config.research.gpu_rendering,
-                "model_ensembles" => config.research.model_fusion,
-                "distributed_workers" => config.research.distributed_workers,
-                "learned_cost_selection" => config.research.learned_cost_selection,
-                "hardware_autotuning" => config.research.hardware_autotuning,
-                "translation_validated_display_optimization" => {
-                    config.research.display_optimization_validation
-                }
-                "experimental_solvers" => config.research.experimental_solvers,
-                _ => false,
-            };
-        let state = if active {
-            CapabilityState::Experimental
-        } else if config.mode != ExecutionMode::Research || !policy.allow_research {
-            CapabilityState::InactivePolicy
-        } else if name == "gpu_hybrid_rendering" && !host.gpu_present {
-            CapabilityState::InactiveMissingHardware
-        } else {
-            CapabilityState::InactiveMissingProvider
+    // Former research-mode components: optional Standard capabilities that are
+    // off by default and become Experimental only when their own explicit
+    // switch (plus any hardware/permission prerequisite) is configured.
+    let advanced = &config.advanced;
+    let optional: [(&str, bool, &str, Option<CapabilityState>); 7] = [
+        (
+            "gpu_hybrid_rendering",
+            advanced.gpu_rendering,
+            "advanced.gpu_rendering_plus_resources.allow_gpu",
+            if !config.resources.allow_gpu {
+                Some(CapabilityState::InactivePolicy)
+            } else if !host.gpu_present {
+                Some(CapabilityState::InactiveMissingHardware)
+            } else {
+                None
+            },
+        ),
+        (
+            "model_ensembles",
+            advanced.model_fusion,
+            "advanced.model_fusion",
+            None,
+        ),
+        (
+            "distributed_workers",
+            advanced.distributed_workers,
+            "advanced.distributed_workers_plus_resources.allow_external_processes",
+            (!config.resources.allow_external_processes).then_some(CapabilityState::InactivePolicy),
+        ),
+        (
+            "learned_cost_selection",
+            advanced.learned_cost_selection,
+            "advanced.learned_cost_selection",
+            None,
+        ),
+        (
+            "hardware_autotuning",
+            advanced.hardware_autotuning,
+            "advanced.hardware_autotuning",
+            None,
+        ),
+        (
+            "translation_validated_display_optimization",
+            advanced.display_optimization_validation,
+            "advanced.display_optimization_validation",
+            None,
+        ),
+        (
+            "experimental_solvers",
+            advanced.experimental_solvers,
+            "advanced.experimental_solvers",
+            None,
+        ),
+    ];
+    for (name, enabled, switch, blocked) in optional {
+        let state = match (enabled, blocked) {
+            (false, _) => CapabilityState::InactivePolicy,
+            (true, Some(blocked)) => blocked,
+            (true, None) => CapabilityState::Experimental,
         };
         entries.push(RuntimeCapability {
             name: name.to_string(),
             state,
-            mode: ExecutionMode::Research,
-            reason: "research_optional_component_with_deterministic_standard_fallback".to_string(),
+            mode: ExecutionMode::Standard,
+            reason: format!(
+                "optional_standard_capability_off_by_default_enabled_only_by_explicit_{switch}_with_deterministic_cpu_fallback"
+            ),
         });
     }
     RuntimeCapabilityReport {
         schema_version: RUNTIME_CONFIG_SCHEMA_VERSION,
-        public_modes: vec![ExecutionMode::Standard, ExecutionMode::Research],
+        public_modes: vec![ExecutionMode::Standard],
+        deprecated_mode_aliases: vec!["research".to_string()],
         default_mode: ExecutionMode::Standard,
         standard_feature_complete_under_supported_boundaries: true,
         gpu_required_for_standard: false,
@@ -2326,16 +2535,326 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_two_public_modes_parse() {
+    fn standard_is_the_only_mode_and_research_is_a_deprecated_alias() {
         assert_eq!(
             "standard".parse::<ExecutionMode>().unwrap(),
             ExecutionMode::Standard
         );
         assert_eq!(
             "research".parse::<ExecutionMode>().unwrap(),
-            ExecutionMode::Research
+            ExecutionMode::Standard
         );
+        assert_eq!(
+            ExecutionMode::parse_with_deprecation(" Research ").unwrap(),
+            (ExecutionMode::Standard, Some(RESEARCH_MODE_DEPRECATION))
+        );
+        assert_eq!(
+            ExecutionMode::parse_with_deprecation("standard").unwrap(),
+            (ExecutionMode::Standard, None)
+        );
+        assert!(ExecutionMode::is_deprecated_alias("RESEARCH"));
+        assert!(!ExecutionMode::is_deprecated_alias("standard"));
         assert!("other".parse::<ExecutionMode>().is_err());
+        assert_eq!(
+            serde_json::from_str::<ExecutionMode>("\"research\"").unwrap(),
+            ExecutionMode::Standard
+        );
+        assert_eq!(
+            serde_json::to_string(&ExecutionMode::Standard).unwrap(),
+            "\"standard\""
+        );
+    }
+
+    #[test]
+    fn research_mode_string_maps_to_standard_with_deprecation_decision() {
+        let cfg = RuntimeConfig::from_mode_str("research").unwrap();
+        assert_eq!(cfg.mode, ExecutionMode::Standard);
+        assert_eq!(cfg.deprecations, vec![RESEARCH_MODE_DEPRECATION]);
+        let effective = cfg
+            .effective(
+                HostRuntimeProfile::recommended_standard(),
+                HostRuntimePolicy::default(),
+            )
+            .unwrap();
+        assert_eq!(effective.requested_mode, ExecutionMode::Standard);
+        assert_eq!(effective.effective_mode, ExecutionMode::Standard);
+        assert!(effective
+            .decisions
+            .iter()
+            .any(|decision| decision == "research_mode_deprecated_merged_into_standard"));
+
+        let toml = RuntimeConfig::from_config_str("mode = \"research\"\n").unwrap();
+        assert_eq!(toml.mode, ExecutionMode::Standard);
+        assert_eq!(toml.deprecations, vec![RESEARCH_MODE_DEPRECATION]);
+
+        let plain = RuntimeConfig::from_mode_str("standard").unwrap();
+        assert!(plain.deprecations.is_empty());
+        let plain_effective = plain
+            .effective(
+                HostRuntimeProfile::recommended_standard(),
+                HostRuntimePolicy::default(),
+            )
+            .unwrap();
+        assert!(!plain_effective
+            .decisions
+            .iter()
+            .any(|decision| decision.contains("deprecated")));
+    }
+
+    #[test]
+    fn legacy_research_runtime_config_json_deserializes_as_standard() {
+        let mut legacy = serde_json::to_value(RuntimeConfig::standard()).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        let advanced = object.remove("advanced").unwrap();
+        let mut research = advanced.as_object().unwrap().clone();
+        research.remove("instrumentation");
+        research.insert("research_instrumentation".to_string(), true.into());
+        research.insert("model_fusion".to_string(), true.into());
+        object.insert("research".to_string(), research.into());
+        object.insert("mode".to_string(), "research".into());
+        object["ocr"]["routing"] = "research_fusion".into();
+
+        let cfg = RuntimeConfig::from_json_str(&legacy.to_string()).unwrap();
+        assert_eq!(cfg.mode, ExecutionMode::Standard);
+        assert!(cfg.advanced.model_fusion);
+        assert!(cfg.advanced.instrumentation);
+        assert_eq!(cfg.ocr.routing, OcrRoutingPolicy::ModelFusion);
+        assert!(cfg
+            .deprecations
+            .iter()
+            .any(|d| d == RESEARCH_MODE_DEPRECATION));
+        assert!(cfg
+            .deprecations
+            .iter()
+            .any(|d| d == RESEARCH_CONFIG_SECTION_DEPRECATION));
+        // Formerly rejected in Standard ("research-only switches require
+        // mode='research'"); now ordinary optional Standard switches.
+        cfg.validate().unwrap();
+
+        // Re-serialization uses the new names and round-trips the deprecations.
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["mode"], "standard");
+        assert!(json.get("research").is_none());
+        assert_eq!(json["advanced"]["model_fusion"], true);
+        let again: RuntimeConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(again, cfg);
+
+        // Default Standard configs serialize without a deprecations key.
+        let standard_json = serde_json::to_value(RuntimeConfig::standard()).unwrap();
+        assert!(standard_json.get("deprecations").is_none());
+    }
+
+    #[test]
+    fn legacy_research_section_in_toml_like_config_maps_to_advanced() {
+        let cfg = RuntimeConfig::from_config_str(
+            "[research]\nmodel_fusion = true\ndistributed_workers = true\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.mode, ExecutionMode::Standard);
+        assert!(cfg.advanced.model_fusion);
+        assert!(cfg.advanced.distributed_workers);
+        assert_eq!(cfg.deprecations, vec![RESEARCH_CONFIG_SECTION_DEPRECATION]);
+
+        let cfg = RuntimeConfig::from_config_str(
+            "[advanced]\nexperimental_solvers = on\n[resources]\nallow_gpu = true\n",
+        )
+        .unwrap();
+        assert!(cfg.advanced.experimental_solvers);
+        assert!(cfg.resources.allow_gpu);
+        assert!(cfg.deprecations.is_empty());
+        assert!(RuntimeConfig::from_config_str("[advanced]\nunknown = true\n").is_err());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_research_constructor_returns_standard_without_enabling_network() {
+        let cfg = RuntimeConfig::research();
+        let mut expected = RuntimeConfig::standard();
+        expected.deprecations = vec![RESEARCH_MODE_DEPRECATION.to_string()];
+        assert_eq!(cfg, expected);
+        assert!(!cfg.resources.allow_gpu);
+        assert!(!cfg.resources.allow_external_processes);
+        assert!(!cfg.resources.allow_external_network);
+        assert!(!cfg.providers.allow_hosted_api);
+        assert!(!cfg.providers.allow_cloud_document_intelligence);
+        assert!(!cfg.rendering.experimental_gpu_backend);
+        assert_eq!(cfg.advanced, AdvancedConfig::default());
+    }
+
+    #[test]
+    fn standard_defaults_keep_network_gpu_and_external_processes_off() {
+        let cfg = RuntimeConfig::standard();
+        assert_eq!(cfg, RuntimeConfig::default());
+        assert!(!cfg.resources.allow_gpu);
+        assert!(!cfg.resources.allow_external_processes);
+        assert!(!cfg.resources.allow_external_network);
+        assert!(!cfg.rendering.experimental_gpu_backend);
+        assert!(!cfg.providers.allow_hosted_api);
+        assert!(!cfg.providers.allow_cloud_document_intelligence);
+        assert!(!cfg.providers.allow_user_plugins);
+        assert_eq!(cfg.advanced, AdvancedConfig::default());
+        assert!(!HostRuntimePolicy::default().allow_external_network_providers);
+        assert!(HostRuntimePolicy::default().local_only_ocr);
+
+        let report = runtime_capabilities_for(
+            &cfg,
+            HostRuntimeProfile {
+                gpu_present: true,
+                ..HostRuntimeProfile::recommended_standard()
+            },
+            &HostRuntimePolicy::default(),
+        );
+        assert_eq!(report.public_modes, vec![ExecutionMode::Standard]);
+        assert_eq!(report.deprecated_mode_aliases, vec!["research".to_string()]);
+        for name in [
+            "gpu_hybrid_rendering",
+            "model_ensembles",
+            "distributed_workers",
+            "learned_cost_selection",
+            "hardware_autotuning",
+            "translation_validated_display_optimization",
+            "experimental_solvers",
+        ] {
+            let entry = report
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("missing optional capability {name}"));
+            assert_eq!(entry.mode, ExecutionMode::Standard, "{name}");
+            assert_eq!(entry.state, CapabilityState::InactivePolicy, "{name}");
+            assert!(entry.reason.contains("off_by_default"), "{name}");
+        }
+        for name in ["hosted_api_ocr", "cloud_document_intelligence"] {
+            let entry = report.entries.iter().find(|e| e.name == name).unwrap();
+            assert_eq!(entry.state, CapabilityState::InactivePolicy, "{name}");
+        }
+    }
+
+    #[test]
+    fn optional_capabilities_are_usable_in_standard_when_explicitly_configured() {
+        let mut cfg = RuntimeConfig::standard();
+        cfg.resources.allow_gpu = true;
+        cfg.resources.allow_external_processes = true;
+        cfg.rendering.experimental_gpu_backend = true;
+        cfg.advanced = AdvancedConfig {
+            experimental_renderer: true,
+            gpu_rendering: true,
+            model_fusion: true,
+            distributed_workers: true,
+            learned_cost_selection: true,
+            hardware_autotuning: true,
+            display_optimization_validation: true,
+            experimental_solvers: true,
+            instrumentation: true,
+        };
+        cfg.validate().unwrap();
+        let gpu_host = HostRuntimeProfile {
+            gpu_present: true,
+            ..HostRuntimeProfile::recommended_standard()
+        };
+        let effective = cfg
+            .effective(gpu_host, HostRuntimePolicy::default())
+            .unwrap();
+        assert_eq!(effective.effective_mode, ExecutionMode::Standard);
+        assert!(effective.config.rendering.experimental_gpu_backend);
+        for entry in effective.capabilities.entries.iter().filter(|entry| {
+            [
+                "gpu_hybrid_rendering",
+                "model_ensembles",
+                "distributed_workers",
+                "learned_cost_selection",
+                "hardware_autotuning",
+                "translation_validated_display_optimization",
+                "experimental_solvers",
+            ]
+            .contains(&entry.name.as_str())
+        }) {
+            assert_eq!(entry.state, CapabilityState::Experimental, "{}", entry.name);
+            assert_eq!(entry.mode, ExecutionMode::Standard);
+        }
+
+        // Prerequisites still apply: no GPU on the host, or no permission.
+        let no_gpu = cfg
+            .effective(
+                HostRuntimeProfile::recommended_standard(),
+                HostRuntimePolicy::default(),
+            )
+            .unwrap();
+        assert!(!no_gpu.config.rendering.experimental_gpu_backend);
+        let gpu = no_gpu
+            .capabilities
+            .entries
+            .iter()
+            .find(|entry| entry.name == "gpu_hybrid_rendering")
+            .unwrap();
+        assert_eq!(gpu.state, CapabilityState::InactiveMissingHardware);
+
+        let mut no_permission = cfg.clone();
+        no_permission.resources.allow_gpu = false;
+        no_permission.resources.allow_external_processes = false;
+        let report =
+            runtime_capabilities_for(&no_permission, gpu_host, &HostRuntimePolicy::default());
+        for name in ["gpu_hybrid_rendering", "distributed_workers"] {
+            let entry = report.entries.iter().find(|e| e.name == name).unwrap();
+            assert_eq!(entry.state, CapabilityState::InactivePolicy, "{name}");
+        }
+
+        // Hosted/cloud OCR providers remain explicit operator opt-ins in Standard.
+        let mut hosted = RuntimeConfig::standard();
+        hosted.resources.allow_external_network = true;
+        hosted.providers.allow_hosted_api = true;
+        hosted.ocr.providers.push(OcrProviderConfig::new(
+            "hosted",
+            OcrProviderKind::OpenAiCompatible,
+        ));
+        hosted.validate().unwrap();
+        let open_policy = HostRuntimePolicy {
+            allow_external_network_providers: true,
+            local_only_ocr: false,
+            ..HostRuntimePolicy::default()
+        };
+        let effective = hosted
+            .effective(HostRuntimeProfile::recommended_standard(), open_policy)
+            .unwrap();
+        let entry = effective
+            .capabilities
+            .entries
+            .iter()
+            .find(|e| e.name == "hosted_api_ocr")
+            .unwrap();
+        assert_eq!(entry.state, CapabilityState::Configured);
+        assert_eq!(entry.mode, ExecutionMode::Standard);
+    }
+
+    #[test]
+    fn deprecated_host_policy_research_switches_are_ignored_no_ops() {
+        let policy = HostRuntimePolicy {
+            force_standard: true,
+            allow_research: true,
+            ..HostRuntimePolicy::default()
+        };
+        let effective = RuntimeConfig::standard()
+            .effective(HostRuntimeProfile::recommended_standard(), policy)
+            .unwrap();
+        assert_eq!(effective.effective_mode, ExecutionMode::Standard);
+        assert!(effective
+            .decisions
+            .iter()
+            .any(|d| d == RESEARCH_POLICY_SWITCH_DEPRECATION));
+        // Old serialized policies (with or without the retired keys) parse.
+        let legacy: HostRuntimePolicy = serde_json::from_str(
+            r#"{"force_standard":true,"allow_research":true,"allow_external_network_providers":false,
+                "local_only_ocr":true,"max_memory_bytes":null,"max_cpu_workers":null,
+                "max_provider_cost_micros":null,"allowed_tenants_for_research":["t1"]}"#,
+        )
+        .unwrap();
+        assert!(legacy.allow_research);
+        let modern: HostRuntimePolicy = serde_json::from_str(
+            r#"{"allow_external_network_providers":false,"local_only_ocr":true,
+                "max_memory_bytes":null,"max_cpu_workers":null,"max_provider_cost_micros":null}"#,
+        )
+        .unwrap();
+        assert_eq!(modern, HostRuntimePolicy::default());
     }
 
     #[test]
@@ -2351,19 +2870,6 @@ mod tests {
         assert!(!effective.config.resources.allow_gpu);
         assert_eq!(effective.config.resources.max_concurrent_documents, Some(1));
         assert!(!effective.capabilities.gpu_required_for_standard);
-    }
-
-    #[test]
-    fn research_falls_back_when_policy_disallows() {
-        let cfg = RuntimeConfig::research();
-        let effective = cfg
-            .effective(
-                HostRuntimeProfile::recommended_standard(),
-                HostRuntimePolicy::default(),
-            )
-            .unwrap();
-        assert_eq!(effective.requested_mode, ExecutionMode::Research);
-        assert_eq!(effective.effective_mode, ExecutionMode::Standard);
     }
 
     #[test]
@@ -2397,10 +2903,10 @@ mod tests {
         assert_eq!(contract_entry.state, CapabilityState::Active);
         assert!(contract_entry
             .reason
-            .contains("research_execution_mode_contract_identity"));
+            .contains("standard_execution_mode_contract_identity_with_deprecated_research_alias"));
         assert!(contract_entry
             .reason
-            .contains("research_hybrid_CPU_dispatch_identity"));
+            .contains("backend_selection_hybrid_CPU_dispatch_identity"));
         assert!(contract_entry
             .reason
             .contains("unsupported_policy_combinations"));
@@ -2534,9 +3040,7 @@ mod tests {
         assert!(simd_entry
             .reason
             .contains("soft_mask_mixed_destination_f32x4"));
-        assert!(simd_entry
-            .reason
-            .contains("BackendSelection_ResearchHybrid"));
+        assert!(simd_entry.reason.contains("BackendSelection_Hybrid"));
         assert!(simd_entry.reason.contains("common_separable_blend_kernels"));
         assert!(simd_entry
             .reason

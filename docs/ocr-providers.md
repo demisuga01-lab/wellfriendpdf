@@ -1,6 +1,6 @@
 # OCR provider families
 
-OCR provider selection is orthogonal to execution mode.
+OCR provider selection is independent of the execution mode (Standard is the only mode). Hosted API and cloud document-intelligence providers are optional Standard capabilities: they require an explicitly configured and enabled provider, `resources.allow_external_network = true`, and a host policy that allows external network providers (the registry permissions are `providers.allow_hosted_api` and `providers.allow_cloud_document_intelligence`). The multi-provider fusion routing policy is `model_fusion` (`research_fusion` is a deprecated alias).
 
 ## Hosted API providers
 

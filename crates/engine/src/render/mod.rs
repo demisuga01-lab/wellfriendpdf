@@ -82,7 +82,8 @@ pub use image_painter::ImagePainter;
 pub use invalidation::{InvalidationResult, RenderDependencyGraph};
 pub use line::{DashState, LinePainter, WuLineRenderer};
 pub use page_renderer::{
-    FinalRasterCachePolicy, PageRenderer, RenderArtifactCacheStats, RenderDocumentCache,
+    skipped_render_object_count, FinalRasterCachePolicy, PageRenderer, RenderArtifactCacheStats,
+    RenderDocumentCache,
 };
 pub use path::{
     flatten_cubic, flatten_path, path_raster_stats, FillRule, FlatPath, Path, PathPainter,
@@ -122,3 +123,84 @@ pub use transform::{Transform2D, Viewport};
 pub use vector_fallback::{
     classify_page_for_vector_output, image_device_rect, VectorFallbackDecision,
 };
+
+/// Round a channel value to a byte exactly like
+/// `value.round().clamp(0.0, 255.0) as u8` (half away from zero, NaN to 0),
+/// without the libm `round`/`roundf` call baseline x86-64 lowers that to.
+pub(crate) trait RoundByte {
+    fn round_byte(self) -> u8;
+}
+
+impl RoundByte for f32 {
+    #[inline(always)]
+    fn round_byte(self) -> u8 {
+        if self >= 255.0 {
+            255
+        } else if self > 0.0 {
+            let whole = self as u8;
+            whole + u8::from(self - f32::from(whole) >= 0.5)
+        } else {
+            0
+        }
+    }
+}
+
+impl RoundByte for f64 {
+    #[inline(always)]
+    fn round_byte(self) -> u8 {
+        if self >= 255.0 {
+            255
+        } else if self > 0.0 {
+            let whole = self as u8;
+            whole + u8::from(self - f64::from(whole) >= 0.5)
+        } else {
+            0
+        }
+    }
+}
+
+#[cfg(test)]
+mod round_byte_tests {
+    use super::RoundByte;
+
+    #[test]
+    fn round_byte_matches_round_clamp() {
+        let mut value = -3.0_f64;
+        while value < 260.0 {
+            assert_eq!(
+                value.round_byte(),
+                value.round().clamp(0.0, 255.0) as u8,
+                "{value}"
+            );
+            let single = value as f32;
+            assert_eq!(
+                single.round_byte(),
+                single.round().clamp(0.0, 255.0) as u8,
+                "{single}"
+            );
+            value += 0.0625;
+        }
+        for edge in [
+            0.5_f64,
+            1.5,
+            254.5,
+            0.49999999999999994,
+            f64::NAN,
+            -0.0,
+            255.0,
+        ] {
+            assert_eq!(
+                edge.round_byte(),
+                edge.round().clamp(0.0, 255.0) as u8,
+                "{edge}"
+            );
+        }
+        for edge in [0.5_f32, 254.5, 0.49999997, f32::NAN, 127.5, 254.99998] {
+            assert_eq!(
+                edge.round_byte(),
+                edge.round().clamp(0.0, 255.0) as u8,
+                "{edge}"
+            );
+        }
+    }
+}

@@ -253,7 +253,90 @@ fn html_escape(s: &str) -> String {
 pub fn detect_tables(chunks: &[TextChunk], graphics: &DrawnGraphics) -> Vec<Table> {
     let mut tables = detect_ruled(chunks, graphics);
     if tables.is_empty() {
+        tables.extend(detect_rule_bounded(chunks, graphics));
+    }
+    if tables.is_empty() {
         tables.extend(detect_borderless(chunks));
+    }
+    tables
+}
+
+/// Tables bounded by horizontal rules only (LaTeX booktabs, most journal and
+/// report styles): two or more horizontal rules spanning the same width mark
+/// the table's vertical extent, and the text between them is laid out as a
+/// borderless grid. Like MuPDF's table hunt, the rules isolate the table from
+/// the surrounding prose, which would otherwise outvote its columns.
+pub fn detect_rule_bounded(chunks: &[TextChunk], graphics: &DrawnGraphics) -> Vec<Table> {
+    const MIN_RULE_WIDTH: f64 = 40.0;
+    const EXTENT_TOLERANCE: f64 = 3.0;
+    // Merge collinear pieces of one rule (a rule drawn per column) first.
+    let mut rules: Vec<(f64, f64, f64)> = Vec::new(); // (y, x0, x1)
+    let mut pieces: Vec<(f64, f64, f64)> = graphics
+        .segments
+        .iter()
+        .filter(|s| s.is_horizontal())
+        .map(|s| ((s.y0 + s.y1) / 2.0, s.x0.min(s.x1), s.x0.max(s.x1)))
+        .collect();
+    pieces.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    for (y, x0, x1) in pieces {
+        match rules.last_mut() {
+            Some(last) if (last.0 - y).abs() < 1.0 && x0 <= last.2 + 2.0 => last.2 = last.2.max(x1),
+            _ => rules.push((y, x0, x1)),
+        }
+    }
+    rules.retain(|(_, x0, x1)| x1 - x0 >= MIN_RULE_WIDTH);
+    // A thin filled rule yields its top and bottom edges: keep one per rule.
+    rules.dedup_by(|b, a| {
+        (a.0 - b.0).abs() < 1.5 && (a.1 - b.1).abs() < 1.0 && (a.2 - b.2).abs() < 1.0
+    });
+
+    let mut used = vec![false; rules.len()];
+    let mut tables = Vec::new();
+    for i in 0..rules.len() {
+        if used[i] {
+            continue;
+        }
+        let (_, x0, x1) = rules[i];
+        let group: Vec<usize> = (i..rules.len())
+            .filter(|&j| {
+                !used[j]
+                    && (rules[j].1 - x0).abs() <= EXTENT_TOLERANCE
+                    && (rules[j].2 - x1).abs() <= EXTENT_TOLERANCE
+            })
+            .collect();
+        if group.len() < 2 {
+            continue;
+        }
+        let bottom = group
+            .iter()
+            .map(|&j| rules[j].0)
+            .fold(f64::INFINITY, f64::min);
+        let top = group
+            .iter()
+            .map(|&j| rules[j].0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let inside: Vec<TextChunk> = chunks
+            .iter()
+            .filter(|c| {
+                c.y > bottom
+                    && c.y < top
+                    && c.x >= x0 - EXTENT_TOLERANCE
+                    && c.x + c.width.max(0.0) <= x1 + EXTENT_TOLERANCE
+            })
+            .cloned()
+            .collect();
+        let found = detect_borderless(&inside);
+        if !found.is_empty() {
+            for &j in &group {
+                used[j] = true;
+            }
+            // Drawn rules delimit these tables, so they are ruled tables (and
+            // reportable), with columns taken from text alignment.
+            tables.extend(found.into_iter().map(|mut table| {
+                table.source = TableSource::Ruled;
+                table
+            }));
+        }
     }
     tables
 }
@@ -670,18 +753,76 @@ fn point_inside_bbox(x: f64, y: f64, bbox: [f64; 4], margin: f64) -> bool {
 
 /// Infer a borderless table from text alignment alone. Returns at most one
 /// table with a confidence reflecting how grid-like the text is.
-pub fn detect_borderless(chunks: &[TextChunk]) -> Vec<Table> {
-    let items: Vec<TextItem> = chunks
+/// Gap (in ems) below which neighbouring runs on one line belong to the same
+/// cell. Table columns are set at least ~1 em apart (LaTeX uses 2 x tabcolsep
+/// = 12 pt), while kerned word fragments and word spaces inside a cell stay
+/// well under this.
+const CELL_PHRASE_GAP_EM: f64 = 0.6;
+
+/// Merge text runs into cell phrases: runs on the same baseline closer than
+/// [`CELL_PHRASE_GAP_EM`] join, with a space only for a word-sized gap. Without
+/// this, kerned fragments ("Con" "volutional") become separate columns.
+fn phrase_items(chunks: &[TextChunk]) -> Vec<TextItem> {
+    let mut runs: Vec<&TextChunk> = chunks
         .iter()
         .filter(|c| !c.is_vertical && !c.text.trim().is_empty())
-        .map(|c| TextItem {
-            x0: c.x,
-            x1: c.x + c.width.max(0.0),
-            yc: c.y + c.font_size.max(1.0) / 2.0,
-            fs: c.font_size.max(1.0),
-            text: c.text.clone(),
-        })
         .collect();
+    runs.sort_by(|a, b| b.y.total_cmp(&a.y));
+    // Cluster runs into text lines. Super- and subscripts sit up to ~0.45 em
+    // off the baseline and belong to the line they annotate.
+    let mut lines: Vec<Vec<&TextChunk>> = Vec::new();
+    for c in runs {
+        let fs = c.font_size.max(1.0);
+        match lines.last_mut() {
+            Some(line)
+                if line
+                    .iter()
+                    .any(|o| (o.y - c.y).abs() < 0.45 * o.font_size.max(1.0).max(fs)) =>
+            {
+                line.push(c)
+            }
+            _ => lines.push(vec![c]),
+        }
+    }
+    let mut items: Vec<TextItem> = Vec::new();
+    for mut line in lines {
+        line.sort_by(|a, b| a.x.total_cmp(&b.x));
+        // The line's baseline is that of its largest text, not of a script.
+        let main = line
+            .iter()
+            .max_by(|a, b| a.font_size.total_cmp(&b.font_size))
+            .map(|c| (c.y, c.font_size.max(1.0)))
+            .unwrap_or((0.0, 1.0));
+        let start = items.len();
+        for c in line {
+            let fs = c.font_size.max(1.0);
+            let x1 = c.x + c.width.max(0.0);
+            if items.len() > start {
+                let prev = items.last_mut().expect("line has a previous item");
+                let gap = c.x - prev.x1;
+                if gap > -fs * 0.3 && gap < main.1 * CELL_PHRASE_GAP_EM {
+                    if gap > fs * crate::text::reading_order::WORD_GAP_EM {
+                        prev.text.push(' ');
+                    }
+                    prev.text.push_str(c.text.trim());
+                    prev.x1 = prev.x1.max(x1);
+                    continue;
+                }
+            }
+            items.push(TextItem {
+                x0: c.x,
+                x1,
+                yc: main.0 + main.1 / 2.0,
+                fs: main.1,
+                text: c.text.trim().to_string(),
+            });
+        }
+    }
+    items
+}
+
+pub fn detect_borderless(chunks: &[TextChunk]) -> Vec<Table> {
+    let items = phrase_items(chunks);
     if items.len() < 4 {
         return Vec::new();
     }

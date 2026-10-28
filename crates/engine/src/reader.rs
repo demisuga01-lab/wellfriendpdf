@@ -406,6 +406,75 @@ impl SeekableFileSource {
     }
 }
 
+/// XXH64 (non-cryptographic, ~10 GB/s): content identity for cache binding,
+/// where a SHA-256 of a large file would dominate a one-page render.
+pub(crate) fn xxh64(bytes: &[u8], seed: u64) -> u64 {
+    const P1: u64 = 0x9E37_79B1_85EB_CA87;
+    const P2: u64 = 0xC2B2_AE3D_27D4_EB4F;
+    const P3: u64 = 0x1656_67B1_9E37_79F9;
+    const P4: u64 = 0x85EB_CA77_C2B2_AE63;
+    const P5: u64 = 0x27D4_EB2F_1656_67C5;
+    fn round(acc: u64, input: u64) -> u64 {
+        acc.wrapping_add(input.wrapping_mul(P2))
+            .rotate_left(31)
+            .wrapping_mul(P1)
+    }
+    fn merge(acc: u64, value: u64) -> u64 {
+        (acc ^ round(0, value)).wrapping_mul(P1).wrapping_add(P4)
+    }
+    fn u64_at(bytes: &[u8], at: usize) -> u64 {
+        u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8-byte lane"))
+    }
+    let len = bytes.len();
+    let mut at = 0usize;
+    let mut hash = if len >= 32 {
+        let mut lanes = [
+            seed.wrapping_add(P1).wrapping_add(P2),
+            seed.wrapping_add(P2),
+            seed,
+            seed.wrapping_sub(P1),
+        ];
+        while at + 32 <= len {
+            for (lane, acc) in lanes.iter_mut().enumerate() {
+                *acc = round(*acc, u64_at(bytes, at + lane * 8));
+            }
+            at += 32;
+        }
+        let mut hash = lanes[0]
+            .rotate_left(1)
+            .wrapping_add(lanes[1].rotate_left(7))
+            .wrapping_add(lanes[2].rotate_left(12))
+            .wrapping_add(lanes[3].rotate_left(18));
+        for lane in lanes {
+            hash = merge(hash, lane);
+        }
+        hash
+    } else {
+        seed.wrapping_add(P5)
+    };
+    hash = hash.wrapping_add(len as u64);
+    while at + 8 <= len {
+        hash ^= round(0, u64_at(bytes, at));
+        hash = hash.rotate_left(27).wrapping_mul(P1).wrapping_add(P4);
+        at += 8;
+    }
+    if at + 4 <= len {
+        let word = u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4-byte lane"));
+        hash ^= u64::from(word).wrapping_mul(P1);
+        hash = hash.rotate_left(23).wrapping_mul(P2).wrapping_add(P3);
+        at += 4;
+    }
+    for &byte in &bytes[at..] {
+        hash ^= u64::from(byte).wrapping_mul(P5);
+        hash = hash.rotate_left(11).wrapping_mul(P1);
+    }
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(P2);
+    hash ^= hash >> 29;
+    hash = hash.wrapping_mul(P3);
+    hash ^ (hash >> 32)
+}
+
 #[cfg(unix)]
 fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
     while !buf.is_empty() {
@@ -483,7 +552,7 @@ struct LargeStreamLayout {
 pub struct PdfReader {
     source: PdfSource,
     version: String,
-    xref: HashMap<(u32, u16), XrefEntry>,
+    xref: crate::fast_hash::ObjectMap<XrefEntry>,
     trailer: PdfDictionary,
     /// Cache of decoded object streams (`/Type /ObjStm`). Wrapped in an
     /// `RwLock` rather than a `RefCell` so the whole `PdfReader` — and therefore
@@ -564,7 +633,7 @@ impl PdfReader {
     pub fn from_bytes_strict_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
         let repair_diagnostics = Vec::new();
         let version = parse_header_version(&data)?;
-        let mut xref = HashMap::new();
+        let mut xref = crate::fast_hash::ObjectMap::default();
         let mut trailer = None;
         let mut visited = HashSet::new();
         let startxref = find_startxref(&data)?;
@@ -610,7 +679,7 @@ impl PdfReader {
     pub fn from_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
         let mut repair_diagnostics = Vec::new();
         let version = parse_header_version(&data)?;
-        let mut xref = HashMap::new();
+        let mut xref = crate::fast_hash::ObjectMap::default();
         let mut trailer = None;
         let mut visited = HashSet::new();
 
@@ -718,7 +787,7 @@ impl PdfReader {
     ) -> Result<Self> {
         let mut repair_diagnostics = Vec::new();
         let version = parse_header_version(&data)?;
-        let mut xref = HashMap::new();
+        let mut xref = crate::fast_hash::ObjectMap::default();
         let mut trailer = None;
         let mut visited = HashSet::new();
 
@@ -821,7 +890,7 @@ impl PdfReader {
         let repair_diagnostics = Vec::new();
         let prefix = source.read_prefix(1024)?;
         let version = parse_header_version(&prefix)?;
-        let mut xref = HashMap::new();
+        let mut xref = crate::fast_hash::ObjectMap::default();
         let mut trailer = None;
         let mut visited = HashSet::new();
         let startxref = find_startxref_from_source(&source)?;
@@ -950,6 +1019,55 @@ impl PdfReader {
         self.source.file_bytes()
     }
 
+    /// 64-bit identity of the opened bytes for binding in-process caches to
+    /// this revision. In-memory input hashes every byte. A path-backed file
+    /// whose bytes were never materialized hashes its path, length,
+    /// modification time, head, tail and evenly spaced samples instead, so
+    /// rendering one page of a large file does not read all of it.
+    pub(crate) fn content_revision(&self) -> u64 {
+        const SAMPLE: usize = 4096;
+        const EDGE: usize = 64 * 1024;
+        const SAMPLES: usize = 64;
+        let source = match &self.source {
+            PdfSource::Memory(data) => return xxh64(data, 0),
+            PdfSource::File(source) => source,
+        };
+        if let Some(bytes) = source.raw_cache.get() {
+            return xxh64(bytes, 0);
+        }
+        let len = source.len;
+        let mut material = Vec::with_capacity(2 * EDGE + SAMPLES * SAMPLE + 256);
+        material.extend_from_slice(source.path.to_string_lossy().as_bytes());
+        material.extend_from_slice(&(len as u64).to_le_bytes());
+        let modified = source
+            .file
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        material.extend_from_slice(&modified.to_le_bytes());
+        let mut take = |offset: usize, count: usize| {
+            let count = count.min(len.saturating_sub(offset));
+            if count > 0 {
+                if let Ok(bytes) = source.read_at(offset, count) {
+                    material.extend_from_slice(&bytes);
+                }
+            }
+        };
+        if len <= 2 * EDGE + SAMPLES * SAMPLE {
+            take(0, len);
+        } else {
+            take(0, EDGE);
+            let span = len - 2 * EDGE;
+            for index in 0..SAMPLES {
+                take(EDGE + span / SAMPLES * index, SAMPLE);
+            }
+            take(len - EDGE, EDGE);
+        }
+        xxh64(&material, 0)
+    }
+
     /// Byte offset recorded by the latest `startxref` marker.
     pub fn startxref_offset(&self) -> usize {
         self.startxref
@@ -1017,6 +1135,15 @@ impl PdfReader {
     /// whole-document round-trip (copy every object, identity-renumber, emit a
     /// fresh file). For page-level manipulation (merge/split/extract) the
     /// writer instead walks a dependency closure and never needs this.
+    /// True when the source stores objects inside compressed object streams
+    /// (PDF 1.5+). Content-preserving rewrites keep that packing so the output
+    /// is not inflated by writing every small object out in full.
+    pub fn uses_object_streams(&self) -> bool {
+        self.xref
+            .values()
+            .any(|entry| matches!(entry, XrefEntry::Compressed { .. }))
+    }
+
     pub fn object_ids(&self) -> Vec<(u32, u16)> {
         let mut ids: Vec<(u32, u16)> = self
             .xref
@@ -1561,7 +1688,7 @@ impl PdfReader {
 
 fn setup_encryption(
     source: &PdfSource,
-    xref: &HashMap<(u32, u16), XrefEntry>,
+    xref: &crate::fast_hash::ObjectMap<XrefEntry>,
     trailer: &PdfDictionary,
     password: &[u8],
 ) -> Result<Option<EncryptionContext>> {
@@ -1634,7 +1761,7 @@ fn setup_encryption(
 
 fn setup_encryption_pubsec(
     source: &PdfSource,
-    xref: &HashMap<(u32, u16), XrefEntry>,
+    xref: &crate::fast_hash::ObjectMap<XrefEntry>,
     trailer: &PdfDictionary,
     provider: &PubSecKeyProvider,
 ) -> Result<Option<EncryptionContext>> {
@@ -1770,7 +1897,7 @@ fn extract_file_id(trailer: &PdfDictionary) -> Vec<u8> {
 
 fn resolve_encrypt_dict(
     source: &PdfSource,
-    xref: &HashMap<(u32, u16), XrefEntry>,
+    xref: &crate::fast_hash::ObjectMap<XrefEntry>,
     object: &PdfObject,
 ) -> Result<Option<PdfDictionary>> {
     match object {
@@ -1799,7 +1926,7 @@ fn resolve_encrypt_dict(
 
 fn read_object_window_from_source(
     source: &PdfSource,
-    xref: &HashMap<(u32, u16), XrefEntry>,
+    xref: &crate::fast_hash::ObjectMap<XrefEntry>,
     offset: usize,
     startxref: Option<usize>,
 ) -> Result<Vec<u8>> {
@@ -1924,7 +2051,7 @@ fn decrypt_bytes_by_method(
 fn read_xref_chain(
     data: &[u8],
     startxref: usize,
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
     trailer: &mut Option<PdfDictionary>,
     visited: &mut HashSet<usize>,
 ) -> Result<()> {
@@ -1961,7 +2088,7 @@ fn read_xref_chain(
 fn read_xref_chain_from_source(
     source: &PdfSource,
     startxref: usize,
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
     trailer: &mut Option<PdfDictionary>,
     visited: &mut HashSet<usize>,
 ) -> Result<()> {
@@ -1997,7 +2124,7 @@ fn read_xref_chain_from_source(
 
 fn repair_uncompressed_xref_offsets(
     data: &[u8],
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
 ) -> usize {
     let needs_repair = xref.iter().any(|(&(number, generation), entry)| {
         matches!(
@@ -2037,7 +2164,7 @@ fn repair_uncompressed_xref_offsets(
 /// `/XRefStm` sections with its usual newest-revision precedence.
 fn recover_xref_chain(
     data: &[u8],
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
     trailer: &mut Option<PdfDictionary>,
 ) -> Result<usize> {
     let stream_spans = stream_data_spans(data);
@@ -2078,7 +2205,7 @@ fn recover_xref_chain(
     candidates.dedup();
 
     for offset in candidates {
-        let mut recovered_xref = HashMap::new();
+        let mut recovered_xref = crate::fast_hash::ObjectMap::default();
         let mut recovered_trailer = None;
         let mut visited = HashSet::new();
         if read_xref_chain(
@@ -2108,7 +2235,7 @@ fn recover_xref_chain(
 
 fn rebuild_xref_from_object_scan(
     data: &[u8],
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
     trailer: &mut Option<PdfDictionary>,
 ) -> Result<()> {
     let scanned = scan_indirect_object_headers(data);
@@ -2296,7 +2423,7 @@ struct XrefSection {
 fn read_xref_section(
     data: &[u8],
     offset: usize,
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
 ) -> Result<XrefSection> {
     let offset = skip_ws_and_comments(data, offset);
     if bytes_at(data, offset, b"xref") {
@@ -2313,7 +2440,7 @@ fn read_xref_section(
 fn read_xref_section_from_source(
     source: &PdfSource,
     offset: usize,
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
 ) -> Result<XrefSection> {
     let base = offset.saturating_sub(64);
     let available = source.len().saturating_sub(base);
@@ -2322,7 +2449,7 @@ fn read_xref_section_from_source(
 
     loop {
         let data = source.read_at(base, read_len)?;
-        let mut section_xref = HashMap::new();
+        let mut section_xref = crate::fast_hash::ObjectMap::default();
         match read_xref_section(&data, offset - base, &mut section_xref) {
             Ok(section) => {
                 for ((object_number, generation), entry) in section_xref {
@@ -2371,7 +2498,7 @@ fn nearby_classic_xref_offset(data: &[u8], offset: usize) -> Option<usize> {
 fn read_classic_xref(
     data: &[u8],
     mut pos: usize,
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
 ) -> Result<XrefSection> {
     if !bytes_at(data, pos, b"xref") {
         return Err(WellfriendError::MalformedPdf(format!(
@@ -2454,7 +2581,7 @@ fn read_classic_xref(
 fn read_xref_stream(
     data: &[u8],
     offset: usize,
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
 ) -> Result<XrefSection> {
     let mut parser = PdfParser::new(data, offset)?;
     let parsed = parser.parse_indirect_object()?;
@@ -2698,7 +2825,7 @@ pub(crate) fn parse_object_stream_data(
 }
 
 fn insert_xref_entry(
-    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    xref: &mut crate::fast_hash::ObjectMap<XrefEntry>,
     object_number: u32,
     generation: u16,
     entry: XrefEntry,
@@ -2979,6 +3106,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn xxh64_matches_reference_vectors() {
+        assert_eq!(xxh64(b"", 0), 0xEF46_DB37_51D8_E999);
+        assert_eq!(xxh64(b"abc", 0), 0x44BC_2CF5_AD77_0999);
+        // Exercises the 32-byte stripe, 8-byte, 4-byte and tail paths.
+        let long: Vec<u8> = (0u8..=100).collect();
+        assert_ne!(xxh64(&long, 0), xxh64(&long[..100], 0));
+        assert_eq!(xxh64(&long, 7), xxh64(&long.clone(), 7));
+    }
+
+    #[test]
     fn retained_tint_lookup_does_not_materialize_file_backed_pdf() {
         use crate::render::parameter_dictionary::tests::{bytes_with_objects, numbers, reference};
         let function = PdfObject::Dictionary(dict(&[
@@ -3195,7 +3332,7 @@ mod tests {
 trailer
 << /Size 2 /Root 1 0 R >>
 ";
-        let mut xref = HashMap::new();
+        let mut xref = crate::fast_hash::ObjectMap::default();
 
         read_classic_xref(data, 0, &mut xref).unwrap();
 
@@ -3218,7 +3355,7 @@ trailer
 << /Size 2 /Root 1 0 R >>
 ";
         data[xref_offset..xref_offset + xref.len()].copy_from_slice(xref);
-        let mut xref_map = HashMap::new();
+        let mut xref_map = crate::fast_hash::ObjectMap::default();
 
         read_xref_section(&data, xref_offset - 40, &mut xref_map).unwrap();
 

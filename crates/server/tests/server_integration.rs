@@ -1044,7 +1044,8 @@ async fn render_contract_builder_returns_valid_contract_json() {
     assert_eq!(json["contract"]["background"]["g"], 34);
     assert_eq!(json["contract"]["background"]["b"], 56);
     assert_eq!(json["contract"]["background"]["a"], 255);
-    assert_eq!(json["contract"]["execution_mode"], "Research");
+    // `Research` is a deprecated alias: research mode was merged into Standard.
+    assert_eq!(json["contract"]["execution_mode"], "Standard");
     assert_eq!(json["contract"]["backend"], "ScalarReference");
     assert_eq!(json["contract"]["compositing"], "Compatibility");
     assert_eq!(json["contract"]["annotations"], "Exclude");
@@ -1064,7 +1065,8 @@ async fn render_contract_builder_returns_valid_contract_json() {
         "DeterministicFallback"
     );
     assert_eq!(json["contract"]["exactness"], "HighQualityExact");
-    assert_eq!(json["contract"]["determinism"], "BestEffortResearch");
+    // `BestEffortResearch` is a deprecated alias of `BestEffort`.
+    assert_eq!(json["contract"]["determinism"], "BestEffort");
     assert_eq!(json["contract"]["resource_budget"]["max_pixels"], 1_000_000);
 
     let contract_json = json["contract_json"].as_str().unwrap();
@@ -1073,30 +1075,77 @@ async fn render_contract_builder_returns_valid_contract_json() {
 }
 
 #[tokio::test]
-async fn render_contract_builder_accepts_research_hybrid_backend() {
+async fn render_contract_builder_accepts_hybrid_backend_and_legacy_alias() {
     let pdf = fixture_pdf("flate.pdf");
-    let (ct, body_bytes) = make_multipart(
-        "test.pdf",
-        &pdf,
-        &[("page", "1"), ("dpi", "72"), ("backend", "research-hybrid")],
-    );
-    let app = wellfriendpdf_server::app::create_app();
-    let response = app
-        .oneshot(
-            Request::post("/api/v1/render-contract")
-                .header("content-type", ct)
-                .body(Body::from(body_bytes))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let mut fingerprints = Vec::new();
+    // `research-hybrid` is the deprecated spelling of `hybrid`.
+    for backend in ["hybrid", "research-hybrid"] {
+        let (ct, body_bytes) = make_multipart(
+            "test.pdf",
+            &pdf,
+            &[("page", "1"), ("dpi", "72"), ("backend", backend)],
+        );
+        let app = wellfriendpdf_server::app::create_app();
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/render-contract")
+                    .header("content-type", ct)
+                    .body(Body::from(body_bytes))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
-    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(json["contract"]["backend"], "ResearchHybrid");
-    assert_eq!(json["contract"]["schema_version"], 1);
-    assert_eq!(json["cache_fingerprint"].as_str().unwrap().len(), 64);
+        assert_eq!(response.status(), StatusCode::OK, "{backend}");
+        let body_bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["contract"]["backend"], "Hybrid", "{backend}");
+        assert_eq!(json["contract"]["schema_version"], 1);
+        assert_eq!(json["cache_fingerprint"].as_str().unwrap().len(), 64);
+        fingerprints.push(json["cache_fingerprint"].as_str().unwrap().to_string());
+    }
+    assert_eq!(fingerprints[0], fingerprints[1]);
+}
+
+#[test]
+fn deprecated_research_server_switches_are_accepted_no_ops() {
+    let mut cfg = wellfriendpdf_server::config::ServerConfig::default();
+    assert!(cfg.deprecation_warnings().is_empty());
+    assert!(!cfg.runtime_config.resources.allow_gpu);
+    assert!(!cfg.runtime_config.providers.allow_hosted_api);
+
+    cfg.force_standard = true;
+    cfg.allow_research = true;
+    cfg.runtime_config = wellfriendpdf_engine::RuntimeConfig::from_mode_str("research").unwrap();
+    let warnings = cfg.deprecation_warnings();
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert!(warnings
+        .iter()
+        .any(|w| w.contains("WELLFRIENDPDF_ALLOW_RESEARCH")));
+    // Deprecated switches never fail startup validation by themselves.
+    assert_eq!(
+        cfg.validate(),
+        wellfriendpdf_server::config::ServerConfig::default().validate(),
+        "deprecated research switches must not change startup validation"
+    );
+    let effective = cfg.effective_runtime().expect("effective runtime");
+    assert_eq!(
+        effective.effective_mode,
+        wellfriendpdf_engine::ExecutionMode::Standard
+    );
+    assert!(effective
+        .decisions
+        .iter()
+        .any(|d| d == wellfriendpdf_engine::RESEARCH_MODE_DEPRECATION));
+    assert!(effective
+        .decisions
+        .iter()
+        .any(|d| d == wellfriendpdf_engine::RESEARCH_POLICY_SWITCH_DEPRECATION));
+    // Merging research into Standard does not turn on network/GPU.
+    assert!(!effective.config.resources.allow_gpu);
+    assert!(!effective.config.resources.allow_external_network);
+    assert!(!effective.config.providers.allow_hosted_api);
+    assert!(!effective.config.providers.allow_cloud_document_intelligence);
 }
 
 #[tokio::test]

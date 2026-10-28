@@ -1,6 +1,7 @@
 use crate::images::decoder::RawImage;
 use crate::render::buffer::PixelBuffer;
 use crate::render::transform::{Transform2D, Viewport};
+use crate::render::RoundByte;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SmoothMode {
@@ -360,6 +361,94 @@ impl ImagePainter {
         } else {
             SmoothMode::LegacyBilinear
         };
+        let columns: Vec<f64> = (0..target_width)
+            .map(|x| {
+                (f64::from(target.paint.x_origin) + f64::from(x) + 0.5 - target.device_x_min)
+                    / target.device_width
+            })
+            .collect();
+        let rows: Vec<f64> = (0..target_height)
+            .map(|y| {
+                (f64::from(target.paint.y_origin) + f64::from(y) + 0.5 - target.device_y_min)
+                    / target.device_height
+            })
+            .collect();
+        let channels = image.channels as usize;
+        let stride = image.row_stride();
+        if image.is_valid()
+            && footprint_x <= 1.0
+            && footprint_y <= 1.0
+            && smooth == SmoothMode::None
+        {
+            // Magnification: the nearest source column/row of every target
+            // column/row, as [`Self::nearest_sample`] computes it per pixel.
+            let nearest = |t: f64, extent: u32| {
+                let extent = extent as f64;
+                (t * extent).floor().clamp(0.0, extent - 1.0) as usize
+            };
+            let source_x: Vec<usize> = columns.iter().map(|&u| nearest(u, image.width)).collect();
+            for (y, &v) in rows.iter().enumerate() {
+                let row = &image.pixels[nearest(v, image.height) * stride..];
+                let out = &mut pixels[y * target_width as usize * 3..][..target_width as usize * 3];
+                for (pixel, &sx) in out.chunks_exact_mut(3).zip(&source_x) {
+                    if channels == 1 {
+                        pixel.fill(row[sx]);
+                    } else {
+                        pixel.copy_from_slice(&row[sx * 3..sx * 3 + 3]);
+                    }
+                }
+            }
+            return Some(RawImage {
+                width: target_width,
+                height: target_height,
+                channels: 3,
+                bits_per_sample: 8,
+                pixels,
+            });
+        }
+        if image.is_valid() && (footprint_x > 1.0 || footprint_y > 1.0) {
+            // One axis minifies: area averaging with per-axis taps computed
+            // once (bit-identical to [`Self::area_average_sample`]).
+            let u_taps =
+                AreaAxisTaps::new(columns.iter().copied(), image.width, footprint_x.max(1.0));
+            let v_taps =
+                AreaAxisTaps::new(rows.iter().copied(), image.height, footprint_y.max(1.0));
+            for (y, v_tap) in v_taps.taps.iter().enumerate() {
+                for (x, u_tap) in u_taps.taps.iter().enumerate() {
+                    let sample = match (u_tap, v_tap) {
+                        (
+                            AreaTap::Box { first: ux, end: ue },
+                            AreaTap::Box { first: vy, end: ve },
+                        ) => Self::area_average_box(
+                            image,
+                            channels,
+                            stride,
+                            &u_taps.weights[*ux..*ue],
+                            &v_taps.weights[*vy..*ve],
+                        )
+                        .unwrap_or_else(|| Self::nearest_sample(image, columns[x], rows[y])),
+                        _ => Self::sample(
+                            image,
+                            columns[x],
+                            rows[y],
+                            footprint_x,
+                            footprint_y,
+                            smooth,
+                            true,
+                        ),
+                    };
+                    let base = (y * target_width as usize + x) * 3;
+                    pixels[base..base + 3].copy_from_slice(&sample[..3]);
+                }
+            }
+            return Some(RawImage {
+                width: target_width,
+                height: target_height,
+                channels: 3,
+                bits_per_sample: 8,
+                pixels,
+            });
+        }
         for y in 0..target_height as usize {
             let device_y = f64::from(target.paint.y_origin) + y as f64 + 0.5;
             let v = (device_y - target.device_y_min) / target.device_height;
@@ -448,6 +537,13 @@ impl ImagePainter {
             } else {
                 Vec::new()
             };
+        if x_weights
+            .iter()
+            .flatten()
+            .any(|&(source_x, _)| source_x >= source_width)
+        {
+            return None;
+        }
         // Gray sources add identical products to all three channels, so one
         // accumulator per column carries the exact same sum.
         let gray = image.channels == 1;
@@ -460,27 +556,30 @@ impl ImagePainter {
                     if y_weight <= 0.0 {
                         continue;
                     }
-                    let row_start = source_y * source_width;
+                    // One bounds check per source row instead of per tap;
+                    // the arithmetic and its order are unchanged.
+                    let channels = image.channels as usize;
+                    let row_start = source_y.checked_mul(source_width)?.checked_mul(channels)?;
+                    let row = image
+                        .pixels
+                        .get(row_start..row_start.checked_add(source_width * channels)?)?;
                     for (destination_x, weights) in x_weights.iter().enumerate() {
                         let output_base = destination_x * 3;
-
+                        let output = &mut accumulated[output_base..output_base + 3];
+                        let mut normalized = normalization[destination_x];
                         for &(source_x, x_weight) in weights {
                             let weight = x_weight * y_weight;
-                            normalization[destination_x] += weight;
-                            let source_base =
-                                (row_start + source_x).checked_mul(image.channels as usize)?;
+                            normalized += weight;
                             if gray {
-                                let gray = *image.pixels.get(source_base)? as f64;
-                                accumulated[output_base] += gray * weight;
+                                output[0] += row[source_x] as f64 * weight;
                             } else {
-                                accumulated[output_base] +=
-                                    *image.pixels.get(source_base)? as f64 * weight;
-                                accumulated[output_base + 1] +=
-                                    *image.pixels.get(source_base + 1)? as f64 * weight;
-                                accumulated[output_base + 2] +=
-                                    *image.pixels.get(source_base + 2)? as f64 * weight;
+                                let px = &row[source_x * 3..source_x * 3 + 3];
+                                output[0] += px[0] as f64 * weight;
+                                output[1] += px[1] as f64 * weight;
+                                output[2] += px[2] as f64 * weight;
                             }
                         }
+                        normalization[destination_x] = normalized;
                     }
                 }
             } else {
@@ -755,6 +854,33 @@ impl ImagePainter {
             return;
         }
 
+        if use_area_average || matches!(smooth, SmoothMode::None) {
+            let axes = SeparableAxes {
+                columns: (x0..=x1)
+                    .map(|px| (px as f64 + 0.5 - px_min) / dst_w)
+                    .collect(),
+                rows: (y0..=y1)
+                    .map(|py| (py as f64 + 0.5 - py_min) / dst_h)
+                    .collect(),
+                swapped: false,
+            };
+            let painted = if use_area_average {
+                Self::paint_separable_area_average(
+                    buf,
+                    image,
+                    &axes,
+                    (footprint_x.max(1.0), footprint_y.max(1.0)),
+                    (x0, x1, y0, y1),
+                    paint_alpha,
+                )
+            } else {
+                Self::paint_separable_nearest(buf, image, &axes, (x0, x1, y0, y1), paint_alpha)
+            };
+            if painted {
+                return;
+            }
+        }
+
         if image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped() {
             for py in y0..=y1 {
                 for px in x0..=x1 {
@@ -806,6 +932,248 @@ impl ImagePainter {
                 buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
             }
         }
+    }
+
+    /// Area-average minification with the per-column and per-row source
+    /// boxes computed once instead of per destination pixel. The taps and the
+    /// accumulation order are exactly those of [`Self::area_average_sample`],
+    /// so the output bytes are identical; only the repeated box arithmetic is
+    /// hoisted out of the pixel loop.
+    fn paint_separable_area_average(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        axes: &SeparableAxes,
+        (footprint_x, footprint_y): (f64, f64),
+        (x0, x1, y0, y1): (i32, i32, i32, i32),
+        paint_alpha: f32,
+    ) -> bool {
+        if !image.is_valid() || image.bits_per_sample != 8 {
+            return false;
+        }
+        let u_taps = AreaAxisTaps::new(axes.u_coords().iter().copied(), image.width, footprint_x);
+        let v_taps = AreaAxisTaps::new(axes.v_coords().iter().copied(), image.height, footprint_y);
+        let channels = image.channels as usize;
+        let stride = image.row_stride();
+        let opaque_unclipped =
+            channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped();
+        let opaque_binary_clip = !opaque_unclipped
+            && channels != 4
+            && paint_alpha >= 1.0
+            && buf.can_write_opaque_with_binary_clip();
+        let mut rgb_run: Vec<u8> = Vec::new();
+
+        for (row_index, py) in (y0..=y1).enumerate() {
+            let mut run_start: Option<i32> = None;
+            for (column_index, px) in (x0..=x1).enumerate() {
+                let (u_index, v_index) = axes.uv_index(column_index, row_index);
+                let sample = match (&u_taps.taps[u_index], &v_taps.taps[v_index]) {
+                    (AreaTap::Outside, _) | (_, AreaTap::Outside) => None,
+                    (AreaTap::Box { first: ux, end: ue }, AreaTap::Box { first: vy, end: ve }) => {
+                        Some(
+                            Self::area_average_box(
+                                image,
+                                channels,
+                                stride,
+                                &u_taps.weights[*ux..*ue],
+                                &v_taps.weights[*vy..*ve],
+                            )
+                            .unwrap_or_else(|| {
+                                Self::nearest_sample(
+                                    image,
+                                    u_taps.coords[u_index],
+                                    v_taps.coords[v_index],
+                                )
+                            }),
+                        )
+                    }
+                    _ => Some(Self::nearest_sample(
+                        image,
+                        u_taps.coords[u_index],
+                        v_taps.coords[v_index],
+                    )),
+                };
+                let Some(sample) = sample else {
+                    if let Some(start) = run_start.take() {
+                        buf.write_opaque_rgb_run_binary_clipped(start, py, &rgb_run);
+                        rgb_run.clear();
+                    }
+                    continue;
+                };
+                if opaque_unclipped {
+                    buf.write_opaque_pixel_unclipped(
+                        px,
+                        py,
+                        [sample[0], sample[1], sample[2], 255],
+                    );
+                } else if opaque_binary_clip {
+                    run_start.get_or_insert(px);
+                    rgb_run.extend_from_slice(&sample[..3]);
+                } else {
+                    let coverage = if channels == 4 {
+                        sample[3] as f32 / 255.0
+                    } else {
+                        1.0
+                    } * paint_alpha;
+                    buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
+                }
+            }
+            if let Some(start) = run_start.take() {
+                buf.write_opaque_rgb_run_binary_clipped(start, py, &rgb_run);
+                rgb_run.clear();
+            }
+        }
+        true
+    }
+
+    /// Nearest-sample painting with the source column and row of every
+    /// destination pixel computed once, exactly as [`Self::nearest_sample`]
+    /// computes them per pixel.
+    fn paint_separable_nearest(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        axes: &SeparableAxes,
+        (x0, x1, y0, y1): (i32, i32, i32, i32),
+        paint_alpha: f32,
+    ) -> bool {
+        if !image.is_valid() || image.bits_per_sample != 8 || !matches!(image.channels, 1 | 3 | 4) {
+            return false;
+        }
+        let index = |t: f64, extent: u32| -> Option<usize> {
+            if !inside_unit_image_sample(t) {
+                return None;
+            }
+            let extent = extent as f64;
+            Some((t * extent).floor().clamp(0.0, extent - 1.0) as usize)
+        };
+        let source_x: Vec<Option<usize>> = axes
+            .u_coords()
+            .iter()
+            .map(|&u| index(u, image.width))
+            .collect();
+        let source_y: Vec<Option<usize>> = axes
+            .v_coords()
+            .iter()
+            .map(|&v| index(v, image.height))
+            .collect();
+        let channels = image.channels as usize;
+        let stride = image.row_stride();
+        let opaque_unclipped =
+            channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped();
+        for (row_index, py) in (y0..=y1).enumerate() {
+            for (column_index, px) in (x0..=x1).enumerate() {
+                let (u_index, v_index) = axes.uv_index(column_index, row_index);
+                let (Some(sx), Some(sy)) = (source_x[u_index], source_y[v_index]) else {
+                    continue;
+                };
+                let at = sy * stride + sx * channels;
+                let sample = match channels {
+                    1 => {
+                        let gray = image.pixels[at];
+                        [gray, gray, gray, 255]
+                    }
+                    3 => [
+                        image.pixels[at],
+                        image.pixels[at + 1],
+                        image.pixels[at + 2],
+                        255,
+                    ],
+                    _ => [
+                        image.pixels[at],
+                        image.pixels[at + 1],
+                        image.pixels[at + 2],
+                        image.pixels[at + 3],
+                    ],
+                };
+                if opaque_unclipped {
+                    buf.write_opaque_pixel_unclipped(px, py, sample);
+                } else {
+                    let coverage = if channels == 4 {
+                        sample[3] as f32 / 255.0
+                    } else {
+                        1.0
+                    } * paint_alpha;
+                    buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
+                }
+            }
+        }
+        true
+    }
+
+    /// One destination pixel of [`Self::area_average_sample`] from
+    /// precomputed `(source index, overlap)` taps. `None` asks the caller for
+    /// the nearest-sample fallback (no positive weight).
+    #[inline]
+    fn area_average_box(
+        image: &RawImage,
+        channels: usize,
+        stride: usize,
+        x_taps: &[(usize, f64)],
+        y_taps: &[(usize, f64)],
+    ) -> Option<[u8; 4]> {
+        let pixels = image.pixels.as_slice();
+        let mut accum = [0.0_f64; 4];
+        let mut total = 0.0_f64;
+        match channels {
+            1 => {
+                for &(y, oy) in y_taps {
+                    let row = &pixels[y * stride..];
+                    for &(x, ox) in x_taps {
+                        let weight = ox * oy;
+                        accum[0] += row[x] as f64 * weight;
+                        accum[3] += 255.0 * weight;
+                        total += weight;
+                    }
+                }
+                accum[1] = accum[0];
+                accum[2] = accum[0];
+            }
+            3 => {
+                for &(y, oy) in y_taps {
+                    let row = &pixels[y * stride..];
+                    for &(x, ox) in x_taps {
+                        let weight = ox * oy;
+                        let px = &row[x * 3..x * 3 + 3];
+                        accum[0] += px[0] as f64 * weight;
+                        accum[1] += px[1] as f64 * weight;
+                        accum[2] += px[2] as f64 * weight;
+                        accum[3] += 255.0 * weight;
+                        total += weight;
+                    }
+                }
+            }
+            4 => {
+                let mut alpha_total = 0.0_f64;
+                for &(y, oy) in y_taps {
+                    let row = &pixels[y * stride..];
+                    for &(x, ox) in x_taps {
+                        let weight = ox * oy;
+                        let px = &row[x * 4..x * 4 + 4];
+                        let alpha_weight = weight * px[3] as f64 / 255.0;
+                        accum[0] += px[0] as f64 * alpha_weight;
+                        accum[1] += px[1] as f64 * alpha_weight;
+                        accum[2] += px[2] as f64 * alpha_weight;
+                        accum[3] += px[3] as f64 * weight;
+                        alpha_total += alpha_weight;
+                        total += weight;
+                    }
+                }
+                if alpha_total > 0.0 {
+                    for value in accum.iter_mut().take(3) {
+                        *value *= total / alpha_total;
+                    }
+                }
+            }
+            _ => return None,
+        }
+        if total <= 0.0 {
+            return None;
+        }
+        Some([
+            (accum[0] / total).round_byte(),
+            (accum[1] / total).round_byte(),
+            (accum[2] / total).round_byte(),
+            (accum[3] / total).round_byte(),
+        ])
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1067,6 +1435,52 @@ impl ImagePainter {
             return;
         }
 
+        // Flipped or quarter-turned images: u and v each depend on one device
+        // axis only, so sample positions are computed once per row/column
+        // with the same expressions as the per-pixel inverse mapping below.
+        if use_area_average || matches!(smooth, SmoothMode::None) {
+            let axes = if inv.b == 0.0 && inv.c == 0.0 {
+                Some(SeparableAxes {
+                    columns: (x0..=x1)
+                        .map(|px| inv.a * (px as f64 + 0.5) + inv.c * 0.5 + inv.e)
+                        .collect(),
+                    rows: (y0..=y1)
+                        .map(|py| 1.0 - (inv.b * 0.5 + inv.d * (py as f64 + 0.5) + inv.f))
+                        .collect(),
+                    swapped: false,
+                })
+            } else if inv.a == 0.0 && inv.d == 0.0 {
+                Some(SeparableAxes {
+                    columns: (x0..=x1)
+                        .map(|px| 1.0 - (inv.b * (px as f64 + 0.5) + inv.d * 0.5 + inv.f))
+                        .collect(),
+                    rows: (y0..=y1)
+                        .map(|py| inv.a * 0.5 + inv.c * (py as f64 + 0.5) + inv.e)
+                        .collect(),
+                    swapped: true,
+                })
+            } else {
+                None
+            };
+            if let Some(axes) = axes {
+                let painted = if use_area_average {
+                    Self::paint_separable_area_average(
+                        buf,
+                        image,
+                        &axes,
+                        (footprint_x.max(1.0), footprint_y.max(1.0)),
+                        (x0, x1, y0, y1),
+                        paint_alpha,
+                    )
+                } else {
+                    Self::paint_separable_nearest(buf, image, &axes, (x0, x1, y0, y1), paint_alpha)
+                };
+                if painted {
+                    return;
+                }
+            }
+        }
+
         if image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped() {
             for py in y0..=y1 {
                 for px in x0..=x1 {
@@ -1165,7 +1579,7 @@ impl ImagePainter {
         let lerp2 = |v00: u8, v10: u8, v01: u8, v11: u8| -> u8 {
             let top = v00 as f32 * (1.0 - fx) + v10 as f32 * fx;
             let bottom = v01 as f32 * (1.0 - fx) + v11 as f32 * fx;
-            (top * (1.0 - fy) + bottom * fy).round().clamp(0.0, 255.0) as u8
+            (top * (1.0 - fy) + bottom * fy).round_byte()
         };
 
         [
@@ -1212,6 +1626,7 @@ impl ImagePainter {
 
         let mut accum = [0.0_f64; 4];
         let mut total = 0.0_f64;
+        let mut alpha_total = 0.0_f64;
         // Gray and RGB samples expand to [g, g, g, 255] / [r, g, b, 255]; the
         // replicated and constant channels receive exactly the same products
         // in the same order, so they are accumulated once and copied.
@@ -1267,10 +1682,22 @@ impl ImagePainter {
                         }
                         let weight = ox * oy;
                         let px = Self::get_pixel_channels(image, x, y);
-                        for c in 0..4 {
-                            accum[c] += px[c] as f64 * weight;
+                        // Average colour weighted by alpha (premultiplied):
+                        // the colour under fully transparent mask pixels is
+                        // arbitrary (often noise in scanned MRC foregrounds)
+                        // and must not bleed into the visible result.
+                        let alpha_weight = weight * px[3] as f64 / 255.0;
+                        for c in 0..3 {
+                            accum[c] += px[c] as f64 * alpha_weight;
                         }
+                        accum[3] += px[3] as f64 * weight;
+                        alpha_total += alpha_weight;
                         total += weight;
+                    }
+                }
+                if alpha_total > 0.0 {
+                    for value in accum.iter_mut().take(3) {
+                        *value *= total / alpha_total;
                     }
                 }
             }
@@ -1281,10 +1708,10 @@ impl ImagePainter {
         }
 
         [
-            (accum[0] / total).round().clamp(0.0, 255.0) as u8,
-            (accum[1] / total).round().clamp(0.0, 255.0) as u8,
-            (accum[2] / total).round().clamp(0.0, 255.0) as u8,
-            (accum[3] / total).round().clamp(0.0, 255.0) as u8,
+            (accum[0] / total).round_byte(),
+            (accum[1] / total).round_byte(),
+            (accum[2] / total).round_byte(),
+            (accum[3] / total).round_byte(),
         ]
     }
 
@@ -1315,7 +1742,7 @@ impl ImagePainter {
         let lerp2 = |v00: u8, v10: u8, v01: u8, v11: u8| -> u8 {
             let top = v00 as f64 * (1.0 - fx) + v10 as f64 * fx;
             let bottom = v01 as f64 * (1.0 - fx) + v11 as f64 * fx;
-            (top * (1.0 - fy) + bottom * fy).round().clamp(0.0, 255.0) as u8
+            (top * (1.0 - fy) + bottom * fy).round_byte()
         };
 
         [
@@ -1345,6 +1772,102 @@ fn source_footprint_from_inverse(inv: &Transform2D, image: &RawImage) -> (f64, f
     let footprint_x = (dx.0.abs() + dy.0.abs()) * image.width as f64;
     let footprint_y = (dx.1.abs() + dy.1.abs()) * image.height as f64;
     (footprint_x.max(1e-6), footprint_y.max(1e-6))
+}
+
+/// Unit-square sample coordinates of each destination column and row for a
+/// mapping where u and v each depend on one device axis: `u` comes from the
+/// columns and `v` from the rows, or the reverse for a quarter turn.
+struct SeparableAxes {
+    columns: Vec<f64>,
+    rows: Vec<f64>,
+    swapped: bool,
+}
+
+impl SeparableAxes {
+    fn u_coords(&self) -> &[f64] {
+        if self.swapped {
+            &self.rows
+        } else {
+            &self.columns
+        }
+    }
+
+    fn v_coords(&self) -> &[f64] {
+        if self.swapped {
+            &self.columns
+        } else {
+            &self.rows
+        }
+    }
+
+    /// Indexes into `u_coords` and `v_coords` for one destination pixel.
+    #[inline]
+    fn uv_index(&self, column: usize, row: usize) -> (usize, usize) {
+        if self.swapped {
+            (row, column)
+        } else {
+            (column, row)
+        }
+    }
+}
+
+/// Source box of one destination column (or row) for area averaging.
+enum AreaTap {
+    /// The destination sample centre falls outside the unit image square.
+    Outside,
+    /// The box collapsed; the pixel falls back to a nearest sample.
+    Degenerate,
+    /// Positive `(source index, overlap)` weights at `weights[first..end]`.
+    Box { first: usize, end: usize },
+}
+
+struct AreaAxisTaps {
+    coords: Vec<f64>,
+    taps: Vec<AreaTap>,
+    weights: Vec<(usize, f64)>,
+}
+
+impl AreaAxisTaps {
+    /// One axis of [`ImagePainter::area_average_sample`]'s source box, for
+    /// every destination coordinate `t` (in unit image space).
+    fn new(coords: impl Iterator<Item = f64>, extent: u32, footprint: f64) -> Self {
+        let w = extent as f64;
+        let half = (footprint.max(1e-6) * 0.5).min(w * 0.5);
+        let coords: Vec<f64> = coords.collect();
+        let mut taps = Vec::with_capacity(coords.len());
+        let mut weights = Vec::new();
+        for &t in &coords {
+            if !inside_unit_image_sample(t) {
+                taps.push(AreaTap::Outside);
+                continue;
+            }
+            let centre = (t * w).clamp(0.0, w);
+            let start = snap_source_box_edge((centre - half).clamp(0.0, w), w);
+            let finish = snap_source_box_edge((centre + half).clamp(0.0, w), w);
+            if finish <= start {
+                taps.push(AreaTap::Degenerate);
+                continue;
+            }
+            let first = weights.len();
+            let lo = start.floor().max(0.0) as usize;
+            let hi = finish.ceil().min(w) as usize;
+            for index in lo..hi {
+                let overlap = box_pixel_weight(index, start, finish);
+                if overlap > 0.0 {
+                    weights.push((index, overlap));
+                }
+            }
+            taps.push(AreaTap::Box {
+                first,
+                end: weights.len(),
+            });
+        }
+        Self {
+            coords,
+            taps,
+            weights,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

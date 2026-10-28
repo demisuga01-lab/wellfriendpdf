@@ -960,13 +960,7 @@ fn face_embeddable(face: &ttf_parser::Face<'_>) -> bool {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn system_database() -> Option<&'static fontdb::Database> {
-    static DB: std::sync::OnceLock<Option<fontdb::Database>> = std::sync::OnceLock::new();
-    DB.get_or_init(|| {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        (!db.is_empty()).then_some(db)
-    })
-    .as_ref()
+    crate::fonts::installed::database()
 }
 
 fn normalize_font_key(name: &str) -> String {
@@ -1014,7 +1008,8 @@ fn system_font_exact(_base: &str) -> Option<Candidate> {
 
 /// The complete program of a source font's own family, for replacement text
 /// its embedded subset cannot draw, so an edit keeps the source typeface.
-/// An installed face with the same PostScript name comes first; otherwise the
+/// An installed face with the same PostScript name comes first, then the
+/// installed face of the same family closest in style; otherwise the
 /// bundled Liberation face of the same style, but only for Liberation itself
 /// and the metric-compatible Arial/Helvetica, Times and Courier families.
 /// Never an unrelated family: callers fall back explicitly.
@@ -1023,15 +1018,28 @@ pub(crate) fn matching_full_font(base_font: &str, text: &str) -> Option<&'static
         ttf_parser::Face::parse(bytes, 0).is_ok_and(|face| {
             text.chars()
                 .filter(|character| !character.is_whitespace())
-                .all(|character| face.glyph_index(character).is_some_and(|glyph| glyph.0 != 0))
+                .all(|character| {
+                    face.glyph_index(character)
+                        .is_some_and(|glyph| glyph.0 != 0)
+                })
         })
     };
     if let Some(program) = system_font_program_exact(base_font).filter(|bytes| covers(bytes)) {
         return Some(program);
     }
+    // The installed face of the source family and style (a collection face
+    // is extracted), so an edit grows the subset in the source typeface.
+    if let Some(program) = crate::fonts::installed_font_named(base_font, false, false, true)
+        .map(|program| program.bytes)
+        .filter(|bytes| covers(bytes))
+    {
+        return Some(program);
+    }
     let family = ["bold", "italic", "oblique"]
         .iter()
-        .fold(normalize_font_key(base_font), |key, style| key.replace(style, ""));
+        .fold(normalize_font_key(base_font), |key, style| {
+            key.replace(style, "")
+        });
     let compatible = [
         "liberationsans",
         "liberationserif",
