@@ -70,6 +70,14 @@ pub const ADVANCED_EDITING_SCHEMA_VERSION: &str =
 
 pub const MAX_ADVANCED_EDITING_PARAGRAPH_CHARS: usize = 1_000_000;
 pub const MAX_ADVANCED_EDITING_BIDI_RUNS: usize = 4096;
+/// Upper bound on the number of *page source text tokens* the whole-page
+/// multi-run model may carry. This scales with how finely a producer split the
+/// page's text (OCR layers emit a Tj per word or per glyph), not with the size
+/// of the edit, so it is a much larger, memory-shaped cap than the per-edit
+/// [`MAX_ADVANCED_EDITING_BIDI_RUNS`]: a dense newspaper or scanned page easily
+/// exceeds 4096 tokens while the edit itself still resolves to a handful of
+/// bidi runs. Each carried span is a small record, so 64Ki stays well bounded.
+pub const MAX_ADVANCED_EDITING_PAGE_SOURCE_SPANS: usize = 1 << 16;
 pub const MAX_ADVANCED_EDITING_GLYPHS: usize = 1_000_000;
 pub const MAX_ADVANCED_EDITING_INK_POINTS: usize = 1_000_000;
 pub const MAX_ADVANCED_EDITING_INK_SEGMENTS: usize = 100_000;
@@ -1989,10 +1997,10 @@ pub(crate) fn analyze_multi_run_source(
         });
     }
     normalize_isomorphic_actual_text_spans(&mut source_spans);
-    if source_spans.len() > MAX_ADVANCED_EDITING_BIDI_RUNS {
-        return Err(WellfriendError::UnsupportedFeature(
-            "advanced_editing_closeout range span count exceeds 4096".to_string(),
-        ));
+    if source_spans.len() > MAX_ADVANCED_EDITING_PAGE_SOURCE_SPANS {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "advanced_editing_closeout range span count exceeds {MAX_ADVANCED_EDITING_PAGE_SOURCE_SPANS}"
+        )));
     }
     assign_source_paint_slots(reader, &page.contents, &mut source_spans)?;
     let analysis = analyze_advanced_text_reflow(
@@ -2190,10 +2198,10 @@ pub fn propose_generated_paint_partitions(
             "paint partition proposal selection has no provenance-bearing source spans".into(),
         ));
     }
-    if slots.len() > MAX_ADVANCED_EDITING_BIDI_RUNS {
-        return Err(WellfriendError::ResourceLimit(
-            "paint partition proposal exceeds 4096 source text objects".into(),
-        ));
+    if slots.len() > MAX_ADVANCED_EDITING_PAGE_SOURCE_SPANS {
+        return Err(WellfriendError::ResourceLimit(format!(
+            "paint partition proposal exceeds {MAX_ADVANCED_EDITING_PAGE_SOURCE_SPANS} source text objects"
+        )));
     }
 
     let grapheme_scalar_lengths = request
