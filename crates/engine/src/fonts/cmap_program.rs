@@ -181,6 +181,34 @@ impl Program {
                     if name.replace(value.clone()).is_some_and(|old| old != *value) {
                         return Err("conflicting CMapName".into());
                     }
+                    // A few producers write a CMapName whose value is an invalid
+                    // PostScript name containing spaces (e.g.
+                    // `/Adobe-SI-*Microsoft Sans Serif-Bold-3132-0`). The
+                    // tokenizer splits the trailing words into stray bare-word
+                    // operator tokens; skip through the closing `def` so they
+                    // are not read as unsupported CMap operators. Stop at any
+                    // structural (`begin*`/`end*`/`use*`) operator so a missing
+                    // `def` can never let this swallow real mapping records.
+                    at += 2;
+                    let mut guard = 0;
+                    while at < tokens.len() && guard < 64 {
+                        guard += 1;
+                        if let Token::Operator(op) = &tokens[at] {
+                            let op = op.as_str();
+                            if op == "def" {
+                                at += 1;
+                                break;
+                            }
+                            if op.starts_with("begin")
+                                || op.starts_with("end")
+                                || op.starts_with("use")
+                            {
+                                break;
+                            }
+                        }
+                        at += 1;
+                    }
+                    continue;
                 }
                 _ => {}
             }
@@ -704,6 +732,26 @@ mod tests {
         assert_eq!(
             program.unicode.get(&Code::new(0x2E, 1).unwrap()).map(String::as_str),
             Some(".")
+        );
+    }
+
+    #[test]
+    fn cmap_name_with_embedded_spaces_does_not_fail_as_unsupported_operator() {
+        // Real producer output: the CMapName is an invalid PostScript name
+        // containing spaces, whose trailing words tokenize as stray bare-word
+        // operators. They must be skipped, not read as CMap operators.
+        let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+            /CIDSystemInfo 3 dict dup begin /Registry (Adobe) def /Ordering (SI-*Microsoft Sans Serif-Bold-3132) def /Supplement 0 def end def\n\
+            /CMapName /Adobe-SI-*Microsoft Sans Serif-Bold-3132-0 def\n\
+            /CMapType 2 def\n\
+            1 begincodespacerange <0000> <FFFF> endcodespacerange\n\
+            2 beginbfchar <0000> <FFFD> <0001> <0030> endbfchar\n\
+            endcmap CMapName currentdict /CMap defineresource pop end end";
+        let program = Program::parse(cmap, Kind::Unicode, None, true)
+            .expect("CMapName with embedded spaces must not fail as an operator");
+        assert_eq!(
+            program.unicode.get(&Code::new(0x0001, 2).unwrap()).map(String::as_str),
+            Some("0")
         );
     }
 
