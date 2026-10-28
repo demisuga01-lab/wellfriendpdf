@@ -15916,6 +15916,30 @@ impl<'a> RenderState<'a> {
         };
 
         let Some(glyph_path) = glyph_path.as_deref() else {
+            // The source font produced no outline for this code point. Rather
+            // than silently drop the glyph (a blank gap / tofu), substitute a
+            // font that covers the Unicode scalar and draw it there, the way
+            // Acrobat/Foxit do. Compatibility policy only; exact rendering must
+            // not substitute. The PDF-specified advance is unchanged, so
+            // positioning of the rest of the run is unaffected.
+            if !color_fill_painted
+                && self.exactness_policy == ExactnessPolicy::Compatibility
+                && text_rendering_mode_paints(self.gs.text.rendering_mode)
+                && is_fallback_candidate_char(request.ch)
+            {
+                self.paint_fallback_glyph(
+                    request.ch,
+                    request.font_name,
+                    &offset_t,
+                    &rise_t,
+                    &tm_t,
+                    &ctm,
+                    th,
+                    glyph_pixel_size,
+                    fill_color,
+                    stroke_color,
+                );
+            }
             return Some(advance_width);
         };
 
@@ -16020,6 +16044,117 @@ impl<'a> RenderState<'a> {
             other => log::warn!("PageRenderer: unknown text render mode {}", other),
         }
         Some(advance_width)
+    }
+
+    /// Draw a glyph the source font could not provide by substituting a font
+    /// that covers the Unicode scalar (bundled face by name, then DejaVu Sans,
+    /// then an installed system face). Mirrors `render_glyph_with_cache`'s paint
+    /// arms but rescales to the substitute font's units-per-em. Returns whether
+    /// anything was painted.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_fallback_glyph(
+        &mut self,
+        ch: char,
+        font_name: &str,
+        offset_t: &Transform2D,
+        rise_t: &Transform2D,
+        tm_t: &Transform2D,
+        ctm: &Transform2D,
+        th: f64,
+        glyph_pixel_size: f64,
+        fill_color: PixelColor,
+        stroke_color: PixelColor,
+    ) -> bool {
+        let Some((bytes, upem)) = select_covering_fallback_font(ch, font_name) else {
+            return false;
+        };
+        let scale = font_size_scale(self.gs.text.font_size, upem);
+        let scale_x = scale * th;
+        if scale <= 0.0 || !scale_x.is_finite() {
+            return false;
+        }
+        let code = u16::try_from(ch as u32).unwrap_or(0);
+        let (path, _advance) = crate::render::glyph_outline::extract_glyph_path_for_simple_var(
+            bytes,
+            code,
+            ch,
+            None,
+            &crate::fonts::VariationRequest::none(),
+        );
+        let Some(path) = path else {
+            return false;
+        };
+        if path.is_empty() {
+            return false;
+        }
+        let glyph_ctm = Transform2D::scale(scale_x, scale)
+            .concat(offset_t)
+            .concat(rise_t)
+            .concat(tm_t)
+            .concat(ctm);
+        let glyph_hinting = GlyphHinting::light(glyph_pixel_size);
+        match self.gs.text.rendering_mode {
+            0 | 4 => self.fill_fallback_glyph(&path, &glyph_ctm, fill_color, glyph_hinting),
+            1 | 5 => self.stroke_fallback_glyph(&path, &glyph_ctm, stroke_color),
+            2 | 6 => {
+                self.fill_fallback_glyph(&path, &glyph_ctm, fill_color, glyph_hinting);
+                self.stroke_fallback_glyph(&path, &glyph_ctm, stroke_color);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn fill_fallback_glyph(
+        &mut self,
+        path: &Path,
+        glyph_ctm: &Transform2D,
+        fill_color: PixelColor,
+        glyph_hinting: GlyphHinting,
+    ) {
+        if self.text_smoothing_disabled() {
+            let _ = PathPainter::fill_glyph_binary_cancellable(
+                &mut self.buf,
+                path,
+                glyph_ctm,
+                &self.viewport,
+                fill_color,
+                FillRule::NonZero,
+                glyph_hinting,
+                &self.cancel,
+            );
+        } else {
+            PathPainter::fill_glyph(
+                &mut self.buf,
+                path,
+                glyph_ctm,
+                &self.viewport,
+                fill_color,
+                FillRule::NonZero,
+                glyph_hinting,
+            );
+        }
+    }
+
+    fn stroke_fallback_glyph(
+        &mut self,
+        path: &Path,
+        glyph_ctm: &Transform2D,
+        stroke_color: PixelColor,
+    ) {
+        PathPainter::stroke_with_style_fast_cancellable(
+            &mut self.buf,
+            path,
+            glyph_ctm,
+            &self.viewport,
+            stroke_color,
+            self.gs.line_width,
+            &DashState::solid(),
+            &LineCap::Butt,
+            &LineJoin::Miter,
+            10.0,
+            &self.cancel,
+        );
     }
 
     fn cached_type1_program(
@@ -20961,6 +21096,58 @@ fn font_substitution_glyph_coverage(
         }
     }
     coverage
+}
+
+/// A code point worth substituting a covering font for. Control characters,
+/// DEL, the replacement character and whitespace are skipped — they are either
+/// invisible by design or legitimately have no outline.
+fn is_fallback_candidate_char(ch: char) -> bool {
+    let code = ch as u32;
+    if code < 0x20 || code == 0x7F || ch == '\u{FFFD}' {
+        return false;
+    }
+    !ch.is_whitespace()
+}
+
+/// Pick a font that covers `ch` to stand in for a source font that could not
+/// render it: a bundled face chosen from the source font's name, then DejaVu
+/// Sans (broad Unicode coverage), then an installed system face (CJK / Indic /
+/// Arabic, when present). Returns the program bytes and its units-per-em.
+fn select_covering_fallback_font(ch: char, font_name: &str) -> Option<(&'static [u8], f64)> {
+    if let Some(bytes) = crate::render::get_fallback_font(font_name) {
+        if let Some(upem) = font_covers_char_upem(bytes, ch) {
+            return Some((bytes, upem));
+        }
+    }
+    let dejavu = crate::render::font_rasterizer::fallback_fonts::DEJAVU_SANS;
+    if let Some(upem) = font_covers_char_upem(dejavu, ch) {
+        return Some((dejavu, upem));
+    }
+    if crate::fonts::installed::installed_fonts_enabled() {
+        let style = crate::fonts::installed::InstalledFontStyle {
+            family_hint: Some(font_name.to_string()),
+            ..Default::default()
+        };
+        if let Some(program) =
+            crate::fonts::installed::installed_font_covering(&ch.to_string(), &style)
+        {
+            if let Some(upem) = font_covers_char_upem(program.bytes, ch) {
+                return Some((program.bytes, upem));
+            }
+        }
+    }
+    None
+}
+
+/// Units-per-em of `bytes` iff it has a non-notdef glyph for `ch`.
+fn font_covers_char_upem(bytes: &[u8], ch: char) -> Option<f64> {
+    let face = ttf_parser::Face::parse(bytes, 0).ok()?;
+    let gid = face.glyph_index(ch)?;
+    if gid.0 == 0 {
+        return None;
+    }
+    let upem = f64::from(face.units_per_em());
+    (upem > 0.0 && upem.is_finite()).then_some(upem)
 }
 
 fn fallback_font_covers_glyph(
@@ -28019,6 +28206,32 @@ mod tests {
     use super::*;
     use crate::images::encoder::ImageEncoder;
     use crate::render::{flatten_path, Path, PathPainter, RenderColor, BLACK, BLUE, RED, WHITE};
+
+    #[test]
+    fn covering_fallback_picks_face_for_glyph_source_lacks() {
+        // U+2713 (CHECK MARK) is absent from the bundled Liberation faces but
+        // present in DejaVu Sans. A source font that cannot render it must fall
+        // back to a face that covers it rather than drop the glyph.
+        let picked = select_covering_fallback_font('\u{2713}', "Helvetica");
+        let (bytes, upem) = picked.expect("expected a covering fallback for U+2713");
+        assert!(upem > 0.0);
+        assert!(
+            font_covers_char_upem(bytes, '\u{2713}').is_some(),
+            "selected fallback must actually cover U+2713"
+        );
+        // A plain Latin glyph is covered by the first (name-based) bundled face.
+        assert!(select_covering_fallback_font('A', "Helvetica").is_some());
+    }
+
+    #[test]
+    fn fallback_candidate_excludes_control_and_whitespace() {
+        assert!(!is_fallback_candidate_char(' '));
+        assert!(!is_fallback_candidate_char('\n'));
+        assert!(!is_fallback_candidate_char('\u{FFFD}'));
+        assert!(!is_fallback_candidate_char('\u{7F}'));
+        assert!(is_fallback_candidate_char('A'));
+        assert!(is_fallback_candidate_char('\u{2713}'));
+    }
 
     include!("resource_scope_tests.rs");
     include!("default_color_render_tests.rs");
