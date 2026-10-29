@@ -4803,12 +4803,29 @@ fn edit_partitioned_generated_reflow(
                 "partitioned generated style spans do not cover their replacement segment".into(),
             ));
         }
+        // Style-aware re-break for a preserved-style partition whose supplied
+        // line overflows its own bounded region (the per-partition analogue of
+        // the single-object re-break). Segment-relative style spans and the
+        // partition's region keep the measurement local to this partition.
+        let rewrapped_partition_lines = if preserved_styles.is_some() {
+            partition
+                .final_lines
+                .as_deref()
+                .map(|base| {
+                    rewrap_preserved_style_lines(base, &style_spans, request.mode, font, &options)
+                })
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        let effective_final_lines = rewrapped_partition_lines
+            .as_deref()
+            .or(partition.final_lines.as_deref());
         let layout = if text.is_empty() {
             Vec::new()
         } else {
-            let analysis_text = partition
-                .final_lines
-                .as_ref()
+            let analysis_text = effective_final_lines
                 .map(|lines| {
                     lines
                         .iter()
@@ -4831,7 +4848,7 @@ fn edit_partitioned_generated_reflow(
             layout_generated_partition_with_context(
                 &request.replacement_text,
                 byte_range,
-                partition.final_lines.as_deref(),
+                effective_final_lines,
                 request.mode,
                 font,
                 &options,
@@ -20095,6 +20112,66 @@ mod tests {
             result.is_err(),
             "overflow with no vertical room must refuse, not clip or overrun"
         );
+    }
+
+    #[test]
+    fn mixed_style_partition_line_wider_than_region_rewraps() {
+        // The multi-text-object (paint-partition) analogue: one partition's
+        // supplied final line overflows that partition's own bounded region, and
+        // must re-break within the partition's region instead of refusing.
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g 10 150 Td (A) Tj ET 0 0 20 20 re f BT /F2 18 Tf 1 0 0 rg 60 150 Td (B) Tj ET",
+        );
+        let replacement = "alpha beta gamma delta epsilon zeta eta";
+        // 39 scalars: partition 0 (source object 0) takes "alpha ... zeta " [0,36],
+        // partition 1 (source object 1) takes "eta" [36,39].
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 2,
+            replacement_text: replacement.to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions {
+                region: [10.0, 20.0, 200.0, 170.0],
+                font_size: 10.0,
+                line_spacing: 1.4,
+                paint_partitions: vec![
+                    GeneratedPaintPartition {
+                        source_text_object: 0,
+                        replacement_scalar_range: [0, 36],
+                        // Narrow but tall: the long prefix overflows and must wrap.
+                        region: [10.0, 20.0, 95.0, 170.0],
+                        final_lines: Some(vec![ExplicitLayoutLine {
+                            logical_text: "alpha beta gamma delta epsilon zeta ".to_string(),
+                            visual_text: "alpha beta gamma delta epsilon zeta".to_string(),
+                            inserted_visual_hyphen: false,
+                            bidi: None,
+                        }]),
+                    },
+                    GeneratedPaintPartition {
+                        source_text_object: 1,
+                        replacement_scalar_range: [36, 39],
+                        region: [120.0, 120.0, 190.0, 160.0],
+                        final_lines: Some(vec![ExplicitLayoutLine {
+                            logical_text: "eta".to_string(),
+                            visual_text: "eta".to_string(),
+                            inserted_visual_hyphen: false,
+                            bidi: None,
+                        }]),
+                    },
+                ],
+                ..AdvancedTextEditOptions::default()
+            },
+            final_lines: None,
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &request, None)
+            .expect("overflowing partition line must re-break, not refuse");
+        assert_eq!(report.generated_paint_partitions.len(), 2);
+        let reopened = ContentEngine::open_bytes(output).expect("reopen");
+        let text = reopened.get_page_text(1).expect("text");
+        assert!(text.contains("alpha") && text.contains("eta"));
     }
 
     #[test]
