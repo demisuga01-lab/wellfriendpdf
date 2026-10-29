@@ -1913,6 +1913,12 @@ pub(crate) fn analyze_multi_run_source(
     // spanning several Tj/TJ operands does not duplicate its logical value.
     let mut emitted_actual_text = BTreeSet::<(u32, u16, usize, usize)>::new();
     let mut position_metrics = inline_text::Metrics::new(&resources, reader);
+    // A dense page reuses a handful of fonts across thousands of text tokens;
+    // resolving a font parses its ToUnicode CMap, so cache the resolver per font
+    // to avoid re-parsing the same CMap for every token (the dominant cost when
+    // editing large OCR pages).
+    let mut resolver_cache: std::collections::HashMap<String, FontResolver> =
+        std::collections::HashMap::new();
     for page_token in scan_page_text_string_tokens_with_metrics(
         reader,
         &page.contents,
@@ -1928,7 +1934,9 @@ pub(crate) fn analyze_multi_run_source(
         let Some(font) = resources.fonts.get(&token.font_name) else {
             continue;
         };
-        let resolver = FontResolver::new(font, reader);
+        let resolver = resolver_cache
+            .entry(token.font_name.clone())
+            .or_insert_with(|| FontResolver::new(font, reader));
         let decoded_text = resolver
             .try_decode_string(&token.decoded)
             .map_err(WellfriendError::UnsupportedFeature)?;
@@ -2604,6 +2612,11 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
             (Arc::clone(&object), Arc::clone(&decoded)),
         );
     }
+    // Cache one resolver per font across the whole-page token scan: resolving a
+    // font parses its ToUnicode CMap, which otherwise repeats for every one of a
+    // dense page's thousands of tokens (the dominant edit cost on large pages).
+    let mut resolver_cache: std::collections::HashMap<String, FontResolver> =
+        std::collections::HashMap::new();
     for page_token in scan_page_text_string_tokens_with_metrics(
         reader,
         &page.contents,
@@ -2636,7 +2649,9 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
         let Some(font) = resources.fonts.get(&token.font_name) else {
             continue;
         };
-        let resolver = FontResolver::new(font, reader);
+        let resolver = resolver_cache
+            .entry(token.font_name.clone())
+            .or_insert_with(|| FontResolver::new(font, reader));
         let decoded_text = resolver
             .try_decode_string(&token.decoded)
             .map_err(WellfriendError::UnsupportedFeature)?;
@@ -10026,6 +10041,13 @@ pub fn analyze_same_width_patch(
     let reader = document.reader();
     let mut candidates = Vec::new();
     let mut position_metrics = inline_text::Metrics::new(&resources, reader);
+    // Decoding each page token to match the source text resolves its font, which
+    // parses the font's ToUnicode CMap. A dense page reuses one font across
+    // thousands of tokens (and such a CMap can declare tens of thousands of
+    // entries), so cache the resolver per font to parse each CMap once instead
+    // of per token — the dominant cost of analysing an edit on a large OCR page.
+    let mut resolver_cache: std::collections::HashMap<String, FontResolver> =
+        std::collections::HashMap::new();
     for page_token in scan_page_text_string_tokens_with_metrics(
         reader,
         &page.contents,
@@ -10046,7 +10068,9 @@ pub fn analyze_same_width_patch(
         let Some(font_dict) = resources.fonts.get(&token.font_name) else {
             continue;
         };
-        let resolver = FontResolver::new(font_dict, reader);
+        let resolver = resolver_cache
+            .entry(token.font_name.clone())
+            .or_insert_with(|| FontResolver::new(font_dict, reader));
         if resolver
             .try_decode_string(&token.decoded)
             .map_err(WellfriendError::UnsupportedFeature)?
@@ -10061,7 +10085,7 @@ pub fn analyze_same_width_patch(
             &dict,
             &token,
             font_dict,
-            &resolver,
+            &*resolver,
             replacement_text,
             options,
             reader.is_encrypted(),
