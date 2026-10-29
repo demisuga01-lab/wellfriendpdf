@@ -960,6 +960,23 @@ impl ImagePainter {
             && channels != 4
             && paint_alpha >= 1.0
             && buf.can_write_opaque_with_binary_clip();
+        // Fast streaming path for the common un-swapped gray/RGB case:
+        // read each source row once and accumulate into a destination-
+        // column buffer (see paint_separable_area_average_streaming).
+        // Bit-identical to the per-pixel path below.
+        if !axes.swapped
+            && matches!(channels, 1 | 3)
+            && stride == image.width as usize * channels
+            && image.pixels.len() >= image.height as usize * stride
+            && u_taps.taps.len() == (x1 - x0 + 1).max(0) as usize
+            && v_taps.taps.len() == (y1 - y0 + 1).max(0) as usize
+            && std::env::var_os("WF_NO_STREAM_DOWNSCALE").is_none()
+        {
+            return Self::paint_separable_area_average_streaming(
+                buf, image, &u_taps, &v_taps, channels, stride,
+                (x0, x1, y0, y1), paint_alpha, opaque_unclipped, opaque_binary_clip,
+            );
+        }
         let mut rgb_run: Vec<u8> = Vec::new();
 
         for (row_index, py) in (y0..=y1).enumerate() {
@@ -1014,6 +1031,138 @@ impl ImagePainter {
                     } else {
                         1.0
                     } * paint_alpha;
+                    buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
+                }
+            }
+            if let Some(start) = run_start.take() {
+                buf.write_opaque_rgb_run_binary_clipped(start, py, &rgb_run);
+                rgb_run.clear();
+            }
+        }
+        true
+    }
+
+    /// Streaming form of [`Self::paint_separable_area_average`]'s Box/Box
+    /// averaging for the common un-swapped gray/RGB case. Each source row is
+    /// read once, in order, and accumulated into a destination-column buffer
+    /// (one bounds check per row, cache-sequential, vectorizable inner loop),
+    /// instead of re-gathering the full 2-D box per output pixel. The weights
+    /// are summed in the identical `ox * oy`, v-outer/u-inner order the
+    /// per-pixel path uses, so the rounded output is bit-for-bit the same.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_separable_area_average_streaming(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        u_taps: &AreaAxisTaps,
+        v_taps: &AreaAxisTaps,
+        channels: usize,
+        stride: usize,
+        (x0, x1, y0, y1): (i32, i32, i32, i32),
+        paint_alpha: f32,
+        opaque_unclipped: bool,
+        opaque_binary_clip: bool,
+    ) -> bool {
+        let pixels = image.pixels.as_slice();
+        let out_w = (x1 - x0 + 1).max(0) as usize;
+        let gray = channels == 1;
+        let src_row_len = image.width as usize * channels;
+        let mut accum = vec![0.0_f64; out_w * 3];
+        let mut norm = vec![0.0_f64; out_w];
+        let mut rgb_run: Vec<u8> = Vec::new();
+
+        for (row_index, py) in (y0..=y1).enumerate() {
+            let v_tap = &v_taps.taps[row_index];
+            let v_is_box = matches!(v_tap, AreaTap::Box { .. });
+            if let AreaTap::Box { first: vy, end: ve } = v_tap {
+                accum.fill(0.0);
+                norm.fill(0.0);
+                for &(source_y, oy) in &v_taps.weights[*vy..*ve] {
+                    let row_start = source_y * stride;
+                    let Some(row) = pixels.get(row_start..row_start + src_row_len) else {
+                        continue;
+                    };
+                    for (col, u_tap) in u_taps.taps.iter().enumerate() {
+                        if let AreaTap::Box { first: ux, end: ue } = u_tap {
+                            let base = col * 3;
+                            let mut nrm = norm[col];
+                            if gray {
+                                let mut acc0 = accum[base];
+                                for &(sx, ox) in &u_taps.weights[*ux..*ue] {
+                                    let weight = ox * oy;
+                                    nrm += weight;
+                                    acc0 += row[sx] as f64 * weight;
+                                }
+                                accum[base] = acc0;
+                            } else {
+                                let (mut acc0, mut acc1, mut acc2) =
+                                    (accum[base], accum[base + 1], accum[base + 2]);
+                                for &(sx, ox) in &u_taps.weights[*ux..*ue] {
+                                    let weight = ox * oy;
+                                    nrm += weight;
+                                    let px = &row[sx * 3..sx * 3 + 3];
+                                    acc0 += px[0] as f64 * weight;
+                                    acc1 += px[1] as f64 * weight;
+                                    acc2 += px[2] as f64 * weight;
+                                }
+                                accum[base] = acc0;
+                                accum[base + 1] = acc1;
+                                accum[base + 2] = acc2;
+                            }
+                            norm[col] = nrm;
+                        }
+                    }
+                }
+            }
+
+            let mut run_start: Option<i32> = None;
+            for (col, px) in (x0..=x1).enumerate() {
+                let u_tap = &u_taps.taps[col];
+                let sample: Option<[u8; 4]> =
+                    if matches!(u_tap, AreaTap::Outside) || matches!(v_tap, AreaTap::Outside) {
+                        None
+                    } else if matches!(u_tap, AreaTap::Box { .. }) && v_is_box {
+                        let total = norm[col];
+                        if total > 0.0 {
+                            let base = col * 3;
+                            if gray {
+                                let v = (accum[base] / total).round_byte();
+                                Some([v, v, v, 255])
+                            } else {
+                                Some([
+                                    (accum[base] / total).round_byte(),
+                                    (accum[base + 1] / total).round_byte(),
+                                    (accum[base + 2] / total).round_byte(),
+                                    255,
+                                ])
+                            }
+                        } else {
+                            Some(Self::nearest_sample(
+                                image,
+                                u_taps.coords[col],
+                                v_taps.coords[row_index],
+                            ))
+                        }
+                    } else {
+                        Some(Self::nearest_sample(
+                            image,
+                            u_taps.coords[col],
+                            v_taps.coords[row_index],
+                        ))
+                    };
+                let Some(sample) = sample else {
+                    if let Some(start) = run_start.take() {
+                        buf.write_opaque_rgb_run_binary_clipped(start, py, &rgb_run);
+                        rgb_run.clear();
+                    }
+                    continue;
+                };
+                if opaque_unclipped {
+                    buf.write_opaque_pixel_unclipped(px, py, [sample[0], sample[1], sample[2], 255]);
+                } else if opaque_binary_clip {
+                    run_start.get_or_insert(px);
+                    rgb_run.extend_from_slice(&sample[..3]);
+                } else {
+                    let coverage = paint_alpha;
                     buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
                 }
             }
