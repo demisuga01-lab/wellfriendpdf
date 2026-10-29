@@ -133,6 +133,11 @@ pub struct FontResolver {
     /// `/WMode` entry, or from a predefined CMap name's `-V`/`-H` suffix
     /// (`Identity-V` ⇒ vertical). See PDF 32000-1 §9.7.4.3.
     wmode: u8,
+    /// CID -> Unicode recovered from the embedded sfnt `cmap` for a composite
+    /// font lacking `/ToUnicode` (and any predefined-CMap Unicode). Populated
+    /// only in that case; the recovery MuPDF performs for Identity-encoded
+    /// subsets, without which such text extracts as U+FFFD.
+    cid_to_unicode: Option<std::collections::BTreeMap<u16, String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +198,20 @@ impl FontResolver {
         self.decode_code_bytes_with_source(code)
     }
 
+    /// Recover Unicode for a composite-font code from the embedded sfnt cmap
+    /// when the PDF /ToUnicode is missing or malformed. `code` is the CID
+    /// (equal to the character code for Identity-H). Returns None for simple
+    /// fonts, when no recovery map was built, or when the CID is not covered.
+    fn cid_unicode_fallback(&self, code: u32) -> Option<(String, FontDecodeSource)> {
+        if !self.font_type.is_cid() {
+            return None;
+        }
+        let map = self.cid_to_unicode.as_ref()?;
+        let cid = u16::try_from(code).ok()?;
+        map.get(&cid)
+            .map(|text| (text.clone(), FontDecodeSource::FontCMap))
+    }
+
     fn decode_code_bytes_with_source(&self, code: CharacterCode) -> (String, FontDecodeSource) {
         if let Some(text) = self
             .to_unicode
@@ -225,9 +244,21 @@ impl FontResolver {
                     .as_ref()
                     .is_some_and(|map| map.validate().is_err()))
         {
+            // The ToUnicode is unusable, but a composite font with an embedded
+            // sfnt program still has an authoritative Unicode source: its own
+            // cmap. Recovering CID -> Unicode from it (see
+            // cid::embedded_cid_unicode_map) turns an Identity-H subset with a
+            // broken producer CMap from a run of U+FFFD into real text, the way
+            // MuPDF does, without guessing a CID as Unicode.
+            if let Some(hit) = self.cid_unicode_fallback(code.value()) {
+                return hit;
+            }
             return ("\u{FFFD}".into(), FontDecodeSource::Unknown);
         }
         let code = code.value();
+        if let Some(hit) = self.cid_unicode_fallback(code) {
+            return hit;
+        }
 
         let glyph_name = self
             .encoding_table
@@ -436,6 +467,16 @@ impl FontResolver {
             }
         }
         let sfnt_cff_gids = super::cid::sfnt_cff_gid_map(descendant_font.as_ref(), reader);
+        let cid_to_unicode = if matches!(font_type, FontType::Type0)
+            && !unicode_is_predefined
+            && to_unicode
+                .as_ref()
+                .map_or(true, |map| map.validate().is_err())
+        {
+            super::cid::embedded_cid_unicode_map(descendant_font.as_ref(), reader)
+        } else {
+            None
+        };
         let first_char = font_dict
             .get_integer("FirstChar")
             .filter(|value| *value >= 0)
@@ -542,6 +583,7 @@ impl FontResolver {
             sfnt_cff_gids,
             code_space,
             unicode_encoding,
+            cid_to_unicode,
         }
     }
 

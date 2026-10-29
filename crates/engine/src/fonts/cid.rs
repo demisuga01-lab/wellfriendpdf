@@ -118,6 +118,116 @@ fn gid_from_map_bytes(cid: u16, bytes: &[u8]) -> Option<u16> {
     Some(u16::from_be_bytes([pair[0], pair[1]]))
 }
 
+/// Recover a CID -> Unicode map from the descendant font's embedded sfnt program
+/// for a composite (Type0) font that has no `/ToUnicode` and no predefined-CMap
+/// Unicode source. The embedded TrueType/OpenType `cmap` maps Unicode -> GID;
+/// inverting it and composing with CID -> GID (the `/CIDToGIDMap`, or the CFF
+/// charset for CIDFontType0) yields CID -> Unicode. This mirrors the recovery
+/// MuPDF performs for Identity-encoded subsets: without it, Identity-H text with
+/// no ToUnicode extracts as a run of U+FFFD. Built only on demand (when there is
+/// no ToUnicode), so it adds nothing to the common decode path.
+pub(crate) fn embedded_cid_unicode_map(
+    desc: Option<&PdfDictionary>,
+    reader: Option<&PdfReader>,
+) -> Option<std::collections::BTreeMap<u16, String>> {
+    use std::collections::BTreeMap;
+    let desc = desc?;
+    let resolve = |obj: &PdfObject| -> Option<PdfObject> {
+        match reader {
+            Some(r) => r.resolve(obj.clone()).ok(),
+            None => Some(obj.clone()),
+        }
+    };
+    let decode_any = |stream: &PdfObject| -> Option<Vec<u8>> {
+        let PdfObject::Stream { dict, raw } = stream else {
+            return None;
+        };
+        match reader {
+            Some(r) => decode_stream_lossless(stream, r).ok().map(|d| d.data),
+            None => crate::filters::decode_stream_from_dict(dict, raw).ok(),
+        }
+    };
+    let descriptor = resolve(desc.get("FontDescriptor")?)?;
+    let descriptor = descriptor.as_dict()?.clone();
+    let file = descriptor
+        .get("FontFile2")
+        .or_else(|| descriptor.get("FontFile3"))?;
+    let stream = resolve(file)?;
+    let bytes = decode_any(&stream)?;
+    if bytes.is_empty() || bytes.len() > 256 * 1024 * 1024 {
+        return None;
+    }
+    let face = ttf_parser::Face::parse(&bytes, 0).ok()?;
+    let cmap = face.tables().cmap?;
+    // Prefer a full-repertoire Unicode subtable, then BMP Unicode, then any.
+    let mut best: Option<(u8, ttf_parser::cmap::Subtable)> = None;
+    for sub in cmap.subtables {
+        if !sub.is_unicode() {
+            continue;
+        }
+        let rank = match (sub.platform_id, sub.encoding_id) {
+            (ttf_parser::PlatformId::Unicode, 6) => 3,
+            (ttf_parser::PlatformId::Windows, 10) => 3,
+            (ttf_parser::PlatformId::Windows, 1) => 2,
+            _ => 1,
+        };
+        if best.as_ref().map_or(true, |(r, _)| rank > *r) {
+            best = Some((rank, sub));
+        }
+    }
+    let sub = best?.1;
+    let mut gid_to_unicode: BTreeMap<u16, String> = BTreeMap::new();
+    sub.codepoints(|cp| {
+        if let Some(gid) = sub.glyph_index(cp) {
+            if let Some(ch) = char::from_u32(cp) {
+                if !ch.is_control() {
+                    gid_to_unicode.entry(gid.0).or_insert_with(|| ch.to_string());
+                }
+            }
+        }
+    });
+    if gid_to_unicode.is_empty() {
+        return None;
+    }
+    let mut out: BTreeMap<u16, String> = BTreeMap::new();
+    if desc.get_name("Subtype") == Some("CIDFontType0") {
+        // sfnt-wrapped CFF: the charset maps CID -> GID (vector index == CID).
+        match sfnt_cff_gid_map(Some(desc), reader) {
+            Ok(Some(cid_to_gid)) => {
+                for (cid, gid) in cid_to_gid.into_iter().enumerate() {
+                    if let (Ok(cid), Some(text)) = (u16::try_from(cid), gid_to_unicode.get(&gid)) {
+                        out.insert(cid, text.clone());
+                    }
+                }
+            }
+            _ => out = gid_to_unicode,
+        }
+    } else {
+        // CIDFontType2 (TrueType): /CIDToGIDMap, defaulting to Identity.
+        let cid_to_gid_stream = desc
+            .get("CIDToGIDMap")
+            .and_then(|o| resolve(o))
+            .filter(|o| matches!(o, PdfObject::Stream { .. }))
+            .and_then(|o| decode_any(&o));
+        match cid_to_gid_stream {
+            Some(data) => {
+                for (cid, pair) in data.chunks_exact(2).enumerate() {
+                    let gid = u16::from_be_bytes([pair[0], pair[1]]);
+                    if let (Ok(cid), Some(text)) = (u16::try_from(cid), gid_to_unicode.get(&gid)) {
+                        out.insert(cid, text.clone());
+                    }
+                }
+            }
+            None => out = gid_to_unicode, // Identity CIDToGIDMap: CID == GID.
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,4 +326,18 @@ mod tests {
 
         assert!(!cid_font_has_embedded_program(Some(&descendant), reader));
     }
+    #[test]
+    fn embedded_cid_unicode_recovers_from_sfnt_cmap() {
+        // The fixture's `cmap` maps U+0020->GID3, U+0041->GID1, U+0042->GID2,
+        // and its CFF charset maps CID42->GID1, CID7->GID2, CID1000->GID3.
+        // Composed, the recovered CID -> Unicode must read the glyphs back as
+        // real characters even though the font carries no /ToUnicode.
+        let bytes = crate::fonts::pdf_embedding_fixtures::font(true, 4);
+        let desc = cff_descriptor(bytes, "OpenType");
+        let map = embedded_cid_unicode_map(Some(&desc), None).expect("recovered map");
+        assert_eq!(map.get(&42).map(String::as_str), Some("A"));
+        assert_eq!(map.get(&7).map(String::as_str), Some("B"));
+        assert_eq!(map.get(&1000).map(String::as_str), Some(" "));
+    }
+
 }
