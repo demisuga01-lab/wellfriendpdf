@@ -2728,10 +2728,23 @@ pub fn line_break_text_sized(
         }),
     };
     let prepared_bidi = crate::fonts::shaper::ParagraphBidi::new(text, shape_options)?;
-    let font_bytes = get_fallback_font("Symbol").ok_or_else(|| {
+    let bundled = get_fallback_font("Symbol").ok_or_else(|| {
         WellfriendError::UnsupportedFeature("canonical shaping font missing".into())
     })?;
-    let digest = *CANONICAL_REFLOW_FONT_DIGEST.get_or_init(|| Sha256::digest(font_bytes).into());
+    // Select a shaping font that can actually draw this text: the bundled
+    // canonical font when it covers every cluster, else an installed embeddable
+    // face that does (CJK, Arabic, Indic, ... which the bundled font lacks).
+    // This mirrors the generated glyph-emission path, which selects with the
+    // same `generated_text_font`, so the line-breaking advances measured here
+    // match the font that ultimately paints the run. The common Latin case
+    // returns the bundled font unchanged, so nothing regresses and its digest
+    // stays cached.
+    let font_bytes = crate::fonts::installed::generated_text_font(text).unwrap_or(bundled);
+    let digest = if std::ptr::eq(font_bytes.as_ptr(), bundled.as_ptr()) {
+        *CANONICAL_REFLOW_FONT_DIGEST.get_or_init(|| Sha256::digest(bundled).into())
+    } else {
+        Sha256::digest(font_bytes).into()
+    };
     let font = PreparedReflowFont::new_with_digest(font_bytes, digest)?;
     let graphemes = text.graphemes(true).collect::<Vec<_>>();
     let mut break_records = uax14_break_records(text);
