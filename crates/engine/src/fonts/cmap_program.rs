@@ -262,6 +262,22 @@ impl Program {
                     at += 1;
                     continue;
                 }
+                // Some producers emit the CIDSystemInfo entry without its
+                // leading slash (`begincmap CIDSystemInfo << /Registry(Adobe)
+                // /Ordering(UCS) /Supplement 0 >> def`), so it tokenizes as a
+                // bare operator and never reaches the `/CIDSystemInfo` name
+                // handler above. Accept it on the same terms: read the
+                // character-collection dictionary and advance past the operator;
+                // the generic dictionary-literal and `def` handling consumes the
+                // value that follows.
+                "CIDSystemInfo" if dictionaries == cmap_depth => {
+                    let value = read_system(&tokens, at + 1)?;
+                    if system.replace(value.clone()).is_some_and(|old| old != value) {
+                        return Err("conflicting CMap CIDSystemInfo".into());
+                    }
+                    at += 1;
+                    continue;
+                }
                 _ => {}
             }
             let (range, space, missing, unicode_record, end) = match op.as_str() {
@@ -749,6 +765,28 @@ mod tests {
             endcmap CMapName currentdict /CMap defineresource pop end end";
         let program = Program::parse(cmap, Kind::Unicode, None, true)
             .expect("CMapName with embedded spaces must not fail as an operator");
+        assert_eq!(
+            program.unicode.get(&Code::new(0x0001, 2).unwrap()).map(String::as_str),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn bare_cid_system_info_operator_with_inline_dict_is_accepted() {
+        // Real producer output: the CIDSystemInfo entry is written without its
+        // leading slash and with an inline dictionary value
+        // (`begincmap CIDSystemInfo << ... >> def`), so it tokenizes as a bare
+        // operator rather than a name. It must be accepted on the same terms as
+        // `/CIDSystemInfo`, not rejected as an unsupported declarative operator.
+        let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+            CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+            /CMapName /Adobe-Identity-UCS def\n\
+            /CMapType 2 def\n\
+            1 begincodespacerange <0000> <FFFF> endcodespacerange\n\
+            2 beginbfchar <0000> <FFFD> <0001> <0030> endbfchar\n\
+            endcmap CMapName currentdict /CMap defineresource pop end end";
+        let program = Program::parse(cmap, Kind::Unicode, None, true)
+            .expect("bare CIDSystemInfo operator must be accepted");
         assert_eq!(
             program.unicode.get(&Code::new(0x0001, 2).unwrap()).map(String::as_str),
             Some("0")
