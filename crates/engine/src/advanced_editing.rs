@@ -3941,15 +3941,31 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
                     Some(&replacement_style_spans),
                 );
             }
-            let mut layout = layout_generated_explicit_lines(
+            // Style-aware re-break: if the supplied line structure would
+            // overflow the bounded region because the replacement's glyphs are
+            // wider than the source (a mixed-style line that no longer fits),
+            // wrap it onto more lines within the region's vertical capacity
+            // instead of refusing. Returns None when the lines already fit or no
+            // fitting wrap exists, leaving the exact lines and existing refusal
+            // untouched.
+            let rewrapped = rewrap_preserved_style_lines(
                 logical_lines,
+                &replacement_style_spans,
+                request.mode,
+                font,
+                &request.options,
+            )?;
+            let effective_lines: &[ExplicitLayoutLine] =
+                rewrapped.as_deref().unwrap_or(logical_lines);
+            let mut layout = layout_generated_explicit_lines(
+                effective_lines,
                 request.mode,
                 font,
                 &request.options,
                 None,
             )?;
             let mut line_byte_base = 0usize;
-            for (line, glyphs) in logical_lines.iter().zip(layout.iter_mut()) {
+            for (line, glyphs) in effective_lines.iter().zip(layout.iter_mut()) {
                 for glyph in glyphs {
                     glyph.logical_byte_start =
                         glyph.logical_byte_start.saturating_add(line_byte_base);
@@ -6141,6 +6157,177 @@ fn page_graphics_state_isolation_prefix(number: u32) -> IncrementalObject {
 
 fn isolated_appended_content(content: String) -> String {
     format!("Q\n{content}")
+}
+
+/// Measure the bounded-region width a byte range of `text` would need, as the
+/// larger of two constraints that both gate the emitted line:
+///   * the per-style painted width `serialize_generated_preserved_styles` sums
+///     (each glyph advanced at its own preserved font size, spacing and
+///     horizontal scale), and
+///   * the uniform width `layout_generated_explicit_lines` checks (raw advances
+///     at `options.font_size`).
+/// Returning the maximum means `measure <= region_width` holds exactly when both
+/// downstream checks pass, so the style-aware breaker never produces a line that
+/// a later stage would reject, and a line that already fits is never re-broken.
+fn measure_preserved_style_width(
+    text: &str,
+    range: std::ops::Range<usize>,
+    style_spans: &[PreservedStyleSpan],
+    mode: AdvancedTextMode,
+    font: &[u8],
+    options: &AdvancedTextEditOptions,
+) -> Result<f64> {
+    let visible = text
+        .get(range.clone())
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "preserved-style measurement range is outside the replacement text".into(),
+            )
+        })?
+        .trim_end_matches(crate::fonts::hard_break::is_hard_break);
+    if visible.is_empty() {
+        return Ok(0.0);
+    }
+    // Shape directly rather than through `layout_generated_explicit_lines`,
+    // whose own region-width guard would error on the deliberately over-wide
+    // candidate ranges a line breaker probes. Total advance is independent of
+    // bidi visual order, so a standalone line bidi gives the same width the
+    // serializer later sums from the paragraph-context shaping.
+    let shape_options = crate::fonts::ShapeOptions {
+        direction: Some(if mode == AdvancedTextMode::ParagraphReflowRtl {
+            crate::fonts::TextDirection::RightToLeft
+        } else {
+            crate::fonts::TextDirection::LeftToRight
+        }),
+    };
+    let bidi = crate::fonts::shaper::resolve_line_bidi(visible, 0..visible.len(), shape_options)?;
+    let shaped =
+        crate::fonts::TextShaper::shape_resolved(font, visible, &bidi, &Default::default())?;
+    let glyphs = generated_glyphs_from_shaped(visible, font, shaped)?;
+    let mut per_style_width = 0.0;
+    let mut raw_advance = 0.0;
+    for glyph in &glyphs {
+        let absolute = range.start + glyph.logical_byte_start;
+        let style = generated_style_for_offset(style_spans, absolute)?;
+        let horizontal_scale = style.horizontal_scaling / 100.0;
+        per_style_width += (glyph.advance.abs() / 1000.0 * style.font_size
+            + style.character_spacing
+            + if glyph.visual_unicode == " " {
+                style.word_spacing
+            } else {
+                0.0
+            })
+            * horizontal_scale;
+        raw_advance += glyph.advance.abs();
+    }
+    let uniform_width = raw_advance * options.font_size / 1000.0;
+    Ok(per_style_width.max(uniform_width))
+}
+
+/// Re-break a preserved-per-segment replacement whose supplied line structure
+/// would overflow its bounded region width, wrapping at valid Unicode line-break
+/// opportunities measured with each glyph's own preserved style. This is the
+/// mixed-style counterpart of ordinary word wrap: a replacement whose glyphs are
+/// wider than the source (even at the same character count) reflows onto more
+/// lines instead of being refused for overflowing a single bounded line.
+///
+/// Returns `Ok(None)` — leaving the caller's exact lines and its existing typed
+/// behaviour untouched — when every supplied line already fits (so no currently
+/// successful edit is ever disturbed), or when a fitting wrap is impossible
+/// because the region has no vertical room for another line or a single
+/// unbreakable cluster is itself wider than the region (the caller keeps its
+/// no-silent-clipping overflow refusal). Otherwise returns `Ok(Some(lines))`
+/// whose every line fits the region width. Vertical writing has its own
+/// serializer and is never re-broken here.
+fn rewrap_preserved_style_lines(
+    lines: &[ExplicitLayoutLine],
+    style_spans: &[PreservedStyleSpan],
+    mode: AdvancedTextMode,
+    font: &[u8],
+    options: &AdvancedTextEditOptions,
+) -> Result<Option<Vec<ExplicitLayoutLine>>> {
+    if mode == AdvancedTextMode::ParagraphReflowVertical || lines.is_empty() {
+        return Ok(None);
+    }
+    let target_width = options.region[2] - options.region[0];
+    if !target_width.is_finite() || target_width <= 0.0 {
+        return Ok(None);
+    }
+    // Reconstruct the complete logical text and each supplied line's byte span.
+    // The preserve-per-segment contract guarantees these lines concatenate to
+    // the full replacement text, so byte offsets map straight onto the shared
+    // style spans.
+    let mut text = String::new();
+    let mut line_spans = Vec::with_capacity(lines.len());
+    for line in lines {
+        let start = text.len();
+        text.push_str(&line.logical_text);
+        line_spans.push(start..text.len());
+    }
+    // Only intervene when a supplied line actually overflows. Measuring first
+    // means a layout that already fits is returned verbatim, so this never
+    // changes a currently successful edit — it only recovers one that would
+    // otherwise be refused.
+    let mut any_overflow = false;
+    for span in &line_spans {
+        if measure_preserved_style_width(&text, span.clone(), style_spans, mode, font, options)?
+            > target_width + EPSILON
+        {
+            any_overflow = true;
+            break;
+        }
+    }
+    if !any_overflow {
+        return Ok(None);
+    }
+    let capacity = horizontal_line_capacity(options)?;
+    if capacity <= lines.len() {
+        // No vertical room to add a line; keep the existing typed refusal.
+        return Ok(None);
+    }
+    let direction = if mode == AdvancedTextMode::ParagraphReflowRtl {
+        crate::fonts::TextDirection::RightToLeft
+    } else {
+        crate::fonts::TextDirection::LeftToRight
+    };
+    let prepared = crate::fonts::line_layout::PreparedParagraph::new(
+        &text,
+        crate::fonts::ShapeOptions {
+            direction: Some(direction),
+        },
+    )?;
+    let batch = prepared.break_lines_measured_prefix(0, target_width, capacity, |range| {
+        measure_preserved_style_width(&text, range, style_spans, mode, font, options)
+    })?;
+    // A blocked break (a single unbreakable cluster wider than the region) or a
+    // prefix that does not reach the end of the text (vertical capacity
+    // exhausted) cannot be emitted as a complete non-clipping layout, so defer
+    // to the caller's existing refusal rather than silently dropping content.
+    if batch.blocked.is_some() {
+        return Ok(None);
+    }
+    let covered = batch.lines.last().map(|line| line.bytes.end).unwrap_or(0);
+    if covered != text.len() {
+        return Ok(None);
+    }
+    let mut wrapped = Vec::with_capacity(batch.lines.len());
+    for measured in &batch.lines {
+        let logical = text
+            .get(measured.bytes.clone())
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(
+                    "style-aware wrap produced a line outside the replacement text".into(),
+                )
+            })?;
+        let visible = logical.trim_end_matches(crate::fonts::hard_break::is_hard_break);
+        wrapped.push(ExplicitLayoutLine {
+            logical_text: logical.to_string(),
+            visual_text: visible.to_string(),
+            bidi: None,
+            inserted_visual_hyphen: false,
+        });
+    }
+    Ok(Some(wrapped))
 }
 
 fn layout_generated_logical_text(
@@ -19796,6 +19983,118 @@ mod tests {
         assert!(content.contains("/F1 10 Tf"));
         assert!(content.contains("/F2 18 Tf"));
         assert!(content.contains("1 0 0 rg"));
+    }
+
+    /// Count the distinct baseline y-positions the generated preserved-style
+    /// serializer painted, i.e. how many lines the replacement occupies.
+    fn generated_line_count(output: Vec<u8>) -> usize {
+        let reopened = ContentEngine::open_bytes(output).expect("reopen");
+        let page = reopened.document().get_page(1).expect("page");
+        let (number, generation) = *page.contents.last().expect("generated content");
+        let object = reopened
+            .document()
+            .reader()
+            .get_object(number, generation)
+            .expect("content object");
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reopened.document().reader(),
+            &DecodeLimits::default(),
+        )
+        .expect("decode");
+        let content = String::from_utf8(decoded.data).expect("content utf8");
+        content
+            .lines()
+            .filter_map(|line| {
+                let tokens: Vec<&str> = line.split_whitespace().collect();
+                // "1 0 0 1 <x> <y> Tm <CID> Tj"
+                (tokens.get(6) == Some(&"Tm")).then(|| tokens[5].to_string())
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+
+    #[test]
+    fn mixed_style_line_wider_than_region_rewraps_instead_of_refusing() {
+        // A mixed-style source line (two sizes) whose replacement is wider than
+        // the bounded region width. The supplied final line pins it to one line,
+        // which previously failed with "generated mixed-style line exceeds its
+        // bounded region". With a style-aware re-break and vertical room, it now
+        // wraps onto more lines, each measured with its own preserved style.
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g 10 150 Td (ONE) Tj /F2 18 Tf 1 0 0 rg (TWO) Tj ET\n",
+        );
+        let replacement = "alpha beta gamma delta epsilon zeta eta theta";
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 6,
+            replacement_text: replacement.to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions {
+                // Narrow width (forces overflow) but tall (room to wrap).
+                region: [10.0, 20.0, 120.0, 175.0],
+                font_size: 12.0,
+                line_spacing: 1.4,
+                ..AdvancedTextEditOptions::default()
+            },
+            final_lines: Some(vec![ExplicitLayoutLine {
+                logical_text: replacement.to_string(),
+                visual_text: replacement.to_string(),
+                inserted_visual_hyphen: false,
+                bidi: None,
+            }]),
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &request, None)
+            .expect("mixed-style overflow must re-break instead of refusing");
+        assert!(report.replacement_extracts);
+        let reopened = ContentEngine::open_bytes(output.clone()).expect("reopen");
+        let text = reopened.get_page_text(1).expect("text");
+        assert!(text.contains("alpha") && text.contains("theta"));
+        assert!(
+            generated_line_count(output) >= 2,
+            "the wider replacement must occupy more than one line"
+        );
+    }
+
+    #[test]
+    fn mixed_style_overflow_without_vertical_room_still_refuses() {
+        // Same overflow, but the region is only one line tall: there is no room
+        // to wrap, so the engine must keep its no-silent-clipping refusal rather
+        // than overrun the region.
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g 10 150 Td (ONE) Tj /F2 18 Tf 1 0 0 rg (TWO) Tj ET\n",
+        );
+        let replacement = "alpha beta gamma delta epsilon zeta eta theta";
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 6,
+            replacement_text: replacement.to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions {
+                // Narrow and only tall enough for a single line.
+                region: [10.0, 150.0, 120.0, 170.0],
+                font_size: 12.0,
+                line_spacing: 1.4,
+                ..AdvancedTextEditOptions::default()
+            },
+            final_lines: Some(vec![ExplicitLayoutLine {
+                logical_text: replacement.to_string(),
+                visual_text: replacement.to_string(),
+                inserted_visual_hyphen: false,
+                bidi: None,
+            }]),
+        };
+        let result = edit_multi_run_text_range(&input, &request, None);
+        assert!(
+            result.is_err(),
+            "overflow with no vertical room must refuse, not clip or overrun"
+        );
     }
 
     #[test]
