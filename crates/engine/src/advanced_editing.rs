@@ -12029,6 +12029,37 @@ struct PreservedStyleSpan {
     style: PreservedTextStyle,
 }
 
+/// Decompose a text-showing CTM into its page-space axis scale factors
+/// `(sx, sy)` when the matrix is a clean axis-aligned, non-reflecting scale
+/// (translation is irrelevant here and ignored). Returns `None` for a rotated,
+/// sheared, reflected, or degenerate matrix, which cannot be reduced to a pair
+/// of scalars.
+///
+/// A preserved style is laid out and width-checked in page space (the bounded
+/// region comes from CTM-transformed glyph positions), but the token's font
+/// size and spacing are in unscaled text space. When the source text was shown
+/// under a scaling CTM — common in scanned or downscaled content, where a large
+/// `Tf` is paired with a ~0.2 uniform CTM scale to render an ~18pt line —
+/// folding that scale into the retained metrics puts them in the same page
+/// space as the region, so the generated replacement is sized and measured
+/// consistently instead of being refused as spuriously over-wide.
+fn ctm_axis_scale(m: &crate::content::state::Matrix) -> Option<(f64, f64)> {
+    let [a, b, c, d, _e, _f] = *m;
+    if !(a.is_finite() && b.is_finite() && c.is_finite() && d.is_finite()) {
+        return None;
+    }
+    // Only a clean axis-aligned, non-reflecting scale can be folded: a rotation
+    // or shear leaves measurable off-diagonal terms (a pure rotation has zero
+    // net shear yet still non-zero b/c), and a reflection flips an axis. Such a
+    // matrix keeps the raw text-space metrics, and the downstream bounded-region
+    // check then refuses rather than emitting a distorted line.
+    let tol = 1e-6 * (a.abs() + b.abs() + c.abs() + d.abs()).max(1.0);
+    if b.abs() > tol || c.abs() > tol || a <= 0.0 || d <= 0.0 {
+        return None;
+    }
+    Some((a, d))
+}
+
 fn preserved_style_from_token(token: &ContentStringToken) -> Result<PreservedTextStyle> {
     if !token.font_size.is_finite()
         || token.font_size <= 0.0
@@ -12056,13 +12087,21 @@ fn preserved_style_from_token(token: &ContentStringToken) -> Result<PreservedTex
                 .to_string(),
         ));
     }
+    // Fold any axis-aligned CTM scale in force when the string was shown into
+    // the retained metrics so the style is expressed in page space (see
+    // `ctm_axis_scale`). The vertical scale `sy` sizes the glyph run (font size,
+    // text rise) and the spacing advances; the horizontal/vertical ratio rides
+    // on the horizontal scaling so a non-uniform scale still reproduces the
+    // original horizontal extent. An identity CTM yields `(1.0, 1.0)`, leaving
+    // every metric untouched.
+    let (sx, sy) = ctm_axis_scale(&token.source_ctm).unwrap_or((1.0, 1.0));
     Ok(PreservedTextStyle {
         font_resource: token.font_name.clone(),
-        font_size: token.font_size,
-        character_spacing: token.character_spacing,
-        word_spacing: token.word_spacing,
-        horizontal_scaling: token.horizontal_scaling,
-        text_rise: token.text_rise,
+        font_size: token.font_size * sy,
+        character_spacing: token.character_spacing * sy,
+        word_spacing: token.word_spacing * sy,
+        horizontal_scaling: token.horizontal_scaling * sx / sy,
+        text_rise: token.text_rise * sy,
         text_render_mode: token.text_render_mode,
         fill_color_command: token.fill_color_command.clone(),
         stroke_color_command: token.stroke_color_command.clone(),
@@ -20073,6 +20112,107 @@ mod tests {
         assert!(
             generated_line_count(output) >= 2,
             "the wider replacement must occupy more than one line"
+        );
+    }
+
+    #[test]
+    fn ctm_axis_scale_folds_only_clean_axis_aligned_scale() {
+        use crate::content::state::IDENTITY_MATRIX;
+        // Identity and pure translation carry no scale, so nothing is folded.
+        assert_eq!(ctm_axis_scale(&IDENTITY_MATRIX), Some((1.0, 1.0)));
+        assert_eq!(
+            ctm_axis_scale(&[1.0, 0.0, 0.0, 1.0, 40.0, 700.0]),
+            Some((1.0, 1.0))
+        );
+        // Uniform and non-uniform axis-aligned scales decompose to their axes.
+        assert_eq!(
+            ctm_axis_scale(&[0.25, 0.0, 0.0, 0.25, 0.0, 0.0]),
+            Some((0.25, 0.25))
+        );
+        assert_eq!(
+            ctm_axis_scale(&[0.5, 0.0, 0.0, 0.25, 10.0, 10.0]),
+            Some((0.5, 0.25))
+        );
+        // A rotation, shear, reflection, or degenerate matrix cannot be reduced
+        // to a pair of axis scalars and keeps the raw metrics.
+        let rot = 30f64.to_radians();
+        assert_eq!(
+            ctm_axis_scale(&[rot.cos(), rot.sin(), -rot.sin(), rot.cos(), 0.0, 0.0]),
+            None
+        );
+        assert_eq!(ctm_axis_scale(&[1.0, 0.0, 0.4, 1.0, 0.0, 0.0]), None);
+        assert_eq!(ctm_axis_scale(&[1.0, 0.0, 0.0, -1.0, 0.0, 800.0]), None);
+        assert_eq!(ctm_axis_scale(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]), None);
+    }
+
+    #[test]
+    fn scaling_ctm_source_is_folded_into_page_space_metrics() {
+        // The mixed-style source is shown under a 0.25 uniform CTM scale, so the
+        // 40pt and 72pt Tf sizes render as 10pt and 18pt lines in page space.
+        // Mixed sizes take the generated preserve-per-segment route, which
+        // re-emits each style's own size and does NOT reinstate the source `cm`,
+        // so the retained per-style size must already be folded to page space.
+        // Before the fold it stayed 72pt and the per-style width came out ~4x
+        // too large, refusing the edit as over-wide and (if forced) painting a
+        // 4x-oversized run.
+        let input = advanced_editing_fixture_with_content(
+            false,
+            b"q 0.25 0 0 0.25 0 0 cm BT /F1 40 Tf 0 g 40 600 Td (ONE) Tj /F2 72 Tf 1 0 0 rg (TWO) Tj ET Q\n",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 6,
+            replacement_text: "summerDAY".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions {
+                // Page-space region: ample for the 10/18pt lines, far too narrow
+                // for the unscaled 40/72pt metrics (which would overflow).
+                region: [10.0, 100.0, 400.0, 170.0],
+                font_size: 18.0,
+                line_spacing: 1.4,
+                ..AdvancedTextEditOptions::default()
+            },
+            final_lines: Some(vec![ExplicitLayoutLine {
+                logical_text: "summerDAY".to_string(),
+                visual_text: "summerDAY".to_string(),
+                inserted_visual_hyphen: false,
+                bidi: None,
+            }]),
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &request, None)
+            .expect("a CTM-scaled source must fold to page space, not refuse as over-wide");
+        assert!(report.replacement_extracts);
+        let reopened = ContentEngine::open_bytes(output.clone()).expect("reopen");
+        assert!(reopened
+            .get_page_text(1)
+            .expect("text")
+            .contains("summerDAY"));
+        // The generated run re-emits each preserved style at its folded page
+        // size (18pt), never the raw unscaled 72pt.
+        let page = reopened.document().get_page(1).expect("page");
+        let (number, generation) = *page.contents.last().expect("generated content");
+        let object = reopened
+            .document()
+            .reader()
+            .get_object(number, generation)
+            .expect("content object");
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reopened.document().reader(),
+            &DecodeLimits::default(),
+        )
+        .expect("decode");
+        let content = String::from_utf8(decoded.data).expect("content utf8");
+        // The generated glyph run paints at the folded page size: the 72pt
+        // source style is re-emitted as 18pt (72 * 0.25). Without the CTM fold
+        // the serializer would paint it at the raw 72pt and this size would be
+        // absent. (A non-drawing trailing TJ may still set the raw source size
+        // to replay the exact writing-axis endpoint; that paints no glyphs.)
+        assert!(
+            content.contains("18 Tf"),
+            "the larger run must be painted at its folded 18pt size, not raw 72pt: {content}"
         );
     }
 
