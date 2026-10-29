@@ -8534,7 +8534,23 @@ fn reachable_font_names(
                         ));
                     }
                     let mut operands = Vec::new();
-                    for token in lex_content(&decoded.data)? {
+                    // A page `/Contents` array splits one logical content stream
+                    // into members, and a marked-content sequence may open in
+                    // one member and close in a later one, so an individual
+                    // member can be structurally unbalanced even though the
+                    // concatenation is well formed. Font discovery only needs
+                    // the `Tf` operands, so tolerate an unbalanced member rather
+                    // than aborting the whole edit; every `Tf` in the member is
+                    // still visited, so no referenced font is missed and nothing
+                    // is retired on incomplete information.
+                    let member_tokens = match lex_content(&decoded.data) {
+                        Ok(tokens) => tokens,
+                        Err(WellfriendError::MalformedPdf(_)) => {
+                            lex_content_tolerant(&decoded.data)?
+                        }
+                        Err(other) => return Err(other),
+                    };
+                    for token in member_tokens {
                         if let LexicalKind::Word(op) = &token.kind {
                             if op == "Tf" {
                                 if let Some(LexicalToken {
@@ -12542,6 +12558,22 @@ fn serialize_preserved_styled_runs(
 }
 
 pub(crate) fn lex_content(data: &[u8]) -> Result<Vec<LexicalToken>> {
+    lex_content_inner(data, false)
+}
+
+/// Like [`lex_content`], but does not enforce array/dictionary balance. A page
+/// `/Contents` array splits one logical content stream into members, and a
+/// marked-content or array sequence may open in one member and close in a
+/// later one, so a single member can be structurally unbalanced even though the
+/// concatenation is well formed. Callers that only need a flat operator/operand
+/// scan (font-name discovery) use this to tolerate such a member rather than
+/// reject it; container nesting is not validated and the token kinds are
+/// otherwise identical.
+pub(crate) fn lex_content_tolerant(data: &[u8]) -> Result<Vec<LexicalToken>> {
+    lex_content_inner(data, true)
+}
+
+fn lex_content_inner(data: &[u8], tolerant: bool) -> Result<Vec<LexicalToken>> {
     use crate::content::tokenizer::{ContentToken, ContentTokenizer};
 
     let mut tokens = Vec::new();
@@ -12569,7 +12601,7 @@ pub(crate) fn lex_content(data: &[u8]) -> Result<Vec<LexicalToken>> {
                 LexicalKind::ArrayStart
             }
             ContentToken::ArrayEnd => {
-                if containers.pop() != Some(false) {
+                if containers.pop() != Some(false) && !tolerant {
                     return Err(WellfriendError::MalformedPdf(
                         "unbalanced content array".into(),
                     ));
@@ -12581,14 +12613,14 @@ pub(crate) fn lex_content(data: &[u8]) -> Result<Vec<LexicalToken>> {
                 LexicalKind::DictionaryStart
             }
             ContentToken::DictEnd => {
-                if containers.pop() != Some(true) {
+                if containers.pop() != Some(true) && !tolerant {
                     return Err(WellfriendError::MalformedPdf(
                         "unbalanced content dictionary".into(),
                     ));
                 }
                 LexicalKind::DictionaryEnd
             }
-            ContentToken::Operator(operator) if !containers.is_empty() => {
+            ContentToken::Operator(operator) if !containers.is_empty() && !tolerant => {
                 if operator != "R" {
                     return Err(WellfriendError::MalformedPdf(
                         "executable operator inside a content object".into(),
@@ -12614,7 +12646,7 @@ pub(crate) fn lex_content(data: &[u8]) -> Result<Vec<LexicalToken>> {
             kind,
         });
     }
-    if !containers.is_empty() {
+    if !containers.is_empty() && !tolerant {
         return Err(WellfriendError::MalformedPdf(
             "unterminated content object".into(),
         ));
@@ -17734,6 +17766,24 @@ mod tests {
         let tokens =
             lex_content(b"/Span << /Value /ActualText /Nested << /ActualText (NO) >> >>").unwrap();
         assert!(marked_property(&tokens, "ActualText").unwrap().is_none());
+    }
+
+    #[test]
+    fn lex_content_tolerant_scans_an_unbalanced_contents_fragment() {
+        // A `/Contents` array member can open a marked-content dict that closes
+        // in a later member, leaving the member alone structurally unbalanced.
+        // Strict lexing rejects it; the tolerant scan still yields the Tf font
+        // operand so font-reachability discovery stays complete.
+        let fragment = b"BT /F3 12 Tf (hi) Tj ET\nEMC\n/P << ";
+        assert!(lex_content(fragment).is_err());
+        let tokens = lex_content_tolerant(fragment)
+            .expect("tolerant lex must accept an unbalanced content member");
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(&t.kind, LexicalKind::Word(op) if op == "Tf")));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(&t.kind, LexicalKind::Name(n) if n == "F3")));
     }
 
     #[test]
