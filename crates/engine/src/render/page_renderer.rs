@@ -21509,9 +21509,26 @@ fn native_reduction_target_from_plan(decode_plan: &ImageDecodePlan) -> Option<(u
         // image and is never smaller than requested, so the drawn size is
         // enough. Asking for more forfeits the reduction on typical 300-400
         // dpi scans viewed at screen resolution (and SSIM rose on them).
+        // The JPEG supersampling floor (decode at this multiple of the drawn
+        // size so the box filter still averages >= this many source px/axis).
+        // Tunable for A/B measurement via WF_JPEG_REDUCTION_FLOOR; defaults to
+        // the quality-validated 2x. A lower floor lets a power-of-2 JPEG level
+        // fire on moderate source/target ratios (fewer px to decode + resample).
+        let jpeg_floor = std::env::var("WF_JPEG_REDUCTION_FLOOR")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 1.0 && *v <= 4.0)
+            .unwrap_or(2.0);
         let scale = |length: u32| match decode_plan.capability_report.codec {
             ImageDecodeCodec::Jpx => length,
-            _ => length.saturating_mul(2),
+            _ => {
+                let scaled = (f64::from(length) * jpeg_floor).round();
+                if scaled >= f64::from(u32::MAX) {
+                    u32::MAX
+                } else {
+                    (scaled as u32).max(length)
+                }
+            }
         };
         Some((scale(target_width), scale(target_height)))
     }
