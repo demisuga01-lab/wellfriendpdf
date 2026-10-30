@@ -127,6 +127,20 @@ fn extract_text_structured_runs() {
 }
 
 #[test]
+fn extract_text_raw_opt_out_runs() {
+    // Layout-aware ordering is the default; --raw restores content-stream order.
+    let out = run(&[
+        "extract-text",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "-p",
+        "3",
+        "--raw",
+    ]);
+    assert_ok(&out, "extract-text --raw");
+    assert!(!out.stdout.is_empty(), "raw extraction produced no text");
+}
+
+#[test]
 fn extract_text_region_and_profile_runs() {
     let out = run(&[
         "extract-text",

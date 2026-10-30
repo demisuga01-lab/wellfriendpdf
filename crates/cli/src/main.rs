@@ -992,11 +992,18 @@ struct ExtractTextArgs {
     /// Include page numbers in output
     #[arg(long)]
     page_numbers: bool,
-    /// Layout-aware extraction: recover reading order across columns/blocks via
-    /// geometric XY-cut segmentation (correct multi-column order, unlike a plain
-    /// top-to-bottom dump). Additive; the default extraction is unchanged.
+    /// Layout-aware extraction is now the DEFAULT: reading order is recovered
+    /// across columns/blocks via geometric XY-cut segmentation. This flag is
+    /// kept for backward compatibility and additionally unlocks the structured
+    /// `--format json`/`model-json` block-tree output. Pass `--raw` to opt out
+    /// and get the plain content-stream order instead.
     #[arg(long)]
     structured: bool,
+    /// Opt out of the default layout-aware ordering and emit text in raw
+    /// content-stream order (the pre-XY-cut behavior, honoring `--profile`).
+    /// Faster on simple single-column pages; may interleave multi-column text.
+    #[arg(long, conflicts_with_all = ["structured", "semantic"])]
+    raw: bool,
     /// Semantic extraction: use tagged-PDF structure when present, falling back
     /// to geometric layout analysis when absent.
     #[arg(long)]
@@ -4571,6 +4578,16 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     // of page buffers in flight. Each chunk preserves input order, and chunks
     // are appended sequentially, so the output stays byte-identical to serial
     // extraction.
+    // Layout-aware reading order is the default; `--raw` restores raw
+    // content-stream order (honoring --profile). Region extraction is
+    // layout-based in both modes.
+    let extract_page = |page_num: usize| -> wellfriendpdf_engine::Result<String> {
+        match region {
+            Some(region) => engine.extract_text_in_region(page_num, region),
+            None if args.raw => engine.get_page_text_with_profile(page_num, profile),
+            None => engine.get_page_text_reading_order(page_num),
+        }
+    };
     let parallel_window = wellfriendpdf_engine::bounded_text_parallel_window(page_nums.len());
     let page_texts: Vec<wellfriendpdf_engine::Result<String>> = if parallel_window >= 4 {
         let mut out = Vec::with_capacity(page_nums.len());
@@ -4578,22 +4595,13 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
             out.extend(
                 chunk
                     .par_iter()
-                    .map(|&page_num| match region {
-                        Some(region) => engine.extract_text_in_region(page_num, region),
-                        None => engine.get_page_text_with_profile(page_num, profile),
-                    })
+                    .map(|&page_num| extract_page(page_num))
                     .collect::<Vec<_>>(),
             );
         }
         out
     } else {
-        page_nums
-            .iter()
-            .map(|&page_num| match region {
-                Some(region) => engine.extract_text_in_region(page_num, region),
-                None => engine.get_page_text_with_profile(page_num, profile),
-            })
-            .collect()
+        page_nums.iter().map(|&page_num| extract_page(page_num)).collect()
     };
 
     let mut output_text = String::new();

@@ -2791,6 +2791,21 @@ impl ContentEngine {
         Ok(self.analyze_page_layout(page_number)?.text())
     }
 
+    /// Default page text for `extract-text`: always recover multi-column
+    /// reading order via XY-cut layout analysis, falling back to raw
+    /// content-stream order only when structured analysis yields nothing
+    /// (image-only/scanned pages) or errors. This makes layout-aware ordering
+    /// the default without ever returning *less* text than the raw path, so it
+    /// is safe to use unconditionally. Internal callers (search, redaction) keep
+    /// using [`get_page_text`](Self::get_page_text), whose conservative
+    /// auto-upgrade is unchanged.
+    pub fn get_page_text_reading_order(&self, page_number: usize) -> Result<String> {
+        match self.get_page_text_structured(page_number) {
+            Ok(structured) if !structured.trim().is_empty() => Ok(structured),
+            _ => self.get_page_text(page_number),
+        }
+    }
+
     /// Extract text constrained to a page region in PDF user-space points.
     ///
     /// A line is included when its center lies inside the region or at least
