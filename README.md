@@ -57,13 +57,23 @@ memory between the two.
 
 ### Text extraction
 
-Extracted text compared to MuPDF (median similarity over the 70 documents with a
-text layer); extraction runs at ~38 ms/page.
+Extraction is **layout-aware by default**: reading order is recovered across
+columns and blocks with geometric (XY-cut) segmentation, so multi-column
+newspapers and journals come out in the right order instead of interleaved. Pass
+`--raw` for plain content-stream order.
 
-| Pair | SSIM |
-|---|---|
-| Wellfriend vs MuPDF | **0.886** |
-| PDFium vs MuPDF | 0.962 |
+Extracted text compared to MuPDF over the full corpus — the 221 of 500 documents
+that carry a text layer (the rest are image-only scans):
+
+| Metric vs MuPDF | Median | Mean |
+|---|---|---|
+| Content accuracy (word overlap, F1) | **1.000** | **0.948** |
+| Reading-order similarity | **0.973** | 0.809 |
+
+71% of those documents match MuPDF's content at ≥0.99, and 89% at ≥0.90. The mean
+is pulled down by a small tail of 19th-century non-Latin scans whose embedded
+fonts carry no reliable Unicode mapping — a glyph-decoding limit, not a
+reading-order one.
 
 ### Parsing, tables, and conversions
 
