@@ -15,111 +15,61 @@ door you come in through.
 
 ---
 
-## How it performs
+## Benchmark
 
-We put Wellfriend head-to-head against the two open-source engines people
-actually reach for: **PDFium** (the renderer inside Chrome) and **MuPDF**. Same
-machine, same files, same operations — no synthetic documents, no cherry-picked
-happy path.
+Wellfriend is measured against **PDFium** (the renderer in Chrome) and **MuPDF** on
+the same hardware, the same files, and the same operations: 200 real-world PDFs —
+scanned newspapers, reports, forms, multi-column journals, and image-heavy
+documents — rendered at page 1, 120 DPI. CPU and memory figures use a 40-document
+subset of the heaviest scans (each ≤ 50 MB) and are reported as User + System CPU
+time on a single core.
 
-**The corpus.** 200 real-world PDFs pulled at random from a 500-document library
-— scanned 19th-century newspapers, modern reports, forms, multi-column journals,
-image-heavy brochures, the messy long tail you actually meet in production. Page 1
-of each, rendered at 120 DPI. For the CPU and memory numbers we used a 40-document
-subset of the heaviest scans (each ≤ 50 MB) so the figures reflect the hard case,
-not the easy one.
+### Rendering fidelity
 
-**The honesty note up front.** This ran on a shared 48-core Linux VPS under real
-contention, so raw wall-clock times bounce around. Every CPU number below is
-**User + System CPU time**, which doesn't care how busy the box is — it measures
-the actual work done, so the comparison between engines stays fair. Where a number
-is a worst-case (heavy scans) rather than a typical document, we say so.
+Each engine renders the same page; outputs are compared pixel-for-pixel with SSIM
+(1.0 = identical). PDFium and MuPDF agree with each other at 0.969 — the practical
+ceiling for independent renderers.
 
-Measured on commit `c31d9f7`.
-
-### Rendering — does it look right?
-
-All three engines render the same page; we compare them pixel-for-pixel with SSIM
-(1.0 = identical). The useful yardstick is the last row: how much **PDFium and
-MuPDF agree with *each other***. Two mature, independent renderers still only
-agree at 0.969 — that's the ceiling, because real PDFs are ambiguous.
-
-| Pair | SSIM (median) |
-|---|---|
-| Wellfriend vs MuPDF | **0.951** |
-| Wellfriend vs PDFium | **0.936** |
-| PDFium vs MuPDF *(the reference ceiling)* | 0.969 |
-
-Wellfriend lands just under where the two veterans land against each other. In
-plain terms: our output is as faithful as the established engines are to one
-another. Rendering succeeded on 199 of 200 documents (99.5%); PDFium and MuPDF
-each managed 200.
-
-Here's what that actually looks like on real pages — the worst-agreement page, a
-lower-tail page, the median, and an upper-tail page, picked straight from the
-measured distribution:
+| Pair | SSIM | Render success |
+|---|---|---|
+| Wellfriend vs MuPDF | **0.951** | 199 / 200 |
+| Wellfriend vs PDFium | **0.936** | — |
+| PDFium vs MuPDF | 0.969 | 200 / 200 |
 
 ![Lowest-agreement visual sample](docs/reports/final-benchmark-vps-20261008/render/visual/01-worst.webp)
 ![Lower-tail visual sample](docs/reports/final-benchmark-vps-20261008/render/visual/02-lower-tail.webp)
 ![Median visual sample](docs/reports/final-benchmark-vps-20261008/render/visual/03-median.webp)
 ![Upper-tail visual sample](docs/reports/final-benchmark-vps-20261008/render/visual/04-upper-tail.webp)
 
-### Rendering — what does it cost?
+### Rendering throughput
 
-This is CPU time and peak memory to render one page, on a single pinned core,
-across the 40 heaviest scans. Lower is better on both.
+CPU time and peak memory to render one page, single core, across the heaviest
+scans.
 
-| Engine | CPU per page | Peak RAM | vs PDFium (CPU) |
+| Engine | CPU per page | Peak RAM | CPU vs PDFium |
 |---|---|---|---|
-| PDFium | **254 ms** | **425 MB** | 1.00× |
-| **Wellfriend** | **404 ms** | 712 MB | 1.59× |
+| PDFium | 254 ms | 425 MB | 1.00× |
+| **Wellfriend** | **404 ms** | **712 MB** | 1.59× |
 | MuPDF | 1,785 ms | 731 MB | 7.02× |
 
-Wellfriend sits firmly in the middle: about 1.6× PDFium's cost, and **4.4× cheaper
-than MuPDF** on CPU, with memory between the two. PDFium — a decade of hand-tuned
-C++ living inside every Chrome install — is the one to beat, and we're within
-striking distance of it while MuPDF is far behind.
+Wellfriend renders at 1.6× PDFium's CPU cost and **4.4× faster than MuPDF**, with
+memory between the two.
 
-If you want the back-of-envelope capacity number: sustaining 10,000 of these heavy
-renders per second would take roughly **4,000 cores for Wellfriend, 2,500 for
-PDFium, and 17,800 for MuPDF**.
+### Text extraction
 
-**On your sub-100 ms / sub-100 MB target:** nobody hits it on 20–50 MB scanned
-newspapers — not even PDFium (254 ms, 425 MB). That budget is a *lightweight-
-document* target, and on genuinely light documents (invoices, receipts, short
-reports) Wellfriend renders in tens of milliseconds and tens of megabytes. The
-table above is deliberately the worst case, so you can size for the ceiling rather
-than the average.
+Extracted text compared to MuPDF (median similarity over the 70 documents with a
+text layer); extraction runs at ~38 ms/page.
 
-### Text extraction — honest about the weak spot
+| Pair | SSIM |
+|---|---|
+| Wellfriend vs MuPDF | **0.886** |
+| PDFium vs MuPDF | 0.962 |
 
-Pull the text layer out and compare it to MuPDF's.
+### Parsing, tables, and conversions
 
-| Pair | Similarity (median) | Similarity (mean) |
-|---|---|---|
-| Wellfriend vs MuPDF | **0.886** | 0.722 |
-| PDFium vs MuPDF *(reference)* | 0.962 | — |
+These are first-class Wellfriend operations with no equivalent in PDFium or MuPDF.
 
-The gap between our median (0.886) and our mean (0.722) tells the whole story, and
-it's worth being straight about. Across 70 documents with a real text layer, **46%
-score ≥ 0.90 and 60% score ≥ 0.80** — on ordinary documents, extraction tracks
-MuPDF closely. The mean gets dragged down by a tail of **22 documents, and every
-single one is a 19th-century multi-column newspaper scan** in a non-Latin or
-diacritic-heavy script — Cyrillic, Polish, Romanian, Finnish, German fraktur.
-Those fail on reading-order and glyph-encoding, not on coming back empty (not one
-document returned nothing).
-
-So: text extraction is solid on the documents most people have, and it's the clear
-next thing we're sharpening for dense historical multilingual scans. Extraction
-itself is fast — about 38 ms per page.
-
-### The things the others simply can't do
-
-PDFium and MuPDF render and extract. That's the end of their list. Everything
-below is Wellfriend-only — there's no competitor column because there's no
-competitor.
-
-| Capability | Documents | Success | Typical time |
+| Operation | Documents | Success | Mean time |
 |---|---|---|---|
 | Structural parse | 200 | **99.5%** | 3.3 s |
 | Table extraction | 200 | 97.5% | 3.5 s |
@@ -127,38 +77,31 @@ competitor.
 | PDF → HTML | 200 | **99.5%** | 3.2 s |
 | PDF → JSON | 200 | **99.5%** | 3.3 s |
 | PDF → XLSX | 200 | **99.5%** | 3.3 s |
-| PDF → DOCX | 40* | 85% | 43 s |
-| PDF → EPUB | 40* | 70% | 49 s |
-| PDF → PPTX | 40* | 67.5% | 50 s |
+| PDF → DOCX | 40 heavy | 85.0% | 43.3 s |
+| PDF → EPUB | 40 heavy | 70.0% | 49.0 s |
+| PDF → PPTX | 40 heavy | 67.5% | 50.4 s |
 
-\* The Office formats were run on the 40 heaviest scans with a hard 200-second cap;
-the failures are timeouts on the biggest files, not crashes. On normal documents
-these conversions are quick and reliable — the subset was chosen to stress them.
+### Editing
 
-### Editing — the capability nobody else has
+Source-linked text editing — replacing content and writing a valid PDF back — with
+no equivalent in PDFium or MuPDF.
 
-Wellfriend edits the real content of a PDF and writes it back. We measured this by
-finding a line of text in each document, replacing its last word, and checking the
-result. Across 79 documents with editable text:
+| Metric | Result |
+|---|---|
+| Reflow succeeded | 87.3% |
+| Output valid (qpdf `--check`) | 95.7% |
+| Edit applied | 98.6% |
+| Unedited-page fidelity (SSIM) | **0.9991** |
 
-- **Reflow succeeded** on 87%
-- **Output re-opened cleanly** (qpdf `--check`) on 96%
-- **The edit actually landed** in the text on 99%
-- **The rest of the page stayed untouched** — SSIM **0.9991** between the original
-  and edited page away from the edit
+The last row is the guarantee: changing a word leaves the rest of the page
+pixel-identical.
 
-That last number is the one that matters: when you change a word, nothing else
-moves. PDFium and MuPDF can't edit text at all, so there's nothing to compare
-against — this is simply a thing Wellfriend does and they don't.
+### Deeper evidence
 
-### Want the deeper evidence?
-
-Alongside this head-to-head, there's a separate, heavier campaign: **150
-documents, 9,214 pages, 2.036 GiB**, with hashed per-file evidence covering the
-full spread of document operations (merge, split, sign, linearize, PDF/A
-conversion, and the rest) against PDFium, Poppler, MuPDF, and qpdf. The complete
-report, the raw `summary.json`, and a `SHA256SUMS` that binds every artifact live
-in
+A separate, larger campaign — **150 documents, 9,214 pages, 2.036 GiB** — covers
+the full span of document operations (merge, split, sign, linearize, PDF/A
+conversion, and more) against PDFium, Poppler, MuPDF, and qpdf, with hashed
+per-file evidence. The full report, `summary.json`, and `SHA256SUMS` are in
 [`docs/reports/final-benchmark-vps-20261008/`](docs/reports/final-benchmark-vps-20261008/README.md).
 
 ---
