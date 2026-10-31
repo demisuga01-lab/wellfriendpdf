@@ -411,8 +411,13 @@ pub(super) fn assignments(builder: &PdfBuilder) -> Result<Vec<Vec<usize>>> {
     Ok(pages)
 }
 
+/// Whether [`materialize`] would change the builder.
+pub(super) fn pending(builder: &PdfBuilder) -> bool {
+    !builder.sections.is_empty() && !builder.section_masters_materialized
+}
+
 pub(super) fn materialize(builder: &PdfBuilder) -> Result<PdfBuilder> {
-    if builder.sections.is_empty() || builder.section_masters_materialized {
+    if !pending(builder) {
         return Ok(builder.clone());
     }
     for section in &builder.sections {

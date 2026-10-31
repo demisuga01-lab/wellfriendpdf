@@ -5471,6 +5471,19 @@ impl Budget {
         }
         Ok(())
     }
+    /// Add a row prepared with its own budget, then check the table totals.
+    fn absorb(&mut self, other: &Budget) -> Result<()> {
+        self.cells = self.cells.saturating_add(other.cells);
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        self.lines = self.lines.saturating_add(other.lines);
+        if self.cells > MAX_CELLS || self.bytes > MAX_SOURCE_BYTES || self.lines > MAX_LINES {
+            return Err(WellfriendError::ResourceLimit(
+                "authored table source/cell/line budget".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn lines(&mut self, lines: usize) -> Result<()> {
         self.lines = self.lines.saturating_add(lines);
         if self.lines > MAX_LINES {
@@ -5640,6 +5653,43 @@ impl PreparedCaption {
         }
         Ok(())
     }
+}
+
+/// Tables at least this long lay their rows out in parallel.
+const PARALLEL_ROW_THRESHOLD: usize = 256;
+
+/// Lay out the body rows of a long table in parallel before pagination
+/// (QF-2381: a 20,000-row CSV spent most of its time shaping cells one after
+/// another). Layout reads only the document's fonts from the page, so a row
+/// prepares the same on every page; pagination stays sequential. Each row uses
+/// its own budget and the totals are checked as they are added.
+fn prepare_rows_in_parallel(
+    table: &TableBuilder,
+    page: &PdfPageBuilder,
+    budget: &mut Budget,
+) -> Result<Option<Vec<PreparedRow>>> {
+    use rayon::prelude::*;
+    if table.rows.len() < PARALLEL_ROW_THRESHOLD {
+        return Ok(None);
+    }
+    let cancel = crate::cancel::current_cancel_token();
+    let prepared = table
+        .rows
+        .par_iter()
+        .map(|source| {
+            cancel.scope(|| {
+                let mut own = Budget::default();
+                let row = PreparedRow::new(table, page, source, false, &mut own)?;
+                Ok((row, own))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut rows = Vec::with_capacity(prepared.len());
+    for (row, own) in prepared {
+        budget.absorb(&own)?;
+        rows.push(row);
+    }
+    Ok(Some(rows))
 }
 
 fn register_structure(
@@ -7364,6 +7414,8 @@ pub(super) fn append_flow(
         }
         return Ok(report);
     }
+    let mut prepared_rows =
+        prepare_rows_in_parallel(table, flow.current_page_ref(), &mut budget)?.map(Vec::into_iter);
     for (row_index, source) in table.rows.iter().enumerate() {
         if let Some(policy) = source
             .page_break_before
@@ -7372,7 +7424,12 @@ pub(super) fn append_flow(
             forced_row_page(flow, row_index, policy, &mut report)?;
             header_pending = header.is_some();
         }
-        let row = PreparedRow::new(table, flow.current_page_ref(), source, false, &mut budget)?;
+        let row = match prepared_rows.as_mut() {
+            Some(rows) => rows
+                .next()
+                .ok_or_else(|| fail("authored table row preparation lost a row"))?,
+            None => PreparedRow::new(table, flow.current_page_ref(), source, false, &mut budget)?,
+        };
         let continuation = row.continuations(capacity, table.row_split_policy)?;
         let mut starts = vec![0; row.cells.len()];
         loop {

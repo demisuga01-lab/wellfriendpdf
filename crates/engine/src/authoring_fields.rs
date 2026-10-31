@@ -840,14 +840,18 @@ fn add_link(page: &mut PdfPageBuilder, link: AuthoredLink) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn materialize(builder: &PdfBuilder) -> Result<PdfBuilder> {
-    if builder.fields_materialized
-        || builder.pages.iter().all(|page| {
+/// Whether [`materialize`] would change the builder.
+pub(super) fn pending(builder: &PdfBuilder) -> bool {
+    !builder.fields_materialized
+        && builder.pages.iter().any(|page| {
             page.commands
                 .iter()
-                .all(|command| !matches!(command, PageCommand::DeferredField(_)))
+                .any(|command| matches!(command, PageCommand::DeferredField(_)))
         })
-    {
+}
+
+pub(super) fn materialize(builder: &PdfBuilder) -> Result<PdfBuilder> {
+    if !pending(builder) {
         return Ok(builder.clone());
     }
     let (assignments, by_page) = page_sections(builder)?;

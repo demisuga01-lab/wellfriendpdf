@@ -484,6 +484,12 @@ fn signed_contextual_advances_are_measured_as_the_writer_emits_them() {
     )
     .unwrap();
     let content = String::from_utf8(content).unwrap();
-    assert!(content.contains("1 0 0 1 20 100 Tm"));
-    assert!(content.contains("1 0 0 1 10 100 Tm"));
+    let entries = &plan.embedded_plan(style.font).unwrap().entries;
+    let origins = crate::authoring::authored_glyph_origins(&content, 10.0, |cid| {
+        crate::authoring::round_pdf_num(entries[usize::from(cid) - 1].width)
+    });
+    let xs = origins.iter().map(|origin| origin.1).collect::<Vec<_>>();
+    assert_eq!(xs.len(), 2, "{content}");
+    assert!((xs[0] - 20.0).abs() < 1e-3 && (xs[1] - 10.0).abs() < 1e-3, "{content}");
+    assert!(origins.iter().all(|origin| (origin.2 - 100.0).abs() < 1e-3));
 }

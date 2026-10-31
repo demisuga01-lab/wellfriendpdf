@@ -107,7 +107,12 @@ impl<'a> PreparedFontMetrics<'a> {
         font_size: f64,
         signed: bool,
     ) -> Result<LineMetrics> {
-        measure_prepared_progression(&self.face, &self.outlines, run, font_size, signed)
+        let vertical = VerticalMetrics {
+            units_per_em: self.face.units_per_em(),
+            ascender: self.face.ascender(),
+            descender: self.face.descender(),
+        };
+        measure_prepared_progression(vertical, |glyph| self.bounds(glyph), run, font_size, signed)
     }
 }
 impl LineMetrics {
@@ -132,18 +137,79 @@ pub(crate) fn measure_signed_run(
     measure_run_progression(font, run, font_size, true)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct VerticalMetrics {
+    units_per_em: u16,
+    ascender: i16,
+    descender: i16,
+}
+
+/// Vertical metrics and glyph bounds per font program digest. Fallback layout
+/// measures every candidate line through [`measure_run_progression`], which
+/// otherwise parses the face and outlines every glyph again (QF-2381).
+struct MeasureMemo {
+    vertical: VerticalMetrics,
+    bounds: std::collections::HashMap<u16, Option<ttf_parser::Rect>>,
+}
+
+const MEASURE_MEMO_FONTS: usize = 16;
+thread_local! {
+    static MEASURE_MEMO: std::cell::RefCell<std::collections::HashMap<[u8; 32], MeasureMemo>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 fn measure_run_progression(
     font: &[u8],
     run: &super::ShapedRun,
     font_size: f64,
     signed: bool,
 ) -> Result<LineMetrics> {
-    PreparedFontMetrics::new(font)?.measure_progression(run, font_size, signed)
+    let digest = super::shaper::font_program_digest(font);
+    let mut memo = MEASURE_MEMO.with(|memos| memos.borrow_mut().remove(&digest));
+    let mut prepared = None;
+    if memo.is_none() {
+        let metrics = PreparedFontMetrics::new(font)?;
+        memo = Some(MeasureMemo {
+            vertical: VerticalMetrics {
+                units_per_em: metrics.units_per_em(),
+                ascender: metrics.ascender(),
+                descender: metrics.descender(),
+            },
+            bounds: std::collections::HashMap::new(),
+        });
+        prepared = Some(metrics);
+    }
+    let mut memo = memo.expect("measure memo");
+    let measured = measure_prepared_progression(
+        memo.vertical,
+        |glyph| {
+            if let Some(bounds) = memo.bounds.get(&glyph) {
+                return Ok(*bounds);
+            }
+            if prepared.is_none() {
+                prepared = Some(PreparedFontMetrics::new(font)?);
+            }
+            let bounds = prepared.as_ref().expect("prepared metrics").bounds(glyph)?;
+            memo.bounds.insert(glyph, bounds);
+            Ok(bounds)
+        },
+        run,
+        font_size,
+        signed,
+    );
+    MEASURE_MEMO.with(|memos| {
+        let mut memos = memos.borrow_mut();
+        if memos.len() >= MEASURE_MEMO_FONTS {
+            memos.clear();
+        }
+        memos.insert(digest, memo);
+    });
+    measured
 }
 
 fn measure_prepared_progression(
-    face: &ttf_parser::Face<'_>,
-    outlines: &super::sfnt_outline::PreparedOutlines,
+    vertical: VerticalMetrics,
+    mut bounds_of: impl FnMut(u16) -> Result<Option<ttf_parser::Rect>>,
     run: &super::ShapedRun,
     font_size: f64,
     signed: bool,
@@ -151,12 +217,12 @@ fn measure_prepared_progression(
     if !font_size.is_finite() || font_size <= 0.0 {
         return Err(WellfriendError::invalid_input("invalid measured font size"));
     }
-    let scale = font_size / f64::from(face.units_per_em()).max(1.0);
+    let scale = font_size / f64::from(vertical.units_per_em).max(1.0);
     let mut pen = 0.0f64;
     let mut left = 0.0f64;
     let mut right = 0.0f64;
-    let mut ascent = (f64::from(face.ascender()) * scale).max(0.0);
-    let mut descent = (-f64::from(face.descender()) * scale).max(0.0);
+    let mut ascent = (f64::from(vertical.ascender) * scale).max(0.0);
+    let mut descent = (-f64::from(vertical.descender) * scale).max(0.0);
     for (index, glyph) in run.glyphs.iter().enumerate() {
         if index % 1024 == 0 {
             crate::cancel::check_current_cancel("line glyph measurement")?;
@@ -169,7 +235,7 @@ fn measure_prepared_progression(
                 "invalid measured glyph position",
             ));
         }
-        if let Some(bounds) = outlines.bounds(face, ttf_parser::GlyphId(glyph.glyph_id))? {
+        if let Some(bounds) = bounds_of(glyph.glyph_id)? {
             let x = pen + glyph.offset_x * font_size / 1000.0;
             let y = glyph.offset_y * font_size / 1000.0;
             left = left.min(x + f64::from(bounds.x_min) * scale);

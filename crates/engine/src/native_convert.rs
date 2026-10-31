@@ -310,9 +310,10 @@ pub(crate) fn check_font_size(size: f64) -> Result<()> {
 }
 
 pub(crate) fn finish(
-    builder: PdfBuilder,
+    mut builder: PdfBuilder,
     mut report: NativeConversionReport,
 ) -> Result<NativeConversionOutput> {
+    builder.set_compress_content(true);
     report.pages = builder.pages().len();
     let pdf = builder.to_bytes()?;
     report.bytes = pdf.len();

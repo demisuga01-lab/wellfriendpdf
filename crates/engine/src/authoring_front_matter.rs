@@ -202,6 +202,7 @@ where
     let mut structures = front_structures;
     structures.append(&mut body_structures);
     flow.builder.structures = structures;
+    structure::reset_index(&mut flow.builder);
     flow.builder.custom_fonts = staged_custom_fonts;
     flow.builder.font_stacks = staged_font_stacks;
     flow.builder.images = staged_images;

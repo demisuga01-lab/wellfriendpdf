@@ -510,3 +510,38 @@ fn tagged_authoring_rejects_unowned_painting_commands() {
         .draw_rect(10.0, 10.0, 20.0, 20.0, &GraphicsStyle::fill(Color::black()));
     assert!(flow.builder.to_bytes().is_err());
 }
+
+#[test]
+fn structure_lookups_stay_linear_and_survive_a_rolled_back_registry() {
+    // QF-2381: 200,000 cells (20,000 rows x 10 columns) register in one pass;
+    // a scan per lookup would take minutes here.
+    let mut builder = PdfBuilder::new();
+    let table = register_table(&mut builder, None).unwrap();
+    let body = register_table_group(&mut builder, table, Role::TableBody).unwrap();
+    let started = std::time::Instant::now();
+    for _ in 0..20_000 {
+        let row = register(&mut builder, Role::TableRow, Some(body), None).unwrap();
+        for _ in 0..10 {
+            register_table_cell(&mut builder, Role::TableData, row, false).unwrap();
+        }
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+
+    // A rolled-back registry truncates the list and reuses ids; lookups and
+    // typed-owner uniqueness follow the list, not the stale index.
+    let kept = builder.structures.len();
+    let next = builder.next_structure_id;
+    let row = register(&mut builder, Role::TableRow, Some(body), None).unwrap();
+    let cell = register_table_cell(&mut builder, Role::TableData, row, false).unwrap();
+    set_typed_table_cell_owner(&mut builder, cell, "ledger", "net").unwrap();
+    builder.structures.truncate(kept);
+    builder.next_structure_id = next;
+    reset_index(&mut builder);
+    let paragraph = register(&mut builder, Role::Paragraph, None, None).unwrap();
+    assert_eq!(paragraph, row);
+    assert_eq!(role_of(&mut builder, paragraph), Some(Role::Paragraph));
+    let row = register(&mut builder, Role::TableRow, Some(body), None).unwrap();
+    let cell = register_table_cell(&mut builder, Role::TableData, row, false).unwrap();
+    set_typed_table_cell_owner(&mut builder, cell, "ledger", "net").unwrap();
+    assert!(register_span(&mut builder, paragraph).is_ok());
+}

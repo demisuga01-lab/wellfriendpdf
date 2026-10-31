@@ -1012,8 +1012,13 @@ pub(super) fn append_endnotes(
     Ok(report)
 }
 
+/// Whether [`materialize`] would change the builder.
+pub(super) fn pending(builder: &PdfBuilder) -> bool {
+    !builder.notes_materialized && builder.pages.iter().any(|page| !page.footnotes.is_empty())
+}
+
 pub(super) fn materialize(builder: &PdfBuilder) -> Result<PdfBuilder> {
-    if builder.notes_materialized || builder.pages.iter().all(|page| page.footnotes.is_empty()) {
+    if !pending(builder) {
         return Ok(builder.clone());
     }
     let mut result = builder.clone();

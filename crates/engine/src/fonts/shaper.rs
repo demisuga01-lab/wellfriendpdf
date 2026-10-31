@@ -5,7 +5,7 @@ use crate::error::{Result, WellfriendError};
 use rustybuzz::{Direction, UnicodeBuffer};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use unicode_bidi::{BidiInfo, Level};
 use unicode_script::{Script, UnicodeScript};
@@ -206,16 +206,44 @@ pub fn resolve_line_bidi(
 
 // Bounded thread-local LRU: no global rendering lock and no pointer/family-name
 // aliasing between font revisions. Keys hash actual font bytes, text, direction.
+/// Least-recently-used shaping results keyed by digest. Lookups hash the key
+/// (QF-2381: a linear scan of 4,096 keys on every miss dominated CSV tables,
+/// where almost every cell is new text). `order` holds (key, stamp) pairs; an
+/// entry whose stamp no longer matches the map is stale and skipped.
+#[derive(Default)]
 struct ShapeCache {
-    entries: VecDeque<([u8; 32], ShapedRun)>,
+    entries: HashMap<[u8; 32], (ShapedRun, u64)>,
+    order: VecDeque<([u8; 32], u64)>,
+    clock: u64,
     bytes: usize,
 }
 
+impl ShapeCache {
+    fn touch(&mut self, key: [u8; 32]) -> u64 {
+        self.clock += 1;
+        self.order.push_front((key, self.clock));
+        if self.order.len() > 4 * CACHE_ENTRIES {
+            let entries = &self.entries;
+            self.order
+                .retain(|(key, stamp)| entries.get(key).is_some_and(|entry| entry.1 == *stamp));
+        }
+        self.clock
+    }
+
+    fn evict_oldest(&mut self) -> bool {
+        while let Some((key, stamp)) = self.order.pop_back() {
+            if self.entries.get(&key).is_some_and(|entry| entry.1 == stamp) {
+                let (evicted, _) = self.entries.remove(&key).expect("live entry");
+                self.bytes = self.bytes.saturating_sub(shaped_run_bytes(&evicted));
+                return true;
+            }
+        }
+        false
+    }
+}
+
 thread_local! {
-    static SHAPE_CACHE: RefCell<ShapeCache> = const { RefCell::new(ShapeCache {
-        entries: VecDeque::new(),
-        bytes: 0,
-    }) };
+    static SHAPE_CACHE: RefCell<ShapeCache> = RefCell::new(ShapeCache::default());
 }
 const CACHE_BYTES: usize = 4 * 1024 * 1024;
 // The byte budget is authoritative. A low entry cap caused cache thrashing for
@@ -228,9 +256,10 @@ const CACHE_ENTRIES: usize = 4_096;
 /// hashing a multi-hundred-kilobyte program on each call made text-to-pdf
 /// spend over 95% of its time in SHA-256 (about 0.1 s per line). A memo entry
 /// is reused only for the same buffer address and length whose table
-/// directory, tail and sampled interior still hash to the recorded
-/// fingerprint, so a different program at a reused address is rehashed.
-fn font_program_digest(font_bytes: &[u8]) -> [u8; 32] {
+/// directory, tail and sampled interior still equal the recorded samples, so a
+/// different program at a reused address is rehashed. The samples are compared
+/// directly: hashing them on every call cost more than shaping a short cell.
+pub(crate) fn font_program_digest(font_bytes: &[u8]) -> [u8; 32] {
     const SAMPLE: usize = 1_024;
     const WINDOWS: usize = 16;
     const WINDOW: usize = 64;
@@ -238,26 +267,32 @@ fn font_program_digest(font_bytes: &[u8]) -> [u8; 32] {
     if font_bytes.len() <= 4 * SAMPLE {
         return Sha256::digest(font_bytes).into();
     }
-    let mut fingerprint = Sha256::new();
-    fingerprint.update((font_bytes.len() as u64).to_le_bytes());
-    fingerprint.update(&font_bytes[..SAMPLE]);
-    fingerprint.update(&font_bytes[font_bytes.len() - SAMPLE..]);
     let stride = (font_bytes.len() - WINDOW) / WINDOWS;
-    for index in 0..WINDOWS {
-        let start = index * stride;
-        fingerprint.update(&font_bytes[start..start + WINDOW]);
-    }
-    let fingerprint: [u8; 32] = fingerprint.finalize().into();
+    let samples = || {
+        std::iter::once(&font_bytes[..SAMPLE])
+            .chain(std::iter::once(&font_bytes[font_bytes.len() - SAMPLE..]))
+            .chain((0..WINDOWS).map(move |index| {
+                let start = index * stride;
+                &font_bytes[start..start + WINDOW]
+            }))
+    };
     let address = font_bytes.as_ptr() as usize;
     let length = font_bytes.len();
     thread_local! {
-        static FONT_DIGESTS: RefCell<VecDeque<(usize, usize, [u8; 32], [u8; 32])>> =
+        static FONT_DIGESTS: RefCell<VecDeque<(usize, usize, Vec<u8>, [u8; 32])>> =
             const { RefCell::new(VecDeque::new()) };
     }
     FONT_DIGESTS.with(|memo| {
         let mut memo = memo.borrow_mut();
-        if let Some(hit) = memo.iter().find(|(entry_address, entry_length, entry_fingerprint, _)| {
-            *entry_address == address && *entry_length == length && *entry_fingerprint == fingerprint
+        if let Some(hit) = memo.iter().find(|(entry_address, entry_length, recorded, _)| {
+            *entry_address == address && *entry_length == length && {
+                let mut offset = 0;
+                samples().all(|sample| {
+                    let same = recorded.get(offset..offset + sample.len()) == Some(sample);
+                    offset += sample.len();
+                    same
+                })
+            }
         }) {
             return hit.3;
         }
@@ -265,21 +300,123 @@ fn font_program_digest(font_bytes: &[u8]) -> [u8; 32] {
         if memo.len() >= ENTRIES {
             memo.pop_back();
         }
-        memo.push_front((address, length, fingerprint, digest));
+        memo.push_front((address, length, samples().flatten().copied().collect(), digest));
         digest
+    })
+}
+
+/// Font programs kept for the life of the process so their parsed shaping
+/// faces can be cached (QF-2381: parsing GSUB/GPOS for every shaped table cell
+/// was a fifth of a CSV conversion). Bounded by bytes; programs beyond the
+/// budget are parsed per call as before.
+const RETAINED_PROGRAM_BYTES: usize = 64 << 20;
+const FACE_CACHE_ENTRIES: usize = 8;
+
+type RetainedPrograms = std::sync::Mutex<(HashMap<[u8; 32], &'static [u8]>, usize)>;
+
+fn retained_program(font_bytes: &[u8], digest: &[u8; 32]) -> Option<&'static [u8]> {
+    static PROGRAMS: std::sync::OnceLock<RetainedPrograms> = std::sync::OnceLock::new();
+    let mut programs = PROGRAMS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(program) = programs.0.get(digest) {
+        return Some(program);
+    }
+    let retained = programs.1.checked_add(font_bytes.len())?;
+    if retained > RETAINED_PROGRAM_BYTES {
+        return None;
+    }
+    let program: &'static [u8] = Box::leak(font_bytes.to_vec().into_boxed_slice());
+    programs.0.insert(*digest, program);
+    programs.1 = retained;
+    Some(program)
+}
+
+thread_local! {
+    static FACE_CACHE: RefCell<VecDeque<([u8; 32], std::rc::Rc<rustybuzz::Face<'static>>)>> =
+        const { RefCell::new(VecDeque::new()) };
+}
+
+/// The cached shaping face for a font program. `digest` must be
+/// [`font_program_digest`] of `font_bytes`. `None` when the program is invalid
+/// or beyond the retention budget.
+fn cached_face(font_bytes: &[u8], digest: &[u8; 32]) -> Option<std::rc::Rc<rustybuzz::Face<'static>>> {
+    FACE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(index) = cache.iter().position(|(key, _)| key == digest) {
+            let entry = cache.remove(index)?;
+            let face = std::rc::Rc::clone(&entry.1);
+            cache.push_front(entry);
+            return Some(face);
+        }
+        let face = std::rc::Rc::new(rustybuzz::Face::from_slice(
+            retained_program(font_bytes, digest)?,
+            0,
+        )?);
+        if cache.len() >= FACE_CACHE_ENTRIES {
+            cache.pop_back();
+        }
+        cache.push_front((*digest, std::rc::Rc::clone(&face)));
+        Some(face)
+    })
+}
+
+const PLAN_CACHE_ENTRIES: usize = 256;
+thread_local! {
+    static PLAN_CACHE: RefCell<HashMap<([u8; 32], String), std::rc::Rc<rustybuzz::ShapePlan>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// The compiled shaping plan for one font, direction, script, language and
+/// feature set. `rustybuzz::shape` compiles it for every call (QF-2381). A
+/// buffer without a resolved script keeps the uncached path, which plans it
+/// with no script exactly as before.
+fn cached_plan(
+    face: &rustybuzz::Face<'_>,
+    font_digest: &[u8; 32],
+    buffer: &UnicodeBuffer,
+    feature_names: &[String],
+    features: &[rustybuzz::Feature],
+) -> Option<std::rc::Rc<rustybuzz::ShapePlan>> {
+    let script = buffer.script();
+    if script == rustybuzz::script::UNKNOWN || buffer.direction() == Direction::Invalid {
+        return None;
+    }
+    let language = buffer.language();
+    let key = (*font_digest, format!(
+        "{:?}|{:?}|{}|{}",
+        buffer.direction(),
+        script,
+        language.as_ref().map(|language| language.as_str()).unwrap_or(""),
+        feature_names.join(",")
+    ));
+    PLAN_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(plan) = cache.get(&key) {
+            return Some(std::rc::Rc::clone(plan));
+        }
+        let plan = std::rc::Rc::new(rustybuzz::ShapePlan::new(
+            face,
+            buffer.direction(),
+            Some(script),
+            language.as_ref(),
+            features,
+        ));
+        if cache.len() >= PLAN_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(key, std::rc::Rc::clone(&plan));
+        Some(plan)
     })
 }
 
 fn cached_shape(key: &[u8; 32]) -> Option<ShapedRun> {
     SHAPE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = cache
-            .entries
-            .iter()
-            .position(|(candidate, _)| candidate == key)?;
-        let entry = cache.entries.remove(index)?;
-        let result = entry.1.clone();
-        cache.entries.push_front(entry);
+        let result = cache.entries.get(key)?.0.clone();
+        let stamp = cache.touch(*key);
+        cache.entries.get_mut(key).expect("live entry").1 = stamp;
         Some(result)
     })
 }
@@ -290,15 +427,15 @@ fn cache_shape(key: [u8; 32], result: &ShapedRun) {
     }
     SHAPE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        while cache.entries.len() >= CACHE_ENTRIES
-            || bytes.saturating_add(cache.bytes) > CACHE_BYTES
-        {
-            let Some((_, evicted)) = cache.entries.pop_back() else {
-                break;
-            };
-            cache.bytes = cache.bytes.saturating_sub(shaped_run_bytes(&evicted));
+        if let Some((previous, _)) = cache.entries.remove(&key) {
+            cache.bytes = cache.bytes.saturating_sub(shaped_run_bytes(&previous));
         }
-        cache.entries.push_front((key, result.clone()));
+        while (cache.entries.len() >= CACHE_ENTRIES
+            || bytes.saturating_add(cache.bytes) > CACHE_BYTES)
+            && cache.evict_oldest()
+        {}
+        let stamp = cache.touch(key);
+        cache.entries.insert(key, (result.clone(), stamp));
         cache.bytes = cache.bytes.saturating_add(bytes);
     });
 }
@@ -407,9 +544,20 @@ impl TextShaper {
         if let Some(hit) = cached_shape(&key) {
             return Ok(hit);
         }
-        let face = rustybuzz::Face::from_slice(font_bytes, 0).ok_or_else(|| {
-            WellfriendError::UnsupportedFeature("font.shaper.invalid_font".into())
-        })?;
+        let cached;
+        let parsed;
+        let face: &rustybuzz::Face<'_> = match cached_face(font_bytes, font_digest) {
+            Some(face) => {
+                cached = face;
+                &cached
+            }
+            None => {
+                parsed = rustybuzz::Face::from_slice(font_bytes, 0).ok_or_else(|| {
+                    WellfriendError::UnsupportedFeature("font.shaper.invalid_font".into())
+                })?;
+                &parsed
+            }
+        };
         let language = settings
             .language
             .as_deref()
@@ -482,7 +630,10 @@ impl TextShaper {
                     buffer.set_script(script);
                 }
                 buffer.guess_segment_properties();
-                let shaped = rustybuzz::shape(&face, &features, buffer);
+                let shaped = match cached_plan(face, font_digest, &buffer, &settings.features, &features) {
+                    Some(plan) => rustybuzz::shape_with_plan(face, &plan, buffer),
+                    None => rustybuzz::shape(face, &features, buffer),
+                };
                 for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
                     glyphs.push(ShapedGlyph {
                         glyph_id: u16::try_from(info.glyph_id).map_err(|_| {

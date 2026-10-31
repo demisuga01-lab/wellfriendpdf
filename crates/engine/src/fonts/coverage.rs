@@ -3,6 +3,7 @@
 //! source clusters and detects retained cmap entries with absent subset outlines.
 use super::ShapedRun;
 use crate::{Result, WellfriendError};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -86,6 +87,16 @@ pub fn missing_glyph_clusters(font: &[u8], text: &str, run: &ShapedRun) -> Resul
 pub(crate) struct PreparedCoverage<'a> {
     face: ttf_parser::Face<'a>,
     outlines: super::sfnt_outline::PreparedOutlines,
+    font_digest: [u8; 32],
+}
+
+/// Whether a glyph has an outline, per font program digest. Fallback shaping
+/// checks coverage for every shaped slice with a fresh [`PreparedCoverage`],
+/// so a per-call memo re-outlined every glyph of every table cell (QF-2381).
+const OUTLINE_MEMO_FONTS: usize = 16;
+thread_local! {
+    static OUTLINE_EXISTS: RefCell<HashMap<[u8; 32], HashMap<u16, bool>>> =
+        RefCell::new(HashMap::new());
 }
 
 impl<'a> PreparedCoverage<'a> {
@@ -93,7 +104,12 @@ impl<'a> PreparedCoverage<'a> {
         let face = ttf_parser::Face::parse(font, 0)
             .map_err(|_| WellfriendError::invalid_input("invalid coverage font"))?;
         let outlines = super::sfnt_outline::PreparedOutlines::new(&face)?;
-        Ok(Self { face, outlines })
+        let font_digest = super::shaper::font_program_digest(font);
+        Ok(Self {
+            face,
+            outlines,
+            font_digest,
+        })
     }
 
     pub(crate) fn has_missing_glyphs(&self, text: &str, run: &ShapedRun) -> Result<bool> {
@@ -171,7 +187,30 @@ impl<'a> PreparedCoverage<'a> {
             }
             cluster_policy.insert(pair[0], (source.chars().any(outline_expected), blanks));
         }
-        let mut outlines = HashMap::new();
+        let mut outlines = OUTLINE_EXISTS.with(|memo| {
+            memo.borrow_mut()
+                .remove(&self.font_digest)
+                .unwrap_or_default()
+        });
+        let checked = self.check_outlines(run, &cluster_policy, &mut outlines, &mut missing);
+        OUTLINE_EXISTS.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            if memo.len() >= OUTLINE_MEMO_FONTS {
+                memo.clear();
+            }
+            memo.insert(self.font_digest, outlines);
+        });
+        checked?;
+        Ok(missing.into_iter().collect())
+    }
+
+    fn check_outlines(
+        &self,
+        run: &ShapedRun,
+        cluster_policy: &BTreeMap<usize, (bool, BTreeSet<u16>)>,
+        outlines: &mut HashMap<u16, bool>,
+        missing: &mut BTreeSet<u32>,
+    ) -> Result<()> {
         for (index, glyph) in run.glyphs.iter().enumerate() {
             if index % 1024 == 0 {
                 crate::cancel::check_current_cancel("coverage outlines")?;
@@ -198,7 +237,7 @@ impl<'a> PreparedCoverage<'a> {
                 }
             }
         }
-        Ok(missing.into_iter().collect())
+        Ok(())
     }
 }
 

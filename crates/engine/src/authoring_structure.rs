@@ -7,7 +7,9 @@ use super::*;
 #[path = "authoring_structure_tests.rs"]
 mod tests;
 
-const MAX_STRUCTURE_ELEMENTS: usize = 100_000;
+/// One element per table cell: a 100,000-row CSV with ten columns fits
+/// (QF-2381). An element is about 250 bytes, so the ceiling is ~250 MB.
+const MAX_STRUCTURE_ELEMENTS: usize = 1_100_000;
 const MAX_STRUCTURE_TITLE_BYTES: usize = 16 * 1024;
 const MAX_NUMBER_TREE_NODE_ENTRIES: usize = 64;
 const MAX_TYPED_OWNER_SERIALIZED_BYTES: usize = 64 * 1024 * 1024;
@@ -127,6 +129,54 @@ pub(super) struct Element {
     pub(super) typed_cell_identity: Option<String>,
 }
 
+/// Element positions by id and the typed cell identities already bound, so a
+/// lookup is O(1) instead of a scan of every element (QF-2381: tagging one
+/// element per cell made a 20,000-row table quadratic). Elements are appended
+/// in place, so the index extends itself; code that truncates or replaces
+/// `PdfBuilder::structures` calls [`reset_index`].
+#[derive(Debug, Clone, Default)]
+pub(super) struct Index {
+    positions: HashMap<u64, usize>,
+    typed: HashMap<(String, String), u64>,
+    covered: usize,
+}
+
+pub(super) fn reset_index(builder: &mut PdfBuilder) {
+    builder.structure_index = Index::default();
+}
+
+fn sync_index(builder: &mut PdfBuilder) {
+    let index = &mut builder.structure_index;
+    if index.covered > builder.structures.len() {
+        *index = Index::default();
+    }
+    for (position, element) in builder.structures.iter().enumerate().skip(index.covered) {
+        index.positions.insert(element.id, position);
+        if let Some((table, cell)) = element
+            .typed_table_identity
+            .as_ref()
+            .zip(element.typed_cell_identity.as_ref())
+        {
+            index.typed.insert((table.clone(), cell.clone()), element.id);
+        }
+    }
+    index.covered = builder.structures.len();
+}
+
+fn position(builder: &mut PdfBuilder, id: u64) -> Option<usize> {
+    sync_index(builder);
+    let position = *builder.structure_index.positions.get(&id)?;
+    (builder.structures.get(position)?.id == id).then_some(position)
+}
+
+fn role_of(builder: &mut PdfBuilder, id: u64) -> Option<Role> {
+    position(builder, id).map(|position| builder.structures[position].role)
+}
+
+fn element_mut(builder: &mut PdfBuilder, id: u64) -> Option<&mut Element> {
+    position(builder, id).map(|position| &mut builder.structures[position])
+}
+
 pub(super) fn register(
     builder: &mut PdfBuilder,
     role: Role,
@@ -175,11 +225,7 @@ fn register_full(
         ));
     }
     if let Some(parent) = parent {
-        if !builder
-            .structures
-            .iter()
-            .any(|element| element.id == parent)
-        {
+        if position(builder, parent).is_none() {
             return Err(WellfriendError::invalid_input(
                 "authored structure parent must be registered first",
             ));
@@ -239,10 +285,7 @@ pub(super) fn register_table(builder: &mut PdfBuilder, summary: Option<&str>) ->
                 "authored table summary must be bounded and nonempty",
             ));
         }
-        builder
-            .structures
-            .iter_mut()
-            .find(|element| element.id == table)
+        element_mut(builder, table)
             .expect("registered table")
             .table_summary = Some(summary.to_owned());
     }
@@ -250,11 +293,7 @@ pub(super) fn register_table(builder: &mut PdfBuilder, summary: Option<&str>) ->
 }
 
 pub(super) fn register_caption(builder: &mut PdfBuilder, table: u64) -> Result<u64> {
-    if !builder
-        .structures
-        .iter()
-        .any(|element| element.id == table && element.role == Role::Table)
-    {
+    if role_of(builder, table) != Some(Role::Table) {
         return Err(WellfriendError::invalid_input(
             "authored table caption requires a Table owner",
         ));
@@ -268,10 +307,7 @@ pub(super) fn register_table_group(
     role: Role,
 ) -> Result<u64> {
     if !matches!(role, Role::TableHead | Role::TableBody)
-        || !builder
-            .structures
-            .iter()
-            .any(|element| element.id == table && element.role == Role::Table)
+        || role_of(builder, table) != Some(Role::Table)
     {
         return Err(WellfriendError::invalid_input(
             "authored table group requires THead/TBody and a Table owner",
@@ -285,10 +321,7 @@ pub(super) fn set_table_header_scope(
     cell: u64,
     scope: TableHeaderScope,
 ) -> Result<()> {
-    let element = builder
-        .structures
-        .iter_mut()
-        .find(|element| element.id == cell)
+    let element = element_mut(builder, cell)
         .ok_or_else(|| WellfriendError::invalid_input("unknown authored table header"))?;
     if element.role != Role::TableHeader {
         return Err(WellfriendError::invalid_input(
@@ -304,10 +337,7 @@ pub(super) fn set_table_column_span(
     cell: u64,
     columns: usize,
 ) -> Result<()> {
-    let element = builder
-        .structures
-        .iter_mut()
-        .find(|element| element.id == cell)
+    let element = element_mut(builder, cell)
         .ok_or_else(|| WellfriendError::invalid_input("unknown authored table cell"))?;
     if !matches!(element.role, Role::TableHeader | Role::TableData)
         || !(2..=10_000).contains(&columns)
@@ -321,10 +351,7 @@ pub(super) fn set_table_column_span(
 }
 
 pub(super) fn set_table_row_span(builder: &mut PdfBuilder, cell: u64, rows: usize) -> Result<()> {
-    let element = builder
-        .structures
-        .iter_mut()
-        .find(|element| element.id == cell)
+    let element = element_mut(builder, cell)
         .ok_or_else(|| WellfriendError::invalid_input("unknown authored table cell"))?;
     if !matches!(element.role, Role::TableHeader | Role::TableData)
         || !(2..=100_000).contains(&rows)
@@ -356,19 +383,16 @@ pub(super) fn set_typed_table_cell_owner(
             "typed table/cell ownership identities must be bounded and nonempty",
         ));
     }
-    if builder.structures.iter().any(|element| {
-        element.id != cell
-            && element.typed_table_identity.as_deref() == Some(table_identity)
-            && element.typed_cell_identity.as_deref() == Some(cell_identity)
-    }) {
-        return Err(WellfriendError::invalid_input(
-            "typed table/cell ownership identities must be unique",
-        ));
+    sync_index(builder);
+    let key = (table_identity.to_owned(), cell_identity.to_owned());
+    if let Some(&owner) = builder.structure_index.typed.get(&key) {
+        if owner != cell {
+            return Err(WellfriendError::invalid_input(
+                "typed table/cell ownership identities must be unique",
+            ));
+        }
     }
-    let element = builder
-        .structures
-        .iter_mut()
-        .find(|element| element.id == cell)
+    let element = element_mut(builder, cell)
         .ok_or_else(|| WellfriendError::invalid_input("unknown authored typed table cell"))?;
     if !matches!(element.role, Role::TableHeader | Role::TableData)
         || element.typed_table_identity.is_some()
@@ -378,8 +402,9 @@ pub(super) fn set_typed_table_cell_owner(
             "typed table ownership requires one unbound TH/TD element",
         ));
     }
-    element.typed_table_identity = Some(table_identity.to_owned());
-    element.typed_cell_identity = Some(cell_identity.to_owned());
+    element.typed_table_identity = Some(key.0.clone());
+    element.typed_cell_identity = Some(key.1.clone());
+    builder.structure_index.typed.insert(key, cell);
     Ok(())
 }
 
@@ -390,21 +415,15 @@ pub(super) fn set_table_headers(
 ) -> Result<()> {
     let unique = headers.iter().copied().collect::<BTreeSet<_>>();
     if unique.len() != headers.len()
-        || headers.iter().any(|header| {
-            !builder
-                .structures
-                .iter()
-                .any(|element| element.id == *header && element.role == Role::TableHeader)
-        })
+        || headers
+            .iter()
+            .any(|header| role_of(builder, *header) != Some(Role::TableHeader))
     {
         return Err(WellfriendError::invalid_input(
             "table cell headers must be unique live TH elements",
         ));
     }
-    let element = builder
-        .structures
-        .iter_mut()
-        .find(|element| element.id == cell)
+    let element = element_mut(builder, cell)
         .ok_or_else(|| WellfriendError::invalid_input("unknown authored table data cell"))?;
     if element.role != Role::TableData {
         return Err(WellfriendError::invalid_input(
@@ -423,16 +442,8 @@ pub(super) fn register_reference(
     paragraph: u64,
     note: u64,
 ) -> Result<u64> {
-    let paragraph_role = builder
-        .structures
-        .iter()
-        .find(|element| element.id == paragraph)
-        .map(|element| element.role);
-    let note_role = builder
-        .structures
-        .iter()
-        .find(|element| element.id == note)
-        .map(|element| element.role);
+    let paragraph_role = role_of(builder, paragraph);
+    let note_role = role_of(builder, note);
     if paragraph_role != Some(Role::Paragraph) || note_role != Some(Role::Note) {
         return Err(WellfriendError::invalid_input(
             "authored footnote reference requires a paragraph and Note owner",
@@ -444,11 +455,7 @@ pub(super) fn register_reference(
 }
 
 pub(super) fn register_span(builder: &mut PdfBuilder, paragraph: u64) -> Result<u64> {
-    if !builder
-        .structures
-        .iter()
-        .any(|element| element.id == paragraph && element.role == Role::Paragraph)
-    {
+    if role_of(builder, paragraph) != Some(Role::Paragraph) {
         return Err(WellfriendError::invalid_input(
             "authored text span requires a paragraph owner",
         ));
@@ -462,15 +469,9 @@ fn relate(builder: &mut PdfBuilder, left: u64, right: u64) -> Result<()> {
             "authored structure relationship cannot target itself",
         ));
     }
-    let left_index = builder
-        .structures
-        .iter()
-        .position(|element| element.id == left)
+    let left_index = position(builder, left)
         .ok_or_else(|| WellfriendError::invalid_input("unknown authored relationship source"))?;
-    let right_index = builder
-        .structures
-        .iter()
-        .position(|element| element.id == right)
+    let right_index = position(builder, right)
         .ok_or_else(|| WellfriendError::invalid_input("unknown authored relationship target"))?;
     if builder.structures[left_index].references.len() >= MAX_STRUCTURE_ELEMENTS
         || builder.structures[right_index].references.len() >= MAX_STRUCTURE_ELEMENTS

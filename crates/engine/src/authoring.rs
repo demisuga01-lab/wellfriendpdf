@@ -267,6 +267,7 @@ pub struct PdfBuilder {
     pages: Vec<PdfPageBuilder>,
     metadata: PdfMetadata,
     writer_mode: WriterMode,
+    compress_content: bool,
     version: String,
     custom_fonts: Arc<Vec<CustomFont>>,
     font_stacks: Arc<Vec<Vec<FontFace>>>,
@@ -279,6 +280,7 @@ pub struct PdfBuilder {
     outline_item_count: usize,
     language: Option<String>,
     structures: Vec<structure::Element>,
+    structure_index: structure::Index,
     next_structure_id: u64,
     next_footnote_id: u64,
     notes_materialized: bool,
@@ -299,6 +301,7 @@ impl PdfBuilder {
             pages: Vec::new(),
             metadata: PdfMetadata::default(),
             writer_mode: WriterMode::XrefStreamWithObjStm,
+            compress_content: false,
             version: "1.7".to_string(),
             custom_fonts: Arc::new(Vec::new()),
             font_stacks: Arc::new(Vec::new()),
@@ -311,6 +314,7 @@ impl PdfBuilder {
             outline_item_count: 0,
             language: None,
             structures: Vec::new(),
+            structure_index: structure::Index::default(),
             next_structure_id: 0,
             next_footnote_id: 0,
             notes_materialized: false,
@@ -382,6 +386,14 @@ impl PdfBuilder {
     }
 
     /// Select the low-level writer mode used by [`Self::to_bytes`].
+    /// Flate-compress page content streams. Off by default so authored
+    /// operators stay readable; the native converters turn it on (QF-2381:
+    /// a 20,000-row CSV table was 108 MB of uncompressed operators).
+    pub fn set_compress_content(&mut self, compress: bool) -> &mut Self {
+        self.compress_content = compress;
+        self
+    }
+
     pub fn with_writer_mode(mut self, mode: WriterMode) -> Self {
         self.writer_mode = mode;
         self
@@ -623,12 +635,22 @@ impl PdfBuilder {
             ));
         }
 
-        let materialized = notes::materialize(self)?;
-        let materialized = sections::materialize(&materialized)?;
-        let materialized = fields::materialize(&materialized)?;
-        let font_plan = FontBuildPlan::from_builder(&materialized)?;
-        let image_plan = ImageBuildPlan::from_builder(&materialized)?;
-        let objects = AuthoredObjects::build(&materialized, &font_plan, &image_plan)?;
+        // Each pass copies the whole builder, so a pass with nothing to do is
+        // skipped instead of cloning a large table document three times.
+        let mut materialized = std::borrow::Cow::Borrowed(self);
+        if notes::pending(&materialized) {
+            materialized = std::borrow::Cow::Owned(notes::materialize(&materialized)?);
+        }
+        if sections::pending(&materialized) {
+            materialized = std::borrow::Cow::Owned(sections::materialize(&materialized)?);
+        }
+        if fields::pending(&materialized) {
+            materialized = std::borrow::Cow::Owned(fields::materialize(&materialized)?);
+        }
+        let materialized: &PdfBuilder = &materialized;
+        let font_plan = FontBuildPlan::from_builder(materialized)?;
+        let image_plan = ImageBuildPlan::from_builder(materialized)?;
+        let objects = AuthoredObjects::build(materialized, &font_plan, &image_plan)?;
         PdfWriter::new(objects.objects, objects.catalog_number)
             .with_info(objects.info_number)
             .with_version(self.version.clone())
@@ -2871,6 +2893,7 @@ impl FlowDocument {
             self.builder.next_footnote_id = next_footnote_id;
             self.builder.next_field_plan_id = next_field_plan_id;
             self.builder.structures.truncate(structure_count);
+            structure::reset_index(&mut self.builder);
             self.builder.next_structure_id = next_structure_id;
             self.builder
                 .authored_typed_tables
@@ -3266,15 +3289,37 @@ impl AuthoredObjects {
             image_refs: &image_refs,
         };
 
-        for (idx, page) in builder.pages.iter().enumerate() {
+        // Page content streams are independent; build and compress them in
+        // parallel (QF-2381), then emit objects in page order as before.
+        let contents = {
+            use rayon::prelude::*;
+            let cancel = crate::cancel::current_cancel_token();
+            builder
+                .pages
+                .par_iter()
+                .map(|page| {
+                    cancel.scope(|| {
+                        let content = build_content_stream_with_structure(
+                            page,
+                            font_plan,
+                            image_plan,
+                            &structure_objects,
+                        )?;
+                        Ok(if builder.compress_content {
+                            (
+                                dict(&[("Filter", PdfObject::Name("FlateDecode".to_string()))]),
+                                crate::filters::flate_encode(&content, 3),
+                            )
+                        } else {
+                            (PdfDictionary::empty(), content)
+                        })
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        for ((idx, page), (dict, raw)) in builder.pages.iter().enumerate().zip(contents) {
             let page_number = page_start + idx as u32;
             let content_number = content_start + idx as u32;
-            let content = build_content_stream_with_structure(
-                page,
-                font_plan,
-                image_plan,
-                &structure_objects,
-            )?;
             objects.push(OutputObject {
                 number: page_number,
                 object: PdfObject::Dictionary(page_dict(
@@ -3288,10 +3333,7 @@ impl AuthoredObjects {
             });
             objects.push(OutputObject {
                 number: content_number,
-                object: PdfObject::Stream {
-                    dict: PdfDictionary::empty(),
-                    raw: content,
-                },
+                object: PdfObject::Stream { dict, raw },
             });
         }
 
@@ -3376,6 +3418,8 @@ struct ShapedTextPlan {
 #[derive(Debug, Clone, PartialEq)]
 struct ShapedTextGlyph {
     cid: u16,
+    /// The width written to the font's /W array for this CID.
+    width: f64,
     advance: f64,
     offset_x: f64,
     offset_y: f64,
@@ -3649,8 +3693,10 @@ impl EmbeddedFontPlanBuilder {
                 self.glyph_cids.insert(key, cid);
                 cid
             };
+            let width = self.entries[usize::from(cid) - 1].width;
             glyphs.push(ShapedTextGlyph {
                 cid,
+                width,
                 advance: glyph.advance,
                 offset_x: glyph.offset_x,
                 offset_y: glyph.offset_y,
@@ -4858,6 +4904,112 @@ fn write_text_command_resolved(
     write_text_command_owned(out, text, x, y, style, plan, bidi, logical_text, true)
 }
 
+/// Glyph origins drawn by authored text operators, reading both forms that
+/// [`write_shaped_glyphs`] emits: `Tm` + `Tj` for one glyph and `Tm` + `TJ`
+/// runs, whose corrections apply against each CID's /W `width`.
+#[cfg(test)]
+pub(super) fn authored_glyph_origins(
+    content: &str,
+    size: f64,
+    width: impl Fn(u16) -> f64,
+) -> Vec<(u16, f64, f64)> {
+    let mut origins = Vec::new();
+    for line in content.lines() {
+        let Some(rest) = line.strip_prefix("1 0 0 1 ") else {
+            continue;
+        };
+        let mut parts = rest.splitn(4, ' ');
+        let (Some(x), Some(y), Some("Tm"), Some(show)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let (mut x, y): (f64, f64) = (x.parse().unwrap(), y.parse().unwrap());
+        if let Some(run) = show.strip_prefix('[').and_then(|run| run.strip_suffix("] TJ")) {
+            let mut rest = run.trim_start();
+            while !rest.is_empty() {
+                if let Some(hex) = rest.strip_prefix('<') {
+                    let (code, tail) = hex.split_once('>').unwrap();
+                    let cid = u16::from_str_radix(code, 16).unwrap();
+                    origins.push((cid, x, y));
+                    x += width(cid) * size / 1000.0;
+                    rest = tail.trim_start();
+                } else {
+                    let end = rest.find(['<', ' ']).unwrap_or(rest.len());
+                    let correction: f64 = rest[..end].parse().unwrap();
+                    x -= correction * size / 1000.0;
+                    rest = rest[end..].trim_start();
+                }
+            }
+        } else if let Some(code) = show.strip_prefix('<').and_then(|code| code.strip_suffix("> Tj")) {
+            origins.push((u16::from_str_radix(code, 16).unwrap(), x, y));
+        }
+    }
+    origins
+}
+
+/// Shaped glyphs as `TJ` runs: one text matrix per run of unshifted glyphs,
+/// with a width correction wherever the shaped advance differs from the /W
+/// width. A glyph with a mark offset gets its own matrix. Positioning every
+/// glyph with its own `Tm` made table output about 5 KB per CSV row (QF-2381).
+fn write_shaped_glyphs(
+    out: &mut Vec<u8>,
+    glyphs: &[ShapedTextGlyph],
+    x: f64,
+    y: f64,
+    size: f64,
+) -> Result<()> {
+    use std::fmt::Write as _;
+    let mut pen = x;
+    let mut run = String::new();
+    let flush = |out: &mut Vec<u8>, run: &mut String| {
+        if !run.is_empty() {
+            out.extend_from_slice(run.as_bytes());
+            out.extend_from_slice(b"] TJ\n");
+            run.clear();
+        }
+    };
+    for (index, glyph) in glyphs.iter().enumerate() {
+        let gx = pen + glyph.offset_x * size / 1000.0;
+        let gy = y + glyph.offset_y * size / 1000.0;
+        let next_pen = pen + glyph.advance * size / 1000.0;
+        if ![gx, gy, next_pen].iter().all(|n| n.is_finite()) {
+            return Err(WellfriendError::invalid_input(
+                "authored glyph position overflow",
+            ));
+        }
+        if glyph.offset_x != 0.0 || glyph.offset_y != 0.0 {
+            flush(out, &mut run);
+            out.extend_from_slice(
+                format!(
+                    "1 0 0 1 {} {} Tm <{:04X}> Tj\n",
+                    fmt_num(gx),
+                    fmt_num(gy),
+                    glyph.cid
+                )
+                .as_bytes(),
+            );
+        } else {
+            if run.is_empty() {
+                let _ = write!(run, "1 0 0 1 {} {} Tm [", fmt_num(gx), fmt_num(gy));
+            }
+            let _ = write!(run, "<{:04X}>", glyph.cid);
+            // The viewer advances by the /W width; correct it to the shaped
+            // advance unless the next glyph starts its own matrix anyway.
+            let correction = round_pdf_num(round_pdf_num(glyph.width) - glyph.advance);
+            let next_in_run = glyphs
+                .get(index + 1)
+                .is_some_and(|next| next.offset_x == 0.0 && next.offset_y == 0.0);
+            if correction != 0.0 && next_in_run {
+                let _ = write!(run, " {} ", fmt_num(correction));
+            }
+        }
+        pen = next_pen;
+    }
+    flush(out, &mut run);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_text_command_owned(
     out: &mut Vec<u8>,
@@ -4886,27 +5038,7 @@ fn write_text_command_owned(
             )
             .as_bytes(),
         );
-        let mut pen = x;
-        for glyph in &shaped.glyphs {
-            let gx = pen + glyph.offset_x * style.size / 1000.0;
-            let gy = y + glyph.offset_y * style.size / 1000.0;
-            let next_pen = pen + glyph.advance * style.size / 1000.0;
-            if ![gx, gy, next_pen].iter().all(|n| n.is_finite()) {
-                return Err(WellfriendError::invalid_input(
-                    "authored glyph position overflow",
-                ));
-            }
-            out.extend_from_slice(
-                format!(
-                    "1 0 0 1 {} {} Tm <{:04X}> Tj\n",
-                    fmt_num(gx),
-                    fmt_num(gy),
-                    glyph.cid
-                )
-                .as_bytes(),
-            );
-            pen = next_pen;
-        }
+        write_shaped_glyphs(out, &shaped.glyphs, x, y, style.size)?;
         out.extend_from_slice(b"ET\n");
         if owns_logical_text {
             out.extend_from_slice(b"EMC\n");
@@ -5555,19 +5687,20 @@ mod tests {
         )
         .unwrap();
         let content = String::from_utf8(content).unwrap();
+        let entries = &plan.embedded_plan(font).unwrap().entries;
+        let origins = authored_glyph_origins(&content, 18.0, |cid| {
+            round_pdf_num(entries[usize::from(cid) - 1].width)
+        });
+        assert_eq!(origins.len(), shaped.glyphs.len(), "{content}");
         let mut pen = 20.0;
-        for (actual, expected) in saved.glyphs.iter().zip(&shaped.glyphs) {
+        for ((actual, expected), origin) in saved.glyphs.iter().zip(&shaped.glyphs).zip(&origins) {
             assert_eq!(
                 (actual.advance, actual.offset_x, actual.offset_y),
                 (expected.advance, expected.offset_x, expected.offset_y)
             );
-            let command = format!(
-                "1 0 0 1 {} {} Tm <{:04X}> Tj",
-                fmt_num(pen + expected.offset_x * 18.0 / 1000.0),
-                fmt_num(90.0 + expected.offset_y * 18.0 / 1000.0),
-                actual.cid
-            );
-            assert!(content.contains(&command));
+            assert_eq!(origin.0, actual.cid);
+            assert!((origin.1 - (pen + expected.offset_x * 18.0 / 1000.0)).abs() < 1e-3, "{content}");
+            assert!((origin.2 - (90.0 + expected.offset_y * 18.0 / 1000.0)).abs() < 1e-3, "{content}");
             pen += expected.advance * 18.0 / 1000.0;
         }
     }
