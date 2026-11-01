@@ -5569,7 +5569,7 @@ fn fmt_num_integer_path_prints_what_the_float_printer_printed() {
         612.0,
         841.89,
         1e9 + 0.5,
-        -2.71828,
+        -2.46802,
     ];
     for _ in 0..200_000 {
         let bits = next();
