@@ -77,7 +77,45 @@ pub(crate) fn outline_expected(c: char) -> bool {
 /// visible outline. Invalid cluster offsets/positions are errors, not coverage.
 /// This is not proof of intended typography or pixel-level visual equivalence.
 pub fn missing_glyph_clusters(font: &[u8], text: &str, run: &ShapedRun) -> Result<Vec<u32>> {
+    if run_known_covered(font, text, run) {
+        return Ok(Vec::new());
+    }
     PreparedCoverage::new(font)?.missing_glyph_clusters(text, run)
+}
+
+/// A run nothing can be missing from, decided without parsing the font
+/// (QF-2381: fallback shaping checked coverage for every table cell). It holds
+/// when the run starts at the first byte (no omitted visible prefix), every
+/// cluster offset is valid, and every glyph is already known, from an earlier
+/// full check of this font program, to be a real glyph with an outline.
+/// Anything else takes the full check.
+fn run_known_covered(font: &[u8], text: &str, run: &ShapedRun) -> bool {
+    if run.glyphs.is_empty() || run.glyphs.len() > MAX_GLYPHS || text.len() > 4_000_000 {
+        return false;
+    }
+    if run.glyphs.iter().map(|glyph| glyph.cluster).min() != Some(0) {
+        return false;
+    }
+    let valid = run.glyphs.iter().all(|glyph| {
+        let start = glyph.cluster as usize;
+        start < text.len()
+            && text.is_char_boundary(start)
+            && glyph.glyph_id != 0
+            && [glyph.advance, glyph.offset_x, glyph.offset_y]
+                .iter()
+                .all(|value| value.is_finite())
+    });
+    if !valid {
+        return false;
+    }
+    let digest = super::shaper::font_program_digest(font);
+    OUTLINE_EXISTS.with(|memo| {
+        memo.borrow().get(&digest).is_some_and(|known| {
+            run.glyphs
+                .iter()
+                .all(|glyph| known.get(&glyph.glyph_id) == Some(&true))
+        })
+    })
 }
 
 /// Parsed coverage state for one immutable font program. Layout explores many
