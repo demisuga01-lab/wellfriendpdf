@@ -331,6 +331,9 @@ pub struct PreparedParagraph<'a> {
     mandatory: Vec<usize>,
     composition: LineComposition,
 }
+/// Remaining segments up to this many graphemes are measured whole first.
+const WHOLE_SEGMENT_GRAPHEMES: usize = 256;
+
 impl<'a> PreparedParagraph<'a> {
     pub fn new(text: &'a str, options: ShapeOptions) -> Result<Self> {
         Self::with_break_settings(text, options, &LineBreakSettings::default())
@@ -479,14 +482,18 @@ impl<'a> PreparedParagraph<'a> {
             // again; kerning cannot cause an unverified over-width result.
             let mut fit = start;
             let mut probe = (start + 1).min(limit);
-            loop {
+            // A short remaining segment (a table cell, a heading) usually fits
+            // whole: try it first, one shape instead of a probe per doubling
+            // (QF-2381). Long paragraphs keep the bounded exponential search.
+            if limit.saturating_sub(start) <= WHOLE_SEGMENT_GRAPHEMES && measure(limit)? <= width + 1e-7 {
+                fit = limit;
+                probe = limit;
+            }
+            while fit < limit {
                 if measure(probe)? > width + 1e-7 {
                     break;
                 }
                 fit = probe;
-                if fit == limit {
-                    break;
-                }
                 probe = (start + (probe - start).saturating_mul(2)).min(limit);
             }
             let mut high = probe;
