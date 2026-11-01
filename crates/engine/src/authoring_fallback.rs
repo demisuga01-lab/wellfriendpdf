@@ -315,6 +315,16 @@ struct Prepared<'a> {
     programs: Vec<&'a [u8]>,
     spans: Vec<engine::FontSpan>,
     paragraph: PreparedParagraph<'a>,
+    /// The last range shaped without a supplied bidi, with its width: line
+    /// breaking measures a fitting range twice and the chosen line is then
+    /// shaped for emission, so a one-line table cell was shaped three times.
+    last_shape: std::cell::RefCell<Option<ShapedRange>>,
+}
+
+struct ShapedRange {
+    range: Range<usize>,
+    width: f64,
+    shaped: (String, LineBidi, Vec<engine::FontRun>),
 }
 
 impl<'a> Prepared<'a> {
@@ -355,7 +365,31 @@ impl<'a> Prepared<'a> {
             programs,
             spans,
             paragraph: PreparedParagraph::new(text, ShapeOptions::default())?,
+            last_shape: std::cell::RefCell::new(None),
         })
+    }
+
+    /// The width of `range` as `prepare`'s line breaker measures it, keeping
+    /// the shaped runs for a following `measure` or `line` of the same range.
+    fn measure(&self, range: Range<usize>, size: f64) -> Result<f64> {
+        if let Some(last) = self.last_shape.borrow().as_ref() {
+            if last.range == range {
+                return Ok(last.width);
+            }
+        }
+        let shaped = self.shape(range.clone(), None)?;
+        let width = layout::checked_metrics(engine::measure_signed_line_programs(
+            &shaped.2,
+            &self.programs,
+            size,
+        )?)?
+        .width();
+        *self.last_shape.borrow_mut() = Some(ShapedRange {
+            range,
+            width,
+            shaped,
+        });
+        Ok(width)
     }
 
     fn shape(
@@ -389,7 +423,23 @@ impl<'a> Prepared<'a> {
         style: &TextStyle,
         supplied: Option<&LineBidi>,
     ) -> Result<layout::Line> {
-        let (visual, bidi, shaped) = self.shape(range.clone(), supplied)?;
+        let reused = match supplied {
+            None => {
+                let mut last = self.last_shape.borrow_mut();
+                match last.take() {
+                    Some(hit) if hit.range == range => Some(hit.shaped),
+                    other => {
+                        *last = other;
+                        None
+                    }
+                }
+            }
+            Some(_) => None,
+        };
+        let (visual, bidi, shaped) = match reused {
+            Some(shaped) => shaped,
+            None => self.shape(range.clone(), supplied)?,
+        };
         let metrics = layout::checked_metrics(engine::measure_signed_line_programs(
             &shaped,
             &self.programs,
@@ -471,15 +521,7 @@ pub(super) fn prepare(
     let measured = prepared
         .paragraph
         .break_lines_measured(0, width, 100_000, |range| {
-            let (_, _, runs) = prepared.shape(range, None)?;
-            Ok(
-                layout::checked_metrics(engine::measure_signed_line_programs(
-                    &runs,
-                    &prepared.programs,
-                    style.size,
-                )?)?
-                .width(),
-            )
+            prepared.measure(range, style.size)
         })?;
     if measured.last().map_or(0, |line| line.bytes.end) != text.len() {
         return Err(WellfriendError::ResourceLimit(

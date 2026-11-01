@@ -5484,6 +5484,27 @@ fn fmt_num(value: f64) -> String {
     if is_integerish(value) {
         return format!("{}", value.round() as i64);
     }
+    // `value` is k / 10_000 for an integer k (round_pdf_num), and the nearest
+    // double to k / 10_000 is never near a fifth-decimal tie, so the exact
+    // float printer below would print k's digits. Print them from the integer:
+    // the float path was ~7% of a table-heavy document's CPU.
+    let scaled = (value * 10_000.0).round();
+    if scaled.abs() < 1e12 {
+        let scaled = scaled as i64;
+        let (whole, fraction) = (scaled.unsigned_abs() / 10_000, scaled.unsigned_abs() % 10_000);
+        let sign = if scaled < 0 { "-" } else { "" };
+        let mut s = format!("{sign}{whole}.{fraction:04}");
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+        if s == "-0" {
+            s = "0".to_string();
+        }
+        return s;
+    }
     let mut s = format!("{value:.4}");
     while s.contains('.') && s.ends_with('0') {
         s.pop();
@@ -5502,6 +5523,49 @@ fn round_pdf_num(value: f64) -> f64 {
         0.0
     } else {
         (value * 10_000.0).round() / 10_000.0
+    }
+}
+
+#[cfg(test)]
+fn fmt_num_float_path(value: f64) -> String {
+    let value = round_pdf_num(value);
+    if is_integerish(value) {
+        return format!("{}", value.round() as i64);
+    }
+    let mut s = format!("{value:.4}");
+    while s.contains('.') && s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    if s == "-0" {
+        s = "0".to_string();
+    }
+    s
+}
+
+#[cfg(test)]
+#[test]
+fn fmt_num_integer_path_prints_what_the_float_printer_printed() {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut values = vec![0.0, -0.0, 0.00005, -0.00005, 0.00015, 1.23455, -1.23455, 612.0, 841.89, 1e9 + 0.5, -3.14159];
+    for _ in 0..200_000 {
+        let bits = next();
+        let magnitude = [1.0, 10.0, 1_000.0, 100_000.0, 1e8][(bits % 5) as usize];
+        let unit = (next() >> 11) as f64 / (1u64 << 53) as f64;
+        let value = (unit * 2.0 - 1.0) * magnitude;
+        values.push(value);
+        values.push((value * 10_000.0).round() / 10_000.0 + 0.00005);
+    }
+    for value in values {
+        assert_eq!(fmt_num(value), fmt_num_float_path(value), "{value:?}");
     }
 }
 

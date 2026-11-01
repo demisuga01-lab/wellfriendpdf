@@ -118,6 +118,34 @@ pub(crate) fn resolve_contextual_programs(
     if units.len().saturating_mul(ranked.len()) > 1_000_000 {
         return Err(fail("fallback assignment exceeds one million states"));
     }
+    let covers = |font: &[u8], slice: &str| -> Result<bool> {
+        Ok(if mode.is_vertical() {
+            super::vertical_fonts::covers(font, slice, options, settings)?
+        } else {
+            let shaped = TextShaper::shape_with_settings(font, slice, options, settings)?;
+            !has_missing_glyphs(font, slice, &shaped)?
+        })
+    };
+    // When the single cheapest font covers every unit, the search below
+    // assigns every unit to it: each unit costs at least that font's cost and
+    // a switch only adds. Checking that font alone first skips shaping each
+    // word with every other font of the stack (most text, every table cell).
+    if let Some(index) = sole_cheapest(ranked) {
+        let font_index = ranked[index].0;
+        if let Some(font) = fonts.get(font_index).filter(|font| editable_font(font)) {
+            let mut all = true;
+            for unit in &units {
+                crate::cancel::check_current_cancel("contextual font fallback")?;
+                if !covers(font, &text[unit.clone()])? {
+                    all = false;
+                    break;
+                }
+            }
+            if all {
+                return Ok(merge_spans(units, std::iter::repeat(font_index)));
+            }
+        }
+    }
     let mut costs = vec![0.0f64; ranked.len()];
     let mut parents = Vec::new();
     for unit in &units {
@@ -140,14 +168,7 @@ pub(crate) fn resolve_contextual_programs(
             if !editable_font(font) {
                 continue;
             }
-            let slice = &text[unit.clone()];
-            let covered = if mode.is_vertical() {
-                super::vertical_fonts::covers(font, slice, options, settings)?
-            } else {
-                let shaped = TextShaper::shape_with_settings(font, slice, options, settings)?;
-                !has_missing_glyphs(font, slice, &shaped)?
-            };
-            if !covered {
+            if !covers(font, &text[unit.clone()])? {
                 continue;
             }
             let predecessor = if costs[candidate] <= costs[best] + 0.25 {
@@ -179,6 +200,21 @@ pub(crate) fn resolve_contextual_programs(
         assigned[i] = ranked[current].0;
         current = parents[i][current];
     }
+    Ok(merge_spans(units, assigned))
+}
+
+/// The candidate whose cost is strictly below every other valid cost, when
+/// all costs are valid (an invalid cost is left to the search's error).
+fn sole_cheapest(ranked: &[(usize, f64)]) -> Option<usize> {
+    if ranked.iter().any(|(_, cost)| !cost.is_finite() || *cost < 0.0) {
+        return None;
+    }
+    let (index, &(_, cost)) = ranked.iter().enumerate().min_by(|a, b| a.1 .1.total_cmp(&b.1 .1))?;
+    let ties = ranked.iter().filter(|(_, other)| *other <= cost).count();
+    (ties == 1).then_some(index)
+}
+
+fn merge_spans(units: Vec<Range<usize>>, assigned: impl IntoIterator<Item = usize>) -> Vec<FontSpan> {
     let mut result: Vec<FontSpan> = Vec::new();
     for (unit, index) in units.into_iter().zip(assigned) {
         if let Some(previous) = result.last_mut() {
@@ -192,7 +228,7 @@ pub(crate) fn resolve_contextual_programs(
             font_index: index,
         });
     }
-    Ok(result)
+    result
 }
 
 pub fn slice_spans(spans: &[FontSpan], range: Range<usize>) -> Vec<FontSpan> {

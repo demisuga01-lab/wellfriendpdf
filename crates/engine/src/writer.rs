@@ -576,14 +576,27 @@ impl PdfWriter {
         // 2. Build + emit each object stream; record type-2 entries for members.
         let obj_by_number: std::collections::HashMap<u32, &OutputObject> =
             objects.iter().map(|o| (o.number, *o)).collect();
-        for plan in &objstms {
-            let (objstm_bytes, member_indices) = build_objstm_body(&plan.members, &obj_by_number)?;
+        // Bodies are built and compressed in parallel (each stream is
+        // independent; a tagged table puts one structure element per cell in
+        // them), then emitted in plan order, so the bytes do not depend on the
+        // thread count.
+        let built = {
+            use rayon::prelude::*;
+            objstms
+                .par_iter()
+                .map(|plan| {
+                    let (objstm_bytes, member_indices) =
+                        build_objstm_body(&plan.members, &obj_by_number)?;
+                    Ok((crate::filters::flate_encode(&objstm_bytes, 9), member_indices))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        for (plan, (compressed, member_indices)) in objstms.iter().zip(built) {
             // Filter order matters: the data is FIRST FlateDecode-compressed,
             // THEN (if encrypting) encrypted as a WHOLE stream — encryption is
             // the outermost layer, undone first on read, exactly mirroring how
             // the reader decrypts the raw stream bytes before FlateDecode. The
             // inner objects are NOT individually encrypted.
-            let compressed = crate::filters::flate_encode(&objstm_bytes, 9);
             let payload = if let Some(state) = enc_state {
                 encrypt_bytes_for_writer(
                     &compressed,
