@@ -587,7 +587,10 @@ impl PdfWriter {
                 .map(|plan| {
                     let (objstm_bytes, member_indices) =
                         build_objstm_body(&plan.members, &obj_by_number)?;
-                    Ok((crate::filters::flate_encode(&objstm_bytes, 9), member_indices))
+                    Ok((
+                        crate::filters::flate_encode(&objstm_bytes, 9),
+                        member_indices,
+                    ))
                 })
                 .collect::<Result<Vec<_>>>()?
         };

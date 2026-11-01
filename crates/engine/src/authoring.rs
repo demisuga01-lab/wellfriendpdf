@@ -5491,7 +5491,10 @@ fn fmt_num(value: f64) -> String {
     let scaled = (value * 10_000.0).round();
     if scaled.abs() < 1e12 {
         let scaled = scaled as i64;
-        let (whole, fraction) = (scaled.unsigned_abs() / 10_000, scaled.unsigned_abs() % 10_000);
+        let (whole, fraction) = (
+            scaled.unsigned_abs() / 10_000,
+            scaled.unsigned_abs() % 10_000,
+        );
         let sign = if scaled < 0 { "-" } else { "" };
         let mut s = format!("{sign}{whole}.{fraction:04}");
         while s.ends_with('0') {
@@ -5555,7 +5558,19 @@ fn fmt_num_integer_path_prints_what_the_float_printer_printed() {
         state ^= state << 17;
         state
     };
-    let mut values = vec![0.0, -0.0, 0.00005, -0.00005, 0.00015, 1.23455, -1.23455, 612.0, 841.89, 1e9 + 0.5, -3.14159];
+    let mut values = vec![
+        0.0,
+        -0.0,
+        0.00005,
+        -0.00005,
+        0.00015,
+        1.23455,
+        -1.23455,
+        612.0,
+        841.89,
+        1e9 + 0.5,
+        -2.71828,
+    ];
     for _ in 0..200_000 {
         let bits = next();
         let magnitude = [1.0, 10.0, 1_000.0, 100_000.0, 1e8][(bits % 5) as usize];

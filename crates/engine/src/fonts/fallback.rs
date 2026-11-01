@@ -206,15 +206,24 @@ pub(crate) fn resolve_contextual_programs(
 /// The candidate whose cost is strictly below every other valid cost, when
 /// all costs are valid (an invalid cost is left to the search's error).
 fn sole_cheapest(ranked: &[(usize, f64)]) -> Option<usize> {
-    if ranked.iter().any(|(_, cost)| !cost.is_finite() || *cost < 0.0) {
+    if ranked
+        .iter()
+        .any(|(_, cost)| !cost.is_finite() || *cost < 0.0)
+    {
         return None;
     }
-    let (index, &(_, cost)) = ranked.iter().enumerate().min_by(|a, b| a.1 .1.total_cmp(&b.1 .1))?;
+    let (index, &(_, cost)) = ranked
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1 .1.total_cmp(&b.1 .1))?;
     let ties = ranked.iter().filter(|(_, other)| *other <= cost).count();
     (ties == 1).then_some(index)
 }
 
-fn merge_spans(units: Vec<Range<usize>>, assigned: impl IntoIterator<Item = usize>) -> Vec<FontSpan> {
+fn merge_spans(
+    units: Vec<Range<usize>>,
+    assigned: impl IntoIterator<Item = usize>,
+) -> Vec<FontSpan> {
     let mut result: Vec<FontSpan> = Vec::new();
     for (unit, index) in units.into_iter().zip(assigned) {
         if let Some(previous) = result.last_mut() {
