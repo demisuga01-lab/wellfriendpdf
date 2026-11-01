@@ -2398,6 +2398,66 @@ impl FlowDocument {
             style,
             &paragraph.tab_stops,
         )?;
+        self.append_prepared_paragraph(lines, width, style, paragraph, role, title)
+    }
+
+    /// Add plain paragraphs in order, laying them out in parallel first
+    /// (QF-2381: text-to-pdf laid out 60,000 lines one after another). Layout
+    /// reads only the content width and the document's fonts, so a paragraph
+    /// prepares the same whatever page it lands on; appending stays in order.
+    /// `None` adds an empty line of the paragraph's line height.
+    pub fn add_paragraphs(
+        &mut self,
+        texts: &[Option<String>],
+        style: &TextStyle,
+        paragraph: &ParagraphStyle,
+    ) -> Result<&mut Self> {
+        use rayon::prelude::*;
+        let width = self.content_width()?;
+        let page = self.current_page_ref();
+        let cancel = crate::cancel::current_cancel_token();
+        let prepared = texts
+            .par_iter()
+            .map(|text| {
+                cancel.scope(|| {
+                    text.as_deref()
+                        .map(|text| {
+                            layout::prepare_with_tabs(page, text, width, style, &paragraph.tab_stops)
+                        })
+                        .transpose()
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let line_height = paragraph.line_height_points(style.size)?;
+        for lines in prepared {
+            match lines {
+                Some(lines) => {
+                    self.append_prepared_paragraph(
+                        lines,
+                        width,
+                        style,
+                        paragraph,
+                        structure::Role::Paragraph,
+                        None,
+                    )?;
+                }
+                None => {
+                    self.add_spacer(line_height);
+                }
+            }
+        }
+        Ok(self)
+    }
+
+    fn append_prepared_paragraph(
+        &mut self,
+        lines: Vec<layout::Line>,
+        width: f64,
+        style: &TextStyle,
+        paragraph: &ParagraphStyle,
+        role: structure::Role,
+        title: Option<String>,
+    ) -> Result<&mut Self> {
         let line_height = paragraph.line_height_points(style.size)?;
         self.append_transaction(|flow| {
             let structure_id = if lines.is_empty() {

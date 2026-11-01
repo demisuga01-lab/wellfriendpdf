@@ -110,6 +110,19 @@ pub fn text_to_pdf_with_report(
     let mut report = NativeConversionReport::default();
 
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    // Word-wrapped lines without page breaks are laid out in parallel in one
+    // batch; the per-line path below keeps the other modes unchanged.
+    if options.line_wrap == LineWrap::Word && !normalized.contains('\u{000C}') {
+        let mut paragraphs = Vec::new();
+        for raw_line in normalized.split('\n') {
+            crate::cancel::check_current_cancel("text-to-pdf")?;
+            let expanded = expand_tabs(raw_line, options.tab_width);
+            let line = fonts.sanitize(kind, &expanded, &mut report.replaced_characters);
+            paragraphs.push((!line.trim().is_empty()).then_some(line));
+        }
+        flow.add_paragraphs(&paragraphs, &style, &paragraph)?;
+        return finish(flow.into_builder(), report);
+    }
     for (index, raw_line) in normalized.split('\n').enumerate() {
         crate::cancel::check_current_cancel("text-to-pdf")?;
         // U+000C starts a new page at that point of the line.
