@@ -315,7 +315,7 @@ pub(crate) fn finish(
 ) -> Result<NativeConversionOutput> {
     builder.set_compress_content(true);
     report.pages = builder.pages().len();
-    let pdf = builder.to_bytes()?;
+    let pdf = builder.into_bytes()?;
     report.bytes = pdf.len();
     Ok(NativeConversionOutput { pdf, report })
 }

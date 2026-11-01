@@ -658,6 +658,31 @@ impl PdfBuilder {
             .write()
     }
 
+    /// [`Self::to_bytes`] for a builder the caller no longer needs: running
+    /// headers and footers are painted into its own pages instead of a copy
+    /// of every page (a 676-page table spent 3% of its time cloning).
+    pub fn into_bytes(self) -> Result<Vec<u8>> {
+        if notes::pending(&self) || fields::pending(&self) {
+            return self.to_bytes();
+        }
+        if self.pages.is_empty() {
+            return self.to_bytes();
+        }
+        let version = self.version.clone();
+        let mut materialized = sections::materialize_owned(self)?;
+        if fields::pending(&materialized) {
+            materialized = fields::materialize(&materialized)?;
+        }
+        let font_plan = FontBuildPlan::from_builder(&materialized)?;
+        let image_plan = ImageBuildPlan::from_builder(&materialized)?;
+        let objects = AuthoredObjects::build(&materialized, &font_plan, &image_plan)?;
+        PdfWriter::new(objects.objects, objects.catalog_number)
+            .with_info(objects.info_number)
+            .with_version(version)
+            .with_mode(materialized.writer_mode)
+            .write()
+    }
+
     /// Write the authored document to a file.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         std::fs::write(path, self.to_bytes()?)?;

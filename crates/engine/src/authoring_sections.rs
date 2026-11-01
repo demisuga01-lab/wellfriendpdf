@@ -420,11 +420,18 @@ pub(super) fn materialize(builder: &PdfBuilder) -> Result<PdfBuilder> {
     if !pending(builder) {
         return Ok(builder.clone());
     }
-    for section in &builder.sections {
+    materialize_owned(builder.clone())
+}
+
+/// [`materialize`] on a builder the caller owns, without copying its pages.
+pub(super) fn materialize_owned(mut result: PdfBuilder) -> Result<PdfBuilder> {
+    if !pending(&result) {
+        return Ok(result);
+    }
+    for section in &result.sections {
         section.validate()?;
     }
-    let section_pages = assignments(builder)?;
-    let mut result = builder.clone();
+    let section_pages = assignments(&result)?;
     let document_pages = result.pages.len();
     for (section_index, indexes) in section_pages.iter().enumerate() {
         let section = result.sections[section_index].clone();
