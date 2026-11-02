@@ -676,11 +676,26 @@ impl PdfBuilder {
         let font_plan = FontBuildPlan::from_builder(&materialized)?;
         let image_plan = ImageBuildPlan::from_builder(&materialized)?;
         let objects = AuthoredObjects::build(&materialized, &font_plan, &image_plan)?;
-        PdfWriter::new(objects.objects, objects.catalog_number)
+        let writer = PdfWriter::new(objects.objects, objects.catalog_number)
             .with_info(objects.info_number)
             .with_version(version)
-            .with_mode(materialized.writer_mode)
-            .write()
+            .with_mode(materialized.writer_mode);
+        let bytes = writer.write()?;
+        drop(font_plan);
+        drop(image_plan);
+        // Freeing a large document's object graph took about 6% of a
+        // 20,000-row table's serial time after the bytes were final; free it
+        // off the caller's path instead.
+        if materialized.pages.len() >= 64 {
+            let garbage = (writer, materialized);
+            if let Err(error) = std::thread::Builder::new()
+                .name("wellfriendpdf-free".into())
+                .spawn(move || drop(garbage))
+            {
+                drop(error);
+            }
+        }
+        Ok(bytes)
     }
 
     /// Write the authored document to a file.
