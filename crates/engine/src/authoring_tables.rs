@@ -5573,6 +5573,7 @@ struct GridSegmentRow {
     continues: bool,
 }
 
+#[derive(Clone)]
 pub(super) struct Fragment {
     pub(super) height: f64,
     ranges: Vec<Range<usize>>,
@@ -6253,6 +6254,7 @@ impl PreparedRow {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render(
         &self,
         page: &mut PdfPageBuilder,
@@ -6263,6 +6265,24 @@ impl PreparedRow {
         paint_owner: Option<(&str, usize)>,
         cell_structures: Option<&[u64]>,
     ) -> Result<()> {
+        let commands =
+            self.render_commands(x, top, fragment, artifact, paint_owner, cell_structures)?;
+        page.commands.extend(commands);
+        Ok(())
+    }
+
+    /// The page commands of one fragment of this row. They depend only on the
+    /// row and the placement, so a table's rows can be painted in parallel
+    /// once pagination has placed them (`append_flow`).
+    fn render_commands(
+        &self,
+        x: f64,
+        top: f64,
+        fragment: &Fragment,
+        artifact: bool,
+        paint_owner: Option<(&str, usize)>,
+        cell_structures: Option<&[u64]>,
+    ) -> Result<Vec<PageCommand>> {
         if fragment.ranges.len() != self.cells.len()
             || ![x, top, fragment.height, top - fragment.height]
                 .iter()
@@ -6370,8 +6390,7 @@ impl PreparedRow {
         if artifact {
             commands.push(PageCommand::EndArtifact);
         }
-        page.commands.extend(commands);
-        Ok(())
+        Ok(commands)
     }
 
     fn render_spanned(
@@ -7009,6 +7028,59 @@ pub(super) fn draw_on_page(
     result
 }
 
+/// One placed fragment of a table header or body row, painted after pagination.
+struct PaintJob<'a> {
+    page: usize,
+    left: f64,
+    top: f64,
+    /// Index into the kept body rows; `None` is the repeated header.
+    row: Option<usize>,
+    fragment: Fragment,
+    artifact: bool,
+    paint_owner: Option<(&'a str, usize)>,
+    structures: Option<&'a [u64]>,
+}
+
+fn paint_placed_fragments(
+    flow: &mut FlowDocument,
+    paints: &[PaintJob<'_>],
+    rows: &[PreparedRow],
+    header: Option<&PreparedRow>,
+) -> Result<()> {
+    use rayon::prelude::*;
+    let cancel = crate::cancel::current_cancel_token();
+    let painted = paints
+        .par_iter()
+        .map(|job| {
+            cancel.scope(|| {
+                let row = match job.row {
+                    Some(index) => rows
+                        .get(index)
+                        .ok_or_else(|| fail("authored table paint lost its row"))?,
+                    None => header.ok_or_else(|| fail("authored table paint lost its header"))?,
+                };
+                row.render_commands(
+                    job.left,
+                    job.top,
+                    &job.fragment,
+                    job.artifact,
+                    job.paint_owner,
+                    job.structures,
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (job, commands) in paints.iter().zip(painted) {
+        flow.builder
+            .pages
+            .get_mut(job.page)
+            .ok_or_else(|| fail("authored table paint lost its page"))?
+            .commands
+            .extend(commands);
+    }
+    Ok(())
+}
+
 fn fresh_page(flow: &mut FlowDocument, added: &mut usize) -> Result<()> {
     crate::cancel::check_current_cancel("authored table page allocation")?;
     if *added >= MAX_FRAGMENTS {
@@ -7416,6 +7488,11 @@ pub(super) fn append_flow(
     }
     let mut prepared_rows =
         prepare_rows_in_parallel(table, flow.current_page_ref(), &mut budget)?.map(Vec::into_iter);
+    // Pagination places every fragment first; the fragments are painted
+    // afterwards in parallel and appended to their pages in placement order,
+    // which is the order the serial loop appended them in.
+    let mut paints: Vec<PaintJob<'_>> = Vec::new();
+    let mut kept_rows: Vec<PreparedRow> = Vec::with_capacity(table.rows.len());
     for (row_index, source) in table.rows.iter().enumerate() {
         if let Some(policy) = source
             .page_break_before
@@ -7464,21 +7541,22 @@ pub(super) fn append_flow(
                 budget.fragment(header_fragment)?;
                 let cursor = flow.cursor_y;
                 let left = flow.margins.left;
-                header.render(
-                    flow.current_page_mut(),
+                paints.push(PaintJob {
+                    page: flow.current_page,
                     left,
-                    cursor,
-                    header_fragment,
-                    header_emitted,
-                    None,
-                    if header_emitted {
+                    top: cursor,
+                    row: None,
+                    fragment: header_fragment.clone(),
+                    artifact: header_emitted,
+                    paint_owner: None,
+                    structures: if header_emitted {
                         None
                     } else {
                         structures
                             .as_ref()
                             .and_then(|plan| plan.header_cells.as_deref())
                     },
-                )?;
+                });
                 report.fragments.push(header.info(
                     header_fragment,
                     flow.current_page + 1,
@@ -7493,20 +7571,21 @@ pub(super) fn append_flow(
             budget.fragment(&fragment)?;
             let cursor = flow.cursor_y;
             let left = flow.margins.left;
-            row.render(
-                flow.current_page_mut(),
+            paints.push(PaintJob {
+                page: flow.current_page,
                 left,
-                cursor,
-                &fragment,
-                false,
-                (!report.evaluated_values.is_empty())
+                top: cursor,
+                row: Some(kept_rows.len()),
+                fragment: fragment.clone(),
+                artifact: false,
+                paint_owner: (!report.evaluated_values.is_empty())
                     .then_some(table.identity.as_deref())
                     .flatten()
                     .map(|identity| (identity, row_index)),
-                structures
+                structures: structures
                     .as_ref()
                     .map(|plan| plan.body_cells[row_index].as_slice()),
-            )?;
+            });
             report.fragments.push(row.info(
                 &fragment,
                 flow.current_page + 1,
@@ -7532,7 +7611,9 @@ pub(super) fn append_flow(
             fresh_page(flow, &mut report.added_pages)?;
             header_pending = header.is_some();
         }
+        kept_rows.push(row);
     }
+    paint_placed_fragments(flow, &paints, &kept_rows, header.as_ref())?;
     let pagination = retained_table_pagination(flow, table)?;
     retain_authored_typed_model(
         &mut flow.builder,
