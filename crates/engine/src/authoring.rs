@@ -3544,7 +3544,39 @@ impl FontBuildPlan {
         let mut embedded_builders: HashMap<FontFace, EmbeddedFontPlanBuilder> = HashMap::new();
         let mut metrics_by_font = HashMap::new();
 
-        for page in &builder.pages {
+        // Glyph coverage of each prepared text run depends only on its font,
+        // text and shaping, so it is checked for all pages in parallel up
+        // front; the loop below consumes the answers in command order.
+        let prepared_coverage = {
+            use rayon::prelude::*;
+            builder
+                .pages
+                .par_iter()
+                .map(|page| {
+                    page.commands
+                        .iter()
+                        .flat_map(text_commands)
+                        .map(|command| match command {
+                            PageCommand::Text {
+                                text,
+                                style,
+                                shaped: Some(prepared),
+                                ..
+                            } if style.font.is_embedded_unicode() => {
+                                let font_bytes = font_bytes_for_face(builder, style.font)?;
+                                Ok(Some(crate::fonts::shaper::has_missing_glyphs(
+                                    font_bytes, text, prepared,
+                                )?))
+                            }
+                            _ => Ok(None),
+                        })
+                        .collect::<Result<Vec<Option<bool>>>>()
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+
+        for (page, page_coverage) in builder.pages.iter().zip(prepared_coverage) {
+            let mut page_coverage = page_coverage.into_iter();
             for font in page.fonts_used() {
                 if let FontFace::Custom(id) = font {
                     builder.custom_font(id)?;
@@ -3553,6 +3585,7 @@ impl FontBuildPlan {
             }
             for command in page.commands.iter().flat_map(text_commands) {
                 crate::cancel::check_current_cancel("authoring font plan")?;
+                let known_missing = page_coverage.next().flatten();
                 if let PageCommand::LogicalBreak { text, .. } = command {
                     if let std::collections::hash_map::Entry::Vacant(e) =
                         metrics_by_font.entry(FontFace::BuiltinUnicode)
@@ -3613,7 +3646,11 @@ impl FontBuildPlan {
                     } else {
                         TextShaper::shape(font_bytes, text, ShapeOptions::default())?
                     };
-                    if crate::fonts::shaper::has_missing_glyphs(font_bytes, text, &shaped)? {
+                    let missing = match (prepared.is_some(), known_missing) {
+                        (true, Some(missing)) => missing,
+                        _ => crate::fonts::shaper::has_missing_glyphs(font_bytes, text, &shaped)?,
+                    };
+                    if missing {
                         return Err(WellfriendError::UnsupportedFeature(
                             "authoring font lacks shaped glyph coverage".into(),
                         ));

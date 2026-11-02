@@ -1204,7 +1204,11 @@ pub(super) fn build(
         objects.extend(build_name_tree(id_tree, &entries, next)?);
     }
 
-    for element in &builder.structures {
+    // Each element's dictionary depends only on the lookups built above, so
+    // they are built in parallel and kept in element order (the output does
+    // not depend on the thread count). Serially this was the largest single
+    // part of a tagged 20,000-row table's critical path.
+    let element_object = |element: &Element| -> Result<OutputObject> {
         let parent = element
             .parent
             .map(|id| element_numbers[&id])
@@ -1341,10 +1345,20 @@ pub(super) fn build(
         if let Some(id) = element_id(element) {
             dictionary.insert("ID", PdfObject::String(id));
         }
-        objects.push(OutputObject {
+        Ok(OutputObject {
             number: element_numbers[&element.id],
             object: PdfObject::Dictionary(dictionary),
-        });
+        })
+    };
+    {
+        use rayon::prelude::*;
+        objects.extend(
+            builder
+                .structures
+                .par_iter()
+                .map(element_object)
+                .collect::<Result<Vec<_>>>()?,
+        );
     }
     Ok(Built {
         root: Some(root),
