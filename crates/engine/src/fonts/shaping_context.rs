@@ -54,14 +54,19 @@ fn synopsis(raw: &str, nearest: Option<char>) -> Option<char> {
     }
 }
 fn raw_edge(chars: impl Iterator<Item = char>, reverse: bool) -> String {
-    let mut edge = chars
-        .take_while(|c| !hard_boundary(*c))
-        .take(CONTEXT_SCALARS)
-        .collect::<Vec<_>>();
+    // At most CONTEXT_SCALARS scalars: gather them on the stack so an edge
+    // costs one allocation (none when empty) instead of a Vec and a String.
+    let mut edge = ['\0'; CONTEXT_SCALARS];
+    let mut count = 0;
+    for c in chars.take_while(|c| !hard_boundary(*c)).take(CONTEXT_SCALARS) {
+        edge[count] = c;
+        count += 1;
+    }
+    let edge = &mut edge[..count];
     if reverse {
         edge.reverse();
     }
-    edge.into_iter().collect()
+    edge.iter().collect()
 }
 fn scan_edge(
     chars: impl Iterator<Item = char>,

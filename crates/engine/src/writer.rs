@@ -1044,11 +1044,17 @@ fn version_lt_1_5(version: &str) -> bool {
 
 /// Serialize a single [`PdfObject`] to PDF syntax, appending to `out`.
 pub fn serialize_object(object: &PdfObject, out: &mut Vec<u8>) {
+    // Integers and references are formatted straight into `out` (writing to a
+    // Vec cannot fail): a String per object was a fifth of all allocations
+    // when writing a 20,000-row tagged table.
+    use std::io::Write as _;
     match object {
         PdfObject::Null => out.extend_from_slice(b"null"),
         PdfObject::Boolean(true) => out.extend_from_slice(b"true"),
         PdfObject::Boolean(false) => out.extend_from_slice(b"false"),
-        PdfObject::Integer(value) => out.extend_from_slice(value.to_string().as_bytes()),
+        PdfObject::Integer(value) => {
+            let _ = write!(out, "{value}");
+        }
         PdfObject::Real(value) => out.extend_from_slice(format_real(*value).as_bytes()),
         PdfObject::String(bytes) => serialize_string(bytes, out),
         PdfObject::Name(name) => serialize_name(name, out),
@@ -1064,7 +1070,7 @@ pub fn serialize_object(object: &PdfObject, out: &mut Vec<u8>) {
         }
         PdfObject::Dictionary(dict) => serialize_dictionary(dict, out),
         PdfObject::Reference { number, generation } => {
-            out.extend_from_slice(format!("{number} {generation} R").as_bytes());
+            let _ = write!(out, "{number} {generation} R");
         }
         PdfObject::Stream { dict, raw } => serialize_stream(dict, raw, out),
     }
