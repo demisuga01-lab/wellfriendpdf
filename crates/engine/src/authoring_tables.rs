@@ -6276,10 +6276,7 @@ impl PreparedRow {
                 return Err(fail("invalid authored table-cell structure plan"));
             }
         }
-        // Sized up front: growing it (and the moves that came with it) was a
-        // fifth of a large table's serial row rendering.
-        let line_count: usize = fragment.ranges.iter().map(|range| range.len()).sum();
-        let mut commands = Vec::with_capacity(4 + self.cells.len() * 6 + line_count * 3);
+        let mut commands = Vec::new();
         if artifact {
             commands.push(PageCommand::BeginArtifact);
         }
