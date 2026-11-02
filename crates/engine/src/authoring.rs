@@ -3528,7 +3528,12 @@ impl ShapedRuns {
             .find(|(stored, stored_bidi, _)| stored == text && stored_bidi.as_ref() == bidi)
         {
             Some((_, _, existing)) => *existing = plan,
-            None => bucket.push((text.to_string(), bidi.cloned(), plan)),
+            None => {
+                // Nearly every bucket holds one run; a default first push
+                // would reserve four.
+                bucket.reserve_exact(1);
+                bucket.push((text.to_string(), bidi.cloned(), plan));
+            }
         }
     }
 }
@@ -3557,10 +3562,9 @@ impl GlyphCids {
 
     fn insert(&mut self, glyph_id: u16, unicode: &str, cid: u16) {
         let key = self.key(glyph_id, unicode);
-        self.buckets
-            .entry(key)
-            .or_default()
-            .push((glyph_id, unicode.to_string(), cid));
+        let bucket = self.buckets.entry(key).or_default();
+        bucket.reserve_exact(1);
+        bucket.push((glyph_id, unicode.to_string(), cid));
     }
 }
 

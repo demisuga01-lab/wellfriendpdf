@@ -5767,6 +5767,10 @@ fn register_structure(
         .map(|row| register_row(row, true, head.expect("header group")))
         .transpose()?;
     let body_grid = table.body_cell_placements()?;
+    structure::reserve(
+        &mut flow.builder,
+        body_grid.len() + body_grid.iter().map(Vec::len).sum::<usize>(),
+    );
     let mut body_cells = Vec::with_capacity(body_grid.len());
     for placements in &body_grid {
         let row = structure::register(
@@ -7070,6 +7074,18 @@ fn paint_placed_fragments(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    // Size each page's command list once: growing it by doubling while
+    // appending a 20,000-row table copied the large commands repeatedly and
+    // held up to twice their memory at the document's peak.
+    let mut added = vec![0usize; flow.builder.pages.len()];
+    for (job, commands) in paints.iter().zip(&painted) {
+        *added
+            .get_mut(job.page)
+            .ok_or_else(|| fail("authored table paint lost its page"))? += commands.len();
+    }
+    for (page, count) in flow.builder.pages.iter_mut().zip(added) {
+        page.commands.reserve_exact(count);
+    }
     for (job, commands) in paints.iter().zip(painted) {
         flow.builder
             .pages

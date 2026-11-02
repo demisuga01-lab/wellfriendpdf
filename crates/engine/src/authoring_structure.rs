@@ -145,6 +145,16 @@ pub(super) fn reset_index(builder: &mut PdfBuilder) {
     builder.structure_index = Index::default();
 }
 
+/// Make room for `additional` elements before registering them one by one, so
+/// a large table does not regrow (and copy) the element list and its index.
+pub(super) fn reserve(builder: &mut PdfBuilder, additional: usize) {
+    // Never beyond the element limit, which registration reports as an error.
+    let additional =
+        additional.min(MAX_STRUCTURE_ELEMENTS.saturating_sub(builder.structures.len()));
+    builder.structures.reserve(additional);
+    builder.structure_index.positions.reserve(additional);
+}
+
 fn sync_index(builder: &mut PdfBuilder) {
     let index = &mut builder.structure_index;
     if index.covered > builder.structures.len() {

@@ -167,7 +167,9 @@ impl ResolvedLine {
             });
         }
         let mut pen = x;
-        let mut commands = Vec::new();
+        // Exact capacity: a command is 248 bytes and a default first push
+        // reserves four, which a one-run table cell kept for the document's life.
+        let mut commands = Vec::with_capacity(self.runs.len());
         for run in &self.runs {
             crate::cancel::check_current_cancel("authoring fallback command")?;
             if !pen.is_finite() {
@@ -445,10 +447,11 @@ impl<'a> Prepared<'a> {
             &self.programs,
             style.size,
         )?)?;
-        let mut runs = Vec::new();
         // A logical-only line is emitted using the private zero-width carrier,
         // not any of the stack's visible font runs. Preview must agree.
         let logical_only = crate::fonts::logical_carrier::is_text(&self.text[range.clone()]);
+        // Exact capacity: the runs live as long as the document's layout.
+        let mut runs = Vec::with_capacity(if logical_only { 0 } else { shaped.len() });
         for run in shaped.into_iter().filter(|_| !logical_only) {
             let font = self.members[run.font_index];
             let rtl = run.shaped.direction == TextDirection::RightToLeft;
@@ -528,10 +531,13 @@ pub(super) fn prepare(
             "authoring fallback paragraph line budget".into(),
         ));
     }
-    measured
-        .into_iter()
-        .map(|line| prepared.line(line.bytes, style, None))
-        .collect()
+    // Collecting into `Result<Vec<_>>` has no size hint, so a one-line cell
+    // kept room for four 248-byte lines; size the list exactly instead.
+    let mut lines = Vec::with_capacity(measured.len());
+    for line in measured {
+        lines.push(prepared.line(line.bytes, style, None)?);
+    }
+    Ok(lines)
 }
 
 pub(super) fn prepare_with_tabs(
