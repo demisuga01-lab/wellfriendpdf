@@ -686,13 +686,7 @@ impl PdfBuilder {
         // 20,000-row table's serial time after the bytes were final; free it
         // off the caller's path instead.
         if materialized.pages.len() >= 64 {
-            let garbage = (writer, materialized, font_plan);
-            if let Err(error) = std::thread::Builder::new()
-                .name("wellfriendpdf-free".into())
-                .spawn(move || drop(garbage))
-            {
-                drop(error);
-            }
+            free_in_background((writer, materialized, font_plan));
         }
         Ok(bytes)
     }
@@ -1993,24 +1987,31 @@ impl TableBuilder {
         crate::typed_tables::evaluate_values(identity, &entries)
     }
 
-    fn resolved_typed_values(&self) -> Result<(Self, BTreeMap<String, String>)> {
+    /// The table with typed cells replaced by their evaluated text. A table
+    /// without typed values is returned borrowed: copying every cell of a
+    /// 20,000-row table only to free the identical copy cost the serial path
+    /// about 0.4 s on production hardware.
+    fn resolved_typed_values(
+        &self,
+    ) -> Result<(std::borrow::Cow<'_, Self>, BTreeMap<String, String>)> {
         self.validate()?;
         let values = self.typed_values()?;
+        if values.is_empty() {
+            return Ok((std::borrow::Cow::Borrowed(self), values));
+        }
         let mut resolved = self.clone();
-        if !values.is_empty() {
-            for row in &mut resolved.rows {
-                for cell in &mut row.cells {
-                    if let Some(id) = &cell.typed_id {
-                        cell.text = values.get(id).cloned().ok_or_else(|| {
-                            WellfriendError::invalid_input(
-                                "authored typed value lost its evaluated result",
-                            )
-                        })?;
-                    }
+        for row in &mut resolved.rows {
+            for cell in &mut row.cells {
+                if let Some(id) = &cell.typed_id {
+                    cell.text = values.get(id).cloned().ok_or_else(|| {
+                        WellfriendError::invalid_input(
+                            "authored typed value lost its evaluated result",
+                        )
+                    })?;
                 }
             }
         }
-        Ok((resolved, values))
+        Ok((std::borrow::Cow::Owned(resolved), values))
     }
 
     fn cell_placements<'a>(
@@ -3483,7 +3484,84 @@ struct FontBuildPlan {
 struct EmbeddedFontPlan {
     cids: HashMap<char, u16>,
     entries: Vec<CidEntry>,
-    shaped_runs: HashMap<(String, Option<crate::fonts::shaper::LineBidi>), ShapedTextPlan>,
+    shaped_runs: ShapedRuns,
+}
+
+/// Shaped text plans by logical text and bidi resolution. Buckets are keyed by
+/// a hash of the borrowed (text, bidi) pair and compared exactly, so a lookup
+/// does not clone the command's text and bidi levels into an owned key once
+/// per text command.
+#[derive(Debug, Clone, Default)]
+struct ShapedRuns {
+    keys: std::collections::hash_map::RandomState,
+    buckets: HashMap<u64, Vec<(String, Option<crate::fonts::shaper::LineBidi>, ShapedTextPlan)>>,
+}
+
+impl ShapedRuns {
+    fn key(&self, text: &str, bidi: Option<&crate::fonts::shaper::LineBidi>) -> u64 {
+        use std::hash::BuildHasher;
+        self.keys.hash_one((text, bidi))
+    }
+
+    fn get(
+        &self,
+        text: &str,
+        bidi: Option<&crate::fonts::shaper::LineBidi>,
+    ) -> Option<&ShapedTextPlan> {
+        self.buckets
+            .get(&self.key(text, bidi))?
+            .iter()
+            .find(|(stored, stored_bidi, _)| stored == text && stored_bidi.as_ref() == bidi)
+            .map(|(_, _, plan)| plan)
+    }
+
+    fn insert(
+        &mut self,
+        text: &str,
+        bidi: Option<&crate::fonts::shaper::LineBidi>,
+        plan: ShapedTextPlan,
+    ) {
+        let key = self.key(text, bidi);
+        let bucket = self.buckets.entry(key).or_default();
+        match bucket
+            .iter_mut()
+            .find(|(stored, stored_bidi, _)| stored == text && stored_bidi.as_ref() == bidi)
+        {
+            Some((_, _, existing)) => *existing = plan,
+            None => bucket.push((text.to_string(), bidi.cloned(), plan)),
+        }
+    }
+}
+
+/// CIDs by glyph id and cluster text, bucketed like [`ShapedRuns`] so a
+/// lookup borrows the cluster text instead of allocating a key per glyph.
+#[derive(Debug, Default)]
+struct GlyphCids {
+    keys: std::collections::hash_map::RandomState,
+    buckets: HashMap<u64, Vec<(u16, String, u16)>>,
+}
+
+impl GlyphCids {
+    fn key(&self, glyph_id: u16, unicode: &str) -> u64 {
+        use std::hash::BuildHasher;
+        self.keys.hash_one((glyph_id, unicode))
+    }
+
+    fn get(&self, glyph_id: u16, unicode: &str) -> Option<u16> {
+        self.buckets
+            .get(&self.key(glyph_id, unicode))?
+            .iter()
+            .find(|(stored_id, stored, _)| *stored_id == glyph_id && stored == unicode)
+            .map(|(_, _, cid)| *cid)
+    }
+
+    fn insert(&mut self, glyph_id: u16, unicode: &str, cid: u16) {
+        let key = self.key(glyph_id, unicode);
+        self.buckets
+            .entry(key)
+            .or_default()
+            .push((glyph_id, unicode.to_string(), cid));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3524,18 +3602,12 @@ struct ShapedTextGlyph {
     offset_y: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct GlyphCidKey {
-    glyph_id: u16,
-    unicode: String,
-}
-
 #[derive(Debug, Default)]
 struct EmbeddedFontPlanBuilder {
     cids: HashMap<char, u16>,
-    glyph_cids: HashMap<GlyphCidKey, u16>,
+    glyph_cids: GlyphCids,
     entries: Vec<CidEntry>,
-    shaped_runs: HashMap<(String, Option<crate::fonts::shaper::LineBidi>), ShapedTextPlan>,
+    shaped_runs: ShapedRuns,
 }
 
 impl FontBuildPlan {
@@ -3633,22 +3705,23 @@ impl FontBuildPlan {
                     }
                     let metrics = &metrics_by_font[&style.font];
                     let embedded = embedded_builders.entry(style.font).or_default();
-                    if embedded
-                        .shaped_runs
-                        .contains_key(&(text.clone(), bidi.clone()))
-                    {
+                    if embedded.shaped_runs.get(text, bidi.as_ref()).is_some() {
                         continue;
                     }
-                    let shaped = if let Some(prepared) = prepared {
-                        prepared.as_ref().clone()
-                    } else if let Some(bidi) = bidi {
-                        TextShaper::shape_resolved(font_bytes, text, bidi, &Default::default())?
+                    let shaped_here;
+                    let shaped: &crate::fonts::ShapedRun = if let Some(prepared) = prepared {
+                        prepared
                     } else {
-                        TextShaper::shape(font_bytes, text, ShapeOptions::default())?
+                        shaped_here = if let Some(bidi) = bidi {
+                            TextShaper::shape_resolved(font_bytes, text, bidi, &Default::default())?
+                        } else {
+                            TextShaper::shape(font_bytes, text, ShapeOptions::default())?
+                        };
+                        &shaped_here
                     };
                     let missing = match (prepared.is_some(), known_missing) {
                         (true, Some(missing)) => missing,
-                        _ => crate::fonts::shaper::has_missing_glyphs(font_bytes, text, &shaped)?,
+                        _ => crate::fonts::shaper::has_missing_glyphs(font_bytes, text, shaped)?,
                     };
                     if missing {
                         return Err(WellfriendError::UnsupportedFeature(
@@ -3656,7 +3729,7 @@ impl FontBuildPlan {
                         ));
                     }
                     if shaped.used_complex_shaping {
-                        embedded.add_shaped_run(text, &shaped, metrics, bidi.as_ref())?;
+                        embedded.add_shaped_run(text, shaped, metrics, bidi.as_ref())?;
                     } else {
                         for ch in text.chars() {
                             embedded.add_char(ch, metrics)?;
@@ -3733,10 +3806,7 @@ impl FontBuildPlan {
         text: &str,
         bidi: Option<&crate::fonts::shaper::LineBidi>,
     ) -> Option<&ShapedTextPlan> {
-        self.embedded
-            .get(&font)?
-            .shaped_runs
-            .get(&(text.to_owned(), bidi.cloned()))
+        self.embedded.get(&font)?.shaped_runs.get(text, bidi)
     }
 }
 
@@ -3813,20 +3883,16 @@ impl EmbeddedFontPlanBuilder {
             let unicode = if mapped_clusters.insert(glyph.cluster) {
                 cluster_text(text, glyph.cluster, &clusters)
             } else {
-                String::new()
+                ""
             };
-            let key = GlyphCidKey {
-                glyph_id: glyph.glyph_id,
-                unicode: unicode.clone(),
-            };
-            let cid = if let Some(cid) = self.glyph_cids.get(&key).copied() {
+            let cid = if let Some(cid) = self.glyph_cids.get(glyph.glyph_id, unicode) {
                 cid
             } else {
                 // /W describes the reusable glyph. Contextual advances belong
                 // to occurrences, not the first context that allocated this CID.
                 let width = metrics.glyph_width_by_gid(glyph.glyph_id);
-                let cid = self.push_entry(glyph.glyph_id, unicode.clone(), width)?;
-                self.glyph_cids.insert(key, cid);
+                let cid = self.push_entry(glyph.glyph_id, unicode.to_string(), width)?;
+                self.glyph_cids.insert(glyph.glyph_id, unicode, cid);
                 cid
             };
             let width = self.entries[usize::from(cid) - 1].width;
@@ -3839,7 +3905,8 @@ impl EmbeddedFontPlanBuilder {
             });
         }
         self.shaped_runs.insert(
-            (text.to_string(), bidi.cloned()),
+            text,
+            bidi,
             ShapedTextPlan {
                 glyphs,
                 actual_text: text.to_string(),
@@ -3899,12 +3966,12 @@ fn cluster_boundaries(text: &str, shaped: &crate::fonts::ShapedRun) -> Vec<usize
     clusters
 }
 
-fn cluster_text(text: &str, cluster: u32, clusters: &[usize]) -> String {
+fn cluster_text<'a>(text: &'a str, cluster: u32, clusters: &[usize]) -> &'a str {
     let Ok(start) = usize::try_from(cluster) else {
-        return "\u{FFFD}".to_string();
+        return "\u{FFFD}";
     };
     if start > text.len() || !text.is_char_boundary(start) {
-        return "\u{FFFD}".to_string();
+        return "\u{FFFD}";
     }
     let end = clusters
         .iter()
@@ -3912,9 +3979,22 @@ fn cluster_text(text: &str, cluster: u32, clusters: &[usize]) -> String {
         .find(|candidate| *candidate > start)
         .unwrap_or(text.len());
     if end <= start || end > text.len() || !text.is_char_boundary(end) {
-        return "\u{FFFD}".to_string();
+        return "\u{FFFD}";
     }
-    text[start..end].to_string()
+    &text[start..end]
+}
+
+/// Free a large owned value on a short-lived thread. Freeing a 20,000-row
+/// table's layout and object graph cost the caller's serial path about half a
+/// second each on production hardware. If the thread cannot start, the value
+/// is freed here.
+fn free_in_background<T: Send + 'static>(garbage: T) {
+    if let Err(error) = std::thread::Builder::new()
+        .name("wellfriendpdf-free".into())
+        .spawn(move || drop(garbage))
+    {
+        drop(error);
+    }
 }
 
 fn push_unique_font(fonts: &mut Vec<FontFace>, font: FontFace) {

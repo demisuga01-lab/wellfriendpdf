@@ -210,18 +210,25 @@ pub fn resolve_line_bidi(
 /// (QF-2381: a linear scan of 4,096 keys on every miss dominated CSV tables,
 /// where almost every cell is new text). `order` holds (key, stamp) pairs; an
 /// entry whose stamp no longer matches the map is stale and skipped.
+///
+/// A key is the exact byte string that identifies the shaping input (font
+/// digest, text, levels, context, settings), not a digest of it: equal keys
+/// mean equal inputs. Hashing the key with SHA-256 cost about 4% of a CSV
+/// conversion on a CPU without SHA extensions.
 #[derive(Default)]
 struct ShapeCache {
-    entries: HashMap<[u8; 32], (ShapedRun, u64)>,
-    order: VecDeque<([u8; 32], u64)>,
+    entries: HashMap<ShapeKey, (ShapedRun, u64)>,
+    order: VecDeque<(ShapeKey, u64)>,
     clock: u64,
     bytes: usize,
 }
 
+type ShapeKey = std::rc::Rc<[u8]>;
+
 impl ShapeCache {
-    fn touch(&mut self, key: [u8; 32]) -> u64 {
+    fn touch(&mut self, key: &ShapeKey) -> u64 {
         self.clock += 1;
-        self.order.push_front((key, self.clock));
+        self.order.push_front((ShapeKey::clone(key), self.clock));
         if self.order.len() > 4 * CACHE_ENTRIES {
             let entries = &self.entries;
             self.order
@@ -411,20 +418,38 @@ fn cached_plan(
     })
 }
 
-fn cached_shape(key: &[u8; 32]) -> Option<ShapedRun> {
+/// Append a value to a shaping key: one zero byte for the default value,
+/// otherwise a one byte, the length and its JSON. Every cell of a plain table
+/// has the default context and settings, so the common key skips JSON.
+fn push_key_json<T: serde::Serialize>(key: &mut Vec<u8>, value: &T, default: bool) -> Result<()> {
+    if default {
+        key.push(0);
+        return Ok(());
+    }
+    let json =
+        serde_json::to_vec(value).map_err(|e| WellfriendError::invalid_input(e.to_string()))?;
+    key.push(1);
+    key.extend_from_slice(&(json.len() as u64).to_le_bytes());
+    key.extend_from_slice(&json);
+    Ok(())
+}
+
+fn cached_shape(key: &[u8]) -> Option<ShapedRun> {
     SHAPE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let result = cache.entries.get(key)?.0.clone();
-        let stamp = cache.touch(*key);
+        let (stored, (result, _)) = cache.entries.get_key_value(key)?;
+        let (stored, result) = (ShapeKey::clone(stored), result.clone());
+        let stamp = cache.touch(&stored);
         cache.entries.get_mut(key).expect("live entry").1 = stamp;
         Some(result)
     })
 }
-fn cache_shape(key: [u8; 32], result: &ShapedRun) {
+fn cache_shape(key: Vec<u8>, result: &ShapedRun) {
     let bytes = shaped_run_bytes(result);
     if bytes > CACHE_BYTES / 4 {
         return;
     }
+    let key = ShapeKey::from(key);
     SHAPE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some((previous, _)) = cache.entries.remove(&key) {
@@ -434,7 +459,7 @@ fn cache_shape(key: [u8; 32], result: &ShapedRun) {
             || bytes.saturating_add(cache.bytes) > CACHE_BYTES)
             && cache.evict_oldest()
         {}
-        let stamp = cache.touch(key);
+        let stamp = cache.touch(&key);
         cache.entries.insert(key, (result.clone(), stamp));
         cache.bytes = cache.bytes.saturating_add(bytes);
     });
@@ -523,24 +548,15 @@ impl TextShaper {
                 "resolved shaping expects one visible logical line without hard separators",
             ));
         }
-        let mut digest = Sha256::new();
-        digest.update(b"resolved-line-v5-prehashed-font-hard-lines");
-        let context_bytes = serde_json::to_vec(&bidi.context)
-            .map_err(|e| WellfriendError::invalid_input(e.to_string()))?;
-        for bytes in [
-            font_digest.as_slice(),
-            text.as_bytes(),
-            bidi.levels.as_slice(),
-            context_bytes.as_slice(),
-        ] {
-            digest.update((bytes.len() as u64).to_le_bytes());
-            digest.update(bytes);
+        let mut key = Vec::with_capacity(96 + 2 * text.len());
+        key.extend_from_slice(b"resolved-line-v6-exact-key");
+        for bytes in [font_digest.as_slice(), text.as_bytes(), bidi.levels.as_slice()] {
+            key.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            key.extend_from_slice(bytes);
         }
-        digest.update([u8::from(bidi.rtl)]);
-        let settings_bytes = serde_json::to_vec(settings)
-            .map_err(|e| WellfriendError::invalid_input(e.to_string()))?;
-        digest.update(settings_bytes);
-        let key: [u8; 32] = digest.finalize().into();
+        push_key_json(&mut key, &bidi.context, bidi.context.is_empty())?;
+        key.push(u8::from(bidi.rtl));
+        push_key_json(&mut key, settings, settings == &OpenTypeSettings::default())?;
         if let Some(hit) = cached_shape(&key) {
             return Ok(hit);
         }
@@ -674,17 +690,16 @@ impl TextShaper {
                 "shaping input exceeds 4 MB".into(),
             ));
         }
-        let mut hash = Sha256::new();
-        hash.update(b"paragraph-v5-hard-lines-font-digest");
-        hash.update((font_bytes.len() as u64).to_le_bytes());
-        hash.update(font_program_digest(font_bytes));
-        hash.update([match options.direction {
+        let mut key = Vec::with_capacity(80 + text.len());
+        key.extend_from_slice(b"paragraph-v6-exact-key");
+        key.extend_from_slice(&(font_bytes.len() as u64).to_le_bytes());
+        key.extend_from_slice(&font_program_digest(font_bytes));
+        key.push(match options.direction {
             None => 0,
             Some(TextDirection::LeftToRight) => 1,
             Some(TextDirection::RightToLeft) => 2,
-        }]);
-        hash.update(text.as_bytes());
-        let key: [u8; 32] = hash.finalize().into();
+        });
+        key.extend_from_slice(text.as_bytes());
         if let Some(hit) = cached_shape(&key) {
             return Ok(hit);
         }

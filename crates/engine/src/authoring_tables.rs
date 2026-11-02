@@ -6963,7 +6963,7 @@ pub(super) fn draw_on_page(
 ) -> Result<f64> {
     crate::cancel::check_current_cancel("authored table single-page transaction")?;
     let (resolved, _) = table.resolved_typed_values()?;
-    let table = &resolved;
+    let table: &TableBuilder = &resolved;
     if table.rows.iter().any(|row| row.page_break_before.is_some()) {
         return Err(WellfriendError::UnsupportedFeature(
             "a page-local table cannot own a row page break; use FlowDocument::add_table".into(),
@@ -7341,7 +7341,7 @@ pub(super) fn append_flow(
 ) -> Result<TableFlowReport> {
     crate::cancel::check_current_cancel("authored table flow transaction")?;
     let (resolved, evaluated_values) = table.resolved_typed_values()?;
-    let table = &resolved;
+    let table: &TableBuilder = &resolved;
     if table.has_row_spans() {
         return append_spanned_flow(flow, table, evaluated_values);
     }
@@ -7621,5 +7621,17 @@ pub(super) fn append_flow(
         &report.evaluated_values,
         pagination,
     )?;
+    drop(paints);
+    if kept_rows.len() >= BACKGROUND_FREE_ROWS {
+        let resolved = match resolved {
+            std::borrow::Cow::Owned(resolved) => Some(resolved),
+            std::borrow::Cow::Borrowed(_) => None,
+        };
+        super::free_in_background((kept_rows, header, resolved));
+    }
     Ok(report)
 }
+
+/// Prepared rows (and the resolved table they came from) at or above this
+/// count are freed off the caller's path once painted.
+const BACKGROUND_FREE_ROWS: usize = 1_000;
