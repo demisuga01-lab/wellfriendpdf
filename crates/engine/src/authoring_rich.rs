@@ -166,12 +166,12 @@ pub(super) fn uri_link_annotation_dict(link: &UriLink, page_number: u32) -> Resu
             "invalid authored URI link annotation",
         ));
     }
-    let action = dict(&[
+    let action = dict([
         ("Type", PdfObject::Name("Action".into())),
         ("S", PdfObject::Name("URI".into())),
         ("URI", PdfObject::String(link.uri.as_bytes().to_vec())),
     ]);
-    Ok(dict(&[
+    Ok(dict([
         ("Type", PdfObject::Name("Annot".into())),
         ("Subtype", PdfObject::Name("Link".into())),
         (

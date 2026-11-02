@@ -1026,7 +1026,7 @@ pub(super) fn link_annotation_dict(
             "invalid authored link annotation rectangle",
         ));
     }
-    let mut dictionary = dict(&[
+    let mut dictionary = dict([
         ("Type", PdfObject::Name("Annot".into())),
         ("Subtype", PdfObject::Name("Link".into())),
         (

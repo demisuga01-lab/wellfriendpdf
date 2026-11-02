@@ -681,13 +681,12 @@ impl PdfBuilder {
             .with_version(version)
             .with_mode(materialized.writer_mode);
         let bytes = writer.write()?;
-        drop(font_plan);
         drop(image_plan);
         // Freeing a large document's object graph took about 6% of a
         // 20,000-row table's serial time after the bytes were final; free it
         // off the caller's path instead.
         if materialized.pages.len() >= 64 {
-            let garbage = (writer, materialized);
+            let garbage = (writer, materialized, font_plan);
             if let Err(error) = std::thread::Builder::new()
                 .name("wellfriendpdf-free".into())
                 .spawn(move || drop(garbage))
@@ -3407,7 +3406,7 @@ impl AuthoredObjects {
                         )?;
                         Ok(if builder.compress_content {
                             (
-                                dict(&[("Filter", PdfObject::Name("FlateDecode".to_string()))]),
+                                dict([("Filter", PdfObject::Name("FlateDecode".to_string()))]),
                                 crate::filters::flate_encode(&content, 3),
                             )
                         } else {
@@ -3937,7 +3936,7 @@ fn catalog_dict(
     language: Option<&str>,
     authored_typed_tables: Option<u32>,
 ) -> PdfDictionary {
-    let mut catalog = dict(&[
+    let mut catalog = dict([
         ("Type", PdfObject::Name("Catalog".to_string())),
         ("Pages", reference(pages_number)),
     ]);
@@ -3955,7 +3954,7 @@ fn catalog_dict(
         catalog.insert("StructTreeRoot", reference(structure_root));
         catalog.insert(
             "MarkInfo",
-            PdfObject::Dictionary(dict(&[("Marked", PdfObject::Boolean(true))])),
+            PdfObject::Dictionary(dict([("Marked", PdfObject::Boolean(true))])),
         );
     }
     if let Some(language) = language {
@@ -3974,7 +3973,7 @@ fn pages_tree_dict(page_start: u32, page_count: usize) -> PdfDictionary {
     let kids = (0..page_count)
         .map(|idx| reference(page_start + idx as u32))
         .collect();
-    dict(&[
+    dict([
         ("Type", PdfObject::Name("Pages".to_string())),
         ("Count", PdfObject::Integer(page_count as i64)),
         ("Kids", PdfObject::Array(kids)),
@@ -4029,7 +4028,7 @@ fn page_dict(
         ]),
     );
 
-    let mut page_dictionary = dict(&[
+    let mut page_dictionary = dict([
         ("Type", PdfObject::Name("Page".to_string())),
         ("Parent", reference(parent)),
         (
@@ -4086,7 +4085,7 @@ fn info_dict(metadata: &PdfMetadata) -> PdfDictionary {
 }
 
 fn authored_image_dict(image: &AuthoredImage, smask_number: Option<u32>) -> PdfDictionary {
-    let mut dict = dict(&[
+    let mut dict = dict([
         ("Type", PdfObject::Name("XObject".to_string())),
         ("Subtype", PdfObject::Name("Image".to_string())),
         ("Width", PdfObject::Integer(i64::from(image.width))),
@@ -4111,7 +4110,7 @@ fn authored_image_dict(image: &AuthoredImage, smask_number: Option<u32>) -> PdfD
 }
 
 fn smask_image_dict(mask: &AuthoredSoftMask) -> PdfDictionary {
-    dict(&[
+    dict([
         ("Type", PdfObject::Name("XObject".to_string())),
         ("Subtype", PdfObject::Name("Image".to_string())),
         ("Width", PdfObject::Integer(i64::from(mask.width))),
@@ -4259,7 +4258,7 @@ fn build_font_objects(
 
 fn standard_font_dict(font: StandardFont) -> Result<PdfDictionary> {
     let widths = standard_widths(font)?;
-    let mut font_dict = dict(&[
+    let mut font_dict = dict([
         ("Type", PdfObject::Name("Font".to_string())),
         ("Subtype", PdfObject::Name("Type1".to_string())),
         (
@@ -4316,7 +4315,7 @@ fn build_embedded_type0_font(
     let mut objects = Vec::new();
     objects.push(OutputObject {
         number: type0_number,
-        object: PdfObject::Dictionary(dict(&[
+        object: PdfObject::Dictionary(dict([
             ("Type", PdfObject::Name("Font".to_string())),
             ("Subtype", PdfObject::Name("Type0".to_string())),
             ("BaseFont", PdfObject::Name(embedded_base_name.to_string())),
@@ -4551,7 +4550,7 @@ fn cid_font_dict(
     } else {
         unicode_width_array(font, plan, metrics)?
     };
-    let mut result = dict(&[
+    let mut result = dict([
         ("Type", PdfObject::Name("Font".to_string())),
         (
             "Subtype",
@@ -4585,7 +4584,7 @@ fn font_descriptor_dict(
     metrics: &TrueTypeMetrics,
     cff: bool,
 ) -> PdfDictionary {
-    dict(&[
+    dict([
         ("Type", PdfObject::Name("FontDescriptor".to_string())),
         ("FontName", PdfObject::Name(base_name.to_string())),
         ("Flags", PdfObject::Integer(32)),
@@ -5503,10 +5502,13 @@ fn alloc(next: &mut u32) -> u32 {
     number
 }
 
-fn dict(entries: &[(&str, PdfObject)]) -> PdfDictionary {
+/// Takes the entries by value: cloning them deep-copied every structure
+/// element's kids and the parent tree's number arrays, half the structure
+/// tree's serial time for a large tagged table.
+fn dict<const N: usize>(entries: [(&str, PdfObject); N]) -> PdfDictionary {
     let mut map = BTreeMap::new();
     for (key, value) in entries {
-        map.insert((*key).to_string(), value.clone());
+        map.insert(key.to_string(), value);
     }
     PdfDictionary::new(map)
 }

@@ -531,7 +531,7 @@ fn number_tree_leaf_dictionary(entries: &[(i64, PdfObject)]) -> PdfDictionary {
         nums.push(PdfObject::Integer(*key));
         nums.push(value.clone());
     }
-    let mut dictionary = dict(&[("Nums", PdfObject::Array(nums))]);
+    let mut dictionary = dict([("Nums", PdfObject::Array(nums))]);
     if let (Some((first, _)), Some((last, _))) = (entries.first(), entries.last()) {
         dictionary.insert("Limits", number_tree_limits(*first, *last));
     }
@@ -545,7 +545,7 @@ fn number_tree_branch_dictionary(nodes: &[NumberTreeNode]) -> Result<PdfDictiona
         ));
     };
     let last = nodes.last().unwrap();
-    Ok(dict(&[
+    Ok(dict([
         (
             "Kids",
             PdfObject::Array(nodes.iter().map(|node| reference(node.number)).collect()),
@@ -621,7 +621,7 @@ fn name_tree_leaf_dictionary(entries: &[(Vec<u8>, PdfObject)]) -> PdfDictionary 
         names.push(PdfObject::String(key.clone()));
         names.push(value.clone());
     }
-    let mut dictionary = dict(&[("Names", PdfObject::Array(names))]);
+    let mut dictionary = dict([("Names", PdfObject::Array(names))]);
     if let (Some((first, _)), Some((last, _))) = (entries.first(), entries.last()) {
         dictionary.insert("Limits", name_tree_limits(first, last));
     }
@@ -635,7 +635,7 @@ fn name_tree_branch_dictionary(nodes: &[NameTreeNode]) -> Result<PdfDictionary> 
         ));
     };
     let last = nodes.last().unwrap();
-    Ok(dict(&[
+    Ok(dict([
         (
             "Kids",
             PdfObject::Array(nodes.iter().map(|node| reference(node.number)).collect()),
@@ -1143,7 +1143,7 @@ pub(super) fn build(
     }
 
     let mut objects = Vec::new();
-    let mut root_dict = dict(&[
+    let mut root_dict = dict([
         ("Type", PdfObject::Name("StructTreeRoot".into())),
         (
             "K",
@@ -1222,7 +1222,7 @@ pub(super) fn build(
                     .ok_or_else(|| {
                         WellfriendError::ResourceLimit("authored structure page number".into())
                     })?;
-                kids.push(PdfObject::Dictionary(dict(&[
+                kids.push(PdfObject::Dictionary(dict([
                     ("Type", PdfObject::Name("MCR".into())),
                     ("Pg", reference(page_number)),
                     ("MCID", PdfObject::Integer(i64::from(*mcid))),
@@ -1242,7 +1242,7 @@ pub(super) fn build(
                             "authored annotation structure page number".into(),
                         )
                     })?;
-                kids.push(PdfObject::Dictionary(dict(&[
+                kids.push(PdfObject::Dictionary(dict([
                     ("Type", PdfObject::Name("OBJR".into())),
                     ("Obj", reference(mark.object)),
                     ("Pg", reference(page_number)),
@@ -1254,7 +1254,7 @@ pub(super) fn build(
         } else {
             PdfObject::Array(kids)
         };
-        let mut dictionary = dict(&[
+        let mut dictionary = dict([
             ("Type", PdfObject::Name("StructElem".into())),
             ("S", PdfObject::Name(element.role.pdf_name().into())),
             ("P", reference(parent)),
@@ -1290,7 +1290,7 @@ pub(super) fn build(
             );
         }
         if element.role == Role::TableHeader || element.role == Role::TableData {
-            let mut attributes = dict(&[("O", PdfObject::Name("Table".into()))]);
+            let mut attributes = dict([("O", PdfObject::Name("Table".into()))]);
             if let Some(scope) = element.table_scope {
                 attributes.insert(
                     "Scope",

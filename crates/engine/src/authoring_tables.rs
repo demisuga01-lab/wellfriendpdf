@@ -955,7 +955,7 @@ pub(super) fn build_typed_table_registry(
         objects: vec![OutputObject {
             number,
             object: PdfObject::Stream {
-                dict: dict(&[
+                dict: dict([
                     (
                         "Type",
                         PdfObject::Name("WellfriendAuthoredTypedTables".into()),
