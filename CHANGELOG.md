@@ -5,6 +5,31 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- Conversions to Markdown, JSON, DOCX, XLSX and EPUB run page-parallel in one
+  process and read each page's content once: classification, layout, marked
+  text and the tagged route share a single parse. Pages are assembled in page
+  order, so the output is byte-identical for any thread count. A global
+  `--threads N` sizes the worker pool (default and `0`: every core).
+  `pdf-to-docx` and `pdf-to-xlsx` take `-p/--pages`.
+- A structure tree that yields no content for the selected pages (for example
+  an empty `Document` element) no longer produces an empty conversion: the
+  pages are laid out geometrically, as for an untagged file.
+- The per-page content operation limit scales with the page's stored content
+  size (one operation per stored byte, floor 1,000,000, ceiling 8,000,000), so
+  dense map pages parse while decompression bombs keep the floor. The page
+  pass bounds the stored content it expands at once.
+- The content tokenizer reads a page's decoded streams from one buffer and
+  scans names, operators and numbers in place; numbers parse exactly as
+  `str::parse` does without its general machinery.
+- JSON results of the conversions and of `rotate`, `organize`, `merge`,
+  `extract-pages`, `watermark`, `add-page-numbers`, `optimize`, `repair`,
+  `linearize`, `encrypt` and `decrypt` carry `output_sha256` (computed while
+  writing) and `output_pages`; the `pdf-to-epub` result carries `sha256`.
+- `rotate --incremental` appends the changed page dictionaries as an
+  incremental update after an unchanged copy of the input and reports
+  `incremental`, `baseLength` and `deltaLength`.
+- `pdf-to-epub` opens its input in place instead of reading it into memory
+  twice.
 - Added Rust-native conversions to PDF: `text-to-pdf`, `markdown-to-pdf`
   (CommonMark + GFM), `csv-to-pdf` (repeated headers, column cap error instead
   of truncation), `json-to-pdf` and `svg-to-pdf` (vector, via `svg2pdf`), on
