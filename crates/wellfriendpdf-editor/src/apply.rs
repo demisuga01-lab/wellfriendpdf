@@ -600,16 +600,23 @@ fn replace_text(
 ) -> Result<Vec<u8>, EditorError> {
     let page = page as usize;
     let before = PageTextLayout::from_bytes(input, page)?;
+    if end > before.len() || start > end || before.text_in([start, end]) != expected {
+        return Err(EditorError::new(
+            "EDITOR_TEXT_STALE",
+            "the selected text no longer matches the page; reopen the current version",
+        ));
+    }
+    // Text inside a placed form is edited in the form's own content.
+    if let Some(form) = crate::forms::target(&before, start, end)? {
+        let base = form.range[0];
+        return crate::forms::edit_in_form(input, page as u32, &form, report, |bytes, scratch, report| {
+            replace_text(bytes, scratch, start - base, end - base, expected, text, fallback_font, fonts, report)
+        });
+    }
     if !before.editable {
         return Err(EditorError::new(
             "EDITOR_TEXT_NOT_EDITABLE",
             "this page's text cannot be edited in place (its fonts do not decode to exact text)",
-        ));
-    }
-    if end > before.len() || before.text_in([start, end]) != expected {
-        return Err(EditorError::new(
-            "EDITOR_TEXT_STALE",
-            "the selected text no longer matches the page; reopen the current version",
         ));
     }
     // A pure insertion or deletion is widened by one neighbouring scalar that

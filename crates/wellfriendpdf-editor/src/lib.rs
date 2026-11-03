@@ -12,6 +12,7 @@ pub mod apply;
 pub mod error;
 pub mod fonts;
 mod flow;
+mod forms;
 pub mod images;
 pub mod objects;
 pub mod ops;

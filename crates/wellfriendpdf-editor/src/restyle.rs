@@ -47,12 +47,6 @@ pub fn restyle_text(
 ) -> Result<Vec<u8>, EditorError> {
     let page = restyle.page as usize;
     let before = PageTextLayout::from_bytes(input, page)?;
-    if !before.editable {
-        return Err(EditorError::new(
-            "EDITOR_TEXT_NOT_EDITABLE",
-            "this page's text cannot be edited in place (its fonts do not decode to exact text)",
-        ));
-    }
     if restyle.start >= restyle.end
         || restyle.end > before.len()
         || before.text_in([restyle.start, restyle.end]) != restyle.expected
@@ -60,6 +54,26 @@ pub fn restyle_text(
         return Err(EditorError::new(
             "EDITOR_TEXT_STALE",
             "the selected text no longer matches the page; reopen the current version",
+        ));
+    }
+    // Text inside a placed form is restyled in the form's own content.
+    if let Some(form) = crate::forms::target(&before, restyle.start, restyle.end)? {
+        let base = form.range[0];
+        return crate::forms::edit_in_form(input, restyle.page, &form, report, |bytes, scratch, report| {
+            let local = Restyle {
+                page: scratch,
+                start: restyle.start - base,
+                end: restyle.end - base,
+                color: restyle.color.clone(),
+                ..*restyle
+            };
+            restyle_text(bytes, &local, fonts, report)
+        });
+    }
+    if !before.editable {
+        return Err(EditorError::new(
+            "EDITOR_TEXT_NOT_EDITABLE",
+            "this page's text cannot be edited in place (its fonts do not decode to exact text)",
         ));
     }
     let bytes = fonts.font_bytes(restyle.font).ok_or_else(|| {
@@ -381,11 +395,24 @@ impl<'a> Reset<'a> {
             text: String::new(),
             fallback_font: None,
         };
-        let (removed, _) = apply_operation(input, &remove, fonts, true)?;
-        let left = PageTextLayout::from_bytes(&removed, restyle.page as usize)?;
-        if restyle.expected.chars().count() > 3 && left.text.contains(restyle.expected) {
-            return Err(EditorError::new("EDITOR_TEXT_LAYOUT_FAILED", "the paragraph could not be removed"));
-        }
+        let removed_by = |bytes: Vec<u8>| -> Result<Vec<u8>, EditorError> {
+            let left = PageTextLayout::from_bytes(&bytes, restyle.page as usize)?;
+            if restyle.expected.chars().count() > 3 && left.text.contains(restyle.expected) {
+                return Err(EditorError::new("EDITOR_TEXT_LAYOUT_FAILED", "the paragraph could not be removed"));
+            }
+            Ok(bytes)
+        };
+        // The reflow transaction deletes the text; when it cannot (all of
+        // the page's text, with nothing to anchor the deletion on), the
+        // paragraph's text runs are taken out of the content directly.
+        let removed = apply_operation(input, &remove, fonts, true)
+            .and_then(|(bytes, _)| removed_by(bytes))
+            .or_else(|first| {
+                let lines: Vec<usize> = covering.iter().flat_map(|p| p.lines[0]..p.lines[1]).collect();
+                flow::remove_lines(input, restyle.page, before, &lines)
+                    .and_then(removed_by)
+                    .map_err(|_| first)
+            })?;
         // Link underlines of the removed lines would cross the re-set text.
         let baselines: Vec<f64> = covering
             .iter()

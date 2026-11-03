@@ -676,8 +676,8 @@ pub use text::{
     TextStructureEntry, TextStructurePageSummary, TextTraversalLimits,
 };
 pub use text_editor::{
-    Caret, CaretMove, EditorGlyph, EditorLine, EditorParagraph, PageTextLayout, TextEditOutcome,
-    TextEditSession,
+    Caret, CaretMove, EditorFormText, EditorGlyph, EditorLine, EditorParagraph, PageTextLayout,
+    TextEditOutcome, TextEditSession,
 };
 pub use text_reflow::{
     analyze_geometric_region, analyze_semantic_layout, apply_reflow_document, apply_reflow_region,

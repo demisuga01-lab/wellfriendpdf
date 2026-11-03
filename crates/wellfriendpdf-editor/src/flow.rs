@@ -299,6 +299,39 @@ pub(crate) fn push(bytes: &[u8], page: u32, layout: &PageTextLayout, room: &Room
     overlay::save(&mut document)
 }
 
+/// Remove the text runs that draw `lines` of `layout` (the layout of
+/// `bytes`), keeping every other operator: the paragraph is re-set as new
+/// text. Used where the reflow transaction cannot delete the text (all of a
+/// page's or a form's text, with nothing around it to anchor the deletion).
+pub(crate) fn remove_lines(bytes: &[u8], page: u32, layout: &PageTextLayout, lines: &[usize]) -> Result<Vec<u8>, EditorError> {
+    let mut document = overlay::load(bytes)?;
+    let page_id = overlay::page_id(&document, page)?;
+    let mut tracker = Tracker::new(layout, None, HashMap::new());
+    tracker.drop_lines = vec![false; layout.lines.len()];
+    for &line in lines {
+        tracker.drop_lines[line] = true;
+    }
+    let mut streams = Vec::new();
+    for id in document.get_page_contents(page_id) {
+        let operations = tracker.rewrite(decode(&document, id)?);
+        let encoded = Content { operations }
+            .encode()
+            .map_err(|e| EditorError::new("EDITOR_WRITE_FAILED", e.to_string()))?;
+        let mut stream = Stream::new(Dictionary::new(), encoded);
+        let _ = stream.compress();
+        streams.push(Object::Reference(document.add_object(stream)));
+    }
+    if tracker.dropped == 0 {
+        return Err(EditorError::new("EDITOR_TEXT_LAYOUT_FAILED", "the paragraph's text runs could not be located"));
+    }
+    document
+        .get_object_mut(page_id)
+        .and_then(Object::as_dict_mut)
+        .map_err(|e| EditorError::new("EDITOR_WRITE_FAILED", e.to_string()))?
+        .set("Contents", Object::Array(streams));
+    overlay::save(&mut document)
+}
+
 /// Remove the thin filled rectangles just under `baselines` inside `area`
 /// (link underlines drawn as paths): the text they decorated was removed
 /// and re-set elsewhere, so they would cross it.
@@ -464,6 +497,11 @@ struct Tracker<'a> {
     path_box: Option<[f64; 4]>,
     clipping: bool,
     moved: usize,
+    /// Lines whose runs are removed (re-set elsewhere), and the line of the
+    /// run in progress.
+    drop_lines: Vec<bool>,
+    current_line: Option<usize>,
+    dropped: usize,
 }
 
 impl<'a> Tracker<'a> {
@@ -492,6 +530,9 @@ impl<'a> Tracker<'a> {
             path_box: None,
             clipping: false,
             moved: 0,
+            drop_lines: Vec::new(),
+            current_line: None,
+            dropped: 0,
         }
     }
 
@@ -572,11 +613,25 @@ impl<'a> Tracker<'a> {
                     if let Some(change) = self.decide() {
                         out.push(change);
                     }
+                    if self.dropping() {
+                        continue;
+                    }
                     out.push(operation);
                 }
                 "'" | "\"" => {
                     self.next_line(0.0, -self.leading);
-                    match self.decide() {
+                    let change = self.decide();
+                    if self.dropping() {
+                        // Keep the line move and spacing, drop the run.
+                        let mut operands = operation.operands;
+                        if operation.operator == "\"" && operands.len() == 3 {
+                            out.push(Operation::new("Tw", vec![operands.remove(0)]));
+                            out.push(Operation::new("Tc", vec![operands.remove(0)]));
+                        }
+                        out.push(Operation::new("T*", vec![]));
+                        continue;
+                    }
+                    match change {
                         None => out.push(operation),
                         Some(change) => {
                             // Split into its parts so the new text matrix
@@ -696,6 +751,7 @@ impl<'a> Tracker<'a> {
         self.pending = false;
         let origin = apply(self.ctm, [self.tm[4], self.tm[5]]);
         let line = self.line_at(origin);
+        self.current_line = line;
         if let Some(line) = line {
             if self.room.is_none() {
                 self.line_clips[line].extend(self.clips.iter().copied());
@@ -710,6 +766,13 @@ impl<'a> Tracker<'a> {
         }
         self.emitted = want;
         Some(tm_operation(translated(self.tm, want.unwrap_or([0.0, 0.0]))))
+    }
+
+    /// Whether the run in progress is on a line being removed.
+    fn dropping(&mut self) -> bool {
+        let drop = self.current_line.is_some_and(|line| self.drop_lines.get(line).copied().unwrap_or(false));
+        self.dropped += usize::from(drop);
+        drop
     }
 
     /// The layout line a run starting at `point` (page space) draws: the
