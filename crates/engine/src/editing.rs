@@ -2633,9 +2633,9 @@ fn rewrite_page_content_for_redaction(
                     } else {
                         redact_text_array(&op, &state, resolver, redactions, report)
                     };
-                    let unchanged = rewritten
-                        .as_ref()
-                        .is_some_and(|rewritten| operation_bytes(rewritten) == operation_bytes(&op));
+                    let unchanged = rewritten.as_ref().is_some_and(|rewritten| {
+                        operation_bytes(rewritten) == operation_bytes(&op)
+                    });
                     if !unchanged {
                         mark_open_sequences_dirty(&mut open_marks);
                     }
@@ -2812,10 +2812,12 @@ fn mark_open_sequences_dirty(open_marks: &mut [(usize, usize, bool)]) {
 /// the alternate text of every such sequence is dropped and extraction falls
 /// back to the surviving glyphs (QF-2561).
 fn drop_alternate_text(out: &mut Vec<u8>, mut dirty: Vec<(usize, usize)>) -> Result<()> {
-    dirty.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    dirty.sort_unstable_by_key(|&(start, _)| std::cmp::Reverse(start));
     for (start, end) in dirty {
         let mut operations = ContentParser::parse(&out[start..end])?;
-        let Some(op) = operations.first_mut() else { continue };
+        let Some(op) = operations.first_mut() else {
+            continue;
+        };
         let mut changed = false;
         for operand in &mut op.operands {
             if let Operand::Dictionary(entries) = operand {
