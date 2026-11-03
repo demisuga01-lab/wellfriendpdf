@@ -20,6 +20,7 @@ pub mod pages;
 pub mod protocol;
 pub mod restyle;
 mod scratch;
+pub mod windows;
 
 pub use apply::{apply_operation, apply_operations, ApplyOutcome, OperationReport};
 pub use error::EditorError;

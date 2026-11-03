@@ -38,6 +38,216 @@ struct Command {
     operations_path: Option<PathBuf>,
     #[serde(default)]
     allow_signature_invalidation: bool,
+    /// `"windows"`: the operations file is a [`WindowedList`] of page-scoped
+    /// edits, saved as an incremental update.
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+/// Page-scoped edits of a large document: each window's operations address
+/// its page as page 1 (the one-page window the browser edited).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WindowedList {
+    pub version: u32,
+    pub windows: Vec<WindowEdit>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WindowEdit {
+    pub page: u32,
+    pub operations: Vec<crate::ops::EditorOperation>,
+}
+
+impl WindowedList {
+    pub fn validate(&self) -> Result<(), EditorError> {
+        let invalid = |m: &str| EditorError::new("EDITOR_OPERATION_INVALID", m);
+        if self.version != 1 || self.windows.is_empty() || self.windows.len() > 200 {
+            return Err(invalid("a windowed list has version 1 and 1-200 windows"));
+        }
+        let mut pages = std::collections::BTreeSet::new();
+        let mut total = 0;
+        for window in &self.windows {
+            if window.page == 0 || !pages.insert(window.page) {
+                return Err(invalid("each window names a distinct page"));
+            }
+            total += window.operations.len();
+            let list = OperationList {
+                version: 1,
+                operations: window.operations.clone(),
+            };
+            list.validate()?;
+            for operation in &window.operations {
+                if operation.restructures_pages() || operation.page() > 1 {
+                    return Err(invalid("window operations edit their own page (page 1) only"));
+                }
+                if matches!(operation, crate::ops::EditorOperation::Redact { .. }) {
+                    return Err(EditorError::new(
+                        "EDITOR_REDACTION_NEEDS_REWRITE",
+                        "redaction must remove content from every revision; save it with a full rewrite",
+                    ));
+                }
+            }
+        }
+        if total > crate::ops::MAX_OPERATIONS {
+            return Err(invalid("at most 500 operations per save"));
+        }
+        Ok(())
+    }
+}
+
+/// Replay page-scoped edits on freshly extracted windows and splice the
+/// pages back as one incremental update.
+pub fn apply_windows(
+    input: &[u8],
+    list: &WindowedList,
+    font_dir: PathBuf,
+    allow_signature_invalidation: bool,
+) -> Result<(Vec<u8>, ApplyResult), EditorError> {
+    list.validate()?;
+    let engine = wellfriendpdf_engine::ContentEngine::open_bytes(input.to_vec())?;
+    let signed = crate::windows::signed_lazily(&engine);
+    if signed && !allow_signature_invalidation {
+        return Err(EditorError::new(
+            "EDITOR_SIGNATURE_CONFIRMATION_REQUIRED",
+            "this PDF is signed; confirm that the edit invalidates the signature",
+        ));
+    }
+    let fonts = DirectoryFonts {
+        directory: font_dir,
+    };
+    let mut edited = Vec::new();
+    let mut reports = Vec::new();
+    let mut count = 0;
+    for window in &list.windows {
+        let source = crate::windows::extract(&engine, window.page)?;
+        let operations = OperationList {
+            version: 1,
+            operations: window.operations.clone(),
+        };
+        let outcome = apply_operations(&source, &operations, &fonts, allow_signature_invalidation)?;
+        count += window.operations.len();
+        for mut report in outcome.reports {
+            report.index = reports.len();
+            report.page = window.page;
+            reports.push(report);
+        }
+        edited.push(crate::windows::EditedWindow {
+            page: window.page,
+            before: source,
+            after: outcome.bytes,
+        });
+    }
+    let page_count = engine.page_count()?;
+    drop(engine);
+    let bytes = crate::windows::splice_incremental(input, &edited)?;
+    let reopened = wellfriendpdf_engine::ContentEngine::open_bytes(bytes.clone())?;
+    if reopened.page_count()? != page_count {
+        return Err(EditorError::new(
+            "EDITOR_OUTPUT_INVALID",
+            "the incremental update changed the page count",
+        ));
+    }
+    let result = ApplyResult {
+        operation: "APPLY_EDITOR_OPERATIONS",
+        capability: "PDF_EDITOR_OPERATIONS",
+        input_sha256: sha256(input),
+        output_sha256: sha256(&bytes),
+        input_bytes: input.len() as u64,
+        output_bytes: bytes.len() as u64,
+        page_count,
+        operation_count: count,
+        save_mode: "INCREMENTAL",
+        signature_effect: if signed {
+            "INVALIDATES_EXISTING_SIGNATURES"
+        } else {
+            "NONE"
+        },
+        source_object_count: 0,
+        output_object_count: 0,
+        changed_objects: Vec::new(),
+        validation: Validation {
+            reparsed: true,
+            operations_applied: true,
+        },
+        reports,
+    };
+    Ok((bytes, result))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowCommand {
+    input_path: PathBuf,
+    #[serde(default)]
+    output_path: Option<PathBuf>,
+    #[serde(default)]
+    page: Option<u32>,
+}
+
+fn read_command<T: serde::de::DeserializeOwned>() -> Result<T, EditorError> {
+    let mut payload = Vec::new();
+    std::io::stdin()
+        .take(64 * 1024)
+        .read_to_end(&mut payload)
+        .map_err(|_| EditorError::new("EDITOR_IO_FAILED", "the command could not be read"))?;
+    serde_json::from_slice(&payload).map_err(|e| {
+        EditorError::new(
+            "EDITOR_OPERATION_INVALID",
+            format!("the command is malformed: {e}"),
+        )
+    })
+}
+
+/// `pdf-editor-index`: page count and page sizes of a (large) document.
+pub fn run_index_stdin() -> i32 {
+    envelope(read_command::<WindowCommand>().and_then(|command| {
+        let engine = wellfriendpdf_engine::ContentEngine::open_path(&command.input_path)?;
+        Ok(serde_json::to_value(crate::windows::index(&engine)?).unwrap_or_default())
+    }))
+}
+
+/// `pdf-editor-window`: write the one-page window of `page`.
+pub fn run_window_stdin() -> i32 {
+    envelope(read_command::<WindowCommand>().and_then(|command| {
+        let page = command
+            .page
+            .ok_or_else(|| EditorError::new("EDITOR_OPERATION_INVALID", "page is required"))?;
+        let output = command
+            .output_path
+            .ok_or_else(|| EditorError::new("EDITOR_OPERATION_INVALID", "output_path is required"))?;
+        let engine = wellfriendpdf_engine::ContentEngine::open_path(&command.input_path)?;
+        let bytes = crate::windows::extract(&engine, page)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .and_then(|mut file| file.write_all(&bytes))
+            .map_err(|_| EditorError::new("EDITOR_IO_FAILED", "the window could not be written"))?;
+        Ok(serde_json::json!({ "page": page, "outputBytes": bytes.len(), "outputSha256": sha256(&bytes) }))
+    }))
+}
+
+fn envelope(result: Result<serde_json::Value, EditorError>) -> i32 {
+    match result {
+        Ok(value) => {
+            println!("{}", serde_json::json!({ "status": "SUCCESS", "result": value }));
+            0
+        }
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ERROR",
+                    "code": format!("PDF_{}", error.code),
+                    "message": error.to_string().chars().take(1000).collect::<String>(),
+                    "retryable": false,
+                })
+            );
+            2
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -158,6 +368,38 @@ fn run() -> Result<ApplyResult, EditorError> {
             format!("the command is malformed: {e}"),
         )
     })?;
+    if command.mode.as_deref() == Some("windows") {
+        let path = command
+            .operations_path
+            .as_ref()
+            .ok_or_else(|| io("the windowed list is unavailable"))?;
+        let text = std::fs::read_to_string(path).map_err(|_| io("the windowed list is unavailable"))?;
+        let list: WindowedList = serde_json::from_str(&text).map_err(|e| {
+            EditorError::new(
+                "EDITOR_OPERATION_INVALID",
+                format!("the windowed list is malformed: {e}"),
+            )
+        })?;
+        if command.output_path.exists() {
+            return Err(io("the output already exists"));
+        }
+        let input = std::fs::read(&command.input_path).map_err(|_| io("the input is unavailable"))?;
+        let (bytes, result) = apply_windows(
+            &input,
+            &list,
+            command.font_dir,
+            command.allow_signature_invalidation,
+        )?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&command.output_path)
+            .map_err(|_| io("the output could not be created"))?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| io("the output could not be written"))?;
+        return Ok(result);
+    }
     let operations = match (command.operations, &command.operations_path) {
         (Some(operations), None) => operations,
         (None, Some(path)) => {

@@ -191,6 +191,13 @@ impl PdfEditorSession {
         Ok(())
     }
 
+    /// A new PDF with the listed pages (JSON array of 1-based numbers).
+    #[wasm_bindgen(js_name = extractPages)]
+    pub fn extract_pages(&self, pages_json: &str) -> Result<Vec<u8>, JsValue> {
+        let pages: Vec<u32> = serde_json::from_str(pages_json).map_err(js_err)?;
+        wellfriendpdf_editor::pages::extract_pages(&self.bytes, &pages).map_err(editor_err)
+    }
+
     pub fn bytes(&self) -> Vec<u8> {
         self.bytes.clone()
     }
