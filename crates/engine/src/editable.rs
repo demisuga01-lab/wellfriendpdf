@@ -1137,55 +1137,6 @@ fn html_escape(input: &str) -> String {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::{AuthorPageSize, PdfBuilder, StandardFont, TextStyle};
-
-    use super::*;
-
-    fn sample_pdf() -> Vec<u8> {
-        let mut doc = PdfBuilder::new();
-        doc.add_page(AuthorPageSize::LETTER)
-            .draw_text(
-                "Heading",
-                72.0,
-                720.0,
-                &TextStyle::standard(StandardFont::Helvetica, 18.0),
-            )
-            .unwrap()
-            .draw_text(
-                "Editable paragraph text.",
-                72.0,
-                690.0,
-                &TextStyle::standard(StandardFont::Helvetica, 11.0),
-            )
-            .unwrap();
-        doc.to_bytes().unwrap()
-    }
-
-    #[test]
-    fn editable_model_builds_blocks_and_markdown() {
-        let engine = ContentEngine::open_bytes(sample_pdf()).unwrap();
-        let model = build_editable_document(&engine, &EditableBuildOptions::default()).unwrap();
-        assert!(!model.blocks.is_empty());
-        assert!(model.to_markdown().contains("Editable paragraph"));
-        assert!(!model.sections.is_empty());
-    }
-
-    #[test]
-    fn editable_transaction_undo_redo_changes_text() {
-        let engine = ContentEngine::open_bytes(sample_pdf()).unwrap();
-        let mut model = build_editable_document(&engine, &EditableBuildOptions::default()).unwrap();
-        let id = model.blocks[0].id.clone();
-        assert!(model.replace_block_text(&id, "Changed"));
-        assert!(model.to_markdown().contains("Changed"));
-        assert!(model.undo());
-        assert!(!model.to_markdown().contains("Changed"));
-        assert!(model.redo());
-        assert!(model.to_markdown().contains("Changed"));
-    }
-}
-
 impl EditableDocument {
     /// `serde_json::to_vec_pretty(self)`, byte for byte, with the four large
     /// arrays (the parse's blocks and pages, the editable blocks and pages)
@@ -1196,7 +1147,7 @@ impl EditableDocument {
             source_document: Document {
                 schema_version: self.source_document.schema_version.clone(),
                 metadata: self.source_document.metadata.clone(),
-                source: self.source_document.source.clone(),
+                source: self.source_document.source,
                 body: Vec::new(),
                 pages: Vec::new(),
             },
@@ -1282,4 +1233,53 @@ fn pretty_array<T: Serialize + Sync>(items: &[T], level: usize) -> serde_json::R
     out.extend_from_slice("  ".repeat(level).as_bytes());
     out.push(b']');
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AuthorPageSize, PdfBuilder, StandardFont, TextStyle};
+
+    use super::*;
+
+    fn sample_pdf() -> Vec<u8> {
+        let mut doc = PdfBuilder::new();
+        doc.add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "Heading",
+                72.0,
+                720.0,
+                &TextStyle::standard(StandardFont::Helvetica, 18.0),
+            )
+            .unwrap()
+            .draw_text(
+                "Editable paragraph text.",
+                72.0,
+                690.0,
+                &TextStyle::standard(StandardFont::Helvetica, 11.0),
+            )
+            .unwrap();
+        doc.to_bytes().unwrap()
+    }
+
+    #[test]
+    fn editable_model_builds_blocks_and_markdown() {
+        let engine = ContentEngine::open_bytes(sample_pdf()).unwrap();
+        let model = build_editable_document(&engine, &EditableBuildOptions::default()).unwrap();
+        assert!(!model.blocks.is_empty());
+        assert!(model.to_markdown().contains("Editable paragraph"));
+        assert!(!model.sections.is_empty());
+    }
+
+    #[test]
+    fn editable_transaction_undo_redo_changes_text() {
+        let engine = ContentEngine::open_bytes(sample_pdf()).unwrap();
+        let mut model = build_editable_document(&engine, &EditableBuildOptions::default()).unwrap();
+        let id = model.blocks[0].id.clone();
+        assert!(model.replace_block_text(&id, "Changed"));
+        assert!(model.to_markdown().contains("Changed"));
+        assert!(model.undo());
+        assert!(!model.to_markdown().contains("Changed"));
+        assert!(model.redo());
+        assert!(model.to_markdown().contains("Changed"));
+    }
 }
