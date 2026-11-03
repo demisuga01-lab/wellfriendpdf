@@ -321,7 +321,9 @@ pub enum EditorOperation {
         #[serde(default)]
         line_height: Option<f64>,
     },
-    /// Crop an image placement (fractions of the image kept on each side).
+    /// Crop an image placement to the kept rectangle `crop` in image space
+    /// (0 to 1 from the image's lower-left corner; `right > left` and
+    /// `top > bottom`), not insets.
     #[serde(rename_all = "camelCase")]
     CropImage {
         selector: ImagePlacementSelector,
