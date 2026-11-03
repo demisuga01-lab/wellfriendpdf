@@ -12,7 +12,6 @@ name = "wellfriend_pdf_edit"
 path = "src/lib.rs"
 
 [dependencies]
-getrandom = "=0.4.3"
 jpeg-decoder = "0.3.2"
 lopdf = { version = "0.44.0", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -21,7 +20,14 @@ sha2 = "0.10.9"
 thiserror = "2.0.18"
 url = "2.5.7"
 ttf-parser = "0.25.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+getrandom = "=0.4.3"
 tempfile = "3.24.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "=0.4.3", features = ["wasm_js"] }
+lopdf = { version = "0.44.0", default-features = false, features = ["wasm_js"] }
 
 [dev-dependencies]
 jpeg-encoder = "0.6.1"

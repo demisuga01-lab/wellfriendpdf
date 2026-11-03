@@ -529,6 +529,7 @@ fn scene_text_reflow_request(
         paint_order_policy: Default::default(),
         break_width_scale: None,
         max_downstream_blocks: request.max_downstream_blocks,
+        explicit_style: false,
     })
 }
 

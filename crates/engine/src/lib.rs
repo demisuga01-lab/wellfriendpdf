@@ -176,6 +176,7 @@ pub mod render;
 pub mod research_edit_synthesis {
     pub use crate::edit_synthesis::*;
 }
+pub mod portable_time;
 pub mod runtime;
 pub mod scan_review;
 pub mod sdk;
@@ -679,8 +680,8 @@ pub use text::{
     TextStructureEntry, TextStructurePageSummary, TextTraversalLimits,
 };
 pub use text_editor::{
-    Caret, CaretMove, EditorGlyph, EditorLine, EditorParagraph, PageTextLayout, TextEditOutcome,
-    TextEditSession,
+    Caret, CaretMove, EditorFormText, EditorGlyph, EditorLine, EditorParagraph, PageTextLayout,
+    TextEditOutcome, TextEditSession,
 };
 pub use text_reflow::{
     analyze_geometric_region, analyze_semantic_layout, apply_reflow_document, apply_reflow_region,

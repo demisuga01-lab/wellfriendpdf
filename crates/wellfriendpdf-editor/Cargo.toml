@@ -1,0 +1,25 @@
+[package]
+name = "wellfriendpdf-editor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+publish = false
+description = "Wellfriend PDF SDK interactive editor: a validated operation list (text, image, vector, overlay, link and redaction edits) applied by the same code in the browser (WASM) and on the server."
+
+[lib]
+name = "wellfriendpdf_editor"
+path = "src/lib.rs"
+
+[dependencies]
+wellfriendpdf-engine = { version = "0.1.0", path = "../engine" }
+wellfriendpdf-edit = { version = "0.22.0", path = "../wellfriendpdf-edit" }
+lopdf = { version = "0.44.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+ttf-parser = "0.25.1"
+sha2 = "0.10.9"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tempfile = "3.24.0"

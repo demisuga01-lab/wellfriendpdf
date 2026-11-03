@@ -16,7 +16,7 @@
 use serde::Serialize;
 
 use crate::error::{Result, WellfriendError};
-use crate::ContentEngine;
+use crate::{ContentEngine, PdfObject};
 
 /// One painted glyph of the page's editable text.
 #[derive(Debug, Clone, Serialize)]
@@ -55,6 +55,32 @@ pub struct EditorLine {
     pub baseline: [[f64; 2]; 2],
     /// Index into [`PageTextLayout::paragraphs`].
     pub paragraph: usize,
+}
+
+/// Text drawn by a Form XObject that the page content places with `Do`.
+///
+/// Its glyphs follow the page's own glyphs in [`PageTextLayout::glyphs`],
+/// already in page space, and its text follows the page's own text (after a
+/// line break) at [`Self::range`]. An edit inside the range rewrites the
+/// form's content stream; a form placed more than once is copied first so
+/// its other placements are unchanged.
+#[derive(Debug, Clone, Serialize)]
+pub struct EditorFormText {
+    /// `[start, end)` offsets of the form's text in [`PageTextLayout::text`].
+    pub range: [usize; 2],
+    /// XObject resource name the page content invokes (`Fm1`).
+    pub name: String,
+    /// Index of the invoking `Do` among all `Do` operators of the page
+    /// content, in content order.
+    pub placement: usize,
+    pub object: u32,
+    pub generation: u16,
+    /// Form space to page user space: the form's `/Matrix` times the CTM at
+    /// the `Do`.
+    pub matrix: [f64; 6],
+    /// The form's text is the editing model's exact text (see
+    /// [`PageTextLayout::editable`]).
+    pub editable: bool,
 }
 
 /// Consecutive lines with one alignment edge and a regular line pitch.
@@ -135,35 +161,69 @@ pub struct PageTextLayout {
     pub page_box: [f64; 4],
     pub rotation: u32,
     pub user_unit: f64,
+    /// Text inside Form XObjects placed by the page content, in placement
+    /// order; it follows the page's own text.
+    pub forms: Vec<EditorFormText>,
     #[serde(skip)]
     chars: Vec<char>,
+    /// Scalars of the page content's own text (before any form text).
+    #[serde(skip)]
+    page_chars: usize,
 }
 
 impl PageTextLayout {
     /// Build the layout of `page` (1-based) of an opened document.
     pub fn build(engine: &ContentEngine, page: usize) -> Result<Self> {
-        let source = crate::advanced_editing::editor_layout::page_glyph_layout(engine, page)?;
-        let editable = source.editable;
-        let logical_text = source.logical_text;
         let pdf_page = engine.document().get_page(page)?;
+        let source = crate::advanced_editing::editor_layout::glyph_layout(engine, &pdf_page)?;
+        let editable = source.editable;
+        let mut logical_text = source.logical_text;
+        let page_chars = logical_text.chars().count();
         let mut glyphs: Vec<EditorGlyph> = source
             .glyphs
             .into_iter()
-            .map(|glyph| EditorGlyph {
-                bbox: quad_bounds(&glyph.quad),
-                text: glyph.text,
-                range: glyph.logical_range,
-                quad: glyph.quad,
-                baseline: glyph.baseline,
-                font_resource: glyph.font_resource,
-                font_size: glyph.font_size,
-                vertical: glyph.vertical,
-                invisible: glyph.invisible,
-                line: 0,
-            })
+            .map(|glyph| editor_glyph(glyph, None, 0))
             .collect();
-        let lines = group_lines(&mut glyphs);
-        let (lines, paragraphs) = group_paragraphs(lines, &glyphs);
+        // Text inside forms the page places follows the page's own text; a
+        // form starts a new line and paragraph.
+        let mut forms = Vec::new();
+        let mut breaks = Vec::new();
+        let mut length = page_chars;
+        for placement in form_placements(engine, &pdf_page).unwrap_or_default() {
+            let mut form_page = pdf_page.clone();
+            form_page.contents = vec![(placement.object, placement.generation)];
+            form_page.resources = placement.resources;
+            let Ok(form) = crate::advanced_editing::editor_layout::glyph_layout(engine, &form_page) else {
+                continue;
+            };
+            if form.glyphs.is_empty() {
+                continue;
+            }
+            if length > 0 && !logical_text.ends_with(char::is_whitespace) {
+                logical_text.push('\n');
+                length += 1;
+            }
+            let start = length;
+            length += form.logical_text.chars().count();
+            logical_text.push_str(&form.logical_text);
+            breaks.push(glyphs.len());
+            glyphs.extend(
+                form.glyphs
+                    .into_iter()
+                    .map(|glyph| editor_glyph(glyph, Some(&placement.matrix), start)),
+            );
+            forms.push(EditorFormText {
+                range: [start, length],
+                name: placement.name,
+                placement: placement.placement,
+                object: placement.object,
+                generation: placement.generation,
+                matrix: placement.matrix,
+                editable: form.editable,
+            });
+        }
+        let lines = group_lines(&mut glyphs, &breaks);
+        let (lines, paragraphs) = group_paragraphs(lines, &glyphs, &breaks);
         let mut layout = Self {
             page,
             chars: logical_text.chars().collect(),
@@ -175,6 +235,8 @@ impl PageTextLayout {
             page_box: engine.page_box(page)?,
             rotation: (pdf_page.rotate.rem_euclid(360)) as u32,
             user_unit: pdf_page.user_unit,
+            forms,
+            page_chars,
         };
         for (index, line) in layout.lines.iter().enumerate() {
             for glyph in &mut layout.glyphs[line.glyphs[0]..line.glyphs[1]] {
@@ -193,6 +255,19 @@ impl PageTextLayout {
     /// Number of scalars in [`Self::text`] (the largest caret offset).
     pub fn len(&self) -> usize {
         self.chars.len()
+    }
+
+    /// Number of scalars of the page content's own text: offsets below it
+    /// are page text, the rest belongs to [`Self::forms`].
+    pub fn page_text_len(&self) -> usize {
+        self.page_chars
+    }
+
+    /// The form whose text holds all of `[start, end)`.
+    pub fn form_at(&self, [start, end]: [usize; 2]) -> Option<&EditorFormText> {
+        self.forms
+            .iter()
+            .find(|form| form.range[0] <= start && end <= form.range[1])
     }
 
     pub fn is_empty(&self) -> bool {
@@ -492,18 +567,134 @@ impl PageTextLayout {
     }
 }
 
+fn editor_glyph(
+    glyph: crate::advanced_editing::editor_layout::SourceGlyph,
+    matrix: Option<&[f64; 6]>,
+    offset: usize,
+) -> EditorGlyph {
+    let place = |point: [f64; 2]| match matrix {
+        Some(m) => {
+            let (x, y) = crate::content::state::transform_point(m, point[0], point[1]);
+            [x, y]
+        }
+        None => point,
+    };
+    let quad = glyph.quad.map(place);
+    let scale = matrix.map_or(1.0, |m| m[2].hypot(m[3]));
+    EditorGlyph {
+        bbox: quad_bounds(&quad),
+        text: glyph.text,
+        range: [glyph.logical_range[0] + offset, glyph.logical_range[1] + offset],
+        quad,
+        baseline: glyph.baseline.map(place),
+        font_resource: glyph.font_resource,
+        font_size: glyph.font_size * scale,
+        vertical: glyph.vertical,
+        invisible: glyph.invisible,
+        line: 0,
+    }
+}
+
+/// A Form XObject the page content places with `Do`.
+struct FormPlacement {
+    name: String,
+    placement: usize,
+    object: u32,
+    generation: u16,
+    matrix: [f64; 6],
+    resources: crate::PdfDictionary,
+}
+
+/// The most form placements whose text a page layout includes.
+const MAX_FORM_PLACEMENTS: usize = 64;
+
+/// Forms placed directly by the page content (not inside other forms), with
+/// the form-to-page matrix of each placement.
+fn form_placements(engine: &ContentEngine, page: &crate::document::PdfPage) -> Result<Vec<FormPlacement>> {
+    use crate::content::state::{concat_matrix, IDENTITY_MATRIX};
+    let reader = engine.document().reader();
+    let Some(xobjects) = page
+        .resources
+        .get("XObject")
+        .and_then(|value| reader.resolve(value.clone()).ok())
+        .and_then(|value| value.as_dict().cloned())
+    else {
+        return Ok(Vec::new());
+    };
+    let mut content = Vec::new();
+    for (number, generation) in &page.contents {
+        let stream = reader.get_object(*number, *generation)?;
+        content.extend(crate::filters::decode_stream(&stream, reader)?);
+        content.push(b'\n');
+    }
+    let mut out = Vec::new();
+    let mut ctm = IDENTITY_MATRIX;
+    let mut stack = Vec::new();
+    let mut invocations = 0usize;
+    for operation in crate::content::parser::ContentParser::parse(&content)? {
+        match operation.operator.as_str() {
+            "q" => stack.push(ctm),
+            "Q" => ctm = stack.pop().unwrap_or(IDENTITY_MATRIX),
+            "cm" => {
+                let values: Vec<f64> = (0..6).filter_map(|i| operation.number(i)).collect();
+                if values.len() == 6 {
+                    ctm = concat_matrix(&[values[0], values[1], values[2], values[3], values[4], values[5]], &ctm);
+                }
+            }
+            "Do" => {
+                let placement = invocations;
+                invocations += 1;
+                let Some(name) = operation.name(0) else { continue };
+                let Some((object, generation)) = xobjects.get(name).and_then(PdfObject::as_reference) else {
+                    continue;
+                };
+                let Ok(stream) = reader.get_object(object, generation) else { continue };
+                let Some((dict, _)) = stream.as_stream() else { continue };
+                if dict.get_name("Subtype") != Some("Form") {
+                    continue;
+                }
+                let form_matrix = dict
+                    .get("Matrix")
+                    .and_then(PdfObject::as_array)
+                    .map(|items| items.iter().filter_map(PdfObject::as_number).collect::<Vec<_>>())
+                    .filter(|items| items.len() == 6)
+                    .map_or(IDENTITY_MATRIX, |m| [m[0], m[1], m[2], m[3], m[4], m[5]]);
+                let resources = dict
+                    .get("Resources")
+                    .and_then(|value| reader.resolve(value.clone()).ok())
+                    .and_then(|value| value.as_dict().cloned())
+                    .unwrap_or_else(|| page.resources.clone());
+                out.push(FormPlacement {
+                    name: name.to_string(),
+                    placement,
+                    object,
+                    generation,
+                    matrix: concat_matrix(&form_matrix, &ctm),
+                    resources,
+                });
+                if out.len() == MAX_FORM_PLACEMENTS {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
 fn is_space_text(text: &str) -> bool {
     !text.is_empty() && text.chars().all(char::is_whitespace)
 }
 
 /// Split glyphs (in content order) into lines: a new line starts when the
 /// baseline moves off the current line or jumps backwards along it.
-fn group_lines(glyphs: &mut [EditorGlyph]) -> Vec<EditorLine> {
+fn group_lines(glyphs: &mut [EditorGlyph], forms: &[usize]) -> Vec<EditorLine> {
     let mut lines: Vec<EditorLine> = Vec::new();
     let mut start = 0usize;
     for index in 0..=glyphs.len() {
         let breaks = index == glyphs.len()
-            || (index > start && starts_new_line(&glyphs[index - 1], &glyphs[index]));
+            || (index > start
+                && (forms.contains(&index) || starts_new_line(&glyphs[index - 1], &glyphs[index])));
         if !breaks {
             continue;
         }
@@ -544,20 +735,57 @@ fn starts_new_line(previous: &EditorGlyph, next: &EditorGlyph) -> bool {
     let step = sub(next.baseline[0], previous.baseline[1]);
     let across = dot(step, normal).abs();
     let along = dot(step, direction);
-    across > 0.5 * size || along < -0.5 * size || along > 6.0 * size
+    // A gap wider than 2.5 em is a column or table-cell boundary, not a word
+    // space (justified text stays well below it).
+    across > 0.5 * size || along < -0.5 * size || along > 2.5 * size
+}
+
+/// The size and font resource covering most visible glyphs of a line.
+fn dominant_style(line: &EditorLine, glyphs: &[EditorGlyph]) -> (f64, String) {
+    let mut sizes: Vec<(f64, String, usize)> = Vec::new();
+    for glyph in &glyphs[line.glyphs[0]..line.glyphs[1]] {
+        if glyph.text.trim().is_empty() || glyph.invisible {
+            continue;
+        }
+        match sizes.iter_mut().find(|(size, resource, _)| {
+            (*size - glyph.font_size).abs() < 0.01 && *resource == glyph.font_resource
+        }) {
+            Some(entry) => entry.2 += 1,
+            None => sizes.push((glyph.font_size, glyph.font_resource.clone(), 1)),
+        }
+    }
+    sizes
+        .into_iter()
+        .max_by_key(|(_, _, count)| *count)
+        .map(|(size, resource, _)| (size, resource))
+        .unwrap_or((0.0, String::new()))
+}
+
+/// Whether two lines are set in different styles: a size change over 15%
+/// (a heading above body text) or a different font at a different size.
+fn style_break(previous: &EditorLine, current: &EditorLine, glyphs: &[EditorGlyph]) -> bool {
+    let (a_size, a_font) = dominant_style(previous, glyphs);
+    let (b_size, b_font) = dominant_style(current, glyphs);
+    if a_size <= 0.0 || b_size <= 0.0 {
+        return false;
+    }
+    let ratio = a_size.max(b_size) / a_size.min(b_size);
+    ratio > 1.15 || (a_font != b_font && ratio > 1.05)
 }
 
 /// Group consecutive lines into paragraphs: same direction, a line pitch
-/// under 1.7 em and no larger than 1.4x the paragraph's first pitch, and a
-/// shared start edge (or the following line starting at the paragraph's).
+/// under 1.7 em and no larger than 1.4x the paragraph's first pitch, a
+/// shared start edge (or the following line starting at the paragraph's),
+/// and the same text style (a heading never joins the body below it).
 fn group_paragraphs(
     mut lines: Vec<EditorLine>,
     glyphs: &[EditorGlyph],
+    forms: &[usize],
 ) -> (Vec<EditorLine>, Vec<EditorParagraph>) {
     let mut paragraphs: Vec<EditorParagraph> = Vec::new();
     let mut first_pitch: Option<f64> = None;
     for index in 0..lines.len() {
-        let continues = index > 0 && {
+        let continues = index > 0 && !forms.contains(&lines[index].glyphs[0]) && {
             let previous = &lines[index - 1];
             let current = &lines[index];
             let size = glyphs[previous.glyphs[0]..previous.glyphs[1]]
@@ -579,6 +807,7 @@ fn group_paragraphs(
                 && pitch < 1.7 * size
                 && first_pitch.is_none_or(|first| pitch <= 1.4 * first)
                 && (indent < 1.5 * size || paragraph_indent < 1.5 * size)
+                && !style_break(previous, current, glyphs)
         };
         if continues {
             let previous_baseline = lines[index - 1].baseline[0];
@@ -666,6 +895,11 @@ impl TextEditSession {
             ));
         }
         let [start, end] = before.clamp_range(range);
+        if end > before.page_text_len() {
+            return Err(WellfriendError::UnsupportedFeature(
+                "text inside a form XObject is edited through the editor operation list, not a text edit session".into(),
+            ));
+        }
         // The reflow transaction rewrites a non-empty source selection. A
         // pure insertion or deletion is widened by one neighbouring scalar
         // that is written back unchanged.

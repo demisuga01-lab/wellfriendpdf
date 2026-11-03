@@ -620,6 +620,16 @@ enum Commands {
     /// REPLACE_IMAGE, EDIT_ANNOTATION, MUTATE_PAGES, ...) on stdin and print
     /// one JSON result envelope on stdout. Exit code 2 means the edit was refused.
     PdfEdit,
+    /// Interactive editor: apply one validated operation list (text in place,
+    /// image/vector objects, added text/images/shapes/links, redactions) read
+    /// as JSON on stdin and print one JSON envelope. Exit code 2 means refused.
+    PdfEditorApply,
+    /// Interactive editor: page count and sizes of a document (JSON command
+    /// `{input_path}` on stdin), read lazily for large files.
+    PdfEditorIndex,
+    /// Interactive editor: write the one-page window of a page (JSON command
+    /// `{input_path, output_path, page}` on stdin).
+    PdfEditorWindow,
     /// Emit shared SDK feature, codec, scheduler, corpus, and fuzz capability report
     FeatureReport(FeatureReportArgs),
     /// Emit canonical lazy document-view boundary JSON
@@ -4488,6 +4498,18 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Split(args) => run_split(args),
         Commands::ExtractPages(args) => run_extract_pages(args),
         Commands::Info(args) => run_info(args),
+        Commands::PdfEditorApply => {
+            let code = wellfriendpdf_editor::protocol::run_stdin();
+            std::process::exit(code);
+        }
+        Commands::PdfEditorIndex => {
+            let code = wellfriendpdf_editor::protocol::run_index_stdin();
+            std::process::exit(code);
+        }
+        Commands::PdfEditorWindow => {
+            let code = wellfriendpdf_editor::protocol::run_window_stdin();
+            std::process::exit(code);
+        }
         Commands::PdfEdit => {
             let code = wellfriend_pdf_edit::protocol::run_stdin();
             let _ = std::io::Write::flush(&mut std::io::stdout());

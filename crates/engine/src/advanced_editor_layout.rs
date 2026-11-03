@@ -52,11 +52,14 @@ struct SpanText {
 /// Glyphs whose text position cannot be tracked exactly (an unsupported
 /// font encoding, a text-showing operator without a usable text matrix) are
 /// absent; their logical text is still part of `logical_text`.
-pub(crate) fn page_glyph_layout(
+///
+/// `page` is a page, or a Form XObject given as a page whose contents are
+/// the form stream and whose resources are the form's (its glyphs are then
+/// in form space).
+pub(crate) fn glyph_layout(
     engine: &ContentEngine,
-    page_number: usize,
+    page: &crate::document::PdfPage,
 ) -> Result<PageGlyphLayout> {
-    let page = engine.document().get_page(page_number)?;
     let reader = engine.document().reader();
     let resources = PageResources::from_dict(&page.resources, reader);
     let mut metrics = inline_text::Metrics::new(&resources, reader);
@@ -67,7 +70,7 @@ pub(crate) fn page_glyph_layout(
         &mut metrics,
     )?;
     let (logical_text, spans, editable) =
-        match analyze_multi_run_source(engine, &page, ScannedTextTokenState::default()) {
+        match analyze_multi_run_source(engine, page, ScannedTextTokenState::default()) {
             Ok(model) => {
                 let spans = model
                     .source_spans

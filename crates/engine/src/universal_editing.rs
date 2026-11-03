@@ -1337,7 +1337,7 @@ struct PreparedPlanArtifact {
     prepared_engine: Option<crate::ContentEngine>,
     secure_policy: EditPolicyReport,
     estimated_bytes: usize,
-    created_at: std::time::Instant,
+    created_at: crate::portable_time::Instant,
 }
 
 #[derive(Default)]
@@ -1446,7 +1446,7 @@ impl PreparedPlanCache {
                 prepared_engine: admitted_engine,
                 secure_policy: secure_policy.clone(),
                 estimated_bytes,
-                created_at: std::time::Instant::now(),
+                created_at: crate::portable_time::Instant::now(),
             },
         );
     }
