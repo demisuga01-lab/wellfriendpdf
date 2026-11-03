@@ -5,6 +5,20 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- DOCX and EPUB embed each distinct image once, for its largest placement:
+  baseline JPEGs are copied, PNG-predicted Flate images are wrapped as PNG
+  without inflating, the rest are decoded (at reduced resolution when far
+  larger than needed at 200 dpi) and written as JPEG or PNG. EPUB images are
+  no longer all full-resolution PNG. Image placements come from the content
+  the conversion pass already parsed.
+- `pdf-to-json` serializes the large arrays in parallel; the bytes are
+  unchanged.
+- With `--threads` 2 or fewer the CLI keeps memory near its live data
+  (one glibc arena per worker, large buffers mapped, freed heap trimmed);
+  allocator tunables set by the environment are respected.
+- `watermark --incremental`, `add-page-numbers --incremental` and the new
+  `page-labels` command append incremental updates. Deleting or reordering
+  pages stays a full rewrite.
 - Conversions to Markdown, JSON, DOCX, XLSX and EPUB run page-parallel in one
   process and read each page's content once: classification, layout, marked
   text and the tagged route share a single parse. Pages are assembled in page
