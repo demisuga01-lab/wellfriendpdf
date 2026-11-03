@@ -315,3 +315,28 @@ fn incremental_rotation_appends_only_the_changed_pages() {
     assert_eq!(whole[..original.len()], original[..]);
     assert_eq!(&whole[original.len()..], &delta[..]);
 }
+
+/// A page image also reachable through a Form under another name, and a
+/// Form image sharing the page image's name: the page's placement resolves
+/// to the page's own image on every open (the resource walk used to follow a
+/// randomized hash order and sometimes picked the Form's image).
+#[test]
+fn page_image_placements_resolve_to_the_page_resources() {
+    let objects = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R /Fm0 6 0 R /Fm1 6 0 R /A 6 0 R /Z 6 0 R >> >> >>".to_vec(),
+        stream("", b"q 100 0 0 100 10 10 cm /Im0 Do Q /Fm0 Do"),
+        stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\x00"),
+        stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Im0 7 0 R /Alias 5 0 R >> >>", b"/Im0 Do"),
+        stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\xff"),
+    ];
+    let pdf = assemble_pdf(&objects);
+    for _ in 0..24 {
+        let engine = ContentEngine::open_bytes(pdf.clone()).unwrap();
+        let region = wellfriendpdf_engine::PageRegion::new(0.0, 0.0, 200.0, 200.0).unwrap();
+        let placed = engine.find_page_images_in_region(1, region).unwrap();
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[0].image.object_number, 5);
+    }
+}
