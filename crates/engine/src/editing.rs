@@ -2501,6 +2501,10 @@ fn rewrite_page_content_for_redaction(
     let mut state = RedactionState::default();
     let mut pending_path = PendingPath::default();
     let mut retained_xobjects = BTreeSet::new();
+    // Open marked-content sequences: the byte range of their BDC/BMC in `out`
+    // and whether a glyph inside them was removed (QF-2561).
+    let mut open_marks: Vec<(usize, usize, bool)> = Vec::new();
+    let mut dirty_marks: Vec<(usize, usize)> = Vec::new();
     report.scrub_metadata |= redactions
         .iter()
         .any(|redaction| redaction.options.scrub_metadata);
@@ -2592,22 +2596,35 @@ fn rewrite_page_content_for_redaction(
                 pending_path.flush_to(&mut out);
             }
             match op.operator.as_str() {
-                "Tj" => {
+                "Tj" | "TJ" => {
                     let resolver = state.current_resolver(&resolvers);
-                    if let Some(rewritten) =
+                    let rewritten = if op.operator == "Tj" {
                         redact_text_show(&op, &state, resolver, redactions, report)
-                    {
+                    } else {
+                        redact_text_array(&op, &state, resolver, redactions, report)
+                    };
+                    let unchanged = rewritten
+                        .as_ref()
+                        .is_some_and(|rewritten| operation_bytes(rewritten) == operation_bytes(&op));
+                    if !unchanged {
+                        mark_open_sequences_dirty(&mut open_marks);
+                    }
+                    if let Some(rewritten) = rewritten {
                         serialize_content_operation(&rewritten, &mut out);
                     }
                     state.apply(&op, &resolvers);
                 }
-                "TJ" => {
-                    let resolver = state.current_resolver(&resolvers);
-                    if let Some(rewritten) =
-                        redact_text_array(&op, &state, resolver, redactions, report)
-                    {
-                        serialize_content_operation(&rewritten, &mut out);
+                "BDC" | "BMC" => {
+                    let start = out.len();
+                    serialize_content_operation(&op, &mut out);
+                    open_marks.push((start, out.len(), false));
+                    state.apply(&op, &resolvers);
+                }
+                "EMC" => {
+                    if let Some((start, end, true)) = open_marks.pop() {
+                        dirty_marks.push((start, end));
                     }
+                    serialize_content_operation(&op, &mut out);
                     state.apply(&op, &resolvers);
                 }
                 "'" | "\"" => {
@@ -2615,6 +2632,7 @@ fn rewrite_page_content_for_redaction(
                     // glyphs at that post-move position. On intersection (or any
                     // uncertainty) the whole operator is dropped — fail closed.
                     if line_show_intersects(&op, &state, &resolvers, redactions) {
+                        mark_open_sequences_dirty(&mut open_marks);
                         collect_text_from_operation(&op, report);
                     } else {
                         serialize_content_operation(&op, &mut out);
@@ -2735,7 +2753,56 @@ fn rewrite_page_content_for_redaction(
         }
         out.push(b'\n');
     }
+    dirty_marks.extend(
+        open_marks
+            .into_iter()
+            .filter(|(_, _, dirty)| *dirty)
+            .map(|(start, end, _)| (start, end)),
+    );
+    drop_alternate_text(&mut out, dirty_marks)?;
     Ok(out)
+}
+
+fn operation_bytes(op: &ContentOperation) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    serialize_content_operation(op, &mut bytes);
+    bytes
+}
+
+fn mark_open_sequences_dirty(open_marks: &mut [(usize, usize, bool)]) {
+    for mark in open_marks {
+        mark.2 = true;
+    }
+}
+
+/// A marked-content sequence that lost glyphs to a redaction may still carry
+/// the original words as inline `/ActualText`, `/Alt` or `/E` (expansion)
+/// text, which extraction prefers over the glyphs. Matching the removed
+/// strings is not enough: composite fonts record glyph codes, not text. So
+/// the alternate text of every such sequence is dropped and extraction falls
+/// back to the surviving glyphs (QF-2561).
+fn drop_alternate_text(out: &mut Vec<u8>, mut dirty: Vec<(usize, usize)>) -> Result<()> {
+    dirty.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    for (start, end) in dirty {
+        let mut operations = ContentParser::parse(&out[start..end])?;
+        let Some(op) = operations.first_mut() else { continue };
+        let mut changed = false;
+        for operand in &mut op.operands {
+            if let Operand::Dictionary(entries) = operand {
+                let before = entries.len();
+                entries.retain(|(key, _)| {
+                    !matches!(key.trim_start_matches('/'), "ActualText" | "Alt" | "E")
+                });
+                changed |= entries.len() != before;
+            }
+        }
+        if changed {
+            let mut replacement = Vec::new();
+            serialize_content_operation(op, &mut replacement);
+            out.splice(start..end, replacement);
+        }
+    }
+    Ok(())
 }
 
 /// Conservative width (per-mille of em) assumed for a glyph whose font metrics
