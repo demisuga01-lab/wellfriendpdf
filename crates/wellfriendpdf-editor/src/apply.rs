@@ -687,7 +687,15 @@ fn replace_text(
     report.fonts_added = result.fonts_added;
     report.changed_region = changed_region(&before, &result.layout);
     report.caret = Some(caret);
-    Ok(result.bytes)
+    // A paragraph that grew moves the text below it in its column down.
+    let paragraphs: Vec<usize> = before
+        .paragraphs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.range[0] < selection[1].max(selection[0] + 1) && p.range[1] > selection[0])
+        .map(|(i, _)| i)
+        .collect();
+    crate::restyle::make_room(input, result.bytes, &before, &paragraphs, None, report)
 }
 
 struct Attempt {

@@ -7,6 +7,11 @@
 //! its box). Colour is then applied to exactly the text-showing operators that
 //! draw the restyled run: they are the ones that select the font resource the
 //! transaction added.
+//!
+//! A restyled paragraph that grows moves the text below it in its column
+//! down (see [`crate::flow`]); when the page runs out of room the paragraph
+//! keeps its style, is set within the height left and the report carries an
+//! overflow note.
 
 use lopdf::content::{Content, Operation};
 use lopdf::Object;
@@ -20,7 +25,7 @@ use crate::apply::{apply_operation, OperationReport};
 use crate::error::EditorError;
 use crate::fonts::{page_fonts, FontSource};
 use crate::ops::{Align, EditorOperation, Rect, Rgb};
-use crate::overlay;
+use crate::{flow, overlay};
 
 pub struct Restyle<'a> {
     pub page: u32,
@@ -78,19 +83,129 @@ pub fn restyle_text(
     }
     // 1. The engine's transaction: in place for a face or colour change,
     //    re-flowed in the block's own box for size, alignment and spacing.
-    match transaction(input, &before, restyle, &covering, bytes) {
+    let out = match transaction(input, &before, restyle, &covering, bytes) {
         Ok((out, added)) => {
             report.fonts_added = added;
             report.notes.push(format!("The text is set in {} from the font library.", restyle.font));
             report.changed_region = Some(region(&before, restyle.start, restyle.end));
-            Ok(out)
+            out
         }
         // 2. Tagged or clipped source text must stay inside its marked-content
         //    scopes, where the engine keeps each run's own size. Whole
         //    paragraphs are then re-set as new text: the old glyphs are
         //    removed and the paragraph is written again in the chosen style.
-        Err(first) => reset_paragraphs(input, &before, restyle, &covering, fonts, report).map_err(|_| first),
+        Err(first) => {
+            let reset = Reset::prepare(input, &before, restyle, &covering, fonts).map_err(|_| first.clone())?;
+            let (out, added) = reset.draw(&reset.text).map_err(|_| first)?;
+            report.fonts_added = added;
+            report.notes.push(format!(
+                "The paragraph is tagged or clipped, so it was re-set as new text in {} (its old glyphs were removed).",
+                restyle.font
+            ));
+            report.changed_region = Some(reset.region());
+            out
+        }
+    };
+    let indexes: Vec<usize> = before
+        .paragraphs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.range[0] < restyle.end && p.range[1] > restyle.start)
+        .map(|(i, _)| i)
+        .collect();
+    make_room(input, out, &before, &indexes, Some((restyle, &covering, fonts)), report)
+}
+
+/// 3. A paragraph that grew moves the text below it in its column down by
+///    the growth, so nothing is drawn over. When the page has too little
+///    room left, the restyled paragraph keeps its style and is set within
+///    the height there is; the words that do not fit are left out and the
+///    report says so (never silently, and never by shrinking the text).
+pub(crate) fn make_room(
+    input: &[u8],
+    out: Vec<u8>,
+    before: &PageTextLayout,
+    paragraphs: &[usize],
+    refit: Option<(&Restyle<'_>, &[&wellfriendpdf_engine::EditorParagraph], &dyn FontSource)>,
+    report: &mut OperationReport,
+) -> Result<Vec<u8>, EditorError> {
+    let page = before.page;
+    let Some(source) = flow::source_block(before, paragraphs) else {
+        return Ok(out);
+    };
+    // Only a paragraph that now ends lower needs the content scan.
+    let room_for = |out: &[u8], after: &PageTextLayout, edited: &[bool]| -> Result<Option<flow::Room>, EditorError> {
+        match flow::edited_box(after, edited) {
+            Some(grown) if source.0[1] - grown[1] > 0.25 => {
+                let clips = flow::clips(out, page as u32, after)?;
+                Ok(flow::plan(source, after, edited, &clips))
+            }
+            _ => Ok(None),
+        }
+    };
+    let mut out = out;
+    let mut after = PageTextLayout::from_bytes(&out, page)?;
+    let mut edited = flow::edited_glyphs(before, &after);
+    let mut room = room_for(&out, &after, &edited)?;
+    if let Some(over) = room.clone().filter(|r| r.overflow > 0.25) {
+        match refit {
+            Some((restyle, covering, fonts)) => {
+                let lowest = source.0[1] - (over.growth - over.overflow);
+                let reset = Reset::prepare(input, before, restyle, covering, fonts)?;
+                let (fitted, kept, total) = reset.fit(lowest)?;
+                out = fitted.0;
+                report.fonts_added = fitted.1;
+                report.notes.push(format!(
+                    "Overflow: the restyled paragraph does not fit on the page. The text below it was moved down as far as the page allows, and the last {} of its {} words do not fit and are not shown. Shorten the text, choose a smaller size, or undo.",
+                    total - kept,
+                    total
+                ));
+                after = PageTextLayout::from_bytes(&out, page)?;
+                edited = flow::edited_glyphs(before, &after);
+                room = room_for(&out, &after, &edited)?;
+            }
+            None => report.notes.push(
+                "Overflow: the edited paragraph does not fit on the page; the text below it was moved down as far as the page allows.".into(),
+            ),
+        }
     }
+    let ignore = flow::already_over(&after, &edited, source.0);
+    if let Some(mut room) = room {
+        if room.overflow > 0.25 {
+            // Keep everything on the page: move by the room there is.
+            room.reduce(room.overflow);
+        }
+        if !room.groups.is_empty() {
+            let pushed = flow::push(&out, page as u32, &after, &room)?;
+            let moved = PageTextLayout::from_bytes(&pushed, page)?;
+            if moved.text != after.text || moved.glyphs.len() != after.glyphs.len() {
+                return Err(EditorError::new(
+                    "EDITOR_TEXT_LAYOUT_FAILED",
+                    "moving the text below the edited paragraph changed it",
+                ));
+            }
+            let (lines, shift) = (room.lines(), room.largest_shift());
+            report.notes.push(format!(
+                "{lines} following line{} in the same column moved down by {shift:.1} pt to make room.",
+                if lines == 1 { "" } else { "s" }
+            ));
+            if let Some(region) = report.changed_region.as_mut() {
+                for group in &room.groups {
+                    let b = group.bbox;
+                    *region = flow::union(*region, [b[0], b[1] - group.shift, b[2], b[3]]);
+                }
+            }
+            out = pushed;
+            after = moved;
+        }
+    }
+    if let Some((mine, other)) = flow::overlap(&after, &edited, &ignore) {
+        return Err(EditorError::new(
+            "EDITOR_TEXT_LAYOUT_FAILED",
+            format!("the edited paragraph would draw over other text ({mine:?} over {other:?})"),
+        ));
+    }
+    Ok(out)
 }
 
 fn transaction(
@@ -224,62 +339,142 @@ fn paragraph_text(layout: &PageTextLayout, covering: &[&wellfriendpdf_engine::Ed
     out
 }
 
-fn reset_paragraphs(
-    input: &[u8],
-    before: &PageTextLayout,
-    restyle: &Restyle<'_>,
-    covering: &[&wellfriendpdf_engine::EditorParagraph],
-    fonts: &dyn FontSource,
-    report: &mut OperationReport,
-) -> Result<Vec<u8>, EditorError> {
-    let (bbox, lines) = block(covering);
-    let source_size = source_size(before, restyle.start, restyle.end).unwrap_or(12.0);
-    let size = restyle.size.unwrap_or(source_size);
-    let ratio = (size / source_size).max(1.0);
-    let pitch = if lines > 1 { (bbox[3] - bbox[1]) / lines as f64 } else { source_size * 1.2 };
-    let line_height = restyle.line_height.unwrap_or((pitch / source_size).clamp(0.8, 3.0));
-    let text = paragraph_text(before, covering);
-    let width = if lines == 1 { (bbox[2] - bbox[0]) * ratio + size } else { bbox[2] - bbox[0] + 1.0 };
-    let rows = (lines as f64 * ratio).ceil() + 2.0;
-    let remove = EditorOperation::ReplaceText {
-        page: restyle.page,
-        start: restyle.start,
-        end: restyle.end,
-        expected: restyle.expected.to_owned(),
-        text: String::new(),
-        fallback_font: None,
-    };
-    let (removed, _) = apply_operation(input, &remove, fonts, true)?;
-    let left = PageTextLayout::from_bytes(&removed, restyle.page as usize)?;
-    if restyle.expected.chars().count() > 3 && left.text.contains(restyle.expected) {
-        return Err(EditorError::new("EDITOR_TEXT_LAYOUT_FAILED", "the paragraph could not be removed"));
-    }
-    // The first baseline lands where the source's did: the box top is the
-    // paragraph top plus the growth of the first line.
-    let top = bbox[3] + (size - source_size).max(0.0) * 0.25;
-    let add = EditorOperation::AddText {
-        page: restyle.page,
-        rect: Rect {
-            x: bbox[0],
-            y: top - size * line_height * rows,
+/// A paragraph re-set as new text: its old glyphs removed once, then the
+/// text drawn in the requested style in the paragraph's box.
+struct Reset<'a> {
+    removed: Vec<u8>,
+    text: String,
+    page: u32,
+    fonts: &'a dyn FontSource,
+    font: String,
+    bbox: [f64; 4],
+    top: f64,
+    width: f64,
+    size: f64,
+    ratio: f64,
+    line_height: f64,
+    rows: f64,
+    color: Rgb,
+    align: Align,
+}
+
+impl<'a> Reset<'a> {
+    fn prepare(
+        input: &[u8],
+        before: &PageTextLayout,
+        restyle: &Restyle<'_>,
+        covering: &[&wellfriendpdf_engine::EditorParagraph],
+        fonts: &'a dyn FontSource,
+    ) -> Result<Self, EditorError> {
+        let (bbox, lines) = block(covering);
+        let source_size = source_size(before, restyle.start, restyle.end).unwrap_or(12.0);
+        let size = restyle.size.unwrap_or(source_size);
+        let ratio = (size / source_size).max(1.0);
+        let pitch = if lines > 1 { (bbox[3] - bbox[1]) / lines as f64 } else { source_size * 1.2 };
+        let line_height = restyle.line_height.unwrap_or((pitch / source_size).clamp(0.8, 3.0));
+        let width = if lines == 1 { (bbox[2] - bbox[0]) * ratio + size } else { bbox[2] - bbox[0] + 1.0 };
+        let remove = EditorOperation::ReplaceText {
+            page: restyle.page,
+            start: restyle.start,
+            end: restyle.end,
+            expected: restyle.expected.to_owned(),
+            text: String::new(),
+            fallback_font: None,
+        };
+        let (removed, _) = apply_operation(input, &remove, fonts, true)?;
+        let left = PageTextLayout::from_bytes(&removed, restyle.page as usize)?;
+        if restyle.expected.chars().count() > 3 && left.text.contains(restyle.expected) {
+            return Err(EditorError::new("EDITOR_TEXT_LAYOUT_FAILED", "the paragraph could not be removed"));
+        }
+        // Link underlines of the removed lines would cross the re-set text.
+        let baselines: Vec<f64> = covering
+            .iter()
+            .flat_map(|p| before.lines[p.lines[0]..p.lines[1]].iter())
+            .map(|line| line.baseline[0][1])
+            .collect();
+        let removed = flow::remove_underlines(&removed, restyle.page, bbox, &baselines, source_size)?;
+        Ok(Self {
+            removed,
+            text: paragraph_text(before, covering),
+            page: restyle.page,
+            fonts,
+            font: restyle.font.to_owned(),
+            bbox,
+            // The first baseline lands where the source's did: the box top is
+            // the paragraph top plus the growth of the first line.
+            top: bbox[3] + (size - source_size).max(0.0) * 0.25,
             width,
-            height: size * line_height * rows,
-        },
-        text,
-        font: restyle.font.to_owned(),
-        size,
-        color: restyle.color.clone().unwrap_or(Rgb::BLACK),
-        align: restyle.align.unwrap_or_default(),
-        line_height,
-    };
-    let (out, added) = apply_operation(&removed, &add, fonts, true)?;
-    report.fonts_added = added.fonts_added;
-    report.notes.push(format!(
-        "The paragraph is tagged or clipped, so it was re-set as new text in {} (its old glyphs were removed).",
-        restyle.font
-    ));
-    report.changed_region = Some([bbox[0], bbox[1] - (ratio - 1.0) * (bbox[3] - bbox[1]), bbox[0] + width, top]);
-    Ok(out)
+            size,
+            ratio,
+            line_height,
+            rows: (lines as f64 * ratio).ceil() + 2.0,
+            color: restyle.color.clone().unwrap_or(Rgb::BLACK),
+            align: restyle.align.unwrap_or_default(),
+        })
+    }
+
+    /// Draw `text`; returns the bytes and the font resources added.
+    fn draw(&self, text: &str) -> Result<(Vec<u8>, Vec<String>), EditorError> {
+        let height = self.size * self.line_height * self.rows;
+        let add = EditorOperation::AddText {
+            page: self.page,
+            rect: Rect { x: self.bbox[0], y: self.top - height, width: self.width, height },
+            text: text.to_owned(),
+            font: self.font.clone(),
+            size: self.size,
+            color: self.color.clone(),
+            align: self.align,
+            line_height: self.line_height,
+        };
+        let (out, added) = apply_operation(&self.removed, &add, self.fonts, true)?;
+        Ok((out, added.fonts_added))
+    }
+
+    fn region(&self) -> [f64; 4] {
+        let b = self.bbox;
+        [b[0], b[1] - (self.ratio - 1.0) * (b[3] - b[1]), b[0] + self.width, self.top]
+    }
+
+    /// The longest run of whole words whose glyphs stay above `lowest`:
+    /// `((bytes, fonts added), words kept, words in the paragraph)`.
+    #[allow(clippy::type_complexity)]
+    fn fit(&self, lowest: f64) -> Result<((Vec<u8>, Vec<String>), usize, usize), EditorError> {
+        let ends: Vec<usize> = self
+            .text
+            .char_indices()
+            .zip(self.text.chars().skip(1).chain(std::iter::once(' ')))
+            .filter(|((_, c), next)| !c.is_whitespace() && next.is_whitespace())
+            .map(|((i, c), _)| i + c.len_utf8())
+            .collect();
+        let before = PageTextLayout::from_bytes(&self.removed, self.page as usize)?;
+        let fits = |words: usize| -> Result<Option<(Vec<u8>, Vec<String>)>, EditorError> {
+            let drawn = self.draw(&self.text[..ends[words - 1]])?;
+            let after = PageTextLayout::from_bytes(&drawn.0, self.page as usize)?;
+            let edited = flow::edited_glyphs(&before, &after);
+            let bottom = flow::edited_box(&after, &edited).map_or(f64::INFINITY, |b| b[1]);
+            Ok((bottom >= lowest - 0.25).then_some(drawn))
+        };
+        // Binary search over the word count: fitting is monotone in it.
+        let (mut low, mut high) = (0usize, ends.len());
+        let mut best = None;
+        while low < high {
+            let middle = (low + high).div_ceil(2);
+            match fits(middle)? {
+                Some(drawn) => {
+                    best = Some((drawn, middle));
+                    low = middle;
+                }
+                None => high = middle - 1,
+            }
+        }
+        match best {
+            Some((drawn, kept)) => Ok((drawn, kept, ends.len())),
+            None => Err(EditorError::new(
+                "EDITOR_TEXT_OVERFLOW",
+                "the restyled paragraph does not fit on the page at the requested size; choose a smaller size",
+            )),
+        }
+    }
 }
 
 /// The most common glyph size in `[start, end)`.
