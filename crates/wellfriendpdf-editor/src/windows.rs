@@ -408,7 +408,7 @@ pub fn splice_incremental(original: &[u8], windows: &[EditedWindow]) -> Result<V
     let mut offsets = BTreeMap::new();
     for (number, (generation, body)) in &appended {
         offsets.insert(*number, (out.len(), *generation));
-        let _ = write!(out, "{number} {generation} obj\n");
+        let _ = writeln!(out, "{number} {generation} obj");
         out.extend_from_slice(body);
         out.extend_from_slice(b"\nendobj\n");
     }
@@ -421,7 +421,7 @@ pub fn splice_incremental(original: &[u8], windows: &[EditedWindow]) -> Result<V
         while end < numbers.len() && numbers[end] == numbers[end - 1] + 1 {
             end += 1;
         }
-        let _ = write!(out, "{} {}\n", numbers[index], end - index);
+        let _ = writeln!(out, "{} {}", numbers[index], end - index);
         for number in &numbers[index..end] {
             let (offset, generation) = offsets[number];
             let _ = write!(out, "{offset:010} {generation:05} n\r\n");
