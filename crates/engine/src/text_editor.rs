@@ -544,12 +544,48 @@ fn starts_new_line(previous: &EditorGlyph, next: &EditorGlyph) -> bool {
     let step = sub(next.baseline[0], previous.baseline[1]);
     let across = dot(step, normal).abs();
     let along = dot(step, direction);
-    across > 0.5 * size || along < -0.5 * size || along > 6.0 * size
+    // A gap wider than 2.5 em is a column or table-cell boundary, not a word
+    // space (justified text stays well below it).
+    across > 0.5 * size || along < -0.5 * size || along > 2.5 * size
+}
+
+/// The size and font resource covering most visible glyphs of a line.
+fn dominant_style(line: &EditorLine, glyphs: &[EditorGlyph]) -> (f64, String) {
+    let mut sizes: Vec<(f64, String, usize)> = Vec::new();
+    for glyph in &glyphs[line.glyphs[0]..line.glyphs[1]] {
+        if glyph.text.trim().is_empty() || glyph.invisible {
+            continue;
+        }
+        match sizes.iter_mut().find(|(size, resource, _)| {
+            (*size - glyph.font_size).abs() < 0.01 && *resource == glyph.font_resource
+        }) {
+            Some(entry) => entry.2 += 1,
+            None => sizes.push((glyph.font_size, glyph.font_resource.clone(), 1)),
+        }
+    }
+    sizes
+        .into_iter()
+        .max_by_key(|(_, _, count)| *count)
+        .map(|(size, resource, _)| (size, resource))
+        .unwrap_or((0.0, String::new()))
+}
+
+/// Whether two lines are set in different styles: a size change over 15%
+/// (a heading above body text) or a different font at a different size.
+fn style_break(previous: &EditorLine, current: &EditorLine, glyphs: &[EditorGlyph]) -> bool {
+    let (a_size, a_font) = dominant_style(previous, glyphs);
+    let (b_size, b_font) = dominant_style(current, glyphs);
+    if a_size <= 0.0 || b_size <= 0.0 {
+        return false;
+    }
+    let ratio = a_size.max(b_size) / a_size.min(b_size);
+    ratio > 1.15 || (a_font != b_font && ratio > 1.05)
 }
 
 /// Group consecutive lines into paragraphs: same direction, a line pitch
-/// under 1.7 em and no larger than 1.4x the paragraph's first pitch, and a
-/// shared start edge (or the following line starting at the paragraph's).
+/// under 1.7 em and no larger than 1.4x the paragraph's first pitch, a
+/// shared start edge (or the following line starting at the paragraph's),
+/// and the same text style (a heading never joins the body below it).
 fn group_paragraphs(
     mut lines: Vec<EditorLine>,
     glyphs: &[EditorGlyph],
@@ -579,6 +615,7 @@ fn group_paragraphs(
                 && pitch < 1.7 * size
                 && first_pitch.is_none_or(|first| pitch <= 1.4 * first)
                 && (indent < 1.5 * size || paragraph_indent < 1.5 * size)
+                && !style_break(previous, current, glyphs)
         };
         if continues {
             let previous_baseline = lines[index - 1].baseline[0];

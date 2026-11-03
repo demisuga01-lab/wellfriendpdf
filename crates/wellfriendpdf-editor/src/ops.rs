@@ -30,26 +30,133 @@ pub struct OperationList {
     pub operations: Vec<EditorOperation>,
 }
 
-/// An RGB colour, each component in `0..=1`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Rgb {
-    pub r: f64,
-    pub g: f64,
-    pub b: f64,
+/// A paint colour, each component in `0..=1`: device RGB `{r, g, b}`,
+/// device CMYK `{c, m, y, k}`, or a spot colour `{spot, tint, c, m, y, k}`
+/// written as a `/Separation` colour space whose CMYK values are the
+/// alternate (full-tint) appearance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Paint {
+    Spot {
+        spot: String,
+        #[serde(default = "full_tint")]
+        tint: f64,
+        c: f64,
+        m: f64,
+        y: f64,
+        k: f64,
+    },
+    Cmyk {
+        c: f64,
+        m: f64,
+        y: f64,
+        k: f64,
+    },
+    Rgb {
+        r: f64,
+        g: f64,
+        b: f64,
+    },
 }
 
-impl Rgb {
-    pub const BLACK: Rgb = Rgb {
+/// The historical name: every colour field accepts any [`Paint`].
+pub type Rgb = Paint;
+
+fn full_tint() -> f64 {
+    1.0
+}
+
+impl Paint {
+    pub const BLACK: Paint = Paint::Rgb {
         r: 0.0,
         g: 0.0,
         b: 0.0,
     };
-    pub const WHITE: Rgb = Rgb {
+    pub const WHITE: Paint = Paint::Rgb {
         r: 1.0,
         g: 1.0,
         b: 1.0,
     };
+
+    pub fn rgb(r: f64, g: f64, b: f64) -> Self {
+        Paint::Rgb { r, g, b }
+    }
+
+    pub fn components(&self) -> Vec<f64> {
+        match self {
+            Paint::Rgb { r, g, b } => vec![*r, *g, *b],
+            Paint::Cmyk { c, m, y, k } => vec![*c, *m, *y, *k],
+            Paint::Spot { tint, c, m, y, k, .. } => vec![*tint, *c, *m, *y, *k],
+        }
+    }
+
+    /// The colour the engine draws with: RGB, CMYK, or for a spot colour
+    /// its alternate CMYK scaled by the tint (rewritten to the separation
+    /// afterwards, see `overlay::merge`).
+    pub fn engine(&self) -> wellfriendpdf_engine::Color {
+        match self {
+            Paint::Rgb { r, g, b } => wellfriendpdf_engine::Color::device_rgb(*r, *g, *b),
+            Paint::Cmyk { c, m, y, k } => wellfriendpdf_engine::Color::device_cmyk(*c, *m, *y, *k),
+            Paint::Spot { tint, c, m, y, k, .. } => {
+                wellfriendpdf_engine::Color::device_cmyk(c * tint, m * tint, y * tint, k * tint)
+            }
+        }
+    }
+
+    /// `(name, alternate CMYK, tint)` of a spot colour.
+    pub fn spot(&self) -> Option<SpotColor> {
+        match self {
+            Paint::Spot { spot, tint, c, m, y, k } => Some(SpotColor {
+                name: spot.clone(),
+                alternate: [*c, *m, *y, *k],
+                tint: *tint,
+            }),
+            _ => None,
+        }
+    }
+
+    /// An approximate RGB for previews of CMYK and spot colours.
+    pub fn approximate_rgb(&self) -> [f64; 3] {
+        match self {
+            Paint::Rgb { r, g, b } => [*r, *g, *b],
+            Paint::Cmyk { c, m, y, k } => [(1.0 - c) * (1.0 - k), (1.0 - m) * (1.0 - k), (1.0 - y) * (1.0 - k)],
+            Paint::Spot { tint, c, m, y, k, .. } => [
+                (1.0 - c * tint) * (1.0 - k * tint),
+                (1.0 - m * tint) * (1.0 - k * tint),
+                (1.0 - y * tint) * (1.0 - k * tint),
+            ],
+        }
+    }
+}
+
+/// A named spot colour used by an operation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpotColor {
+    pub name: String,
+    pub alternate: [f64; 4],
+    pub tint: f64,
+}
+
+/// A page annotation kind the editor adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnnotationKind {
+    Highlight,
+    Underline,
+    Strikeout,
+    Note,
+    Ink,
+    Stamp,
+}
+
+/// A normalised crop of an image placement (fractions of the image).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Crop {
+    pub left: f64,
+    pub bottom: f64,
+    pub right: f64,
+    pub top: f64,
 }
 
 /// A user-space rectangle: lower-left corner plus size, in points.
@@ -195,6 +302,94 @@ pub enum EditorOperation {
         #[serde(default = "black")]
         fill: Rgb,
     },
+    /// Restyle existing text `[start, end)`: set it in the library face
+    /// `font` (family, bold, italic) and optionally change size, colour,
+    /// alignment and line spacing. The text is re-flowed inside its own block.
+    #[serde(rename_all = "camelCase")]
+    RestyleText {
+        page: u32,
+        start: usize,
+        end: usize,
+        expected: String,
+        font: String,
+        #[serde(default)]
+        size: Option<f64>,
+        #[serde(default)]
+        color: Option<Rgb>,
+        #[serde(default)]
+        align: Option<Align>,
+        #[serde(default)]
+        line_height: Option<f64>,
+    },
+    /// Crop an image placement (fractions of the image kept on each side).
+    #[serde(rename_all = "camelCase")]
+    CropImage {
+        selector: ImagePlacementSelector,
+        crop: Crop,
+    },
+    /// Set an image placement's constant opacity.
+    #[serde(rename_all = "camelCase")]
+    SetImageOpacity {
+        selector: ImagePlacementSelector,
+        opacity: f64,
+    },
+    /// Set the page's display rotation (0, 90, 180 or 270).
+    #[serde(rename_all = "camelCase")]
+    RotatePage { page: u32, rotation: i32 },
+    #[serde(rename_all = "camelCase")]
+    DeletePage { page: u32 },
+    /// Move `page` so it becomes page `to`.
+    #[serde(rename_all = "camelCase")]
+    MovePage { page: u32, to: u32 },
+    /// Insert a blank page after `after` (0 = first) of the given size.
+    #[serde(rename_all = "camelCase")]
+    InsertBlankPage { after: u32, width: f64, height: f64 },
+    /// Insert pages of another PDF (all pages when `pages` is empty).
+    #[serde(rename_all = "camelCase")]
+    InsertPages {
+        after: u32,
+        pdf: String,
+        #[serde(default)]
+        pages: Vec<u32>,
+    },
+    /// Add a markup annotation. Highlight, underline and strike-out mark
+    /// `quads` (each `[x0, y0, x1, y1]`); a note sits at `rect`; ink draws
+    /// `ink` polylines; a stamp shows `label`. Each has an appearance stream.
+    #[serde(rename_all = "camelCase")]
+    AddAnnotation {
+        page: u32,
+        kind: AnnotationKind,
+        rect: Rect,
+        #[serde(default)]
+        quads: Vec<[f64; 4]>,
+        #[serde(default)]
+        ink: Vec<Vec<[f64; 2]>>,
+        #[serde(default)]
+        contents: Option<String>,
+        #[serde(default)]
+        label: Option<String>,
+        color: Rgb,
+        #[serde(default)]
+        author: Option<String>,
+    },
+    /// Fill an AcroForm field by its fully qualified name; appearances are
+    /// regenerated. Checkboxes take "true"/"false".
+    #[serde(rename_all = "camelCase")]
+    SetFormField {
+        name: String,
+        value: String,
+        #[serde(default)]
+        kind: FieldValueKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldValueKind {
+    #[default]
+    Text,
+    Choice,
+    Checkbox,
 }
 
 fn default_line_height() -> f64 {
@@ -225,7 +420,26 @@ impl EditorOperation {
             Self::AddWhiteout { .. } => "addWhiteout",
             Self::AddLink { .. } => "addLink",
             Self::Redact { .. } => "redact",
+            Self::RestyleText { .. } => "restyleText",
+            Self::CropImage { .. } => "cropImage",
+            Self::SetImageOpacity { .. } => "setImageOpacity",
+            Self::RotatePage { .. } => "rotatePage",
+            Self::DeletePage { .. } => "deletePage",
+            Self::MovePage { .. } => "movePage",
+            Self::InsertBlankPage { .. } => "insertBlankPage",
+            Self::InsertPages { .. } => "insertPages",
+            Self::AddAnnotation { .. } => "addAnnotation",
+            Self::SetFormField { .. } => "setFormField",
         }
+    }
+
+    /// Whether the operation changes the page sequence (page numbers after
+    /// it refer to the new sequence).
+    pub fn restructures_pages(&self) -> bool {
+        matches!(
+            self,
+            Self::DeletePage { .. } | Self::MovePage { .. } | Self::InsertBlankPage { .. } | Self::InsertPages { .. }
+        )
     }
 
     /// The 1-based page the operation edits.
@@ -238,11 +452,18 @@ impl EditorOperation {
             | Self::AddLine { page, .. }
             | Self::AddWhiteout { page, .. }
             | Self::AddLink { page, .. }
-            | Self::Redact { page, .. } => *page,
-            Self::TransformImage { selector, .. } | Self::DeleteImage { selector } => {
-                selector.page_number
-            }
-            Self::ReplaceImage { .. } => 0,
+            | Self::Redact { page, .. }
+            | Self::RestyleText { page, .. }
+            | Self::RotatePage { page, .. }
+            | Self::DeletePage { page }
+            | Self::MovePage { page, .. }
+            | Self::AddAnnotation { page, .. } => *page,
+            Self::InsertBlankPage { after, .. } | Self::InsertPages { after, .. } => after + 1,
+            Self::TransformImage { selector, .. }
+            | Self::DeleteImage { selector }
+            | Self::CropImage { selector, .. }
+            | Self::SetImageOpacity { selector, .. } => selector.page_number,
+            Self::ReplaceImage { .. } | Self::SetFormField { .. } => 0,
             Self::EditVector { selector, .. } => selector.page_number,
         }
     }
@@ -282,12 +503,49 @@ fn rect(rect: &Rect) -> Result<(), EditorError> {
 }
 
 fn color(color: &Rgb) -> Result<(), EditorError> {
-    for component in [color.r, color.g, color.b] {
+    for component in color.components() {
         if !component.is_finite() || !(0.0..=1.0).contains(&component) {
             return Err(invalid("colour components must be within 0..1"));
         }
     }
+    if let Paint::Spot { spot, .. } = color {
+        let valid = !spot.is_empty()
+            && spot.len() <= 64
+            && spot.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_');
+        if !valid {
+            return Err(invalid("spot colour names are 1-64 letters, digits, spaces, hyphens or underscores"));
+        }
+    }
     Ok(())
+}
+
+fn rgb_only(color: &Rgb) -> Result<(), EditorError> {
+    match color {
+        Paint::Rgb { .. } => Ok(()),
+        _ => Err(invalid("this colour must be RGB")),
+    }
+}
+
+fn point(value: [f64; 2]) -> Result<(), EditorError> {
+    finite(value[0], "point.x")?;
+    finite(value[1], "point.y")
+}
+
+pub const MAX_INSERTED_PDF_BYTES: usize = 24 * 1024 * 1024;
+
+/// Decoded bytes of an inserted PDF.
+pub fn decode_pdf(base64_pdf: &str) -> Result<Vec<u8>, EditorError> {
+    use base64::Engine as _;
+    if base64_pdf.len() > MAX_INSERTED_PDF_BYTES / 3 * 4 + 8 {
+        return Err(invalid("inserted PDFs are limited to 24 MiB"));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_pdf.as_bytes())
+        .map_err(|_| invalid("the inserted PDF is not valid base64"))?;
+    if !bytes.starts_with(b"%PDF-") {
+        return Err(invalid("the inserted file is not a PDF"));
+    }
+    Ok(bytes)
 }
 
 fn text(value: &str, allow_empty: bool) -> Result<(), EditorError> {
@@ -447,11 +705,7 @@ pub fn validate_operation(
         }
         EditorOperation::DeleteImage { selector } => page(selector.page_number)?,
         EditorOperation::ReplaceImage { image, .. } => {
-            let bytes = decode_image(image)?;
-            if image.mime_type != "image/jpeg" {
-                return Err(invalid("replacement images must be JPEG"));
-            }
-            *image_bytes += bytes.len();
+            *image_bytes += decode_image(image)?.len();
         }
         EditorOperation::EditVector { selector, mutation } => {
             page(selector.page_number)?;
@@ -465,11 +719,7 @@ pub fn validate_operation(
                         .into_iter()
                         .flatten()
                     {
-                        color(&Rgb {
-                            r: c.red,
-                            g: c.green,
-                            b: c.blue,
-                        })?;
+                        color(&Paint::rgb(c.red, c.green, c.blue))?;
                     }
                     if destination_fill_color.is_none() && destination_stroke_color.is_none() {
                         return Err(invalid("a recolour needs a fill or stroke colour"));
@@ -576,6 +826,136 @@ pub fn validate_operation(
             page(*p)?;
             rect(r)?;
             color(fill)?;
+            rgb_only(fill)?;
+        }
+        EditorOperation::RestyleText {
+            page: p,
+            start,
+            end,
+            expected,
+            font,
+            size,
+            color: c,
+            line_height,
+            ..
+        } => {
+            page(*p)?;
+            if start >= end || end - start > MAX_TEXT_CHARS || expected.chars().count() != end - start {
+                return Err(invalid("expected must be the exact, non-empty text of [start, end)"));
+            }
+            font_id(font)?;
+            if let Some(size) = size {
+                if !size.is_finite() || !(1.0..=500.0).contains(size) {
+                    return Err(invalid("font size must be within 1..500 pt"));
+                }
+            }
+            if let Some(c) = c {
+                color(c)?;
+            }
+            if let Some(line_height) = line_height {
+                if !line_height.is_finite() || !(0.5..=5.0).contains(line_height) {
+                    return Err(invalid("line height must be within 0.5..5"));
+                }
+            }
+        }
+        EditorOperation::CropImage { selector, crop } => {
+            page(selector.page_number)?;
+            let sides = [crop.left, crop.bottom, crop.right, crop.top];
+            if sides.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+                || crop.left >= crop.right
+                || crop.bottom >= crop.top
+            {
+                return Err(invalid("a crop keeps a non-empty part of the image (fractions 0..1)"));
+            }
+        }
+        EditorOperation::SetImageOpacity { selector, opacity } => {
+            page(selector.page_number)?;
+            if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
+                return Err(invalid("opacity must be within 0..1"));
+            }
+        }
+        EditorOperation::RotatePage { page: p, rotation } => {
+            page(*p)?;
+            if ![0, 90, 180, 270].contains(rotation) {
+                return Err(invalid("rotation must be 0, 90, 180 or 270"));
+            }
+        }
+        EditorOperation::DeletePage { page: p } => page(*p)?,
+        EditorOperation::MovePage { page: p, to } => {
+            page(*p)?;
+            page(*to)?;
+        }
+        EditorOperation::InsertBlankPage { after, width, height } => {
+            if *after > MAX_PAGE {
+                return Err(invalid("after must be a page number or 0"));
+            }
+            for v in [width, height] {
+                if !v.is_finite() || !(36.0..=MAX_COORDINATE).contains(v) {
+                    return Err(invalid("page sizes are 36..14400 pt"));
+                }
+            }
+        }
+        EditorOperation::InsertPages { after, pdf, pages } => {
+            if *after > MAX_PAGE {
+                return Err(invalid("after must be a page number or 0"));
+            }
+            for p in pages {
+                page(*p)?;
+            }
+            *image_bytes += decode_pdf(pdf)?.len();
+        }
+        EditorOperation::AddAnnotation {
+            page: p,
+            kind,
+            rect: r,
+            quads,
+            ink,
+            contents,
+            label,
+            color: c,
+            author,
+        } => {
+            page(*p)?;
+            rect(r)?;
+            color(c)?;
+            rgb_only(c)?;
+            for value in [contents, label, author].into_iter().flatten() {
+                text(value, true)?;
+                if value.chars().count() > 4_000 {
+                    return Err(invalid("annotation text is limited to 4000 characters"));
+                }
+            }
+            if quads.len() > 500 || ink.len() > 200 || ink.iter().map(Vec::len).sum::<usize>() > 20_000 {
+                return Err(invalid("annotation geometry is too large"));
+            }
+            for quad in quads {
+                for v in quad {
+                    finite(*v, "quad")?;
+                }
+            }
+            for stroke in ink {
+                for p in stroke {
+                    point(*p)?;
+                }
+            }
+            match kind {
+                AnnotationKind::Highlight | AnnotationKind::Underline | AnnotationKind::Strikeout if quads.is_empty() => {
+                    return Err(invalid("text markup needs at least one quad"));
+                }
+                AnnotationKind::Ink if ink.iter().all(|stroke| stroke.len() < 2) => {
+                    return Err(invalid("ink needs a stroke of two or more points"));
+                }
+                AnnotationKind::Stamp if label.as_deref().is_none_or(|l| l.trim().is_empty()) => {
+                    return Err(invalid("a stamp needs a label"));
+                }
+                _ => {}
+            }
+        }
+        EditorOperation::SetFormField { name, value, .. } => {
+            if name.is_empty() || name.len() > 512 || name.chars().any(char::is_control) {
+                return Err(invalid("field names are 1-512 printable characters"));
+            }
+            text(value, true)?;
         }
     }
     if *image_bytes > MAX_TOTAL_IMAGE_BYTES {

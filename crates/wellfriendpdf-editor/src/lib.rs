@@ -7,14 +7,18 @@
 //! with the native build to produce the new immutable document version.
 //! Both run [`OperationList::validate`] first.
 
+pub mod annotations;
 pub mod apply;
 pub mod error;
 pub mod fonts;
+pub mod images;
 pub mod objects;
 pub mod ops;
 pub mod overlay;
+pub mod pages;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod protocol;
+pub mod restyle;
 mod scratch;
 
 pub use apply::{apply_operation, apply_operations, ApplyOutcome, OperationReport};

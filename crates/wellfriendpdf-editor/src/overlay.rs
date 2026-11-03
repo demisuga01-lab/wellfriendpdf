@@ -12,6 +12,7 @@ use lopdf::content::{Content, Operation};
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 
 use crate::error::EditorError;
+use crate::ops::SpotColor;
 use crate::fonts::page_resources;
 
 fn refused(message: impl Into<String>) -> EditorError {
@@ -126,7 +127,12 @@ fn reachable(document: &Document, root: &Object) -> BTreeSet<ObjectId> {
 /// `q`/`Q`, translated to the MediaBox origin) and its resources are merged
 /// under fresh names, so added text is ordinary page text that the editor
 /// can select and edit again later.
-pub fn merge(target: &[u8], page: u32, overlay: &[u8]) -> Result<Vec<u8>, EditorError> {
+pub fn merge(
+    target: &[u8],
+    page: u32,
+    overlay: &[u8],
+    spots: &[SpotColor],
+) -> Result<Vec<u8>, EditorError> {
     let mut document = load(target)?;
     let target_page = page_id(&document, page)?;
     let [x0, y0, _, _] = media_box(&document, target_page)?;
@@ -184,6 +190,9 @@ pub fn merge(target: &[u8], page: u32, overlay: &[u8]) -> Result<Vec<u8>, Editor
                 }
             }
         }
+    }
+    if !spots.is_empty() {
+        apply_spots(&mut document, &mut page_resources, &mut content, spots, suffix);
     }
     let mut operations = vec![
         Operation::new("Q", vec![]),
@@ -297,4 +306,72 @@ pub fn add_link(
         .map_err(|_| refused("page dictionary missing"))?
         .set("Annots", Object::Array(annots));
     save(&mut document)
+}
+
+fn operand_number(object: &Object) -> Option<f64> {
+    match object {
+        Object::Integer(value) => Some(*value as f64),
+        Object::Real(value) => Some(f64::from(*value)),
+        _ => None,
+    }
+}
+
+/// Rewrite the authored CMYK paint of each spot colour (its alternate scaled
+/// by the tint) into the `/Separation` colour space the spot names, so the
+/// PDF carries the real spot plate with its CMYK appearance as alternate.
+fn apply_spots(
+    document: &mut Document,
+    page_resources: &mut Dictionary,
+    content: &mut Content,
+    spots: &[SpotColor],
+    suffix: u32,
+) {
+    let mut spaces = match page_resources.get(b"ColorSpace") {
+        Ok(Object::Dictionary(d)) => d.clone(),
+        Ok(Object::Reference(id)) => document.get_dictionary(*id).cloned().unwrap_or_default(),
+        _ => Dictionary::new(),
+    };
+    for (index, spot) in spots.iter().enumerate() {
+        let function = dictionary! {
+            "FunctionType" => 2,
+            "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![0.into(), 0.into(), 0.into(), 0.into()],
+            "C1" => spot.alternate.iter().map(|v| Object::Real(*v as f32)).collect::<Vec<_>>(),
+            "N" => 1,
+        };
+        let separation = document.add_object(Object::Array(vec![
+            "Separation".into(),
+            Object::Name(spot.name.replace(' ', "#20").into_bytes()),
+            "DeviceCMYK".into(),
+            Object::Dictionary(function),
+        ]));
+        let name = format!("WfSpot{index}_wf{suffix}");
+        spaces.set(name.as_bytes().to_vec(), Object::Reference(separation));
+        let expected: Vec<f64> = spot.alternate.iter().map(|v| v * spot.tint).collect();
+        let mut rewritten = Vec::with_capacity(content.operations.len());
+        for operation in content.operations.drain(..) {
+            let stroke = operation.operator == "K";
+            let matches = (operation.operator == "k" || stroke)
+                && operation.operands.len() == 4
+                && operation
+                    .operands
+                    .iter()
+                    .zip(&expected)
+                    .all(|(o, e)| operand_number(o).is_some_and(|v| (v - e).abs() < 0.002));
+            if matches {
+                rewritten.push(Operation::new(
+                    if stroke { "CS" } else { "cs" },
+                    vec![Object::Name(name.as_bytes().to_vec())],
+                ));
+                rewritten.push(Operation::new(
+                    if stroke { "SCN" } else { "scn" },
+                    vec![Object::Real(spot.tint as f32)],
+                ));
+            } else {
+                rewritten.push(operation);
+            }
+        }
+        content.operations = rewritten;
+    }
+    page_resources.set("ColorSpace", Object::Dictionary(spaces));
 }

@@ -2,7 +2,7 @@
 //! the page's fonts, with the selectors the operations take.
 
 use serde::Serialize;
-use wellfriend_pdf_edit::{EditableImage, EditableImagePlacement, EditableVectorPath};
+use wellfriend_pdf_edit::{EditableFormField, EditableImage, EditableImagePlacement, EditableVectorPath};
 
 use crate::apply::matrix_bounds;
 use crate::error::EditorError;
@@ -28,6 +28,8 @@ pub struct PageObjects {
     pub images: Vec<PageImage>,
     pub vectors: Vec<EditableVectorPath>,
     pub fonts: Vec<SourceFont>,
+    /// AcroForm fields with a widget on this page.
+    pub forms: Vec<EditableFormField>,
     /// Objects the inspection could not certify for editing on this page.
     pub unsupported_images: usize,
     pub unsupported_vectors: usize,
@@ -84,6 +86,12 @@ pub fn page_objects(bytes: &[u8], page: u32) -> Result<PageObjects, EditorError>
         images,
         vectors,
         fonts,
+        forms: inspection
+            .editable_form_fields
+            .iter()
+            .filter(|f| f.page_number == page || f.widgets.iter().any(|w| w.selector.expected_page_number == page))
+            .cloned()
+            .collect(),
         unsupported_images,
         unsupported_vectors,
         signatures: inspection.signatures.len(),

@@ -327,6 +327,11 @@ pub struct GeometricReflowRequest {
     pub break_width_scale: Option<f64>,
     #[serde(default = "default_max_downstream_blocks")]
     pub max_downstream_blocks: usize,
+    /// The caller restyles the text: its `font_size`, `alignment` and
+    /// `line_height` (with an approved font) replace the source style
+    /// instead of inheriting it from the first source run.
+    #[serde(default)]
+    pub explicit_style: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4409,6 +4414,8 @@ fn apply_source_linked_reflow(
             mode: source_reflow_mode(request),
             style_policy: if preserve_per_segment {
                 MultiRunStylePolicy::PreservePerSegment
+            } else if request.explicit_style && approved_font.is_some() {
+                MultiRunStylePolicy::ExplicitSupplied
             } else {
                 MultiRunStylePolicy::InheritLeading
             },
@@ -8441,6 +8448,7 @@ mod tests {
             paint_order_policy: Default::default(),
             break_width_scale: None,
             max_downstream_blocks: 4,
+            explicit_style: false,
         }
     }
 

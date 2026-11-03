@@ -3,7 +3,7 @@
 //! order, so the preview the user approved is the version the server saves.
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use wellfriend_pdf_edit as edit;
 use wellfriendpdf_engine::{
     text_reflow::{apply_reflow_region, GeometricReflowRequest},
@@ -13,7 +13,9 @@ use wellfriendpdf_engine::{
 
 use crate::error::EditorError;
 use crate::fonts::{ascent_ratio, covers, FontSource};
-use crate::ops::{decode_image, Align, EditorOperation, OperationList, Rect, Rgb, ShapeKind};
+use crate::ops::{
+    decode_image, decode_pdf, Align, EditorOperation, FieldValueKind, OperationList, Rect, Rgb, ShapeKind, SpotColor,
+};
 use crate::{overlay, scratch};
 
 /// What one applied operation did, for the UI and the version record.
@@ -136,6 +138,9 @@ pub fn apply_operation(
             report.changed_region = Some(matrix_bounds(&selector.expected_matrix));
             out
         }
+        EditorOperation::ReplaceImage { selector, image } if image.mime_type == "image/png" => {
+            crate::images::replace_image_png(input, selector, &decode_image(image)?)?
+        }
         EditorOperation::ReplaceImage { selector, image } => {
             let jpeg = decode_image(image)?;
             let (_, out) = scratch::run(input, Some(&jpeg), |p| {
@@ -201,7 +206,7 @@ pub fn apply_operation(
             report.changed_region =
                 Some([rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]);
             report.fonts_added.push(font.clone());
-            author_onto(input, *page, |builder, origin| {
+            author_onto(input, *page, &spots([Some(color)]), |builder, origin| {
                 let face = builder
                     .register_font_bytes(postscript_name(&font_bytes, font), font_bytes.clone())?;
                 let face = match &fallback {
@@ -234,7 +239,7 @@ pub fn apply_operation(
             let data = decode_image(image)?;
             let png = image.mime_type == "image/png";
             report.changed_region = Some(bounds(rect));
-            author_onto(input, *page, |builder, origin| {
+            author_onto(input, *page, &[], |builder, origin| {
                 let handle = if png {
                     builder.add_png_image(&data)?
                 } else {
@@ -265,13 +270,13 @@ pub fn apply_operation(
         } => {
             report.changed_region = Some(bounds(rect));
             let style = GraphicsStyle {
-                stroke: stroke.map(rgb),
-                fill: fill.map(rgb),
+                stroke: stroke.as_ref().map(rgb),
+                fill: fill.as_ref().map(rgb),
                 line_width: *line_width,
                 ..GraphicsStyle::default()
             };
             let (shape, r) = (*shape, *rect);
-            author_onto(input, *page, |_, origin| {
+            author_onto(input, *page, &spots([stroke.as_ref(), fill.as_ref()]), |_, origin| {
                 Ok(Box::new(
                     move |page: &mut wellfriendpdf_engine::PdfPageBuilder| {
                         let (x, y) = (r.x - origin[0], r.y - origin[1]);
@@ -303,9 +308,9 @@ pub fn apply_operation(
                 from[0].max(to[0]),
                 from[1].max(to[1]),
             ]);
-            let style = GraphicsStyle::stroke(rgb(*color), *line_width);
+            let style = GraphicsStyle::stroke(rgb(color), *line_width);
             let (from, to) = (*from, *to);
-            author_onto(input, *page, |_, origin| {
+            author_onto(input, *page, &spots([Some(color)]), |_, origin| {
                 Ok(Box::new(
                     move |page: &mut wellfriendpdf_engine::PdfPageBuilder| {
                         page.draw_line(
@@ -327,11 +332,11 @@ pub fn apply_operation(
                 .push("Whiteout covers content; use Redact to remove it.".into());
             let style = GraphicsStyle {
                 stroke: None,
-                fill: Some(rgb(*color)),
+                fill: Some(rgb(color)),
                 ..GraphicsStyle::default()
             };
             let r = *rect;
-            author_onto(input, *page, |_, origin| {
+            author_onto(input, *page, &spots([Some(color)]), |_, origin| {
                 Ok(Box::new(
                     move |page: &mut wellfriendpdf_engine::PdfPageBuilder| {
                         page.draw_rect(r.x - origin[0], r.y - origin[1], r.width, r.height, &style);
@@ -350,7 +355,107 @@ pub fn apply_operation(
             overlay::add_link(input, *page, bounds(rect), url.as_deref(), *target_page)?
         }
         EditorOperation::Redact { page, rect, fill } => {
-            redact(input, *page, rect, *fill, &mut report)?
+            redact(input, *page, rect, fill.clone(), &mut report)?
+        }
+        EditorOperation::RestyleText {
+            page,
+            start,
+            end,
+            expected,
+            font,
+            size,
+            color,
+            align,
+            line_height,
+        } => crate::restyle::restyle_text(
+            input,
+            &crate::restyle::Restyle {
+                page: *page,
+                start: *start,
+                end: *end,
+                expected,
+                font,
+                size: *size,
+                color: color.clone(),
+                align: *align,
+                line_height: *line_height,
+            },
+            fonts,
+            &mut report,
+        )?,
+        EditorOperation::CropImage { selector, crop } => {
+            let (_, out) = scratch::run(input, None, |p| {
+                edit::crop_image(&edit::CropImageRequest {
+                    input_path: p.input.to_path_buf(),
+                    output_path: p.output.to_path_buf(),
+                    selector: selector.clone(),
+                    destination_crop: edit::PdfNormalizedCrop {
+                        left: crop.left,
+                        bottom: crop.bottom,
+                        right: crop.right,
+                        top: crop.top,
+                    },
+                    allow_signature_invalidation: allow,
+                })
+            })?;
+            report.changed_region = Some(matrix_bounds(&selector.expected_matrix));
+            out
+        }
+        EditorOperation::SetImageOpacity { selector, opacity } => {
+            let (_, out) = scratch::run(input, None, |p| {
+                edit::set_image_opacity(&edit::SetImageOpacityRequest {
+                    input_path: p.input.to_path_buf(),
+                    output_path: p.output.to_path_buf(),
+                    selector: selector.clone(),
+                    destination_opacity: *opacity,
+                    allow_signature_invalidation: allow,
+                })
+            })?;
+            report.changed_region = Some(matrix_bounds(&selector.expected_matrix));
+            out
+        }
+        EditorOperation::RotatePage { page, rotation } => crate::pages::rotate_page(input, *page, *rotation)?,
+        EditorOperation::DeletePage { page } => crate::pages::delete_page(input, *page)?,
+        EditorOperation::MovePage { page, to } => crate::pages::move_page(input, *page, *to)?,
+        EditorOperation::InsertBlankPage { after, width, height } => {
+            crate::pages::insert_blank_page(input, *after, *width, *height)?
+        }
+        EditorOperation::InsertPages { after, pdf, pages } => {
+            crate::pages::insert_pages(input, *after, &decode_pdf(pdf)?, pages)?
+        }
+        EditorOperation::AddAnnotation {
+            page,
+            kind,
+            rect,
+            quads,
+            ink,
+            contents,
+            label,
+            color,
+            author,
+        } => {
+            report.changed_region = Some(bounds(rect));
+            crate::annotations::add_annotation(
+                input,
+                *page,
+                *kind,
+                rect,
+                quads,
+                ink,
+                contents.as_deref(),
+                label.as_deref(),
+                color,
+                author.as_deref(),
+            )?
+        }
+        EditorOperation::SetFormField { name, value, kind } => {
+            let mut editor = PdfEditor::open_bytes(input.to_vec())?;
+            match kind {
+                FieldValueKind::Text => editor.set_form_text(name.clone(), value.clone()),
+                FieldValueKind::Choice => editor.set_form_choice(name.clone(), value.clone()),
+                FieldValueKind::Checkbox => editor.set_form_checkbox(name.clone(), value == "true"),
+            };
+            editor.save_to_bytes(EditMode::FullRewrite)?
         }
     };
     Ok((bytes, report))
@@ -370,8 +475,13 @@ fn postscript_name(bytes: &[u8], id: &str) -> String {
         .unwrap_or_else(|| id.to_owned())
 }
 
-fn rgb(color: Rgb) -> Color {
-    Color::device_rgb(color.r, color.g, color.b)
+fn rgb(color: &Rgb) -> Color {
+    color.engine()
+}
+
+/// Spot colours an operation paints with (rewritten to separations on merge).
+fn spots<'a>(colors: impl IntoIterator<Item = Option<&'a Rgb>>) -> Vec<SpotColor> {
+    colors.into_iter().flatten().filter_map(Rgb::spot).collect()
 }
 
 fn bounds(rect: &Rect) -> [f64; 4] {
@@ -418,6 +528,7 @@ type DrawFn<'a> = Box<
 fn author_onto<'a>(
     input: &[u8],
     page: u32,
+    spot_colors: &[SpotColor],
     prepare: impl FnOnce(
         &mut PdfBuilder,
         [f64; 2],
@@ -433,7 +544,7 @@ fn author_onto<'a>(
     let page_builder = builder.add_page(AuthorPageSize::custom(x1 - x0, y1 - y0));
     draw(page_builder)?;
     let authored = builder.to_bytes()?;
-    overlay::merge(input, page, &authored)
+    overlay::merge(input, page, &authored, spot_colors)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -449,7 +560,7 @@ fn draw_text_box(
     line_height: f64,
     ascent: f64,
 ) -> Result<(), wellfriendpdf_engine::WellfriendError> {
-    let style = TextStyle::new(face, size).fill(rgb(*color));
+    let style = TextStyle::new(face, size).fill(rgb(color));
     let paragraph = ParagraphStyle::new()
         .align(match align {
             Align::Left => TextAlign::Left,
@@ -725,7 +836,7 @@ fn redact(
         page as usize,
         ImageRect::new(rect.x, rect.y, rect.width, rect.height),
         RedactionOptions {
-            fill: rgb(fill),
+            fill: rgb(&fill),
             ..RedactionOptions::default()
         },
     )?;
