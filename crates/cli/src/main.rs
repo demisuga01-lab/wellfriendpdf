@@ -4086,21 +4086,72 @@ struct CanonicalizeArgs {
 /// lets later buffers reuse already-faulted pages (about a third fewer page
 /// faults on scanned pages). The process exits soon after, so the retained
 /// memory is not a concern.
+///
+/// A tunable the environment already sets (`MALLOC_MMAP_THRESHOLD_`,
+/// `MALLOC_TRIM_THRESHOLD_`, `MALLOC_TOP_PAD_`, or `GLIBC_TUNABLES`) is left
+/// as the platform chose it.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn tune_allocator_for_one_shot_process() {
-    extern "C" {
-        fn mallopt(param: i32, value: i32) -> i32;
-    }
     const M_TRIM_THRESHOLD: i32 = -1;
     const M_TOP_PAD: i32 = -2;
     const M_MMAP_THRESHOLD: i32 = -3;
+    // 32 MiB is the largest mmap threshold glibc accepts on 64-bit targets.
+    set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 32 * 1024 * 1024);
+    set_malloc_tunable(
+        M_TRIM_THRESHOLD,
+        "MALLOC_TRIM_THRESHOLD_",
+        1024 * 1024 * 1024,
+    );
+    set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 64 * 1024 * 1024);
+}
+
+/// Bound glibc's per-thread heaps to the page workers (plus the CLI thread):
+/// freed memory is reused across workers instead of each arena keeping its
+/// own peak. Called before the worker pool starts.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_allocator_for_workers(workers: usize) {
+    const M_ARENA_MAX: i32 = -8;
+    const M_TRIM_THRESHOLD: i32 = -1;
+    const M_TOP_PAD: i32 = -2;
+    const M_MMAP_THRESHOLD: i32 = -3;
+    let arenas = i32::try_from(workers.saturating_add(1)).unwrap_or(i32::MAX);
+    set_malloc_tunable(M_ARENA_MAX, "MALLOC_ARENA_MAX", arenas);
+    // A job given a share of a busy host (the tools service runs several at
+    // once) keeps its memory near its live data: large buffers are mapped
+    // and returned on free, and freed heap above 64 MiB is trimmed. That
+    // costs a few page faults; a job with the whole host keeps the faster
+    // retention above.
+    if workers <= LEAN_ALLOCATOR_WORKERS {
+        set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 1024 * 1024);
+        set_malloc_tunable(M_TRIM_THRESHOLD, "MALLOC_TRIM_THRESHOLD_", 64 * 1024 * 1024);
+        set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 0);
+    }
+}
+
+/// Worker counts at or below which the allocator keeps memory lean.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const LEAN_ALLOCATOR_WORKERS: usize = 2;
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_allocator_for_workers(_workers: usize) {}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn set_malloc_tunable(param: i32, env: &str, value: i32) {
+    extern "C" {
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    let tunables = std::env::var("GLIBC_TUNABLES").unwrap_or_default();
+    let glibc_name = env
+        .trim_end_matches('_')
+        .trim_start_matches("MALLOC_")
+        .to_ascii_lowercase();
+    if std::env::var_os(env).is_some() || tunables.contains(&format!("malloc.{glibc_name}")) {
+        return;
+    }
     // SAFETY: mallopt only adjusts glibc allocator tunables; it is called
-    // before any other thread exists. 32 MiB is the largest mmap threshold
-    // glibc accepts on 64-bit targets.
+    // from the CLI thread before the worker pool exists.
     unsafe {
-        mallopt(M_MMAP_THRESHOLD, 32 * 1024 * 1024);
-        mallopt(M_TRIM_THRESHOLD, 1024 * 1024 * 1024);
-        mallopt(M_TOP_PAD, 64 * 1024 * 1024);
+        mallopt(param, value);
     }
 }
 
@@ -4173,6 +4224,14 @@ const WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
 
 /// Size the process-wide worker pool every page-parallel stage runs on.
 fn configure_worker_threads(threads: Option<usize>) -> Result<(), rayon::ThreadPoolBuildError> {
+    let workers = threads.filter(|&threads| threads > 0).unwrap_or_else(|| {
+        std::env::var("RAYON_NUM_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&threads| threads > 0)
+            .unwrap_or_else(wellfriendpdf_engine::page_parallel::available_threads)
+    });
+    tune_allocator_for_workers(workers);
     let mut builder = rayon::ThreadPoolBuilder::new()
         .stack_size(WORKER_STACK_BYTES)
         .thread_name(|index| format!("wellfriendpdf-page-{index}"));
@@ -10450,8 +10509,10 @@ fn run_pdf_to_json(args: PdfToJsonArgs) -> Result<(), Box<dyn Error>> {
         pages: pages.clone(),
         ..wellfriendpdf_engine::EditableBuildOptions::default()
     })?;
-    let output = serde_json::to_string_pretty(&model)?;
-    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, output.as_bytes())?;
+    // The same bytes as `serde_json::to_string_pretty(&model)`, with the
+    // large arrays serialized in parallel.
+    let output = model.to_json_pretty()?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &output)?;
     if args.json {
         println!(
             "{}",
