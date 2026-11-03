@@ -16,7 +16,7 @@
 //! OEBPS/nav.xhtml               EPUB navigation document (toc + landmarks)
 //! OEBPS/style.css
 //! OEBPS/chapter-NNN.xhtml       one per chapter
-//! OEBPS/images/image-<digest>.png
+//! OEBPS/images/image-<digest>.jpg|png
 //! ```
 //!
 //! Chapters split on top-level headings (the document's highest heading rank;
@@ -37,8 +37,6 @@ use crate::analysis::tables::Table;
 use crate::engine::{ContentEngine, ExtractionProfile};
 use crate::error::{Result, WellfriendError};
 use crate::parse::{Block, BlockKind, Document, InlineSpan, InlineText, ParseOptions};
-use crate::versioning::resource_digest;
-use crate::PageRegion;
 
 /// Default pages per chapter for page-based splitting.
 pub const DEFAULT_EPUB_PAGES_PER_CHAPTER: usize = 10;
@@ -298,6 +296,9 @@ pub fn pdf_to_epub_with_report(
     engine: &ContentEngine,
     options: &EpubOptions,
 ) -> Result<(Vec<u8>, EpubReport)> {
+    if options.include_images {
+        engine.retain_page_image_placements();
+    }
     // The canonical parse. (It once went through the editable model and
     // back; that round trip returns the parse unchanged, so it is not run.)
     let document = engine.parse_document_with_profile(
@@ -486,44 +487,45 @@ fn collect_images(
     document: &Document,
     store: &mut Vec<(String, Vec<u8>)>,
 ) -> Vec<EpubImage> {
-    // Pages decode and encode their images independently: run them in
-    // parallel, then name and de-duplicate in page order.
-    let per_page = crate::page_parallel::map_ordered(&document.pages, |page| {
-        let Ok(region) = PageRegion::new(0.0, 0.0, page.width.max(1.0), page.height.max(1.0))
-        else {
-            return Vec::new();
-        };
-        let Ok(found) = engine.find_page_images_in_region(page.number as usize, region) else {
-            return Vec::new();
-        };
-        found
-            .into_iter()
-            .filter(|img| !img.image.is_mask && !img.image.is_smask)
-            .filter_map(|image| {
-                let bytes = engine.extract_image_png_for_package(&image.image).ok()?;
-                Some((page.number, image, bytes))
-            })
-            .collect::<Vec<_>>()
-    });
+    // Every distinct image is encoded once, for its largest placement:
+    // plain JPEGs and PNG-predicted Flate images are copied, the rest are
+    // fitted to their placed size (see `package_images`).
+    let pages: Vec<(u32, f64, f64)> = document
+        .pages
+        .iter()
+        .map(|page| (page.number, page.width, page.height))
+        .collect();
+    let placements = crate::package_images::page_placements(engine, &pages);
+    let packaged = crate::package_images::package_distinct(
+        engine,
+        &placements,
+        crate::package_images::PackagePolicy { any_jpeg: false },
+    );
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    for (page_number, image, bytes) in per_page.into_iter().flatten() {
-        let digest = resource_digest(&bytes);
-        let suffix: String = digest
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .take(16)
-            .collect();
-        let href = format!("images/image-{suffix}.png");
-        if seen.insert(href.clone()) {
-            store.push((href.clone(), bytes));
+    for (page, placed) in document.pages.iter().zip(&placements) {
+        for image in placed {
+            let key = (image.image.object_number, image.image.generation_number);
+            let Some(part) = packaged.get(&key) else {
+                continue;
+            };
+            let suffix: String = part
+                .digest
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(16)
+                .collect();
+            let href = format!("images/image-{suffix}.{}", part.ext);
+            if seen.insert(href.clone()) {
+                store.push((href.clone(), part.bytes.as_ref().clone()));
+            }
+            out.push(EpubImage {
+                page: page.number,
+                bbox: image.bbox,
+                href,
+                width: (image.bbox[2] - image.bbox[0]).abs(),
+            });
         }
-        out.push(EpubImage {
-            page: page_number,
-            bbox: image.bbox,
-            href,
-            width: (image.bbox[2] - image.bbox[0]).abs(),
-        });
     }
     out
 }
@@ -941,9 +943,14 @@ fn package_opf(
     }
     for (index, (href, _)) in images.iter().enumerate() {
         manifest.push_str(&format!(
-            "    <item id=\"img-{n}\" href=\"{href}\" media-type=\"image/png\"/>\n",
+            "    <item id=\"img-{n}\" href=\"{href}\" media-type=\"{media}\"/>\n",
             n = index + 1,
-            href = escape(href.as_str())
+            href = escape(href.as_str()),
+            media = if href.ends_with(".jpg") {
+                "image/jpeg"
+            } else {
+                "image/png"
+            }
         ));
     }
     format!(

@@ -155,6 +155,7 @@ pub mod object;
 pub mod ocr;
 pub mod office;
 pub mod optional_content;
+pub(crate) mod package_images;
 pub mod page_parallel;
 pub mod parse;
 pub mod parser;

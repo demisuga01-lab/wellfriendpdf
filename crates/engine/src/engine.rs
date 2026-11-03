@@ -1447,6 +1447,11 @@ pub struct ContentEngine {
     canonical: CanonicalDocument,
     registered_fonts: RegisteredFontProvider,
     page_artifacts: Arc<RwLock<PageArtifactCache>>,
+    /// Each page's image placements (full page), once computed.
+    image_placements: Arc<RwLock<HashMap<usize, Arc<Vec<PlacedImageReference>>>>>,
+    /// Whether the conversion page pass records image placements from the
+    /// content it already parsed (set by the writers that embed images).
+    retain_image_placements: Arc<std::sync::atomic::AtomicBool>,
     edit_policy_cache: Arc<
         RwLock<
             HashMap<
@@ -1466,6 +1471,8 @@ impl ContentEngine {
             canonical,
             registered_fonts: RegisteredFontProvider::default(),
             page_artifacts: Arc::new(RwLock::new(PageArtifactCache::default())),
+            image_placements: Arc::new(RwLock::new(HashMap::new())),
+            retain_image_placements: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             edit_policy_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -3366,40 +3373,101 @@ impl ContentEngine {
         region: PageRegion,
     ) -> Result<Vec<PlacedImageReference>> {
         let region = self.validated_region_for_page(page_number, region)?;
-        let images = self.find_page_images(page_number)?;
+        let placements = self.page_image_placements(page_number, None)?;
+        Ok(placements
+            .iter()
+            .filter(|placed| region.keeps_bbox(placed.bbox))
+            .cloned()
+            .collect())
+    }
+
+    /// Every image placement of a page, in content order, computed once per
+    /// page. `ops`, when given, are the page's operations as
+    /// [`Self::get_page_content`] returns them (the conversion page pass
+    /// hands over the ones it parsed, so the page is not parsed again).
+    fn page_image_placements(
+        &self,
+        page_number: usize,
+        ops: Option<&[ContentOperation]>,
+    ) -> Result<Arc<Vec<PlacedImageReference>>> {
+        if let Some(cached) = self
+            .image_placements
+            .read()
+            .expect("image placement cache lock poisoned")
+            .get(&page_number)
+        {
+            return Ok(Arc::clone(cached));
+        }
+        // Placements come from `Do` of image XObjects only, so inline images
+        // (whose lookup parses the page content again) are not collected.
+        self.validate_page(page_number)?;
+        let images = ImageLocator::find_page_images(
+            self,
+            page_number,
+            &ImageLocateOptions {
+                include_inline: false,
+                ..ImageLocateOptions::default()
+            },
+        )?;
         let image_names: BTreeSet<String> = images
             .iter()
             .filter(|image| !image.is_inline)
             .map(|image| image.xobject_name.clone())
             .collect();
-        if image_names.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let ops = self.get_page_content(page_number)?;
-        let graphics = crate::analysis::graphics::collect_graphics_with_images(&ops, &image_names);
         let mut out = Vec::new();
-        for placement in graphics.images {
-            let bbox = [
-                placement.bbox.x0,
-                placement.bbox.y0,
-                placement.bbox.x1,
-                placement.bbox.y1,
-            ];
-            if !region.keeps_bbox(bbox) {
-                continue;
-            }
-            if let Some(image) = images
-                .iter()
-                .find(|image| image.xobject_name == placement.name)
-            {
-                out.push(PlacedImageReference {
-                    image: image.clone(),
-                    bbox,
-                });
+        if !image_names.is_empty() {
+            let parsed;
+            let ops = match ops {
+                Some(ops) => ops,
+                None => {
+                    parsed = self.get_page_content(page_number)?;
+                    &parsed
+                }
+            };
+            let graphics =
+                crate::analysis::graphics::collect_graphics_with_images(ops, &image_names);
+            for placement in graphics.images {
+                let bbox = [
+                    placement.bbox.x0,
+                    placement.bbox.y0,
+                    placement.bbox.x1,
+                    placement.bbox.y1,
+                ];
+                if let Some(image) = images
+                    .iter()
+                    .find(|image| image.xobject_name == placement.name)
+                {
+                    out.push(PlacedImageReference {
+                        image: image.clone(),
+                        bbox,
+                    });
+                }
             }
         }
+        let out = Arc::new(out);
+        self.image_placements
+            .write()
+            .expect("image placement cache lock poisoned")
+            .insert(page_number, Arc::clone(&out));
         Ok(out)
+    }
+
+    /// Ask the conversion page pass to record image placements from the
+    /// content it parses (writers that embed images call this first).
+    pub(crate) fn retain_page_image_placements(&self) {
+        self.retain_image_placements
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record a page's image placements from its already-parsed operations
+    /// (those [`Self::get_page_content`] returns), when requested.
+    pub(crate) fn note_page_image_placements(&self, page_number: usize, ops: &[ContentOperation]) {
+        if self
+            .retain_image_placements
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let _ = self.page_image_placements(page_number, Some(ops));
+        }
     }
 
     /// Serializable image-placement metadata constrained to a page region.
@@ -3621,38 +3689,6 @@ impl ContentEngine {
     /// 200 dpi of its displayed size and written as JPEG (photographic) or PNG
     /// (transparency or pure black-and-white). Returns the bytes and extension.
     /// Full-resolution PNGs of scanned pages made DOCX output slow and huge.
-    pub(crate) fn extract_image_for_office(
-        &self,
-        image: &ImageReference,
-        display_width_points: f64,
-        display_height_points: f64,
-    ) -> Result<(Vec<u8>, &'static str)> {
-        if let Ok(Some((bytes, ext))) = ImageEncoder::keep_original(
-            image,
-            self.document().reader(),
-            &ImageOutputFormat::Original,
-        ) {
-            if matches!(ext, "jpg" | "jpeg") {
-                return Ok((bytes, "jpg"));
-            }
-        }
-        let raw = self.decode_image(image)?;
-        const OFFICE_IMAGE_DPI: f64 = 200.0;
-        let max_w = (display_width_points.abs() / 72.0 * OFFICE_IMAGE_DPI)
-            .ceil()
-            .max(16.0) as u32;
-        let max_h = (display_height_points.abs() / 72.0 * OFFICE_IMAGE_DPI)
-            .ceil()
-            .max(16.0) as u32;
-        let raw = crate::images::decoder::box_downscale_to_fit(raw, max_w, max_h);
-        let bilevel = raw.channels == 1 && raw.pixels.iter().all(|&v| v == 0 || v == 255);
-        if raw.channels == 4 || raw.channels == 2 || bilevel {
-            Ok((ImageEncoder::encode_png_compact(&raw)?, "png"))
-        } else {
-            Ok((ImageEncoder::encode_jpeg(&raw, 85)?, "jpg"))
-        }
-    }
-
     pub(crate) fn extract_image_png_for_package(&self, image: &ImageReference) -> Result<Vec<u8>> {
         if let Ok(Some((bytes, _ext))) =
             ImageEncoder::keep_original(image, self.document().reader(), &ImageOutputFormat::Png)

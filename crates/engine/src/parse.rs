@@ -835,6 +835,7 @@ fn prepare_page(
         None
     };
     let ops: &[crate::content::ContentOperation] = normalized_copy.as_deref().unwrap_or(&strict);
+    engine.note_page_image_placements(page, ops);
     let class = crate::classify::classify_parsed_page(engine, page, cfg, ops, &text)
         .unwrap_or_else(|_| crate::classify::unreadable_page_classification(page));
     if !builds(&class) {

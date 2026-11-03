@@ -855,6 +855,9 @@ pub fn pdf_to_docx_pages(
     options: &DocxOptions,
     pages: &[usize],
 ) -> Result<Vec<u8>> {
+    if options.include_images {
+        engine.retain_page_image_placements();
+    }
     let document = parse_for_office(engine, ExtractionProfile::LayoutFaithful, pages)?;
     write_docx(engine, &document, options)
 }
@@ -1041,7 +1044,7 @@ struct DocxImagePart {
     page: u32,
     rel_id: String,
     name: String,
-    bytes: Vec<u8>,
+    bytes: std::sync::Arc<Vec<u8>>,
     width_emu: i64,
     height_emu: i64,
     x_emu: i64,
@@ -1103,7 +1106,7 @@ fn write_docx(
             &mut zip,
             opts,
             &format!("word/media/{}", image.name),
-            &image.bytes,
+            image.bytes.as_slice(),
         )?;
     }
     zip.finish().map_err(zip_err)?;
@@ -1111,50 +1114,44 @@ fn write_docx(
 }
 
 fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Vec<DocxImagePart>> {
-    // Pages decode and encode their images independently; run them in
-    // parallel and keep page order.
-    let per_page =
-        crate::page_parallel::map_ordered(&document.pages, |page| page_docx_images(engine, page));
-    Ok(per_page.into_iter().flatten().collect())
-}
-
-fn page_docx_images(engine: &ContentEngine, page: &crate::parse::Page) -> Vec<DocxImagePart> {
+    // Every distinct image is encoded once, for its largest placement, and
+    // referenced by each placement in page order.
+    let pages: Vec<(u32, f64, f64)> = document
+        .pages
+        .iter()
+        .map(|page| (page.number, page.width, page.height))
+        .collect();
+    let placements = crate::package_images::page_placements(engine, &pages);
+    let packaged = crate::package_images::package_distinct(
+        engine,
+        &placements,
+        crate::package_images::PackagePolicy { any_jpeg: true },
+    );
     let mut out = Vec::new();
-    let Ok(region) = PageRegion::new(0.0, 0.0, page.width.max(1.0), page.height.max(1.0)) else {
-        return out;
-    };
-    let Ok(images) = engine.find_page_images_in_region(page.number as usize, region) else {
-        return out;
-    };
-    for image in images
-        .into_iter()
-        .filter(|img| !img.image.is_mask && !img.image.is_smask)
-    {
-        let Ok((bytes, ext)) = engine.extract_image_for_office(
-            &image.image,
-            image.bbox[2] - image.bbox[0],
-            image.bbox[3] - image.bbox[1],
-        ) else {
-            continue;
-        };
-        let width_points = (image.bbox[2] - image.bbox[0]).abs().clamp(72.0, 432.0);
-        let height_points = (image.bbox[3] - image.bbox[1]).abs().clamp(72.0, 432.0);
-        let x_points = image.bbox[0].max(0.0);
-        let y_points = (page.height - image.bbox[3]).max(0.0);
-        let digest = resource_digest(&bytes);
-        let stable_suffix = &digest[..16];
-        out.push(DocxImagePart {
-            page: page.number,
-            rel_id: format!("rIdImage{stable_suffix}"),
-            name: format!("image-{stable_suffix}.{ext}"),
-            bytes,
-            width_emu: points_to_emu(width_points),
-            height_emu: points_to_emu(height_points),
-            x_emu: points_to_emu(x_points),
-            y_emu: points_to_emu(y_points),
-        });
+    for (page, placed) in document.pages.iter().zip(&placements) {
+        for image in placed {
+            let key = (image.image.object_number, image.image.generation_number);
+            let Some(part) = packaged.get(&key) else {
+                continue;
+            };
+            let width_points = (image.bbox[2] - image.bbox[0]).abs().clamp(72.0, 432.0);
+            let height_points = (image.bbox[3] - image.bbox[1]).abs().clamp(72.0, 432.0);
+            let x_points = image.bbox[0].max(0.0);
+            let y_points = (page.height - image.bbox[3]).max(0.0);
+            let stable_suffix = &part.digest[..16];
+            out.push(DocxImagePart {
+                page: page.number,
+                rel_id: format!("rIdImage{stable_suffix}"),
+                name: format!("image-{stable_suffix}.{}", part.ext),
+                bytes: std::sync::Arc::clone(&part.bytes),
+                width_emu: points_to_emu(width_points),
+                height_emu: points_to_emu(height_points),
+                x_emu: points_to_emu(x_points),
+                y_emu: points_to_emu(y_points),
+            });
+        }
     }
-    out
+    Ok(out)
 }
 
 fn collect_docx_hyperlinks(document: &Document) -> Vec<DocxHyperlinkPart> {
