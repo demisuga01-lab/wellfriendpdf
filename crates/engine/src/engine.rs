@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::io::{self, Cursor, Read};
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -534,13 +534,22 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     fields
 }
 
+/// The bytes between two decoded content streams of one page. This is the
+/// separator the previous reader chain produced (the chain's own newline
+/// between readers around an explicit newline reader); keeping it byte for
+/// byte keeps inline-image payloads that span streams unchanged.
+const CONTENT_STREAM_JOIN: &[u8] = b"\n\n\n";
+
+/// The previous reader chain, kept to prove the in-memory join equivalent.
+#[cfg(test)]
 struct JoinedContentStreams<'a> {
     readers: Vec<Box<dyn Read + 'a>>,
     index: usize,
     emit_separator: bool,
-    pending_error: Option<io::Error>,
+    pending_error: Option<std::io::Error>,
 }
 
+#[cfg(test)]
 impl<'a> JoinedContentStreams<'a> {
     fn new(readers: Vec<Box<dyn Read + 'a>>) -> Self {
         Self {
@@ -603,8 +612,9 @@ fn enforce_page_content_decoded_limits(
     Ok(())
 }
 
+#[cfg(test)]
 impl Read for JoinedContentStreams<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if let Some(err) = self.pending_error.take() {
             return Err(err);
         }
@@ -1342,6 +1352,12 @@ impl PageArtifactCache {
     }
 }
 
+/// Whether the page artifact cache would keep these operations.
+fn operations_cacheable(operations: &[ContentOperation]) -> bool {
+    let bytes = estimate_operations_bytes(operations);
+    bytes <= MAX_SINGLE_PAGE_ARTIFACT_BYTES.min(MAX_PAGE_ARTIFACT_CACHE_BYTES)
+}
+
 fn estimate_operations_bytes(operations: &[ContentOperation]) -> usize {
     let mut bytes = operations
         .len()
@@ -1431,6 +1447,11 @@ pub struct ContentEngine {
     canonical: CanonicalDocument,
     registered_fonts: RegisteredFontProvider,
     page_artifacts: Arc<RwLock<PageArtifactCache>>,
+    /// Each page's image placements (full page), once computed.
+    image_placements: Arc<RwLock<HashMap<usize, Arc<Vec<PlacedImageReference>>>>>,
+    /// Whether the conversion page pass records image placements from the
+    /// content it already parsed (set by the writers that embed images).
+    retain_image_placements: Arc<std::sync::atomic::AtomicBool>,
     edit_policy_cache: Arc<
         RwLock<
             HashMap<
@@ -1450,6 +1471,8 @@ impl ContentEngine {
             canonical,
             registered_fonts: RegisteredFontProvider::default(),
             page_artifacts: Arc::new(RwLock::new(PageArtifactCache::default())),
+            image_placements: Arc::new(RwLock::new(HashMap::new())),
+            retain_image_placements: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             edit_policy_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -2391,10 +2414,14 @@ impl ContentEngine {
             false,
             false,
         )?;
-        self.page_artifacts
-            .write()
-            .expect("page artifact cache lock poisoned")
-            .insert_operations(page_number, operations.clone());
+        // Clone into the cache only what it would keep: a page too large
+        // to cache would otherwise be copied just to be dropped.
+        if operations_cacheable(&operations) {
+            self.page_artifacts
+                .write()
+                .expect("page artifact cache lock poisoned")
+                .insert_operations(page_number, operations.clone());
+        }
         Ok(operations)
     }
 
@@ -2418,10 +2445,14 @@ impl ContentEngine {
             }
             let operations =
                 self.get_page_content_with_limits_inner(page_number, limits, cancel, true, false)?;
-            self.page_artifacts
-                .write()
-                .expect("page artifact cache lock poisoned")
-                .insert_operations(page_number, operations.clone());
+            // Clone into the cache only what it would keep: a page too large
+            // to cache would otherwise be copied just to be dropped.
+            if operations_cacheable(&operations) {
+                self.page_artifacts
+                    .write()
+                    .expect("page artifact cache lock poisoned")
+                    .insert_operations(page_number, operations.clone());
+            }
             return Ok(operations);
         }
         self.get_page_content_with_limits_inner(page_number, limits, cancel, true, false)
@@ -2438,8 +2469,14 @@ impl ContentEngine {
         self.validate_page(page_number)?;
         let scheduler = DecodeSchedulerContext::new(limits);
         if let Some(streams) = self.doc.content_stream_ranges(page_number)? {
-            let mut readers = Vec::with_capacity(streams.len());
+            // The page's decoded streams, joined in memory and tokenized
+            // from one buffer.
+            let mut joined: Vec<u8> = Vec::new();
             let mut total_decoded_bytes = 0u64;
+            let stored_bytes = streams
+                .iter()
+                .map(|stream| stream.reader.remaining_len() as u64)
+                .sum::<u64>();
             for (stream_index, stream) in streams.into_iter().enumerate() {
                 let estimate = stream
                     .dict
@@ -2484,17 +2521,27 @@ impl ContentEngine {
                     }
                     log::warn!("page content stream stopped at image filter {filter}");
                 }
-                if stream_index > 0 {
-                    readers.push(Box::new(Cursor::new(vec![b'\n'])) as Box<dyn Read>);
+                if stream_index == 0 {
+                    joined = bytes;
+                } else {
+                    joined.extend_from_slice(CONTENT_STREAM_JOIN);
+                    joined.extend_from_slice(&bytes);
                 }
-                readers.push(Box::new(Cursor::new(bytes)) as Box<dyn Read>);
             }
-            let tokens = StreamingContentTokenizer::new(JoinedContentStreams::new(readers));
+            let tokens = StreamingContentTokenizer::from_bytes(joined);
+            let max_operations = crate::content::parser::content_operation_limit(stored_bytes);
             if strict_parse {
-                return ContentParser::parse_tokens_strict_cancellable(tokens, cancel);
+                return ContentParser::parse_tokens_strict_cancellable(
+                    tokens,
+                    cancel,
+                    max_operations,
+                );
             }
-            let mut operations =
-                ContentParser::parse_tokens_propagating_io_cancellable(tokens, cancel)?;
+            let mut operations = ContentParser::parse_tokens_propagating_io_cancellable(
+                tokens,
+                cancel,
+                max_operations,
+            )?;
             crate::content::parser::normalize_compatibility_operations(&mut operations);
             return Ok(operations);
         }
@@ -2653,7 +2700,7 @@ impl ContentEngine {
         }
         let chunks = self.collect_page_scoped_text_chunks_with_limits(
             page_number,
-            &crate::text::TextTraversalLimits::default(),
+            &self.page_text_limits(page_number),
             &cancel,
         )?;
         self.page_artifacts
@@ -2690,10 +2737,14 @@ impl ContentEngine {
                     true,
                     true,
                 )?;
-                self.page_artifacts
-                    .write()
-                    .expect("page artifact cache lock poisoned")
-                    .insert_strict_operations(page_number, operations.clone());
+                // Clone into the cache only what it would keep: a page too large
+                // to cache would otherwise be copied just to be dropped.
+                if operations_cacheable(&operations) {
+                    self.page_artifacts
+                        .write()
+                        .expect("page artifact cache lock poisoned")
+                        .insert_strict_operations(page_number, operations.clone());
+                }
                 operations
             }
         } else {
@@ -2734,7 +2785,7 @@ impl ContentEngine {
         Ok(self
             .collect_page_scoped_text_chunks_including_appearances(
                 page_number,
-                &crate::text::TextTraversalLimits::default(),
+                &self.page_text_limits(page_number),
                 &crate::cancel::current_cancel_token(),
             )?
             .into_iter()
@@ -2752,35 +2803,86 @@ impl ContentEngine {
         cancel: &CancelToken,
     ) -> Result<Vec<crate::text::ScopedTextChunk>> {
         cancel.check("page/appearance text extraction")?;
+        let annotations = self.page_text_annotations(page_number)?;
+        let ops = self.strict_page_operations(page_number, limits, cancel)?;
+        self.scoped_text_from_operations(page_number, &ops, &annotations, limits, cancel)
+    }
+
+    /// Stored (encoded) bytes of the page's content streams; 0 when they
+    /// cannot be located.
+    pub(crate) fn page_content_stored_bytes(&self, page_number: usize) -> u64 {
+        match self.doc.content_stream_ranges(page_number) {
+            Ok(Some(streams)) => streams
+                .iter()
+                .map(|stream| stream.reader.remaining_len() as u64)
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    /// The default text-walk limits with the operation budget scaled to the
+    /// page's stored content size, as the page's parse limit is (see
+    /// [`crate::content::parser::content_operation_limit`]).
+    pub(crate) fn page_text_limits(&self, page_number: usize) -> crate::text::TextTraversalLimits {
+        let mut limits = crate::text::TextTraversalLimits::default();
+        limits.max_operations =
+            limits
+                .max_operations
+                .max(crate::content::parser::content_operation_limit(
+                    self.page_content_stored_bytes(page_number),
+                ));
+        limits
+    }
+
+    /// The page's `/Annots`, as the appearance-including text walk reads them.
+    pub(crate) fn page_text_annotations(&self, page_number: usize) -> Result<Vec<PdfObject>> {
         let page = self.get_page(page_number)?;
         let reader = self.doc.reader();
         let page_object = reader.get_object(page.object_number, page.generation_number)?;
         let dict = page_object
             .as_dict()
             .ok_or_else(|| WellfriendError::MalformedPdf("page is not a dictionary".into()))?;
-        let annotations = match dict
+        match dict
             .get("Annots")
             .map(|value| reader.resolve(value.clone()))
             .transpose()?
         {
-            None | Some(PdfObject::Null) => Vec::new(),
-            Some(PdfObject::Array(items)) => items,
-            _ => {
-                return Err(WellfriendError::MalformedPdf(
-                    "page Annots is not an array".into(),
-                ))
-            }
-        };
-        let ops = self.get_page_content_with_limits_inner(
-            page_number,
-            &limits.decode,
-            cancel,
-            true,
-            true,
-        )?;
-        let mut collector =
-            crate::text::TextCollector::new(self.get_page_resources(page_number)?, reader);
-        collector.collect_scoped_with_appearances(&ops, &annotations, limits, cancel)
+            None | Some(PdfObject::Null) => Ok(Vec::new()),
+            Some(PdfObject::Array(items)) => Ok(items),
+            _ => Err(WellfriendError::MalformedPdf(
+                "page Annots is not an array".into(),
+            )),
+        }
+    }
+
+    /// The page's operations parsed strictly, as the text walks read them
+    /// (uncached). With the compatibility normalization applied they are the
+    /// operations [`Self::get_page_content`] returns: the lenient parse only
+    /// differs from the strict one on input the strict parse rejects.
+    pub(crate) fn strict_page_operations(
+        &self,
+        page_number: usize,
+        limits: &crate::text::TextTraversalLimits,
+        cancel: &CancelToken,
+    ) -> Result<Vec<ContentOperation>> {
+        self.get_page_content_with_limits_inner(page_number, &limits.decode, cancel, true, true)
+    }
+
+    /// Walk already-parsed page operations (and the given annotations'
+    /// appearances) for positioned text.
+    pub(crate) fn scoped_text_from_operations(
+        &self,
+        page_number: usize,
+        ops: &[ContentOperation],
+        annotations: &[PdfObject],
+        limits: &crate::text::TextTraversalLimits,
+        cancel: &CancelToken,
+    ) -> Result<Vec<crate::text::ScopedTextChunk>> {
+        let mut collector = crate::text::TextCollector::new(
+            self.get_page_resources(page_number)?,
+            self.doc.reader(),
+        );
+        collector.collect_scoped_with_appearances(ops, annotations, limits, cancel)
     }
 
     /// Structured (layout-aware) text for a page: the page's text in
@@ -3271,40 +3373,101 @@ impl ContentEngine {
         region: PageRegion,
     ) -> Result<Vec<PlacedImageReference>> {
         let region = self.validated_region_for_page(page_number, region)?;
-        let images = self.find_page_images(page_number)?;
+        let placements = self.page_image_placements(page_number, None)?;
+        Ok(placements
+            .iter()
+            .filter(|placed| region.keeps_bbox(placed.bbox))
+            .cloned()
+            .collect())
+    }
+
+    /// Every image placement of a page, in content order, computed once per
+    /// page. `ops`, when given, are the page's operations as
+    /// [`Self::get_page_content`] returns them (the conversion page pass
+    /// hands over the ones it parsed, so the page is not parsed again).
+    fn page_image_placements(
+        &self,
+        page_number: usize,
+        ops: Option<&[ContentOperation]>,
+    ) -> Result<Arc<Vec<PlacedImageReference>>> {
+        if let Some(cached) = self
+            .image_placements
+            .read()
+            .expect("image placement cache lock poisoned")
+            .get(&page_number)
+        {
+            return Ok(Arc::clone(cached));
+        }
+        // Placements come from `Do` of image XObjects only, so inline images
+        // (whose lookup parses the page content again) are not collected.
+        self.validate_page(page_number)?;
+        let images = ImageLocator::find_page_images(
+            self,
+            page_number,
+            &ImageLocateOptions {
+                include_inline: false,
+                ..ImageLocateOptions::default()
+            },
+        )?;
         let image_names: BTreeSet<String> = images
             .iter()
             .filter(|image| !image.is_inline)
             .map(|image| image.xobject_name.clone())
             .collect();
-        if image_names.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let ops = self.get_page_content(page_number)?;
-        let graphics = crate::analysis::graphics::collect_graphics_with_images(&ops, &image_names);
         let mut out = Vec::new();
-        for placement in graphics.images {
-            let bbox = [
-                placement.bbox.x0,
-                placement.bbox.y0,
-                placement.bbox.x1,
-                placement.bbox.y1,
-            ];
-            if !region.keeps_bbox(bbox) {
-                continue;
-            }
-            if let Some(image) = images
-                .iter()
-                .find(|image| image.xobject_name == placement.name)
-            {
-                out.push(PlacedImageReference {
-                    image: image.clone(),
-                    bbox,
-                });
+        if !image_names.is_empty() {
+            let parsed;
+            let ops = match ops {
+                Some(ops) => ops,
+                None => {
+                    parsed = self.get_page_content(page_number)?;
+                    &parsed
+                }
+            };
+            let graphics =
+                crate::analysis::graphics::collect_graphics_with_images(ops, &image_names);
+            for placement in graphics.images {
+                let bbox = [
+                    placement.bbox.x0,
+                    placement.bbox.y0,
+                    placement.bbox.x1,
+                    placement.bbox.y1,
+                ];
+                if let Some(image) = images
+                    .iter()
+                    .find(|image| image.xobject_name == placement.name)
+                {
+                    out.push(PlacedImageReference {
+                        image: image.clone(),
+                        bbox,
+                    });
+                }
             }
         }
+        let out = Arc::new(out);
+        self.image_placements
+            .write()
+            .expect("image placement cache lock poisoned")
+            .insert(page_number, Arc::clone(&out));
         Ok(out)
+    }
+
+    /// Ask the conversion page pass to record image placements from the
+    /// content it parses (writers that embed images call this first).
+    pub(crate) fn retain_page_image_placements(&self) {
+        self.retain_image_placements
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record a page's image placements from its already-parsed operations
+    /// (those [`Self::get_page_content`] returns), when requested.
+    pub(crate) fn note_page_image_placements(&self, page_number: usize, ops: &[ContentOperation]) {
+        if self
+            .retain_image_placements
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let _ = self.page_image_placements(page_number, Some(ops));
+        }
     }
 
     /// Serializable image-placement metadata constrained to a page region.
@@ -3526,38 +3689,6 @@ impl ContentEngine {
     /// 200 dpi of its displayed size and written as JPEG (photographic) or PNG
     /// (transparency or pure black-and-white). Returns the bytes and extension.
     /// Full-resolution PNGs of scanned pages made DOCX output slow and huge.
-    pub(crate) fn extract_image_for_office(
-        &self,
-        image: &ImageReference,
-        display_width_points: f64,
-        display_height_points: f64,
-    ) -> Result<(Vec<u8>, &'static str)> {
-        if let Ok(Some((bytes, ext))) = ImageEncoder::keep_original(
-            image,
-            self.document().reader(),
-            &ImageOutputFormat::Original,
-        ) {
-            if matches!(ext, "jpg" | "jpeg") {
-                return Ok((bytes, "jpg"));
-            }
-        }
-        let raw = self.decode_image(image)?;
-        const OFFICE_IMAGE_DPI: f64 = 200.0;
-        let max_w = (display_width_points.abs() / 72.0 * OFFICE_IMAGE_DPI)
-            .ceil()
-            .max(16.0) as u32;
-        let max_h = (display_height_points.abs() / 72.0 * OFFICE_IMAGE_DPI)
-            .ceil()
-            .max(16.0) as u32;
-        let raw = crate::images::decoder::box_downscale_to_fit(raw, max_w, max_h);
-        let bilevel = raw.channels == 1 && raw.pixels.iter().all(|&v| v == 0 || v == 255);
-        if raw.channels == 4 || raw.channels == 2 || bilevel {
-            Ok((ImageEncoder::encode_png_compact(&raw)?, "png"))
-        } else {
-            Ok((ImageEncoder::encode_jpeg(&raw, 85)?, "jpg"))
-        }
-    }
-
     pub(crate) fn extract_image_png_for_package(&self, image: &ImageReference) -> Result<Vec<u8>> {
         if let Ok(Some((bytes, _ext))) =
             ImageEncoder::keep_original(image, self.document().reader(), &ImageOutputFormat::Png)
@@ -4479,6 +4610,34 @@ fn intersect_boxes(media: [f64; 4], crop: [f64; 4]) -> Option<[f64; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The in-memory join tokenizes exactly as the previous reader chain did,
+    /// including inline-image payloads that run across a stream boundary.
+    #[test]
+    fn joined_content_buffer_tokenizes_like_the_reader_chain() {
+        use std::io::Cursor;
+        let streams: Vec<&[u8]> = vec![
+            b"q 1 0 0 1 10 20 cm BT /F1 12 Tf (a) Tj ET",
+            b"",
+            b"BI /W 2 /H 1 /BPC 8 /CS /G ID \x00\xff",
+            b"\x10 EI Q 0.5 -.25 +3 1e5 [<0a> 2] TJ % c\n/N#20x null true",
+        ];
+        let mut readers: Vec<Box<dyn Read>> = Vec::new();
+        let mut joined = Vec::new();
+        for (index, stream) in streams.iter().enumerate() {
+            if index > 0 {
+                readers.push(Box::new(Cursor::new(vec![b'\n'])));
+                joined.extend_from_slice(CONTENT_STREAM_JOIN);
+            }
+            readers.push(Box::new(Cursor::new(stream.to_vec())));
+            joined.extend_from_slice(stream);
+        }
+        let chained: Vec<_> =
+            StreamingContentTokenizer::new(JoinedContentStreams::new(readers)).collect();
+        let buffered: Vec<_> = StreamingContentTokenizer::from_bytes(joined).collect();
+        assert_eq!(format!("{chained:?}"), format!("{buffered:?}"));
+        assert!(chained.len() > 20);
+    }
 
     fn page(media_box: [f64; 4], crop_box: [f64; 4]) -> PdfPage {
         PdfPage {

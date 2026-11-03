@@ -544,8 +544,21 @@ pub fn recover_parenttree_semantics(
     pages: &[usize],
 ) -> Result<ParentTreeRecoveryReport> {
     let page_list = normalized_pages(engine, pages)?;
-    let selected: BTreeSet<usize> = page_list.iter().copied().collect();
     let marked_text = collect_marked_text(engine, &page_list)?;
+    recover_parenttree_semantics_with_marked_text(engine, &page_list, marked_text)
+}
+
+/// [`recover_parenttree_semantics`] for a validated, non-empty `page_list`
+/// whose marked text the caller has already collected with
+/// [`collect_marked_text`] (the semantic extractor reuses its own instead of
+/// reading every page's content a second time).
+pub(crate) fn recover_parenttree_semantics_with_marked_text(
+    engine: &ContentEngine,
+    page_list: &[usize],
+    marked_text: MarkedTextMap,
+) -> Result<ParentTreeRecoveryReport> {
+    let page_list = page_list.to_vec();
+    let selected: BTreeSet<usize> = page_list.iter().copied().collect();
     let page_struct_parents = page_struct_parent_keys(engine, &page_list)?;
     let page_scopes = engine
         .document()
@@ -1359,10 +1372,37 @@ fn normalized_pages(engine: &ContentEngine, pages: &[usize]) -> Result<Vec<usize
     Ok(out)
 }
 
-fn collect_marked_text(engine: &ContentEngine, pages: &[usize]) -> Result<MarkedTextMap> {
+/// Every page's marked-content text (including annotation appearances),
+/// keyed by page and marked-content id. Pages are read in parallel; their
+/// chunks are merged in page order, so each key's chunk list is in the order
+/// the serial loop produced, and the first failing page's error is returned.
+pub(crate) fn collect_marked_text(
+    engine: &ContentEngine,
+    pages: &[usize],
+) -> Result<MarkedTextMap> {
+    let unique: Vec<usize> = pages
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let per_page = crate::page_parallel::map_ordered(&unique, |&page| {
+        engine.collect_page_marked_text_chunks_including_appearances(page)
+    });
+    merge_marked_text(unique.into_iter().zip(per_page).collect())
+}
+
+/// Key per-page marked text by page and marked-content id. Pages are taken
+/// once each in ascending order (the first failing one's error is returned),
+/// so the map is the one [`collect_marked_text`] builds serially.
+pub(crate) fn merge_marked_text(
+    mut per_page: Vec<(usize, Result<Vec<crate::text::MarkedTextChunk>>)>,
+) -> Result<MarkedTextMap> {
+    per_page.sort_by_key(|(page, _)| *page);
+    per_page.dedup_by_key(|(page, _)| *page);
     let mut out = HashMap::new();
-    for page in pages.iter().copied().collect::<BTreeSet<_>>() {
-        for marked in engine.collect_page_marked_text_chunks_including_appearances(page)? {
+    for (page, chunks) in per_page {
+        for marked in chunks? {
             if let Some(id) = marked.marked_content_id() {
                 out.entry((page, id))
                     .or_insert_with(Vec::new)

@@ -147,6 +147,25 @@ pub fn extract_semantic_document(
     engine: &ContentEngine,
     pages: &[usize],
 ) -> Result<SemanticDocument> {
+    extract_semantic_document_inner(engine, pages, None)
+}
+
+/// [`extract_semantic_document`] with each page's marked text (including
+/// annotation appearances) already read, as `(page, result)` pairs covering
+/// `pages`.
+pub(crate) fn extract_semantic_document_prepared(
+    engine: &ContentEngine,
+    pages: &[usize],
+    marked: Vec<(usize, Result<Vec<MarkedTextChunk>>)>,
+) -> Result<SemanticDocument> {
+    extract_semantic_document_inner(engine, pages, Some(marked))
+}
+
+fn extract_semantic_document_inner(
+    engine: &ContentEngine,
+    pages: &[usize],
+    prepared_marked: Option<Vec<(usize, Result<Vec<MarkedTextChunk>>)>>,
+) -> Result<SemanticDocument> {
     let total = engine.page_count()?;
     let page_list: Vec<usize> = if pages.is_empty() {
         (1..=total).collect()
@@ -169,7 +188,10 @@ pub fn extract_semantic_document(
     let reader = engine.document().reader();
     let page_by_ref = page_ref_map(engine)?;
     let selected: BTreeSet<usize> = page_list.iter().copied().collect();
-    let marked_text = collect_marked_text(engine, &page_list)?;
+    let marked_text = match prepared_marked {
+        Some(marked) => crate::semantic_intelligence::merge_marked_text(marked)?,
+        None => crate::semantic_intelligence::collect_marked_text(engine, &page_list)?,
+    };
 
     let root = reader.resolve(root_obj)?;
     let Some(root_dict) = root.as_dict() else {
@@ -213,8 +235,13 @@ pub fn extract_semantic_document(
         .filter_map(|el| prune_for_pages(el, &selected))
         .collect();
     if elements.is_empty() {
-        let recovery =
-            crate::semantic_intelligence::recover_parenttree_semantics(engine, &page_list)?;
+        // The recovery reads the same pages' marked text: hand it over.
+        let marked_text = std::mem::take(&mut parser.marked_text);
+        let recovery = crate::semantic_intelligence::recover_parenttree_semantics_with_marked_text(
+            engine,
+            &page_list,
+            marked_text,
+        )?;
         let recovered =
             crate::semantic_intelligence::semantic_elements_from_parenttree_recovery(&recovery);
         if !recovered.is_empty() {
@@ -763,22 +790,6 @@ fn parse_role_map(root: &PdfDictionary) -> HashMap<String, String> {
         }
     }
     out
-}
-
-fn collect_marked_text(engine: &ContentEngine, pages: &[usize]) -> Result<McidTextMap> {
-    let mut out: McidTextMap = HashMap::new();
-    for page in pages.iter().copied().collect::<BTreeSet<_>>() {
-        for marked in engine.collect_page_marked_text_chunks_including_appearances(page)? {
-            push_marked_chunk(page, marked, &mut out);
-        }
-    }
-    Ok(out)
-}
-
-fn push_marked_chunk(page: usize, marked: MarkedTextChunk, out: &mut McidTextMap) {
-    if let Some(id) = marked.marked_content_id() {
-        out.entry((page, id)).or_default().push(marked.chunk);
-    }
 }
 
 fn text_for_mcids(mcids: &[SemanticMcid], text_map: &McidTextMap) -> String {

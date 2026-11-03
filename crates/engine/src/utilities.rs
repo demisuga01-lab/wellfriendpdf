@@ -423,11 +423,36 @@ pub fn watermark_text_pdf(
             "watermark: text must not be empty".to_string(),
         ));
     }
+    let mut editor = PdfEditor::open_bytes(input)?;
+    stamp_text_watermark(&mut editor, text, &options)?;
+    editor.save_to_bytes(EditMode::FullRewrite)
+}
+
+/// [`watermark_text_pdf`] as an incremental update of the file at `path`:
+/// the returned bytes are appended to an unchanged copy of it.
+pub fn watermark_text_pdf_incremental_delta(
+    path: &Path,
+    text: &str,
+    options: TextWatermarkOptions,
+) -> Result<Vec<u8>> {
+    let mut editor = PdfEditor::open_path(path)?;
+    stamp_text_watermark(&mut editor, text, &options)?;
+    editor.save_incremental_delta()
+}
+
+fn stamp_text_watermark(
+    editor: &mut PdfEditor,
+    text: &str,
+    options: &TextWatermarkOptions,
+) -> Result<()> {
+    if text.trim().is_empty() {
+        return Err(WellfriendError::MalformedPdf(
+            "watermark: text must not be empty".to_string(),
+        ));
+    }
     validate_opacity(options.opacity, "watermark")?;
     validate_positive(options.font_size, "watermark: font size")?;
     validate_finite(options.rotation_degrees, "watermark: rotation")?;
-
-    let mut editor = PdfEditor::open_bytes(input)?;
     let total = editor.document().get_pages()?.len();
     let pages = normalize_pages(total, &options.pages)?;
     let style = EditTextStyle::new(options.font_size)
@@ -444,9 +469,9 @@ pub fn watermark_text_pdf(
             },
         )?;
     } else {
-        draw_positioned_text(&mut editor, &pages, text, style, options.position)?;
+        draw_positioned_text(editor, &pages, text, style, options.position)?;
     }
-    editor.save_to_bytes(EditMode::FullRewrite)
+    Ok(())
 }
 
 /// Add an image watermark as overlay content streams.
@@ -469,6 +494,40 @@ pub fn watermark_image_pdf(
         ));
     }
     let mut editor = PdfEditor::open_bytes(input)?;
+    stamp_image_watermark(&mut editor, image_bytes, extension_hint, &options)?;
+    editor.save_to_bytes(EditMode::FullRewrite)
+}
+
+/// [`watermark_image_pdf`] as an incremental update of the file at `path`.
+pub fn watermark_image_pdf_incremental_delta(
+    path: &Path,
+    image_bytes: &[u8],
+    extension_hint: Option<&str>,
+    options: ImageWatermarkOptions,
+) -> Result<Vec<u8>> {
+    let mut editor = PdfEditor::open_path(path)?;
+    stamp_image_watermark(&mut editor, image_bytes, extension_hint, &options)?;
+    editor.save_incremental_delta()
+}
+
+fn stamp_image_watermark(
+    editor: &mut PdfEditor,
+    image_bytes: &[u8],
+    extension_hint: Option<&str>,
+    options: &ImageWatermarkOptions,
+) -> Result<()> {
+    if image_bytes.is_empty() {
+        return Err(WellfriendError::MalformedPdf(
+            "watermark: image bytes must not be empty".to_string(),
+        ));
+    }
+    validate_opacity(options.opacity, "watermark")?;
+    validate_positive(options.scale, "watermark: image scale")?;
+    if options.scale > 10.0 {
+        return Err(WellfriendError::MalformedPdf(
+            "watermark: image scale must be <= 10".to_string(),
+        ));
+    }
     let total = editor.document().get_pages()?.len();
     let pages = normalize_pages(total, &options.pages)?;
     let image = image_payload(image_bytes, extension_hint)?;
@@ -502,7 +561,7 @@ pub fn watermark_image_pdf(
             }
         }
     }
-    editor.save_to_bytes(EditMode::FullRewrite)
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -536,6 +595,23 @@ pub fn add_page_numbers_pdf(input: Vec<u8>, options: PageNumberOptions) -> Resul
     validate_positive(options.font_size, "page-numbers: font size")?;
     validate_page_number_format(&options.format)?;
     let mut editor = PdfEditor::open_bytes(input)?;
+    stamp_page_numbers(&mut editor, &options)?;
+    editor.save_to_bytes(EditMode::FullRewrite)
+}
+
+/// [`add_page_numbers_pdf`] as an incremental update of the file at `path`.
+pub fn add_page_numbers_pdf_incremental_delta(
+    path: &Path,
+    options: PageNumberOptions,
+) -> Result<Vec<u8>> {
+    let mut editor = PdfEditor::open_path(path)?;
+    stamp_page_numbers(&mut editor, &options)?;
+    editor.save_incremental_delta()
+}
+
+fn stamp_page_numbers(editor: &mut PdfEditor, options: &PageNumberOptions) -> Result<()> {
+    validate_positive(options.font_size, "page-numbers: font size")?;
+    validate_page_number_format(&options.format)?;
     let total = editor.document().get_pages()?.len();
     let pages = normalize_pages(total, &options.pages)?;
     let style = EditTextStyle::new(options.font_size).fill(options.color.to_color()?);
@@ -569,7 +645,7 @@ pub fn add_page_numbers_pdf(input: Vec<u8>, options: PageNumberOptions) -> Resul
             OverlayLayer::Overlay,
         )?;
     }
-    editor.save_to_bytes(EditMode::FullRewrite)
+    Ok(())
 }
 
 /// Convenience wrapper for the existing writer's ordered page-copy operation.

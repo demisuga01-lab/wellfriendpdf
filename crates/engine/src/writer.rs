@@ -1569,10 +1569,73 @@ pub fn build_subset_to(
 /// dropping an uncommitted `AtomicFile` deletes the temporary file. Callers
 /// should close their sources before committing (required for renaming over
 /// an open file on Windows).
+/// Facts about a written output, computed from its bytes as they are
+/// written, so a caller never has to read the output back to report them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OutputFacts {
+    /// Lowercase hex SHA-256 of the output.
+    pub sha256: String,
+    /// Output length in bytes.
+    pub bytes: u64,
+}
+
+impl OutputFacts {
+    /// Facts of an output held in memory.
+    pub fn of(bytes: &[u8]) -> Self {
+        Self {
+            sha256: crate::versioning::resource_digest(bytes),
+            bytes: bytes.len() as u64,
+        }
+    }
+}
+
+/// A writer that hashes and counts everything written through it.
+pub struct HashingWriter<W: std::io::Write> {
+    inner: W,
+    hasher: sha2::Sha256,
+    bytes: u64,
+}
+
+impl<W: std::io::Write> HashingWriter<W> {
+    pub fn new(inner: W) -> Self {
+        Self {
+            inner,
+            hasher: <sha2::Sha256 as sha2::Digest>::new(),
+            bytes: 0,
+        }
+    }
+
+    /// The writer and the facts of what was written.
+    pub fn finish(self) -> (W, OutputFacts) {
+        let digest = <sha2::Sha256 as sha2::Digest>::finalize(self.hasher);
+        let sha256 = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        (
+            self.inner,
+            OutputFacts {
+                sha256,
+                bytes: self.bytes,
+            },
+        )
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for HashingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        <sha2::Sha256 as sha2::Digest>::update(&mut self.hasher, &buf[..written]);
+        self.bytes += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 pub struct AtomicFile {
     partial: std::path::PathBuf,
     output: std::path::PathBuf,
-    writer: Option<std::io::BufWriter<std::fs::File>>,
+    writer: Option<HashingWriter<std::io::BufWriter<std::fs::File>>>,
 }
 
 impl AtomicFile {
@@ -1584,21 +1647,30 @@ impl AtomicFile {
         Ok(Self {
             partial,
             output: output.to_path_buf(),
-            writer: Some(std::io::BufWriter::with_capacity(1 << 20, file)),
+            writer: Some(HashingWriter::new(std::io::BufWriter::with_capacity(
+                1 << 20,
+                file,
+            ))),
         })
     }
 
-    pub fn writer(&mut self) -> &mut std::io::BufWriter<std::fs::File> {
+    pub fn writer(&mut self) -> &mut HashingWriter<std::io::BufWriter<std::fs::File>> {
         self.writer
             .as_mut()
             .expect("AtomicFile writer is present until commit")
     }
 
-    pub fn commit(mut self) -> Result<()> {
+    pub fn commit(self) -> Result<()> {
+        self.commit_with_facts().map(|_| ())
+    }
+
+    /// Commit and return the facts of the bytes written.
+    pub fn commit_with_facts(mut self) -> Result<OutputFacts> {
         let writer = self
             .writer
             .take()
             .expect("AtomicFile writer is present until commit");
+        let (writer, facts) = writer.finish();
         // Flush and close before renaming (same durability as `fs::write`).
         drop(
             writer
@@ -1606,7 +1678,50 @@ impl AtomicFile {
                 .map_err(|err| WellfriendError::from(err.into_error()))?,
         );
         std::fs::rename(&self.partial, &self.output)?;
-        Ok(())
+        Ok(facts)
+    }
+}
+
+/// Write `bytes` to `path` and return their facts.
+pub fn write_output_with_facts(path: &std::path::Path, bytes: &[u8]) -> Result<OutputFacts> {
+    let facts = OutputFacts::of(bytes);
+    std::fs::write(path, bytes)?;
+    Ok(facts)
+}
+
+#[cfg(test)]
+mod output_facts_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn hashing_writer_matches_the_in_memory_digest() {
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i * 31 % 251) as u8).collect();
+        let mut writer = HashingWriter::new(Vec::new());
+        for chunk in data.chunks(7_919) {
+            writer.write_all(chunk).unwrap();
+        }
+        let (written, facts) = writer.finish();
+        assert_eq!(written, data);
+        assert_eq!(facts, OutputFacts::of(&data));
+        assert_eq!(facts.bytes, 300_000);
+        assert_eq!(
+            OutputFacts::of(b"abc").sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn atomic_file_reports_the_facts_of_the_committed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.bin");
+        let mut file = AtomicFile::create(&path).unwrap();
+        file.writer().write_all(b"%PDF-1.7 facts").unwrap();
+        let facts = file.commit_with_facts().unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(facts, OutputFacts::of(&on_disk));
+        let path2 = dir.path().join("out2.bin");
+        assert_eq!(write_output_with_facts(&path2, &on_disk).unwrap(), facts);
     }
 }
 
@@ -2735,7 +2850,68 @@ fn write_incremental_update_raw_with_info(
     if changed_objects.is_empty() {
         return Ok(reader.file_bytes().to_vec());
     }
+    let base = reader.file_bytes();
+    let base_ends_with_eol = base.ends_with(b"\n") || base.ends_with(b"\r");
+    let delta = incremental_delta_bytes(
+        reader,
+        changed_objects,
+        info_override,
+        base.len(),
+        base_ends_with_eol,
+    )?;
+    let mut out = Vec::with_capacity(base.len() + delta.len());
+    out.extend_from_slice(base);
+    out.extend_from_slice(&delta);
+    Ok(out)
+}
 
+/// The bytes an incremental update appends to the opened file, which is
+/// neither copied nor read: append them to an unchanged copy of the file to
+/// get exactly what [`write_incremental_update`] returns. Offsets in the
+/// appended cross-reference section count from the start of the file.
+pub fn incremental_update_delta(
+    reader: &PdfReader,
+    mut changed_objects: Vec<IncrementalObject>,
+) -> Result<Vec<u8>> {
+    if reader.is_encrypted() {
+        return Err(WellfriendError::UnsupportedFeature(
+            "incremental writer: encrypted inputs require encrypted appended objects".to_string(),
+        ));
+    }
+    if changed_objects.is_empty() {
+        return Ok(Vec::new());
+    }
+    feature_version::incremental(reader, &mut changed_objects)?;
+    let raw_objects = changed_objects
+        .into_iter()
+        .map(|obj| {
+            let mut body = Vec::new();
+            serialize_object(&obj.object, &mut body);
+            RawIncrementalObject {
+                number: obj.number,
+                generation: obj.generation,
+                body,
+            }
+        })
+        .collect();
+    incremental_delta_bytes(
+        reader,
+        raw_objects,
+        None,
+        reader.source_len(),
+        reader.source_ends_with_eol()?,
+    )
+}
+
+/// The appended revision: the changed objects, a classic xref section and a
+/// trailer chained to the previous one with `/Prev`.
+fn incremental_delta_bytes(
+    reader: &PdfReader,
+    changed_objects: Vec<RawIncrementalObject>,
+    info_override: Option<(u32, u16)>,
+    base_len: usize,
+    base_ends_with_eol: bool,
+) -> Result<Vec<u8>> {
     let mut objects = changed_objects;
     objects.sort_by_key(|obj| (obj.number, obj.generation));
     for pair in objects.windows(2) {
@@ -2754,21 +2930,21 @@ fn write_incremental_update_raw_with_info(
         }
     }
 
-    let mut out = reader.file_bytes().to_vec();
-    if !out.ends_with(b"\n") && !out.ends_with(b"\r") {
+    let mut out = Vec::new();
+    if !base_ends_with_eol {
         out.push(b'\n');
     }
 
     let mut offsets = Vec::with_capacity(objects.len());
     for obj in &objects {
-        let offset = out.len();
+        let offset = base_len + out.len();
         offsets.push((obj.number, obj.generation, offset));
         out.extend_from_slice(format!("{} {} obj\n", obj.number, obj.generation).as_bytes());
         out.extend_from_slice(&obj.body);
         out.extend_from_slice(b"\nendobj\n");
     }
 
-    let xref_offset = out.len();
+    let xref_offset = base_len + out.len();
     out.extend_from_slice(b"xref\n");
     for group in contiguous_xref_groups(&offsets) {
         out.extend_from_slice(format!("{} {}\n", group.start, group.entries.len()).as_bytes());

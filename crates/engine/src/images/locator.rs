@@ -805,102 +805,125 @@ impl ImageLocator {
             )));
         }
         let _ = options;
-        for (name, &(obj_num, gen_num)) in xobjects {
-            if !visited.insert((obj_num, gen_num)) {
-                continue;
-            }
-            if visited.len() > MAX_XOBJECT_NODES {
-                return Err(WellfriendError::ResourceLimit(format!(
-                    "XObject graph exceeds node limit {MAX_XOBJECT_NODES}"
-                )));
-            }
-
-            let obj = match reader.get_object(obj_num, gen_num) {
-                Ok(obj) => obj,
-                Err(err) => {
-                    log::warn!(
-                        "XObject '{}' (obj {}) failed to resolve: {}",
-                        name,
-                        obj_num,
-                        err
-                    );
+        // Walk the resource names in sorted order, this level's images before
+        // its Forms. A HashMap walk made the order (and, when an image is
+        // reachable both directly and through a Form, the name it is recorded
+        // under) differ from run to run, so a placement could pick another
+        // image or none. Images placed by this level's own names are now
+        // always recorded under those names.
+        let mut entries: Vec<(&String, (u32, u16))> = xobjects
+            .iter()
+            .map(|(name, &reference)| (name, reference))
+            .collect();
+        entries.sort();
+        for images_pass in [true, false] {
+            for &(name, (obj_num, gen_num)) in &entries {
+                if visited.contains(&(obj_num, gen_num)) {
                     continue;
                 }
-            };
 
-            let mut dict = match &obj {
-                PdfObject::Stream { dict, .. } => dict.clone(),
-                _ => {
-                    log::debug!("XObject '{}' is not a stream, skipping", name);
-                    continue;
-                }
-            };
-
-            match dict.get_name("Subtype") {
-                Some("Image") => {
-                    if let Some(PdfObject::Reference { number, .. }) = dict.get("SMask") {
-                        soft_mask_objects.insert(*number);
+                let obj = match reader.get_object(obj_num, gen_num) {
+                    Ok(obj) => obj,
+                    Err(err) => {
+                        if images_pass {
+                            log::warn!(
+                                "XObject '{}' (obj {}) failed to resolve: {}",
+                                name,
+                                obj_num,
+                                err
+                            );
+                        }
+                        continue;
                     }
-                    // Any of these entries may legally be indirect objects.
-                    for key in [
-                        "ColorSpace",
-                        "Width",
-                        "Height",
-                        "BitsPerComponent",
-                        "Filter",
-                    ] {
-                        if let Some(value @ PdfObject::Reference { .. }) = dict.get(key).cloned() {
-                            if let Ok(resolved) = reader.resolve(value) {
-                                dict.insert(key, resolved);
+                };
+
+                let mut dict = match &obj {
+                    PdfObject::Stream { dict, .. } => dict.clone(),
+                    _ => {
+                        if images_pass {
+                            log::debug!("XObject '{}' is not a stream, skipping", name);
+                        }
+                        continue;
+                    }
+                };
+                if (dict.get_name("Subtype") == Some("Image")) != images_pass {
+                    continue;
+                }
+                visited.insert((obj_num, gen_num));
+                if visited.len() > MAX_XOBJECT_NODES {
+                    return Err(WellfriendError::ResourceLimit(format!(
+                        "XObject graph exceeds node limit {MAX_XOBJECT_NODES}"
+                    )));
+                }
+
+                match dict.get_name("Subtype") {
+                    Some("Image") => {
+                        if let Some(PdfObject::Reference { number, .. }) = dict.get("SMask") {
+                            soft_mask_objects.insert(*number);
+                        }
+                        // Any of these entries may legally be indirect objects.
+                        for key in [
+                            "ColorSpace",
+                            "Width",
+                            "Height",
+                            "BitsPerComponent",
+                            "Filter",
+                        ] {
+                            if let Some(value @ PdfObject::Reference { .. }) =
+                                dict.get(key).cloned()
+                            {
+                                if let Ok(resolved) = reader.resolve(value) {
+                                    dict.insert(key, resolved);
+                                }
+                            }
+                        }
+                        // One unreadable image must not cost the page's other images.
+                        match Self::image_ref_from_dict(
+                            page_number,
+                            name.clone(),
+                            obj_num,
+                            gen_num,
+                            &dict,
+                        ) {
+                            Ok(image) => results.push(image),
+                            Err(err) => log::warn!("skipping image XObject /{name}: {err}"),
+                        }
+                    }
+                    Some("Form") => {
+                        log::debug!("XObject '{}' is a Form; walking nested images", name);
+                        if let Some(res_dict) = Self::resolve_resource_dict(&dict, reader) {
+                            if let Some(xobj_dict) = res_dict.get_dict("XObject") {
+                                let nested: HashMap<String, (u32, u16)> = xobj_dict
+                                    .entries()
+                                    .filter_map(|(key, value)| {
+                                        value
+                                            .as_reference()
+                                            .map(|reference| (key.clone(), reference))
+                                    })
+                                    .collect();
+                                Self::walk_xobject_dict(
+                                    &nested,
+                                    page_number,
+                                    reader,
+                                    visited,
+                                    soft_mask_objects,
+                                    options,
+                                    results,
+                                    depth + 1,
+                                )?;
                             }
                         }
                     }
-                    // One unreadable image must not cost the page's other images.
-                    match Self::image_ref_from_dict(
-                        page_number,
-                        name.clone(),
-                        obj_num,
-                        gen_num,
-                        &dict,
-                    ) {
-                        Ok(image) => results.push(image),
-                        Err(err) => log::warn!("skipping image XObject /{name}: {err}"),
+                    Some(other) => {
+                        log::debug!(
+                            "XObject '{}' has unsupported subtype '{}'; skipping",
+                            name,
+                            other
+                        );
                     }
-                }
-                Some("Form") => {
-                    log::debug!("XObject '{}' is a Form; walking nested images", name);
-                    if let Some(res_dict) = Self::resolve_resource_dict(&dict, reader) {
-                        if let Some(xobj_dict) = res_dict.get_dict("XObject") {
-                            let nested: HashMap<String, (u32, u16)> = xobj_dict
-                                .entries()
-                                .filter_map(|(key, value)| {
-                                    value
-                                        .as_reference()
-                                        .map(|reference| (key.clone(), reference))
-                                })
-                                .collect();
-                            Self::walk_xobject_dict(
-                                &nested,
-                                page_number,
-                                reader,
-                                visited,
-                                soft_mask_objects,
-                                options,
-                                results,
-                                depth + 1,
-                            )?;
-                        }
+                    None => {
+                        log::debug!("XObject '{}' has no /Subtype; skipping", name);
                     }
-                }
-                Some(other) => {
-                    log::debug!(
-                        "XObject '{}' has unsupported subtype '{}'; skipping",
-                        name,
-                        other
-                    );
-                }
-                None => {
-                    log::debug!("XObject '{}' has no /Subtype; skipping", name);
                 }
             }
         }

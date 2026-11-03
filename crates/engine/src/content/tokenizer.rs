@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::io::Read;
 
 use crate::error::{Result, WellfriendError};
@@ -47,13 +46,25 @@ pub struct ContentTokenizer<'a> {
     pending_inline_end_span: Option<[usize; 2]>,
 }
 
+/// Bytes requested from the reader per refill, as the original fixed buffer.
+const STREAMING_READ_CHUNK: usize = 64 * 1024;
+
+/// Tokenizes a content program read from `R`.
+///
+/// The bytes not yet consumed sit in one contiguous window
+/// (`window[pos..]`), so a peek is an indexed load. The reader is asked for
+/// more bytes only when a token needs a byte past everything read so far,
+/// [`STREAMING_READ_CHUNK`] at a time, so reads (and their errors) happen at
+/// the same stream offsets as a byte-at-a-time lookahead would see them. A
+/// program already in memory ([`StreamingContentTokenizer::from_bytes`]) is
+/// the window itself and is never copied.
 pub struct StreamingContentTokenizer<R: Read> {
     reader: R,
-    buffer: [u8; 64 * 1024],
+    window: Vec<u8>,
     pos: usize,
-    len: usize,
     eof: bool,
-    lookahead: VecDeque<u8>,
+    /// The window holds the whole program: tokens are scanned in place.
+    complete: bool,
     inline_image_state: InlineImageState,
 }
 
@@ -408,17 +419,50 @@ impl Iterator for ContentTokenizer<'_> {
     }
 }
 
+impl StreamingContentTokenizer<std::io::Empty> {
+    /// Tokenize a content program that is already in memory. Produces exactly
+    /// the tokens `StreamingContentTokenizer::new(Cursor::new(data))` does.
+    pub fn from_bytes(data: Vec<u8>) -> Self {
+        Self {
+            reader: std::io::empty(),
+            window: data,
+            pos: 0,
+            eof: false,
+            complete: true,
+            inline_image_state: InlineImageState::Normal,
+        }
+    }
+}
+
 impl<R: Read> StreamingContentTokenizer<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
-            buffer: [0; 64 * 1024],
+            window: Vec::new(),
             pos: 0,
-            len: 0,
             eof: false,
-            lookahead: VecDeque::new(),
+            complete: false,
             inline_image_state: InlineImageState::Normal,
         }
+    }
+
+    /// With the whole program in the window, the length of the regular
+    /// (non-whitespace, non-delimiter) run at the cursor.
+    fn regular_run(&self) -> Option<usize> {
+        if !self.complete {
+            return None;
+        }
+        let rest = &self.window[self.pos..];
+        Some(
+            rest.iter()
+                .position(|&byte| is_pdf_whitespace(byte) || is_delimiter(byte))
+                .unwrap_or(rest.len()),
+        )
+    }
+
+    /// The `index`-th unconsumed byte, after `ensure_lookahead(index + 1)`.
+    fn lookahead_get(&self, index: usize) -> Option<u8> {
+        self.window.get(self.pos + index).copied()
     }
 
     fn next_token(&mut self) -> Result<Option<ContentToken>> {
@@ -481,7 +525,37 @@ impl<R: Read> StreamingContentTokenizer<R> {
     }
 
     fn read_number(&mut self, _first: u8) -> Result<ContentToken> {
-        let mut out = Vec::new();
+        if self.complete {
+            // Scan in place: the same sign/digits/single-dot grammar.
+            let rest = &self.window[self.pos..];
+            let mut len = usize::from(matches!(rest.first(), Some(b'+' | b'-')));
+            let mut saw_dot = false;
+            while let Some(&byte) = rest.get(len) {
+                match byte {
+                    b'0'..=b'9' => len += 1,
+                    b'.' if !saw_dot => {
+                        saw_dot = true;
+                        len += 1;
+                    }
+                    _ => break,
+                }
+            }
+            let text = &rest[..len];
+            let token = if saw_dot {
+                parse_content_real(text)
+                    .map(ContentToken::Real)
+                    .ok_or_else(|| WellfriendError::ParseError("invalid content real".to_string()))
+            } else {
+                parse_content_integer(text)
+                    .map(ContentToken::Integer)
+                    .ok_or_else(|| {
+                        WellfriendError::ParseError("invalid content integer".to_string())
+                    })
+            };
+            self.pos += len;
+            return token;
+        }
+        let mut out = NumberText::default();
         if matches!(self.peek()?, Some(b'+' | b'-')) {
             out.push(self.next_byte()?.expect("peek checked"));
         }
@@ -496,20 +570,27 @@ impl<R: Read> StreamingContentTokenizer<R> {
                 _ => break,
             }
         }
-        let text = std::str::from_utf8(&out).unwrap_or("");
         if saw_dot {
-            text.parse::<f64>()
+            out.real()
                 .map(ContentToken::Real)
-                .map_err(|_| WellfriendError::ParseError("invalid content real".to_string()))
+                .ok_or_else(|| WellfriendError::ParseError("invalid content real".to_string()))
         } else {
-            text.parse::<i64>()
+            out.integer()
                 .map(ContentToken::Integer)
-                .map_err(|_| WellfriendError::ParseError("invalid content integer".to_string()))
+                .ok_or_else(|| WellfriendError::ParseError("invalid content integer".to_string()))
         }
     }
 
     fn read_name(&mut self) -> Result<ContentToken> {
         self.consume(1)?;
+        if let Some(len) = self.regular_run() {
+            let name = &self.window[self.pos..self.pos + len];
+            if !name.contains(&b'#') {
+                let name = String::from_utf8_lossy(name).into_owned();
+                self.pos += len;
+                return Ok(ContentToken::Name(name));
+            }
+        }
         let mut out = Vec::new();
         while let Some(byte) = self.peek()? {
             if is_pdf_whitespace(byte) || is_delimiter(byte) {
@@ -519,7 +600,7 @@ impl<R: Read> StreamingContentTokenizer<R> {
             if byte == b'#' {
                 let high = self.peek()?.and_then(hex_value);
                 self.ensure_lookahead(2)?;
-                let low = self.lookahead.get(1).copied().and_then(hex_value);
+                let low = self.lookahead_get(1).and_then(hex_value);
                 if let (Some(high), Some(low)) = (high, low) {
                     self.consume(2)?;
                     out.push((high << 4) | low);
@@ -628,6 +709,20 @@ impl<R: Read> StreamingContentTokenizer<R> {
     }
 
     fn read_operator(&mut self) -> Result<ContentToken> {
+        if let Some(len) = self.regular_run() {
+            if len == 0 {
+                self.consume(1)?;
+                return Ok(ContentToken::Operator("?".to_string()));
+            }
+            let token = match &self.window[self.pos..self.pos + len] {
+                b"null" => ContentToken::Null,
+                b"true" => ContentToken::Boolean(true),
+                b"false" => ContentToken::Boolean(false),
+                op => ContentToken::Operator(String::from_utf8_lossy(op).into_owned()),
+            };
+            self.pos += len;
+            return Ok(token);
+        }
         let mut out = Vec::new();
         while let Some(byte) = self.peek()? {
             if is_pdf_whitespace(byte) || is_delimiter(byte) {
@@ -639,12 +734,11 @@ impl<R: Read> StreamingContentTokenizer<R> {
             self.consume(1)?;
             return Ok(ContentToken::Operator("?".to_string()));
         }
-        let op = String::from_utf8_lossy(&out).into_owned();
-        Ok(match op.as_str() {
-            "null" => ContentToken::Null,
-            "true" => ContentToken::Boolean(true),
-            "false" => ContentToken::Boolean(false),
-            _ => ContentToken::Operator(op),
+        Ok(match out.as_slice() {
+            b"null" => ContentToken::Null,
+            b"true" => ContentToken::Boolean(true),
+            b"false" => ContentToken::Boolean(false),
+            _ => ContentToken::Operator(utf8_lossy_owned(out)),
         })
     }
 
@@ -657,11 +751,7 @@ impl<R: Read> StreamingContentTokenizer<R> {
             };
             if is_pdf_whitespace(byte) && self.starts_with(b"EI")? {
                 self.ensure_lookahead(3)?;
-                let follows = self
-                    .lookahead
-                    .get(2)
-                    .copied()
-                    .is_none_or(is_inline_image_end_follow);
+                let follows = self.lookahead_get(2).is_none_or(is_inline_image_end_follow);
                 if follows {
                     self.consume(2)?;
                     self.inline_image_state = InlineImageState::PendingEnd;
@@ -715,11 +805,11 @@ impl<R: Read> StreamingContentTokenizer<R> {
             b'0'..=b'9' => true,
             b'.' => {
                 self.ensure_lookahead(2)?;
-                matches!(self.lookahead.get(1), Some(b'0'..=b'9'))
+                matches!(self.lookahead_get(1), Some(b'0'..=b'9'))
             }
             b'+' | b'-' => {
                 self.ensure_lookahead(2)?;
-                matches!(self.lookahead.get(1), Some(b'0'..=b'9' | b'.'))
+                matches!(self.lookahead_get(1), Some(b'0'..=b'9' | b'.'))
             }
             _ => false,
         })
@@ -727,59 +817,159 @@ impl<R: Read> StreamingContentTokenizer<R> {
 
     fn starts_with(&mut self, bytes: &[u8]) -> Result<bool> {
         self.ensure_lookahead(bytes.len())?;
-        if self.lookahead.len() < bytes.len() {
-            return Ok(false);
-        }
-        Ok(bytes
-            .iter()
-            .enumerate()
-            .all(|(idx, byte)| self.lookahead.get(idx) == Some(byte)))
+        Ok(self
+            .window
+            .get(self.pos..)
+            .is_some_and(|rest| rest.starts_with(bytes)))
     }
 
+    #[inline]
     fn peek(&mut self) -> Result<Option<u8>> {
+        if let Some(&byte) = self.window.get(self.pos) {
+            return Ok(Some(byte));
+        }
         self.ensure_lookahead(1)?;
-        Ok(self.lookahead.front().copied())
+        Ok(self.window.get(self.pos).copied())
     }
 
+    #[inline]
     fn next_byte(&mut self) -> Result<Option<u8>> {
-        self.ensure_lookahead(1)?;
-        Ok(self.lookahead.pop_front())
+        let byte = self.peek()?;
+        if byte.is_some() {
+            self.pos += 1;
+        }
+        Ok(byte)
     }
 
     fn consume(&mut self, n: usize) -> Result<()> {
         self.ensure_lookahead(n)?;
-        for _ in 0..n.min(self.lookahead.len()) {
-            self.lookahead.pop_front();
-        }
+        self.pos += n.min(self.window.len() - self.pos);
         Ok(())
     }
 
+    /// Make at least `n` unconsumed bytes available, unless the reader ends
+    /// first. The reader is called only when a byte past everything read so
+    /// far is needed.
     fn ensure_lookahead(&mut self, n: usize) -> Result<()> {
-        while self.lookahead.len() < n && !self.eof {
-            match self.read_raw_byte()? {
-                Some(byte) => self.lookahead.push_back(byte),
-                None => self.eof = true,
+        if self.window.len() - self.pos >= n || self.eof {
+            return Ok(());
+        }
+        // Drop the consumed prefix before growing the window.
+        if self.pos > 0 {
+            self.window.drain(..self.pos);
+            self.pos = 0;
+        }
+        while self.window.len() < n && !self.eof {
+            let filled = self.window.len();
+            self.window.resize(filled + STREAMING_READ_CHUNK, 0);
+            match self.reader.read(&mut self.window[filled..]) {
+                Ok(read) => {
+                    self.window.truncate(filled + read);
+                    if read == 0 {
+                        self.eof = true;
+                    }
+                }
+                Err(err) => {
+                    self.window.truncate(filled);
+                    return Err(WellfriendError::Io(err));
+                }
             }
         }
         Ok(())
-    }
-
-    fn read_raw_byte(&mut self) -> Result<Option<u8>> {
-        if self.pos >= self.len {
-            self.len = self
-                .reader
-                .read(&mut self.buffer)
-                .map_err(WellfriendError::Io)?;
-            self.pos = 0;
-            if self.len == 0 {
-                return Ok(None);
-            }
-        }
-        let byte = self.buffer[self.pos];
-        self.pos += 1;
-        Ok(Some(byte))
     }
 }
+
+/// `String::from_utf8_lossy(&bytes).into_owned()` without copying valid UTF-8.
+fn utf8_lossy_owned(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
+    }
+}
+
+/// The text of a content-stream number, collected byte by byte when the
+/// tokenizer reads from a stream.
+#[derive(Default)]
+struct NumberText {
+    bytes: Vec<u8>,
+}
+
+impl NumberText {
+    fn push(&mut self, byte: u8) {
+        self.bytes.push(byte);
+    }
+
+    fn integer(&self) -> Option<i64> {
+        parse_content_integer(&self.bytes)
+    }
+
+    fn real(&self) -> Option<f64> {
+        parse_content_real(&self.bytes)
+    }
+}
+
+/// The sign and the unsigned remainder of a number's text.
+fn split_sign(bytes: &[u8]) -> (bool, &[u8]) {
+    match bytes.first() {
+        Some(b'-') => (true, &bytes[1..]),
+        Some(b'+') => (false, &bytes[1..]),
+        _ => (false, bytes),
+    }
+}
+
+/// `str::parse::<i64>` of a number's text, without the round trip through
+/// the standard parser for ordinary values.
+fn parse_content_integer(bytes: &[u8]) -> Option<i64> {
+    let (negative, digits) = split_sign(bytes);
+    // Up to 18 digits cannot overflow an i64; longer values (and malformed
+    // ones) take the standard parser for its exact verdict.
+    if !digits.is_empty() && digits.len() <= 18 && digits.iter().all(u8::is_ascii_digit) {
+        let magnitude = digits
+            .iter()
+            .fold(0i64, |value, digit| value * 10 + i64::from(digit - b'0'));
+        return Some(if negative { -magnitude } else { magnitude });
+    }
+    std::str::from_utf8(bytes).ok()?.parse::<i64>().ok()
+}
+
+/// `str::parse::<f64>` of a number's text, bit for bit.
+fn parse_content_real(bytes: &[u8]) -> Option<f64> {
+    let slow = || std::str::from_utf8(bytes).ok()?.parse::<f64>().ok();
+    let (negative, digits) = split_sign(bytes);
+    let mut mantissa = 0u64;
+    let mut significant = 0usize;
+    let mut fraction_digits = 0usize;
+    let mut seen_dot = false;
+    for &byte in digits {
+        match byte {
+            b'.' if !seen_dot => seen_dot = true,
+            b'0'..=b'9' => {
+                if significant == 15 {
+                    return slow();
+                }
+                mantissa = mantissa * 10 + u64::from(byte - b'0');
+                significant += 1;
+                if seen_dot {
+                    fraction_digits += 1;
+                }
+            }
+            _ => return slow(),
+        }
+    }
+    if significant == 0 {
+        return slow();
+    }
+    // A mantissa below 10^15 and a power of ten up to 10^15 are both exact
+    // doubles, so one correctly rounded division yields the correctly rounded
+    // value of the decimal, which is what `str::parse` returns.
+    let magnitude = mantissa as f64 / POWERS_OF_TEN[fraction_digits];
+    Some(if negative { -magnitude } else { magnitude })
+}
+
+/// 10^0 ..= 10^15, all exact doubles.
+const POWERS_OF_TEN: [f64; 16] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+];
 
 impl<R: Read> Iterator for StreamingContentTokenizer<R> {
     type Item = Result<ContentToken>;
@@ -985,5 +1175,161 @@ mod tests {
         // And the higher-level parser must also terminate (this is what hung).
         let ops = crate::content::ContentParser::parse(data).unwrap();
         assert!(ops.iter().any(|o| o.operator == "ID"));
+    }
+
+    fn number_text(text: &str) -> NumberText {
+        let mut out = NumberText::default();
+        for &byte in text.as_bytes() {
+            out.push(byte);
+        }
+        out
+    }
+
+    /// The number fast paths return exactly what `str::parse` returns,
+    /// bit for bit, for every sign, digit count and fraction length.
+    #[test]
+    fn number_fast_paths_match_the_standard_parser() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut texts: Vec<String> = [
+            "0",
+            "-0",
+            "+0",
+            "0.0",
+            "-0.0",
+            ".5",
+            "-.5",
+            "+.5",
+            "5.",
+            "-5.",
+            "007",
+            "1.000",
+            "999999999999999",
+            "9999999999999999",
+            "0.000000000000001",
+            "123456.789012345",
+            "1234567.890123456",
+            "-9223372036854775808",
+            "9223372036854775807",
+            "9223372036854775808",
+            "123456789012345678",
+            "1234567890123456789",
+            "-",
+            "+",
+            ".",
+            "-.",
+            "+.",
+            "",
+            "0.1",
+            "0.2",
+            "0.3",
+            "2.675",
+            "1.005",
+            "33.33333333333333",
+        ]
+        .iter()
+        .map(|text| text.to_string())
+        .collect();
+        for _ in 0..20_000 {
+            let digits = 1 + (next() % 19) as usize;
+            let mut text = String::new();
+            match next() % 3 {
+                0 => text.push('-'),
+                1 => text.push('+'),
+                _ => {}
+            }
+            let dot = (next() % (digits as u64 + 2)) as usize;
+            for index in 0..digits {
+                if index == dot {
+                    text.push('.');
+                }
+                text.push(char::from(b'0' + (next() % 10) as u8));
+            }
+            texts.push(text);
+        }
+        for text in &texts {
+            let number = number_text(text);
+            if text.contains('.') {
+                let expected = text.parse::<f64>().ok().map(f64::to_bits);
+                assert_eq!(number.real().map(f64::to_bits), expected, "{text}");
+            } else {
+                assert_eq!(number.integer(), text.parse::<i64>().ok(), "{text}");
+            }
+        }
+    }
+
+    /// A reader that hands out a few bytes per call and can fail once: the
+    /// windowed tokenizer must see the same tokens and the same error as a
+    /// byte-at-a-time reader.
+    struct Trickle {
+        data: Vec<u8>,
+        pos: usize,
+        step: usize,
+        fail_at: Option<usize>,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.fail_at.is_some_and(|at| self.pos >= at) {
+                self.fail_at = None;
+                return Err(std::io::Error::other("trickle failure"));
+            }
+            let n = self.step.min(buf.len()).min(self.data.len() - self.pos);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn windowed_streaming_tokenizer_matches_slice_tokens_across_reads() {
+        let data: &[u8] = b"BT /F#201 12 Tf 1 0 0 1 72 700 Tm [(Hel\\)lo) -250 <48 65>] TJ ET\n\
+            q 0.5 0 0 .5 -3 +4 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x7f EI Q % end\n\
+            [null true false] << /A 1 >> 1.5 -2.25 d";
+        let expected = tokenize_all(data).unwrap();
+        for step in [1, 2, 3, 7, 64, 100_000] {
+            let tokens: Vec<_> = StreamingContentTokenizer::new(Trickle {
+                data: data.to_vec(),
+                pos: 0,
+                step,
+                fail_at: None,
+            })
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+            assert_eq!(tokens, expected, "step {step}");
+        }
+        let buffered: Vec<_> = StreamingContentTokenizer::from_bytes(data.to_vec())
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(buffered, expected);
+    }
+
+    #[test]
+    fn windowed_streaming_tokenizer_reports_reader_errors() {
+        let tokens: Vec<_> = StreamingContentTokenizer::new(Trickle {
+            data: b"1 2 3 4 5 6 7 8 9".to_vec(),
+            pos: 0,
+            step: 4,
+            fail_at: Some(8),
+        })
+        .collect();
+        assert!(tokens
+            .iter()
+            .any(|token| matches!(token, Err(WellfriendError::Io(_)))));
+        // The reader recovers after its single failure; every number before
+        // and after the failure is still read in order.
+        let numbers: Vec<i64> = tokens
+            .iter()
+            .filter_map(|token| match token {
+                Ok(ContentToken::Integer(value)) => Some(*value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbers, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 }

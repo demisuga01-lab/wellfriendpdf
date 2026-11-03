@@ -53,6 +53,11 @@ struct Cli {
     /// Runtime configuration file (JSON or the documented TOML-like subset).
     #[arg(long = "runtime-config-file", global = true, value_name = "PATH")]
     runtime_config_file: Option<PathBuf>,
+    /// Worker threads for page-parallel work (conversions, extraction,
+    /// rendering). Default and 0: every available core. A service running
+    /// several jobs at once passes each job its share of the cores.
+    #[arg(long, global = true, value_name = "N")]
+    threads: Option<usize>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -598,6 +603,9 @@ enum Commands {
     EditMetadata(EditMetadataArgs),
     /// Convert PDF content to an EPUB 3 book (chapters, nav, images)
     PdfToEpub(PdfToEpubArgs),
+    /// Set page labels (the page numbering a viewer shows) as an incremental
+    /// update appended to an unchanged copy of the input
+    PageLabels(PageLabelsArgs),
     /// Analyze whether a PDF has a real text layer
     Analyze(AnalyzeArgs),
     /// Merge several PDFs into one (pdfunite-equivalent)
@@ -778,6 +786,11 @@ struct RotateArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+    /// Append an incremental update (only the changed page dictionaries)
+    /// after an unchanged copy of the input instead of rewriting the whole
+    /// file. Encrypted inputs fall back to the full rewrite.
+    #[arg(long)]
+    incremental: bool,
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
@@ -909,6 +922,11 @@ struct WatermarkArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+    /// Append the overlay as an incremental update (new content streams and
+    /// the changed page dictionaries) after an unchanged copy of the input
+    /// instead of rewriting the file. Encrypted inputs keep the full rewrite.
+    #[arg(long)]
+    incremental: bool,
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
@@ -943,6 +961,11 @@ struct PageNumbersArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+    /// Append the overlay as an incremental update (new content streams and
+    /// the changed page dictionaries) after an unchanged copy of the input
+    /// instead of rewriting the file. Encrypted inputs keep the full rewrite.
+    #[arg(long)]
+    incremental: bool,
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
@@ -3134,6 +3157,9 @@ struct PdfToXlsxArgs {
     /// Output XLSX file
     #[arg(short, long, alias = "out", default_value = "output.xlsx")]
     output: PathBuf,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
     /// Layout policy: pages (one worksheet per PDF page) or tables (one worksheet per table)
     #[arg(long, default_value = "pages", value_parser = ["pages", "tables"])]
     layout: String,
@@ -3170,6 +3196,9 @@ struct PdfToDocxArgs {
     /// Output DOCX file
     #[arg(short, long, alias = "out", default_value = "output.docx")]
     output: PathBuf,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
     /// Do not export decodable image XObjects as inline pictures
     #[arg(long)]
     no_images: bool,
@@ -3396,6 +3425,23 @@ struct EditMetadataArgs {
     /// signaturePolicyOverride. An empty string removes a field.
     #[arg(long)]
     options: Option<String>,
+}
+
+#[derive(Parser)]
+struct PageLabelsArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output file
+    #[arg(short, long, default_value = "labelled.pdf")]
+    output: PathBuf,
+    /// Comma-separated ranges page:style[:prefix[:start]], style D (1, 2),
+    /// R/r (roman), A/a (letters) or - (prefix only); the first range starts
+    /// at page 1. Example: 1:r,5:D,40:D:A-:1
+    #[arg(long)]
+    labels: String,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 /// `pdf-to-epub`: one JSON result line on stdout, non-zero exit on failure.
@@ -4070,21 +4116,72 @@ struct CanonicalizeArgs {
 /// lets later buffers reuse already-faulted pages (about a third fewer page
 /// faults on scanned pages). The process exits soon after, so the retained
 /// memory is not a concern.
+///
+/// A tunable the environment already sets (`MALLOC_MMAP_THRESHOLD_`,
+/// `MALLOC_TRIM_THRESHOLD_`, `MALLOC_TOP_PAD_`, or `GLIBC_TUNABLES`) is left
+/// as the platform chose it.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn tune_allocator_for_one_shot_process() {
-    extern "C" {
-        fn mallopt(param: i32, value: i32) -> i32;
-    }
     const M_TRIM_THRESHOLD: i32 = -1;
     const M_TOP_PAD: i32 = -2;
     const M_MMAP_THRESHOLD: i32 = -3;
+    // 32 MiB is the largest mmap threshold glibc accepts on 64-bit targets.
+    set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 32 * 1024 * 1024);
+    set_malloc_tunable(
+        M_TRIM_THRESHOLD,
+        "MALLOC_TRIM_THRESHOLD_",
+        1024 * 1024 * 1024,
+    );
+    set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 64 * 1024 * 1024);
+}
+
+/// Bound glibc's per-thread heaps to the page workers (plus the CLI thread):
+/// freed memory is reused across workers instead of each arena keeping its
+/// own peak. Called before the worker pool starts.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_allocator_for_workers(workers: usize) {
+    const M_ARENA_MAX: i32 = -8;
+    const M_TRIM_THRESHOLD: i32 = -1;
+    const M_TOP_PAD: i32 = -2;
+    const M_MMAP_THRESHOLD: i32 = -3;
+    let arenas = i32::try_from(workers.saturating_add(1)).unwrap_or(i32::MAX);
+    set_malloc_tunable(M_ARENA_MAX, "MALLOC_ARENA_MAX", arenas);
+    // A job given a share of a busy host (the tools service runs several at
+    // once) keeps its memory near its live data: large buffers are mapped
+    // and returned on free, and freed heap above 64 MiB is trimmed. That
+    // costs a few page faults; a job with the whole host keeps the faster
+    // retention above.
+    if workers <= LEAN_ALLOCATOR_WORKERS {
+        set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 1024 * 1024);
+        set_malloc_tunable(M_TRIM_THRESHOLD, "MALLOC_TRIM_THRESHOLD_", 64 * 1024 * 1024);
+        set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 0);
+    }
+}
+
+/// Worker counts at or below which the allocator keeps memory lean.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const LEAN_ALLOCATOR_WORKERS: usize = 2;
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_allocator_for_workers(_workers: usize) {}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn set_malloc_tunable(param: i32, env: &str, value: i32) {
+    extern "C" {
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    let tunables = std::env::var("GLIBC_TUNABLES").unwrap_or_default();
+    let glibc_name = env
+        .trim_end_matches('_')
+        .trim_start_matches("MALLOC_")
+        .to_ascii_lowercase();
+    if std::env::var_os(env).is_some() || tunables.contains(&format!("malloc.{glibc_name}")) {
+        return;
+    }
     // SAFETY: mallopt only adjusts glibc allocator tunables; it is called
-    // before any other thread exists. 32 MiB is the largest mmap threshold
-    // glibc accepts on 64-bit targets.
+    // from the CLI thread before the worker pool exists.
     unsafe {
-        mallopt(M_MMAP_THRESHOLD, 32 * 1024 * 1024);
-        mallopt(M_TRIM_THRESHOLD, 1024 * 1024 * 1024);
-        mallopt(M_TOP_PAD, 64 * 1024 * 1024);
+        mallopt(param, value);
     }
 }
 
@@ -4113,6 +4210,10 @@ fn main() -> ExitCode {
 
 fn run_cli() -> ExitCode {
     let cli = Cli::parse();
+    if let Err(err) = configure_worker_threads(cli.threads) {
+        eprintln!("wellfriendpdf: internal error: could not start worker threads: {err}");
+        return ExitCode::from(CliExitCode::Internal.code());
+    }
 
     // Keep the panic's message and location (but not the default hook's noisy
     // output) so an internal error can be reported and fixed.
@@ -4145,6 +4246,29 @@ fn run_cli() -> ExitCode {
             ExitCode::from(CliExitCode::Internal.code())
         }
     }
+}
+
+/// Stack of each page worker: page programs recurse (Form XObjects, nested
+/// marked content) as deeply on a worker as on the CLI's own thread.
+const WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+/// Size the process-wide worker pool every page-parallel stage runs on.
+fn configure_worker_threads(threads: Option<usize>) -> Result<(), rayon::ThreadPoolBuildError> {
+    let workers = threads.filter(|&threads| threads > 0).unwrap_or_else(|| {
+        std::env::var("RAYON_NUM_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&threads| threads > 0)
+            .unwrap_or_else(wellfriendpdf_engine::page_parallel::available_threads)
+    });
+    tune_allocator_for_workers(workers);
+    let mut builder = rayon::ThreadPoolBuilder::new()
+        .stack_size(WORKER_STACK_BYTES)
+        .thread_name(|index| format!("wellfriendpdf-page-{index}"));
+    if let Some(threads) = threads.filter(|&threads| threads > 0) {
+        builder = builder.num_threads(threads);
+    }
+    builder.build_global()
 }
 
 fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
@@ -4358,6 +4482,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::SvgToPdf(args) => run_native_convert(args, NativeConverter::Svg),
         Commands::EditMetadata(args) => run_edit_metadata(args),
         Commands::PdfToEpub(args) => run_pdf_to_epub(args),
+        Commands::PageLabels(args) => run_page_labels(args),
         Commands::Analyze(args) => run_analyze(args),
         Commands::Merge(args) => run_merge(args),
         Commands::Split(args) => run_split(args),
@@ -10250,11 +10375,15 @@ fn run_image_to_pdf(args: ImageToPdfArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_pdf_to_xlsx(args: PdfToXlsxArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
+    let (selection, page_count) = conversion_pages(&engine, &args.pages)?;
     let layout = wellfriendpdf_engine::XlsxLayout::parse(&args.layout)
         .ok_or_else(|| format!("unknown --layout '{}'; use pages or tables", args.layout))?;
-    let bytes =
-        wellfriendpdf_engine::pdf_to_xlsx(&engine, &wellfriendpdf_engine::XlsxOptions { layout })?;
-    std::fs::write(&args.output, &bytes)?;
+    let bytes = wellfriendpdf_engine::pdf_to_xlsx_pages(
+        &engine,
+        &wellfriendpdf_engine::XlsxOptions { layout },
+        &selection,
+    )?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
     if args.json {
         println!(
             "{}",
@@ -10263,7 +10392,9 @@ fn run_pdf_to_xlsx(args: PdfToXlsxArgs) -> Result<(), Box<dyn Error>> {
                 "input": args.pdf,
                 "output": args.output,
                 "layout": layout.as_str(),
-                "output_bytes": bytes.len(),
+                "output_sha256": facts.sha256,
+                "output_bytes": facts.bytes,
+                "output_pages": page_count,
             }))?
         );
     } else {
@@ -10307,14 +10438,15 @@ fn run_pdf_to_pptx(args: PdfToPptxArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_pdf_to_docx(args: PdfToDocxArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
+    let (selection, page_count) = conversion_pages(&engine, &args.pages)?;
     let layout = wellfriendpdf_engine::DocxLayout::parse(&args.layout)
         .ok_or_else(|| usage_error("unknown --layout; use flowing, page-faithful, or hybrid"))?;
     let options = wellfriendpdf_engine::DocxOptions {
         include_images: !args.no_images,
         layout,
     };
-    let bytes = wellfriendpdf_engine::pdf_to_docx(&engine, &options)?;
-    std::fs::write(&args.output, &bytes)?;
+    let bytes = wellfriendpdf_engine::pdf_to_docx_pages(&engine, &options, &selection)?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
     if args.json {
         println!(
             "{}",
@@ -10324,7 +10456,9 @@ fn run_pdf_to_docx(args: PdfToDocxArgs) -> Result<(), Box<dyn Error>> {
                 "output": args.output,
                 "include_images": options.include_images,
                 "layout": options.layout.as_str(),
-                "output_bytes": bytes.len(),
+                "output_sha256": facts.sha256,
+                "output_bytes": facts.bytes,
+                "output_pages": page_count,
             }))?
         );
     } else {
@@ -10369,12 +10503,15 @@ fn run_pdf_to_markdown(args: PdfToMarkdownArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
+    // Markdown is written from the blocks alone: the per-page image lookup
+    // the editable model can add is not part of it, so it is not run.
     let model = engine.build_editable_document(&wellfriendpdf_engine::EditableBuildOptions {
         pages: pages.clone(),
+        include_images: false,
         ..wellfriendpdf_engine::EditableBuildOptions::default()
     })?;
     let output = model.to_markdown();
-    std::fs::write(&args.output, output.as_bytes())?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, output.as_bytes())?;
     if args.json {
         println!(
             "{}",
@@ -10384,7 +10521,9 @@ fn run_pdf_to_markdown(args: PdfToMarkdownArgs) -> Result<(), Box<dyn Error>> {
                 "output": args.output,
                 "pages": pages,
                 "blocks": model.blocks.len(),
-                "output_bytes": output.len(),
+                "output_sha256": facts.sha256,
+                "output_bytes": facts.bytes,
+                "output_pages": pages.len(),
             }))?
         );
     } else {
@@ -10401,8 +10540,10 @@ fn run_pdf_to_json(args: PdfToJsonArgs) -> Result<(), Box<dyn Error>> {
         pages: pages.clone(),
         ..wellfriendpdf_engine::EditableBuildOptions::default()
     })?;
-    let output = serde_json::to_string_pretty(&model)?;
-    std::fs::write(&args.output, output.as_bytes())?;
+    // The same bytes as `serde_json::to_string_pretty(&model)`, with the
+    // large arrays serialized in parallel.
+    let output = model.to_json_pretty()?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &output)?;
     if args.json {
         println!(
             "{}",
@@ -10412,7 +10553,9 @@ fn run_pdf_to_json(args: PdfToJsonArgs) -> Result<(), Box<dyn Error>> {
                 "output": args.output,
                 "pages": pages,
                 "blocks": model.blocks.len(),
-                "output_bytes": output.len(),
+                "output_sha256": facts.sha256,
+                "output_bytes": facts.bytes,
+                "output_pages": pages.len(),
             }))?
         );
     } else {
@@ -10911,25 +11054,74 @@ fn run_edit_metadata(args: EditMetadataArgs) -> Result<(), Box<dyn Error>> {
     })
 }
 
+fn run_page_labels(args: PageLabelsArgs) -> Result<(), Box<dyn Error>> {
+    let ranges = args
+        .labels
+        .split(',')
+        .map(wellfriendpdf_engine::PageLabelRange::parse)
+        .collect::<Result<Vec<_>, _>>()?;
+    let engine = wellfriendpdf_engine::ContentEngine::open_path(&args.pdf)?;
+    let pages = engine.page_count()?;
+    let delta = wellfriendpdf_engine::page_labels_incremental_delta(&engine, &ranges)?;
+    drop(engine);
+    let (facts, base, delta_length) = write_incremental_output(&args.pdf, &args.output, &delta)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "page-labels",
+                "output": args.output.display().to_string(),
+                "ranges": ranges.len(),
+                "incremental": true,
+                "baseLength": base,
+                "deltaLength": delta_length,
+                "output_sha256": facts.sha256,
+                "output_bytes": facts.bytes,
+                "output_pages": pages,
+            })
+        );
+    } else {
+        eprintln!(
+            "Set {} page-label range(s) -> {}",
+            ranges.len(),
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
 fn run_pdf_to_epub(args: PdfToEpubArgs) -> Result<(), Box<dyn Error>> {
-    let result = read_contract_input(&args.input).and_then(|bytes| {
-        let (epub, report) =
-            wellfriendpdf_engine::epub::pdf_to_epub_json(&bytes, args.options.as_deref())
-                .map_err(|error| json_failure(&error))?;
-        std::fs::write(&args.output, &epub).map_err(|err| {
+    // The input is opened in place (not read into memory); an unreadable
+    // input is reported exactly as reading it would report it.
+    let result = std::fs::File::open(&args.input)
+        .map_err(|err| {
             contract_failure(
-                "INTERNAL",
-                format!("cannot write {}: {err}", args.output.display()),
+                "INVALID_INPUT",
+                format!("cannot read input {}: {err}", args.input.display()),
             )
-        })?;
-        Ok(serde_json::json!({
-            "ok": true,
-            "pages": report.pages,
-            "bytes": epub.len(),
-            "chapters": report.chapters.len(),
-            "images": report.images,
-        }))
-    });
+        })
+        .and_then(|_| {
+            let (epub, report) = wellfriendpdf_engine::epub::pdf_to_epub_json_path(
+                &args.input,
+                args.options.as_deref(),
+            )
+            .map_err(|error| json_failure(&error))?;
+            let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &epub)
+                .map_err(|err| {
+                    contract_failure(
+                        "INTERNAL",
+                        format!("cannot write {}: {err}", args.output.display()),
+                    )
+                })?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "pages": report.pages,
+                "bytes": epub.len(),
+                "sha256": facts.sha256,
+                "chapters": report.chapters.len(),
+                "images": report.images,
+            }))
+        });
     contract_exit(result.unwrap_or_else(|failure| failure))
 }
 
@@ -11185,6 +11377,21 @@ fn run_analyze(args: AnalyzeArgs) -> Result<(), Box<dyn Error>> {
 
     println!("{}", json);
     Ok(())
+}
+
+/// The 1-based pages a conversion reads (empty: every page, exactly as when
+/// no selection is given) and how many pages that is.
+fn conversion_pages(
+    engine: &wellfriendpdf_engine::ContentEngine,
+    spec: &str,
+) -> Result<(Vec<usize>, usize), Box<dyn Error>> {
+    let total = engine.page_count()?;
+    if spec.trim().eq_ignore_ascii_case("all") {
+        return Ok((Vec::new(), total));
+    }
+    let pages = parse_page_range_cli(spec, total)?;
+    let count = pages.len();
+    Ok((pages, count))
 }
 
 fn open_engine(
@@ -13425,7 +13632,7 @@ fn run_merge(args: MergeArgs) -> Result<(), Box<dyn Error>> {
     let input_count = engines.len();
     drop(inputs);
     drop(engines);
-    file.commit()?;
+    let facts = file.commit_with_facts()?;
     if args.json {
         println!(
             "{}",
@@ -13435,6 +13642,9 @@ fn run_merge(args: MergeArgs) -> Result<(), Box<dyn Error>> {
                 "inputs": input_count,
                 "pages": total_pages,
                 "bytes": written,
+                "output_sha256": facts.sha256,
+                "output_bytes": facts.bytes,
+                "output_pages": total_pages,
             })
         );
     } else {
@@ -13513,7 +13723,7 @@ fn run_extract_pages(args: ExtractPagesArgs) -> Result<(), Box<dyn Error>> {
     let mut file = wellfriendpdf_engine::AtomicFile::create(&args.output)?;
     let written = engine.extract_pages_to(&pages, file.writer())?;
     drop(engine);
-    file.commit()?;
+    let facts = file.commit_with_facts()?;
     if args.json {
         println!(
             "{}",
@@ -13522,6 +13732,9 @@ fn run_extract_pages(args: ExtractPagesArgs) -> Result<(), Box<dyn Error>> {
                 "output": args.output.display().to_string(),
                 "pages": pages,
                 "bytes": written,
+                "output_sha256": facts.sha256,
+                "output_bytes": facts.bytes,
+                "output_pages": pages.len(),
             })
         );
     } else {
@@ -13566,14 +13779,17 @@ fn run_encrypt(args: EncryptArgs) -> Result<(), Box<dyn Error>> {
             args.algo
         );
     }
+    let output_pages = engine.page_count()?;
     let bytes = wellfriendpdf_engine::encrypt(&engine, &params)?;
-    std::fs::write(&args.output, &bytes)?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "encrypt",
                 "output": args.output.display().to_string(),
+                "output_sha256": facts.sha256,
+                "output_pages": output_pages,
                 "algorithm": args.algo,
                 "bytes": bytes.len(),
             })
@@ -13591,14 +13807,17 @@ fn run_encrypt(args: EncryptArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_decrypt(args: DecryptArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
+    let output_pages = engine.page_count()?;
     let bytes = wellfriendpdf_engine::decrypt_pdf(&engine)?;
-    std::fs::write(&args.output, &bytes)?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "decrypt",
                 "output": args.output.display().to_string(),
+                "output_sha256": facts.sha256,
+                "output_pages": output_pages,
                 "bytes": bytes.len(),
             })
         );
@@ -13612,54 +13831,104 @@ fn run_decrypt(args: DecryptArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Write `input` unchanged followed by an incremental update `delta` to
+/// `output` (atomically), returning the facts and the two lengths.
+fn write_incremental_output(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    delta: &[u8],
+) -> Result<(wellfriendpdf_engine::OutputFacts, u64, u64), Box<dyn Error>> {
+    let mut file = wellfriendpdf_engine::AtomicFile::create(output)?;
+    let base = std::io::copy(&mut std::fs::File::open(input)?, file.writer())?;
+    std::io::Write::write_all(file.writer(), delta)?;
+    Ok((file.commit_with_facts()?, base, delta.len() as u64))
+}
+
+/// Whether an overlay command can append to the input: requested, no
+/// password, and an unencrypted input.
+fn incremental_input(requested: bool, pdf: &std::path::Path, password: &Option<String>) -> bool {
+    requested
+        && password.is_none()
+        && wellfriendpdf_engine::ContentEngine::open_path(pdf)
+            .is_ok_and(|engine| !engine.document().reader().is_encrypted())
+}
+
 fn run_watermark(args: WatermarkArgs) -> Result<(), Box<dyn Error>> {
     let has_text = args.text.is_some();
     let has_image = args.image.is_some();
     if has_text == has_image {
         return Err("pass exactly one of --text or --image".into());
     }
-    let input = read_edit_input(&args.pdf, &args.password)?;
-    let engine = wellfriendpdf_engine::ContentEngine::open_bytes(input.clone())?;
+    let incremental = incremental_input(args.incremental, &args.pdf, &args.password);
+    let input = if incremental {
+        Vec::new()
+    } else {
+        read_edit_input(&args.pdf, &args.password)?
+    };
+    let engine = if incremental {
+        wellfriendpdf_engine::ContentEngine::open_path(&args.pdf)?
+    } else {
+        wellfriendpdf_engine::ContentEngine::open_bytes(input.clone())?
+    };
     let total = engine.page_count()?;
+    drop(engine);
+    let mut base_length = None;
+    let mut delta_length = None;
     let pages = parse_page_range_cli(&args.pages, total)?;
     let position = parse_stamp_position(&args.position)?;
     let bytes = if let Some(text) = args.text {
-        wellfriendpdf_engine::watermark_text_pdf(
-            input,
-            &text,
-            wellfriendpdf_engine::TextWatermarkOptions {
-                pages: pages.clone(),
-                position,
-                opacity: args.opacity,
-                rotation_degrees: args.rotation,
-                font_size: args.font_size,
-                color: parse_rgb_color(&args.color)?,
-            },
-        )?
+        let options = wellfriendpdf_engine::TextWatermarkOptions {
+            pages: pages.clone(),
+            position,
+            opacity: args.opacity,
+            rotation_degrees: args.rotation,
+            font_size: args.font_size,
+            color: parse_rgb_color(&args.color)?,
+        };
+        if incremental {
+            wellfriendpdf_engine::watermark_text_pdf_incremental_delta(&args.pdf, &text, options)?
+        } else {
+            wellfriendpdf_engine::watermark_text_pdf(input, &text, options)?
+        }
     } else {
         let image_path = args.image.expect("checked above");
         let image = std::fs::read(&image_path)?;
-        wellfriendpdf_engine::watermark_image_pdf(
-            input,
-            &image,
-            image_path.extension().and_then(|s| s.to_str()),
-            wellfriendpdf_engine::ImageWatermarkOptions {
-                pages: pages.clone(),
-                position,
-                opacity: args.opacity,
-                scale: args.scale,
-            },
-        )?
+        let options = wellfriendpdf_engine::ImageWatermarkOptions {
+            pages: pages.clone(),
+            position,
+            opacity: args.opacity,
+            scale: args.scale,
+        };
+        let extension = image_path.extension().and_then(|s| s.to_str());
+        if incremental {
+            wellfriendpdf_engine::watermark_image_pdf_incremental_delta(
+                &args.pdf, &image, extension, options,
+            )?
+        } else {
+            wellfriendpdf_engine::watermark_image_pdf(input, &image, extension, options)?
+        }
     };
-    std::fs::write(&args.output, &bytes)?;
+    let facts = if incremental {
+        let (facts, base, delta) = write_incremental_output(&args.pdf, &args.output, &bytes)?;
+        base_length = Some(base);
+        delta_length = Some(delta);
+        facts
+    } else {
+        wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?
+    };
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "watermark",
+                "incremental": incremental,
+                "baseLength": base_length,
+                "deltaLength": delta_length,
                 "output": args.output.display().to_string(),
+                "output_sha256": facts.sha256,
+                "output_pages": total,
                 "pages": pages,
-                "bytes": bytes.len(),
+                "bytes": facts.bytes,
             })
         );
     } else {
@@ -13673,30 +13942,51 @@ fn run_watermark(args: WatermarkArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_page_numbers(args: PageNumbersArgs) -> Result<(), Box<dyn Error>> {
-    let input = read_edit_input(&args.pdf, &args.password)?;
-    let engine = wellfriendpdf_engine::ContentEngine::open_bytes(input.clone())?;
+    let incremental = incremental_input(args.incremental, &args.pdf, &args.password);
+    let input = if incremental {
+        Vec::new()
+    } else {
+        read_edit_input(&args.pdf, &args.password)?
+    };
+    let engine = if incremental {
+        wellfriendpdf_engine::ContentEngine::open_path(&args.pdf)?
+    } else {
+        wellfriendpdf_engine::ContentEngine::open_bytes(input.clone())?
+    };
     let total = engine.page_count()?;
+    drop(engine);
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let bytes = wellfriendpdf_engine::add_page_numbers_pdf(
-        input,
-        wellfriendpdf_engine::PageNumberOptions {
-            pages: pages.clone(),
-            position: parse_stamp_position(&args.position)?,
-            format: args.format,
-            start: args.start,
-            font_size: args.font_size,
-            color: parse_rgb_color(&args.color)?,
-        },
-    )?;
-    std::fs::write(&args.output, &bytes)?;
+    let options = wellfriendpdf_engine::PageNumberOptions {
+        pages: pages.clone(),
+        position: parse_stamp_position(&args.position)?,
+        format: args.format,
+        start: args.start,
+        font_size: args.font_size,
+        color: parse_rgb_color(&args.color)?,
+    };
+    let (facts, base_length, delta_length) = if incremental {
+        let delta =
+            wellfriendpdf_engine::add_page_numbers_pdf_incremental_delta(&args.pdf, options)?;
+        let (facts, base, delta) = write_incremental_output(&args.pdf, &args.output, &delta)?;
+        (facts, Some(base), Some(delta))
+    } else {
+        let bytes = wellfriendpdf_engine::add_page_numbers_pdf(input, options)?;
+        let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
+        (facts, None, None)
+    };
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "add-page-numbers",
+                "incremental": incremental,
+                "baseLength": base_length,
+                "deltaLength": delta_length,
                 "output": args.output.display().to_string(),
+                "output_sha256": facts.sha256,
+                "output_pages": total,
                 "pages": pages,
-                "bytes": bytes.len(),
+                "bytes": facts.bytes,
             })
         );
     } else {
@@ -13713,10 +14003,12 @@ fn run_organize(args: OrganizeArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let order = parse_page_selection_ordered(&args.order, total)?;
+    let mut output_pages = order.len();
     let bytes = if let Some(insert_path) = args.insert_from {
         let inserted = open_engine(&insert_path, &args.insert_password)?;
         let inserted_total = inserted.page_count()?;
         let insert_pages = parse_page_selection_ordered(&args.insert_pages, inserted_total)?;
+        output_pages += insert_pages.len();
         wellfriendpdf_engine::organize_pdf_with_insert(
             &engine,
             &order,
@@ -13725,13 +14017,15 @@ fn run_organize(args: OrganizeArgs) -> Result<(), Box<dyn Error>> {
     } else {
         wellfriendpdf_engine::organize_pdf(&engine, &order)?
     };
-    std::fs::write(&args.output, &bytes)?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "organize",
                 "output": args.output.display().to_string(),
+                "output_sha256": facts.sha256,
+                "output_pages": output_pages,
                 "order": order,
                 "bytes": bytes.len(),
             })
@@ -13753,19 +14047,38 @@ fn run_rotate(args: RotateArgs) -> Result<(), Box<dyn Error>> {
     } else {
         Rotation::Absolute(args.angle)
     };
+    let incremental = args.incremental && !engine.document().reader().is_encrypted();
     let mut file = wellfriendpdf_engine::AtomicFile::create(&args.output)?;
-    wellfriendpdf_engine::rotate_pages_to(&engine, &pages, rotation, file.writer())?;
-    drop(engine);
-    file.commit()?;
+    let mut base_length = None;
+    let mut delta_length = None;
+    if incremental {
+        let delta =
+            wellfriendpdf_engine::rotate_pages_incremental_delta(&engine, &pages, rotation)?;
+        drop(engine);
+        let copied = std::io::copy(&mut std::fs::File::open(&args.pdf)?, file.writer())?;
+        std::io::Write::write_all(file.writer(), &delta)?;
+        base_length = Some(copied);
+        delta_length = Some(delta.len() as u64);
+    } else {
+        wellfriendpdf_engine::rotate_pages_to(&engine, &pages, rotation, file.writer())?;
+        drop(engine);
+    }
+    let facts = file.commit_with_facts()?;
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "rotate",
+                "incremental": incremental,
+                "baseLength": base_length,
+                "deltaLength": delta_length,
                 "output": args.output.display().to_string(),
                 "angle": args.angle,
                 "relative": args.relative,
                 "pages": pages.len(),
+                "output_sha256": facts.sha256,
+                "output_bytes": facts.bytes,
+                "output_pages": total,
             })
         );
     } else {
@@ -13879,6 +14192,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<(), Box<dyn Error>> {
         .map(|m| m.len() as usize)
         .unwrap_or(0);
     let engine = open_engine(&args.pdf, &args.password)?;
+    let output_pages = engine.page_count()?;
     let (mut bytes, report) = wellfriendpdf_engine::optimize(&engine)?;
     // Optimizing must never grow a file: when the rewrite is not smaller,
     // keep the original bytes (decrypted copies excepted, which must be rewritten).
@@ -13886,7 +14200,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<(), Box<dyn Error>> {
     if kept_original {
         bytes = std::fs::read(&args.pdf)?;
     }
-    std::fs::write(&args.output, &bytes)?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
     let saved = input_size.saturating_sub(bytes.len());
     if args.json {
         println!(
@@ -13894,6 +14208,8 @@ fn run_optimize(args: OptimizeArgs) -> Result<(), Box<dyn Error>> {
             serde_json::json!({
                 "op": "optimize",
                 "output": args.output.display().to_string(),
+                "output_sha256": facts.sha256,
+                "output_pages": output_pages,
                 "input_bytes": input_size,
                 "output_bytes": bytes.len(),
                 "saved_bytes": saved,
@@ -13918,13 +14234,14 @@ fn run_repair(args: RepairArgs) -> Result<(), Box<dyn Error>> {
     let input = std::fs::read(&args.pdf)?;
     let password = args.password.clone().unwrap_or_default();
     let bytes = wellfriendpdf_engine::repair(input, password.as_bytes())?;
-    std::fs::write(&args.output, &bytes)?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "repair",
                 "output": args.output.display().to_string(),
+                "output_sha256": facts.sha256,
                 "bytes": bytes.len(),
             })
         );
@@ -13940,14 +14257,17 @@ fn run_repair(args: RepairArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_linearize(args: LinearizeArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
+    let output_pages = engine.page_count()?;
     let bytes = wellfriendpdf_engine::linearize(&engine)?;
-    std::fs::write(&args.output, &bytes)?;
+    let facts = wellfriendpdf_engine::write_output_with_facts(&args.output, &bytes)?;
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "op": "linearize",
                 "output": args.output.display().to_string(),
+                "output_sha256": facts.sha256,
+                "output_pages": output_pages,
                 "bytes": bytes.len(),
             })
         );

@@ -24,7 +24,8 @@ use crate::reader::PdfReader;
 use crate::text::{TextQuad, TextSearchOptions};
 use crate::versioning::resource_digest;
 use crate::writer::{
-    write_incremental_update, IncrementalObject, OutputObject, PdfWriter, WriterMode,
+    incremental_update_delta, write_incremental_update, IncrementalObject, OutputObject, PdfWriter,
+    WriterMode,
 };
 use crate::TextAlign;
 
@@ -802,6 +803,21 @@ impl PdfEditor {
         })
     }
 
+    /// Open a file in place (it is read on demand, not loaded), for edits
+    /// saved with [`Self::save_incremental_delta`].
+    pub fn open_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Ok(Self {
+            document: PdfDocument::open_path(path)?,
+            edits: BTreeMap::new(),
+            redactions: BTreeMap::new(),
+            annotations: BTreeMap::new(),
+            form_fills: BTreeMap::new(),
+            flatten_forms: false,
+            flatten_annotations: false,
+            flatten_annotation_subtypes: BTreeSet::new(),
+        })
+    }
+
     pub fn document(&self) -> &PdfDocument {
         &self.document
     }
@@ -1201,6 +1217,20 @@ impl PdfEditor {
             EditMode::Incremental => write_incremental_update(self.document.reader(), changes),
             EditMode::FullRewrite => write_full_rewrite(self.document.reader(), changes),
         }
+    }
+
+    /// The incremental update [`Self::save_to_bytes`] with
+    /// [`EditMode::Incremental`] appends, without the original bytes: append
+    /// it to an unchanged copy of the file.
+    pub fn save_incremental_delta(&self) -> Result<Vec<u8>> {
+        if !self.redactions.is_empty() {
+            return Err(WellfriendError::UnsupportedFeature(
+                "redaction requires full rewrite; incremental output preserves old revision bytes"
+                    .to_string(),
+            ));
+        }
+        let changes = self.build_changes()?;
+        incremental_update_delta(self.document.reader(), changes)
     }
 
     pub fn save_to_bytes_with_options(

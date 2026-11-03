@@ -32,6 +32,7 @@ use crate::analysis::graphics::{
 };
 use crate::analysis::layout::{BBox, LayoutBlock, LayoutConfig, LayoutLine};
 use crate::analysis::tables::{detect_tables, Table, TableSource};
+use crate::content::ContentOperation;
 use crate::engine::ContentEngine;
 use crate::error::Result;
 use crate::object::PdfObject;
@@ -1850,7 +1851,18 @@ pub fn build_document_model(engine: &ContentEngine, pages: &[usize]) -> Result<D
     // traversal budget does not make the document unreadable: fall back to
     // layout analysis, as for an untagged file.
     match engine.extract_semantic_document(&page_list) {
-        Ok(semantic) if semantic.tagged => Ok(build_tagged(&semantic, page_list.len())),
+        // A structure tree that yields no block for the selected pages (an
+        // empty tree, or one whose content is all artifacts) would make the
+        // conversion silently empty: lay the pages out instead.
+        Ok(semantic) if semantic.tagged => {
+            let model = build_tagged(&semantic, page_list.len());
+            if model.blocks.is_empty() {
+                log::warn!("structure tree yields no content for the selected pages; using layout analysis");
+                build_geometric(engine, &page_list)
+            } else {
+                Ok(model)
+            }
+        }
         Ok(_) => build_geometric(engine, &page_list),
         Err(err)
             if matches!(
@@ -1862,6 +1874,61 @@ pub fn build_document_model(engine: &ContentEngine, pages: &[usize]) -> Result<D
         {
             log::warn!("structure tree unusable ({err}); using layout analysis");
             build_geometric(engine, &page_list)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Per-page builder inputs the parse prepared while classifying, so the
+/// model does not read the pages again.
+#[derive(Default)]
+pub(crate) struct PreparedPages {
+    /// [`geometric_page_data`] of each builder page, in page order.
+    pub(crate) pages_data: Vec<Result<PageData>>,
+    /// Each builder page's marked text including annotation appearances
+    /// (documents with a structure tree only).
+    pub(crate) marked: Vec<(usize, Result<Vec<crate::text::MarkedTextChunk>>)>,
+}
+
+/// [`build_document_model`] from prepared page inputs. `has_structure` is
+/// whether the catalog has a `/StructTreeRoot`; `page_list` are valid pages.
+pub(crate) fn build_document_model_prepared(
+    engine: &ContentEngine,
+    page_list: &[usize],
+    has_structure: bool,
+    prepared: PreparedPages,
+) -> Result<DocumentModel> {
+    let PreparedPages { pages_data, marked } = prepared;
+    let geometric = |pages_data: Vec<Result<PageData>>| {
+        assemble_pages_data(
+            pages_data.into_iter().collect::<Result<Vec<_>>>()?,
+            page_list.len(),
+        )
+    };
+    if !has_structure {
+        return geometric(pages_data);
+    }
+    match crate::semantic::extract_semantic_document_prepared(engine, page_list, marked) {
+        Ok(semantic) if semantic.tagged => {
+            let model = build_tagged(&semantic, page_list.len());
+            if model.blocks.is_empty() {
+                log::warn!("structure tree yields no content for the selected pages; using layout analysis");
+                geometric(pages_data)
+            } else {
+                Ok(model)
+            }
+        }
+        Ok(_) => geometric(pages_data),
+        Err(err)
+            if matches!(
+                err,
+                crate::error::WellfriendError::MalformedPdf(_)
+                    | crate::error::WellfriendError::ResourceLimit(_)
+                    | crate::error::WellfriendError::UnsupportedFeature(_)
+            ) =>
+        {
+            log::warn!("structure tree unusable ({err}); using layout analysis");
+            geometric(pages_data)
         }
         Err(err) => Err(err),
     }
@@ -1886,49 +1953,59 @@ pub(crate) struct PageData {
 }
 
 fn build_geometric(engine: &ContentEngine, page_list: &[usize]) -> Result<DocumentModel> {
-    let mut pages_data: Vec<PageData> = Vec::new();
-
-    for &page in page_list {
+    // Pages are independent until `assemble_pages_data`, which computes the
+    // document-wide statistics; extract them in parallel, in page order.
+    let pages_data = crate::page_parallel::try_map_ordered(page_list, |&page| {
         let ops = engine.get_page_content(page)?;
-        let mut chunks = engine.collect_page_text_chunks(page)?;
-        let image_names = page_image_names(engine, page)?;
-        let mut graphics = collect_graphics_with_images(&ops, &image_names);
-        let (raw_w, raw_h) = engine.page_dimensions(page)?;
+        let chunks = engine.collect_page_text_chunks(page)?;
+        geometric_page_data(engine, page, &ops, chunks)
+    })?;
+    assemble_pages_data(pages_data, page_list.len())
+}
 
-        // ── rotation normalization ──
-        // /Rotate 90/180/270 leaves the content stream's coordinates in the
-        // *unrotated* user space, so on a landscape-rotated page the text and
-        // rules are sideways and layout/reading-order would run along the wrong
-        // axis. Map every chunk and graphic into upright reading orientation
-        // here, and swap page width/height for the quarter turns, so everything
-        // downstream (segmentation, tables, ordering) sees an upright page.
-        let rotate = engine.page_rotation(page).unwrap_or(0);
-        let crop = engine
-            .page_crop_box(page)
-            .unwrap_or([0.0, 0.0, raw_w, raw_h]);
-        let (page_width, page_height) = if rotate == 90 || rotate == 270 {
-            (raw_h, raw_w)
-        } else {
-            (raw_w, raw_h)
-        };
-        if rotate != 0 {
-            let rot = PageRotation::new(rotate, crop, page_width, page_height);
-            for c in &mut chunks {
-                rot.rotate_chunk(c);
-            }
-            rot.rotate_graphics(&mut graphics);
+/// Build the geometric [`PageData`] of one digital-born page from its parsed
+/// content (`ops`, compatibility-normalized) and its text chunks.
+pub(crate) fn geometric_page_data(
+    engine: &ContentEngine,
+    page: usize,
+    ops: &[ContentOperation],
+    mut chunks: Vec<TextChunk>,
+) -> Result<PageData> {
+    let image_names = page_image_names(engine, page)?;
+    let mut graphics = collect_graphics_with_images(ops, &image_names);
+    let (raw_w, raw_h) = engine.page_dimensions(page)?;
+
+    // ── rotation normalization ──
+    // /Rotate 90/180/270 leaves the content stream's coordinates in the
+    // *unrotated* user space, so on a landscape-rotated page the text and
+    // rules are sideways and layout/reading-order would run along the wrong
+    // axis. Map every chunk and graphic into upright reading orientation
+    // here, and swap page width/height for the quarter turns, so everything
+    // downstream (segmentation, tables, ordering) sees an upright page.
+    let rotate = engine.page_rotation(page).unwrap_or(0);
+    let crop = engine
+        .page_crop_box(page)
+        .unwrap_or([0.0, 0.0, raw_w, raw_h]);
+    let (page_width, page_height) = if rotate == 90 || rotate == 270 {
+        (raw_h, raw_w)
+    } else {
+        (raw_w, raw_h)
+    };
+    if rotate != 0 {
+        let rot = PageRotation::new(rotate, crop, page_width, page_height);
+        for c in &mut chunks {
+            rot.rotate_chunk(c);
         }
-
-        pages_data.push(page_data_from_chunks(
-            page,
-            &chunks,
-            &graphics,
-            page_width,
-            page_height,
-        ));
+        rot.rotate_graphics(&mut graphics);
     }
 
-    assemble_pages_data(pages_data, page_list.len())
+    Ok(page_data_from_chunks(
+        page,
+        &chunks,
+        &graphics,
+        page_width,
+        page_height,
+    ))
 }
 
 /// Build one page's [`PageData`] from already-collected, already-upright
@@ -2020,12 +2097,53 @@ pub(crate) fn assemble_pages_data(
     let doc_stats = compute_doc_stats(&all_blocks);
     let line_h = doc_stats.median_line_height;
 
-    // Assemble per-page ordered, typed blocks; concatenate in page order.
+    // Assemble per-page ordered, typed blocks; concatenate in page order. A
+    // page's classification and reading order depend only on its own blocks
+    // and the document statistics, so pages are assembled in parallel with
+    // page-local ids and reading-order indexes, which are then rebased in
+    // page order to the exact values the serial loop assigned.
+    let per_page: Vec<AssembledPage> =
+        crate::page_parallel::map_ordered(&pages_data, |pd| assemble_page(pd, &doc_stats, line_h));
+    let mut blocks: Vec<DocBlock> =
+        Vec::with_capacity(per_page.iter().map(|page| page.blocks.len()).sum());
+    let mut id_base = 0usize;
+    let mut ro_base = 0usize;
+    for page in per_page {
+        let emitted = page.blocks.len();
+        blocks.extend(page.blocks.into_iter().map(|mut block| {
+            block.id += id_base;
+            block.reading_order_index += ro_base;
+            block
+        }));
+        id_base += page.ids;
+        ro_base += emitted;
+    }
+
+    // Caption linkage (promotion in place; single ownership).
+    link_captions(&mut blocks, line_h);
+
+    // Cross-page header/footer/page-number pass.
+    let page_dims: BTreeMap<usize, (f64, f64)> = pages_data
+        .iter()
+        .map(|pd| (pd.page, (pd.page_width, pd.page_height)))
+        .collect();
+    detect_running_elements(&mut blocks, &page_dims, page_list_len);
+
+    Ok(DocumentModel {
+        source: ModelSource::Geometric,
+        page_count: page_list_len,
+        body_font_size: doc_stats.body_size,
+        blocks,
+    })
+}
+
+/// Classify and order one page's blocks. Ids and reading-order indexes are
+/// page-local; the caller rebases them in page order.
+fn assemble_page(pd: &PageData, doc_stats: &DocStats, line_h: f64) -> AssembledPage {
     let mut blocks: Vec<DocBlock> = Vec::new();
     let mut next_id = 0usize;
     let mut ro_index = 0usize;
-
-    for pd in &pages_data {
+    {
         // A staged block: its geometry, region kind, the pre-assigned column
         // (None = full-width spanning), and the typed DocBlock.
         let mut staged: Vec<(BBox, RegionKind, Option<usize>, DocBlock)> = Vec::new();
@@ -2109,8 +2227,8 @@ pub(crate) fn assemble_pages_data(
                 continue;
             }
 
-            let f = features_for(block, pd, &doc_stats, bi, gap_above);
-            let (ctype, conf, basis) = classify_block(&f, &doc_stats);
+            let f = features_for(block, pd, doc_stats, bi, gap_above);
+            let (ctype, conf, basis) = classify_block(&f, doc_stats);
             let id = next_id;
             next_id += 1;
             staged.push((
@@ -2247,23 +2365,17 @@ pub(crate) fn assemble_pages_data(
             }
         }
     }
-
-    // Caption linkage (promotion in place; single ownership).
-    link_captions(&mut blocks, line_h);
-
-    // Cross-page header/footer/page-number pass.
-    let page_dims: BTreeMap<usize, (f64, f64)> = pages_data
-        .iter()
-        .map(|pd| (pd.page, (pd.page_width, pd.page_height)))
-        .collect();
-    detect_running_elements(&mut blocks, &page_dims, page_list_len);
-
-    Ok(DocumentModel {
-        source: ModelSource::Geometric,
-        page_count: page_list_len,
-        body_font_size: doc_stats.body_size,
+    AssembledPage {
         blocks,
-    })
+        ids: next_id,
+    }
+}
+
+/// One page's assembled blocks with page-local ids (`0..ids`) and
+/// reading-order indexes (`0..blocks.len()`).
+struct AssembledPage {
+    blocks: Vec<DocBlock>,
+    ids: usize,
 }
 
 /// Median width of single-column blocks — the page's column width. Falls back

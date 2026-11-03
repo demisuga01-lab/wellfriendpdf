@@ -114,15 +114,7 @@ pub fn classify_page(
     page: usize,
     cfg: &ClassifyConfig,
 ) -> PageClassification {
-    classify_page_inner(engine, page, cfg).unwrap_or(PageClassification {
-        page: page as u32,
-        source: PageSource::Scanned,
-        confidence: 0.3,
-        char_count: 0,
-        text_coverage: 0.0,
-        image_coverage: 0.0,
-        has_invisible_text: false,
-    })
+    classify_page_inner(engine, page, cfg).unwrap_or_else(|_| unreadable_page_classification(page))
 }
 
 fn classify_page_inner(
@@ -130,18 +122,45 @@ fn classify_page_inner(
     page: usize,
     cfg: &ClassifyConfig,
 ) -> Result<PageClassification> {
+    engine.page_dimensions(page)?;
+    let ops = engine.get_page_content(page)?;
+    let chunks = engine.collect_page_text_chunks(page)?;
+    classify_parsed_page(engine, page, cfg, &ops, &chunks)
+}
+
+/// The fallback classification of a page whose content cannot be read.
+pub(crate) fn unreadable_page_classification(page: usize) -> PageClassification {
+    PageClassification {
+        page: page as u32,
+        source: PageSource::Scanned,
+        confidence: 0.3,
+        char_count: 0,
+        text_coverage: 0.0,
+        image_coverage: 0.0,
+        has_invisible_text: false,
+    }
+}
+
+/// Classify a page from its already-parsed content: `ops` as
+/// [`ContentEngine::get_page_content`] returns them and `chunks` as
+/// [`ContentEngine::collect_page_text_chunks`] does. Lets the conversion
+/// pipeline parse a page once for both classification and layout.
+pub(crate) fn classify_parsed_page(
+    engine: &ContentEngine,
+    page: usize,
+    cfg: &ClassifyConfig,
+    ops: &[crate::content::ContentOperation],
+    chunks: &[crate::text::TextChunk],
+) -> Result<PageClassification> {
     let (pw, ph) = engine.page_dimensions(page)?;
     let page_area = (pw * ph).max(1.0);
 
-    let ops = engine.get_page_content(page)?;
-
-    // Text signals: collect chunks, count non-whitespace chars, sum text box area,
-    // and note any invisible (Tr 3) text.
-    let chunks = engine.collect_page_text_chunks(page)?;
+    // Text signals: count non-whitespace chars, sum text box area, and note
+    // any invisible (Tr 3) text.
     let mut char_count = 0usize;
     let mut text_area = 0.0f64;
     let mut has_invisible_text = false;
-    for c in &chunks {
+    for c in chunks {
         let n = c.text.chars().filter(|ch| !ch.is_whitespace()).count();
         if n == 0 {
             continue;
@@ -157,7 +176,7 @@ fn classify_page_inner(
 
     // Image signal: total area covered by image XObject `Do` placements.
     let image_names = page_image_names(engine, page)?;
-    let graphics = collect_graphics_with_images(&ops, &image_names);
+    let graphics = collect_graphics_with_images(ops, &image_names);
     let image_coverage = (image_area(&graphics.images) / page_area).clamp(0.0, 1.0) as f32;
 
     let (source, confidence) = decide(
@@ -237,10 +256,10 @@ pub fn classify_document(
     } else {
         pages.to_vec()
     };
-    Ok(list
-        .iter()
-        .map(|&p| classify_page(engine, p, cfg))
-        .collect())
+    // Pages classify independently; run them in parallel, in page order.
+    Ok(crate::page_parallel::map_ordered(&list, |&p| {
+        classify_page(engine, p, cfg)
+    }))
 }
 
 /// Names of the page's top-level *image* XObjects (never Form XObjects) — the

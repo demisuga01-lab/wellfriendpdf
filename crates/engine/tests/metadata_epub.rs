@@ -539,17 +539,23 @@ fn epub_embeds_images_and_honours_include_images() {
     assert_eq!(report.images, 1, "image XObject embedded");
     assert!(text.contains("<img "));
     let mut archive = zip::ZipArchive::new(Cursor::new(&epub)).unwrap();
-    let png_name = (0..archive.len())
+    // Opaque images are packaged as JPEG, alpha and bilevel ones as PNG.
+    let image_name = (0..archive.len())
         .map(|i| archive.by_index(i).unwrap().name().to_string())
-        .find(|name| name.ends_with(".png"))
-        .expect("png in package");
-    let mut png = Vec::new();
+        .find(|name| name.starts_with("OEBPS/images/"))
+        .expect("image in package");
+    let mut image = Vec::new();
     archive
-        .by_name(&png_name)
+        .by_name(&image_name)
         .unwrap()
-        .read_to_end(&mut png)
+        .read_to_end(&mut image)
         .unwrap();
-    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
+    if image_name.ends_with(".png") {
+        assert!(image.starts_with(&[0x89, b'P', b'N', b'G']));
+    } else {
+        assert!(image_name.ends_with(".jpg"), "{image_name}");
+        assert!(image.starts_with(&[0xFF, 0xD8]));
+    }
     run_epubcheck_if_available("image_only", &epub);
 
     let without = EpubOptions {

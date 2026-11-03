@@ -234,8 +234,9 @@ fn is_tagged(catalog: &PdfDictionary, reader: &crate::reader::PdfReader) -> bool
 /// key) as the very first object, right after the header. We scan the first
 /// chunk of the file for the `/Linearized` marker.
 fn detect_linearized(reader: &crate::reader::PdfReader) -> bool {
-    let bytes = reader.file_bytes();
-    let prefix = &bytes[..bytes.len().min(1024)];
+    // Only the first KiB is inspected: read just that, so `info` on a
+    // multi-gigabyte file does not read (and hold) the whole file.
+    let prefix = reader.file_prefix(1024);
     prefix
         .windows(b"/Linearized".len())
         .any(|window| window == b"/Linearized")
