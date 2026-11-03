@@ -647,8 +647,9 @@ pub use standards_engine::{
     STANDARDS_ENGINE_SCHEMA_VERSION,
 };
 pub use structural::{
-    crop_pages, crop_pages_to, encrypt, linearize::linearize, optimize, repair, rotate_pages,
-    rotate_pages_incremental_delta, rotate_pages_to, OptimizeReport, Rotation,
+    crop_pages, crop_pages_to, encrypt, linearize::linearize, optimize,
+    page_labels_incremental_delta, repair, rotate_pages, rotate_pages_incremental_delta,
+    rotate_pages_to, OptimizeReport, PageLabelRange, Rotation,
 };
 pub use table_intelligence::{
     merge_table_proposals_deterministic, mock_tableformer_proposal_set,
@@ -715,14 +716,15 @@ pub use universal_editing::{
     UniversalVectorEditRequestV2, UNIVERSAL_EDITING_SCHEMA_VERSION,
 };
 pub use utilities::{
-    add_page_numbers_pdf, attachments_json, crop_pdf, crop_pdf_pages, decrypt_pdf, encrypt_pdf,
-    encrypt_pdf_with_pdf_mac, export_pdf_pages_to_images, fonts_json, html_string,
-    images_to_pdf_from_bytes, images_to_pdf_from_paths, linearize_pdf, n_up_pdf, optimize_pdf,
-    organize_pdf, organize_pdf_with_insert, render_page_image, render_page_image_with_cache,
-    repair_pdf, rotate_pdf, scale_pdf_pages, signatures_json, watermark_image_pdf,
-    watermark_text_pdf, ImagePdfPageSize, ImageToPdfOptions, ImageWatermarkOptions, NUpOptions,
-    PageNumberOptions, RasterImageFormat, RasterPageResult, RgbColor, ScalePagesOptions,
-    StampPosition, TextWatermarkOptions,
+    add_page_numbers_pdf, add_page_numbers_pdf_incremental_delta, attachments_json, crop_pdf,
+    crop_pdf_pages, decrypt_pdf, encrypt_pdf, encrypt_pdf_with_pdf_mac, export_pdf_pages_to_images,
+    fonts_json, html_string, images_to_pdf_from_bytes, images_to_pdf_from_paths, linearize_pdf,
+    n_up_pdf, optimize_pdf, organize_pdf, organize_pdf_with_insert, render_page_image,
+    render_page_image_with_cache, repair_pdf, rotate_pdf, scale_pdf_pages, signatures_json,
+    watermark_image_pdf, watermark_image_pdf_incremental_delta, watermark_text_pdf,
+    watermark_text_pdf_incremental_delta, ImagePdfPageSize, ImageToPdfOptions,
+    ImageWatermarkOptions, NUpOptions, PageNumberOptions, RasterImageFormat, RasterPageResult,
+    RgbColor, ScalePagesOptions, StampPosition, TextWatermarkOptions,
 };
 pub use versioning::{
     content_defined_chunks, hamming_distance, resource_dedup_report, resource_digest, simhash_text,

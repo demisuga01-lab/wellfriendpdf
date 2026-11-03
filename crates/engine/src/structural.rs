@@ -112,6 +112,123 @@ pub fn rotate_pages_incremental_delta(
     incremental_update_delta(reader, changed)
 }
 
+/// One page-label range: from `first_page` (1-based) on, pages are labelled
+/// `prefix` followed by the number in `style`, counting from `start`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageLabelRange {
+    pub first_page: usize,
+    /// `D` decimal, `R`/`r` roman, `A`/`a` letters, `None` prefix only.
+    pub style: Option<char>,
+    pub prefix: Option<String>,
+    pub start: Option<i64>,
+}
+
+impl PageLabelRange {
+    /// Parse `page:style[:prefix[:start]]`, style one of `D R r A a -`.
+    pub fn parse(spec: &str) -> Result<Self> {
+        let invalid = || {
+            WellfriendError::MalformedPdf(format!(
+                "page-labels: range '{spec}' is not page:style[:prefix[:start]] with style D, R, r, A, a or -"
+            ))
+        };
+        let mut parts = spec.splitn(4, ':');
+        let first_page = parts
+            .next()
+            .and_then(|page| page.trim().parse::<usize>().ok())
+            .filter(|&page| page >= 1)
+            .ok_or_else(invalid)?;
+        let style = match parts.next().map(str::trim) {
+            Some("-") | Some("") | None => None,
+            Some(style @ ("D" | "R" | "r" | "A" | "a")) => style.chars().next(),
+            Some(_) => return Err(invalid()),
+        };
+        let prefix = parts
+            .next()
+            .filter(|prefix| !prefix.is_empty())
+            .map(str::to_string);
+        let start = match parts.next() {
+            Some(start) => Some(
+                start
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|&start| start >= 1)
+                    .ok_or_else(invalid)?,
+            ),
+            None => None,
+        };
+        Ok(Self {
+            first_page,
+            style,
+            prefix,
+            start,
+        })
+    }
+}
+
+/// The incremental update that sets the document's page labels: a new
+/// version of the catalog with a `/PageLabels` number tree (replacing any
+/// existing one); nothing else is written. Ranges must start at page 1 and
+/// ascend within the document.
+pub fn page_labels_incremental_delta(
+    engine: &ContentEngine,
+    ranges: &[PageLabelRange],
+) -> Result<Vec<u8>> {
+    let total = engine.page_count()?;
+    let invalid =
+        |message: String| WellfriendError::MalformedPdf(format!("page-labels: {message}"));
+    if ranges.first().map(|range| range.first_page) != Some(1) {
+        return Err(invalid("the first range must start at page 1".to_string()));
+    }
+    for pair in ranges.windows(2) {
+        if pair[1].first_page <= pair[0].first_page {
+            return Err(invalid("ranges must ascend by first page".to_string()));
+        }
+    }
+    if let Some(range) = ranges.iter().find(|range| range.first_page > total) {
+        return Err(invalid(format!(
+            "page {} is outside this {total}-page document",
+            range.first_page
+        )));
+    }
+    let reader = engine.document().reader();
+    let (number, generation) = reader
+        .root_reference()
+        .ok_or_else(|| WellfriendError::MalformedPdf("trailer is missing /Root".to_string()))?;
+    let mut catalog = reader.get_object(number, generation)?;
+    let PdfObject::Dictionary(dict) = &mut catalog else {
+        return Err(WellfriendError::MalformedPdf(
+            "catalog is not a dictionary".to_string(),
+        ));
+    };
+    let mut nums = Vec::with_capacity(ranges.len() * 2);
+    for range in ranges {
+        let mut label = crate::object::PdfDictionary::empty();
+        if let Some(style) = range.style {
+            label.insert("S", PdfObject::Name(style.to_string()));
+        }
+        if let Some(prefix) = &range.prefix {
+            label.insert("P", PdfObject::String(prefix.as_bytes().to_vec()));
+        }
+        if let Some(start) = range.start {
+            label.insert("St", PdfObject::Integer(start));
+        }
+        nums.push(PdfObject::Integer((range.first_page - 1) as i64));
+        nums.push(PdfObject::Dictionary(label));
+    }
+    let mut tree = crate::object::PdfDictionary::empty();
+    tree.insert("Nums", PdfObject::Array(nums));
+    dict.insert("PageLabels", PdfObject::Dictionary(tree));
+    incremental_update_delta(
+        reader,
+        vec![IncrementalObject {
+            number,
+            generation,
+            object: catalog,
+        }],
+    )
+}
+
 fn selected_pages(engine: &ContentEngine, pages: &[usize], operation: &str) -> Result<Vec<usize>> {
     let total = engine.page_count()?;
     let targets: Vec<usize> = if pages.is_empty() {

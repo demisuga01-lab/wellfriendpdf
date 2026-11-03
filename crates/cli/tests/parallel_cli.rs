@@ -189,3 +189,99 @@ fn incremental_rotation_appends_to_the_unchanged_input() {
     assert_eq!(full["incremental"], false);
     let _ = std::fs::remove_file(&out);
 }
+
+/// Watermark and page-number overlays appended as incremental updates read
+/// back with the overlay text on the selected pages and leave the input's
+/// bytes as the output's prefix.
+#[test]
+fn incremental_overlays_append_to_the_unchanged_input() {
+    let input = fixture("tracemonkey.pdf");
+    let original = std::fs::read(&input).unwrap();
+    let input = input.to_str().unwrap();
+    for (name, args, needle) in [
+        (
+            "watermark",
+            vec!["watermark", input, "--text", "DRAFT-COPY", "--pages", "2-3"],
+            "DRAFT-COPY",
+        ),
+        (
+            "numbers",
+            vec![
+                "add-page-numbers",
+                input,
+                "--pages",
+                "2-3",
+                "--format",
+                "Folio {n}",
+            ],
+            "Folio",
+        ),
+    ] {
+        let out = tmp(&format!("incremental-{name}.pdf"));
+        let mut command = args.clone();
+        command.extend_from_slice(&["-o", out.to_str().unwrap(), "--incremental", "--json"]);
+        let result = json(&run(&command));
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(result["incremental"], true, "{name}");
+        assert_eq!(result["baseLength"], original.len() as u64, "{name}");
+        assert_eq!(
+            result["deltaLength"],
+            (bytes.len() - original.len()) as u64,
+            "{name}"
+        );
+        assert_eq!(result["output_sha256"], sha256_hex(&bytes), "{name}");
+        assert!(bytes.starts_with(&original), "{name}");
+        let reopened = wellfriendpdf_engine::ContentEngine::open_bytes(bytes).unwrap();
+        assert_eq!(reopened.page_count().unwrap(), 14);
+        for page in 1..=4 {
+            let text = reopened.get_page_text(page).unwrap();
+            assert_eq!(
+                text.contains(needle),
+                page == 2 || page == 3,
+                "{name} page {page}: {text}"
+            );
+        }
+        let _ = std::fs::remove_file(&out);
+    }
+}
+
+#[test]
+fn page_labels_are_appended_as_an_incremental_update() {
+    let input = fixture("tracemonkey.pdf");
+    let original = std::fs::read(&input).unwrap();
+    let out = tmp("labels.pdf");
+    let result = json(&run(&[
+        "page-labels",
+        input.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--labels",
+        "1:r,3:D,10:D:A-:1",
+        "--json",
+    ]));
+    let bytes = std::fs::read(&out).unwrap();
+    assert_eq!(result["incremental"], true);
+    assert_eq!(result["baseLength"], original.len() as u64);
+    assert!(bytes.starts_with(&original));
+    let tail = String::from_utf8_lossy(&bytes[original.len()..]).to_string();
+    assert!(tail.contains("/PageLabels"), "{tail}");
+    let reopened = wellfriendpdf_engine::ContentEngine::open_bytes(bytes).unwrap();
+    assert_eq!(reopened.page_count().unwrap(), 14);
+    let catalog = reopened.document().get_catalog().unwrap();
+    let labels = catalog.get_dict("PageLabels").expect("page labels set");
+    assert_eq!(labels.get_array("Nums").unwrap().len(), 6);
+    // Ranges must start at page 1.
+    let failed = std::process::Command::new(env!("CARGO_BIN_EXE_wellfriendpdf"))
+        .args([
+            "page-labels",
+            input.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--labels",
+            "2:D",
+        ])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    let _ = std::fs::remove_file(&out);
+}
