@@ -575,15 +575,48 @@ pub fn parse(engine: &ContentEngine, options: &ParseOptions) -> Result<Document>
         options.pages.clone()
     };
 
-    // 1. Per-page routing decision.
-    let classes = classify_document(engine, &page_list, &ClassifyConfig::default())?;
-
     // Whether a page with the given classification should be OCR'd: an engine is
     // configured AND the policy selects it. Under `Force` this is every page
     // (including digital-born), under `Auto` only scanned pages, under `Off`
     // (or with no engine) never.
     let has_engine = options.ocr.is_some();
     let wants_ocr = |source: PageSource| has_engine && options.ocr_policy.should_ocr(source);
+
+    // 1. Per-page routing decision. The classifier, the geometric builder and
+    //    (for a document with a structure tree) the semantic extractor all
+    //    read the same page content: one parallel pass reads each page once
+    //    and prepares what every route needs. Only the route the document
+    //    takes consumes its part, so the result is the serial pipeline's.
+    let cfg = ClassifyConfig::default();
+    let (classes, prepared) = match structure_tree_presence(engine) {
+        Some(has_structure) => {
+            let per_page = crate::page_parallel::map_ordered_weighted(
+                &page_list,
+                |&page| engine.page_content_stored_bytes(page),
+                PAGE_PASS_STORED_BYTES_IN_FLIGHT,
+                |&page| {
+                    prepare_page(engine, page, &cfg, has_structure, |class| {
+                        class.source.is_digital_born() && !wants_ocr(class.source)
+                    })
+                },
+            );
+            let mut classes = Vec::with_capacity(per_page.len());
+            let mut prepared = crate::docmodel::PreparedPages::default();
+            for (&page, pass) in page_list.iter().zip(per_page) {
+                classes.push(pass.class);
+                if let Some(data) = pass.data {
+                    prepared.pages_data.push(data);
+                }
+                if let Some(marked) = pass.marked {
+                    prepared.marked.push((page, marked));
+                }
+            }
+            (classes, Some((has_structure, prepared)))
+        }
+        // An unreadable catalog keeps the two-pass route, which reports the
+        // catalog error where it always did.
+        None => (classify_document(engine, &page_list, &cfg)?, None),
+    };
 
     // Digital-born pages routed to the existing builder: those with a usable text
     // layer that are NOT being OCR'd. Under `Force`, digital-born pages are pulled
@@ -600,7 +633,15 @@ pub fn parse(engine: &ContentEngine, options: &ParseOptions) -> Result<Document>
     let mut blocks: Vec<DocBlock> = if digital_pages.is_empty() {
         Vec::new()
     } else {
-        let mut model: DocumentModel = engine.build_document_model(&digital_pages)?;
+        let mut model: DocumentModel = match prepared {
+            Some((has_structure, prepared)) => crate::docmodel::build_document_model_prepared(
+                engine,
+                &digital_pages,
+                has_structure,
+                prepared,
+            )?,
+            None => engine.build_document_model(&digital_pages)?,
+        };
         if options.min_confidence > 0.0 {
             let floor = options.min_confidence;
             model.blocks.retain(|b| b.confidence >= floor);
@@ -679,6 +720,189 @@ pub fn parse(engine: &ContentEngine, options: &ParseOptions) -> Result<Document>
     Ok(assemble(
         &blocks, metadata, source, &page_dims, &classes, &links, options,
     ))
+}
+
+/// Stored content bytes the page pass reads at once. A dense page's parsed
+/// operations take about 50 times its stored content size, so this keeps the
+/// pass under about 1 GiB however many workers run: dense map pages (5-15 MB
+/// stored each) are read one or two at a time, ordinary pages (under 1 MB)
+/// are not held back.
+const PAGE_PASS_STORED_BYTES_IN_FLIGHT: u64 = 16 * 1024 * 1024;
+
+/// Whether the catalog has a `/StructTreeRoot` (`None`: the catalog cannot be
+/// read). Decides the document model's route as
+/// [`crate::docmodel::build_document_model`] does.
+fn structure_tree_presence(engine: &ContentEngine) -> Option<bool> {
+    engine
+        .document()
+        .get_catalog()
+        .ok()
+        .map(|catalog| catalog.get("StructTreeRoot").is_some())
+}
+
+/// What one page contributes to the parse's routes.
+struct PagePass {
+    class: PageClassification,
+    /// The geometric builder's page data, for a page the builder takes.
+    data: Option<Result<crate::docmodel::PageData>>,
+    /// The page's marked text including annotation appearances, for a
+    /// builder page of a document with a structure tree.
+    marked: Option<Result<Vec<crate::text::MarkedTextChunk>>>,
+}
+
+/// One reading of a page's content: the strictly parsed operations, the text
+/// [`ContentEngine::collect_page_text_chunks`] returns, and (on request) the
+/// annotations the marked-text walk adds.
+struct PageReading {
+    strict: Vec<crate::content::ContentOperation>,
+    chunks: Vec<crate::text::ScopedTextChunk>,
+    annotations: Option<Vec<crate::object::PdfObject>>,
+}
+
+/// Read a page's content once. `None` when any step fails: the caller then
+/// takes each result from the engine's own entry points, which report the
+/// exact error they always did.
+fn read_page_once(
+    engine: &ContentEngine,
+    page: usize,
+    with_annotations: bool,
+) -> Option<PageReading> {
+    let limits = engine.page_text_limits(page);
+    let cancel = crate::cancel::current_cancel_token();
+    engine.page_dimensions(page).ok()?;
+    let annotations = if with_annotations {
+        Some(engine.page_text_annotations(page).ok()?)
+    } else {
+        None
+    };
+    let strict = engine.strict_page_operations(page, &limits, &cancel).ok()?;
+    let chunks = engine
+        .scoped_text_from_operations(page, &strict, &[], &limits, &cancel)
+        .ok()?;
+    Some(PageReading {
+        strict,
+        chunks,
+        annotations,
+    })
+}
+
+/// Classify one page and prepare what the builders read from it, reading
+/// its content once. Equivalent to [`crate::classify::classify_page`]
+/// followed by the geometric builder's per-page step and the semantic
+/// extractor's marked-text read; each result is only consulted when the
+/// document takes that route.
+fn prepare_page(
+    engine: &ContentEngine,
+    page: usize,
+    cfg: &ClassifyConfig,
+    has_structure: bool,
+    builds: impl Fn(&PageClassification) -> bool,
+) -> PagePass {
+    let Some(reading) = read_page_once(engine, page, has_structure) else {
+        return prepare_page_from_engine(engine, page, cfg, has_structure, builds);
+    };
+    let PageReading {
+        strict,
+        chunks,
+        annotations,
+    } = reading;
+    // The page's own marked chunks, before the text moves out of them.
+    let page_marked = match &annotations {
+        Some(annotations) if annotations.is_empty() => Some(marked_only(
+            chunks.iter().filter(|chunk| chunk.mcid.is_some()).cloned(),
+        )),
+        _ => None,
+    };
+    let text: Vec<crate::text::TextChunk> = chunks.into_iter().map(|scoped| scoped.chunk).collect();
+    // The operations `get_page_content` returns: on input the strict parse
+    // accepts, the lenient parse yields the same operations, which it then
+    // normalizes for compatibility. The strict operations are needed again
+    // only for an annotation walk; otherwise they are normalized in place.
+    let walks_annotations = annotations
+        .as_ref()
+        .is_some_and(|annotations| !annotations.is_empty());
+    let mut strict = strict;
+    let normalized_copy = if crate::content::parser::compatibility_normalization_needed(&strict) {
+        if walks_annotations {
+            let mut normalized = strict.clone();
+            crate::content::parser::normalize_compatibility_operations(&mut normalized);
+            Some(normalized)
+        } else {
+            crate::content::parser::normalize_compatibility_operations(&mut strict);
+            None
+        }
+    } else {
+        None
+    };
+    let ops: &[crate::content::ContentOperation] = normalized_copy.as_deref().unwrap_or(&strict);
+    let class = crate::classify::classify_parsed_page(engine, page, cfg, ops, &text)
+        .unwrap_or_else(|_| crate::classify::unreadable_page_classification(page));
+    if !builds(&class) {
+        return PagePass {
+            class,
+            data: None,
+            marked: None,
+        };
+    }
+    let marked = annotations.as_ref().map(|annotations| match page_marked {
+        Some(marked) => Ok(marked),
+        None => {
+            let limits = engine.page_text_limits(page);
+            let cancel = crate::cancel::current_cancel_token();
+            match engine.scoped_text_from_operations(page, &strict, annotations, &limits, &cancel) {
+                Ok(chunks) => Ok(marked_only(
+                    chunks.into_iter().filter(|chunk| chunk.mcid.is_some()),
+                )),
+                Err(_) => engine.collect_page_marked_text_chunks_including_appearances(page),
+            }
+        }
+    });
+    let data = crate::docmodel::geometric_page_data(engine, page, ops, text);
+    PagePass {
+        class,
+        data: Some(data),
+        marked,
+    }
+}
+
+/// The chunks as marked chunks. The semantic extractor keeps only those that
+/// carry a marked-content id, so the callers pass only those.
+fn marked_only(
+    chunks: impl Iterator<Item = crate::text::ScopedTextChunk>,
+) -> Vec<crate::text::MarkedTextChunk> {
+    chunks
+        .map(crate::text::ScopedTextChunk::into_marked)
+        .collect()
+}
+
+/// [`prepare_page`] through the engine's entry points, for a page whose
+/// single reading failed somewhere.
+fn prepare_page_from_engine(
+    engine: &ContentEngine,
+    page: usize,
+    cfg: &ClassifyConfig,
+    has_structure: bool,
+    builds: impl Fn(&PageClassification) -> bool,
+) -> PagePass {
+    let class = crate::classify::classify_page(engine, page, cfg);
+    if !builds(&class) {
+        return PagePass {
+            class,
+            data: None,
+            marked: None,
+        };
+    }
+    let data = engine.get_page_content(page).and_then(|ops| {
+        let chunks = engine.collect_page_text_chunks(page)?;
+        crate::docmodel::geometric_page_data(engine, page, &ops, chunks)
+    });
+    let marked =
+        has_structure.then(|| engine.collect_page_marked_text_chunks_including_appearances(page));
+    PagePass {
+        class,
+        data: Some(data),
+        marked,
+    }
 }
 
 /// A hyperlink rectangle on a page, in the same (upright) space as the blocks.

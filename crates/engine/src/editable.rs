@@ -301,20 +301,28 @@ impl EditableDocument {
             .iter()
             .map(block_to_editable)
             .collect::<Vec<_>>();
+        // Each page's image lookup re-reads its content: run the pages in
+        // parallel and merge their diagnostics in page order.
+        let page_image_ids = crate::page_parallel::map_ordered(&source_document.pages, |page| {
+            let mut page_diagnostics = Vec::new();
+            let ids = if options.include_images {
+                page_images(
+                    engine,
+                    page.number as usize,
+                    options.max_images_per_page,
+                    &mut page_diagnostics,
+                )
+            } else {
+                Vec::new()
+            };
+            (ids, page_diagnostics)
+        });
         let pages = source_document
             .pages
             .iter()
-            .map(|page| {
-                let image_ids = if options.include_images {
-                    page_images(
-                        engine,
-                        page.number as usize,
-                        options.max_images_per_page,
-                        &mut diagnostics,
-                    )
-                } else {
-                    Vec::new()
-                };
+            .zip(page_image_ids)
+            .map(|(page, (image_ids, page_diagnostics))| {
+                diagnostics.extend(page_diagnostics);
                 EditablePage {
                     id: format!("page-{}", page.number),
                     source_page: page.number as usize,

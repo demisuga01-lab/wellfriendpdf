@@ -305,6 +305,13 @@ pub(crate) struct PdfRangeReader<'a> {
     remaining: usize,
 }
 
+impl PdfRangeReader<'_> {
+    /// Bytes of the stored (still encoded) stream not yet read.
+    pub(crate) fn remaining_len(&self) -> usize {
+        self.remaining
+    }
+}
+
 pub(crate) struct ContentStreamRange<'a> {
     pub dict: PdfDictionary,
     pub reader: PdfRangeReader<'a>,
@@ -1071,6 +1078,54 @@ impl PdfReader {
     /// Byte offset recorded by the latest `startxref` marker.
     pub fn startxref_offset(&self) -> usize {
         self.startxref
+    }
+
+    /// SHA-256 (lowercase hex) of the opened file's bytes, read in chunks so a
+    /// path-backed file is not materialized. Equals
+    /// `resource_digest(self.file_bytes())`, including its empty-input
+    /// digest when the file cannot be read.
+    pub(crate) fn file_sha256_hex(&self) -> String {
+        if let Some(bytes) = self.source.as_bytes() {
+            return crate::versioning::resource_digest(bytes);
+        }
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        let len = self.source.len();
+        let mut offset = 0usize;
+        while offset < len {
+            let chunk = (len - offset).min(4 << 20);
+            match self.source.read_at(offset, chunk) {
+                Ok(bytes) => <sha2::Sha256 as sha2::Digest>::update(&mut hasher, &bytes),
+                Err(_) => return crate::versioning::resource_digest(self.file_bytes()),
+            }
+            offset += chunk;
+        }
+        <sha2::Sha256 as sha2::Digest>::finalize(hasher)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// The first `len` bytes of the opened file (fewer for a shorter file),
+    /// read without materializing the rest of a path-backed file. Empty when
+    /// the file cannot be read, as `file_bytes()` is then.
+    pub(crate) fn file_prefix(&self, len: usize) -> Vec<u8> {
+        let len = len.min(self.source.len());
+        self.source.read_at(0, len).unwrap_or_default()
+    }
+
+    /// Length of the opened file, without reading it.
+    pub fn source_len(&self) -> usize {
+        self.source.len()
+    }
+
+    /// Whether the opened file's last byte is an end-of-line marker.
+    pub(crate) fn source_ends_with_eol(&self) -> Result<bool> {
+        let len = self.source.len();
+        if len == 0 {
+            return Ok(false);
+        }
+        let last = self.source.read_at(len - 1, 1)?;
+        Ok(matches!(last.first(), Some(b'\n' | b'\r')))
     }
 
     /// The raw, resolved `/Encrypt` dictionary, if the document is encrypted.

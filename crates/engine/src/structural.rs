@@ -17,8 +17,8 @@ use crate::engine::ContentEngine;
 use crate::error::{Result, WellfriendError};
 use crate::object::PdfObject;
 use crate::writer::{
-    rewrite_document, rewrite_document_objects, rewrite_document_to, rewrite_document_with_mode,
-    PdfWriter, WriterMode,
+    incremental_update_delta, rewrite_document, rewrite_document_objects, rewrite_document_to,
+    rewrite_document_with_mode, IncrementalObject, PdfWriter, WriterMode,
 };
 
 /// Normalize a rotation angle to one of {0, 90, 180, 270} (degrees clockwise).
@@ -79,6 +79,37 @@ pub fn rotate_pages_to(
         |orig_num, obj| apply_rotation(&wanted, orig_num, obj),
         output,
     )
+}
+
+/// The incremental update that rotates `pages`: only the changed page
+/// dictionaries, appended after the unchanged original (see
+/// [`incremental_update_delta`]). The pages get the `/Rotate` the full
+/// rewrite of [`rotate_pages_to`] gives them; every other object keeps its
+/// original bytes. Encrypted inputs are refused (use the full rewrite).
+pub fn rotate_pages_incremental_delta(
+    engine: &ContentEngine,
+    pages: &[usize],
+    rotation: Rotation,
+) -> Result<Vec<u8>> {
+    let reader = engine.document().reader();
+    let wanted = rotation_targets(engine, pages, rotation)?;
+    let mut changed = Vec::with_capacity(wanted.len());
+    for page_no in selected_pages(engine, pages, "rotate")? {
+        let page = engine.get_page(page_no)?;
+        let mut object = reader.get_object(page.object_number, page.generation_number)?;
+        let before = object.clone();
+        apply_rotation(&wanted, page.object_number, &mut object);
+        if object != before {
+            changed.push(IncrementalObject {
+                number: page.object_number,
+                generation: page.generation_number,
+                object,
+            });
+        }
+    }
+    changed.sort_by_key(|object| (object.number, object.generation));
+    changed.dedup_by_key(|object| (object.number, object.generation));
+    incremental_update_delta(reader, changed)
 }
 
 fn selected_pages(engine: &ContentEngine, pages: &[usize], operation: &str) -> Result<Vec<usize>> {

@@ -17,7 +17,6 @@ use crate::authoring::{
     FlowDocument, ImageHandle, Margins, PageSize, ParagraphStyle, PdfBuilder, TableBuilder,
     TableColumn, TextStyle,
 };
-use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, ExtractionProfile};
 use crate::error::{Result, WellfriendError};
 use crate::parse::{Block, BlockKind, Document, InlineSpan, InlineText, ParseOptions};
@@ -822,7 +821,16 @@ impl XlsxSheet {
 
 /// Convert a PDF to XLSX bytes using the canonical parse model.
 pub fn pdf_to_xlsx(engine: &ContentEngine, options: &XlsxOptions) -> Result<Vec<u8>> {
-    let document = parse_for_office(engine, ExtractionProfile::TablesFocused)?;
+    pdf_to_xlsx_pages(engine, options, &[])
+}
+
+/// [`pdf_to_xlsx`] restricted to the 1-based `pages` (empty: every page).
+pub fn pdf_to_xlsx_pages(
+    engine: &ContentEngine,
+    options: &XlsxOptions,
+    pages: &[usize],
+) -> Result<Vec<u8>> {
+    let document = parse_for_office(engine, ExtractionProfile::TablesFocused, pages)?;
     let sheets = match options.layout {
         XlsxLayout::Pages => xlsx_sheets_by_page(&document),
         XlsxLayout::Tables => xlsx_sheets_by_table(&document),
@@ -832,13 +840,22 @@ pub fn pdf_to_xlsx(engine: &ContentEngine, options: &XlsxOptions) -> Result<Vec<
 
 /// Convert a PDF to PPTX bytes using the canonical parse model.
 pub fn pdf_to_pptx(engine: &ContentEngine, options: &PptxOptions) -> Result<Vec<u8>> {
-    let document = parse_for_office(engine, ExtractionProfile::LayoutFaithful)?;
+    let document = parse_for_office(engine, ExtractionProfile::LayoutFaithful, &[])?;
     write_pptx(engine, &document, options)
 }
 
 /// Convert a PDF to DOCX bytes using the canonical parse model.
 pub fn pdf_to_docx(engine: &ContentEngine, options: &DocxOptions) -> Result<Vec<u8>> {
-    let document = parse_for_office(engine, ExtractionProfile::LayoutFaithful)?;
+    pdf_to_docx_pages(engine, options, &[])
+}
+
+/// [`pdf_to_docx`] restricted to the 1-based `pages` (empty: every page).
+pub fn pdf_to_docx_pages(
+    engine: &ContentEngine,
+    options: &DocxOptions,
+    pages: &[usize],
+) -> Result<Vec<u8>> {
+    let document = parse_for_office(engine, ExtractionProfile::LayoutFaithful, pages)?;
     write_docx(engine, &document, options)
 }
 
@@ -863,11 +880,21 @@ pub fn pptx_to_pdf(bytes: &[u8], _options: &OfficeToPdfOptions) -> Result<Vec<u8
     pptx_slides_to_pdf(&slides)
 }
 
-fn parse_for_office(engine: &ContentEngine, profile: ExtractionProfile) -> Result<Document> {
-    let document = engine.parse_document_with_profile(profile, &ParseOptions::default())?;
-    let editable =
-        EditableDocument::from_parse_document(engine, document, &EditableBuildOptions::default());
-    Ok(editable.to_parse_document())
+/// The canonical parse the Office writers read. (The writers once took the
+/// parse through the editable model and back; that round trip returns the
+/// parse unchanged, so it is not run.)
+fn parse_for_office(
+    engine: &ContentEngine,
+    profile: ExtractionProfile,
+    pages: &[usize],
+) -> Result<Document> {
+    engine.parse_document_with_profile(
+        profile,
+        &ParseOptions {
+            pages: pages.to_vec(),
+            ..ParseOptions::default()
+        },
+    )
 }
 
 fn xlsx_sheets_by_page(document: &Document) -> Vec<XlsxSheet> {
@@ -1084,45 +1111,50 @@ fn write_docx(
 }
 
 fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Vec<DocxImagePart>> {
+    // Pages decode and encode their images independently; run them in
+    // parallel and keep page order.
+    let per_page =
+        crate::page_parallel::map_ordered(&document.pages, |page| page_docx_images(engine, page));
+    Ok(per_page.into_iter().flatten().collect())
+}
+
+fn page_docx_images(engine: &ContentEngine, page: &crate::parse::Page) -> Vec<DocxImagePart> {
     let mut out = Vec::new();
-    for page in &document.pages {
-        let Ok(region) = PageRegion::new(0.0, 0.0, page.width.max(1.0), page.height.max(1.0))
-        else {
+    let Ok(region) = PageRegion::new(0.0, 0.0, page.width.max(1.0), page.height.max(1.0)) else {
+        return out;
+    };
+    let Ok(images) = engine.find_page_images_in_region(page.number as usize, region) else {
+        return out;
+    };
+    for image in images
+        .into_iter()
+        .filter(|img| !img.image.is_mask && !img.image.is_smask)
+    {
+        let Ok((bytes, ext)) = engine.extract_image_for_office(
+            &image.image,
+            image.bbox[2] - image.bbox[0],
+            image.bbox[3] - image.bbox[1],
+        ) else {
             continue;
         };
-        let Ok(images) = engine.find_page_images_in_region(page.number as usize, region) else {
-            continue;
-        };
-        for image in images
-            .into_iter()
-            .filter(|img| !img.image.is_mask && !img.image.is_smask)
-        {
-            let Ok((bytes, ext)) = engine.extract_image_for_office(
-                &image.image,
-                image.bbox[2] - image.bbox[0],
-                image.bbox[3] - image.bbox[1],
-            ) else {
-                continue;
-            };
-            let width_points = (image.bbox[2] - image.bbox[0]).abs().clamp(72.0, 432.0);
-            let height_points = (image.bbox[3] - image.bbox[1]).abs().clamp(72.0, 432.0);
-            let x_points = image.bbox[0].max(0.0);
-            let y_points = (page.height - image.bbox[3]).max(0.0);
-            let digest = resource_digest(&bytes);
-            let stable_suffix = &digest[..16];
-            out.push(DocxImagePart {
-                page: page.number,
-                rel_id: format!("rIdImage{stable_suffix}"),
-                name: format!("image-{stable_suffix}.{ext}"),
-                bytes,
-                width_emu: points_to_emu(width_points),
-                height_emu: points_to_emu(height_points),
-                x_emu: points_to_emu(x_points),
-                y_emu: points_to_emu(y_points),
-            });
-        }
+        let width_points = (image.bbox[2] - image.bbox[0]).abs().clamp(72.0, 432.0);
+        let height_points = (image.bbox[3] - image.bbox[1]).abs().clamp(72.0, 432.0);
+        let x_points = image.bbox[0].max(0.0);
+        let y_points = (page.height - image.bbox[3]).max(0.0);
+        let digest = resource_digest(&bytes);
+        let stable_suffix = &digest[..16];
+        out.push(DocxImagePart {
+            page: page.number,
+            rel_id: format!("rIdImage{stable_suffix}"),
+            name: format!("image-{stable_suffix}.{ext}"),
+            bytes,
+            width_emu: points_to_emu(width_points),
+            height_emu: points_to_emu(height_points),
+            x_emu: points_to_emu(x_points),
+            y_emu: points_to_emu(y_points),
+        });
     }
-    Ok(out)
+    out
 }
 
 fn collect_docx_hyperlinks(document: &Document) -> Vec<DocxHyperlinkPart> {

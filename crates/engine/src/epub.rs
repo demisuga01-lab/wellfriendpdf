@@ -34,7 +34,6 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::analysis::tables::Table;
-use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, ExtractionProfile};
 use crate::error::{Result, WellfriendError};
 use crate::parse::{Block, BlockKind, Document, InlineSpan, InlineText, ParseOptions};
@@ -219,6 +218,33 @@ pub fn pdf_to_epub_json(input: &[u8], options_json: Option<&str>) -> Result<(Vec
     pdf_to_epub_with_report(&engine, &options)
 }
 
+/// [`pdf_to_epub_json`] for a file on disk, opened without reading it into
+/// memory. A file the seekable reader cannot open is read whole and opened
+/// from its bytes, as [`pdf_to_epub_json`] would.
+pub fn pdf_to_epub_json_path(
+    path: &std::path::Path,
+    options_json: Option<&str>,
+) -> Result<(Vec<u8>, EpubReport)> {
+    let parsed = EpubJsonOptions::parse(options_json)?;
+    let options = parsed.to_options()?;
+    let opened = match parsed.password.as_deref() {
+        Some(password) => ContentEngine::open_path_with_password(path, password.as_bytes()),
+        None => ContentEngine::open_path(path),
+    };
+    let engine = match opened {
+        Ok(engine) => engine,
+        Err(_) => {
+            let input = std::fs::read(path)?;
+            return pdf_to_epub_json(&input, options_json);
+        }
+    };
+    let mut options = options;
+    if let Some(range) = parsed.page_range.as_deref() {
+        options.pages = parse_epub_page_range(range, engine.page_count()?)?;
+    }
+    pdf_to_epub_with_report(&engine, &options)
+}
+
 /// Summary of a generated EPUB.
 #[derive(Debug, Clone, Serialize)]
 pub struct EpubReport {
@@ -272,16 +298,15 @@ pub fn pdf_to_epub_with_report(
     engine: &ContentEngine,
     options: &EpubOptions,
 ) -> Result<(Vec<u8>, EpubReport)> {
-    let parsed = engine.parse_document_with_profile(
+    // The canonical parse. (It once went through the editable model and
+    // back; that round trip returns the parse unchanged, so it is not run.)
+    let document = engine.parse_document_with_profile(
         ExtractionProfile::LayoutFaithful,
         &ParseOptions {
             pages: options.pages.clone(),
             ..ParseOptions::default()
         },
     )?;
-    let document =
-        EditableDocument::from_parse_document(engine, parsed, &EditableBuildOptions::default())
-            .to_parse_document();
 
     let mut image_bytes: Vec<(String, Vec<u8>)> = Vec::new();
     let images = if options.include_images {
@@ -431,7 +456,7 @@ fn catalog_language(engine: &ContentEngine) -> Option<String> {
 }
 
 fn uuid_from_digest(engine: &ContentEngine) -> String {
-    let digest = resource_digest(engine.document().reader().file_bytes());
+    let digest = engine.document().reader().file_sha256_hex();
     let hex: Vec<char> = digest.chars().filter(char::is_ascii_hexdigit).collect();
     let mut chars: Vec<char> = hex.into_iter().take(32).collect();
     while chars.len() < 32 {
@@ -461,40 +486,44 @@ fn collect_images(
     document: &Document,
     store: &mut Vec<(String, Vec<u8>)>,
 ) -> Vec<EpubImage> {
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    for page in &document.pages {
+    // Pages decode and encode their images independently: run them in
+    // parallel, then name and de-duplicate in page order.
+    let per_page = crate::page_parallel::map_ordered(&document.pages, |page| {
         let Ok(region) = PageRegion::new(0.0, 0.0, page.width.max(1.0), page.height.max(1.0))
         else {
-            continue;
+            return Vec::new();
         };
         let Ok(found) = engine.find_page_images_in_region(page.number as usize, region) else {
-            continue;
+            return Vec::new();
         };
-        for image in found
+        found
             .into_iter()
             .filter(|img| !img.image.is_mask && !img.image.is_smask)
-        {
-            let Ok(bytes) = engine.extract_image_png_for_package(&image.image) else {
-                continue;
-            };
-            let digest = resource_digest(&bytes);
-            let suffix: String = digest
-                .chars()
-                .filter(char::is_ascii_alphanumeric)
-                .take(16)
-                .collect();
-            let href = format!("images/image-{suffix}.png");
-            if seen.insert(href.clone()) {
-                store.push((href.clone(), bytes));
-            }
-            out.push(EpubImage {
-                page: page.number,
-                bbox: image.bbox,
-                href,
-                width: (image.bbox[2] - image.bbox[0]).abs(),
-            });
+            .filter_map(|image| {
+                let bytes = engine.extract_image_png_for_package(&image.image).ok()?;
+                Some((page.number, image, bytes))
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for (page_number, image, bytes) in per_page.into_iter().flatten() {
+        let digest = resource_digest(&bytes);
+        let suffix: String = digest
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(16)
+            .collect();
+        let href = format!("images/image-{suffix}.png");
+        if seen.insert(href.clone()) {
+            store.push((href.clone(), bytes));
         }
+        out.push(EpubImage {
+            page: page_number,
+            bbox: image.bbox,
+            href,
+            width: (image.bbox[2] - image.bbox[0]).abs(),
+        });
     }
     out
 }

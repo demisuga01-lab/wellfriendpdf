@@ -8,7 +8,26 @@ pub struct ContentParser;
 
 const MAX_CONTENT_CONTAINER_DEPTH: u32 = 128;
 const MAX_CONTENT_STACK_ITEMS: usize = 1_000_000;
-const MAX_CONTENT_OPERATIONS: usize = 1_000_000;
+/// Operations any page program may hold, whatever its size.
+pub(crate) const MAX_CONTENT_OPERATIONS: usize = 1_000_000;
+/// Operations one stored (encoded) byte of a page's content streams may
+/// account for. Real content stays far below: dense atlas map pages run at
+/// 0.2-0.3 operations per stored byte. A decompression bomb has few stored
+/// bytes, so it keeps the fixed floor.
+const CONTENT_OPERATIONS_PER_STORED_BYTE: u64 = 1;
+/// The ceiling of the scaled limit, which bounds a page's parsed operations
+/// in memory (about 150 bytes each).
+pub(crate) const MAX_SCALED_CONTENT_OPERATIONS: usize = 8_000_000;
+
+/// The operation limit for a page program whose content streams are
+/// `stored_bytes` long as stored in the file: the fixed floor, raised in
+/// proportion to the stored size up to [`MAX_SCALED_CONTENT_OPERATIONS`].
+pub(crate) fn content_operation_limit(stored_bytes: u64) -> usize {
+    let scaled = stored_bytes.saturating_mul(CONTENT_OPERATIONS_PER_STORED_BYTE);
+    usize::try_from(scaled)
+        .unwrap_or(usize::MAX)
+        .clamp(MAX_CONTENT_OPERATIONS, MAX_SCALED_CONTENT_OPERATIONS)
+}
 
 #[derive(Debug)]
 enum StackItem {
@@ -26,7 +45,13 @@ impl ContentParser {
     /// Malformed tokens fail closed so rendering and editing cannot silently
     /// omit content from a damaged stream.
     pub fn parse(data: &[u8]) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(ContentTokenizer::new(data), true, false, None)
+        Self::parse_tokens_inner(
+            ContentTokenizer::new(data),
+            true,
+            false,
+            None,
+            MAX_CONTENT_OPERATIONS,
+        )
     }
 
     /// Parse a painted content program and apply narrowly-scoped recovery for
@@ -43,28 +68,40 @@ impl ContentParser {
         data: &[u8],
         cancel: &CancelToken,
     ) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(ContentTokenizer::new(data), true, false, Some(cancel))
+        Self::parse_tokens_inner(
+            ContentTokenizer::new(data),
+            true,
+            false,
+            Some(cancel),
+            MAX_CONTENT_OPERATIONS,
+        )
     }
 
     /// Same as [`ContentParser::parse`] but accepts a pre-built token iterator.
     pub fn parse_tokens(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
     ) -> Vec<ContentOperation> {
-        Self::parse_tokens_inner(tokens, false, false, None).unwrap_or_default()
+        Self::parse_tokens_inner(tokens, false, false, None, MAX_CONTENT_OPERATIONS)
+            .unwrap_or_default()
     }
 
+    /// Lenient parse that still fails on I/O errors, holding at most
+    /// `max_operations` operations (see [`content_operation_limit`]).
     pub(crate) fn parse_tokens_propagating_io_cancellable(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
         cancel: &CancelToken,
+        max_operations: usize,
     ) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(tokens, false, true, Some(cancel))
+        Self::parse_tokens_inner(tokens, false, true, Some(cancel), max_operations)
     }
 
+    /// Strict parse holding at most `max_operations` operations.
     pub(crate) fn parse_tokens_strict_cancellable(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
         cancel: &CancelToken,
+        max_operations: usize,
     ) -> Result<Vec<ContentOperation>> {
-        Self::parse_tokens_inner(tokens, true, true, Some(cancel))
+        Self::parse_tokens_inner(tokens, true, true, Some(cancel), max_operations)
     }
 
     fn parse_tokens_inner(
@@ -72,6 +109,7 @@ impl ContentParser {
         propagate_all_errors: bool,
         propagate_io: bool,
         cancel: Option<&CancelToken>,
+        max_operations: usize,
     ) -> Result<Vec<ContentOperation>> {
         let mut stack = Vec::new();
         let mut array_depth = 0u32;
@@ -142,7 +180,7 @@ impl ContentParser {
                     array_depth = array_depth.saturating_sub(1);
                 }
                 ContentToken::Operator(op) => {
-                    ensure_content_operation_capacity(operations.len())?;
+                    ensure_content_operation_capacity(operations.len(), max_operations)?;
                     let mut operands = drain_operands(&mut stack);
                     if op == "ID" {
                         operands = normalize_inline_image_operands(operands)?;
@@ -168,7 +206,7 @@ impl ContentParser {
                         log::warn!("flushing operands before inline image data");
                         stack.clear();
                     }
-                    ensure_content_operation_capacity(operations.len())?;
+                    ensure_content_operation_capacity(operations.len(), max_operations)?;
                     operations.push(ContentOperation::new(
                         "inline_image_data",
                         vec![Operand::String(bytes)],
@@ -206,18 +244,29 @@ impl ContentParser {
     }
 }
 
+/// Whether [`normalize_compatibility_operations`] would rewrite an operation.
+pub(crate) fn compatibility_normalization_needed(operations: &[ContentOperation]) -> bool {
+    operations.iter().any(needs_compatibility_normalization)
+}
+
+/// A marked-content operator with stray operands before a valid tag/property
+/// pair.
+fn needs_compatibility_normalization(operation: &ContentOperation) -> bool {
+    if !matches!(operation.operator.as_str(), "BDC" | "DP") || operation.operands.len() <= 2 {
+        return false;
+    }
+    let len = operation.operands.len();
+    operation.operands[len - 2].as_name().is_some()
+        && matches!(
+            operation.operands[len - 1],
+            Operand::Name(_) | Operand::Dictionary(_)
+        )
+}
+
 pub(crate) fn normalize_compatibility_operations(operations: &mut [ContentOperation]) {
     for operation in operations {
-        if !matches!(operation.operator.as_str(), "BDC" | "DP") || operation.operands.len() <= 2 {
-            continue;
-        }
-        let len = operation.operands.len();
-        let trailing_pair_is_valid = operation.operands[len - 2].as_name().is_some()
-            && matches!(
-                operation.operands[len - 1],
-                Operand::Name(_) | Operand::Dictionary(_)
-            );
-        if trailing_pair_is_valid {
+        if needs_compatibility_normalization(operation) {
+            let len = operation.operands.len();
             let ignored = len - 2;
             operation.operands.drain(0..ignored);
             log::warn!(
@@ -237,10 +286,10 @@ fn ensure_content_stack_capacity(current: usize) -> Result<()> {
     Ok(())
 }
 
-fn ensure_content_operation_capacity(current: usize) -> Result<()> {
-    if current >= MAX_CONTENT_OPERATIONS {
+fn ensure_content_operation_capacity(current: usize, max_operations: usize) -> Result<()> {
+    if current >= max_operations {
         return Err(WellfriendError::ResourceLimit(format!(
-            "content operation count exceeds limit {MAX_CONTENT_OPERATIONS}"
+            "content operation count exceeds limit {max_operations}"
         )));
     }
     Ok(())
@@ -291,7 +340,7 @@ fn collect_dictionary(stack: &mut Vec<StackItem>) -> Option<Vec<(String, Operand
 }
 
 fn drain_operands(stack: &mut Vec<StackItem>) -> Vec<Operand> {
-    let mut operands = Vec::new();
+    let mut operands = Vec::with_capacity(stack.len());
     for item in stack.drain(..) {
         match item {
             StackItem::Operand(operand) => operands.push(operand),
@@ -729,5 +778,49 @@ mod tests {
         let operations = ContentParser::parse_compat(b"17 /Span 23 BDC")
             .expect("lexically valid content remains inspectable");
         assert_eq!(operations[0].operands.len(), 3);
+    }
+
+    #[test]
+    fn operation_limit_scales_with_stored_size_between_floor_and_ceiling() {
+        assert_eq!(content_operation_limit(0), MAX_CONTENT_OPERATIONS);
+        assert_eq!(content_operation_limit(250_000), MAX_CONTENT_OPERATIONS);
+        assert_eq!(content_operation_limit(4_400_000), 4_400_000);
+        assert_eq!(
+            content_operation_limit(u64::MAX),
+            MAX_SCALED_CONTENT_OPERATIONS
+        );
+    }
+
+    #[test]
+    fn explicit_operation_limit_is_enforced() {
+        let data = b"q Q q Q q";
+        let tokens = || crate::content::StreamingContentTokenizer::from_bytes(data.to_vec());
+        let cancel = CancelToken::none();
+        assert_eq!(
+            ContentParser::parse_tokens_strict_cancellable(tokens(), &cancel, 5)
+                .unwrap()
+                .len(),
+            5
+        );
+        let err = ContentParser::parse_tokens_strict_cancellable(tokens(), &cancel, 4).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit 4"), "{err}");
+    }
+
+    #[test]
+    fn normalization_check_agrees_with_the_normalization() {
+        for (content, needed) in [
+            (&b"/Span <</MCID 3>> BDC (a) Tj EMC"[..], false),
+            (&b"17 /Span 23 BDC EMC"[..], false),
+            (&b"17 /Span /P1 BDC EMC"[..], true),
+            (&b"1 2 /Tag <</MCID 0>> DP"[..], true),
+            (&b"q 1 0 0 1 0 0 cm Q"[..], false),
+        ] {
+            let original = ContentParser::parse(content).unwrap();
+            let mut normalized = original.clone();
+            normalize_compatibility_operations(&mut normalized);
+            let changed = format!("{original:?}") != format!("{normalized:?}");
+            assert_eq!(compatibility_normalization_needed(&original), needed);
+            assert_eq!(changed, needed, "{}", String::from_utf8_lossy(content));
+        }
     }
 }

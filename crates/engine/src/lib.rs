@@ -155,6 +155,7 @@ pub mod object;
 pub mod ocr;
 pub mod office;
 pub mod optional_content;
+pub mod page_parallel;
 pub mod parse;
 pub mod parser;
 pub mod parser_report;
@@ -482,9 +483,10 @@ pub use ocr::preprocess::{
 };
 pub use ocr::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrPolicy, OcrWord};
 pub use office::{
-    docx_to_pdf, inspect_office_package, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf,
-    xlsx_to_pdf, DocxLayout, DocxOptions, OfficeFormat, OfficePackageSecurityLimits,
-    OfficePackageSecurityReport, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
+    docx_to_pdf, inspect_office_package, pdf_to_docx, pdf_to_docx_pages, pdf_to_pptx, pdf_to_xlsx,
+    pdf_to_xlsx_pages, pptx_to_pdf, xlsx_to_pdf, DocxLayout, DocxOptions, OfficeFormat,
+    OfficePackageSecurityLimits, OfficePackageSecurityReport, OfficeToPdfOptions, PptxOptions,
+    XlsxLayout, XlsxOptions,
 };
 pub use optional_content::{
     OptionalContentContext, OptionalContentLayerReport, OptionalContentMembershipReport,
@@ -645,7 +647,7 @@ pub use standards_engine::{
 };
 pub use structural::{
     crop_pages, crop_pages_to, encrypt, linearize::linearize, optimize, repair, rotate_pages,
-    rotate_pages_to, OptimizeReport, Rotation,
+    rotate_pages_incremental_delta, rotate_pages_to, OptimizeReport, Rotation,
 };
 pub use table_intelligence::{
     merge_table_proposals_deterministic, mock_tableformer_proposal_set,
@@ -726,10 +728,11 @@ pub use versioning::{
     ContentChunk, ResourceDedupGroup, ResourceDedupReport,
 };
 pub use writer::{
-    build_merged, build_merged_to, build_subset, build_subset_to, merge_paths_to_file,
-    rewrite_document, rewrite_document_objects, rewrite_document_to, rewrite_document_with_mode,
-    rewrite_references, serialize_object, write_document_linearized, write_document_roundtrip,
-    AtomicFile, OutputObject, PdfWriter, WriterMode,
+    build_merged, build_merged_to, build_subset, build_subset_to, incremental_update_delta,
+    merge_paths_to_file, rewrite_document, rewrite_document_objects, rewrite_document_to,
+    rewrite_document_with_mode, rewrite_references, serialize_object, write_document_linearized,
+    write_document_roundtrip, write_output_with_facts, AtomicFile, HashingWriter,
+    IncrementalObject, OutputFacts, OutputObject, PdfWriter, WriterMode,
 };
 pub use writer_history::{
     font_reconstruction_report, object_stream_packing_report, pack_object_streams_pdf,
@@ -850,9 +853,10 @@ pub mod prelude {
     };
     pub use crate::ocr::{OcrEngine, OcrOptions};
     pub use crate::office::{
-        docx_to_pdf, inspect_office_package, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf,
-        xlsx_to_pdf, DocxLayout, DocxOptions, OfficeFormat, OfficePackageSecurityLimits,
-        OfficePackageSecurityReport, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
+        docx_to_pdf, inspect_office_package, pdf_to_docx, pdf_to_docx_pages, pdf_to_pptx,
+        pdf_to_xlsx, pdf_to_xlsx_pages, pptx_to_pdf, xlsx_to_pdf, DocxLayout, DocxOptions,
+        OfficeFormat, OfficePackageSecurityLimits, OfficePackageSecurityReport, OfficeToPdfOptions,
+        PptxOptions, XlsxLayout, XlsxOptions,
     };
     pub use crate::parse::{
         parse, Block, BlockKind, Document, DocumentMetadata, Page, ParseOptions, SerializeOptions,
