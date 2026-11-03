@@ -281,6 +281,9 @@ pub fn build_editable_document_with_parse_options(
     parse_options: &ParseOptions,
     options: &EditableBuildOptions,
 ) -> Result<EditableDocument> {
+    if options.include_images {
+        engine.retain_page_image_placements();
+    }
     let source_document = engine.parse_document(parse_options)?;
     Ok(EditableDocument::from_parse_document(
         engine,
@@ -1181,4 +1184,102 @@ mod tests {
         assert!(model.redo());
         assert!(model.to_markdown().contains("Changed"));
     }
+}
+
+impl EditableDocument {
+    /// `serde_json::to_vec_pretty(self)`, byte for byte, with the four large
+    /// arrays (the parse's blocks and pages, the editable blocks and pages)
+    /// serialized in parallel slices and spliced into the small remainder.
+    pub fn to_json_pretty(&self) -> serde_json::Result<Vec<u8>> {
+        let skeleton = EditableDocument {
+            schema_version: self.schema_version.clone(),
+            source_document: Document {
+                schema_version: self.source_document.schema_version.clone(),
+                metadata: self.source_document.metadata.clone(),
+                source: self.source_document.source.clone(),
+                body: Vec::new(),
+                pages: Vec::new(),
+            },
+            sections: self.sections.clone(),
+            pages: Vec::new(),
+            blocks: Vec::new(),
+            diagnostics: self.diagnostics.clone(),
+            transactions: self.transactions.clone(),
+        };
+        let mut out = serde_json::to_vec_pretty(&skeleton)?;
+        // Each placeholder is the empty array a key's value serializes to at
+        // its indentation; they occur once each, in field order.
+        let splices: [(&[u8], Vec<u8>); 4] = [
+            (
+                b"\n    \"body\": []",
+                pretty_array(&self.source_document.body, 2)?,
+            ),
+            (
+                b"\n    \"pages\": []",
+                pretty_array(&self.source_document.pages, 2)?,
+            ),
+            (b"\n  \"pages\": []", pretty_array(&self.pages, 1)?),
+            (b"\n  \"blocks\": []", pretty_array(&self.blocks, 1)?),
+        ];
+        let mut cursor = 0usize;
+        for (placeholder, array) in splices {
+            let found = find_from(&out, placeholder, cursor).ok_or_else(|| {
+                <serde_json::Error as serde::ser::Error>::custom(
+                    "JSON layout placeholder not found",
+                )
+            })?;
+            let value_at = found + placeholder.len() - 2;
+            out.splice(value_at..value_at + 2, array.iter().copied());
+            cursor = value_at + array.len();
+        }
+        Ok(out)
+    }
+}
+
+fn find_from(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    haystack[from..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|at| at + from)
+}
+
+/// A pretty-printed JSON array whose key sits at nesting level `level`
+/// (two spaces each), as `serde_json`'s pretty printer writes it there.
+/// Elements are serialized in parallel slices and re-indented: a pretty
+/// printer's raw newlines are all layout (strings escape theirs), so
+/// indenting after each newline places an element at any depth.
+fn pretty_array<T: Serialize + Sync>(items: &[T], level: usize) -> serde_json::Result<Vec<u8>> {
+    if items.is_empty() {
+        return Ok(b"[]".to_vec());
+    }
+    let inner = "  ".repeat(level + 1);
+    let slices: Vec<&[T]> = items.chunks(256).collect();
+    let parts = crate::page_parallel::map_ordered(&slices, |slice| {
+        let mut part = Vec::new();
+        for (index, item) in slice.iter().enumerate() {
+            if index > 0 {
+                part.extend_from_slice(b",\n");
+            }
+            part.extend_from_slice(inner.as_bytes());
+            let element = serde_json::to_vec_pretty(item)?;
+            for &byte in &element {
+                part.push(byte);
+                if byte == b'\n' {
+                    part.extend_from_slice(inner.as_bytes());
+                }
+            }
+        }
+        Ok::<_, serde_json::Error>(part)
+    });
+    let mut out = b"[\n".to_vec();
+    for (index, part) in parts.into_iter().enumerate() {
+        if index > 0 {
+            out.extend_from_slice(b",\n");
+        }
+        out.extend_from_slice(&part?);
+    }
+    out.push(b'\n');
+    out.extend_from_slice("  ".repeat(level).as_bytes());
+    out.push(b']');
+    Ok(out)
 }

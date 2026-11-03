@@ -60,7 +60,16 @@ fn conversions(path: &Path) -> Vec<(&'static str, Result<Vec<u8>, String>)> {
         .map_err(Clone::clone);
     let json = editable
         .as_ref()
-        .map(|model| serde_json::to_vec(model).expect("editable model serializes"))
+        .map(|model| {
+            let pretty = model.to_json_pretty().expect("editable model serializes");
+            assert_eq!(
+                pretty,
+                serde_json::to_vec_pretty(model).unwrap(),
+                "{}",
+                path.display()
+            );
+            pretty
+        })
         .map_err(Clone::clone);
     let markdown_without_images = engine
         .build_editable_document(&EditableBuildOptions {
@@ -339,4 +348,70 @@ fn page_image_placements_resolve_to_the_page_resources() {
         assert_eq!(placed.len(), 1);
         assert_eq!(placed[0].image.object_number, 5);
     }
+}
+
+/// Package images: a baseline JPEG is copied byte for byte, a PNG-predicted
+/// Flate image is wrapped as a PNG without re-encoding, and an image placed
+/// twice is stored once.
+#[test]
+fn epub_images_are_passed_through_and_stored_once() {
+    // 4x2 RGB rows, each with the PNG "None" filter byte the predictor uses.
+    let mut rows = Vec::new();
+    for y in 0..2u8 {
+        rows.push(0u8);
+        for x in 0..4u8 {
+            rows.extend_from_slice(&[x * 60, y * 120, 200]);
+        }
+    }
+    let flate_rgb = flate(&rows);
+    let mut jpeg = Vec::new();
+    jpeg_encoder::Encoder::new(&mut jpeg, 90)
+        .encode(&[128u8; 8 * 8 * 3], 8, 8, jpeg_encoder::ColorType::Rgb)
+        .unwrap();
+    let objects = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /XObject << /A 5 0 R /B 6 0 R >> >> >>".to_vec(),
+        stream("", b"q 20 0 0 10 10 10 cm /A Do Q q 20 0 0 10 10 100 cm /A Do Q q 8 0 0 8 100 100 cm /B Do Q"),
+        stream("/Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors 3 /Columns 4 /BitsPerComponent 8 >>", &flate_rgb),
+        stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", &jpeg),
+    ];
+    let engine = ContentEngine::open_bytes(assemble_pdf(&objects)).unwrap();
+    let epub = pdf_to_epub(&engine, &EpubOptions::default()).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(epub)).unwrap();
+    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+    let images: Vec<&String> = names
+        .iter()
+        .filter(|n| n.starts_with("OEBPS/images/"))
+        .collect();
+    assert_eq!(images.len(), 2, "{names:?}");
+    let read = |zip: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str| {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut zip.by_name(name).unwrap(), &mut out).unwrap();
+        out
+    };
+    let jpg = images
+        .iter()
+        .find(|n| n.ends_with(".jpg"))
+        .expect("jpeg kept");
+    assert_eq!(read(&mut zip, jpg), jpeg);
+    let png_name = images
+        .iter()
+        .find(|n| n.ends_with(".png"))
+        .expect("png wrapped");
+    let png = read(&mut zip, png_name);
+    let decoder = png::Decoder::new(std::io::Cursor::new(&png));
+    let mut reader = decoder.read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!((info.width, info.height), (4, 2));
+    let expected: Vec<u8> = rows.chunks(13).flat_map(|row| row[1..].to_vec()).collect();
+    assert_eq!(&pixels[..info.buffer_size()], &expected[..]);
+    // The zlib data is the stream's own.
+    assert!(png.windows(flate_rgb.len()).any(|w| w == flate_rgb));
+    let opf = String::from_utf8(read(&mut zip, "OEBPS/content.opf")).unwrap();
+    assert!(
+        opf.contains("image/jpeg") && opf.contains("image/png"),
+        "{opf}"
+    );
 }
