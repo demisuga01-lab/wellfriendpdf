@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{OnceLock, RwLock};
-use std::time::{Duration, Instant};
+use crate::portable_time::Instant;
+use std::time::Duration;
 
 pub const SOURCE_EDITING_SCHEMA_VERSION: &str = "source_editing.provenance-operator-editing.v1";
 

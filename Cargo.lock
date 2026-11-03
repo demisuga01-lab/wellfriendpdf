@@ -4061,6 +4061,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "wellfriendpdf-edit",
+ "wellfriendpdf-editor",
  "wellfriendpdf-engine",
  "wellfriendpdf-ocr-tesseract",
  "zip",
@@ -4081,6 +4082,34 @@ dependencies = [
  "thiserror 2.0.19",
  "ttf-parser",
  "url",
+]
+
+[[package]]
+name = "wellfriendpdf-editor"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "lopdf",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "ttf-parser",
+ "wellfriendpdf-edit",
+ "wellfriendpdf-engine",
+]
+
+[[package]]
+name = "wellfriendpdf-editor-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "getrandom 0.2.17",
+ "js-sys",
+ "serde_json",
+ "wasm-bindgen",
+ "wellfriendpdf-editor",
+ "wellfriendpdf-engine",
 ]
 
 [[package]]

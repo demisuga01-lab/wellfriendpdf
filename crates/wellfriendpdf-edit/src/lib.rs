@@ -7,21 +7,29 @@ use lopdf::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use crate::vfs::{self as fs, File};
 use std::io::{BufWriter, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_merge;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_metadata;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_organize;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_protect;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_rotation;
 pub mod full_font;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_unlock;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod protocol;
 pub mod styled_text;
 mod text_show;
+pub mod vfs;
 
 pub const MAX_INPUT_BYTES: u64 = 320 * 1024 * 1024;
 pub const MAX_DECOMPRESSED_STREAM_BYTES: usize = 64 * 1024 * 1024;
@@ -3471,12 +3479,9 @@ pub fn mutate_pages(request: &MutatePagesRequest) -> Result<MutatePagesResult, P
             {
                 return Err(PdfEditError::InvalidPageMutation);
             }
-            let input_canonical = request
-                .input_path
-                .canonicalize()
+            let input_canonical = fs::canonicalize(&request.input_path)
                 .map_err(|_| PdfEditError::InputUnavailable)?;
-            let import_canonical = import_path
-                .canonicalize()
+            let import_canonical = fs::canonicalize(import_path)
                 .map_err(|_| PdfEditError::InputUnavailable)?;
             if input_canonical == import_canonical {
                 return Err(PdfEditError::InvalidPageMutation);
@@ -4123,6 +4128,168 @@ pub fn move_image(request: &MoveImageRequest) -> Result<MoveImageResult, PdfEdit
         validation: edit.validation,
     })
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteImageRequest {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+    pub selector: ImagePlacementSelector,
+    #[serde(default)]
+    pub allow_signature_invalidation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageDeleteValidation {
+    pub reparsed: bool,
+    pub page_count_preserved: bool,
+    pub non_target_objects_preserved: bool,
+    pub draw_operation_removed: bool,
+    pub non_target_operations_preserved: bool,
+}
+
+impl ImageDeleteValidation {
+    pub fn passed(&self) -> bool {
+        self.reparsed
+            && self.page_count_preserved
+            && self.non_target_objects_preserved
+            && self.draw_operation_removed
+            && self.non_target_operations_preserved
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteImageResult {
+    pub operation: String,
+    pub capability: String,
+    pub input_sha256: String,
+    pub output_sha256: String,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub page_count: usize,
+    pub changed_objects: Vec<PdfObjectId>,
+    pub image_object: PdfObjectId,
+    pub content_stream_object: PdfObjectId,
+    pub page_number: u32,
+    pub resource_name: String,
+    pub save_mode: SaveMode,
+    pub signature_effect: SignatureEffect,
+    pub validation: ImageDeleteValidation,
+}
+
+/// Delete one image placement: the selected `Do` operation is removed from
+/// its content stream, so the page no longer paints the image there. The
+/// image XObject itself stays when other placements still draw it; the
+/// writer drops it on a full rewrite when nothing references it any more.
+/// Every other operation and object is preserved and re-verified.
+pub fn delete_image(request: &DeleteImageRequest) -> Result<DeleteImageResult, PdfEditError> {
+    validate_paths(&request.input_path, &request.output_path)?;
+    let selector = &request.selector;
+    let input_metadata = checked_metadata(&request.input_path)?;
+    let input_sha256 = sha256_file(&request.input_path)?;
+    let mut document = load_checked_pdf(&request.input_path)?;
+    let page_count = document.get_pages().len();
+    let source_objects = document.objects.clone();
+    let signatures = signature_summaries(&document);
+    let signature_effect = if signatures.is_empty() {
+        SignatureEffect::None
+    } else {
+        if !request.allow_signature_invalidation {
+            return Err(PdfEditError::SignatureConfirmationRequired);
+        }
+        SignatureEffect::InvalidatesExistingSignatures
+    };
+
+    let (source_content, _matrix, image_id, _, _) = isolated_image_placement(&document, selector)?;
+    let target_id: ObjectId = selector.content_stream_object.into();
+    let draw = source_content
+        .operations
+        .get(selector.draw_operation_index)
+        .ok_or(PdfEditError::StaleImagePlacement)?;
+    if draw.operator != "Do" {
+        return Err(PdfEditError::StaleImagePlacement);
+    }
+    let mut edited = source_content.clone();
+    edited.operations.remove(selector.draw_operation_index);
+    let encoded_content = edited
+        .encode()
+        .map_err(|_| PdfEditError::ContentStreamUnsupported)?;
+    let stream = document
+        .get_object_mut(target_id)
+        .and_then(Object::as_stream_mut)
+        .map_err(|_| PdfEditError::ContentStreamUnsupported)?;
+    stream.set_plain_content(encoded_content);
+    stream
+        .compress()
+        .map_err(|_| PdfEditError::OutputWriteFailed)?;
+
+    let changed_objects = changed_object_ids(&source_objects, &document.objects);
+    if changed_objects != vec![target_id] {
+        return Err(PdfEditError::ValidationFailed);
+    }
+    save_new_pdf(&mut document, &request.output_path)?;
+    let output_metadata =
+        fs::metadata(&request.output_path).map_err(|_| PdfEditError::OutputWriteFailed)?;
+    let output_sha256 = sha256_file(&request.output_path)?;
+    let output = load_checked_pdf(&request.output_path)?;
+    let result_operations = output
+        .get_object(target_id)
+        .and_then(Object::as_stream)
+        .ok()
+        .and_then(|stream| stream.get_plain_content_with_limit(MAX_DECOMPRESSED_STREAM_BYTES).ok())
+        .and_then(|bytes| Content::decode(&bytes).ok())
+        .map(|content| content.operations);
+    let non_target_operations_preserved = result_operations.as_ref().is_some_and(|result| {
+        result.len() + 1 == source_content.operations.len()
+            && source_content
+                .operations
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != selector.draw_operation_index)
+                .zip(result.iter())
+                .all(|((_, source), result)| operations_equal(source, result))
+    });
+    let non_target_objects_preserved = source_objects.iter().all(|(id, object)| {
+        *id == target_id
+            || *id == image_id
+            || is_writer_housekeeping_object(object)
+            || output
+                .objects
+                .get(id)
+                .is_some_and(|candidate| pdf_objects_semantically_equal(object, candidate))
+    });
+    let validation = ImageDeleteValidation {
+        reparsed: true,
+        page_count_preserved: output.get_pages().len() == page_count,
+        non_target_objects_preserved,
+        draw_operation_removed: result_operations.is_some(),
+        non_target_operations_preserved,
+    };
+    if !validation.passed() {
+        let _ = fs::remove_file(&request.output_path);
+        return Err(PdfEditError::ValidationFailed);
+    }
+    Ok(DeleteImageResult {
+        operation: "DELETE_IMAGE".to_string(),
+        capability: "PDF_OBJECT_DELETE".to_string(),
+        input_sha256,
+        output_sha256,
+        input_bytes: input_metadata.len(),
+        output_bytes: output_metadata.len(),
+        page_count,
+        changed_objects: changed_objects.into_iter().map(Into::into).collect(),
+        image_object: image_id.into(),
+        content_stream_object: target_id.into(),
+        page_number: selector.page_number,
+        resource_name: selector.expected_resource_name.clone(),
+        save_mode: SaveMode::FullRewrite,
+        signature_effect,
+        validation,
+    })
+}
+
 
 pub fn transform_image(
     request: &TransformImageRequest,
@@ -4994,8 +5161,14 @@ fn recognized_vector_path(
         match operation.operator.as_str() {
             "g" | "rg" | "k" => fill_color = operation_rgb(operation, false),
             "G" | "RG" | "K" => stroke_color = operation_rgb(operation, true),
-            "w" if operation.operands.len() == 1
-                && operation.operands.first().and_then(pdf_number).is_some() => {}
+            "w" | "M" | "J" | "j" | "i"
+                if operation.operands.len() == 1
+                    && operation.operands.first().and_then(pdf_number).is_some() => {}
+            // Dash pattern: an array and a phase. Line style is kept as-is by
+            // recolour, transform and delete, so it does not block selection.
+            "d" if operation.operands.len() == 2
+                && matches!(operation.operands.first(), Some(Object::Array(_)))
+                && operation.operands.get(1).and_then(pdf_number).is_some() => {}
             _ => return None,
         }
         if matches!(operation.operator.as_str(), "g" | "rg" | "k") && fill_color.is_none()
@@ -12002,7 +12175,7 @@ fn checked_metadata(path: &Path) -> Result<fs::Metadata, PdfEditError> {
 }
 
 fn load_checked_pdf(path: &Path) -> Result<Document, PdfEditError> {
-    let document = Document::load_with_options(
+    let document = fs::load_document(
         path,
         LoadOptions::with_max_decompressed_size(MAX_DECOMPRESSED_STREAM_BYTES),
     )
@@ -12017,15 +12190,12 @@ fn load_checked_pdf(path: &Path) -> Result<Document, PdfEditError> {
 }
 
 fn validate_paths(input: &Path, output: &Path) -> Result<(), PdfEditError> {
-    if output.exists() {
+    if fs::exists(output) {
         return Err(PdfEditError::OutputAlreadyExists);
     }
-    let input = input
-        .canonicalize()
-        .map_err(|_| PdfEditError::InputUnavailable)?;
+    let input = fs::canonicalize(input).map_err(|_| PdfEditError::InputUnavailable)?;
     let output_parent = output.parent().ok_or(PdfEditError::OutputWriteFailed)?;
-    let output_parent = output_parent
-        .canonicalize()
+    let output_parent = fs::canonicalize(output_parent)
         .map_err(|_| PdfEditError::OutputWriteFailed)?;
     let output_name = output.file_name().ok_or(PdfEditError::OutputWriteFailed)?;
     if input == output_parent.join(output_name) {
@@ -13339,7 +13509,7 @@ fn save_new_pdf(document: &mut Document, output: &Path) -> Result<(), PdfEditErr
         ".{}.wellfriend-pdf-edit.tmp",
         file_name.to_string_lossy()
     ));
-    if temporary.exists() {
+    if fs::exists(&temporary) {
         fs::remove_file(&temporary).map_err(|_| PdfEditError::OutputWriteFailed)?;
     }
     let file = File::options()

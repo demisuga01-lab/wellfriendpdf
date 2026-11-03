@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Instant;
+use crate::portable_time::Instant;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

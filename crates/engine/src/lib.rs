@@ -174,6 +174,7 @@ pub mod render;
 pub mod research_edit_synthesis {
     pub use crate::edit_synthesis::*;
 }
+pub mod portable_time;
 pub mod runtime;
 pub mod scan_review;
 pub mod sdk;
