@@ -3417,6 +3417,19 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
                     .to_string(),
             ));
         }
+        // One style over source strings of one content stream (a producer
+        // that writes each glyph as its own TJ string): the replacement is
+        // set as one run in the first string, and the others are removed
+        // with their own advance compensation. Sharing it out one grapheme
+        // per string would keep every glyph at its old string's position,
+        // so a reordered or wider letter would overlap its neighbour.
+        let uniform_source = selected.len() > 1
+            && source_styles_by_grapheme
+                .iter()
+                .all(|(style, _)| *style == source_styles_by_grapheme[0].0)
+            && selected
+                .iter()
+                .all(|item| (item.0, item.1) == (selected[0].0, selected[0].1));
         let mut runs_by_scalar = Vec::<PreservedStyledRun>::new();
         let mut replacement_by_selected = vec![String::new(); selected.len()];
         let mut replacement_style_spans = Vec::<PreservedStyleSpan>::new();
@@ -3449,10 +3462,12 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
             .clone();
             // Inheritance chooses typography, not insertion order. The full
             // replacement stays at the first selected source occurrence.
-            if matches!(
-                request.style_policy,
-                MultiRunStylePolicy::InheritLeading | MultiRunStylePolicy::InheritTrailing
-            ) {
+            if uniform_source
+                || matches!(
+                    request.style_policy,
+                    MultiRunStylePolicy::InheritLeading | MultiRunStylePolicy::InheritTrailing
+                )
+            {
                 selected_index = 0;
             }
             replacement_by_selected[selected_index].push_str(grapheme);
@@ -3875,7 +3890,13 @@ pub(crate) fn edit_multi_run_text_range_in_scope(
             let reopened = ContentEngine::open_bytes(output.clone())?;
             let extracted = form_text::extract_scope(&reopened, request.page, scope)?;
             let replacement_extracts = extracted.contains(&request.replacement_text)
-                || layout_extraction_equivalent(&extracted, &request.replacement_text);
+                || layout_extraction_equivalent(&extracted, &request.replacement_text)
+                || layout_extraction_contains(&extracted, &request.replacement_text)
+                || form_text::output_page(&reopened, request.page, scope)
+                    .and_then(|page| {
+                        analyze_multi_run_source(&reopened, &page, ScannedTextTokenState::default())
+                    })
+                    .is_ok_and(|model| model.logical_text.contains(&request.replacement_text));
             let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
             if !replacement_extracts || !output.starts_with(input) {
                 return Err(WellfriendError::MalformedPdf(
@@ -5986,6 +6007,13 @@ fn layout_generated_explicit_lines(
         layout.push(glyphs);
     }
     Ok(layout)
+}
+
+/// `expected` occurs in `extracted` once layout whitespace (spaces a
+/// geometric extractor inserts at kerning gaps, line breaks) is ignored.
+fn layout_extraction_contains(extracted: &str, expected: &str) -> bool {
+    let expected: String = expected.split_whitespace().collect();
+    !expected.is_empty() && extracted.split_whitespace().collect::<String>().contains(&expected)
 }
 
 fn layout_extraction_equivalent(extracted: &str, expected: &str) -> bool {

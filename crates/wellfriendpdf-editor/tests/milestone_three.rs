@@ -401,3 +401,134 @@ fn find(layout: &PageTextLayout, needle: &str) -> (usize, usize) {
         .unwrap_or_else(|| panic!("{needle:?} not in {:?}", layout.text));
     (start, start + needle.len())
 }
+
+// ---- Reusing glyphs the source font already has ----
+
+/// A Type3 font whose glyphs (filled boxes of different heights) are named
+/// a, b, c, e, s through /Differences, with no /ToUnicode.
+fn type3_pdf() -> Vec<u8> {
+    use lopdf::{dictionary, Object, Stream};
+    let mut document = lopdf::Document::with_version("1.7");
+    let pages_id = document.new_object_id();
+    let mut procs = lopdf::Dictionary::new();
+    for (index, name) in ["a", "b", "c", "e", "s"].iter().enumerate() {
+        let height = 300 + 80 * index;
+        let program = format!("500 0 0 0 400 {height} d1 50 0 350 {height} re f");
+        procs.set(*name, Object::Reference(document.add_object(Stream::new(lopdf::Dictionary::new(), program.into_bytes()))));
+    }
+    let differences: Vec<Object> = [Object::Integer(97), "a".into(), "b".into(), "c".into(), Object::Integer(101), "e".into(), Object::Integer(115), "s".into()]
+        .into_iter()
+        .map(|o| match o {
+            Object::String(s, _) => Object::Name(s),
+            other => other,
+        })
+        .collect();
+    let font = document.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type3",
+        "FontBBox" => vec![0.into(), 0.into(), 1000.into(), 1000.into()],
+        "FontMatrix" => vec![0.001.into(), 0.into(), 0.into(), 0.001.into(), 0.into(), 0.into()],
+        "CharProcs" => procs,
+        "Encoding" => dictionary! { "Type" => "Encoding", "Differences" => differences },
+        "FirstChar" => 97,
+        "LastChar" => 115,
+        "Widths" => (97..=115).map(|_| Object::Integer(500)).collect::<Vec<_>>(),
+        "Resources" => lopdf::Dictionary::new(),
+    });
+    let content = document.add_object(Stream::new(lopdf::Dictionary::new(), b"BT /T3 20 Tf 72 700 Td (cabs aces) Tj ET".to_vec()));
+    let page = document.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "Resources" => dictionary! { "Font" => dictionary! { "T3" => font } },
+        "Contents" => content,
+    });
+    document.objects.insert(pages_id, Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 }));
+    let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    document.trailer.set("Root", catalog);
+    let mut out = Vec::new();
+    document.save_to(&mut out).unwrap();
+    out
+}
+
+#[test]
+fn type3_text_reuses_its_char_procs() {
+    let source = type3_pdf();
+    let before = layout(&source, 1);
+    assert_eq!(before.text, "cabs aces");
+    let (start, end) = find(&before, "cabs");
+    let operations = list(json!([{ "op": "replaceText", "page": 1, "start": start, "end": end, "expected": "cabs",
+        "text": "seca", "fallbackFont": "liberation-sans-regular" }]));
+    let outcome = apply_operations(&source, &operations, &library(), false).unwrap();
+    let report = &outcome.reports[0];
+    assert!(report.fonts_added.is_empty(), "drawn with the Type3 font's own glyphs: {report:?}");
+    let after = layout(&outcome.bytes, 1);
+    assert_eq!(after.text, "seca aces");
+    let (s, e) = find(&after, "seca");
+    assert!(after.glyphs.iter().filter(|g| g.range[0] >= s && g.range[1] <= e).all(|g| g.font_resource == "T3"));
+}
+
+/// A PdfBuilder page (Liberation Sans as an Identity-H Type0 font) with the
+/// font's /ToUnicode removed: the text decodes through the embedded cmap.
+fn cid_without_to_unicode() -> Vec<u8> {
+    let mut builder = wellfriendpdf_engine::PdfBuilder::new();
+    let sans = builder.register_font_bytes("Body-Sans", SANS.to_vec()).unwrap();
+    let page = builder.add_page(wellfriendpdf_engine::AuthorPageSize::custom(612.0, 792.0));
+    page.draw_text("Reuse the form glyphs", 72.0, 700.0, &wellfriendpdf_engine::TextStyle::new(sans, 14.0)).unwrap();
+    let mut document = lopdf::Document::load_mem(&builder.to_bytes().unwrap()).unwrap();
+    let ids: Vec<_> = document.objects.keys().copied().collect();
+    let mut stripped = 0;
+    for id in ids {
+        if let Ok(dict) = document.get_object_mut(id).and_then(lopdf::Object::as_dict_mut) {
+            if dict.get(b"Subtype").and_then(lopdf::Object::as_name).ok() == Some(b"Type0".as_slice()) {
+                dict.remove(b"ToUnicode");
+                stripped += 1;
+            }
+        }
+    }
+    assert!(stripped > 0);
+    // Without /ToUnicode the logical text has no /ActualText to rely on.
+    let page = document.get_pages()[&1];
+    let content = String::from_utf8_lossy(&document.get_page_content(page)).into_owned();
+    let content = content
+        .split('\n')
+        .filter(|line| !line.contains("BDC") && line.trim() != "EMC")
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stream = document.add_object(lopdf::Stream::new(lopdf::Dictionary::new(), content.into_bytes()));
+    document.get_object_mut(page).unwrap().as_dict_mut().unwrap().set("Contents", stream);
+    let mut out = Vec::new();
+    document.save_to(&mut out).unwrap();
+    out
+}
+
+#[test]
+fn a_subset_without_to_unicode_reuses_its_glyphs() {
+    let source = cid_without_to_unicode();
+    let before = layout(&source, 1);
+    assert_eq!(before.text, "Reuse the form glyphs", "decoded through the embedded cmap");
+    let (start, end) = find(&before, "form");
+    let operations = list(json!([{ "op": "replaceText", "page": 1, "start": start, "end": end, "expected": "form",
+        "text": "from", "fallbackFont": "liberation-sans-regular" }]));
+    let outcome = apply_operations(&source, &operations, &library(), false).unwrap();
+    let report = &outcome.reports[0];
+    assert!(report.fonts_added.is_empty(), "drawn with the subset's own glyphs: {report:?}");
+    assert_eq!(layout(&outcome.bytes, 1).text, "Reuse the from glyphs");
+}
+
+#[test]
+fn reordered_letters_keep_the_embedded_subset() {
+    // Chrome's Georgia subsets (Type0, Identity-H): a word rewritten with
+    // letters the paragraph already draws keeps the source font.
+    let before = layout(WIKIPEDIA, 1);
+    let (start, end) = find(&before, "Mozilla Corporation");
+    let operations = list(json!([{ "op": "replaceText", "page": 1, "start": start, "end": start + 7,
+        "expected": "Mozilla", "text": "allizoM", "fallbackFont": "liberation-serif-regular" }]));
+    let mut fonts = library();
+    fonts.insert("liberation-serif-regular", include_bytes!("../../wellfriendpdf-edit/fonts/LiberationSerif-Regular.ttf").to_vec());
+    let outcome = apply_operations(WIKIPEDIA, &operations, &fonts, false).unwrap();
+    let report = &outcome.reports[0];
+    assert!(report.fonts_added.is_empty(), "{report:?}");
+    assert!(layout(&outcome.bytes, 1).text.contains("allizoM Corporation"));
+    let _ = end;
+}
