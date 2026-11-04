@@ -2634,6 +2634,21 @@ pub fn inspect_pdf_for_page(
     path: &Path,
     text_page: Option<u32>,
 ) -> Result<PdfInspection, PdfEditError> {
+    inspect_pdf_scoped(path, text_page, false)
+}
+
+/// Inspection for one page's editor: text runs, image placements and vector
+/// paths of `page` only (the content streams of other pages are not read).
+pub fn inspect_pdf_page(path: &Path, page: u32) -> Result<PdfInspection, PdfEditError> {
+    inspect_pdf_scoped(path, Some(page), true)
+}
+
+fn inspect_pdf_scoped(
+    path: &Path,
+    text_page: Option<u32>,
+    page_objects_only: bool,
+) -> Result<PdfInspection, PdfEditError> {
+    let object_page = text_page.filter(|_| page_objects_only);
     let metadata = checked_metadata(path)?;
     let document = load_checked_pdf(path)?;
     let page_count = document.get_pages().len();
@@ -2649,9 +2664,9 @@ pub fn inspect_pdf_for_page(
         editable_image_placements,
         editable_image_placements_truncated,
         unsupported_image_placements,
-    ) = inspect_image_placements(&document)?;
+    ) = inspect_image_placements(&document, object_page)?;
     let (editable_vector_paths, editable_vector_paths_truncated, unsupported_vector_path_groups) =
-        inspect_vector_paths(&document)?;
+        inspect_vector_paths(&document, object_page)?;
     let (
         editable_links,
         editable_links_truncated,
@@ -5213,11 +5228,15 @@ fn recognized_vector_path(
 
 fn inspect_vector_paths(
     document: &Document,
+    only_page: Option<u32>,
 ) -> Result<(Vec<EditableVectorPath>, bool, usize), PdfEditError> {
     let mut editable = Vec::new();
     let mut truncated = false;
     let mut unsupported = 0usize;
     for (page_number, page_id) in document.get_pages() {
+        if only_page.is_some_and(|page| page != page_number) {
+            continue;
+        }
         for stream_id in document.get_page_contents(page_id) {
             let stream = match document.get_object(stream_id).and_then(Object::as_stream) {
                 Ok(stream) => stream,
@@ -12403,7 +12422,7 @@ fn reflow_region_is_clear(
     }) {
         return Ok(false);
     }
-    let (image_placements, _, _) = inspect_image_placements(document)?;
+    let (image_placements, _, _) = inspect_image_placements(document, Some(selector.page_number))?;
     if image_placements.iter().any(|placement| {
         placement.selector.page_number == selector.page_number
             && image_placement_bounds(placement.matrix)
@@ -12411,7 +12430,7 @@ fn reflow_region_is_clear(
     }) {
         return Ok(false);
     }
-    let (vector_paths, _, _) = inspect_vector_paths(document)?;
+    let (vector_paths, _, _) = inspect_vector_paths(document, Some(selector.page_number))?;
     if vector_paths.iter().any(|path| {
         path.selector.page_number == selector.page_number
             && pdf_boxes_intersect(&path.bounds, region)
@@ -13145,11 +13164,15 @@ fn image_color_space(stream: &lopdf::Stream) -> Option<String> {
 
 fn inspect_image_placements(
     document: &Document,
+    only_page: Option<u32>,
 ) -> Result<(Vec<EditableImagePlacement>, bool, usize), PdfEditError> {
     let mut placements = Vec::new();
     let mut truncated = false;
     let mut unsupported = 0usize;
     for (page_number, page_id) in document.get_pages() {
+        if only_page.is_some_and(|page| page != page_number) {
+            continue;
+        }
         let resources = page_image_resources(document, page_id)?;
         for stream_id in document.get_page_contents(page_id) {
             let stream = match document.get_object(stream_id).and_then(Object::as_stream) {

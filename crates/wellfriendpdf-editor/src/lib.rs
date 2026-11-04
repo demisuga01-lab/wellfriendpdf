@@ -9,6 +9,8 @@
 
 pub mod annotations;
 pub mod apply;
+pub mod content_objects;
+pub mod delta;
 pub mod error;
 pub mod fonts;
 mod flow;

@@ -83,7 +83,11 @@ pub fn inspect(
             .map_err(io)?;
         let input_path = directory.path().join("input.pdf");
         std::fs::write(&input_path, input).map_err(io)?;
-        wellfriend_pdf_edit::inspect_pdf_for_page(&input_path, page).map_err(EditorError::edit)
+        match page {
+            Some(page) => wellfriend_pdf_edit::inspect_pdf_page(&input_path, page),
+            None => wellfriend_pdf_edit::inspect_pdf_for_page(&input_path, None),
+        }
+        .map_err(EditorError::edit)
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -91,7 +95,10 @@ pub fn inspect(
         let input_path = Path::new("/wellfriendpdf-editor/input.pdf");
         vfs::clear();
         vfs::put(input_path, input.to_vec());
-        let result = wellfriend_pdf_edit::inspect_pdf_for_page(input_path, page);
+        let result = match page {
+            Some(page) => wellfriend_pdf_edit::inspect_pdf_page(input_path, page),
+            None => wellfriend_pdf_edit::inspect_pdf_for_page(input_path, None),
+        };
         vfs::clear();
         result.map_err(EditorError::edit)
     }

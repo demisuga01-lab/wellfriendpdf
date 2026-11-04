@@ -942,6 +942,8 @@ impl Stream {
                 b"FlateDecode" => Self::decompress_zlib(input, params, limit)?,
                 b"LZWDecode" => Self::decompress_lzw(input, params, limit)?,
                 b"ASCII85Decode" => Self::decode_ascii85(input, limit)?,
+                b"ASCIIHexDecode" => Self::decode_ascii_hex(input, limit)?,
+                b"RunLengthDecode" => Self::decode_run_length(input, limit)?,
                 _ => return Err(Error::Unimplemented("decompression algorithms")),
             };
             if let Some(max) = limit
@@ -1048,6 +1050,67 @@ impl Stream {
             return Err(DecompressError::MemoryLimitExceeded { limit: max }.into());
         }
         Self::decompress_predictor(output, params)
+    }
+
+    /// ASCIIHexDecode: pairs of hex digits, white space ignored, `>` ends the
+    /// data and an odd final digit is followed by an implied 0.
+    fn decode_ascii_hex(input: &[u8], limit: Option<usize>) -> Result<Vec<u8>> {
+        let mut output = Vec::with_capacity(input.len() / 2);
+        let mut high: Option<u8> = None;
+        for &ch in input {
+            if ch == b'>' {
+                break;
+            }
+            if ch.is_ascii_whitespace() || ch == 0 {
+                continue;
+            }
+            let digit = (ch as char)
+                .to_digit(16)
+                .ok_or(Error::Unimplemented("ASCIIHexDecode: a character that is not a hex digit"))? as u8;
+            match high.take() {
+                Some(h) => output.push(h << 4 | digit),
+                None => high = Some(digit),
+            }
+            if let Some(max) = limit
+                && output.len() > max
+            {
+                return Err(DecompressError::MemoryLimitExceeded { limit: max }.into());
+            }
+        }
+        if let Some(h) = high {
+            output.push(h << 4);
+        }
+        Ok(output)
+    }
+
+    /// RunLengthDecode: a length byte 0-127 copies the next n+1 bytes,
+    /// 129-255 repeats the next byte 257-n times, 128 ends the data.
+    fn decode_run_length(input: &[u8], limit: Option<usize>) -> Result<Vec<u8>> {
+        let mut output = Vec::new();
+        let mut at = 0usize;
+        while at < input.len() {
+            let length = input[at] as usize;
+            at += 1;
+            match length {
+                128 => break,
+                0..=127 => {
+                    let end = (at + length + 1).min(input.len());
+                    output.extend_from_slice(&input[at..end]);
+                    at = end;
+                }
+                _ => {
+                    let Some(&byte) = input.get(at) else { break };
+                    output.extend(std::iter::repeat_n(byte, 257 - length));
+                    at += 1;
+                }
+            }
+            if let Some(max) = limit
+                && output.len() > max
+            {
+                return Err(DecompressError::MemoryLimitExceeded { limit: max }.into());
+            }
+        }
+        Ok(output)
     }
 
     fn decode_ascii85(input: &[u8], limit: Option<usize>) -> Result<Vec<u8>> {

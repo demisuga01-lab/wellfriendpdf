@@ -11,6 +11,7 @@ use wellfriend_pdf_edit::{
     ImagePlacementSelector, ImageSelector, PdfMatrix, VectorPathMutation, VectorPathSelector,
 };
 
+use crate::content_objects::{ContentObjectSelector, ObjectEdit, MAX_FORM_DEPTH};
 use crate::error::EditorError;
 
 pub const OPERATION_LIST_VERSION: u32 = 1;
@@ -263,6 +264,14 @@ pub enum EditorOperation {
         selector: VectorPathSelector,
         mutation: VectorPathMutation,
     },
+    /// Move/resize, recolour or delete any image placement, inline image,
+    /// path group or shading of a page, also inside Form XObjects
+    /// (`content_objects`).
+    #[serde(rename_all = "camelCase")]
+    EditObject {
+        selector: ContentObjectSelector,
+        edit: ObjectEdit,
+    },
     /// Add a text box with an embedded library font. `rect` is the box; text
     /// wraps at its width and starts at its top edge.
     #[serde(rename_all = "camelCase")]
@@ -478,6 +487,7 @@ impl EditorOperation {
             Self::DeleteImage { .. } => "deleteImage",
             Self::ReplaceImage { .. } => "replaceImage",
             Self::EditVector { .. } => "editVector",
+            Self::EditObject { .. } => "editObject",
             Self::AddText { .. } => "addText",
             Self::AddImage { .. } => "addImage",
             Self::AddShape { .. } => "addShape",
@@ -535,6 +545,7 @@ impl EditorOperation {
             Self::SetFormField { page, .. } => page.unwrap_or(0),
             Self::ReplaceImage { .. } => 0,
             Self::EditVector { selector, .. } => selector.page_number,
+            Self::EditObject { selector, .. } => selector.page_number,
         }
     }
 }
@@ -777,6 +788,36 @@ pub fn validate_operation(
         EditorOperation::DeleteImage { selector } => page(selector.page_number)?,
         EditorOperation::ReplaceImage { image, .. } => {
             *image_bytes += decode_image(image)?.len();
+        }
+        EditorOperation::EditObject { selector, edit } => {
+            page(selector.page_number)?;
+            if selector.start > selector.end
+                || selector.end - selector.start > 100_000
+                || selector.expected_sha256.len() != 64
+                || !selector.expected_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(invalid("the object selector is malformed"));
+            }
+            if selector.forms.len() > MAX_FORM_DEPTH
+                || selector.forms.iter().any(|step| step.name.is_empty() || step.name.len() > 127 || step.name.chars().any(|c| c.is_control()))
+            {
+                return Err(invalid("the object's form path is malformed"));
+            }
+            match edit {
+                ObjectEdit::Transform { matrix: m } => matrix(m)?,
+                ObjectEdit::Delete => {}
+                ObjectEdit::Recolor { fill, stroke } => {
+                    if fill.is_none() && stroke.is_none() {
+                        return Err(invalid("a recolour needs a fill or stroke colour"));
+                    }
+                    for c in [fill, stroke].into_iter().flatten() {
+                        color(c)?;
+                        if c.spot().is_some() {
+                            return Err(invalid("recolour takes RGB or CMYK colours"));
+                        }
+                    }
+                }
+            }
         }
         EditorOperation::EditVector { selector, mutation } => {
             page(selector.page_number)?;

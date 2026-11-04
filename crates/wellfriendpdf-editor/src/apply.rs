@@ -174,6 +174,11 @@ pub fn apply_operation(
             })?;
             out
         }
+        EditorOperation::EditObject { selector, edit } => {
+            let (out, changed) = crate::content_objects::edit_object(input, selector, edit)?;
+            report.changed_region = Some(changed);
+            out
+        }
         EditorOperation::EditVector { selector, mutation } => {
             let (_, out) = scratch::run(input, None, |p| {
                 edit::edit_vector_path(&edit::EditVectorPathRequest {
