@@ -49,7 +49,7 @@ fn report_pdf(pages: usize) -> Vec<u8> {
     let bold = builder.register_font_bytes("Head-Bold", SANS_BOLD.to_vec()).unwrap();
     for index in 0..pages {
         let page = builder.add_page(AuthorPageSize::custom(612.0, 792.0));
-        page.draw_text(&format!("Annual Summary {}", index + 1), 72.0, 720.0, &TextStyle::new(bold, 18.0)).unwrap();
+        page.draw_text(format!("Annual Summary {}", index + 1), 72.0, 720.0, &TextStyle::new(bold, 18.0)).unwrap();
         page.draw_text("Revenue grew in every region this year.", 72.0, 700.0, &TextStyle::new(serif, 12.0)).unwrap();
         page.draw_text("Costs fell slightly over the same period.", 72.0, 686.0, &TextStyle::new(serif, 12.0)).unwrap();
         page.draw_text("Region", 72.0, 600.0, &TextStyle::new(serif, 12.0)).unwrap();

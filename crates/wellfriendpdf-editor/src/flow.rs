@@ -666,7 +666,7 @@ impl<'a> Tracker<'a> {
             let [x, y, w, h] = [values[0], values[1], values[2], values[3]];
             vec![[x, y], [x + w, y], [x, y + h], [x + w, y + h]]
         } else {
-            values.chunks_exact(2).map(|p| [p[0], p[1]]).collect()
+            values.as_chunks::<2>().0.to_vec()
         };
         for point in points {
             let [x, y] = apply(self.ctm, point);

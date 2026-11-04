@@ -101,7 +101,7 @@ impl PdfEditorSession {
         match raw.channels {
             4 => rgba = raw.pixels,
             3 => {
-                for chunk in raw.pixels.chunks_exact(3) {
+                for chunk in raw.pixels.as_chunks::<3>().0 {
                     rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
                 }
             }
@@ -206,4 +206,25 @@ impl PdfEditorSession {
     pub fn byte_length(&self) -> usize {
         self.bytes.len()
     }
+}
+
+/// The window of a blank page inserted into a large (windowed) document,
+/// the same bytes the server builds when it saves the insertion.
+#[wasm_bindgen(js_name = blankWindow)]
+pub fn blank_window(width: f64, height: f64) -> Result<Vec<u8>, JsValue> {
+    wellfriendpdf_editor::windows::blank_window(width, height).map_err(editor_err)
+}
+
+/// The windows of pages of another PDF inserted into a large document (all
+/// pages when `pages_json` is `[]`), one per page, as the server builds them.
+#[wasm_bindgen(js_name = insertedWindows)]
+pub fn inserted_windows(pdf: &[u8], pages_json: &str) -> Result<js_sys::Array, JsValue> {
+    wellfriendpdf_editor::apply::host_independent();
+    let pages: Vec<u32> = serde_json::from_str(pages_json).map_err(js_err)?;
+    let windows = wellfriendpdf_editor::windows::inserted_windows(pdf, &pages).map_err(editor_err)?;
+    let out = js_sys::Array::new();
+    for window in windows {
+        out.push(&js_sys::Uint8Array::from(window.as_slice()));
+    }
+    Ok(out)
 }

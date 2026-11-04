@@ -440,6 +440,11 @@ pub enum EditorOperation {
         value: String,
         #[serde(default)]
         kind: FieldValueKind,
+        /// The page holding the widget that was filled. A large (windowed)
+        /// document previews and saves the fill on that page's window, which
+        /// carries the field's dictionaries; a whole document ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<u32>,
     },
 }
 
@@ -527,7 +532,8 @@ impl EditorOperation {
             | Self::DeleteImage { selector }
             | Self::CropImage { selector, .. }
             | Self::SetImageOpacity { selector, .. } => selector.page_number,
-            Self::ReplaceImage { .. } | Self::SetFormField { .. } => 0,
+            Self::SetFormField { page, .. } => page.unwrap_or(0),
+            Self::ReplaceImage { .. } => 0,
             Self::EditVector { selector, .. } => selector.page_number,
         }
     }
@@ -1021,7 +1027,10 @@ pub fn validate_operation(
             page(*p)?;
             crate::text_layer::validate(lines, font.as_deref())?;
         }
-        EditorOperation::SetFormField { name, value, .. } => {
+        EditorOperation::SetFormField { name, value, page: on, .. } => {
+            if let Some(on) = on {
+                page(*on)?;
+            }
             if name.is_empty() || name.len() > 512 || name.chars().any(char::is_control) {
                 return Err(invalid("field names are 1-512 printable characters"));
             }

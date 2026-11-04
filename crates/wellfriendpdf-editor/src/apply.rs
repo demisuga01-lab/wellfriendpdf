@@ -452,7 +452,7 @@ pub fn apply_operation(
         EditorOperation::ConvertOcrText { page, lines, font } => {
             crate::text_layer::convert_ocr_text(input, *page, lines, font.as_deref(), fonts, &mut report)?
         }
-        EditorOperation::SetFormField { name, value, kind } => {
+        EditorOperation::SetFormField { name, value, kind, .. } => {
             let mut editor = PdfEditor::open_bytes(input.to_vec())?;
             match kind {
                 FieldValueKind::Text => editor.set_form_text(name.clone(), value.clone()),

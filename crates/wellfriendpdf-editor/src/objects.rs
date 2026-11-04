@@ -66,14 +66,14 @@ pub fn page_objects(bytes: &[u8], page: u32) -> Result<PageObjects, EditorError>
         .cloned()
         .collect();
     let on_page = |value: &serde_json::Value| value["pageNumber"].as_u64() == Some(u64::from(page));
-    let unsupported_images = serde_json::to_value(&inspection.unsupported_image_placements)
+    let unsupported_images = serde_json::to_value(inspection.unsupported_image_placements)
         .ok()
         .and_then(|v| {
             v.as_array()
                 .map(|a| a.iter().filter(|v| on_page(v)).count())
         })
         .unwrap_or(0);
-    let unsupported_vectors = serde_json::to_value(&inspection.unsupported_vector_path_groups)
+    let unsupported_vectors = serde_json::to_value(inspection.unsupported_vector_path_groups)
         .ok()
         .and_then(|v| {
             v.as_array()
