@@ -95,10 +95,13 @@ pub(crate) fn edited_glyphs(before: &PageTextLayout, after: &PageTextLayout) -> 
     unchanged_glyphs(before, after).iter().map(Option::is_none).collect()
 }
 
+/// Unmatched glyphs of `before` by text: their box and index, taken once.
+type GlyphSlots<'a> = HashMap<&'a str, Vec<Option<([f64; 4], usize)>>>;
+
 /// For each glyph of `after`, the glyph of `before` it is (same text, same
 /// box within 0.05 units), or `None` when the edit drew it.
 pub(crate) fn unchanged_glyphs(before: &PageTextLayout, after: &PageTextLayout) -> Vec<Option<usize>> {
-    let mut unchanged: HashMap<&str, Vec<Option<([f64; 4], usize)>>> = HashMap::new();
+    let mut unchanged: GlyphSlots = HashMap::new();
     for (index, glyph) in before.glyphs.iter().enumerate() {
         unchanged.entry(glyph.text.as_str()).or_default().push(Some((glyph.bbox, index)));
     }

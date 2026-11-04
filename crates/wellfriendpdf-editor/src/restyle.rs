@@ -95,11 +95,10 @@ pub(crate) fn reset_replacement(
     fit: Fit,
     report: &mut OperationReport,
 ) -> Result<Vec<u8>, EditorError> {
-    let covering: Vec<_> = before
-        .paragraphs
-        .iter()
-        .filter(|p| (p.range[0] < end && p.range[1] > start) || (p.range[0] <= start && start < p.range[1]))
-        .collect();
+    // An insertion belongs to the paragraph it follows (as in place).
+    let from = if start == end { start.saturating_sub(1) } else { start };
+    let to = end.max(from + 1);
+    let covering: Vec<_> = before.paragraphs.iter().filter(|p| p.range[0] < to && p.range[1] > from).collect();
     let (Some(first), Some(last)) = (covering.first(), covering.last()) else {
         return Err(EditorError::new(overflow::OVERFLOW, "the edited text is not in a paragraph that can be re-set"));
     };

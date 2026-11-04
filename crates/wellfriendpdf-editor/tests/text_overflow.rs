@@ -362,6 +362,23 @@ fn a_paragraph_that_grows_past_the_margin_follows_its_policy() {
     let rest = all[all.len() - moved..].join(" ");
     assert!(squash(&layout(&outcome.bytes, 2).text).contains(&squash(&rest)));
     assert!(squash(&layout(&outcome.bytes, 1).text).contains(&squash(&all[..all.len() - moved].join(" "))));
+    // The editor sends typing at the end of a paragraph as a pure insertion.
+    let end = before.paragraphs[paragraph(&before, CLOSING)].range[1];
+    let append = |overflow: &str| json!({ "op": "replaceText", "page": 1, "start": end, "end": end, "expected": "",
+        "text": format!(" {extra}"), "fallbackFont": "liberation-sans-regular", "overflow": overflow });
+    let error = apply(&source, json!([append("refuse")])).unwrap_err();
+    let details = overflow_details(&error);
+    assert!(details["words"].as_u64().unwrap() > 0 && details["nextPage"] == true, "{details:?}");
+    for policy in ["shrink", "continue", "nextPage"] {
+        let outcome = apply(&source, json!([append(policy)])).unwrap_or_else(|e| panic!("{policy}: {e}"));
+        let mut text = squash(&layout(&outcome.bytes, 1).text);
+        if policy == "nextPage" {
+            text.push_str(&squash(&layout(&outcome.bytes, 2).text));
+        }
+        for word in words(&wanted) {
+            assert!(text.contains(&squash(&word)), "{policy}: {word:?} kept");
+        }
+    }
 }
 
 // ---- addText ----
