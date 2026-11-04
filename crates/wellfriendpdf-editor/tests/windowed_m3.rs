@@ -716,3 +716,73 @@ fn large_file_redaction_rewrite_is_streamed() {
     let _ = std::fs::remove_dir(&scratch);
     assert!(elapsed.as_secs_f64() < 60.0);
 }
+
+/// Share of pixels darker than 40 and of near-white pixels in rows
+/// `[from, to)` (fractions of the height) of a page rendered at 24 dpi.
+fn band(engine: &ContentEngine, page: u32, from: f64, to: f64) -> (f64, f64) {
+    let raw = engine.render_page(page as usize, 24).unwrap().into_raw_image();
+    let (width, height, channels) = (raw.width as usize, raw.height as usize, raw.channels as usize);
+    let (mut dark, mut white, mut total) = (0usize, 0usize, 0usize);
+    for y in ((height as f64 * from) as usize + 2)..((height as f64 * to) as usize).saturating_sub(2) {
+        for x in 2..width - 2 {
+            let at = (y * width + x) * channels;
+            let luminance = raw.pixels[at..at + channels.min(3)].iter().map(|v| *v as usize).sum::<usize>() / channels.min(3);
+            total += 1;
+            dark += usize::from(luminance < 40);
+            white += usize::from(luminance > 245);
+        }
+    }
+    (dark as f64 / total.max(1) as f64, white as f64 / total.max(1) as f64)
+}
+
+/// QF-2599: redacting part of a scanned (JPEG) page removes only the area:
+/// the scan is decoded, the area painted and a new JPEG written; the old
+/// image object is gone from the rewrite. `WELLFRIENDPDF_REAL_PDF_DIR`.
+#[test]
+fn a_scanned_page_redaction_keeps_the_rest_of_the_scan() {
+    let Ok(dir) = std::env::var("WELLFRIENDPDF_REAL_PDF_DIR") else {
+        eprintln!("WELLFRIENDPDF_REAL_PDF_DIR unset; skipping");
+        return;
+    };
+    let path = std::path::Path::new(&dir).join("Bolt_Action_Rifles_3rd_Edition-p5-7.pdf");
+    let Ok(source) = std::fs::read(&path) else {
+        eprintln!("{} missing; skipping", path.display());
+        return;
+    };
+    let engine = ContentEngine::open_bytes(source.clone()).unwrap();
+    let page = engine.document().get_pages().unwrap()[0].clone();
+    let [x0, y0, x1, y1] = page.media_box;
+    let original = Document::load_mem(&source).unwrap();
+    let scans: Vec<Vec<u8>> = original
+        .objects
+        .values()
+        .filter_map(|o| o.as_stream().ok())
+        .filter(|s| s.dict.get(b"Filter").and_then(Object::as_name).is_ok_and(|f| f == b"DCTDecode"))
+        .map(|s| s.content[..s.content.len().min(4096)].to_vec())
+        .collect();
+    assert!(!scans.is_empty(), "the pages are JPEG scans");
+    let saved = list(json!({
+        "version": 1,
+        "windows": [{ "page": 1, "operations": [
+            { "op": "redact", "page": 1, "rect": { "x": x0, "y": (y0 + y1) / 2.0, "width": x1 - x0, "height": (y1 - y0) / 2.0 } }
+        ] }]
+    }));
+    let (bytes, result) = apply_windows(&source, &saved, fonts_dir(), true).unwrap();
+    assert_eq!(result.save_mode, "FULL_REWRITE");
+    let reopened = ContentEngine::open_bytes(bytes.clone()).unwrap();
+    let (upper_dark, _) = band(&reopened, 1, 0.0, 0.5);
+    let (_, lower_white) = band(&reopened, 1, 0.5, 1.0);
+    let (_, lower_white_before) = band(&engine, 1, 0.5, 1.0);
+    eprintln!("upper dark {upper_dark:.2}; lower white {lower_white:.2} (before {lower_white_before:.2})");
+    assert!(upper_dark > 0.97, "the upper half is redacted");
+    // Ink below the area survives (the old fallback dropped the whole scan).
+    let kept = (1.0 - lower_white) / (1.0 - lower_white_before).max(1e-6);
+    assert!(kept > 0.8 && kept < 1.25, "the lower half of the scan stays ({kept:.2} of its ink)");
+    // The page's old scan is not in the rewrite; the other pages' are.
+    let first = &scans.iter().filter(|scan| !find(&bytes, scan)).count();
+    assert_eq!(*first, 1, "exactly the redacted page's scan was replaced");
+    let rewritten = Document::load_mem(&bytes).unwrap();
+    let id = rewritten.get_pages()[&1];
+    let resources = rewritten.get_page_resources(id).unwrap();
+    assert!(resources.0.is_some() || !resources.1.is_empty());
+}
