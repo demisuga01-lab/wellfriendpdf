@@ -101,27 +101,25 @@ pub(crate) fn visible(glyph: &EditorGlyph) -> bool {
 /// Boxes match within 0.05 units: rewriting a content stream stores its
 /// numbers at single precision, which moves untouched glyphs by far less.
 pub(crate) fn edited_glyphs(before: &PageTextLayout, after: &PageTextLayout) -> Vec<bool> {
-    let mut unchanged: HashMap<&str, Vec<Option<[f64; 4]>>> = HashMap::new();
-    for glyph in &before.glyphs {
-        unchanged.entry(glyph.text.as_str()).or_default().push(Some(glyph.bbox));
+    unchanged_glyphs(before, after).iter().map(Option::is_none).collect()
+}
+
+/// For each glyph of `after`, the glyph of `before` it is (same text, same
+/// box within 0.05 units), or `None` when the edit drew it.
+pub(crate) fn unchanged_glyphs(before: &PageTextLayout, after: &PageTextLayout) -> Vec<Option<usize>> {
+    let mut unchanged: HashMap<&str, Vec<Option<([f64; 4], usize)>>> = HashMap::new();
+    for (index, glyph) in before.glyphs.iter().enumerate() {
+        unchanged.entry(glyph.text.as_str()).or_default().push(Some((glyph.bbox, index)));
     }
     after
         .glyphs
         .iter()
         .map(|glyph| {
-            let Some(candidates) = unchanged.get_mut(glyph.text.as_str()) else {
-                return true;
-            };
-            let same = candidates.iter_mut().find(|candidate| {
-                candidate.is_some_and(|b| b.iter().zip(glyph.bbox).all(|(x, y)| (x - y).abs() < 0.05))
-            });
-            match same {
-                Some(slot) => {
-                    *slot = None;
-                    false
-                }
-                None => true,
-            }
+            let candidates = unchanged.get_mut(glyph.text.as_str())?;
+            let slot = candidates.iter_mut().find(|candidate| {
+                candidate.is_some_and(|(b, _)| b.iter().zip(glyph.bbox).all(|(x, y)| (x - y).abs() < 0.05))
+            })?;
+            slot.take().map(|(_, index)| index)
         })
         .collect()
 }
@@ -872,30 +870,26 @@ fn intersects(a: [f64; 4], b: [f64; 4], tolerance: f64) -> bool {
     a[0] < b[2] - tolerance && b[0] < a[2] - tolerance && a[1] < b[3] - tolerance && b[1] < a[3] - tolerance
 }
 
-/// Whether an edited glyph of `layout` draws over a glyph the edit did not
-/// draw. `ignore` flags glyphs that already overlapped the source block
-/// (a watermark across the page, say); `edited` flags the edit's glyphs.
-pub(crate) fn overlap(layout: &PageTextLayout, edited: &[bool], ignore: &[bool]) -> Option<(String, String)> {
-    let mine: Vec<&EditorGlyph> =
-        layout.glyphs.iter().zip(edited).filter(|(g, e)| **e && visible(g)).map(|(g, _)| g).collect();
-    let area = mine.iter().map(|g| g.bbox).reduce(union)?;
+/// Intersecting pairs of a visible glyph flagged in `mine` and a visible,
+/// horizontal glyph flagged in neither `mine` nor `own` (the edited
+/// paragraph's own unchanged glyphs, whose spacing the line check owns),
+/// with the first pair found.
+pub(crate) fn overlaps(layout: &PageTextLayout, mine: &[bool], own: &[bool]) -> (usize, Option<(String, String)>) {
+    let flagged: Vec<&EditorGlyph> =
+        layout.glyphs.iter().zip(mine).filter(|(g, m)| **m && visible(g)).map(|(g, _)| g).collect();
+    let Some(area) = flagged.iter().map(|g| g.bbox).reduce(union) else {
+        return (0, None);
+    };
+    let mut count = 0;
+    let mut first = None;
     for (index, other) in layout.glyphs.iter().enumerate() {
-        if edited[index] || ignore[index] || !visible(other) || other.vertical || !intersects(other.bbox, area, 0.01) {
+        if mine[index] || own[index] || !visible(other) || other.vertical || !intersects(other.bbox, area, 0.01) {
             continue;
         }
-        if let Some(glyph) = mine.iter().find(|g| intersects(g.bbox, other.bbox, 0.01)) {
-            return Some((glyph.text.clone(), other.text.clone()));
+        for glyph in flagged.iter().filter(|g| intersects(g.bbox, other.bbox, 0.01)) {
+            count += 1;
+            first.get_or_insert_with(|| (glyph.text.clone(), other.text.clone()));
         }
     }
-    None
-}
-
-/// Glyphs of `layout` the edit did not draw that already crossed `area`.
-pub(crate) fn already_over(layout: &PageTextLayout, edited: &[bool], area: [f64; 4]) -> Vec<bool> {
-    layout
-        .glyphs
-        .iter()
-        .zip(edited)
-        .map(|(g, e)| !*e && intersects(g.bbox, area, 0.1))
-        .collect()
+    (count, first)
 }
