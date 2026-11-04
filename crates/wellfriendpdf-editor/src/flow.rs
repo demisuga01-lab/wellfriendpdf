@@ -51,15 +51,6 @@ pub(crate) struct Room {
 }
 
 impl Room {
-    /// Move everything by `cut` less (the room the page has), dropping
-    /// groups that no longer move.
-    pub fn reduce(&mut self, cut: f64) {
-        self.groups.retain_mut(|group| {
-            group.shift -= cut;
-            group.shift > 0.25
-        });
-    }
-
     pub fn lines(&self) -> usize {
         self.groups.iter().map(|g| g.lines.len()).sum()
     }
@@ -177,11 +168,16 @@ pub(crate) fn clips(bytes: &[u8], page: u32, layout: &PageTextLayout) -> Result<
 
 /// Which lines of `after` follow the source block in its column, and how far
 /// each must move for the edited glyphs (`edited`) to clear them.
+///
+/// Nothing may pass `limit` (the page's bottom margin, or its edge for
+/// `continue`, see `crate::overflow::bottom_limit`) or a clip it is drawn
+/// in; `Room::overflow` is by how much the plan would.
 pub(crate) fn plan(
     source: ([f64; 4], f64),
     after: &PageTextLayout,
     edited: &[bool],
     line_clips: &[Vec<[f64; 4]>],
+    limit: f64,
 ) -> Option<Room> {
     let (original, lowest_baseline) = source;
     let grown = edited_box(after, edited)?;
@@ -223,7 +219,17 @@ pub(crate) fn plan(
     let mut need = growth;
     let mut previous_bottom = original[1];
     let mut normal_gap: Option<f64> = None;
-    let mut overflow = (after.page_box[1] - grown[1]).max(0.0);
+    // The edited lines themselves: above the limit and inside their clips
+    // (what a clip hides is lost).
+    let edited_floor = after
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| edited[line.glyphs[0]..line.glyphs[1]].iter().any(|e| *e))
+        .flat_map(|(index, _)| line_clips.get(index).into_iter().flatten())
+        .map(|clip| clip[1])
+        .fold(limit, f64::max);
+    let mut overflow = (edited_floor - grown[1]).max(0.0);
     for (_, mut group) in found {
         let bbox = group.bbox;
         // Much wider than the column: a block spanning columns, below which
@@ -248,7 +254,7 @@ pub(crate) fn plan(
             .flat_map(|&line| line_clips.get(line).into_iter().flatten())
             .filter(|clip| !(clip[3] <= bbox[3] + t && clip[1] >= bbox[1] - t))
             .map(|clip| clip[1])
-            .fold(after.page_box[1], f64::max);
+            .fold(limit, f64::max);
         overflow = overflow.max(floor - (bbox[1] - need));
         group.shift = need;
         groups.push(group);

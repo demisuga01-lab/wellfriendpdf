@@ -40,6 +40,12 @@ pub struct OperationReport {
     /// Text removed by a redaction (glyph count only, never the text).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redacted_glyphs: Option<usize>,
+    /// How text that did not fit was placed (`shrink`, `continue`, `nextPage`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<crate::overflow::OverflowOutcome>,
+    /// The two parts of text continued on the next page, for the text check.
+    #[serde(skip)]
+    pub continued: Option<crate::overflow::Continued>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,17 +105,31 @@ pub fn apply_operation(
             expected,
             text,
             fallback_font,
-        } => replace_text(
-            input,
-            *page,
-            *start,
-            *end,
-            expected,
-            text,
-            fallback_font.as_deref(),
-            fonts,
-            &mut report,
-        )?,
+            overflow,
+        } => {
+            let (out, resolved) = crate::overflow::resolve(
+                *overflow,
+                || crate::restyle::text_size(input, *page, *start, *end),
+                |fit| {
+                    let mut attempt = report.clone();
+                    let out = replace_text(
+                        input,
+                        *page,
+                        *start,
+                        *end,
+                        expected,
+                        text,
+                        fallback_font.as_deref(),
+                        fonts,
+                        fit,
+                        &mut attempt,
+                    )?;
+                    Ok((out, attempt))
+                },
+            )?;
+            report = resolved;
+            out
+        }
         EditorOperation::TransformImage { selector, matrix } => {
             let (_, out) = scratch::run(input, None, |p| {
                 edit::transform_image(&edit::TransformImageRequest {
@@ -175,65 +195,29 @@ pub fn apply_operation(
             color,
             align,
             line_height,
+            overflow,
         } => {
-            let font_bytes = fonts.font_bytes(font).ok_or_else(|| {
-                EditorError::new(
-                    "EDITOR_FONT_UNAVAILABLE",
-                    format!("font {font} is not in the font library"),
-                )
-            })?;
-            let fallback = if covers(&font_bytes, text) {
-                None
-            } else {
-                ["noto-sans-regular", "dejavu-sans-regular"]
-                    .iter()
-                    .find_map(|id| {
-                        fonts
-                            .font_bytes(id)
-                            .filter(|b| covers(b, text))
-                            .map(|b| (*id, b))
-                    })
+            let item = crate::overflow::TextBox {
+                page: *page,
+                rect: *rect,
+                text,
+                font,
+                size: *size,
+                color,
+                align: *align,
+                line_height: *line_height,
             };
-            if let Some((id, _)) = &fallback {
-                report
-                    .notes
-                    .push(format!("Characters missing from {font} are set in {id}."));
-            } else if !covers(&font_bytes, text) {
-                report.notes.push(format!(
-                    "Some characters are missing from {font} and every fallback font."
-                ));
-            }
-            report.changed_region =
-                Some([rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]);
-            report.fonts_added.push(font.clone());
-            author_onto(input, *page, &spots([Some(color)]), |builder, origin| {
-                let face = builder
-                    .register_font_bytes(postscript_name(&font_bytes, font), font_bytes.clone())?;
-                let face = match &fallback {
-                    Some((id, bytes)) => {
-                        let extra = builder
-                            .register_font_bytes(postscript_name(bytes, id), bytes.clone())?;
-                        builder.register_font_stack(&[face, extra])?
-                    }
-                    None => face,
-                };
-                Ok(Box::new(
-                    move |page: &mut wellfriendpdf_engine::PdfPageBuilder| {
-                        draw_text_box(
-                            page,
-                            origin,
-                            rect,
-                            text,
-                            face,
-                            *size,
-                            color,
-                            *align,
-                            *line_height,
-                            ascent_ratio(&font_bytes),
-                        )
-                    },
-                ))
-            })?
+            let (out, resolved) = crate::overflow::resolve(
+                *overflow,
+                || Ok(*size),
+                |fit| {
+                    let mut attempt = report.clone();
+                    let out = crate::overflow::add_text(input, &item, fit, fonts, &mut attempt)?;
+                    Ok((out, attempt))
+                },
+            )?;
+            report = resolved;
+            out
         }
         EditorOperation::AddImage { page, rect, image } => {
             let data = decode_image(image)?;
@@ -367,22 +351,36 @@ pub fn apply_operation(
             color,
             align,
             line_height,
-        } => crate::restyle::restyle_text(
-            input,
-            &crate::restyle::Restyle {
-                page: *page,
-                start: *start,
-                end: *end,
-                expected,
-                font,
-                size: *size,
-                color: color.clone(),
-                align: *align,
-                line_height: *line_height,
-            },
-            fonts,
-            &mut report,
-        )?,
+            overflow,
+        } => {
+            let (out, resolved) = crate::overflow::resolve(
+                *overflow,
+                || match size {
+                    Some(size) => Ok(*size),
+                    None => crate::restyle::text_size(input, *page, *start, *end),
+                },
+                |fit| {
+                    let mut attempt = report.clone();
+                    let restyle = crate::restyle::Restyle {
+                        page: *page,
+                        start: *start,
+                        end: *end,
+                        expected,
+                        font,
+                        size: *size,
+                        color: color.clone(),
+                        align: *align,
+                        line_height: *line_height,
+                        replacement: None,
+                        fit,
+                    };
+                    let out = crate::restyle::restyle_text(input, &restyle, fonts, &mut attempt)?;
+                    Ok((out, attempt))
+                },
+            )?;
+            report = resolved;
+            out
+        }
         EditorOperation::CropImage { selector, crop } => {
             let (_, out) = scratch::run(input, None, |p| {
                 edit::crop_image(&edit::CropImageRequest {
@@ -458,7 +456,76 @@ pub fn apply_operation(
             editor.save_to_bytes(EditMode::FullRewrite)?
         }
     };
+    // No text operation may lose the words it was asked to show.
+    crate::overflow::ensure_kept(input, &bytes, operation, fonts, &report)?;
     Ok((bytes, report))
+}
+
+/// Draw an `addText` box (its overflow policy is `crate::overflow::add_text`).
+pub(crate) fn add_text(
+    input: &[u8],
+    item: &crate::overflow::TextBox<'_>,
+    fonts: &dyn FontSource,
+    report: &mut OperationReport,
+) -> Result<Vec<u8>, EditorError> {
+    let crate::overflow::TextBox { page, rect, text, font, size, color, align, line_height } = *item;
+    let font_bytes = fonts.font_bytes(font).ok_or_else(|| {
+        EditorError::new(
+            "EDITOR_FONT_UNAVAILABLE",
+            format!("font {font} is not in the font library"),
+        )
+    })?;
+    let fallback = if covers(&font_bytes, text) {
+        None
+    } else {
+        ["noto-sans-regular", "dejavu-sans-regular"]
+            .iter()
+            .find_map(|id| {
+                fonts
+                    .font_bytes(id)
+                    .filter(|b| covers(b, text))
+                    .map(|b| (*id, b))
+            })
+    };
+    if let Some((id, _)) = &fallback {
+        report
+            .notes
+            .push(format!("Characters missing from {font} are set in {id}."));
+    } else if !covers(&font_bytes, text) {
+        report.notes.push(format!(
+            "Some characters are missing from {font} and every fallback font."
+        ));
+    }
+    report.changed_region = Some([rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]);
+    report.fonts_added.push(font.to_owned());
+    author_onto(input, page, &spots([Some(color)]), |builder, origin| {
+        let face = builder
+            .register_font_bytes(postscript_name(&font_bytes, font), font_bytes.clone())?;
+        let face = match &fallback {
+            Some((id, bytes)) => {
+                let extra = builder
+                    .register_font_bytes(postscript_name(bytes, id), bytes.clone())?;
+                builder.register_font_stack(&[face, extra])?
+            }
+            None => face,
+        };
+        Ok(Box::new(
+            move |page: &mut wellfriendpdf_engine::PdfPageBuilder| {
+                draw_text_box(
+                    page,
+                    origin,
+                    &rect,
+                    text,
+                    face,
+                    size,
+                    color,
+                    align,
+                    line_height,
+                    ascent_ratio(&font_bytes),
+                )
+            },
+        ))
+    })
 }
 
 /// The font's PostScript name (so the PDF names the real typeface), else the id.
@@ -596,6 +663,7 @@ fn replace_text(
     text: &str,
     fallback_font: Option<&str>,
     fonts: &dyn FontSource,
+    fit: crate::overflow::Fit,
     report: &mut OperationReport,
 ) -> Result<Vec<u8>, EditorError> {
     let page = page as usize;
@@ -609,8 +677,9 @@ fn replace_text(
     // Text inside a placed form is edited in the form's own content.
     if let Some(form) = crate::forms::target(&before, start, end)? {
         let base = form.range[0];
+        let fit = fit.without_next_page();
         return crate::forms::edit_in_form(input, page as u32, &form, report, |bytes, scratch, report| {
-            replace_text(bytes, scratch, start - base, end - base, expected, text, fallback_font, fonts, report)
+            replace_text(bytes, scratch, start - base, end - base, expected, text, fallback_font, fonts, fit, report)
         });
     }
     if !before.editable {
@@ -618,6 +687,13 @@ fn replace_text(
             "EDITOR_TEXT_NOT_EDITABLE",
             "this page's text cannot be edited in place (its fonts do not decode to exact text)",
         ));
+    }
+    // A smaller size re-sets the whole paragraph (the in-place transaction
+    // keeps the source size).
+    if fit.size.is_some() {
+        return crate::restyle::reset_replacement(
+            input, &before, page as u32, start, end, text, fallback_font, fonts, fit, report,
+        );
     }
     // A pure insertion or deletion is widened by one neighbouring scalar that
     // is written back unchanged (the reflow transaction rewrites a non-empty
@@ -682,7 +758,19 @@ fn replace_text(
             None => first.map(|result| (result, None)),
         },
     };
-    let (result, used_library) = accepted?;
+    let (result, used_library) = match accepted {
+        Ok(accepted) => accepted,
+        // A paragraph that grows more than the transaction can reflow in
+        // place is re-set as new text; whether it then fits is the overflow
+        // policy's to decide (the transaction's refusal stands otherwise).
+        Err(error) if text.chars().count() > expected.chars().count() => {
+            return crate::restyle::reset_replacement(
+                input, &before, page as u32, start, end, text, fallback_font, fonts, fit, report,
+            )
+            .map_err(|reset| if reset.code == crate::overflow::OVERFLOW { reset } else { error });
+        }
+        Err(error) => return Err(error),
+    };
     if !result.fonts_added.is_empty() {
         report.notes.push(match &used_library {
             Some(id) => format!(
@@ -702,7 +790,17 @@ fn replace_text(
         .filter(|(_, p)| p.range[0] < selection[1].max(selection[0] + 1) && p.range[1] > selection[0])
         .map(|(i, _)| i)
         .collect();
-    crate::restyle::make_room(input, result.bytes, &before, &paragraphs, None, report)
+    let placed = crate::restyle::make_room(input, result.bytes, &before, &paragraphs, None, fit.without_next_page(), report);
+    match placed {
+        // The paragraph is re-set so the words that fit stay and the rest
+        // continues on the next page.
+        Err(error) if error.code == crate::overflow::OVERFLOW && fit.mode == crate::ops::TextOverflow::NextPage => {
+            crate::restyle::reset_replacement(
+                input, &before, page as u32, start, end, text, fallback_font, fonts, fit, report,
+            )
+        }
+        other => other,
+    }
 }
 
 struct Attempt {

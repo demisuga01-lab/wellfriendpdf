@@ -9,6 +9,10 @@ pub struct EditorError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation: Option<usize>,
+    /// Structured facts for the client (`EDITOR_TEXT_OVERFLOW`: how much
+    /// does not fit and which overflow policies can place it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl EditorError {
@@ -17,6 +21,7 @@ impl EditorError {
             code: code.to_owned(),
             message: message.into(),
             operation: None,
+            details: None,
         }
     }
 
