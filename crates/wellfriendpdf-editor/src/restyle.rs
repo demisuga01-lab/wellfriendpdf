@@ -183,7 +183,6 @@ pub(crate) fn make_room(
             ),
         }
     }
-    let ignore = flow::already_over(&after, &edited, source.0);
     if let Some(mut room) = room {
         if room.overflow > 0.25 {
             // Keep everything on the page: move by the room there is.
@@ -213,7 +212,26 @@ pub(crate) fn make_room(
             after = moved;
         }
     }
-    if let Some((mine, other)) = flow::overlap(&after, &edited, &ignore) {
+    // The edited glyphs may touch other text no more than the source
+    // paragraph did (glyph boxes taken from a font's ascent and descent
+    // often meet the next paragraph's already).
+    let source_glyphs: Vec<bool> = before
+        .glyphs
+        .iter()
+        .map(|g| {
+            paragraphs.iter().any(|&p| {
+                let r = before.paragraphs[p].range;
+                g.range[0] >= r[0] && g.range[1] <= r[1]
+            })
+        })
+        .collect();
+    let (was, _) = flow::overlaps(before, &source_glyphs, &source_glyphs);
+    let own: Vec<bool> = flow::unchanged_glyphs(before, &after)
+        .into_iter()
+        .map(|matched| matched.is_some_and(|index| source_glyphs[index]))
+        .collect();
+    let (now, pair) = flow::overlaps(&after, &edited, &own);
+    if let Some((mine, other)) = pair.filter(|_| now > was) {
         return Err(EditorError::new(
             "EDITOR_TEXT_LAYOUT_FAILED",
             format!("the edited paragraph would draw over other text ({mine:?} over {other:?})"),

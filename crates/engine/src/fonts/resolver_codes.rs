@@ -92,6 +92,29 @@ impl FontResolver {
             return Ok(candidates);
         }
         let mut candidates = Vec::new();
+        // A composite font decoded through its embedded program's cmap
+        // (no usable /ToUnicode) encodes back through the same map: every CID
+        // the program maps to `text`, as the code that selects it.
+        if self.font_type.is_cid() {
+            if let (Some(map), Some(length)) = (&self.cid_to_unicode, space.fixed_length()) {
+                for (cid, unicode) in map {
+                    if unicode != text {
+                        continue;
+                    }
+                    if let Ok(code) = CharacterCode::new(u32::from(*cid), length) {
+                        if space.contains(code)
+                            && self.cid_for_character(code).ok() == Some(*cid)
+                            && self.decode_code(code) == text
+                        {
+                            candidates.push(code);
+                        }
+                    }
+                }
+                if !candidates.is_empty() {
+                    return Ok(candidates);
+                }
+            }
+        }
         // This compatibility fallback covers simple encodings and legacy
         // Identity inference. Never enumerate a 32-bit character domain.
         if self.font_type.is_cid() {
