@@ -16,6 +16,7 @@ mod forms;
 pub mod images;
 pub mod objects;
 pub mod ops;
+pub mod overflow;
 pub mod overlay;
 pub mod pages;
 #[cfg(not(target_arch = "wasm32"))]

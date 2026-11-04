@@ -91,6 +91,7 @@ fn measure_glyph_reuse() {
                     expected: text.clone(),
                     text: reversed,
                     fallback_font: Some("liberation-sans-regular".into()),
+                    overflow: Default::default(),
                 };
                 let counts = file.entry(kind.clone()).or_default();
                 match apply_operation(&bytes, &operation, &fonts, true) {

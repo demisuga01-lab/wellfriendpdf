@@ -186,6 +186,34 @@ pub enum Align {
     Right,
 }
 
+/// What a text operation does when its text does not fit the room it has
+/// (the page's bottom margin, the text below it in its column, or an added
+/// text box). No policy drops words: every applied text operation is
+/// checked to keep all of its text on the page (`crate::overflow`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TextOverflow {
+    /// The operation fails with `EDITOR_TEXT_OVERFLOW` and the document is
+    /// unchanged.
+    #[default]
+    Refuse,
+    /// The font size (and with it the line spacing) is reduced until every
+    /// word fits.
+    Shrink,
+    /// The text keeps its style and runs past its box or the bottom margin,
+    /// down to the page edge, never over other text.
+    Continue,
+    /// The words that do not fit continue at the top of the same column on
+    /// the next page, which moves its column text down to make room.
+    NextPage,
+}
+
+impl TextOverflow {
+    pub fn is_refuse(&self) -> bool {
+        *self == TextOverflow::Refuse
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShapeKind {
@@ -210,6 +238,9 @@ pub enum EditorOperation {
         text: String,
         #[serde(default)]
         fallback_font: Option<String>,
+        /// When the edited paragraph no longer fits on the page.
+        #[serde(default, skip_serializing_if = "TextOverflow::is_refuse")]
+        overflow: TextOverflow,
     },
     /// Set an image placement's matrix (move, resize, rotate).
     #[serde(rename_all = "camelCase")]
@@ -246,6 +277,9 @@ pub enum EditorOperation {
         align: Align,
         #[serde(default = "default_line_height")]
         line_height: f64,
+        /// When the text does not fit in `rect`.
+        #[serde(default, skip_serializing_if = "TextOverflow::is_refuse")]
+        overflow: TextOverflow,
     },
     #[serde(rename_all = "camelCase")]
     AddImage {
@@ -320,6 +354,9 @@ pub enum EditorOperation {
         align: Option<Align>,
         #[serde(default)]
         line_height: Option<f64>,
+        /// When the restyled paragraph no longer fits on the page.
+        #[serde(default, skip_serializing_if = "TextOverflow::is_refuse")]
+        overflow: TextOverflow,
     },
     /// Crop an image placement to the kept rectangle `crop` in image space
     /// (0 to 1 from the image's lower-left corner; `right > left` and
@@ -680,6 +717,7 @@ pub fn validate_operation(
             expected,
             text: t,
             fallback_font,
+            ..
         } => {
             page(*p)?;
             if start > end {

@@ -36,13 +36,23 @@ fn paragraph(layout: &PageTextLayout, prefix: &str) -> usize {
 }
 
 fn restyle(source: &[u8], prefix: &str, size: f64) -> wellfriendpdf_editor::ApplyOutcome {
+    restyle_with(source, prefix, size, "refuse").unwrap()
+}
+
+/// A restyle under an overflow policy (see `text_overflow.rs`).
+fn restyle_with(
+    source: &[u8],
+    prefix: &str,
+    size: f64,
+    overflow: &str,
+) -> Result<wellfriendpdf_editor::ApplyOutcome, wellfriendpdf_editor::EditorError> {
     let before = layout(source, 1);
     let p = &before.paragraphs[paragraph(&before, prefix)];
     let operations = list(json!([{ "op": "restyleText", "page": 1, "start": p.range[0], "end": p.range[1],
-        "expected": before.text_in(p.range), "font": "gelasio-bold", "size": size }]));
-    let outcome = apply_operations(source, &operations, &library(), false).unwrap();
+        "expected": before.text_in(p.range), "font": "gelasio-bold", "size": size, "overflow": overflow }]));
+    let outcome = apply_operations(source, &operations, &library(), false)?;
     keep(&format!("restyle-{}", prefix.replace(' ', "-")), &outcome.bytes);
-    outcome
+    Ok(outcome)
 }
 
 /// With `WF_EDITOR_TEST_OUT` set, write `bytes` there for a visual check.
@@ -87,7 +97,10 @@ fn a_restyled_paragraph_pushes_the_text_below_it_in_its_column() {
     let before = layout(WIKIPEDIA, 1);
     let following = before.paragraphs[paragraph(&before, "PDF.js is used in Thunderbird")].bbox;
     let infobox = before.paragraphs[paragraph(&before, "Developer(s)")].bbox;
-    let outcome = restyle(WIKIPEDIA, "The project was created to provide", 13.0);
+    // 12.5 pt grows the paragraph past the page's bottom margin (the lowest
+    // text on the page): `continue` lets the column use the room down to
+    // Chrome's printable-area clip.
+    let outcome = restyle_with(WIKIPEDIA, "The project was created to provide", 12.5, "continue").unwrap();
     let after = layout(&outcome.bytes, 1);
     let restyled = paragraph(&after, "The project was created to provide");
     let hits = collisions(&after, restyled);
@@ -95,39 +108,44 @@ fn a_restyled_paragraph_pushes_the_text_below_it_in_its_column() {
     // It grew and the next paragraph of its column moved down by as much.
     let grown = after.paragraphs[restyled].bbox;
     let original = before.paragraphs[paragraph(&before, "The project was created to provide")].bbox;
-    assert!(grown[1] < original[1] - 20.0, "the paragraph grew: {grown:?} from {original:?}");
+    assert!(grown[1] < original[1] - 15.0, "the paragraph grew: {grown:?} from {original:?}");
     let moved = after.paragraphs[paragraph(&after, "PDF.js is used in Thunderbird")].bbox;
-    assert!(moved[3] < following[3] - 20.0, "following paragraph moved down: {moved:?} from {following:?}");
+    assert!(moved[3] < following[3] - 15.0, "following paragraph moved down: {moved:?} from {following:?}");
     assert!((moved[2] - following[2]).abs() < 0.5, "only moved vertically");
     // The gap above the moved paragraph is the source's.
     assert!(((original[1] - following[3]) - (grown[1] - moved[3])).abs() < 0.5);
     // The other column (the infobox) stays put.
     let infobox_after = after.paragraphs[paragraph(&after, "Developer(s)")].bbox;
     assert!(infobox.iter().zip(infobox_after).all(|(a, b)| (a - b).abs() < 0.01), "{infobox:?} {infobox_after:?}");
-    // Every paragraph of the page still reads the same.
+    // Every paragraph of the page still reads the same, the restyled one
+    // with every word.
     for p in &before.paragraphs {
         let text = before.text_in(p.range);
-        if !text.starts_with("The project was created") {
-            assert!(after.text.contains(&text), "{text:?} kept");
-        }
+        assert!(squash(&after.text).contains(&squash(&text)), "{text:?} kept");
     }
-    // Nothing moved out of Chrome's printable-area clip (28 pt margins):
-    // the column runs out of room, so the restyled paragraph keeps its
-    // size, ends where there is room and the report says what did not fit.
+    // Nothing moved out of Chrome's printable-area clip (28 pt margins).
     let lines = after.paragraphs[restyled].lines;
     for glyph in after.glyphs.iter().filter(|g| g.line < lines[0] || g.line >= lines[1]) {
         assert!(glyph.bbox[1] >= 28.0 - 0.01, "{glyph:?} stays inside the page clip");
     }
     let notes = &outcome.reports[0].notes;
     assert!(notes.iter().any(|n| n.contains("moved down")), "{notes:?}");
-    assert!(notes.iter().any(|n| n.starts_with("Overflow") && n.contains("do not fit")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("past the bottom margin")), "{notes:?}");
     let sizes: Vec<f64> = after
         .glyphs
         .iter()
         .filter(|g| g.line >= lines[0] && g.line < lines[1] && !g.text.trim().is_empty())
         .map(|g| g.font_size)
         .collect();
-    assert!(sizes.iter().all(|s| (s - 13.0).abs() < 0.2), "{sizes:?}");
+    assert!(sizes.iter().all(|s| (s - 12.5).abs() < 0.2), "{sizes:?}");
+    // At 13 pt the column has no room even down to the clip: refused, with
+    // nothing left out.
+    let error = restyle_with(WIKIPEDIA, "The project was created to provide", 13.0, "continue").unwrap_err();
+    assert_eq!(error.code, "EDITOR_TEXT_OVERFLOW", "{error}");
+}
+
+fn squash(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 #[test]
@@ -174,11 +192,18 @@ fn pushing_moves_only_the_edited_column() {
 
 #[test]
 fn a_paragraph_without_room_on_the_page_reports_its_overflow() {
+    // At 18 pt the paragraph cannot fit on the page at all: refused, with
+    // what does not fit, and nothing applied.
+    let error = restyle_with(WIKIPEDIA, "According to a benchmark by Mozilla", 18.0, "refuse").unwrap_err();
+    assert_eq!(error.code, "EDITOR_TEXT_OVERFLOW", "{error}");
+    let details = error.details.clone().unwrap();
+    assert!(details["words"].as_u64().unwrap() > 0, "{details}");
+    assert_eq!(details["continue"], false, "{details}");
+    // At 13 pt it fits once it may use the bottom margin.
     let before = layout(WIKIPEDIA, 1);
-    let outcome = restyle(WIKIPEDIA, "According to a benchmark by Mozilla", 18.0);
+    assert_eq!(restyle_with(WIKIPEDIA, "According to a benchmark by Mozilla", 13.0, "refuse").unwrap_err().code, "EDITOR_TEXT_OVERFLOW");
+    let outcome = restyle_with(WIKIPEDIA, "According to a benchmark by Mozilla", 13.0, "continue").unwrap();
     let after = layout(&outcome.bytes, 1);
-    let notes = &outcome.reports[0].notes;
-    assert!(notes.iter().any(|n| n.starts_with("Overflow")), "{notes:?}");
     // (The heading above it, drawn just before the re-set text, may join
     // its paragraph in the layout.)
     let restyled = after
@@ -195,14 +220,16 @@ fn a_paragraph_without_room_on_the_page_reports_its_overflow() {
         .filter(|g| g.line >= lines[0] && g.line < lines[1] && !g.text.trim().is_empty())
         .map(|g| g.font_size)
         .collect();
-    assert!(sizes.iter().all(|s| (s - 18.0).abs() < 0.2), "{sizes:?}");
+    assert!(sizes.iter().all(|s| (s - 13.0).abs() < 0.2), "{sizes:?}");
     // ... the paragraph below was moved but stays on the page ...
     let below = &before.paragraphs[paragraph(&before, "PDF.js supports most of the PDF")];
     let moved = after.paragraphs[paragraph(&after, "PDF.js supports most of the PDF")].bbox;
     assert!(moved[1] < below.bbox[1] - 1.0 && moved[1] >= after.page_box[1], "{moved:?}");
     assert!(after.glyphs.iter().all(|g| g.bbox[1] >= after.page_box[1] - 0.01));
-    // ... and only the restyled paragraph lost the words that did not fit.
+    // ... and every word of both is on the page.
     assert!(after.text.contains(&before.text_in(below.range)));
+    let restyled_text = before.text_in(before.paragraphs[paragraph(&before, "According to a benchmark by Mozilla")].range);
+    assert!(squash(&after.text).contains(&squash(&restyled_text)));
 }
 
 // ---- Text inside Form XObjects ----
