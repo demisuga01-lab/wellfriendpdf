@@ -411,6 +411,27 @@ pub enum EditorOperation {
         #[serde(default)]
         author: Option<String>,
     },
+    /// An invisible OCR text layer (rendering mode 3) over a scanned page:
+    /// each line at one size filling its box, each word scaled to its box
+    /// (see [`crate::text_layer`]). `font` defaults to Noto Sans.
+    #[serde(rename_all = "camelCase")]
+    AddTextLayer {
+        page: u32,
+        lines: Vec<crate::text_layer::OcrLine>,
+        #[serde(default)]
+        font: Option<String>,
+    },
+    /// Replace scanned lines with visible, editable text that keeps the
+    /// scan's look (measured ink colour, baseline, size and width; the
+    /// line area painted with the paper colour). `font` defaults to
+    /// Liberation Serif.
+    #[serde(rename_all = "camelCase")]
+    ConvertOcrText {
+        page: u32,
+        lines: Vec<crate::text_layer::OcrLine>,
+        #[serde(default)]
+        font: Option<String>,
+    },
     /// Fill an AcroForm field by its fully qualified name; appearances are
     /// regenerated. Checkboxes take "true"/"false".
     #[serde(rename_all = "camelCase")]
@@ -469,6 +490,8 @@ impl EditorOperation {
             Self::InsertPages { .. } => "insertPages",
             Self::AddAnnotation { .. } => "addAnnotation",
             Self::SetFormField { .. } => "setFormField",
+            Self::AddTextLayer { .. } => "addTextLayer",
+            Self::ConvertOcrText { .. } => "convertOcrText",
         }
     }
 
@@ -496,7 +519,9 @@ impl EditorOperation {
             | Self::RotatePage { page, .. }
             | Self::DeletePage { page }
             | Self::MovePage { page, .. }
-            | Self::AddAnnotation { page, .. } => *page,
+            | Self::AddAnnotation { page, .. }
+            | Self::AddTextLayer { page, .. }
+            | Self::ConvertOcrText { page, .. } => *page,
             Self::InsertBlankPage { after, .. } | Self::InsertPages { after, .. } => after + 1,
             Self::TransformImage { selector, .. }
             | Self::DeleteImage { selector }
@@ -990,6 +1015,11 @@ pub fn validate_operation(
                 }
                 _ => {}
             }
+        }
+        EditorOperation::AddTextLayer { page: p, lines, font }
+        | EditorOperation::ConvertOcrText { page: p, lines, font } => {
+            page(*p)?;
+            crate::text_layer::validate(lines, font.as_deref())?;
         }
         EditorOperation::SetFormField { name, value, .. } => {
             if name.is_empty() || name.len() > 512 || name.chars().any(char::is_control) {

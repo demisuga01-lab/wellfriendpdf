@@ -22,6 +22,7 @@ pub mod pages;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod protocol;
 pub mod restyle;
+pub mod text_layer;
 mod scratch;
 pub mod windows;
 
