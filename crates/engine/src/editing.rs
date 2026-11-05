@@ -3853,17 +3853,28 @@ fn redacted_image_xobject(
     {
         return Ok(None);
     }
-    let decoded = decode_stream_lossless(&obj, reader)?;
-    if !matches!(decoded.status, StreamDecodeStatus::Complete) {
-        return Ok(None);
-    }
     let channels = layout.channels();
     let expected_samples = usize::try_from(width)
         .ok()
         .and_then(|w| w.checked_mul(height as usize))
         .and_then(|pixels| pixels.checked_mul(channels))
         .ok_or_else(|| WellfriendError::ResourceLimit("image sample count overflow".to_string()))?;
-    let mut samples = unpack_samples_exact(&decoded.data, width, height, channels, bpc)?;
+    // A JPEG (gray or RGB) cannot be decoded losslessly: its pixels are
+    // decoded, redacted and encoded as a new JPEG, so nothing of the area's
+    // original coefficients survives. Otherwise the whole placement would be
+    // dropped (the secure fallback), blanking a scanned page.
+    let jpeg = redactable_jpeg_samples(&obj, layout, width, height, channels, bpc, image_mask);
+    let is_jpeg = jpeg.is_some();
+    let mut samples = match jpeg {
+        Some(pixels) => pixels,
+        None => {
+            let decoded = decode_stream_lossless(&obj, reader)?;
+            if !matches!(decoded.status, StreamDecodeStatus::Complete) {
+                return Ok(None);
+            }
+            unpack_samples_exact(&decoded.data, width, height, channels, bpc)?
+        }
+    };
     if samples.len() != expected_samples {
         return Err(WellfriendError::MalformedPdf(
             "decoded image sample length does not match dimensions".to_string(),
@@ -3914,14 +3925,21 @@ fn redacted_image_xobject(
     if !changed {
         return Ok(None);
     }
-    let packed = pack_samples_exact(&samples, width, height, channels, bpc)?;
+    let (filter, encoded) = if is_jpeg {
+        ("DCTDecode", encode_redacted_jpeg(&samples, width, height, channels)?)
+    } else {
+        (
+            "FlateDecode",
+            flate_encode(&pack_samples_exact(&samples, width, height, channels, bpc)?, 9),
+        )
+    };
     let mut output_dict = image_dict.clone();
     output_dict.remove("F");
     output_dict.remove("Filter");
     output_dict.remove("DP");
     output_dict.remove("DecodeParms");
     output_dict.remove("Length");
-    output_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+    output_dict.insert("Filter", PdfObject::Name(filter.to_string()));
     output_dict.remove("Mask");
     output_dict.remove("SMask");
 
@@ -3941,8 +3959,69 @@ fn redacted_image_xobject(
     }
     Ok(Some(PdfObject::Stream {
         dict: output_dict,
-        raw: flate_encode(&packed, 9),
+        raw: encoded,
     }))
+}
+
+/// Largest JPEG a redaction decodes (samples).
+const MAX_REDACTED_JPEG_SAMPLES: usize = 256 * 1024 * 1024;
+
+/// The decoded samples of a plain JPEG image (`/DCTDecode` only, 8-bit
+/// DeviceGray/DeviceRGB or a 1/3-channel ICC space, no `/Decode`), when they
+/// match its dictionary; `None` for anything else.
+fn redactable_jpeg_samples(
+    obj: &PdfObject,
+    layout: SecureImageLayout,
+    width: u32,
+    height: u32,
+    channels: usize,
+    bpc: u8,
+    image_mask: bool,
+) -> Option<Vec<u8>> {
+    let PdfObject::Stream { dict, raw } = obj else {
+        return None;
+    };
+    let filters: Vec<&str> = match dict.get("Filter").or_else(|| dict.get("F")) {
+        Some(PdfObject::Name(name)) => vec![name.as_str()],
+        Some(PdfObject::Array(items)) => items.iter().filter_map(PdfObject::as_name).collect(),
+        _ => return None,
+    };
+    if !matches!(filters.as_slice(), ["DCTDecode"] | ["DCT"])
+        || image_mask
+        || bpc != 8
+        || !matches!(channels, 1 | 3)
+        || matches!(layout, SecureImageLayout::Indexed { .. } | SecureImageLayout::Stencil { .. })
+        || dict.get("Decode").is_some()
+        || (width as usize).saturating_mul(height as usize).saturating_mul(channels) > MAX_REDACTED_JPEG_SAMPLES
+    {
+        return None;
+    }
+    let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(raw.as_slice()));
+    let pixels = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    let decoded_channels = match info.pixel_format {
+        jpeg_decoder::PixelFormat::L8 => 1,
+        jpeg_decoder::PixelFormat::RGB24 => 3,
+        _ => return None,
+    };
+    (u32::from(info.width) == width
+        && u32::from(info.height) == height
+        && decoded_channels == channels
+        && pixels.len() == width as usize * height as usize * channels)
+        .then_some(pixels)
+}
+
+/// Encode redacted JPEG samples as a new baseline JPEG.
+fn encode_redacted_jpeg(samples: &[u8], width: u32, height: u32, channels: usize) -> Result<Vec<u8>> {
+    let color = if channels == 1 { jpeg_encoder::ColorType::Luma } else { jpeg_encoder::ColorType::Rgb };
+    let (Ok(w), Ok(h)) = (u16::try_from(width), u16::try_from(height)) else {
+        return Err(WellfriendError::UnsupportedFeature("redacted JPEG is too large".to_string()));
+    };
+    let mut out = Vec::new();
+    jpeg_encoder::Encoder::new(&mut out, 92)
+        .encode(samples, w, h, color)
+        .map_err(|e| WellfriendError::UnsupportedFeature(format!("redacted JPEG encode failed: {e}")))?;
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy)]

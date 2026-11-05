@@ -9,6 +9,8 @@
 
 pub mod annotations;
 pub mod apply;
+pub mod content_objects;
+pub mod delta;
 pub mod error;
 pub mod fonts;
 mod flow;
@@ -22,6 +24,7 @@ pub mod pages;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod protocol;
 pub mod restyle;
+pub mod text_layer;
 mod scratch;
 pub mod windows;
 

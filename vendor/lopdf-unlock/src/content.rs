@@ -35,6 +35,25 @@ impl<Operations: AsRef<[Operation]>> Content<Operations> {
             } else {
                 buffer.write_all(b"\n")?;
             }
+            if operation.operator == "BI" {
+                // An inline image: `BI <entries> ID <data> EI`, the data as read.
+                let Some(Object::Stream(image)) = operation.operands.first() else {
+                    return Err(crate::Error::InvalidInlineImage(String::from(
+                        "an inline image without its data cannot be written",
+                    )));
+                };
+                buffer.write_all(b"BI")?;
+                for (key, value) in image.dict.iter() {
+                    buffer.write_all(b" ")?;
+                    Writer::write_object(&mut buffer, &Object::Name(key.clone()))?;
+                    buffer.write_all(b" ")?;
+                    Writer::write_object(&mut buffer, value)?;
+                }
+                buffer.write_all(b" ID ")?;
+                buffer.write_all(&image.content)?;
+                buffer.write_all(b"\nEI")?;
+                continue;
+            }
             for operand in &operation.operands {
                 Writer::write_object(&mut buffer, operand)?;
                 buffer.write_all(b" ")?;
@@ -44,3 +63,4 @@ impl<Operations: AsRef<[Operation]>> Content<Operations> {
         Ok(buffer)
     }
 }
+

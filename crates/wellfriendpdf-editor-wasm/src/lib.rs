@@ -30,6 +30,16 @@ pub struct PdfEditorSession {
     engine: ContentEngine,
     cache: RenderDocumentCache,
     fonts: MemoryFonts,
+    /// The object-level delta of the last applied operation (undo/redo).
+    last_delta: Option<Vec<u8>>,
+}
+
+fn direction(forward: bool) -> wellfriendpdf_editor::delta::Direction {
+    if forward {
+        wellfriendpdf_editor::delta::Direction::Forward
+    } else {
+        wellfriendpdf_editor::delta::Direction::Backward
+    }
 }
 
 #[wasm_bindgen]
@@ -44,6 +54,7 @@ impl PdfEditorSession {
             engine,
             cache: RenderDocumentCache::new(),
             fonts: MemoryFonts::new(),
+            last_delta: None,
         })
     }
 
@@ -101,7 +112,7 @@ impl PdfEditorSession {
         match raw.channels {
             4 => rgba = raw.pixels,
             3 => {
-                for chunk in raw.pixels.chunks_exact(3) {
+                for chunk in raw.pixels.as_chunks::<3>().0 {
                     rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
                 }
             }
@@ -177,8 +188,27 @@ impl PdfEditorSession {
             allow_signature_invalidation,
         )
         .map_err(editor_err)?;
+        // The history step keeps what changed, not the document (undo and
+        // redo restore those objects). `None` when either side cannot be
+        // read as an object graph: the worker then keeps snapshots.
+        self.last_delta = wellfriendpdf_editor::delta::compute(&self.bytes, &bytes)
+            .ok()
+            .map(|delta| delta.to_bytes());
         self.set_bytes(&bytes)?;
         serde_json::to_string(&report).map_err(js_err)
+    }
+
+    /// The object-level delta of the last `apply` (taken once).
+    #[wasm_bindgen(js_name = takeDelta)]
+    pub fn take_delta(&mut self) -> Option<Vec<u8>> {
+        self.last_delta.take()
+    }
+
+    /// Undo (`forward = false`) or redo a history step from its delta.
+    #[wasm_bindgen(js_name = applyDelta)]
+    pub fn apply_delta(&mut self, delta: &[u8], forward: bool) -> Result<(), JsValue> {
+        let bytes = apply_object_delta(&self.bytes, delta, forward)?;
+        self.set_bytes(&bytes)
     }
 
     /// Replace the current document (undo/redo restores a snapshot).
@@ -206,4 +236,33 @@ impl PdfEditorSession {
     pub fn byte_length(&self) -> usize {
         self.bytes.len()
     }
+}
+
+/// Undo (`forward = false`) or redo an object-level delta on `bytes`
+/// (a page window that has no live session).
+#[wasm_bindgen(js_name = applyObjectDelta)]
+pub fn apply_object_delta(bytes: &[u8], delta: &[u8], forward: bool) -> Result<Vec<u8>, JsValue> {
+    let delta = wellfriendpdf_editor::delta::ObjectDelta::from_bytes(delta).map_err(editor_err)?;
+    delta.apply(bytes, direction(forward)).map_err(editor_err)
+}
+
+/// The window of a blank page inserted into a large (windowed) document,
+/// the same bytes the server builds when it saves the insertion.
+#[wasm_bindgen(js_name = blankWindow)]
+pub fn blank_window(width: f64, height: f64) -> Result<Vec<u8>, JsValue> {
+    wellfriendpdf_editor::windows::blank_window(width, height).map_err(editor_err)
+}
+
+/// The windows of pages of another PDF inserted into a large document (all
+/// pages when `pages_json` is `[]`), one per page, as the server builds them.
+#[wasm_bindgen(js_name = insertedWindows)]
+pub fn inserted_windows(pdf: &[u8], pages_json: &str) -> Result<js_sys::Array, JsValue> {
+    wellfriendpdf_editor::apply::host_independent();
+    let pages: Vec<u32> = serde_json::from_str(pages_json).map_err(js_err)?;
+    let windows = wellfriendpdf_editor::windows::inserted_windows(pdf, &pages).map_err(editor_err)?;
+    let out = js_sys::Array::new();
+    for window in windows {
+        out.push(&js_sys::Uint8Array::from(window.as_slice()));
+    }
+    Ok(out)
 }

@@ -664,37 +664,67 @@ fn inline_image(input: ParserInput) -> NomResult<(Vec<Object>, String)> {
 
 fn inline_image_impl(input: ParserInput) -> NomResult<(Vec<Object>, String)> {
     let (input, stream_dict) = inner_dictionary(crate::reader::MAX_NESTING_DEPTH).parse(input)?;
-    let (input, _) = pair(tag(&b"ID"[..]), content_space).parse(input)?;
-    match image_data_stream(input, stream_dict) {
-        Ok((input, stream)) => {
-            let (input, _) = (content_space, tag(&b"EI"[..]), content_space).parse(input)?;
-            Ok((input, (vec![Object::Stream(stream)], String::from("BI"))))
-        }
-        Err(e) => {
-            // Skip to EI marker so the rest of the content stream can still be parsed.
-            log::warn!("Skipping unparseable inline image: {e}");
-            let bytes = input;
-            // EI must appear after whitespace to distinguish from data bytes.
-            let ei_pos = bytes
-                .windows(4)
-                .position(|w| {
-                    (w[0] == b' ' || w[0] == b'\n' || w[0] == b'\r')
-                        && w[1] == b'E'
-                        && w[2] == b'I'
-                        && (w[3] == b' ' || w[3] == b'\n' || w[3] == b'\r')
-                })
-                .ok_or_else(|| {
-                    let err: NomError = nom::error::Error::from_error_kind(input, ErrorKind::Fail);
-                    nom::Err::Failure(err)
-                })?;
-            let (input, _) = take(ei_pos + 3).parse(input).map_err(|_: nom::Err<()>| {
-                let err: NomError = nom::error::Error::from_error_kind(input, ErrorKind::Fail);
-                nom::Err::Failure(err)
-            })?;
-            let (input, _) = content_space(input)?;
-            Ok((input, (vec![], String::from("BI"))))
+    let (input, _) = tag(&b"ID"[..]).parse(input)?;
+    // Exactly one white-space byte separates `ID` from the data (the data
+    // itself may start with bytes that look like white space).
+    let input = match input.first() {
+        Some(byte) if b" \t\r\n\x0C\0".contains(byte) => &input[1..],
+        _ => input,
+    };
+    // Unfiltered data of a known colour space has a computable length.
+    if let Ok((rest, stream)) = image_data_stream(input, stream_dict.clone()) {
+        if let Ok((rest, _)) = (content_space, tag(&b"EI"[..]), inline_image_end).parse(rest) {
+            let (rest, _) = content_space(rest)?;
+            return Ok((rest, (vec![Object::Stream(stream)], String::from("BI"))));
         }
     }
+    // Filtered data (DCT, Flate, ASCII85, ...) or a named or indexed colour
+    // space: the data is kept exactly as written, filter entries included, up
+    // to the `EI` that ends it, so re-encoding the content stream writes the
+    // same image back (it used to be dropped).
+    let end = inline_image_data_end(input).ok_or_else(|| {
+        let err: NomError = nom::error::Error::from_error_kind(input, ErrorKind::Fail);
+        nom::Err::Failure(err)
+    })?;
+    let data = &input[..end];
+    let rest = &input[end..];
+    let (rest, _) = (content_space, tag(&b"EI"[..])).parse(rest)?;
+    let (rest, _) = content_space(rest)?;
+    Ok((rest, (vec![Object::Stream(Stream::new(stream_dict, data.to_vec()))], String::from("BI"))))
+}
+
+/// `EI` must be followed by white space, a delimiter or the end of the stream.
+fn inline_image_end(input: ParserInput) -> NomResult<()> {
+    match input.first() {
+        None => Ok((input, ())),
+        Some(byte) if b" \t\r\n\x0C\0/[<(%".contains(byte) => Ok((input, ())),
+        _ => Err(nom::Err::Error(nom::error::Error::from_error_kind(input, ErrorKind::Tag))),
+    }
+}
+
+/// Offset of the white space before the `EI` that ends inline image data.
+/// A candidate `EI` must be preceded by white space, followed by white space,
+/// a delimiter or the end, and what follows must look like content operators
+/// (printable ASCII), the check other readers use for binary data that
+/// happens to contain `EI`. Without such a candidate the first `EI` wins.
+pub(crate) fn inline_image_data_end(data: &[u8]) -> Option<usize> {
+    let is_space = |b: u8| b" \t\r\n\x0C\0".contains(&b);
+    let mut first = None;
+    let mut index = 0;
+    while index + 3 <= data.len() {
+        if is_space(data[index]) && data[index + 1] == b'E' && data[index + 2] == b'I' {
+            let after = index + 3;
+            if after == data.len() || is_space(data[after]) || b"/[<(%".contains(&data[after]) {
+                first.get_or_insert(index);
+                let tail = &data[after..data.len().min(after + 48)];
+                if tail.iter().all(|b| is_space(*b) || (0x20..0x7F).contains(b)) {
+                    return Some(index);
+                }
+            }
+        }
+        index += 1;
+    }
+    first
 }
 
 fn image_data_stream(input: ParserInput, stream_dict: Dictionary) -> crate::Result<(ParserInput, Stream)> {
@@ -707,8 +737,12 @@ fn image_data_stream(input: ParserInput, stream_dict: Dictionary) -> crate::Resu
         // If we have an image mask then we don't have a colorspace
         Ok(true) => 1,
         _ => {
-            let colorspace = get_abbr(b"CS", b"ColorSpace").unwrap().as_name()?;
+            let colorspace = match get_abbr(b"CS", b"ColorSpace")? {
+                Object::Array(items) if items.first().and_then(|o| o.as_name().ok()).is_some_and(|n| n == b"I" || n == b"Indexed") => b"Indexed".as_slice(),
+                other => other.as_name()?,
+            };
             match colorspace {
+                b"Indexed" => 1,
                 b"DeviceGray" | b"Gray" => 1,
                 b"DeviceRGB" | b"RGB" => 3,
                 b"DeviceRGBA" | b"RGBA" => 4,

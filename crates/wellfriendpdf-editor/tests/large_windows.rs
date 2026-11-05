@@ -20,7 +20,7 @@ fn book(pages: usize) -> Vec<u8> {
     let serif = builder.register_font_bytes("Book-Serif", SERIF.to_vec()).unwrap();
     for index in 0..pages {
         let page = builder.add_page(AuthorPageSize::custom(612.0, 792.0));
-        page.draw_text(&format!("Chapter {} opens here.", index + 1), 72.0, 700.0, &TextStyle::new(serif, 12.0)).unwrap();
+        page.draw_text(format!("Chapter {} opens here.", index + 1), 72.0, 700.0, &TextStyle::new(serif, 12.0)).unwrap();
     }
     builder.to_bytes().unwrap()
 }
@@ -58,10 +58,11 @@ fn a_window_edit_is_appended_as_an_incremental_update() {
 }
 
 #[test]
-fn windows_refuse_redaction_and_restructuring() {
+fn windows_refuse_restructuring_inside_a_window() {
+    // Page structure travels in the list's `structure`, never in a window;
+    // a window's operations address its own page 1.
     let source = book(2);
     for operation in [
-        json!({ "op": "redact", "page": 1, "rect": { "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0 } }),
         json!({ "op": "deletePage", "page": 1 }),
         json!({ "op": "addWhiteout", "page": 2, "rect": { "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0 } }),
     ] {

@@ -174,6 +174,11 @@ pub fn apply_operation(
             })?;
             out
         }
+        EditorOperation::EditObject { selector, edit } => {
+            let (out, changed) = crate::content_objects::edit_object(input, selector, edit)?;
+            report.changed_region = Some(changed);
+            out
+        }
         EditorOperation::EditVector { selector, mutation } => {
             let (_, out) = scratch::run(input, None, |p| {
                 edit::edit_vector_path(&edit::EditVectorPathRequest {
@@ -446,7 +451,13 @@ pub fn apply_operation(
                 author.as_deref(),
             )?
         }
-        EditorOperation::SetFormField { name, value, kind } => {
+        EditorOperation::AddTextLayer { page, lines, font } => {
+            crate::text_layer::add_text_layer(input, *page, lines, font.as_deref(), fonts, &mut report)?
+        }
+        EditorOperation::ConvertOcrText { page, lines, font } => {
+            crate::text_layer::convert_ocr_text(input, *page, lines, font.as_deref(), fonts, &mut report)?
+        }
+        EditorOperation::SetFormField { name, value, kind, .. } => {
             let mut editor = PdfEditor::open_bytes(input.to_vec())?;
             match kind {
                 FieldValueKind::Text => editor.set_form_text(name.clone(), value.clone()),
@@ -611,6 +622,8 @@ fn author_onto<'a>(
     let page_builder = builder.add_page(AuthorPageSize::custom(x1 - x0, y1 - y0));
     draw(page_builder)?;
     let authored = builder.to_bytes()?;
+    // Plain-script text is editable afterwards only without ActualText spans (QF-2590).
+    let authored = crate::text_layer::authored_without_plain_actual_text(authored)?;
     overlay::merge(input, page, &authored, spot_colors)
 }
 
