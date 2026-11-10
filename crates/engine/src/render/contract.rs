@@ -134,6 +134,51 @@ pub enum ColorScheme {
     ForcedMonochrome,
 }
 
+/// Forced (high-contrast / accessibility) colour scheme, the equivalent of
+/// PDFium's `FPDF_COLORSCHEME` with `FPDF_CONVERT_FILL_TO_STROKE`.
+///
+/// When set on a [`RenderContract`], path and text fill/stroke colours are
+/// replaced by these straight-alpha RGBA colours while images, shadings,
+/// pattern paints and soft-mask groups keep their real colours. As in PDFium
+/// the scheme colour (including its alpha) replaces the resolved paint
+/// colour entirely; graphics-state constant alpha and transfer functions do
+/// not modify it. With `convert_fill_to_stroke`, filled paths are drawn as
+/// strokes of their current line width (at least one device pixel) in the
+/// path stroke colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ForcedColorScheme {
+    pub path_fill: ContractColor,
+    pub path_stroke: ContractColor,
+    pub text_fill: ContractColor,
+    pub text_stroke: ContractColor,
+    #[serde(default)]
+    pub convert_fill_to_stroke: bool,
+}
+
+impl ForcedColorScheme {
+    /// A high-contrast scheme: one foreground colour for every path and text
+    /// paint, without fill-to-stroke conversion.
+    pub fn uniform(foreground: ContractColor) -> Self {
+        Self {
+            path_fill: foreground,
+            path_stroke: foreground,
+            text_fill: foreground,
+            text_stroke: foreground,
+            convert_fill_to_stroke: false,
+        }
+    }
+}
+
+impl ContractColor {
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+
+    pub const fn to_pixel(self) -> [u8; 4] {
+        [self.r, self.g, self.b, self.a]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PrintProfile {
     #[default]
@@ -540,6 +585,14 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         effect: "post-render-color-scheme-transform",
     },
     RenderContractFieldEffect {
+        field: "forced_colors",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: false,
+        effect: "forced-path-and-text-paint-colors-and-fill-to-stroke",
+    },
+    RenderContractFieldEffect {
         field: "reverse_byte_order",
         cache_identity: true,
         validation: false,
@@ -648,6 +701,12 @@ pub struct RenderContract {
     pub subpixel_text: SmoothingPolicy,
     pub grayscale: bool,
     pub color_scheme: ColorScheme,
+    /// Optional forced (high-contrast) paint colours for paths and text.
+    /// `None` (the default) leaves rendering unchanged; the field is omitted
+    /// from the serialized contract while unset so existing cache identities
+    /// stay stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forced_colors: Option<ForcedColorScheme>,
     pub reverse_byte_order: bool,
     pub print_profile: PrintProfile,
     pub halftone: HalftonePolicy,
@@ -702,6 +761,7 @@ impl RenderContract {
             subpixel_text: SmoothingPolicy::Disabled,
             grayscale: false,
             color_scheme: ColorScheme::Light,
+            forced_colors: None,
             reverse_byte_order: false,
             print_profile: PrintProfile::Display,
             halftone: HalftonePolicy::Disabled,
@@ -981,8 +1041,36 @@ mod tests {
     }
 
     #[test]
+    fn forced_colors_change_identity_only_when_set() {
+        let base = contract(1);
+        let json = serde_json::to_value(&base).expect("serialize contract");
+        assert!(
+            json.get("forced_colors").is_none(),
+            "unset forced colours keep the legacy serialized identity"
+        );
+        let mut forced = base.clone();
+        forced.forced_colors = Some(ForcedColorScheme::uniform(ContractColor::rgba(
+            255, 255, 0, 255,
+        )));
+        assert_ne!(base.cache_fingerprint(), forced.cache_fingerprint());
+        let mut stroke = forced.clone();
+        stroke
+            .forced_colors
+            .as_mut()
+            .unwrap()
+            .convert_fill_to_stroke = true;
+        assert_ne!(forced.cache_fingerprint(), stroke.cache_fingerprint());
+        let parsed: RenderContract =
+            serde_json::from_value(serde_json::to_value(&stroke).unwrap()).unwrap();
+        assert_eq!(parsed, stroke);
+        let legacy: RenderContract = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.forced_colors, None);
+    }
+
+    #[test]
     fn field_effect_registry_covers_every_serialized_contract_field() {
-        let contract = contract(1);
+        let mut contract = contract(1);
+        contract.forced_colors = Some(ForcedColorScheme::uniform(ContractColor::default()));
         let serialized = serde_json::to_value(&contract).expect("serialize render contract");
         let serialized_fields = serialized
             .as_object()

@@ -36,7 +36,7 @@ use crate::render::cmm::{ColorIntent, ColorTransformBackend, ColorTransformOptio
 use crate::render::color::ColorSpaceHandler;
 use crate::render::contract::{
     AnnotationRenderPolicy, BackendSelection, ColorManagementPolicy, ExactnessPolicy,
-    FormRenderPolicy, HalftonePolicy, ObjectIdentityId, OverprintPolicy, PageBox, PrintProfile,
+    FormRenderPolicy, HalftonePolicy, ObjectIdentityId, OverprintPolicy, PrintProfile,
     RenderContract, RenderResourceBudget, RenderingIntent, RevisionId, SmoothingPolicy,
 };
 #[cfg(test)]
@@ -4525,71 +4525,99 @@ impl PageRenderer {
         ))
     }
 
-    /// Render with explicit contract policies into a caller-owned document cache.
+    /// Render a render-contract window into a caller-owned document cache.
+    ///
+    /// `surface` is the complete device surface the contract addresses: the
+    /// page-box viewport at the contract DPI followed by the contract device
+    /// transform, with the contract output dimensions. `window` selects the
+    /// part of that surface to rasterize; only that window (plus a small
+    /// anti-aliasing overdraw that is cropped away) is rendered, and objects
+    /// whose device bounds miss it are culled before rasterization. Full
+    /// surface windows render exactly as before.
     ///
     /// The cache receives the same live counter state used by multi-page cached
     /// rendering, so callers can snapshot per-render cache telemetry after the
     /// call returns.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_page_cancellable_with_contract_policies_and_cache(
+    pub(crate) fn render_contract_window_with_cache(
         engine: &ContentEngine,
-        page_number: usize,
-        dpi: u32,
+        contract: &RenderContract,
+        surface: &Viewport,
+        window: RenderTile,
         cancel: &CancelToken,
-        render_mode: RenderMode,
-        backend_policy: BackendSelection,
-        print_profile: PrintProfile,
-        annotation_policy: AnnotationRenderPolicy,
-        form_policy: FormRenderPolicy,
-        rendering_intent: RenderingIntent,
-        color_management_policy: ColorManagementPolicy,
-        overprint_policy: OverprintPolicy,
-        text_smoothing_policy: SmoothingPolicy,
-        subpixel_text_policy: SmoothingPolicy,
-        path_smoothing_policy: SmoothingPolicy,
-        image_smoothing_policy: SmoothingPolicy,
-        background: PixelColor,
-        page_box: PageBox,
-        device_transform: Transform2D,
-        resource_budget: RenderResourceBudget,
         render_contract_fingerprint: String,
-        exactness_policy: ExactnessPolicy,
         optional_content: OptionalContentContext,
         cache: &mut RenderDocumentCache,
     ) -> Result<PixelBuffer> {
+        let page_number = contract.page_number;
+        let dpi = contract.dpi;
+        let render_mode = contract.render_mode();
+        let resource_budget = contract.resource_budget;
+        let exactness_policy = contract.exactness;
+        let background = crate::engine::contract_background_pixel(contract);
         let decode_limits = decode_limits_for_resource_budget(resource_budget);
         let ops =
             engine.get_page_content_with_decode_limits(page_number, &decode_limits, cancel)?;
-        let viewport = engine
-            .page_viewport_for_box(page_number, dpi, page_box)?
-            .with_device_transform(device_transform);
         let resources = engine.get_page_resources(page_number)?;
-        let list = build_display_list_cancellable(&ops, viewport.clone(), &resources, cancel)?;
+        // The display list is always built against the whole surface so its
+        // retained device bounds (and therefore culling and plan identity)
+        // are identical for full and windowed renders.
+        let list = build_display_list_cancellable(&ops, surface.clone(), &resources, cancel)?;
         if list.is_fully_supported() {
+            let full_window = RenderTile::full(surface.width_px, surface.height_px);
+            const CONTRACT_WINDOW_OVERDRAW_PX: u32 = 2;
+            let expanded_window = if window == full_window {
+                window
+            } else {
+                expand_render_tile(
+                    window,
+                    surface.width_px,
+                    surface.height_px,
+                    CONTRACT_WINDOW_OVERDRAW_PX,
+                )
+            };
+            let viewport = if expanded_window == full_window {
+                surface.clone()
+            } else {
+                surface.pixel_window(
+                    expanded_window.x,
+                    expanded_window.y,
+                    expanded_window.width,
+                    expanded_window.height,
+                )
+            };
+            if viewport.width_px == 0 || viewport.height_px == 0 {
+                return Err(WellfriendError::invalid_input(
+                    "render contract window is empty after clipping to the device surface",
+                ));
+            }
             let mut plan_contract = engine.render_contract_for_tile_with_page_box(
                 page_number,
                 dpi,
                 render_mode,
-                RenderTile::full(viewport.width_px, viewport.height_px),
-                page_box,
+                RenderTile::full(surface.width_px, surface.height_px),
+                contract.page_box,
             )?;
-            plan_contract.transform =
-                crate::render::contract::DeviceMatrix::from_f64(device_transform.to_array());
-            plan_contract.print_profile = print_profile;
-            plan_contract.annotations = annotation_policy;
-            plan_contract.forms = form_policy;
-            plan_contract.backend = backend_policy;
-            plan_contract.rendering_intent = rendering_intent;
-            plan_contract.color_management = color_management_policy;
-            plan_contract.overprint = overprint_policy;
-            plan_contract.text_smoothing = text_smoothing_policy;
-            plan_contract.subpixel_text = subpixel_text_policy;
-            plan_contract.path_smoothing = path_smoothing_policy;
-            plan_contract.image_smoothing = image_smoothing_policy;
+            plan_contract.transform = contract.transform;
+            plan_contract.print_profile = contract.print_profile;
+            plan_contract.annotations = contract.annotations;
+            plan_contract.forms = contract.forms;
+            plan_contract.backend = contract.backend;
+            plan_contract.rendering_intent = contract.rendering_intent;
+            plan_contract.color_management = contract.color_management;
+            plan_contract.overprint = contract.overprint;
+            plan_contract.text_smoothing = contract.text_smoothing;
+            plan_contract.subpixel_text = contract.subpixel_text;
+            plan_contract.path_smoothing = contract.path_smoothing;
+            plan_contract.image_smoothing = contract.image_smoothing;
+            plan_contract.forced_colors = contract.forced_colors;
             let mut plan_resource_budget = resource_budget;
             let full_plan_pixels =
-                u64::from(viewport.width_px).saturating_mul(u64::from(viewport.height_px));
+                u64::from(surface.width_px).saturating_mul(u64::from(surface.height_px));
             plan_resource_budget.max_pixels = plan_resource_budget.max_pixels.max(full_plan_pixels);
+            plan_resource_budget.max_temporary_bytes = plan_resource_budget
+                .max_temporary_bytes
+                .max(full_plan_pixels.saturating_mul(4));
             plan_contract.resource_budget = plan_resource_budget;
             plan_contract.exactness = exactness_policy;
             plan_contract.optional_content =
@@ -4620,17 +4648,18 @@ impl PageRenderer {
             state.optional_content = optional_content.clone();
             state.exactness_policy = exactness_policy;
             state.cancel = cancel.clone();
-            state.print_profile = print_profile;
-            state.annotation_policy = annotation_policy;
-            state.form_policy = form_policy;
-            state.backend_policy = backend_policy;
-            state.color_management_policy = color_management_policy;
-            state.overprint_policy = overprint_policy;
-            state.text_smoothing_policy = text_smoothing_policy;
-            state.subpixel_text_policy = subpixel_text_policy;
-            state.path_smoothing_policy = path_smoothing_policy;
-            state.image_smoothing_policy = image_smoothing_policy;
-            state.apply_rendering_intent_policy(rendering_intent);
+            state.print_profile = contract.print_profile;
+            state.annotation_policy = contract.annotations;
+            state.form_policy = contract.forms;
+            state.backend_policy = contract.backend;
+            state.color_management_policy = contract.color_management;
+            state.overprint_policy = contract.overprint;
+            state.text_smoothing_policy = contract.text_smoothing;
+            state.subpixel_text_policy = contract.subpixel_text;
+            state.path_smoothing_policy = contract.path_smoothing;
+            state.image_smoothing_policy = contract.image_smoothing;
+            state.forced_color_scheme = contract.forced_colors;
+            state.apply_rendering_intent_policy(contract.rendering_intent);
             {
                 let mut adapter = RenderStatePlanAdapter {
                     state: &mut state,
@@ -4652,7 +4681,18 @@ impl PageRenderer {
             if transparent_page_group {
                 buf.flatten_onto_background(background);
             }
-            return Ok(buf);
+            if expanded_window == window {
+                return Ok(buf);
+            }
+            return crop_buffer(
+                &buf,
+                RenderTile {
+                    x: window.x - expanded_window.x,
+                    y: window.y - expanded_window.y,
+                    width: window.width,
+                    height: window.height,
+                },
+            );
         }
 
         if exactness_policy == ExactnessPolicy::HighQualityExact {
@@ -5155,6 +5195,58 @@ impl PageRenderer {
         Ok(cropped)
     }
 
+    /// Render one image XObject occurrence of a page on its own, with its
+    /// `/SMask` or `/Mask`, at its natural size: the PDFium
+    /// `FPDFImageObj_GetRenderedBitmap` equivalent.
+    ///
+    /// Occurrences are the `Do` operators of the page's top-level content
+    /// stream that invoke an Image XObject (images inside Form XObjects are
+    /// part of their form object, as in PDFium), counted from zero. The
+    /// output is `ceil(hypot(a, c))` x `ceil(hypot(b, d))` pixels of the
+    /// image's user-space matrix `[a b c d e f]` (one pixel per user-space
+    /// unit), positioned the way PDFium positions it, on a transparent
+    /// background. Image masks paint with the initial (black) fill colour.
+    pub fn render_page_image_object(
+        engine: &ContentEngine,
+        page_number: usize,
+        selector: &PageImageObjectSelector,
+    ) -> Result<PixelBuffer> {
+        let ops = engine.get_page_content(page_number)?;
+        let resources = engine.get_page_resources(page_number)?;
+        let (name, matrix) = locate_page_image_object(&ops, &resources, selector)?;
+        let [a, b, c, d, e, f] = matrix.to_array();
+        let output_width = a.hypot(c).ceil();
+        let output_height = b.hypot(d).ceil();
+        if !output_width.is_finite()
+            || !output_height.is_finite()
+            || output_width < 1.0
+            || output_height < 1.0
+            || output_width * output_height > 100_000_000.0
+        {
+            return Err(WellfriendError::invalid_input(format!(
+                "image object /{name} has a degenerate or oversized matrix [{a} {b} {c} {d} {e} {f}]"
+            )));
+        }
+        let min_x = e + a.min(c);
+        let min_y = f + b.min(d);
+        let mut viewport = Viewport::new(
+            [min_x, min_y, min_x + output_width, min_y + output_height],
+            72,
+        );
+        viewport.width_px = output_width as u32;
+        viewport.height_px = output_height as u32;
+        let buf = PixelBuffer::new_transparent_with_mode(
+            output_width as u32,
+            output_height as u32,
+            RenderMode::Compat,
+        );
+        let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
+        state.gs.ctm = matrix.to_array();
+        state.handle_do(&name);
+        state.check_fatal_render_error()?;
+        Ok(state.into_buffer())
+    }
+
     /// Replay a cached full-page display list into one pixel-space tile using
     /// an explicit schema-v1 render contract.
     ///
@@ -5258,9 +5350,10 @@ impl PageRenderer {
             tile,
             contract.page_box,
         )?;
-        let optional_content_context = OptionalContentContext::from_document_for_state(
+        let optional_content_context = OptionalContentContext::from_document_for_state_and_usage(
             engine.document(),
             &contract.optional_content.0,
+            crate::engine::optional_content_usage_for_print_profile(contract.print_profile),
         )
         .map_err(|err| {
             WellfriendError::UnsupportedFeature(format!(
@@ -5290,6 +5383,7 @@ impl PageRenderer {
         accepted_expected.backend = contract.backend;
         accepted_expected.optional_content = contract.optional_content.clone();
         accepted_expected.color_scheme = contract.color_scheme;
+        accepted_expected.forced_colors = contract.forced_colors;
         accepted_expected.text_smoothing = contract.text_smoothing;
         accepted_expected.image_smoothing = contract.image_smoothing;
         accepted_expected.path_smoothing = contract.path_smoothing;
@@ -5457,6 +5551,7 @@ impl PageRenderer {
         state.subpixel_text_policy = contract.subpixel_text;
         state.path_smoothing_policy = contract.path_smoothing;
         state.image_smoothing_policy = contract.image_smoothing;
+        state.forced_color_scheme = contract.forced_colors;
         state.apply_rendering_intent_policy(contract.rendering_intent);
         {
             let mut adapter = RenderStatePlanAdapter {
@@ -6113,6 +6208,18 @@ struct RenderState<'a> {
     path_smoothing_policy: SmoothingPolicy,
     /// Active image smoothing policy from the render contract.
     image_smoothing_policy: SmoothingPolicy,
+    /// Forced (high-contrast) path/text paint colours from the render
+    /// contract (PDFium `FPDF_COLORSCHEME`).
+    forced_color_scheme: Option<crate::render::contract::ForcedColorScheme>,
+    /// Nesting depth of text-showing operators; while non-zero, forced
+    /// colours use the text entries of the scheme.
+    forced_color_text_depth: u32,
+    /// Nesting depth of pattern paints, during which forced colours are
+    /// suspended (pattern cells keep their real colours, as in PDFium).
+    forced_color_suppression: u32,
+    /// Type 3 bitmap-glyph baseline snapping state (PDFium `AdjustBlue`):
+    /// remembered device rows per Type 3 font and size.
+    type3_blue_zones: Type3BlueState,
 }
 
 #[derive(Clone, Copy)]
@@ -6774,6 +6881,140 @@ impl Type3MaskCache {
     }
 }
 
+/// Maximum remembered rows per Type 3 font size (PDFium `kType3MaxBlues`).
+const TYPE3_MAX_BLUES: usize = 16;
+/// Snap distance in device pixels (PDFium `AdjustBlueHelper`).
+const TYPE3_BLUE_SNAP_DISTANCE: f64 = 0.8;
+
+/// Remembered top and bottom device rows (relative to the glyph origin) of
+/// one Type 3 font at one size: PDFium `CPDF_Type3GlyphMap` blue zones.
+#[derive(Clone, Debug, Default)]
+struct Type3BlueZones {
+    top: Vec<i32>,
+    bottom: Vec<i32>,
+}
+
+/// Per-render Type 3 bitmap-glyph baseline snapping state.
+#[derive(Clone, Debug, Default)]
+struct Type3BlueState {
+    /// Blue zones keyed by Type 3 font identity and device size.
+    zones: HashMap<String, Type3BlueZones>,
+    /// Sole-image analysis per charproc: the image's unit-square matrix in
+    /// glyph space when the glyph is an uncoloured single image mask whose
+    /// first and last rows are inked, `None` otherwise.
+    sole_images: HashMap<String, Option<Transform2D>>,
+}
+
+impl Type3BlueState {
+    fn absorb(&mut self, child: Self) {
+        self.zones.extend(child.zones);
+        self.sole_images.extend(child.sole_images);
+    }
+}
+
+/// PDFium `AdjustBlueHelper`: snap `pos` to a remembered row within 0.8
+/// device pixels, otherwise round it and remember it (up to 16 rows).
+fn type3_adjust_blue(pos: f64, blues: &mut Vec<i32>) -> i32 {
+    let mut min_distance = f64::MAX;
+    let mut closest = None;
+    for (index, blue) in blues.iter().enumerate() {
+        let distance = (pos - f64::from(*blue)).abs();
+        if distance < min_distance.min(TYPE3_BLUE_SNAP_DISTANCE) {
+            min_distance = distance;
+            closest = Some(index);
+        }
+    }
+    if let Some(index) = closest {
+        return blues[index];
+    }
+    let rounded = pos.round();
+    let new_pos = if rounded >= f64::from(i32::MAX) {
+        i32::MAX
+    } else if rounded <= f64::from(i32::MIN) {
+        i32::MIN
+    } else {
+        rounded as i32
+    };
+    if blues.len() < TYPE3_MAX_BLUES {
+        blues.push(new_pos);
+    }
+    new_pos
+}
+
+/// The glyph-space matrix of a Type 3 charproc that paints nothing but one
+/// inline image mask (PDFium `GetBitmapAndMatrixFromSoleImageOfForm` for an
+/// uncoloured `d1` glyph), provided the mask's first and last rows contain
+/// painted samples (PDFium `DetectFirstScan`/`DetectLastScan`).
+fn type3_sole_image_mask_matrix(ops: &[ContentOperation]) -> Option<Transform2D> {
+    let mut uncoloured = false;
+    let mut ctm = Transform2D::identity();
+    let mut stack = Vec::new();
+    let mut pending_params: Option<&[Operand]> = None;
+    let mut image: Option<(Transform2D, &[Operand], &[u8])> = None;
+    for op in ops {
+        match op.operator.as_str() {
+            "d1" => uncoloured = true,
+            "d0" => return None,
+            "q" => stack.push(ctm),
+            "Q" => ctm = stack.pop()?,
+            "cm" => {
+                let values: Vec<f64> = op.operands.iter().filter_map(Operand::as_number).collect();
+                let [a, b, c, d, e, f] = <[f64; 6]>::try_from(values).ok()?;
+                ctm = Transform2D { a, b, c, d, e, f }.concat(&ctm);
+            }
+            "BI" | "EI" => {}
+            "ID" => pending_params = Some(op.operands.as_slice()),
+            "inline_image_data" => {
+                if image.is_some() {
+                    return None;
+                }
+                image = Some((ctm, pending_params.take()?, op.string_bytes(0)?));
+            }
+            // Graphics-state and colour operators paint nothing.
+            "w" | "J" | "j" | "M" | "d" | "ri" | "i" | "gs" | "g" | "G" | "rg" | "RG" | "k"
+            | "K" | "cs" | "CS" | "sc" | "SC" | "scn" | "SCN" => {}
+            _ => return None,
+        }
+    }
+    let (matrix, params, data) = image?;
+    if !uncoloured {
+        return None;
+    }
+    let map = inline_params_to_map(params).ok()?;
+    if !inline_optional_bool(&map, "ImageMask", "Type 3 glyph image").ok()? {
+        return None;
+    }
+    let width = inline_required_positive_u32(&map, "Width", "Type 3 glyph image").ok()?;
+    let height = inline_required_positive_u32(&map, "Height", "Type 3 glyph image").ok()?;
+    let paints_ones = inline_image_mask_paints_ones(&map).ok()?;
+    let filters = dict_filter_list(&map).ok()?;
+    let decoded;
+    let bits: &[u8] = if filters.is_empty() {
+        data
+    } else {
+        decoded = crate::images::decoder::ImageDecoder::apply_filters_direct_with_limits(
+            data,
+            &filters,
+            None,
+            &DecodeLimits::default(),
+        )
+        .ok()?;
+        &decoded
+    };
+    let stride = (width as usize).div_ceil(8);
+    let needed = stride.checked_mul(height as usize)?;
+    if bits.len() < needed {
+        return None;
+    }
+    let row_inked = |row: usize| {
+        let line = &bits[row * stride..(row + 1) * stride];
+        (0..width as usize).any(|x| {
+            let bit = (line[x / 8] >> (7 - (x % 8))) & 1 == 1;
+            bit == paints_ones
+        })
+    };
+    (row_inked(0) && row_inked(height as usize - 1)).then_some(matrix)
+}
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct Type3RenderedGlyphCacheKey {
     glyph: String,
@@ -7865,6 +8106,10 @@ impl<'a> RenderState<'a> {
             subpixel_text_policy: SmoothingPolicy::Disabled,
             path_smoothing_policy: SmoothingPolicy::Antialiased,
             image_smoothing_policy: SmoothingPolicy::Antialiased,
+            forced_color_scheme: None,
+            forced_color_text_depth: 0,
+            forced_color_suppression: 0,
+            type3_blue_zones: Type3BlueState::default(),
         };
         // A cache reused after a smaller contract must adopt this new state's
         // policy; the previous caller's cap is not sticky for legacy renders.
@@ -9761,6 +10006,8 @@ impl<'a> RenderState<'a> {
         // authoritative cache set. Move it back wholesale instead of cloning,
         // re-hashing and re-measuring every cache entry at each transparency
         // group or soft-mask boundary.
+        self.type3_blue_zones
+            .absorb(std::mem::take(&mut child.type3_blue_zones));
         self.glyph_cache =
             std::mem::replace(&mut child.glyph_cache, GlyphCache::with_default_capacity());
         self.glyph_mask_cache = std::mem::take(&mut child.glyph_mask_cache);
@@ -11537,6 +11784,70 @@ impl<'a> RenderState<'a> {
         self.recycle_offscreen_buffer(painted);
     }
 
+    /// Overprint imitation for images (PDFium `CPDF_ImageRenderer`): with
+    /// overprint preview on, fill overprint set, overprint mode 0, opaque
+    /// fill and stroke alpha and a Normal blend, DeviceCMYK, Separation and
+    /// DeviceN images composite with a Darken blend.
+    ///
+    /// Darken is used instead of the vector CMYK overprint-preview math
+    /// because that math is the identity for overprint mode 0 (every process
+    /// component of a DeviceCMYK source replaces the backdrop), so it could
+    /// not imitate anything here; Darken matches PDFium's approximation of
+    /// unpainted colorants showing through.
+    fn image_overprint_imitation_applies(&self, image_dict: &PdfDictionary) -> bool {
+        image_dict
+            .get("ColorSpace")
+            .or_else(|| image_dict.get("CS"))
+            .is_some_and(|color_space| self.overprint_imitation_applies_for_space(color_space))
+    }
+
+    fn overprint_imitation_applies_for_space(&self, color_space: &PdfObject) -> bool {
+        if !self.fill_overprint_preview_enabled()
+            || self.gs.overprint_mode != 0
+            || self.gs.blend_mode != BlendMode::Normal
+            || self.gs.fill_alpha < 1.0
+            || self.gs.stroke_alpha < 1.0
+        {
+            return false;
+        }
+        matches!(
+            image_color_space_family_name(
+                color_space,
+                &self.resources,
+                self.engine.document().reader(),
+                0,
+            )
+            .as_deref(),
+            Some("DeviceCMYK" | "Separation" | "DeviceN")
+        )
+    }
+
+    /// Run `paint` into a transparent surface and composite the result with
+    /// a Darken blend (and the active soft mask), for image overprint
+    /// imitation.
+    fn paint_with_overprint_darken(&mut self, paint: impl FnOnce(&mut Self)) {
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        if let Some(clip) = self.buf.clip_mask() {
+            surface.set_clip(clip.clone());
+        }
+        surface.blend_mode = BlendMode::Normal;
+        let mut target = std::mem::replace(&mut self.buf, surface);
+        paint(self);
+        std::mem::swap(&mut self.buf, &mut target);
+        let mut painted = target;
+        painted.clear_clip();
+        painted.clear_smask();
+        let saved_clip = self.buf.clip_mask().cloned();
+        self.buf.clear_clip();
+        let soft_mask = self.buf.smask_mask().cloned();
+        self.buf
+            .composite_from(&painted, 1.0, BlendMode::Darken, soft_mask.as_ref());
+        self.buf.replace_clip(saved_clip);
+        self.recycle_offscreen_buffer(painted);
+    }
+
     /// Apply the active transfer curves to decoded image samples before they
     /// are painted. Gray images are expanded to RGB so per-component curves
     /// stay exact.
@@ -11589,13 +11900,109 @@ impl<'a> RenderState<'a> {
     }
 
     fn fill_pixel_color(&mut self) -> PixelColor {
+        if let Some(forced) = self.forced_fill_pixel_color() {
+            return forced;
+        }
+        self.fill_pixel_color_unforced()
+    }
+
+    /// The resolved fill colour ignoring any forced colour scheme. Image
+    /// masks keep their real colour under a forced scheme (PDFium only
+    /// translates path and text colours).
+    fn fill_pixel_color_unforced(&mut self) -> PixelColor {
         let pixel = self.fill_pixel_color_untransferred();
         self.apply_paint_transfer(pixel)
     }
 
     fn stroke_pixel_color(&mut self) -> PixelColor {
+        if let Some(forced) = self.forced_stroke_pixel_color() {
+            return forced;
+        }
         let pixel = self.stroke_pixel_color_untransferred();
         self.apply_paint_transfer(pixel)
+    }
+
+    /// The forced scheme colour for the given paint role, when a forced
+    /// colour scheme is active and not suspended by a pattern paint.
+    fn forced_scheme_color(&self, stroke: bool) -> Option<PixelColor> {
+        let scheme = self.forced_color_scheme.as_ref()?;
+        if self.forced_color_suppression > 0 {
+            return None;
+        }
+        let text = self.forced_color_text_depth > 0;
+        let color = match (text, stroke) {
+            (false, false) => scheme.path_fill,
+            (false, true) => scheme.path_stroke,
+            (true, false) => scheme.text_fill,
+            (true, true) => scheme.text_stroke,
+        };
+        Some(color.to_pixel())
+    }
+
+    fn forced_fill_pixel_color(&self) -> Option<PixelColor> {
+        if self.is_pattern_fill() {
+            return None;
+        }
+        self.forced_scheme_color(false)
+    }
+
+    fn forced_stroke_pixel_color(&self) -> Option<PixelColor> {
+        if self.is_pattern_stroke() {
+            return None;
+        }
+        self.forced_scheme_color(true)
+    }
+
+    /// True when a forced colour scheme converts the current (non-pattern)
+    /// path fill into a stroke (PDFium `FPDF_CONVERT_FILL_TO_STROKE`).
+    fn forced_fill_converts_to_stroke(&self) -> bool {
+        self.forced_color_text_depth == 0
+            && self.forced_color_suppression == 0
+            && self
+                .forced_color_scheme
+                .is_some_and(|scheme| scheme.convert_fill_to_stroke)
+    }
+
+    /// Stroke the current path with the forced path-stroke colour in place
+    /// of a fill. The stroke uses the current line width, which the stroker
+    /// clamps to at least one device pixel.
+    fn stroke_current_path_for_forced_fill(&mut self) {
+        let Some(color) = self.forced_scheme_color(true) else {
+            return;
+        };
+        let ctm = self.ctm();
+        let dash = self.dash_state();
+        let path_binary_alpha = self.path_smoothing_disabled();
+        if !paint_cached_path_stroke(
+            &mut self.path_stroke_mask_cache,
+            &mut self.buf,
+            &self.viewport,
+            &self.path,
+            &ctm,
+            color,
+            self.gs.line_width,
+            &dash,
+            &self.gs.line_cap,
+            &self.gs.line_join,
+            self.gs.miter_limit,
+            self.gs.path_flatness_tolerance(),
+            path_binary_alpha,
+        ) {
+            PathPainter::stroke_with_style_fast_cancellable_with_flatness(
+                &mut self.buf,
+                &self.path,
+                &ctm,
+                &self.viewport,
+                color,
+                self.gs.line_width,
+                &dash,
+                &self.gs.line_cap,
+                &self.gs.line_join,
+                self.gs.miter_limit,
+                self.gs.path_flatness_tolerance(),
+                &self.cancel,
+            );
+        }
     }
 
     fn fill_pixel_color_untransferred(&mut self) -> PixelColor {
@@ -12199,7 +12606,7 @@ impl<'a> RenderState<'a> {
         let width = self.gs.line_width;
         let dash = self.dash_state();
         let path_binary_alpha = self.path_smoothing_disabled();
-        if self.stroke_overprint_preview_enabled() {
+        if self.stroke_overprint_preview_enabled() && self.forced_stroke_pixel_color().is_none() {
             if let Some(cmyk) = device_cmyk_components(&self.gs.stroke_color) {
                 let overprint_mode = self.active_overprint_mode();
                 PathPainter::stroke_device_cmyk_overprint_preview_with_flatness(
@@ -12276,8 +12683,13 @@ impl<'a> RenderState<'a> {
         let ctm = self.ctm();
         let fill_color_state = self.gs.fill_color.clone();
         self.record_plate_contribution(&fill_color_state, self.gs.fill_alpha as f32, "fill");
+        if self.forced_fill_converts_to_stroke() {
+            self.stroke_current_path_for_forced_fill();
+            self.path.clear();
+            return;
+        }
         let path_binary_alpha = self.path_smoothing_disabled();
-        if self.fill_overprint_preview_enabled() {
+        if self.fill_overprint_preview_enabled() && self.forced_fill_pixel_color().is_none() {
             if let Some(cmyk) = device_cmyk_components(&self.gs.fill_color) {
                 let overprint_mode = self.active_overprint_mode();
                 PathPainter::fill_device_cmyk_overprint_preview_with_flatness(
@@ -12347,8 +12759,14 @@ impl<'a> RenderState<'a> {
                 self.paint_pattern_fill(rule, &pattern_name);
             }
             // Initial Pattern fill is no paint; still execute the stroke.
+        } else if self.forced_fill_converts_to_stroke() {
+            // The converted fill is the same forced stroke the stroke stage
+            // draws below; only a pattern stroke needs it drawn here.
+            if self.is_pattern_stroke() {
+                self.stroke_current_path_for_forced_fill();
+            }
         } else {
-            if self.fill_overprint_preview_enabled() {
+            if self.fill_overprint_preview_enabled() && self.forced_fill_pixel_color().is_none() {
                 if let Some(cmyk) = device_cmyk_components(&self.gs.fill_color) {
                     let overprint_mode = self.active_overprint_mode();
                     PathPainter::fill_device_cmyk_overprint_preview_with_flatness(
@@ -12429,7 +12847,7 @@ impl<'a> RenderState<'a> {
         let stroke = self.stroke_pixel_color();
         let width = self.gs.line_width;
         let dash = self.dash_state();
-        if self.stroke_overprint_preview_enabled() {
+        if self.stroke_overprint_preview_enabled() && self.forced_stroke_pixel_color().is_none() {
             if let Some(cmyk) = device_cmyk_components(&self.gs.stroke_color) {
                 let overprint_mode = self.active_overprint_mode();
                 PathPainter::stroke_device_cmyk_overprint_preview_with_flatness(
@@ -13054,6 +13472,12 @@ impl<'a> RenderState<'a> {
             subpixel_text_policy: self.subpixel_text_policy,
             path_smoothing_policy: self.path_smoothing_policy,
             image_smoothing_policy: self.image_smoothing_policy,
+            // Soft-mask groups render with their real colours (PDFium renders
+            // SMask /G with a normal colour mode).
+            forced_color_scheme: None,
+            forced_color_text_depth: 0,
+            forced_color_suppression: 0,
+            type3_blue_zones: Type3BlueState::default(),
         };
 
         mask_state.apply_form_bbox_clip(group_bbox);
@@ -13367,6 +13791,8 @@ impl<'a> RenderState<'a> {
             self.record_fatal_render_error("inline image /ColorSpace has no family");
             return;
         };
+        let overprint_imitation =
+            !is_mask && self.overprint_imitation_applies_for_space(&source_color_space);
         let color_space_override = if is_mask {
             None
         } else if let Some(resolved) = resolved_color_space {
@@ -13623,7 +14049,7 @@ impl<'a> RenderState<'a> {
             let color = if pattern_stencil {
                 [255, 255, 255, 255]
             } else {
-                self.fill_pixel_color()
+                self.fill_pixel_color_unforced()
             };
             let paints_ones = match inline_image_mask_paints_ones(&dict) {
                 Ok(paints_ones) => paints_ones,
@@ -13658,6 +14084,19 @@ impl<'a> RenderState<'a> {
         let paint_ctm = image_ctm_for_source_region(&ctm, source_region, width, height);
         if pattern_stencil {
             self.paint_fill_pattern_through_stencil(&raw, &paint_ctm, interpolate);
+            return;
+        }
+        if overprint_imitation {
+            self.paint_with_overprint_darken(|state| {
+                ImagePainter::paint_image_with_options_and_alpha(
+                    &mut state.buf,
+                    &raw,
+                    &paint_ctm,
+                    &state.viewport,
+                    interpolate,
+                    paint_alpha,
+                );
+            });
             return;
         }
         ImagePainter::paint_image_with_options_and_alpha(
@@ -14173,7 +14612,7 @@ impl<'a> RenderState<'a> {
                     let color = if pattern_stencil {
                         [255, 255, 255, 255]
                     } else {
-                        self.fill_pixel_color()
+                        self.fill_pixel_color_unforced()
                     };
                     let paints_ones = match image_mask_paints_ones(dict) {
                         Ok(paints_ones) => paints_ones,
@@ -14254,6 +14693,19 @@ impl<'a> RenderState<'a> {
                 );
                 if pattern_stencil {
                     self.paint_fill_pattern_through_stencil(paint_raw, &paint_ctm, interpolate);
+                    return;
+                }
+                if !image_ref.is_mask && self.image_overprint_imitation_applies(dict) {
+                    self.paint_with_overprint_darken(|state| {
+                        ImagePainter::paint_image_with_options_and_alpha(
+                            &mut state.buf,
+                            paint_raw,
+                            &paint_ctm,
+                            &state.viewport,
+                            interpolate,
+                            paint_alpha,
+                        );
+                    });
                     return;
                 }
                 if !image_ref.is_mask
@@ -14815,6 +15267,10 @@ impl<'a> RenderState<'a> {
             subpixel_text_policy: self.subpixel_text_policy,
             path_smoothing_policy: self.path_smoothing_policy,
             image_smoothing_policy: self.image_smoothing_policy,
+            forced_color_scheme: self.forced_color_scheme,
+            forced_color_text_depth: self.forced_color_text_depth,
+            forced_color_suppression: self.forced_color_suppression,
+            type3_blue_zones: std::mem::take(&mut self.type3_blue_zones),
         };
 
         // Carry the parent clip into the group in destination-local coordinates
@@ -15486,6 +15942,25 @@ impl<'a> RenderState<'a> {
     }
 
     fn paint_tiling_pattern_with_device_clip(
+        &mut self,
+        pattern_obj: &PdfObject,
+        path_clip: ClipMask,
+        flat: &FlatPath,
+        use_stroke_color: bool,
+    ) {
+        // Pattern cells keep their real colours under a forced colour
+        // scheme (PDFium renders tiling cells with normal colour options).
+        self.forced_color_suppression += 1;
+        self.paint_tiling_pattern_with_device_clip_inner(
+            pattern_obj,
+            path_clip,
+            flat,
+            use_stroke_color,
+        );
+        self.forced_color_suppression -= 1;
+    }
+
+    fn paint_tiling_pattern_with_device_clip_inner(
         &mut self,
         pattern_obj: &PdfObject,
         path_clip: ClipMask,
@@ -16383,6 +16858,14 @@ impl<'a> RenderState<'a> {
     }
 
     fn process_text_string(&mut self, bytes: &[u8], paint: bool) {
+        // Forced colour schemes use the text entries for everything a
+        // text-showing operator paints (including Type 3 glyph programs).
+        self.forced_color_text_depth += 1;
+        self.process_text_string_inner(bytes, paint);
+        self.forced_color_text_depth -= 1;
+    }
+
+    fn process_text_string_inner(&mut self, bytes: &[u8], paint: bool) {
         if paint && matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6) && self.is_pattern_fill() {
             self.process_pattern_filled_text_string(bytes);
             return;
@@ -17968,11 +18451,25 @@ impl<'a> RenderState<'a> {
             }
 
             if let Some(charproc) = self.cached_type3_charproc(font_name, font_dict, glyph_name) {
+                let unsnapped_glyph_ctm = self.type3_glyph_ctm(font_dict)?;
+                // Bitmap glyphs (a sole image mask) get their top and bottom
+                // device rows snapped to remembered rows so baselines stay
+                // level (PDFium CPDF_Type3GlyphMap::AdjustBlue).
+                let paint_glyph_ctm = self
+                    .type3_bitmap_glyph_blue_ctm(
+                        font_name,
+                        font_dict,
+                        glyph_name,
+                        charproc.as_ref(),
+                        unsnapped_glyph_ctm,
+                    )
+                    .unwrap_or(unsnapped_glyph_ctm);
                 if self.paint_cached_type3_rendered_charproc(
                     font_name,
                     font_dict,
                     glyph_name,
                     charproc.as_ref(),
+                    paint_glyph_ctm,
                 ) {
                     if needs_clip {
                         if let Some(geometry) = geometry.as_ref() {
@@ -17982,11 +18479,12 @@ impl<'a> RenderState<'a> {
                     }
                     return charproc.advance_width.or(glyph.width);
                 }
-                if self.render_type3_charproc_full(
+                if self.render_type3_charproc_full_with_ctm_cached(
                     font_name,
                     font_dict,
                     glyph_name,
                     charproc.as_ref(),
+                    paint_glyph_ctm,
                 ) {
                     if needs_clip {
                         if let Some(geometry) = geometry.as_ref() {
@@ -18119,18 +18617,96 @@ impl<'a> RenderState<'a> {
         })
     }
 
-    fn render_type3_charproc_full(
+    /// PDFium `CPDF_Type3Cache::RenderGlyph` baseline snapping for bitmap
+    /// glyphs: when the glyph program is a sole image mask drawn without
+    /// rotation, snap the image's top and bottom device rows (relative to the
+    /// glyph origin) to up to 16 remembered rows within 0.8 px per Type 3
+    /// font and size, and return the glyph matrix that places the image on
+    /// those whole rows. Returns `None` when snapping does not apply.
+    fn type3_bitmap_glyph_blue_ctm(
         &mut self,
         font_name: &str,
         font_dict: &PdfDictionary,
         glyph_name: &str,
         charproc: &Type3CharProc,
-    ) -> bool {
-        let Some(glyph_ctm) = self.type3_glyph_ctm(font_dict) else {
-            return false;
+        glyph_ctm: Transform2D,
+    ) -> Option<Transform2D> {
+        let program_key = type3_charproc_cache_key(font_name, font_dict, glyph_name);
+        let image_matrix = match self.type3_blue_zones.sole_images.get(&program_key) {
+            Some(matrix) => (*matrix)?,
+            None => {
+                let matrix = type3_sole_image_mask_matrix(&charproc.ops);
+                self.type3_blue_zones
+                    .sole_images
+                    .insert(program_key, matrix);
+                matrix?
+            }
         };
-        self.render_type3_charproc_full_with_ctm_cached(
-            font_name, font_dict, glyph_name, charproc, glyph_ctm,
+        let page_t = self.viewport.to_transform();
+        let glyph_device = glyph_ctm.concat(&page_t);
+        let image_device = image_matrix.concat(&glyph_device);
+        let values = [
+            image_device.a,
+            image_device.b,
+            image_device.c,
+            image_device.d,
+            image_device.e,
+            image_device.f,
+        ];
+        if values.iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        // Unrotated only (PDFium: |b| < |a|/100 and |c| < |d|/100).
+        if image_device.b.abs() >= image_device.a.abs() / 100.0
+            || image_device.c.abs() >= image_device.d.abs() / 100.0
+        {
+            return None;
+        }
+        let (_, origin_y) = glyph_device.transform_point(0.0, 0.0);
+        let y_bottom_edge = image_device.f - origin_y;
+        let y_top_edge = image_device.d + image_device.f - origin_y;
+        let (top, bottom) = if y_top_edge <= y_bottom_edge {
+            (y_top_edge, y_bottom_edge)
+        } else {
+            (y_bottom_edge, y_top_edge)
+        };
+        if bottom - top <= f64::EPSILON {
+            return None;
+        }
+        let size_key = format!(
+            "{}\0{}:{}:{}:{}",
+            font_resource_cache_key(font_name, font_dict),
+            (glyph_device.a * 10000.0).round() as i64,
+            (glyph_device.b * 10000.0).round() as i64,
+            (glyph_device.c * 10000.0).round() as i64,
+            (glyph_device.d * 10000.0).round() as i64,
+        );
+        let zones = self.type3_blue_zones.zones.entry(size_key).or_default();
+        let snapped_top = type3_adjust_blue(top, &mut zones.top);
+        let snapped_bottom = type3_adjust_blue(bottom, &mut zones.bottom);
+        if snapped_bottom <= snapped_top {
+            return None;
+        }
+        // Map the image's device rows [origin + top, origin + bottom] onto
+        // whole rows anchored at the rounded glyph origin.
+        let anchor = origin_y.round();
+        let target_top = anchor + f64::from(snapped_top);
+        let target_bottom = anchor + f64::from(snapped_bottom);
+        let scale = (target_bottom - target_top) / (bottom - top);
+        let correction = Transform2D {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: scale,
+            e: 0.0,
+            f: target_top - scale * (origin_y + top),
+        };
+        let inverse_page = page_t.inverse()?;
+        Some(
+            glyph_ctm
+                .concat(&page_t)
+                .concat(&correction)
+                .concat(&inverse_page),
         )
     }
 
@@ -18481,6 +19057,7 @@ impl<'a> RenderState<'a> {
         font_dict: &PdfDictionary,
         glyph_name: &str,
         charproc: &Type3CharProc,
+        glyph_ctm: Transform2D,
     ) -> bool {
         if self.buf.width == 0
             || self.buf.height == 0
@@ -18488,9 +19065,6 @@ impl<'a> RenderState<'a> {
         {
             return false;
         }
-        let Some(glyph_ctm) = self.type3_glyph_ctm(font_dict) else {
-            return false;
-        };
         let Some((_normalized_t, dx, dy, transform_key)) =
             self.type3_mask_transform_parts(&glyph_ctm)
         else {
@@ -18723,6 +19297,39 @@ impl<'a> RenderState<'a> {
     }
 
     fn paint_type3_geometry(&mut self, geometry: &Type3GlyphGeometry, glyph_ctm: &Transform2D) {
+        // A forced colour scheme replaces the glyph program's own colours
+        // with the text colours (PDFium translates every text paint).
+        if self.forced_color_scheme.is_some()
+            && (self.forced_fill_pixel_color().is_some()
+                || self.forced_stroke_pixel_color().is_some())
+            && (geometry.fills.iter().any(|fill| fill.color.is_some())
+                || geometry.strokes.iter().any(|stroke| stroke.color.is_some()))
+        {
+            let forced = Type3GlyphGeometry {
+                cache_key: geometry.cache_key.clone(),
+                fills: geometry
+                    .fills
+                    .iter()
+                    .map(|fill| Type3Fill {
+                        path: fill.path.clone(),
+                        rule: fill.rule,
+                        color: None,
+                    })
+                    .collect(),
+                strokes: geometry
+                    .strokes
+                    .iter()
+                    .map(|stroke| Type3Stroke {
+                        color: None,
+                        ..stroke.clone()
+                    })
+                    .collect(),
+                advance_width: geometry.advance_width,
+                _uses_color_state: geometry._uses_color_state,
+            };
+            self.paint_type3_geometry(&forced, glyph_ctm);
+            return;
+        }
         let fill_color = self.fill_pixel_color();
         let stroke_color = self.stroke_pixel_color();
         let fill_mode = matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6);
@@ -20909,6 +21516,11 @@ impl<'a, 'b> RenderStatePlanAdapter<'a, 'b> {
     }
 
     fn effective_vector_fill_color(&mut self, fallback: PixelColor, explicit: bool) -> PixelColor {
+        // Retained vector fills are never pattern paints (those dispatch
+        // through pattern descriptors), so a forced scheme applies directly.
+        if let Some(color) = self.state.forced_scheme_color(false) {
+            return color;
+        }
         if !explicit {
             if let Some(color) = self.forced_vector_fill_pixel_color {
                 // Already resolved through the caller's paint path, including
@@ -20925,6 +21537,9 @@ impl<'a, 'b> RenderStatePlanAdapter<'a, 'b> {
         fallback: PixelColor,
         explicit: bool,
     ) -> PixelColor {
+        if let Some(color) = self.state.forced_scheme_color(true) {
+            return color;
+        }
         if !explicit {
             if let Some(color) = self.forced_vector_stroke_pixel_color {
                 return inherited_type3_vector_color_with_fallback_alpha(color, fallback);
@@ -21534,6 +22149,12 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
 
     fn dispatch_fill(&mut self, path: &Path, draw_state: &DrawState, rule: FillRule) {
         if !self.state.oc_current_visible {
+            return;
+        }
+        if self.state.forced_fill_converts_to_stroke() {
+            // PDFium FPDF_CONVERT_FILL_TO_STROKE: the fill becomes a stroke
+            // of the current line width in the forced path-stroke colour.
+            self.dispatch_stroke(path, draw_state);
             return;
         }
         let saved_blend = self.state.buf.blend_mode;
@@ -25993,9 +26614,69 @@ fn expand_render_tile(
     }
 }
 
-/// Public contract-level tile crop helper for the engine render path.
-pub(crate) fn crop_buffer_for_contract(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
-    crop_buffer(buf, tile)
+/// Selects one image XObject occurrence on a page for
+/// [`PageRenderer::render_page_image_object`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageImageObjectSelector {
+    /// Zero-based index among the page's top-level image `Do` operators.
+    Index(usize),
+    /// First top-level occurrence of the named image XObject resource.
+    Name(String),
+}
+
+/// Find an image XObject occurrence in a page's top-level content and the
+/// CTM in effect when it is painted.
+fn locate_page_image_object(
+    ops: &[ContentOperation],
+    resources: &PageResources,
+    selector: &PageImageObjectSelector,
+) -> Result<(String, Transform2D)> {
+    let mut ctm = Transform2D::identity();
+    let mut stack = Vec::new();
+    let mut index = 0usize;
+    for op in ops {
+        match op.operator.as_str() {
+            "q" => stack.push(ctm),
+            "Q" => {
+                if let Some(saved) = stack.pop() {
+                    ctm = saved;
+                }
+            }
+            "cm" => {
+                let values: Vec<f64> = op.operands.iter().filter_map(Operand::as_number).collect();
+                if let Ok([a, b, c, d, e, f]) = <[f64; 6]>::try_from(values) {
+                    ctm = Transform2D { a, b, c, d, e, f }.concat(&ctm);
+                }
+            }
+            "Do" => {
+                let Some(name) = op.name(0) else {
+                    continue;
+                };
+                let is_image = resources.xobject_subtypes.get(name).map(String::as_str)
+                    == Some("Image")
+                    || resources
+                        .xobject_stream_dicts
+                        .get(name)
+                        .and_then(|dict| dict.get_name("Subtype"))
+                        == Some("Image");
+                if !is_image {
+                    continue;
+                }
+                let matched = match selector {
+                    PageImageObjectSelector::Index(wanted) => *wanted == index,
+                    PageImageObjectSelector::Name(wanted) => wanted == name,
+                };
+                if matched {
+                    return Ok((name.to_string(), ctm));
+                }
+                index += 1;
+            }
+            _ => {}
+        }
+    }
+    Err(WellfriendError::invalid_input(format!(
+        "page has no image object matching {selector:?} ({index} top-level image objects)"
+    )))
 }
 
 fn crop_buffer(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
@@ -29571,6 +30252,7 @@ mod tests {
 
     include!("resource_scope_tests.rs");
     include!("default_color_render_tests.rs");
+    include!("pdfium_render_parity_tests.rs");
     include!("shading_parameter_render_tests.rs");
     include!("function_cache_render_tests.rs");
 
@@ -33214,7 +33896,7 @@ mod tests {
         };
         let ops = engine.get_page_content(1).expect("page content");
         let viewport = engine
-            .page_viewport_for_box(1, 72, PageBox::Media)
+            .page_viewport_for_box(1, 72, crate::render::PageBox::Media)
             .expect("viewport");
         let resources = engine.get_page_resources(1).expect("page resources");
         let mut state = RenderState::new(

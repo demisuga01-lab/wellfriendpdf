@@ -89,6 +89,19 @@ struct LayerState {
     locked: bool,
 }
 
+/// Which optional-content usage a render resolves: on-screen viewing or
+/// printing (PDFium `CPDF_OCContext::kView` / `kPrint`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OptionalContentUsage {
+    /// `/Usage /View /ViewState` (the existing default behaviour).
+    #[default]
+    View,
+    /// `/Usage /Print /PrintState` (falling back to `/ViewState` as PDFium
+    /// does) plus the configuration's `/AS` entries whose `/Event` is
+    /// `/Print`.
+    Print,
+}
+
 #[derive(Clone, Debug)]
 enum OptionalContentConfigSelector {
     Default,
@@ -115,19 +128,41 @@ impl OptionalContentContext {
     }
 
     pub fn from_document(document: &PdfDocument) -> Self {
-        Self::from_document_with_config_selector(document, OptionalContentConfigSelector::Default)
+        Self::from_document_with_usage(document, OptionalContentUsage::View)
+    }
+
+    /// Default-configuration visibility for an explicit usage (view or print).
+    pub fn from_document_with_usage(document: &PdfDocument, usage: OptionalContentUsage) -> Self {
+        Self::from_document_with_config_selector(
+            document,
+            OptionalContentConfigSelector::Default,
+            usage,
+        )
     }
 
     pub fn from_document_for_state(
         document: &PdfDocument,
         state_id: &str,
     ) -> std::result::Result<Self, String> {
+        Self::from_document_for_state_and_usage(document, state_id, OptionalContentUsage::View)
+    }
+
+    /// Resolve a render-contract optional-content state for an explicit
+    /// usage. Print usage applies `/Usage /Print` states and `/AS` entries
+    /// whose `/Event` is `/Print`; view usage keeps the `/View` behaviour.
+    pub fn from_document_for_state_and_usage(
+        document: &PdfDocument,
+        state_id: &str,
+        usage: OptionalContentUsage,
+    ) -> std::result::Result<Self, String> {
         let requested = state_id.trim();
-        let default_context = Self::from_document(document);
+        let default_context = Self::from_document_with_usage(document, usage);
         if requested.is_empty()
             || requested == "default"
             || requested == "ocg:default"
             || requested == default_context.visibility_fingerprint()
+            || (usage != OptionalContentUsage::View
+                && requested == Self::from_document(document).visibility_fingerprint())
         {
             return Ok(default_context);
         }
@@ -153,12 +188,15 @@ impl OptionalContentContext {
         };
 
         ensure_config_selector_available(document, &selector)?;
-        Ok(Self::from_document_with_config_selector(document, selector))
+        Ok(Self::from_document_with_config_selector(
+            document, selector, usage,
+        ))
     }
 
     fn from_document_with_config_selector(
         document: &PdfDocument,
         selector: OptionalContentConfigSelector,
+        usage: OptionalContentUsage,
     ) -> Self {
         let mut report = OptionalContentReport::default();
         let mut strict_error = None;
@@ -265,6 +303,12 @@ impl OptionalContentContext {
             "/OCProperties /D",
         );
         let config_intents = intent_names(config.get("Intent"));
+        // Auto-state (/AS) entries for the requested usage event. View keeps
+        // its established behaviour; print applies /Event /Print entries.
+        let auto_states = match usage {
+            OptionalContentUsage::View => Vec::new(),
+            OptionalContentUsage::Print => auto_state_entries(&config, reader, "Print"),
+        };
 
         let mut states = HashMap::new();
         let mut layers = Vec::new();
@@ -313,12 +357,22 @@ impl OptionalContentContext {
                         source = "Intent/mismatch".to_string();
                     }
 
-                    if matches!(usage_view_state.as_deref(), Some("OFF")) {
+                    // Print usage reads /PrintState and falls back to
+                    // /ViewState when a layer has no print usage (PDFium
+                    // CPDF_OCContext::LoadOCGState).
+                    let (usage_state_value, usage_label) = match usage {
+                        OptionalContentUsage::View => (usage_view_state.as_deref(), "View"),
+                        OptionalContentUsage::Print => match usage_print_state.as_deref() {
+                            Some(state) => (Some(state), "Print"),
+                            None => (usage_view_state.as_deref(), "View"),
+                        },
+                    };
+                    if matches!(usage_state_value, Some("OFF")) {
                         visible = false;
-                        source = "Usage/View/OFF".to_string();
-                    } else if matches!(usage_view_state.as_deref(), Some("ON")) {
+                        source = format!("Usage/{usage_label}/OFF");
+                    } else if matches!(usage_state_value, Some("ON")) {
                         visible = true;
-                        source = "Usage/View/ON".to_string();
+                        source = format!("Usage/{usage_label}/ON");
                     }
 
                     if on.contains(&id) {
@@ -328,6 +382,25 @@ impl OptionalContentContext {
                     if off.contains(&id) {
                         visible = false;
                         source = "OFF".to_string();
+                    }
+
+                    for (ocgs, categories) in &auto_states {
+                        if !ocgs.contains(&id) {
+                            continue;
+                        }
+                        for category in categories {
+                            match usage_state(&layer_dict, category).as_deref() {
+                                Some("OFF") => {
+                                    visible = false;
+                                    source = format!("AS/Print/{category}/OFF");
+                                }
+                                Some("ON") => {
+                                    visible = true;
+                                    source = format!("AS/Print/{category}/ON");
+                                }
+                                _ => {}
+                            }
+                        }
                     }
 
                     states.insert(id.clone(), visible);
@@ -891,6 +964,43 @@ fn intent_names(object: Option<&PdfObject>) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// `/AS` usage-application entries of a configuration whose `/Event`
+/// matches `event`: each yields the OCG identities it governs and the usage
+/// categories whose states apply to them.
+fn auto_state_entries(
+    config: &PdfDictionary,
+    reader: &PdfReader,
+    event: &str,
+) -> Vec<(BTreeSet<String>, Vec<String>)> {
+    let Some(PdfObject::Array(entries)) = config
+        .get("AS")
+        .and_then(|object| reader.resolve(object.clone()).ok())
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| resolve_dict(entry, reader))
+        .filter(|entry| entry.get_name("Event") == Some(event))
+        .filter_map(|entry| {
+            let ocgs = match entry
+                .get("OCGs")
+                .and_then(|object| reader.resolve(object.clone()).ok())
+            {
+                Some(PdfObject::Array(items)) => object_id_set(&items),
+                _ => return None,
+            };
+            let categories = intent_names(
+                entry
+                    .get("Category")
+                    .and_then(|object| reader.resolve(object.clone()).ok())
+                    .as_ref(),
+            );
+            Some((ocgs, categories))
+        })
+        .collect()
 }
 
 fn usage_state(layer: &PdfDictionary, usage_key: &str) -> Option<String> {

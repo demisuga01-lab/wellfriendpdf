@@ -492,7 +492,7 @@ pub use office::{
 };
 pub use optional_content::{
     OptionalContentContext, OptionalContentLayerReport, OptionalContentMembershipReport,
-    OptionalContentReport,
+    OptionalContentReport, OptionalContentUsage,
 };
 pub use parse::{
     parse, Block, BlockKind, Document, DocumentMetadata, ImageHandling, ImageRef, InlineSpan,
@@ -539,9 +539,11 @@ pub use render::{
     DeviceMatrix, DisplayItemId, DisplayList, DisplayListStats, DisplayOp, DocumentViewBoundary,
     DocumentViewsReport, DrawState, EditDocumentView, ExactnessPolicy, FillRule,
     FinalRasterCachePolicy, FlatPath, FontRasterizer, FontSubstitutionEvent, FontSubstitutionLog,
-    FontSubstitutionMetricPosture, FontSubstitutionReason, FormRenderPolicy, GlyphCache,
+    FontSubstitutionMetricPosture, FontSubstitutionReason, ForcedColorScheme, FormRenderPolicy,
+    GlyphCache,
     GlyphCacheKey, GlyphCacheStats, ImagePainter, InvalidationResult, LinePainter,
-    ObjectIdentityId, PageBox, PageIdentity, PageRenderer, ParsedPageProgram, Path, PathPainter,
+    ObjectIdentityId, PageBox, PageIdentity, PageImageObjectSelector, PageRenderer,
+    ParsedPageProgram, Path, PathPainter,
     PathRasterStats, PathSegment, PixelBuffer, PixelBufferAllocationStats, PixelColor,
     PixelCompositorBackend, PixelCompositorOperation, PixelCompositorStats, PrintProfile,
     PrintProfileRefusal, PrintProfileRefusalCategory, ProgressiveAdjacentPagePrefetch,
