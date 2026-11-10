@@ -64,10 +64,10 @@ use crate::render::image_painter::{AxisAlignedImageCacheTarget, ImagePainter};
 use crate::render::invalidation::{InvalidationResult, RenderDependencyGraph};
 use crate::render::line::DashState;
 use crate::render::path::{
-    axis_aligned_integer_rect, device_stroke_outline, flatten_path, rasterize_flat_alpha_mask,
-    rasterize_flat_binary_clip_mask, rasterize_glyph_alpha_mask, rasterize_path_alpha_mask,
-    stroke_coverage_lut, stroke_paint_policy, FillRule, FlatPath, GlyphHinting, Path, PathPainter,
-    PathSegment, RasterizedGlyphMask,
+    axis_aligned_integer_rect, device_stroke_outline, flat_alpha_mask_bounds, flatten_path,
+    paint_flat_alpha_mask_rows, rasterize_flat_alpha_mask, rasterize_flat_binary_clip_mask,
+    rasterize_glyph_alpha_mask, stroke_coverage_lut, stroke_paint_policy, FillRule, FlatPath,
+    GlyphHinting, Path, PathPainter, PathSegment, RasterizedGlyphMask,
 };
 use crate::render::plan::{
     graphics_state_color_component_arity_refusal, graphics_state_operand_refusal,
@@ -7268,27 +7268,80 @@ struct PathFillMaskCacheKey {
     raster_options: u8,
 }
 
-#[derive(Default)]
-struct PathFillMaskCache {
-    entries: HashMap<PathFillMaskCacheKey, Arc<RasterizedGlyphMask>>,
-    order: VecDeque<PathFillMaskCacheKey>,
+/// Bounded LRU of rasterized path masks shared by the fill and stroke
+/// paths.
+///
+/// Recency is an append-only journal of `(stamp, key)` pairs: a hit pushes a
+/// new stamp instead of searching the journal, and eviction skips entries
+/// whose stamp is stale, so lookups and evictions are amortized O(1).
+///
+/// Admission is by second sighting: a large mask is only kept once its key
+/// has been painted before (or is small enough to be cheap to keep), so pages
+/// of unique paths do not fill the cache, or memory, with masks that will
+/// never be painted again.
+struct PathMaskCache<K> {
+    entries: HashMap<K, (Arc<RasterizedGlyphMask>, u64)>,
+    order: VecDeque<(u64, K)>,
+    next_stamp: u64,
     bytes: usize,
     stats: RenderArtifactCacheStats,
+    sightings: HashSet<u64>,
 }
 
-impl PathFillMaskCache {
+impl<K> Default for PathMaskCache<K> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            next_stamp: 0,
+            bytes: 0,
+            stats: RenderArtifactCacheStats::default(),
+            sightings: HashSet::new(),
+        }
+    }
+}
+
+impl<K: Clone + Eq + Hash> PathMaskCache<K> {
     const MAX_ENTRIES: usize = 8192;
     const MAX_BYTES: usize = 96 * 1024 * 1024;
+    /// Masks up to this many bytes are cached on first sight.
+    const SMALL_MASK_BYTES: usize = 64 * 64;
+    const MAX_SIGHTINGS: usize = 65_536;
 
-    fn get(&mut self, key: &PathFillMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
-        let hit = self.entries.get(key).cloned();
+    fn get(&mut self, key: &K) -> Option<Arc<RasterizedGlyphMask>> {
+        let stamp = self.next_stamp;
+        let hit = self.entries.get_mut(key).map(|(mask, last)| {
+            *last = stamp;
+            Arc::clone(mask)
+        });
         if hit.is_some() {
+            self.next_stamp = self.next_stamp.wrapping_add(1);
             self.stats.hits = self.stats.hits.saturating_add(1);
-            self.touch(key);
+            self.order.push_back((stamp, key.clone()));
+            self.compact_order();
         } else {
             self.stats.misses = self.stats.misses.saturating_add(1);
         }
         hit
+    }
+
+    /// Whether a freshly rasterized mask for `key` should be cached: small
+    /// masks always, larger ones from their second sighting on.
+    fn admits(&mut self, key: &K, mask_bytes: usize) -> bool {
+        if mask_bytes <= Self::SMALL_MASK_BYTES {
+            return true;
+        }
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let key_hash = hasher.finish();
+        if self.sightings.remove(&key_hash) {
+            return true;
+        }
+        if self.sightings.len() >= Self::MAX_SIGHTINGS {
+            self.sightings.clear();
+        }
+        self.sightings.insert(key_hash);
+        false
     }
 
     fn len(&self) -> usize {
@@ -7302,6 +7355,7 @@ impl PathFillMaskCache {
     fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+        self.sightings.clear();
         self.bytes = 0;
         self.stats = RenderArtifactCacheStats::default();
     }
@@ -7314,22 +7368,28 @@ impl PathFillMaskCache {
         }
     }
 
-    fn oldest_entry_bytes(&self) -> Option<usize> {
-        self.order
-            .front()
-            .and_then(|key| self.entries.get(key))
-            .map(|mask| mask.approximate_bytes())
+    fn is_live(&self, stamp: u64, key: &K) -> bool {
+        self.entries
+            .get(key)
+            .is_some_and(|(_, last)| *last == stamp)
     }
 
-    fn insert(&mut self, key: PathFillMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
+    fn oldest_entry_bytes(&self) -> Option<usize> {
+        self.order
+            .iter()
+            .find(|(stamp, key)| self.is_live(*stamp, key))
+            .and_then(|(_, key)| self.entries.get(key))
+            .map(|(mask, _)| mask.approximate_bytes())
+    }
+
+    fn insert(&mut self, key: K, mask: Arc<RasterizedGlyphMask>) {
         let bytes = mask.approximate_bytes();
         if bytes > Self::MAX_BYTES / 4 {
             self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
             return;
         }
-        if let Some(old) = self.entries.remove(&key) {
+        if let Some((old, _)) = self.entries.remove(&key) {
             self.bytes = self.bytes.saturating_sub(old.approximate_bytes());
-            self.remove_ordered(&key);
         }
         while self.entries.len() >= Self::MAX_ENTRIES
             || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
@@ -7343,33 +7403,41 @@ impl PathFillMaskCache {
         if self.entries.len() < Self::MAX_ENTRIES
             && self.bytes.saturating_add(bytes) <= Self::MAX_BYTES
         {
-            self.order.push_back(key.clone());
+            let stamp = self.next_stamp;
+            self.next_stamp = self.next_stamp.wrapping_add(1);
+            self.order.push_back((stamp, key.clone()));
             self.bytes = self.bytes.saturating_add(bytes);
-            self.entries.insert(key, mask);
-        }
-    }
-
-    fn touch(&mut self, key: &PathFillMaskCacheKey) {
-        self.remove_ordered(key);
-        self.order.push_back(key.clone());
-    }
-
-    fn remove_ordered(&mut self, key: &PathFillMaskCacheKey) {
-        if let Some(pos) = self.order.iter().position(|item| item == key) {
-            self.order.remove(pos);
+            self.entries.insert(key, (mask, stamp));
+            self.compact_order();
         }
     }
 
     fn evict_one(&mut self) -> bool {
-        while let Some(victim) = self.order.pop_front() {
-            if let Some(removed) = self.entries.remove(&victim) {
+        while let Some((stamp, victim)) = self.order.pop_front() {
+            if !self.is_live(stamp, &victim) {
+                continue;
+            }
+            if let Some((removed, _)) = self.entries.remove(&victim) {
                 self.bytes = self.bytes.saturating_sub(removed.approximate_bytes());
                 return true;
             }
         }
         false
     }
+
+    /// Drop stale journal records once they outnumber the live entries.
+    fn compact_order(&mut self) {
+        if self.order.len() <= self.entries.len().saturating_mul(2).saturating_add(1024) {
+            return;
+        }
+        let entries = &self.entries;
+        self.order
+            .retain(|(stamp, key)| entries.get(key).is_some_and(|(_, last)| last == stamp));
+    }
 }
+
+type PathFillMaskCache = PathMaskCache<PathFillMaskCacheKey>;
+type PathStrokeMaskCache = PathMaskCache<PathStrokeMaskCacheKey>;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct PathStrokeMaskCacheKey {
@@ -7387,109 +7455,6 @@ struct PathStrokeMaskCacheKey {
     frac_f: i64,
     binary_alpha: bool,
     raster_options: u8,
-}
-
-#[derive(Default)]
-struct PathStrokeMaskCache {
-    entries: HashMap<PathStrokeMaskCacheKey, Arc<RasterizedGlyphMask>>,
-    order: VecDeque<PathStrokeMaskCacheKey>,
-    bytes: usize,
-    stats: RenderArtifactCacheStats,
-}
-
-impl PathStrokeMaskCache {
-    const MAX_ENTRIES: usize = 8192;
-    const MAX_BYTES: usize = 96 * 1024 * 1024;
-
-    fn get(&mut self, key: &PathStrokeMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
-        let hit = self.entries.get(key).cloned();
-        if hit.is_some() {
-            self.stats.hits = self.stats.hits.saturating_add(1);
-            self.touch(key);
-        } else {
-            self.stats.misses = self.stats.misses.saturating_add(1);
-        }
-        hit
-    }
-
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    fn bytes(&self) -> usize {
-        self.bytes
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.order.clear();
-        self.bytes = 0;
-        self.stats = RenderArtifactCacheStats::default();
-    }
-
-    fn stats(&self) -> RenderArtifactCacheStats {
-        RenderArtifactCacheStats {
-            entries: self.entries.len(),
-            bytes: self.bytes,
-            ..self.stats
-        }
-    }
-
-    fn oldest_entry_bytes(&self) -> Option<usize> {
-        self.order
-            .front()
-            .and_then(|key| self.entries.get(key))
-            .map(|mask| mask.approximate_bytes())
-    }
-
-    fn insert(&mut self, key: PathStrokeMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
-        let bytes = mask.approximate_bytes();
-        if bytes > Self::MAX_BYTES / 4 {
-            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
-            return;
-        }
-        if let Some(old) = self.entries.remove(&key) {
-            self.bytes = self.bytes.saturating_sub(old.approximate_bytes());
-            self.remove_ordered(&key);
-        }
-        while self.entries.len() >= Self::MAX_ENTRIES
-            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
-        {
-            if self.evict_one() {
-                self.stats.evictions = self.stats.evictions.saturating_add(1);
-            } else {
-                break;
-            }
-        }
-        if self.entries.len() < Self::MAX_ENTRIES
-            && self.bytes.saturating_add(bytes) <= Self::MAX_BYTES
-        {
-            self.order.push_back(key.clone());
-            self.bytes = self.bytes.saturating_add(bytes);
-            self.entries.insert(key, mask);
-        }
-    }
-
-    fn touch(&mut self, key: &PathStrokeMaskCacheKey) {
-        self.remove_ordered(key);
-        self.order.push_back(key.clone());
-    }
-
-    fn remove_ordered(&mut self, key: &PathStrokeMaskCacheKey) {
-        if let Some(pos) = self.order.iter().position(|item| item == key) {
-            self.order.remove(pos);
-        }
-    }
-
-    fn evict_one(&mut self) -> bool {
-        while let Some(victim) = self.order.pop_front() {
-            if let Some(removed) = self.entries.remove(&victim) {
-                self.bytes = self.bytes.saturating_sub(removed.approximate_bytes());
-                return true;
-            }
-        }
-        false
-    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -7819,7 +7784,14 @@ impl FontReplacementSelection {
 fn restore_buffer_clip_from_node(buf: &mut PixelBuffer, saved: &ClipNode) {
     let mask = match &saved.state {
         ClipState::Full => None,
-        ClipState::Composite { .. } => {
+        // Row-based states are materialized once per node and shared: a
+        // `ClipMask` clone only bumps reference counts, so a restore no longer
+        // rebuilds per-row run vectors on every `Q`. Dense masks already share
+        // their coverage bytes without a node cache.
+        ClipState::Composite { .. }
+        | ClipState::Rectangle { .. }
+        | ClipState::SparseSpans { .. }
+        | ClipState::RleMask { .. } => {
             Some(saved.materialize(buf.width, buf.height).as_ref().clone())
         }
         state => Some(state.to_clip_mask(buf.width, buf.height)),
@@ -23816,13 +23788,63 @@ fn paint_cached_path_fill(
         buf.fill_rect(x, y, width, height, color);
         return true;
     }
-    let Some(mut mask) = rasterize_path_alpha_mask(path, &normalized_t, rule, flatness) else {
+    if path.is_empty() {
+        return false;
+    }
+    let flat = crate::render::path::flatten_path_device_transform(path, &normalized_t, flatness);
+    let lut = options.coverage_lut();
+    paint_admitted_path_mask(
+        cache,
+        key,
+        buf,
+        &flat,
+        rule,
+        (dx, dy),
+        color,
+        binary_alpha,
+        lut,
+    )
+}
+
+/// Paint the anti-aliased mask of a device-space outline (already normalized
+/// to the cache's fractional origin) at `(dx, dy)`. A mask the cache admits
+/// (a repeat sighting, or a small one) is built, painted and kept; any other
+/// is streamed into the destination row by row without allocating it. Both
+/// produce the same pixels. Returns `false` when no mask would be built.
+#[allow(clippy::too_many_arguments)]
+fn paint_admitted_path_mask<K: Clone + Eq + Hash>(
+    cache: &mut PathMaskCache<K>,
+    key: K,
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    rule: FillRule,
+    (dx, dy): (i32, i32),
+    color: PixelColor,
+    binary_alpha: bool,
+    lut: Option<&[u8; 256]>,
+) -> bool {
+    let Some((_, _, width, height)) = flat_alpha_mask_bounds(flat) else {
+        return false;
+    };
+    let mask_bytes = std::mem::size_of::<RasterizedGlyphMask>() + width.saturating_mul(height);
+    if !cache.admits(&key, mask_bytes) {
+        return paint_flat_alpha_mask_rows(buf, flat, rule, dx, dy, color, |row| {
+            if binary_alpha {
+                for alpha in row.iter_mut() {
+                    *alpha = if *alpha >= 128 { 255 } else { 0 };
+                }
+            } else {
+                crate::render::vector_quality::apply_coverage_lut(row, lut);
+            }
+        });
+    }
+    let Some(mut mask) = rasterize_flat_alpha_mask(flat, rule) else {
         return false;
     };
     if binary_alpha {
         mask.force_binary_alpha();
     } else {
-        mask.apply_coverage_lut(options.coverage_lut());
+        mask.apply_coverage_lut(lut);
     }
     let mask = Arc::new(mask);
     mask.paint(buf, dx, dy, color);
@@ -23930,18 +23952,17 @@ fn paint_cached_path_stroke(
     if outline.subpaths.is_empty() {
         return true;
     }
-    let Some(mut mask) = rasterize_flat_alpha_mask(&outline, FillRule::NonZero) else {
-        return false;
-    };
-    if binary_alpha {
-        mask.force_binary_alpha();
-    } else {
-        mask.apply_coverage_lut(stroke_coverage_lut(stroke.paint, options));
-    }
-    let mask = Arc::new(mask);
-    mask.paint(buf, dx, dy, color);
-    cache.insert(key, mask);
-    true
+    paint_admitted_path_mask(
+        cache,
+        key,
+        buf,
+        &outline,
+        FillRule::NonZero,
+        (dx, dy),
+        color,
+        binary_alpha,
+        stroke_coverage_lut(stroke.paint, options),
+    )
 }
 
 fn line_cap_cache_id(cap: &LineCap) -> u8 {

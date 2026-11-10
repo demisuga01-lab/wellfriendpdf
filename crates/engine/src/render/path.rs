@@ -1,6 +1,6 @@
 use crate::cancel::CancelToken;
 use crate::content::state::{LineCap, LineJoin};
-use crate::render::buffer::{ClipMask, PixelBuffer, PixelColor};
+use crate::render::buffer::{ClipMask, CoverageBlendMemo, PixelBuffer, PixelColor};
 use crate::render::contract::ThinLineMode;
 use crate::render::line::DashState;
 use crate::render::transform::{Transform2D, Viewport};
@@ -22,6 +22,19 @@ const SCANLINE_EDGE_BUCKET_MAX_LINKS: usize = 2_000_000;
 thread_local! {
     static SCANLINE_CROSSING_VEC_POOL: RefCell<Vec<Vec<(f64, i32)>>> = const { RefCell::new(Vec::new()) };
     static SCANLINE_U16_VEC_POOL: RefCell<Vec<Vec<u16>>> = const { RefCell::new(Vec::new()) };
+    // Kept across fills: the memo resets itself when the colour or blend
+    // state changes, so repeated same-colour strokes reuse their results.
+    static COVERAGE_BLEND_MEMO: RefCell<Option<CoverageBlendMemo>> = const { RefCell::new(None) };
+}
+
+fn take_coverage_blend_memo() -> CoverageBlendMemo {
+    COVERAGE_BLEND_MEMO
+        .with(|memo| memo.borrow_mut().take())
+        .unwrap_or_else(CoverageBlendMemo::new)
+}
+
+fn return_coverage_blend_memo(memo: CoverageBlendMemo) {
+    COVERAGE_BLEND_MEMO.with(|slot| *slot.borrow_mut() = Some(memo));
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -577,19 +590,6 @@ pub(crate) fn rasterize_glyph_alpha_mask(
     if hinting.should_apply() {
         light_grid_fit_flat_glyph(&mut flat, device_t);
     }
-    rasterize_flat_alpha_mask(&flat, rule)
-}
-
-pub(crate) fn rasterize_path_alpha_mask(
-    path: &Path,
-    device_t: &Transform2D,
-    rule: FillRule,
-    bezier_threshold: f64,
-) -> Option<RasterizedGlyphMask> {
-    if path.is_empty() {
-        return None;
-    }
-    let flat = flatten_path_device_transform(path, device_t, bezier_threshold);
     rasterize_flat_alpha_mask(&flat, rule)
 }
 
@@ -3250,6 +3250,7 @@ fn fill_convex_flat_with_color_compositor_scanline(
     }
     let w = (x1 - x0) as usize;
     let mut row_accum = take_scanline_u16_vec(w);
+    let mut memo = take_coverage_blend_memo();
     let sample_weight = 255.0 / vertical_samples as f64;
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
@@ -3271,11 +3272,12 @@ fn fill_convex_flat_with_color_compositor_scanline(
                 );
             }
         }
-        paint_alpha_row_runs(buf, &row_accum, x0, y, color, lut, |pixels| {
+        paint_alpha_row_runs(buf, &row_accum, x0, y, color, lut, &mut memo, |pixels| {
             PATH_RASTER_CONVEX_FAST_PIXELS.fetch_add(pixels, Ordering::Relaxed);
         });
     }
     return_scanline_u16_vec(row_accum);
+    return_coverage_blend_memo(memo);
     Some(true)
 }
 
@@ -3358,10 +3360,10 @@ fn convex_scanline_span(edges: &[ScanlineEdge], scan_y: f64) -> Option<(f64, f64
     (crossings >= 2 && right > left).then_some((left, right))
 }
 
-pub(crate) fn rasterize_flat_alpha_mask(
-    flat: &FlatPath,
-    rule: FillRule,
-) -> Option<RasterizedGlyphMask> {
+/// Pixel box `(x0, y0, width, height)` of the alpha mask
+/// [`rasterize_flat_alpha_mask`] builds for `flat`, or `None` when it would
+/// build none (no finite points, empty or over-budget box).
+pub(crate) fn flat_alpha_mask_bounds(flat: &FlatPath) -> Option<(i32, i32, usize, usize)> {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
@@ -3394,12 +3396,20 @@ pub(crate) fn rasterize_flat_alpha_mask(
     if w == 0 || h == 0 || cell_count > ACCUMULATOR_MAX_CELLS {
         return None;
     }
+    Some((x0, y0, w, h))
+}
 
+pub(crate) fn rasterize_flat_alpha_mask(
+    flat: &FlatPath,
+    rule: FillRule,
+) -> Option<RasterizedGlyphMask> {
+    let (x0, y0, w, h) = flat_alpha_mask_bounds(flat)?;
     // Glyph, Type3, and cached path masks are a hot replay path. Use the
     // deterministic edge-bucket scanline/subsample mask for every bounded
     // alpha mask so warm display-list replay stays on row-local scratch instead
     // of accumulator-heavy raster work.
-    rasterize_flat_alpha_mask_scanline(
+    let mut alpha = vec![0u8; w.saturating_mul(h)];
+    scan_flat_alpha_mask_rows(
         flat,
         rule,
         x0,
@@ -3407,40 +3417,112 @@ pub(crate) fn rasterize_flat_alpha_mask(
         w,
         h,
         GLYPH_SCANLINE_ALPHA_VERTICAL_SAMPLES,
-    )
+        |y, row| {
+            let start = (y - y0) as usize * w;
+            for (dst, value) in alpha[start..start + w].iter_mut().zip(row.iter()) {
+                *dst = (*value).min(255) as u8;
+            }
+        },
+    );
+    Some(RasterizedGlyphMask {
+        x: x0,
+        y: y0,
+        width: w as u32,
+        height: h as u32,
+        alpha,
+    })
 }
 
-fn rasterize_flat_alpha_mask_scanline(
+/// Paint the alpha mask [`rasterize_flat_alpha_mask`] would build for `flat`
+/// straight into `buf` at offset `(dx, dy)`, one row at a time, without
+/// allocating the mask: each row is accumulated exactly as the mask row would
+/// be, remapped by `map_row` (the coverage curve the caller would apply to the
+/// mask) and blended with the same row compositor. Rows outside the buffer
+/// are skipped, since blending them would not touch any pixel. Returns `false`
+/// when no mask would be built (the caller's fallback then applies).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_flat_alpha_mask_rows(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    rule: FillRule,
+    dx: i32,
+    dy: i32,
+    color: PixelColor,
+    mut map_row: impl FnMut(&mut [u8]),
+) -> bool {
+    let Some((x0, y0, w, h)) = flat_alpha_mask_bounds(flat) else {
+        return false;
+    };
+    let device_y0 = i64::from(dy) + i64::from(y0);
+    let first = (-device_y0).clamp(0, h as i64) as usize;
+    let last = (i64::from(buf.height) - device_y0).clamp(0, h as i64) as usize;
+    let device_x0 = i64::from(dx) + i64::from(x0);
+    if last <= first
+        || device_x0 >= i64::from(buf.width)
+        || device_x0 + w as i64 <= 0
+        || color[3] == 0
+    {
+        return true;
+    }
+    let mask_x = dx.saturating_add(x0);
+    let mut alpha_row = vec![0u8; w];
+    scan_flat_alpha_mask_rows(
+        flat,
+        rule,
+        x0,
+        y0 + first as i32,
+        w,
+        last - first,
+        GLYPH_SCANLINE_ALPHA_VERTICAL_SAMPLES,
+        |y, row| {
+            for (dst, value) in alpha_row.iter_mut().zip(row.iter()) {
+                *dst = (*value).min(255) as u8;
+            }
+            map_row(&mut alpha_row);
+            buf.blend_alpha_mask(mask_x, dy.saturating_add(y), w as u32, 1, &alpha_row, color);
+        },
+    );
+    true
+}
+
+/// The scanline/subsample coverage of mask rows `y_start..y_start + rows`
+/// (absolute rows; columns `x0..x0 + w`): `visit(y, row)` receives each
+/// row's accumulated coverage. Every row depends only on the geometry, so a
+/// row range scans to exactly the rows of the whole mask.
+#[allow(clippy::too_many_arguments)]
+fn scan_flat_alpha_mask_rows(
     flat: &FlatPath,
     rule: FillRule,
     x0: i32,
-    y0: i32,
+    y_start: i32,
     w: usize,
-    h: usize,
+    rows: usize,
     vertical_samples: usize,
-) -> Option<RasterizedGlyphMask> {
-    if w == 0 || h == 0 || vertical_samples == 0 {
-        return None;
+    mut visit: impl FnMut(i32, &[u16]),
+) {
+    if w == 0 || rows == 0 || vertical_samples == 0 {
+        return;
     }
-    let mut accum = take_scanline_u16_vec(w.saturating_mul(h));
+    let mut accum = take_scanline_u16_vec(w);
     let mut crossings = take_scanline_crossing_vec();
-    let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let edge_buckets = build_scanline_edge_buckets(flat, y_start, rows);
     let mut active_edges = ScanlineActiveEdges::default();
     let sample_weight = 255.0 / vertical_samples as f64;
     let rescues = thin_subpath_rescues(flat, vertical_samples);
     let mut rescue_cursor = 0usize;
-    for row in 0..h {
+    for row in 0..rows {
+        accum.fill(0);
         if !rescues.is_empty() {
             add_thin_subpath_rescues_for_row(
                 flat,
                 &rescues,
                 &mut rescue_cursor,
-                y0.saturating_add(row as i32),
+                y_start.saturating_add(row as i32),
                 rule,
                 x0,
                 w,
                 &mut accum,
-                row * w,
+                0,
                 &mut crossings,
             );
         }
@@ -3449,7 +3531,8 @@ fn rasterize_flat_alpha_mask_scanline(
             active_ready = active_edges.advance_to_row(buckets, row);
         }
         for sample in 0..vertical_samples {
-            let scan_y = y0 as f64 + row as f64 + (sample as f64 + 0.5) / vertical_samples as f64;
+            let scan_y =
+                y_start as f64 + row as f64 + (sample as f64 + 0.5) / vertical_samples as f64;
             crossings.clear();
             if let Some(buckets) = edge_buckets.as_ref() {
                 if active_ready {
@@ -3466,14 +3549,13 @@ fn rasterize_flat_alpha_mask_scanline(
                 continue;
             }
             PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
-            let row_base = row * w;
             match rule {
                 FillRule::EvenOdd => {
                     let mut i = 0usize;
                     while i + 1 < crossings.len() {
                         add_alpha_span(
                             &mut accum,
-                            row_base,
+                            0,
                             w,
                             crossings[i].0 - x0 as f64,
                             crossings[i + 1].0 - x0 as f64,
@@ -3490,7 +3572,7 @@ fn rasterize_flat_alpha_mask_scanline(
                             if let Some(sx) = start_x.take() {
                                 add_alpha_span(
                                     &mut accum,
-                                    row_base,
+                                    0,
                                     w,
                                     sx - x0 as f64,
                                     x - x0 as f64,
@@ -3506,20 +3588,10 @@ fn rasterize_flat_alpha_mask_scanline(
                 }
             }
         }
+        visit(y_start.saturating_add(row as i32), &accum);
     }
     return_scanline_crossing_vec(crossings);
-    let alpha = accum
-        .iter()
-        .map(|v| (*v).min(255) as u8)
-        .collect::<Vec<_>>();
     return_scanline_u16_vec(accum);
-    Some(RasterizedGlyphMask {
-        x: x0,
-        y: y0,
-        width: w as u32,
-        height: h as u32,
-        alpha,
-    })
 }
 
 fn add_alpha_span(
@@ -3539,17 +3611,37 @@ fn add_alpha_span(
         return;
     }
     let first = safe_floor_i32(start).max(0) as usize;
-    let last = safe_ceil_i32(end).max(0) as usize;
-    for col in first..last.min(w) {
+    let last = (safe_ceil_i32(end).max(0) as usize).min(w);
+    // Cells lying entirely inside [start, end) are covered exactly 1.0 (cell
+    // bounds are small integers, so `cell_end - cell_start` is exact): they
+    // all receive the same increment the per-cell formula would compute, so
+    // the interior is a constant add over a slice instead of per-cell
+    // floating-point work. Only the two partial end cells take the general
+    // path.
+    let full_lo = (safe_ceil_i32(start).max(0) as usize).clamp(first, last);
+    let full_hi = (safe_floor_i32(end).max(0) as usize).clamp(full_lo, last);
+    let mut add_cell = |col: usize| {
         let cell_start = col as f64;
         let cell_end = cell_start + 1.0;
         let covered = end.min(cell_end) - start.max(cell_start);
         if covered <= 0.0 {
-            continue;
+            return;
         }
         let add = (covered * sample_weight).round().clamp(0.0, 255.0) as u16;
         let idx = row_base + col;
         accum[idx] = accum[idx].saturating_add(add);
+    };
+    for col in first..full_lo {
+        add_cell(col);
+    }
+    for col in full_hi..last {
+        add_cell(col);
+    }
+    if full_hi > full_lo {
+        let add = sample_weight.round().clamp(0.0, 255.0) as u16;
+        for value in &mut accum[row_base + full_lo..row_base + full_hi] {
+            *value = value.saturating_add(add);
+        }
     }
 }
 
@@ -3834,6 +3926,7 @@ fn fill_flat_with_color_compositor_scanline(
     }
     let mut crossings = take_scanline_crossing_vec();
     let mut row_accum = take_scanline_u16_vec(w);
+    let mut memo = take_coverage_blend_memo();
     let h = (y1 - y0) as usize;
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
@@ -3890,6 +3983,7 @@ fn fill_flat_with_color_compositor_scanline(
                 y,
                 color,
                 lut,
+                &mut memo,
                 |_| {},
             );
             row_accum[lo..hi].fill(0);
@@ -3897,6 +3991,7 @@ fn fill_flat_with_color_compositor_scanline(
     }
     return_scanline_u16_vec(row_accum);
     return_scanline_crossing_vec(crossings);
+    return_coverage_blend_memo(memo);
     true
 }
 
@@ -3907,6 +4002,7 @@ fn paint_alpha_row_runs(
     y: i32,
     color: PixelColor,
     lut: Option<&[u8; 256]>,
+    memo: &mut CoverageBlendMemo,
     mut on_run: impl FnMut(u64),
 ) {
     let mut col = 0usize;
@@ -3935,10 +4031,7 @@ fn paint_alpha_row_runs(
             PATH_RASTER_SOLID_RUN_PIXELS.fetch_add(pixels, Ordering::Relaxed);
             buf.fill_rect(px0, y, px1 - px0, 1, color);
         } else {
-            let coverage = f32::from(alpha) / 255.0;
-            for px in px0..px1 {
-                buf.blend_pixel(px, y, color, coverage);
-            }
+            buf.blend_coverage_run(px0, px1, y, color, alpha, memo);
         }
         col = run_end;
     }
