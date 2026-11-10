@@ -37,6 +37,17 @@
 //! avoids whole-page rasterization for common mixed
 //! vector/local-resource pages. The eligibility is determined by
 //! [`crate::render::vector_fallback::classify_page_for_vector_output`].
+//!
+//! # Searchable text
+//!
+//! Glyphs stay outlines, and an invisible text layer (transparent `<text>`
+//! elements carrying the decoded Unicode at the glyph positions, see
+//! `svg_text_layer.rs`) is added on top so the SVG can be searched, selected
+//! and copied. A page embedded as one raster image gets the same layer from
+//! the page's extracted word boxes.
+
+#[path = "svg_text_layer.rs"]
+mod text_layer;
 
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, Color, ColorSpace, GraphicsState, LineCap, LineJoin};
@@ -449,12 +460,24 @@ fn rasterized_page(
     let png = ImageEncoder::encode_png_fast(&buf.to_raw_image())?;
     let b64 = base64_encode(&png);
     let (w, h) = (viewport.width_px, viewport.height_px);
+    // No glyph geometry is replayed for a raster page; its extracted words
+    // still make it searchable. Extraction failure only drops the layer.
+    let mut layer = text_layer::TextLayer::default();
+    match engine.extract_page_words(page_number) {
+        Ok(words) => {
+            for word in words {
+                layer.push_word_box(&word.text, [word.x0, word.y0, word.x1, word.y1], viewport);
+            }
+        }
+        Err(err) => log::debug!("SVG raster page {page_number}: no text layer: {err}"),
+    }
+    let layer = layer.finish();
     let svg = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
          width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">\n\
          <image width=\"{w}\" height=\"{h}\" xlink:href=\"data:image/png;base64,{b64}\"/>\n\
-         </svg>\n"
+         {layer}</svg>\n"
     );
     Ok(SvgPage {
         svg,
@@ -475,6 +498,8 @@ struct SvgSink {
     mask_counter: usize,
     /// Glyph outlines already defined in `defs`, keyed by outline content.
     glyph_ids: std::collections::HashMap<u64, String>,
+    /// Invisible searchable text, emitted on top of the page.
+    text_layer: text_layer::TextLayer,
 }
 
 impl SvgSink {
@@ -488,6 +513,7 @@ impl SvgSink {
             gradient_counter: 0,
             mask_counter: 0,
             glyph_ids: std::collections::HashMap::new(),
+            text_layer: text_layer::TextLayer::default(),
         }
     }
 
@@ -682,6 +708,7 @@ impl SvgSink {
             out.push_str("</defs>\n");
         }
         out.push_str(&self.body);
+        out.push_str(&self.text_layer.finish());
         out.push_str("</svg>\n");
         out
     }
@@ -2599,6 +2626,7 @@ impl SvgRenderState<'_> {
             .unwrap_or(1000.0);
 
         for glyph in decoded {
+            let layer_start = self.text_layer_frame();
             let font_advance =
                 font_program.and_then(|fb| decoded_glyph_strict_horizontal_advance(&glyph, fb));
             // Render mode 3 is invisible and not a clipping mode; skip outline emission.
@@ -2637,7 +2665,32 @@ impl SvgRenderState<'_> {
             if !self.advance_decoded_text(advance, &glyph) {
                 return;
             }
+            if let (Some(start), Some(end)) = (layer_start, self.text_layer_frame()) {
+                let (em_x, em_y) = text_layer::em_vectors(&start);
+                let [.., ox, oy] = start.to_array();
+                let [.., ex, ey] = end.to_array();
+                self.sink.text_layer.push(&text_layer::LayerGlyph {
+                    text: &glyph.text,
+                    origin: (ox, oy),
+                    end: (ex, ey),
+                    em_x,
+                    em_y,
+                    vertical: glyph.is_vertical,
+                });
+            }
         }
+    }
+
+    /// Text space scaled to one em (font size, horizontal scaling and rise
+    /// applied) to SVG device space, for the searchable text layer.
+    fn text_layer_frame(&self) -> Option<Transform2D> {
+        let size = self.gs.text.font_size;
+        let th = self.gs.text.horizontal_scaling / 100.0;
+        let text = Transform2D::scale(size * th, size)
+            .concat(&Transform2D::translation(0.0, self.gs.text.rise))
+            .concat(&Transform2D::from(self.gs.text.tm))
+            .concat(&self.ctm());
+        self.glyph_device_matrix(&text)
     }
 
     /// Emit one glyph as an SVG `<path>` outline (text-as-outlines).

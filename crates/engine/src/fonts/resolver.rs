@@ -141,6 +141,11 @@ pub struct FontResolver {
     /// only in that case; the recovery MuPDF performs for Identity-encoded
     /// subsets, without which such text extracts as U+FFFD.
     cid_to_unicode: Option<std::collections::BTreeMap<u16, String>>,
+    /// Glyph order of the well-known TrueType family the font was set in.
+    /// For a simple font it decodes `g<index>` glyph names; for a composite
+    /// font it is set only for a non-embedded Identity `CIDFontType2` without
+    /// a usable ToUnicode, whose CIDs are the system font's glyph indexes.
+    known_glyph_order: Option<super::known_glyph_order::KnownGlyphOrder>,
     /// `Some(hex)` when the simple font's /Differences uses numeric glyph
     /// names throughout (`g12`, `cid7`, `Gab`), so such names are read as
     /// character values (Poppler's testForNumericNames). `None` otherwise.
@@ -222,10 +227,29 @@ impl FontResolver {
         if !self.font_type.is_cid() {
             return None;
         }
-        let map = self.cid_to_unicode.as_ref()?;
         let cid = u16::try_from(code).ok()?;
+        if let Some(order) = self.known_glyph_order {
+            return order
+                .unicode(cid)
+                .map(|ch| (ch.to_string(), FontDecodeSource::FontCMap));
+        }
+        let map = self.cid_to_unicode.as_ref()?;
         map.get(&cid)
             .map(|text| (text.clone(), FontDecodeSource::FontCMap))
+    }
+
+    /// Whether a composite font has a real Unicode source (a ToUnicode with
+    /// mappings, the embedded program's cmap or a known glyph order). A code
+    /// it leaves unmapped is then an unencoded glyph (a ligature or contextual
+    /// form): reading its CID as a code point would only invent characters.
+    fn composite_has_unicode_source(&self) -> bool {
+        self.font_type.is_cid()
+            && (self.cid_to_unicode.is_some()
+                || self.known_glyph_order.is_some()
+                || self
+                    .to_unicode
+                    .as_ref()
+                    .is_some_and(|map| map.validate().is_ok() && !map.is_empty()))
     }
 
     fn decode_code_bytes_with_source(&self, code: CharacterCode) -> (String, FontDecodeSource) {
@@ -275,6 +299,9 @@ impl FontResolver {
         if let Some(hit) = self.cid_unicode_fallback(code) {
             return hit;
         }
+        if self.composite_has_unicode_source() {
+            return ("\u{FFFD}".into(), FontDecodeSource::Unknown);
+        }
 
         let glyph_name = self
             .encoding_table
@@ -282,6 +309,18 @@ impl FontResolver {
             .and_then(|table| table.get(code as usize))
             .map(String::as_str)
             .unwrap_or(".notdef");
+
+        // `g<index>` names of a font converted from TrueType are glyph
+        // indexes; with the family's glyph order they name the character
+        // (otherwise they would be read as code points, mostly controls).
+        if let (Some(order), Some(gid)) = (
+            self.known_glyph_order,
+            super::known_glyph_order::glyph_index_name(glyph_name),
+        ) {
+            if let Some(ch) = order.unicode(gid) {
+                return (ch.to_string(), FontDecodeSource::FontCMap);
+            }
+        }
 
         if glyph_name != ".notdef" {
             if let Some(text) = glyph_name_to_text(glyph_name, self.numeric_glyph_names) {
@@ -506,6 +545,23 @@ impl FontResolver {
         } else {
             None
         };
+        let known_glyph_order = if font_type.is_cid() {
+            if matches!(font_type, FontType::Type0)
+                && !unicode_is_predefined
+                && cid_to_unicode.is_none()
+                && to_unicode
+                    .as_ref()
+                    .is_none_or(|map| map.validate().is_err() || map.is_empty())
+            {
+                known_cid_glyph_order(descendant_font.as_ref(), reader)
+            } else {
+                None
+            }
+        } else {
+            font_dict
+                .get_name("BaseFont")
+                .and_then(super::known_glyph_order::KnownGlyphOrder::for_base_font)
+        };
         let first_char = font_dict
             .get_integer("FirstChar")
             .filter(|value| *value >= 0)
@@ -624,6 +680,7 @@ impl FontResolver {
             code_space,
             unicode_encoding,
             cid_to_unicode,
+            known_glyph_order,
             numeric_glyph_names,
             explicit_notdef,
             ascent,
@@ -1049,6 +1106,39 @@ fn explicit_notdef_codes(font_dict: &PdfDictionary, reader: Option<&PdfReader>) 
 /// `Some(hex)` when every /Differences name of a simple font is numeric (see
 /// [`differences_look_numeric`]). `hex` is set when some name the glyph list
 /// cannot map only makes sense as two hex digits.
+/// The known glyph order of a non-embedded `CIDFontType2` descendant whose
+/// CIDs are glyph indexes of the system font: Identity ordering and an absent
+/// or `/Identity` CIDToGIDMap. An embedded program is decoded through its own
+/// cmap instead.
+fn known_cid_glyph_order(
+    descendant: Option<&PdfDictionary>,
+    reader: Option<&PdfReader>,
+) -> Option<super::known_glyph_order::KnownGlyphOrder> {
+    let descendant = descendant?;
+    if descendant.get_name("Subtype") != Some("CIDFontType2") {
+        return None;
+    }
+    if let Some(map) = descendant.get("CIDToGIDMap") {
+        match resolve_optional(map, reader).ok()? {
+            PdfObject::Name(name) if name == "Identity" => {}
+            _ => return None,
+        }
+    }
+    if let Some(descriptor) = descendant.get("FontDescriptor") {
+        if let PdfObject::Dictionary(descriptor) = resolve_optional(descriptor, reader).ok()? {
+            if ["FontFile", "FontFile2", "FontFile3"]
+                .iter()
+                .any(|key| descriptor.contains_key(key))
+            {
+                return None;
+            }
+        }
+    }
+    descendant
+        .get_name("BaseFont")
+        .and_then(super::known_glyph_order::KnownGlyphOrder::for_base_font)
+}
+
 fn numeric_glyph_names(
     font_dict: &PdfDictionary,
     reader: Option<&PdfReader>,
@@ -2392,6 +2482,95 @@ mod tests {
         );
         let resolver = FontResolver::new_from_dict_only(&hex);
         assert_eq!(resolver.decode_string(&[1, 2]), "\u{AB}A");
+    }
+
+    #[test]
+    fn truetype_glyph_index_names_decode_through_a_known_glyph_order() {
+        // Distiller output for Cambria: every glyph named by its TrueType
+        // index, codes 9-13 included, no ToUnicode (TAMReview.pdf).
+        let names = [
+            "g18", "g152", "g135", "g148", "g139", "g135", "g153", "g3", "g145", "g136",
+        ];
+        let mut items = vec![PdfObject::Integer(2)];
+        items.extend(names.iter().map(|value| name(value)));
+        let cambria = simple_font("Type1", "EMMOLK+Cambria", Some(differences(items.clone())));
+        let resolver = FontResolver::new_from_dict_only(&cambria);
+        assert_eq!(
+            resolver.decode_string(&[2, 3, 4, 5, 3, 6, 7, 8, 9, 10, 11]),
+            "Overview of"
+        );
+        // An unknown family keeps the code-point reading of numeric names.
+        let other = simple_font("Type1", "SomeFace", Some(differences(items)));
+        let resolver = FontResolver::new_from_dict_only(&other);
+        assert_eq!(resolver.decode_string(&[2]), "\u{FFFD}");
+    }
+
+    fn type0_font(base_font: &str, descendant: PdfDictionary) -> PdfDictionary {
+        dict(&[
+            ("Subtype", name("Type0")),
+            ("BaseFont", name(base_font)),
+            ("Encoding", name("Identity-H")),
+            (
+                "DescendantFonts",
+                PdfObject::Array(vec![PdfObject::Dictionary(descendant)]),
+            ),
+        ])
+    }
+
+    fn cid_descendant(subtype: &str, base_font: &str) -> PdfDictionary {
+        let system = dict(&[
+            ("Registry", PdfObject::String(b"Adobe".to_vec())),
+            ("Ordering", PdfObject::String(b"Identity".to_vec())),
+            ("Supplement", PdfObject::Integer(0)),
+        ]);
+        dict(&[
+            ("Subtype", name(subtype)),
+            ("BaseFont", name(base_font)),
+            ("CIDSystemInfo", PdfObject::Dictionary(system)),
+            (
+                "FontDescriptor",
+                PdfObject::Dictionary(dict(&[("FontName", name(base_font))])),
+            ),
+        ])
+    }
+
+    #[test]
+    fn non_embedded_identity_truetype_cids_decode_through_the_system_glyph_order() {
+        // issue5801.pdf: Arial Black, not embedded, CIDs are its glyph
+        // indexes and the ToUnicode is unusable.
+        let font = type0_font(
+            "ArialBlack,Bold",
+            cid_descendant("CIDFontType2", "ArialBlack,Bold"),
+        );
+        let resolver = FontResolver::new_from_dict_only(&font);
+        let codes = [0x00, 0x53, 0x00, 0x4C, 0x01, 0x08, 0x00, 0x57];
+        assert_eq!(resolver.decode_string(&codes), "pi\u{105}t");
+        // An unknown family is left alone.
+        let font = type0_font("Mystery", cid_descendant("CIDFontType2", "Mystery"));
+        let resolver = FontResolver::new_from_dict_only(&font);
+        assert_eq!(resolver.decode_string(&[0x00, 0x53]), "S");
+    }
+
+    #[test]
+    fn composite_codes_a_tounicode_leaves_unmapped_are_not_read_as_code_points() {
+        let mut font = type0_font("Nastaleeq", cid_descendant("CIDFontType2", "Nastaleeq"));
+        font.insert(
+            "ToUnicode",
+            PdfObject::Stream {
+                dict: PdfDictionary::empty(),
+                raw: b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                       1 begincodespacerange <0000> <FFFF> endcodespacerange \
+                       1 beginbfchar <00E4> <0627> endbfchar endcmap end end"
+                    .to_vec(),
+            },
+        );
+        let resolver = FontResolver::new_from_dict_only(&font);
+        // 0x2936 is a ligature glyph the ToUnicode does not cover; reading it
+        // as U+2936 would invent a character.
+        assert_eq!(
+            resolver.decode_string(&[0x00, 0xE4, 0x29, 0x36]),
+            "\u{627}\u{FFFD}"
+        );
     }
 
     #[test]
