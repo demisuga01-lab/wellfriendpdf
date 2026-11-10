@@ -1006,6 +1006,16 @@ async fn render_contract_builder_returns_valid_contract_json() {
             ("color_management", "DeterministicFallback"),
             ("exactness", "HighQualityExact"),
             ("determinism", "BestEffortResearch"),
+            ("thin_line_mode", "solid"),
+            ("aa_gamma", "gamma15"),
+            (
+                "forced_colors",
+                r#"{"path_fill":{"r":0,"g":0,"b":0,"a":255},"path_stroke":{"r":0,"g":0,"b":0,"a":255},"text_fill":{"r":255,"g":255,"b":0,"a":255},"text_stroke":{"r":0,"g":0,"b":0,"a":255},"convert_fill_to_stroke":true}"#,
+            ),
+            (
+                "form_highlight",
+                r#"{"text":{"r":0,"g":0,"b":255,"a":80},"focus_field":"a.b"}"#,
+            ),
             ("max_pixels", "1000000"),
         ],
     );
@@ -1068,6 +1078,15 @@ async fn render_contract_builder_returns_valid_contract_json() {
     // `BestEffortResearch` is a deprecated alias of `BestEffort`.
     assert_eq!(json["contract"]["determinism"], "BestEffort");
     assert_eq!(json["contract"]["resource_budget"]["max_pixels"], 1_000_000);
+    assert_eq!(json["contract"]["thin_line_mode"], "Solid");
+    assert_eq!(json["contract"]["vector_antialias_gamma"], "Gamma15");
+    assert_eq!(json["contract"]["forced_colors"]["text_fill"]["g"], 255);
+    assert_eq!(
+        json["contract"]["forced_colors"]["convert_fill_to_stroke"],
+        true
+    );
+    assert_eq!(json["contract"]["form_highlight"]["text"]["a"], 80);
+    assert_eq!(json["contract"]["form_highlight"]["focus_field"], "a.b");
 
     let contract_json = json["contract_json"].as_str().unwrap();
     let round_trip: Value = serde_json::from_str(contract_json).unwrap();
