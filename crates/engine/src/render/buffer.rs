@@ -2264,20 +2264,26 @@ fn composite_source_over(
     (out_rgb, out_alpha)
 }
 
-/// Last destination pixel and blended result per coverage byte for one fill
-/// colour; see [`PixelBuffer::blend_coverage_run`]. A memo must only be
-/// reused while the buffer's blend state (blend mode, render mode, clip,
-/// soft mask) is unchanged, i.e. within one fill.
+/// Last destination pixel and blended result per coverage byte for one
+/// colour, blend mode and render mode; see
+/// [`PixelBuffer::blend_coverage_run`], which resets it whenever that key
+/// changes, so one memo can serve any number of fills and buffers.
 pub(crate) struct CoverageBlendMemo {
     color: PixelColor,
-    slots: Box<[Option<([u8; 4], [u8; 4])>; 256]>,
+    blend_mode: BlendMode,
+    render_mode: RenderMode,
+    // Allocated on the first partially covered pixel: most fills of small
+    // or axis-aligned shapes never need it.
+    slots: Option<Box<[Option<([u8; 4], [u8; 4])>; 256]>>,
 }
 
 impl CoverageBlendMemo {
-    pub(crate) fn new(color: PixelColor) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            color,
-            slots: Box::new([None; 256]),
+            color: [0, 0, 0, 0],
+            blend_mode: BlendMode::Normal,
+            render_mode: RenderMode::Compat,
+            slots: None,
         }
     }
 }
@@ -3029,16 +3035,22 @@ impl PixelBuffer {
         memo: &mut CoverageBlendMemo,
     ) {
         let coverage = f32::from(alpha) / 255.0;
-        if self.smask.is_some()
-            || self.knockout_backdrop.is_some()
-            || alpha == 0
-            || alpha == 255
-            || memo.color != color
-        {
+        if self.smask.is_some() || self.knockout_backdrop.is_some() || alpha == 0 || alpha == 255 {
             for x in x0..x1 {
                 self.blend_pixel(x, y, color, coverage);
             }
             return;
+        }
+        if memo.color != color
+            || memo.blend_mode != self.blend_mode
+            || memo.render_mode != self.render_mode
+        {
+            memo.color = color;
+            memo.blend_mode = self.blend_mode;
+            memo.render_mode = self.render_mode;
+            if let Some(slots) = memo.slots.as_mut() {
+                slots.fill(None);
+            }
         }
         for x in x0..x1 {
             let clip_open = self
@@ -3051,7 +3063,8 @@ impl PixelBuffer {
             };
             let pixel = &mut self.data[idx..idx + 4];
             let dst = [pixel[0], pixel[1], pixel[2], pixel[3]];
-            let slot = &mut memo.slots[usize::from(alpha)];
+            let slot =
+                &mut memo.slots.get_or_insert_with(|| Box::new([None; 256]))[usize::from(alpha)];
             if let Some((seen, out)) = slot {
                 if *seen == dst {
                     pixel.copy_from_slice(out);
@@ -15080,7 +15093,7 @@ mod tests {
 
         assert_eq!(fused.width, 2);
         assert_eq!(fused.height, 1);
-        assert_eq!(fused.data, vec![64, 16]);
+        assert_eq!(*fused.data, vec![64, 16]);
     }
 
     #[test]
@@ -15104,7 +15117,7 @@ mod tests {
             .map(|(soft, clip)| div255_round_u16(u16::from(soft) * u16::from(clip)) as u8)
             .collect();
 
-        assert_eq!(fused.data, expected);
+        assert_eq!(*fused.data, expected);
     }
 
     #[test]

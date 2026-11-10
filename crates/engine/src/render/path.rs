@@ -22,6 +22,19 @@ const SCANLINE_EDGE_BUCKET_MAX_LINKS: usize = 2_000_000;
 thread_local! {
     static SCANLINE_CROSSING_VEC_POOL: RefCell<Vec<Vec<(f64, i32)>>> = const { RefCell::new(Vec::new()) };
     static SCANLINE_U16_VEC_POOL: RefCell<Vec<Vec<u16>>> = const { RefCell::new(Vec::new()) };
+    // Kept across fills: the memo resets itself when the colour or blend
+    // state changes, so repeated same-colour strokes reuse their results.
+    static COVERAGE_BLEND_MEMO: RefCell<Option<CoverageBlendMemo>> = const { RefCell::new(None) };
+}
+
+fn take_coverage_blend_memo() -> CoverageBlendMemo {
+    COVERAGE_BLEND_MEMO
+        .with(|memo| memo.borrow_mut().take())
+        .unwrap_or_else(CoverageBlendMemo::new)
+}
+
+fn return_coverage_blend_memo(memo: CoverageBlendMemo) {
+    COVERAGE_BLEND_MEMO.with(|slot| *slot.borrow_mut() = Some(memo));
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3250,7 +3263,7 @@ fn fill_convex_flat_with_color_compositor_scanline(
     }
     let w = (x1 - x0) as usize;
     let mut row_accum = take_scanline_u16_vec(w);
-    let mut memo = CoverageBlendMemo::new(color);
+    let mut memo = take_coverage_blend_memo();
     let sample_weight = 255.0 / vertical_samples as f64;
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
@@ -3277,6 +3290,7 @@ fn fill_convex_flat_with_color_compositor_scanline(
         });
     }
     return_scanline_u16_vec(row_accum);
+    return_coverage_blend_memo(memo);
     Some(true)
 }
 
@@ -3925,7 +3939,7 @@ fn fill_flat_with_color_compositor_scanline(
     }
     let mut crossings = take_scanline_crossing_vec();
     let mut row_accum = take_scanline_u16_vec(w);
-    let mut memo = CoverageBlendMemo::new(color);
+    let mut memo = take_coverage_blend_memo();
     let h = (y1 - y0) as usize;
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
@@ -3990,6 +4004,7 @@ fn fill_flat_with_color_compositor_scanline(
     }
     return_scanline_u16_vec(row_accum);
     return_scanline_crossing_vec(crossings);
+    return_coverage_blend_memo(memo);
     true
 }
 
