@@ -1,6 +1,7 @@
 pub mod collector;
 pub mod extractor;
 pub mod formatter;
+pub mod poppler_modes;
 pub mod reading_order;
 pub mod semantic_model;
 

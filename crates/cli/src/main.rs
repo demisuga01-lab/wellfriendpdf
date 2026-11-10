@@ -1032,11 +1032,32 @@ struct ExtractTextArgs {
     /// and get the plain content-stream order instead.
     #[arg(long)]
     structured: bool,
-    /// Opt out of the default layout-aware ordering and emit text in raw
-    /// content-stream order (the pre-XY-cut behavior, honoring `--profile`).
-    /// Faster on simple single-column pages; may interleave multi-column text.
+    /// Emit text in true content-stream order (pdftotext -raw): runs in the
+    /// order the page shows them, a line break when the baseline moves and a
+    /// space between separated runs. Each page ends with a form feed unless
+    /// --nopgbrk. With a --profile other than fast-text, that profile's
+    /// extraction is used instead (the previous --raw behaviour).
     #[arg(long, conflicts_with_all = ["structured", "semantic"])]
     raw: bool,
+    /// Keep the physical layout (pdftotext -layout): each text line is placed
+    /// on the row of its baseline and indented to its column, so multi-column
+    /// pages print side by side. Each page ends with a form feed unless
+    /// --nopgbrk.
+    #[arg(long, conflicts_with_all = ["structured", "semantic", "raw", "tsv"])]
+    layout: bool,
+    /// Do not end pages with a form feed in --layout and --raw output
+    /// (pdftotext -nopgbrk). The default reading-order output has none.
+    #[arg(long)]
+    nopgbrk: bool,
+    /// End-of-line convention for text and TSV output: unix, dos, or mac
+    /// (pdftotext -eol).
+    #[arg(long, default_value = "unix", value_parser = ["unix", "dos", "mac"])]
+    eol: String,
+    /// Word bounding boxes as a TSV table with pdftotext -tsv columns: level
+    /// page_num par_num block_num line_num word_num left top width height conf
+    /// text (points from the top-left of the page).
+    #[arg(long, conflicts_with_all = ["structured", "semantic", "raw"])]
+    tsv: bool,
     /// Semantic extraction: use tagged-PDF structure when present, falling back
     /// to geometric layout analysis when absent.
     #[arg(long)]
@@ -2897,7 +2918,10 @@ struct ExtractImagesArgs {
     /// Page range: all, 1, 2-5, or 1,3,7
     #[arg(short, long, default_value = "all")]
     pages: String,
-    /// Output format: png, jpg, webp, or original
+    /// Output format: png, jpg, webp, or original. `original` (pdfimages -all)
+    /// keeps JPEG (.jpg), JPEG 2000 (.jp2), JBIG2 (.jb2e, globals in .jb2g)
+    /// and CCITT fax (.ccitt, fax2tiff options in .params) data unchanged and
+    /// writes every other image as PNG.
     #[arg(short, long, default_value = "original")]
     format: String,
     /// JPEG quality 1-100, only for --format jpg
@@ -2932,15 +2956,71 @@ struct RenderArgs {
     /// Page range: all, 1, 2-5, or 1,3,7
     #[arg(short, long, default_value = "all")]
     pages: String,
-    /// Resolution in DPI (raster formats; also sets the device scale for svg/ps/eps)
+    /// Resolution in DPI, fractional values allowed, 1-2400 (raster formats;
+    /// also sets the device scale for svg/ps/eps). The per-page pixel budget
+    /// (--max-render-pixels) still applies.
     #[arg(short, long, default_value = "150")]
-    dpi: u32,
-    /// Output format: png, jpg, webp, svg (vector), ps (PostScript), or eps
+    dpi: f64,
+    /// Horizontal resolution in DPI (pdftoppm -rx); defaults to --dpi.
+    #[arg(long)]
+    rx: Option<f64>,
+    /// Vertical resolution in DPI (pdftoppm -ry); defaults to --dpi.
+    #[arg(long)]
+    ry: Option<f64>,
+    /// Scale each page so its longer side is this many pixels (pdftoppm -scale-to).
+    #[arg(long)]
+    scale_to: Option<u32>,
+    /// Scale each page to this width in pixels; with --scale-to-y -1 the height
+    /// keeps the aspect ratio (pdftoppm -scale-to-x).
+    #[arg(long, allow_negative_numbers = true)]
+    scale_to_x: Option<i64>,
+    /// Scale each page to this height in pixels; with --scale-to-x -1 the width
+    /// keeps the aspect ratio (pdftoppm -scale-to-y).
+    #[arg(long, allow_negative_numbers = true)]
+    scale_to_y: Option<i64>,
+    /// Output format: png, jpg, webp, tiff, pnm (ppm/pgm/pbm by colour mode),
+    /// raw, svg (vector), ps (PostScript), or eps
     #[arg(short, long, default_value = "png")]
     format: String,
     /// JPEG quality 1-100
     #[arg(short, long, default_value = "85")]
     quality: u8,
+    /// 8-bit grey output for png, jpg, webp, tiff and pnm (pdftoppm -gray).
+    #[arg(long, conflicts_with = "mono")]
+    gray: bool,
+    /// 1-bit black-and-white output for png, tiff and pnm (pdftoppm -mono).
+    #[arg(long)]
+    mono: bool,
+    /// How --mono reduces grey levels: halftone (ordered 8x8 screen),
+    /// threshold, or dither (Floyd-Steinberg error diffusion).
+    #[arg(long, default_value = "halftone", value_parser = ["halftone", "threshold", "dither"])]
+    mono_method: String,
+    /// Grey level below which --mono --mono-method threshold paints black.
+    #[arg(long, default_value_t = 128)]
+    mono_threshold: u8,
+    /// Keep the page background transparent (alpha 0): RGBA png/tiff/webp
+    /// (pdftocairo -transp). Same as --background 255,255,255,0.
+    #[arg(long)]
+    transparent: bool,
+    /// CMYK output for jpg (Adobe YCCK) and tiff (Separated), converted from
+    /// the rendered RGB with the uncalibrated DeviceRGB to DeviceCMYK formula.
+    #[arg(long, conflicts_with_all = ["gray", "mono"])]
+    cmyk: bool,
+    /// TIFF compression: none, packbits, or deflate.
+    #[arg(long, default_value = "deflate", value_parser = ["none", "packbits", "deflate", "zip"])]
+    tiff_compression: String,
+    /// Tag PNG output as sRGB (sRGB chunk).
+    #[arg(long)]
+    png_srgb: bool,
+    /// Embed this ICC profile in png (iCCP) and jpg (APP2) output.
+    #[arg(long)]
+    icc_profile: Option<PathBuf>,
+    /// Write progressive JPEG.
+    #[arg(long)]
+    jpeg_progressive: bool,
+    /// Write JPEG with optimised Huffman tables.
+    #[arg(long)]
+    jpeg_optimize: bool,
     /// Raster compositing mode: compat matches Poppler/Splash; high uses linear-light RGB compositing
     #[arg(long, default_value = "compat", value_parser = ["compat", "high", "high-quality", "hq"])]
     render_quality: String,
@@ -4702,6 +4782,29 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     if region.is_some() && ocr_policy.is_some() {
         return Err("--region is not supported with --ocr text extraction yet".into());
     }
+    if (args.layout || args.tsv) && (region.is_some() || ocr_policy.is_some()) {
+        return Err("--layout and --tsv cannot be combined with --region or --ocr".into());
+    }
+    let eol = match args.eol.as_str() {
+        "dos" => "\r\n",
+        "mac" => "\r",
+        _ => "\n",
+    };
+    let apply_eol = |text: String| -> String {
+        if eol == "\n" {
+            text
+        } else {
+            text.replace('\n', eol)
+        }
+    };
+    if args.tsv {
+        let tsv = apply_eol(engine.get_text_tsv(&page_nums)?);
+        match &args.output {
+            Some(path) => std::fs::write(path, tsv)?,
+            None => print!("{tsv}"),
+        }
+        return Ok(());
+    }
 
     // OCR path: route through the OCR-aware document parser so scanned
     // (image-only) pages contribute recovered text. Digital-born pages parse
@@ -4728,13 +4831,18 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     // Layout-aware reading order is the default; `--raw` restores raw
     // content-stream order (honoring --profile). Region extraction is
     // layout-based in both modes.
+    let true_raw = args.raw && matches!(profile, wellfriendpdf_engine::ExtractionProfile::FastText);
     let extract_page = |page_num: usize| -> wellfriendpdf_engine::Result<String> {
         match region {
             Some(region) => engine.extract_text_in_region(page_num, region),
+            None if args.layout => engine.get_page_text_physical_layout(page_num),
+            None if true_raw => engine.get_page_text_raw_order(page_num),
             None if args.raw => engine.get_page_text_with_profile(page_num, profile),
             None => engine.get_page_text_reading_order(page_num),
         }
     };
+    // pdftotext's own modes end every page with a form feed.
+    let page_breaks = (args.layout || true_raw) && !args.nopgbrk;
     let parallel_window = wellfriendpdf_engine::bounded_text_parallel_window(page_nums.len());
     let page_texts: Vec<wellfriendpdf_engine::Result<String>> = if parallel_window >= 4 {
         let mut out = Vec::with_capacity(page_nums.len());
@@ -4748,7 +4856,10 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
         }
         out
     } else {
-        page_nums.iter().map(|&page_num| extract_page(page_num)).collect()
+        page_nums
+            .iter()
+            .map(|&page_num| extract_page(page_num))
+            .collect()
     };
 
     let mut output_text = String::new();
@@ -4758,8 +4869,14 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
             output_text.push_str(&format!("--- Page {} ---\n", page_num));
         }
         output_text.push_str(&text);
-        output_text.push('\n');
+        if !(page_breaks && text.is_empty()) {
+            output_text.push('\n');
+        }
+        if page_breaks {
+            output_text.push('\x0c');
+        }
     }
+    let output_text = apply_eol(output_text);
 
     match &args.output {
         Some(path) => std::fs::write(path, output_text)?,
@@ -8112,8 +8229,23 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
             continue;
         }
 
-        let bytes = match engine.extract_image_bytes(img_ref, format.clone(), Some(args.quality)) {
-            Ok(bytes) => bytes,
+        // `original` keeps JPEG, JPEG 2000, JBIG2 and CCITT data in their own
+        // encoding (pdfimages -all), named by codec, with JBIG2 globals and
+        // CCITT fax2tiff parameters as sidecar files; other images are PNG.
+        let extracted = if matches!(format, ImageOutputFormat::Original) {
+            engine.extract_image_original(img_ref)
+        } else {
+            engine
+                .extract_image_bytes(img_ref, format.clone(), Some(args.quality))
+                .map(|bytes| wellfriendpdf_engine::PassthroughImage {
+                    bytes,
+                    extension: format.file_extension(),
+                    filter: String::new(),
+                    sidecars: Vec::new(),
+                })
+        };
+        let extracted = match extracted {
+            Ok(extracted) => extracted,
             Err(err) => {
                 eprintln!(
                     "Warning: skipped image {} on page {}: {}",
@@ -8123,24 +8255,22 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
             }
         };
 
-        // For inline images, the chosen output extension is used as-is; XObject
-        // images follow the same naming. The "-inline" marker keeps inline
-        // exports recognizable without disturbing XObject numbering.
-        let ext = if matches!(format, ImageOutputFormat::Original) && img_ref.is_inline {
-            "png"
-        } else {
-            format.file_extension()
-        };
+        // The "-inline" marker keeps inline exports recognizable without
+        // disturbing XObject numbering.
         let suffix = if img_ref.is_inline { "-inline" } else { "" };
-        let filename = format!(
-            "page-{:03}-image-{:03}{}.{}",
+        let stem = format!(
+            "page-{:03}-image-{:03}{}",
             img_ref.page_number,
             idx + 1,
-            suffix,
-            ext
+            suffix
         );
+        let filename = format!("{stem}.{}", extracted.extension);
         zip.start_file(&filename, zip_opts)?;
-        zip.write_all(&bytes)?;
+        zip.write_all(&extracted.bytes)?;
+        for (extension, bytes) in &extracted.sidecars {
+            zip.start_file(format!("{stem}.{extension}"), zip_opts)?;
+            zip.write_all(bytes)?;
+        }
         encoded_count += 1;
     }
     zip.finish()?;
@@ -8299,6 +8429,8 @@ enum CliRenderRasterFormat {
     Png,
     Jpeg,
     Webp,
+    Tiff,
+    Pnm,
     Raw,
 }
 
@@ -8308,6 +8440,8 @@ impl CliRenderRasterFormat {
             "png" => Some(Self::Png),
             "jpg" | "jpeg" => Some(Self::Jpeg),
             "webp" => Some(Self::Webp),
+            "tif" | "tiff" => Some(Self::Tiff),
+            "pnm" | "ppm" | "pgm" | "pbm" => Some(Self::Pnm),
             "raw" => Some(Self::Raw),
             _ => None,
         }
@@ -8318,6 +8452,8 @@ impl CliRenderRasterFormat {
             Self::Png => "png",
             Self::Jpeg => "jpg",
             Self::Webp => "webp",
+            Self::Tiff => "tif",
+            Self::Pnm => "ppm",
             Self::Raw => "raw",
         }
     }
@@ -8761,20 +8897,291 @@ fn read_render_contract_json(
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+/// Colour mode of an encoded raster page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CliRasterColor {
+    Rgb,
+    Gray,
+    Mono(wellfriendpdf_engine::images::raster::BilevelMethod),
+    Cmyk,
+}
+
+/// Everything the raster encoders need besides the pixels.
+#[derive(Clone, Debug)]
+struct CliRasterEncodeSettings {
+    quality: u8,
+    color: CliRasterColor,
+    /// Keep an alpha channel (background alpha below 255).
+    keep_alpha: bool,
+    metadata: wellfriendpdf_engine::images::raster::RasterMetadata,
+    tiff_compression: wellfriendpdf_engine::images::tiff::TiffCompression,
+    jpeg_progressive: bool,
+    jpeg_optimize: bool,
+}
+
+impl CliRasterEncodeSettings {
+    fn with_dpi(&self, dpi: (f64, f64)) -> Self {
+        let mut settings = self.clone();
+        settings.metadata.dpi = Some(dpi);
+        settings
+    }
+}
+
+/// File extension for an encoded page, which for PNM depends on the colour
+/// mode (pdftoppm writes .pbm, .pgm or .ppm).
+fn cli_render_extension(
+    output_format: CliRenderRasterFormat,
+    color: CliRasterColor,
+) -> &'static str {
+    match (output_format, color) {
+        (CliRenderRasterFormat::Pnm, CliRasterColor::Mono(_)) => "pbm",
+        (CliRenderRasterFormat::Pnm, CliRasterColor::Gray) => "pgm",
+        (format, _) => format.file_extension(),
+    }
+}
+
 fn encode_cli_render_buffer(
     output_format: CliRenderRasterFormat,
     buffer: wellfriendpdf_engine::PixelBuffer,
-    quality: u8,
+    settings: &CliRasterEncodeSettings,
 ) -> wellfriendpdf_engine::Result<Vec<u8>> {
+    use wellfriendpdf_engine::images::raster::{self, JpegOptions, PngEffort};
+    use wellfriendpdf_engine::images::tiff::{self, TiffOptions, TiffPixels};
     use wellfriendpdf_engine::ImageEncoder;
 
-    let raw = buffer.into_raw_image();
+    let unsupported = |what: &str| {
+        Err(wellfriendpdf_engine::WellfriendError::UnsupportedFeature(
+            what.to_string(),
+        ))
+    };
+    let image = if settings.keep_alpha {
+        buffer.to_raw_image_rgba()
+    } else {
+        buffer.into_raw_image()
+    };
+    let opaque = |image: &wellfriendpdf_engine::RawImage| raster::flatten_alpha(image, [255; 3]);
     match output_format {
-        CliRenderRasterFormat::Png => ImageEncoder::encode_png_fast(&raw),
-        CliRenderRasterFormat::Jpeg => ImageEncoder::encode_jpeg(&raw, quality),
-        CliRenderRasterFormat::Webp => ImageEncoder::encode_webp(&raw, quality),
+        CliRenderRasterFormat::Png => match settings.color {
+            CliRasterColor::Mono(method) => raster::encode_png_bilevel(
+                &raster::to_bilevel(&image, method)?,
+                &settings.metadata,
+                PngEffort::Fast,
+            ),
+            CliRasterColor::Gray => raster::encode_png(
+                &raster::to_gray(&image)?,
+                &settings.metadata,
+                PngEffort::Fast,
+            ),
+            CliRasterColor::Cmyk => unsupported("--cmyk applies to jpg and tiff output"),
+            CliRasterColor::Rgb => raster::encode_png(&image, &settings.metadata, PngEffort::Fast),
+        },
+        CliRenderRasterFormat::Jpeg => {
+            let options = JpegOptions {
+                quality: settings.quality,
+                progressive: settings.jpeg_progressive,
+                optimize_huffman: settings.jpeg_optimize,
+                metadata: settings.metadata.clone(),
+            };
+            let image = opaque(&image)?;
+            match settings.color {
+                CliRasterColor::Mono(_) => {
+                    unsupported("--mono applies to png, tiff and pnm output")
+                }
+                CliRasterColor::Gray => {
+                    raster::encode_jpeg(&raster::to_gray(&image)?, false, &options)
+                }
+                CliRasterColor::Cmyk => {
+                    raster::encode_jpeg(&raster::rgb_to_cmyk(&image)?, true, &options)
+                }
+                CliRasterColor::Rgb => raster::encode_jpeg(&image, false, &options),
+            }
+        }
+        CliRenderRasterFormat::Webp => match settings.color {
+            CliRasterColor::Gray if !settings.keep_alpha => {
+                ImageEncoder::encode_webp(&raster::to_gray(&image)?, settings.quality)
+            }
+            CliRasterColor::Gray | CliRasterColor::Rgb => {
+                ImageEncoder::encode_webp(&image, settings.quality)
+            }
+            _ => unsupported("--mono and --cmyk do not apply to webp output"),
+        },
+        CliRenderRasterFormat::Tiff => {
+            let options = TiffOptions {
+                compression: settings.tiff_compression,
+                dpi: settings.metadata.dpi,
+            };
+            match settings.color {
+                CliRasterColor::Mono(method) => tiff::encode_tiff(
+                    TiffPixels::Bilevel(&raster::to_bilevel(&image, method)?),
+                    &options,
+                ),
+                CliRasterColor::Gray => tiff::encode_tiff(
+                    TiffPixels::Gray(&raster::to_gray(&opaque(&image)?)?),
+                    &options,
+                ),
+                CliRasterColor::Cmyk => tiff::encode_tiff(
+                    TiffPixels::Cmyk(&raster::rgb_to_cmyk(&opaque(&image)?)?),
+                    &options,
+                ),
+                CliRasterColor::Rgb if image.channels == 4 => {
+                    tiff::encode_tiff(TiffPixels::Rgba(&image), &options)
+                }
+                CliRasterColor::Rgb => tiff::encode_tiff(TiffPixels::Rgb(&image), &options),
+            }
+        }
+        CliRenderRasterFormat::Pnm => match settings.color {
+            CliRasterColor::Mono(method) => {
+                Ok(raster::encode_pbm(&raster::to_bilevel(&image, method)?))
+            }
+            CliRasterColor::Gray => raster::encode_pnm(&raster::to_gray(&opaque(&image)?)?),
+            CliRasterColor::Cmyk => unsupported("--cmyk applies to jpg and tiff output"),
+            CliRasterColor::Rgb => raster::encode_pnm(&opaque(&image)?),
+        },
         CliRenderRasterFormat::Raw => unreachable!("raw surfaces are not image-encoded"),
     }
+}
+
+/// Requested resolution and pixel-size options, resolved per page the way
+/// pdftoppm does it.
+#[derive(Clone, Copy, Debug)]
+struct CliRenderScaling {
+    rx: f64,
+    ry: f64,
+    scale_to: Option<u32>,
+    scale_to_x: Option<i64>,
+    scale_to_y: Option<i64>,
+}
+
+/// One page's render geometry: the integer DPI the renderer runs at and, when
+/// the requested resolution is not that integer DPI on both axes, the device
+/// scale and exact output size to crop to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CliPageGeometry {
+    render_dpi: u32,
+    x_dpi: f64,
+    y_dpi: f64,
+    scaled: Option<(f64, f64, u32, u32)>,
+}
+
+impl CliRenderScaling {
+    fn is_plain(&self) -> bool {
+        self.scale_to.is_none()
+            && self.scale_to_x.is_none_or(|v| v <= 0)
+            && self.scale_to_y.is_none_or(|v| v <= 0)
+            && self.rx == self.ry
+            && self.rx.fract() == 0.0
+    }
+
+    /// Resolve for a page whose displayed (rotated) size is `width_pt` x
+    /// `height_pt` points.
+    fn resolve(&self, width_pt: f64, height_pt: f64) -> CliPageGeometry {
+        let (mut x_dpi, mut y_dpi) = (self.rx, self.ry);
+        let mut width_px = None;
+        let mut height_px = None;
+        if let Some(size) = self.scale_to.filter(|size| *size > 0) {
+            let long_side = width_pt.max(height_pt).max(f64::MIN_POSITIVE);
+            x_dpi = 72.0 * f64::from(size) / long_side;
+            y_dpi = x_dpi;
+            if width_pt >= height_pt {
+                width_px = Some(size);
+            } else {
+                height_px = Some(size);
+            }
+        } else {
+            let sx = self.scale_to_x.unwrap_or(0);
+            let sy = self.scale_to_y.unwrap_or(0);
+            if sx > 0 {
+                x_dpi = 72.0 * sx as f64 / width_pt.max(f64::MIN_POSITIVE);
+                width_px = u32::try_from(sx).ok();
+                if sy == -1 {
+                    y_dpi = x_dpi;
+                }
+            }
+            if sy > 0 {
+                y_dpi = 72.0 * sy as f64 / height_pt.max(f64::MIN_POSITIVE);
+                height_px = u32::try_from(sy).ok();
+                if sx == -1 {
+                    x_dpi = y_dpi;
+                }
+            }
+        }
+        if self.is_plain() {
+            return CliPageGeometry {
+                render_dpi: x_dpi as u32,
+                x_dpi,
+                y_dpi,
+                scaled: None,
+            };
+        }
+        // Size like the renderer does (ceil), forgiving float noise so an
+        // exact --scale-to size is never rounded up by one pixel.
+        let size = |points: f64, dpi: f64| -> u32 {
+            ((points * dpi / 72.0) - 1e-6)
+                .ceil()
+                .clamp(1.0, f64::from(u32::MAX)) as u32
+        };
+        let width_px = width_px.unwrap_or_else(|| size(width_pt, x_dpi)).max(1);
+        let height_px = height_px.unwrap_or_else(|| size(height_pt, y_dpi)).max(1);
+        let render_dpi = x_dpi.max(y_dpi).ceil().clamp(1.0, 1_000_000.0) as u32;
+        let base = f64::from(render_dpi);
+        CliPageGeometry {
+            render_dpi,
+            x_dpi,
+            y_dpi,
+            scaled: Some((x_dpi / base, y_dpi / base, width_px, height_px)),
+        }
+    }
+}
+
+/// Page size in points as displayed (after /Rotate and /UserUnit) for the
+/// selected page box.
+fn cli_page_display_size(
+    engine: &wellfriendpdf_engine::ContentEngine,
+    page_num: usize,
+    page_box: wellfriendpdf_engine::render::PageBox,
+) -> Result<(f64, f64), Box<dyn Error>> {
+    let viewport = engine.page_viewport_for_box(page_num, 72, page_box)?;
+    let w = viewport.page_width_pts() * viewport.user_unit;
+    let h = viewport.page_height_pts() * viewport.user_unit;
+    Ok(if matches!(viewport.rotation % 360, 90 | 270) {
+        (h, w)
+    } else {
+        (w, h)
+    })
+}
+
+/// Apply a resolved page geometry to a contract: scale the device transform
+/// and crop the surface to the exact requested size.
+fn apply_cli_page_geometry(
+    contract: &mut wellfriendpdf_engine::RenderContract,
+    geometry: &CliPageGeometry,
+) -> Result<(), Box<dyn Error>> {
+    let Some((sx, sy, width, height)) = geometry.scaled else {
+        return Ok(());
+    };
+    let [a, b, c, d, e, f] = contract.transform.to_f64();
+    contract.transform = wellfriendpdf_engine::render::DeviceMatrix::from_f64([
+        a * sx,
+        b * sy,
+        c * sx,
+        d * sy,
+        e * sx,
+        f * sy,
+    ]);
+    let full_width = contract.width;
+    let full_height = contract.height;
+    let width = width.min(full_width);
+    let height = height.min(full_height);
+    contract.clip = Some(wellfriendpdf_engine::render::DeviceClip {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    });
+    contract.width = width;
+    contract.height = height;
+    contract.stride = width as usize * contract.pixel_format.bytes_per_pixel();
+    Ok(())
 }
 
 fn encode_font_substitution_log_json(
@@ -8789,13 +9196,58 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     use wellfriendpdf_engine::{CancelToken, RenderDocumentCache, RenderMode};
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
-    let dpi = args.dpi.clamp(24, 600);
-    if dpi != args.dpi {
-        eprintln!("Warning: DPI clamped to {} (valid range: 24-600)", dpi);
-    }
+    // pdftoppm accepts any positive resolution; keep a generous sanity range
+    // and let the per-page pixel budget reject pages that would be too large.
+    let clamp_dpi = |name: &str, value: f64| -> Result<f64, Box<dyn Error>> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(usage_error(format!("{name} must be a positive number")));
+        }
+        let clamped = value.clamp(1.0, 2400.0);
+        if clamped != value {
+            eprintln!("Warning: {name} clamped to {clamped} (valid range: 1-2400)");
+        }
+        Ok(clamped)
+    };
+    let base_dpi = clamp_dpi("--dpi", args.dpi)?;
+    let scaling = CliRenderScaling {
+        rx: args
+            .rx
+            .map(|v| clamp_dpi("--rx", v))
+            .transpose()?
+            .unwrap_or(base_dpi),
+        ry: args
+            .ry
+            .map(|v| clamp_dpi("--ry", v))
+            .transpose()?
+            .unwrap_or(base_dpi),
+        scale_to: args.scale_to,
+        scale_to_x: args.scale_to_x,
+        scale_to_y: args.scale_to_y,
+    };
+    // Whole-number DPI for vector output and summaries.
+    let dpi = base_dpi.round().max(1.0) as u32;
 
     let format_name = args.format.to_ascii_lowercase();
     let contract_requested = render_args_have_contract_options(&args);
+    let raster_only_flags = args.rx.is_some()
+        || args.ry.is_some()
+        || args.scale_to.is_some()
+        || args.scale_to_x.is_some()
+        || args.scale_to_y.is_some()
+        || args.gray
+        || args.mono
+        || args.transparent
+        || args.cmyk;
+    if matches!(format_name.as_str(), "svg" | "ps" | "eps") {
+        if raster_only_flags {
+            return Err(usage_error(
+                "--rx, --ry, --scale-to*, --gray, --mono, --transparent and --cmyk apply only to raster output",
+            ));
+        }
+        if base_dpi.fract() != 0.0 {
+            eprintln!("Warning: vector output uses whole-number DPI; using {dpi}");
+        }
+    }
     if args.contract_json.is_some() {
         if render_args_have_contract_builder_options(&args) {
             return Err(usage_error(
@@ -8857,12 +9309,96 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 
     let output_format = CliRenderRasterFormat::parse(&format_name).ok_or_else(|| {
         usage_error(format!(
-            "unknown format '{}'; use png, jpg, webp, raw, svg, ps, or eps",
+            "unknown format '{}'; use png, jpg, webp, tiff, pnm, raw, svg, ps, or eps",
             format_name
         ))
     })?;
-    let contract_options = parse_cli_render_contract_options(&args, output_format)?;
-    let use_contract = contract_requested || output_format.is_raw();
+    let mut contract_options = parse_cli_render_contract_options(&args, output_format)?;
+    let color = if args.mono || format_name == "pbm" {
+        let method = match args.mono_method.as_str() {
+            "threshold" => {
+                wellfriendpdf_engine::images::raster::BilevelMethod::Threshold(args.mono_threshold)
+            }
+            "dither" => wellfriendpdf_engine::images::raster::BilevelMethod::ErrorDiffusion,
+            _ => wellfriendpdf_engine::images::raster::BilevelMethod::Halftone,
+        };
+        CliRasterColor::Mono(method)
+    } else if args.gray || format_name == "pgm" {
+        CliRasterColor::Gray
+    } else if args.cmyk {
+        CliRasterColor::Cmyk
+    } else {
+        CliRasterColor::Rgb
+    };
+    match (output_format, color) {
+        (CliRenderRasterFormat::Raw, CliRasterColor::Rgb) => {}
+        (CliRenderRasterFormat::Raw, _) => {
+            return Err(usage_error(
+                "--gray, --mono and --cmyk encode image files; for raw surfaces use --pixel-format gray8 or --grayscale",
+            ));
+        }
+        (CliRenderRasterFormat::Jpeg | CliRenderRasterFormat::Webp, CliRasterColor::Mono(_)) => {
+            return Err(usage_error("--mono applies to png, tiff and pnm output"));
+        }
+        (
+            CliRenderRasterFormat::Png | CliRenderRasterFormat::Webp | CliRenderRasterFormat::Pnm,
+            CliRasterColor::Cmyk,
+        ) => {
+            return Err(usage_error("--cmyk applies to jpg and tiff output"));
+        }
+        _ => {}
+    }
+    if args.transparent {
+        if !matches!(
+            output_format,
+            CliRenderRasterFormat::Png
+                | CliRenderRasterFormat::Tiff
+                | CliRenderRasterFormat::Webp
+                | CliRenderRasterFormat::Raw
+        ) {
+            return Err(usage_error(
+                "--transparent needs a format with alpha: png, tiff, webp, or raw",
+            ));
+        }
+        contract_options.background.a = 0;
+    }
+    if !scaling.is_plain() && args.clip.is_some() {
+        return Err(usage_error(
+            "--clip is in output pixels of a whole-number --dpi; it cannot be combined with --rx/--ry, fractional --dpi or --scale-to*",
+        ));
+    }
+    if args.contract_json.is_some() && (!scaling.is_plain() || args.transparent) {
+        return Err(usage_error(
+            "--contract-json carries its own geometry and background; do not combine it with --rx/--ry, fractional --dpi, --scale-to* or --transparent",
+        ));
+    }
+    let icc_profile = args.icc_profile.as_deref().map(std::fs::read).transpose()?;
+    let encode_settings = CliRasterEncodeSettings {
+        quality: args.quality,
+        color,
+        keep_alpha: contract_options.background.a < 255
+            && matches!(
+                output_format,
+                CliRenderRasterFormat::Png
+                    | CliRenderRasterFormat::Tiff
+                    | CliRenderRasterFormat::Webp
+            )
+            && !matches!(color, CliRasterColor::Mono(_) | CliRasterColor::Cmyk),
+        metadata: wellfriendpdf_engine::images::raster::RasterMetadata {
+            dpi: None,
+            icc_profile,
+            srgb: args.png_srgb,
+        },
+        tiff_compression: wellfriendpdf_engine::images::tiff::TiffCompression::from_name(
+            &args.tiff_compression,
+        )
+        .unwrap_or_default(),
+        jpeg_progressive: args.jpeg_progressive,
+        jpeg_optimize: args.jpeg_optimize,
+    };
+    let use_contract =
+        contract_requested || output_format.is_raw() || !scaling.is_plain() || args.transparent;
+    let extension = cli_render_extension(output_format, color);
 
     let mut engine = open_engine(&args.pdf, &args.password)?;
     apply_registered_fonts(&mut engine, &args.registered_fonts)?;
@@ -8889,10 +9425,24 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     // Render pages in parallel for any multi-page document; a one-shot render
     // never reuses finished page rasters, so caches keep resources only.
     const PARALLEL_RENDER_PAGE_THRESHOLD: usize = 2;
-    let quality = args.quality;
+    let page_geometry = |page_num: usize| -> Result<CliPageGeometry, String> {
+        if scaling.is_plain() {
+            return Ok(CliPageGeometry {
+                render_dpi: scaling.rx as u32,
+                x_dpi: scaling.rx,
+                y_dpi: scaling.ry,
+                scaled: None,
+            });
+        }
+        let (width, height) = cli_page_display_size(&engine, page_num, contract_options.page_box)
+            .map_err(|err| err.to_string())?;
+        Ok(scaling.resolve(width, height))
+    };
     let encode_page = |page_num: usize,
                        document_cache: &mut RenderDocumentCache|
      -> Result<RenderedPageOutput, String> {
+        let geometry = page_geometry(page_num)?;
+        let settings = encode_settings.with_dpi((geometry.x_dpi, geometry.y_dpi));
         if use_contract {
             let contract = if let Some(contract) = input_contract.as_ref() {
                 if contract.page_number != page_num {
@@ -8903,8 +9453,16 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 }
                 contract.clone()
             } else {
-                build_cli_render_contract(&engine, page_num, dpi, render_mode, contract_options)
-                    .map_err(|err| err.to_string())?
+                let mut contract = build_cli_render_contract(
+                    &engine,
+                    page_num,
+                    geometry.render_dpi,
+                    render_mode,
+                    contract_options,
+                )
+                .map_err(|err| err.to_string())?;
+                apply_cli_page_geometry(&mut contract, &geometry).map_err(|err| err.to_string())?;
+                contract
             };
             let contract_json = if args.write_contract_json {
                 Some(serde_json::to_vec_pretty(&contract).map_err(|err| err.to_string())?)
@@ -8960,11 +9518,11 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                     None,
                 )
             };
-            let bytes = encode_cli_render_buffer(output_format, buf, quality)
+            let bytes = encode_cli_render_buffer(output_format, buf, &settings)
                 .map_err(|err| err.to_string())?;
             return Ok(RenderedPageOutput {
                 bytes,
-                extension: output_format.file_extension(),
+                extension,
                 contract_json,
                 font_substitution_json,
             });
@@ -8973,7 +9531,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         let buf = engine
             .render_page_cancellable_with_mode_and_cache(
                 page_num,
-                dpi,
+                geometry.render_dpi,
                 &CancelToken::none(),
                 render_mode,
                 document_cache,
@@ -8985,11 +9543,11 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         } else {
             None
         };
-        let bytes =
-            encode_cli_render_buffer(output_format, buf, quality).map_err(|err| err.to_string())?;
+        let bytes = encode_cli_render_buffer(output_format, buf, &settings)
+            .map_err(|err| err.to_string())?;
         Ok(RenderedPageOutput {
             bytes,
-            extension: output_format.file_extension(),
+            extension,
             contract_json: None,
             font_substitution_json,
         })
@@ -9104,6 +9662,8 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 "output": args.output.display().to_string(),
                 "format": args.format,
                 "dpi": dpi,
+                "x_dpi": scaling.rx,
+                "y_dpi": scaling.ry,
                 "pages_requested": page_nums.len(),
                 "pages_rendered": rendered_count,
                 "objects_skipped": wellfriendpdf_engine::render::skipped_render_object_count(),

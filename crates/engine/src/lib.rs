@@ -458,7 +458,7 @@ pub use form_exchange::{
     FormDataFormat, FormDataSet,
 };
 pub use html::{HtmlExporter, HtmlMode, HtmlOptions};
-pub use images::decoder::{ColorSpaceConverter, ImageDecoder, RawImage};
+pub use images::decoder::{ColorSpaceConverter, ImageDecoder, PassthroughImage, RawImage};
 pub use images::encoder::{ImageEncoder, ImageOutputFormat};
 pub use images::locator::{ImageLocateOptions, ImageLocator, ImageReference, InlineImageData};
 pub use images::smask::SmaskLoader;

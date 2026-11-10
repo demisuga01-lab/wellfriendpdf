@@ -1195,6 +1195,17 @@ pub struct TextSearchOptions {
     pub collapse_whitespace: bool,
     pub include_hidden: bool,
     pub max_matches: usize,
+    /// Compare text and query after Unicode NFKC compatibility normalisation
+    /// (ligatures, full-width and other compatibility forms, composed
+    /// accents), as Poppler's search does. On by default.
+    pub normalize_unicode: bool,
+    /// Ignore diacritics: "resume" matches "résumé". Applies to any
+    /// script whose accents decompose canonically. Off by default.
+    pub ignore_accents: bool,
+    /// Only report matches that are not part of a longer word: the characters
+    /// before and after the match must not be letters, digits or `_`. Off by
+    /// default.
+    pub whole_word: bool,
 }
 
 impl Default for TextSearchOptions {
@@ -1206,6 +1217,9 @@ impl Default for TextSearchOptions {
             collapse_whitespace: true,
             include_hidden: false,
             max_matches: 10_000,
+            normalize_unicode: true,
+            ignore_accents: false,
+            whole_word: false,
         }
     }
 }
@@ -2188,7 +2202,7 @@ fn tokenize_words_from_chars(
         if start.is_none() {
             start = Some(ch.char_index);
         }
-        current.push(c);
+        current.push_str(&ch.text);
     }
     let end = chars.last().map(|ch| ch.char_index + 1).unwrap_or(0);
     flush_token(&mut tokens, &mut current, &mut start, end);
@@ -2239,7 +2253,7 @@ fn tokenize_words_from_chars_dictionary(
         if latin_start.is_none() {
             latin_start = Some(ch.char_index);
         }
-        latin.push(c);
+        latin.push_str(&ch.text);
     }
     let end = chars.last().map(|ch| ch.char_index + 1).unwrap_or(0);
     flush_token(&mut tokens, &mut latin, &mut latin_start, end);
@@ -3036,6 +3050,10 @@ fn search_semantic_document(
             };
             let from = start + pos;
             let to = from + query_chars.len();
+            if options.whole_word && !is_whole_word_match(&stream, from, to) {
+                start = from + 1;
+                continue;
+            }
             let char_refs: Vec<&TextSemanticChar> = stream[from..to]
                 .iter()
                 .filter_map(|item| item.char_ref)
@@ -3125,10 +3143,23 @@ fn searchable_stream<'a>(
                 {
                     continue;
                 }
-                raw.push(SearchItem {
-                    ch: ch.text.chars().next().unwrap_or('\u{FFFD}'),
-                    char_ref: Some(ch),
-                });
+                // A semantic char can carry several scalars (a ligature glyph
+                // mapped to "ffi", an ActualText span). Every scalar is
+                // searchable and maps back to the same source char.
+                let mut pushed = false;
+                for scalar in ch.text.chars() {
+                    raw.push(SearchItem {
+                        ch: scalar,
+                        char_ref: Some(ch),
+                    });
+                    pushed = true;
+                }
+                if !pushed {
+                    raw.push(SearchItem {
+                        ch: '\u{FFFD}',
+                        char_ref: Some(ch),
+                    });
+                }
             }
             raw.push(SearchItem {
                 ch: '\n',
@@ -3169,11 +3200,19 @@ fn normalize_stream<'a>(
             idx += 2;
             continue;
         }
-        let mut chars = if options.normalize_ligatures {
-            ligature_expansion(item.ch)
-        } else {
-            vec![item.ch]
-        };
+        // A base character and the combining marks that follow it normalise
+        // together, so a decomposed "e + U+0301" matches a precomposed one.
+        let mut cluster_end = idx + 1;
+        if options.normalize_unicode || options.ignore_accents {
+            while cluster_end < raw.len()
+                && unicode_normalization::char::is_combining_mark(raw[cluster_end].ch)
+            {
+                cluster_end += 1;
+            }
+        }
+        let char_ref = raw[idx..cluster_end].iter().find_map(|item| item.char_ref);
+        let mut chars =
+            fold_search_cluster(raw[idx..cluster_end].iter().map(|item| item.ch), options);
         for mut ch in chars.drain(..) {
             if options.collapse_whitespace && ch.is_whitespace() {
                 ch = ' ';
@@ -3188,19 +3227,63 @@ fn normalize_stream<'a>(
                 for lower in ch.to_lowercase() {
                     out.push(SearchItem {
                         ch: lower,
-                        char_ref: item.char_ref,
+                        char_ref,
                     });
                 }
             } else {
-                out.push(SearchItem {
-                    ch,
-                    char_ref: item.char_ref,
-                });
+                out.push(SearchItem { ch, char_ref });
             }
         }
-        idx += 1;
+        idx = cluster_end;
     }
     out
+}
+
+/// Apply ligature expansion, NFKC and accent folding to one base character
+/// plus its combining marks.
+fn fold_search_cluster(
+    cluster: impl Iterator<Item = char>,
+    options: &TextSearchOptions,
+) -> Vec<char> {
+    use unicode_normalization::UnicodeNormalization;
+
+    let mut chars: Vec<char> = if options.normalize_ligatures {
+        cluster.flat_map(ligature_expansion).collect()
+    } else {
+        cluster.collect()
+    };
+    if options.normalize_unicode {
+        chars = chars.into_iter().nfkc().collect();
+    }
+    if options.ignore_accents {
+        chars = chars
+            .into_iter()
+            .nfd()
+            .filter(|ch| !unicode_normalization::char::is_combining_mark(*ch))
+            .collect();
+    }
+    chars
+}
+
+fn is_search_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+/// True when `stream[from..to]` is not glued to word characters on either side.
+fn is_whole_word_match(stream: &[SearchItem<'_>], from: usize, to: usize) -> bool {
+    let starts_word = stream
+        .get(from)
+        .is_some_and(|item| is_search_word_char(item.ch));
+    let ends_word = to
+        .checked_sub(1)
+        .and_then(|last| stream.get(last))
+        .is_some_and(|item| is_search_word_char(item.ch));
+    let before_ok = !starts_word || from == 0 || !is_search_word_char(stream[from - 1].ch);
+    let after_ok = !ends_word
+        || stream
+            .get(to)
+            .is_none_or(|item| !is_search_word_char(item.ch));
+    before_ok && after_ok
 }
 
 fn ligature_expansion(ch: char) -> Vec<char> {
@@ -3307,6 +3390,97 @@ mod tests {
         let matches = doc.search("office", &options);
         assert_eq!(matches.len(), 1);
         assert!(!matches[0].quads.is_empty());
+    }
+
+    #[test]
+    fn search_keeps_every_scalar_of_multi_char_semantic_chars() {
+        let mut page = build_text_semantic_page(
+            1,
+            [0.0, 0.0, 200.0, 200.0],
+            vec![chunk("oXce", 10.0, 100.0, 40.0)],
+            &TextSemanticOptions::default(),
+        );
+        // One glyph whose Unicode mapping is the three letters "ffi".
+        page.blocks[0].lines[0].chars[1].text = "ffi".to_string();
+        let target_index = page.blocks[0].lines[0].chars[1].char_index;
+        let doc = build_text_semantic_document(vec![page], Vec::new());
+
+        let matches = doc.search("office", &TextSearchOptions::default());
+        assert_eq!(matches.len(), 1, "all three scalars must be searchable");
+        assert_eq!(matches[0].text, "office");
+        assert_eq!(matches[0].quads.len(), 4, "o, ffi, c, e map to 4 chars");
+        assert!(matches[0].char_range[0] < target_index);
+
+        // A match that starts inside the multi-scalar char still maps back to it.
+        let inner = doc.search("fic", &TextSearchOptions::default());
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0].char_range, [target_index, target_index + 2]);
+    }
+
+    #[test]
+    fn search_applies_nfkc_normalisation() {
+        let page = build_text_semantic_page(
+            1,
+            [0.0, 0.0, 200.0, 200.0],
+            // Full-width "ＰＤＦ" and a decomposed "e" + combining acute.
+            vec![chunk(
+                "\u{FF30}\u{FF24}\u{FF26} cafe\u{301}",
+                10.0,
+                100.0,
+                80.0,
+            )],
+            &TextSemanticOptions::default(),
+        );
+        let doc = build_text_semantic_document(vec![page], Vec::new());
+        assert_eq!(doc.search("PDF", &TextSearchOptions::default()).len(), 1);
+        assert_eq!(
+            doc.search("caf\u{E9}", &TextSearchOptions::default()).len(),
+            1
+        );
+        let raw = TextSearchOptions {
+            normalize_unicode: false,
+            ..Default::default()
+        };
+        assert!(doc.search("PDF", &raw).is_empty());
+    }
+
+    #[test]
+    fn search_can_ignore_accents() {
+        let page = build_text_semantic_page(
+            1,
+            [0.0, 0.0, 200.0, 200.0],
+            vec![chunk("R\u{E9}sum\u{E9} na\u{EF}ve", 10.0, 100.0, 80.0)],
+            &TextSemanticOptions::default(),
+        );
+        let doc = build_text_semantic_document(vec![page], Vec::new());
+        let options = TextSearchOptions {
+            ignore_accents: true,
+            case_sensitive: false,
+            ..Default::default()
+        };
+        assert_eq!(doc.search("resume", &options).len(), 1);
+        assert_eq!(doc.search("NAIVE", &options).len(), 1);
+        assert!(doc
+            .search("resume", &TextSearchOptions::default())
+            .is_empty());
+    }
+
+    #[test]
+    fn search_whole_word_rejects_partial_words() {
+        let page = build_text_semantic_page(
+            1,
+            [0.0, 0.0, 300.0, 200.0],
+            vec![chunk("cat concatenate cat, cats", 10.0, 100.0, 200.0)],
+            &TextSemanticOptions::default(),
+        );
+        let doc = build_text_semantic_document(vec![page], Vec::new());
+        assert_eq!(doc.search("cat", &TextSearchOptions::default()).len(), 4);
+        let whole = TextSearchOptions {
+            whole_word: true,
+            ..Default::default()
+        };
+        let matches = doc.search("cat", &whole);
+        assert_eq!(matches.len(), 2, "only the standalone 'cat' words");
     }
 
     #[test]

@@ -5,7 +5,9 @@ pub(crate) mod indexed_samples;
 pub mod jbig2;
 pub mod jpx;
 pub mod locator;
+pub mod raster;
 pub(crate) mod sample_decode;
 pub mod smask;
+pub mod tiff;
 
 pub use smask::SmaskLoader;

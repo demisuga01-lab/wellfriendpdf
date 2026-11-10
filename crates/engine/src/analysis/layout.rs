@@ -64,12 +64,15 @@ struct Item {
     text: String,
     font_size: f64,
     is_rtl: bool,
+    /// Index into the page's vertical-text blocks when this item stands for
+    /// a whole vertical block (so the XY-cut places it by position).
+    vertical_block: Option<usize>,
 }
 
 impl Item {
     fn from_chunk(c: &TextChunk) -> Option<Self> {
-        // Skip vertical runs (handled by the existing vertical reading-order
-        // path) and pure-whitespace/empty chunks (they carry no structure).
+        // Skip vertical runs (laid out separately by `vertical_blocks`) and
+        // pure-whitespace/empty chunks (they carry no structure).
         if c.is_vertical || c.text.trim().is_empty() {
             return None;
         }
@@ -84,6 +87,7 @@ impl Item {
             text: c.text.clone(),
             font_size: fs,
             is_rtl: c.is_rtl,
+            vertical_block: None,
         })
     }
 }
@@ -172,26 +176,64 @@ impl Default for LayoutConfig {
 }
 
 /// Analyse a page's text chunks into a structured, reading-ordered layout.
+///
+/// Vertical (WMode 1) runs are not part of the XY-cut: they are grouped into
+/// columns read top to bottom, columns right to left, and the resulting blocks
+/// are merged into the horizontal reading order by their position on the page.
 pub fn analyze_page(chunks: &[TextChunk], config: &LayoutConfig) -> PageLayout {
+    let vertical: Vec<TextChunk> = chunks
+        .iter()
+        .filter(|c| c.is_vertical && !c.text.trim().is_empty())
+        .cloned()
+        .collect();
+    let vertical = if vertical.is_empty() {
+        Vec::new()
+    } else {
+        vertical_blocks(vertical)
+    };
+    analyze_items(chunks, vertical, config)
+}
+
+fn analyze_items(
+    chunks: &[TextChunk],
+    vertical: Vec<LayoutBlock>,
+    config: &LayoutConfig,
+) -> PageLayout {
     let items: Vec<Item> = chunks.iter().filter_map(Item::from_chunk).collect();
     if items.is_empty() {
-        return PageLayout::default();
+        return PageLayout {
+            blocks: vertical,
+            page_is_rtl: false,
+        };
     }
 
     // Estimate the characteristic line height = median font size. Robust to a
     // few outlier headings/footnotes.
     let line_height = median_font_size(&items).max(1.0);
 
+    // RTL-dominant page? If most text is RTL, columns read right-to-left.
+    let rtl_items = items.iter().filter(|i| i.is_rtl).count();
+    let page_is_rtl = rtl_items * 2 > items.len();
+
+    // Vertical blocks join the cut as one opaque item each, so whitespace
+    // around them orders them among the horizontal regions.
+    let mut items = items;
+    items.extend(vertical.iter().enumerate().map(|(index, block)| Item {
+        bbox: block.bbox,
+        text: String::new(),
+        font_size: block.font_size.max(1.0),
+        is_rtl: false,
+        vertical_block: Some(index),
+    }));
+    let mut vertical: Vec<Option<LayoutBlock>> = vertical.into_iter().map(Some).collect();
+
     // Estimate the typical inter-line PITCH (baseline-to-baseline of vertically
     // adjacent items). The horizontal (block-separating) XY cut must only fire
     // on vertical whitespace LARGER than normal line spacing, otherwise every
     // line's inter-line gap looks like a block boundary. The column-separating
     // vertical cut, by contrast, keys off the font-size-relative gutter width.
+    // Vertical blocks take part, so the gaps around them count as breaks.
     let line_pitch = estimate_line_pitch(&items, line_height);
-
-    // RTL-dominant page? If most text is RTL, columns read right-to-left.
-    let rtl_items = items.iter().filter(|i| i.is_rtl).count();
-    let page_is_rtl = rtl_items * 2 > items.len();
 
     // Recursive XY-cut produces leaf regions in reading order.
     let mut leaves: Vec<Vec<Item>> = Vec::new();
@@ -209,12 +251,109 @@ pub fn analyze_page(chunks: &[TextChunk], config: &LayoutConfig) -> PageLayout {
     // few stacked paragraphs that no whitespace cut separated).
     let mut blocks = Vec::new();
     for leaf in leaves {
-        blocks.extend(region_to_blocks(leaf, line_height, config, page_is_rtl));
+        let (placeholders, leaf): (Vec<Item>, Vec<Item>) = leaf
+            .into_iter()
+            .partition(|item| item.vertical_block.is_some());
+        let mut region = region_to_blocks(leaf, line_height, config, page_is_rtl);
+        let region_vertical: Vec<LayoutBlock> = placeholders
+            .iter()
+            .filter_map(|item| item.vertical_block.and_then(|i| vertical[i].take()))
+            .collect();
+        merge_vertical_blocks(&mut region, region_vertical);
+        blocks.extend(region);
     }
 
     PageLayout {
         blocks,
         page_is_rtl,
+    }
+}
+
+/// Lay vertical runs out as blocks: chunks are grouped into columns (read top
+/// to bottom), and neighbouring columns whose vertical extents overlap form one
+/// block whose lines are the columns from right to left.
+fn vertical_blocks(chunks: Vec<TextChunk>) -> Vec<LayoutBlock> {
+    let reader = crate::text::reading_order::ReadingOrderReconstructor::default();
+    // `group_into_columns` returns columns right to left.
+    let columns: Vec<(BBox, f64, LayoutLine)> = reader
+        .group_into_columns(chunks)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, group)| {
+            let top = group.iter().map(|c| c.y).fold(f64::NEG_INFINITY, f64::max);
+            let bottom = group
+                .iter()
+                .map(|c| c.y - c.width.max(c.font_size).max(0.0))
+                .fold(f64::INFINITY, f64::min);
+            let line = reader.vertical_column_line(group, index);
+            if line.text.trim().is_empty() || !top.is_finite() || !bottom.is_finite() {
+                return None;
+            }
+            let bbox = BBox {
+                x0: line.x_min,
+                y0: bottom.min(top),
+                x1: line.x_max.max(line.x_min),
+                y1: top.max(bottom),
+            };
+            let font_size = line.font_size;
+            Some((
+                bbox,
+                font_size,
+                LayoutLine {
+                    text: line.text.trim().to_string(),
+                    bbox,
+                    is_rtl: false,
+                },
+            ))
+        })
+        .collect();
+
+    let mut blocks: Vec<LayoutBlock> = Vec::new();
+    let mut current: Vec<(BBox, f64, LayoutLine)> = Vec::new();
+    for column in columns {
+        if let Some(previous) = current.last() {
+            let gap = previous.0.x0 - column.0.x1;
+            let overlap = previous.0.y0 < column.0.y1 && column.0.y0 < previous.0.y1;
+            if gap > 2.0 * previous.1.max(column.1) || !overlap {
+                blocks.push(finish_vertical_block(std::mem::take(&mut current)));
+            }
+        }
+        current.push(column);
+    }
+    if !current.is_empty() {
+        blocks.push(finish_vertical_block(current));
+    }
+    blocks
+}
+
+fn finish_vertical_block(columns: Vec<(BBox, f64, LayoutLine)>) -> LayoutBlock {
+    let mut sizes: Vec<f64> = columns.iter().map(|c| c.1).collect();
+    sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let font_size = sizes.get(sizes.len() / 2).copied().unwrap_or(0.0);
+    let boxes: Vec<BBox> = columns.iter().map(|c| c.0).collect();
+    LayoutBlock {
+        bbox: BBox::bounding(&boxes).unwrap_or(BBox {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 0.0,
+            y1: 0.0,
+        }),
+        lines: columns.into_iter().map(|c| c.2).collect(),
+        font_size,
+    }
+}
+
+/// Insert vertical blocks into the horizontal reading order by position: a
+/// vertical block goes before the first horizontal block that starts lower on
+/// the page than it does (so a vertical title above body text is read first,
+/// and a vertical column beside a horizontal header is read after it).
+fn merge_vertical_blocks(blocks: &mut Vec<LayoutBlock>, vertical: Vec<LayoutBlock>) {
+    for block in vertical {
+        let position = blocks
+            .iter()
+            .position(|existing| existing.bbox.y1 < block.bbox.y1)
+            .unwrap_or(blocks.len());
+        blocks.insert(position, block);
     }
 }
 
@@ -742,5 +881,42 @@ mod tests {
         ];
         let layout = analyze_page(&chunks, &LayoutConfig::default());
         assert_eq!(layout.text(), "Hello World");
+    }
+
+    fn vertical_chunk(text: &str, x: f64, y: f64, fs: f64) -> TextChunk {
+        TextChunk {
+            is_vertical: true,
+            ..chunk(text, x, y, fs, fs)
+        }
+    }
+
+    #[test]
+    fn vertical_runs_are_kept_on_mixed_pages() {
+        // A horizontal heading on top, two vertical columns below it (read
+        // right column first), and a horizontal footer at the bottom.
+        let chunks = vec![
+            chunk("Heading", 50.0, 760.0, 60.0, 12.0),
+            vertical_chunk("\u{4E00}", 300.0, 700.0, 12.0),
+            vertical_chunk("\u{4E8C}", 300.0, 688.0, 12.0),
+            vertical_chunk("\u{4E09}", 284.0, 700.0, 12.0),
+            vertical_chunk("\u{56DB}", 284.0, 688.0, 12.0),
+            chunk("Footer", 50.0, 100.0, 50.0, 12.0),
+        ];
+        let layout = analyze_page(&chunks, &LayoutConfig::default());
+        let text = layout.text();
+        assert_eq!(
+            text, "Heading\n\n\u{4E00}\u{4E8C}\n\u{4E09}\u{56DB}\n\nFooter",
+            "vertical text must survive between the horizontal blocks: {text:?}"
+        );
+    }
+
+    #[test]
+    fn vertical_only_page_still_produces_text() {
+        let chunks = vec![
+            vertical_chunk("\u{4E00}", 300.0, 700.0, 12.0),
+            vertical_chunk("\u{4E8C}", 300.0, 688.0, 12.0),
+        ];
+        let layout = analyze_page(&chunks, &LayoutConfig::default());
+        assert_eq!(layout.text(), "\u{4E00}\u{4E8C}");
     }
 }

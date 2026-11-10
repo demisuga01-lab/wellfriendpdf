@@ -2908,6 +2908,45 @@ impl ContentEngine {
         }
     }
 
+    /// Page text in true content-stream order (`pdftotext -raw`): runs are
+    /// written in the order the page shows them, with a line break when the
+    /// baseline moves and a space where runs are separated by a gap.
+    pub fn get_page_text_raw_order(&self, page_number: usize) -> Result<String> {
+        let chunks = self.collect_page_text_chunks(page_number)?;
+        Ok(crate::text::poppler_modes::raw_order_text(&chunks))
+    }
+
+    /// Page text in physical layout (`pdftotext -layout`): each line sits on
+    /// the output row of its baseline, indented to the character column of its
+    /// x position, so columns stay side by side.
+    pub fn get_page_text_physical_layout(&self, page_number: usize) -> Result<String> {
+        let page = self.get_page(page_number)?;
+        let page_box = render_page_box(&page, PageBox::Crop)?;
+        let chunks = self.collect_page_text_chunks(page_number)?;
+        Ok(crate::text::poppler_modes::physical_layout_text(
+            &chunks,
+            page_box[0].min(page_box[2]),
+        ))
+    }
+
+    /// Word-level TSV rows for the given pages in Poppler's `pdftotext -tsv`
+    /// format (header included): `level page_num par_num block_num line_num
+    /// word_num left top width height conf text`, coordinates in points from
+    /// the top-left of the page box.
+    pub fn get_text_tsv(&self, pages: &[usize]) -> Result<String> {
+        let mut out = crate::text::poppler_modes::TSV_HEADER.to_string();
+        for &page in pages {
+            let model = self.extract_text_semantic_model(
+                &[page],
+                crate::text::TextSemanticOptions::default(),
+            )?;
+            for semantic_page in &model.pages {
+                out.push_str(&crate::text::poppler_modes::tsv_rows(semantic_page));
+            }
+        }
+        Ok(out)
+    }
+
     /// Extract text constrained to a page region in PDF user-space points.
     ///
     /// A line is included when its center lies inside the region or at least
@@ -3681,6 +3720,28 @@ impl ContentEngine {
         ImageEncoder::encode(&raw, &format, quality)
     }
 
+    /// An image as `pdfimages -all` saves it: JPEG, JPEG 2000, JBIG2 and
+    /// CCITT data are kept in their original encoding (with JBIG2 globals and
+    /// CCITT fax2tiff parameters as sidecars); every other image, including
+    /// inline images, is decoded and written as PNG.
+    pub fn extract_image_original(
+        &self,
+        image: &ImageReference,
+    ) -> Result<crate::images::decoder::PassthroughImage> {
+        if let Some(passthrough) =
+            crate::images::decoder::passthrough_image(image, self.document().reader())?
+        {
+            return Ok(passthrough);
+        }
+        let raw = self.decode_image(image)?;
+        Ok(crate::images::decoder::PassthroughImage {
+            bytes: ImageEncoder::encode_png(&raw)?,
+            extension: "png",
+            filter: image.filter.last().cloned().unwrap_or_default(),
+            sidecars: Vec::new(),
+        })
+    }
+
     /// PNG bytes for package media (DOCX/PPTX). Same decode as
     /// [`Self::extract_image_bytes`] with [`ImageOutputFormat::Png`], encoded
     /// with [`ImageEncoder::encode_png_compact`] so bilevel scans stay 1-bit.
@@ -3759,6 +3820,16 @@ impl ContentEngine {
 
     /// Render a page to a PixelBuffer at the given DPI.
     pub fn render_page(&self, page_number: usize, dpi: u32) -> Result<PixelBuffer> {
+        PageRenderer::render_page(self, page_number, dpi)
+    }
+
+    /// Render a page with every text-showing operator laid out but not
+    /// painted: the page's graphics, images and shadings without its glyphs.
+    /// This is the background for HTML pages that place real text on top
+    /// (Poppler's `SplashOutputDevNoText`). Text clipping modes 4-7 paint no
+    /// clip either, matching Poppler.
+    pub fn render_page_without_text(&self, page_number: usize, dpi: u32) -> Result<PixelBuffer> {
+        let _guard = crate::render::page_renderer::TextPaintSuppressionGuard::enter();
         PageRenderer::render_page(self, page_number, dpi)
     }
 
@@ -4571,7 +4642,7 @@ fn link_uri(adict: &crate::object::PdfDictionary, reader: &PdfReader) -> Option<
     }
 }
 
-fn render_page_box(page: &PdfPage, page_box: PageBox) -> Result<[f64; 4]> {
+pub(crate) fn render_page_box(page: &PdfPage, page_box: PageBox) -> Result<[f64; 4]> {
     if page_box == PageBox::Media {
         return Ok(page.media_box);
     }
