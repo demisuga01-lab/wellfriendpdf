@@ -153,11 +153,117 @@ pub struct ClipMask {
     // clip-DAG materialization.  Mutating operations use `Arc::make_mut`, so
     // the common read-only paint path avoids cloning a page-sized byte plane.
     mask: Arc<Vec<u8>>,
+    // Page rectangle the dense plane covers; coverage outside it is zero, so
+    // an anti-aliased clip keeps only its bounding box (PDFium's bounded clip
+    // region) instead of a page-sized plane. Mutations that index the plane
+    // in page coordinates (`set`, `fill_rect`, unions) expand it first.
+    window: DenseWindow,
     solid: Option<bool>,
     partial_coverage: bool,
     run_cache: Arc<OnceLock<ClipRunCache>>,
     dense_bounds: Arc<OnceLock<Option<(i32, i32, i32, i32)>>>,
     dense_fingerprint: Arc<OnceLock<u64>>,
+}
+
+/// Pixel rectangle covered by a clip's dense coverage plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DenseWindow {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl DenseWindow {
+    pub(crate) fn full(width: u32, height: u32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+    }
+
+    /// Window for the exclusive page bounds `(x0, y0, x1, y1)`.
+    pub(crate) fn from_bounds((x0, y0, x1, y1): (i32, i32, i32, i32)) -> Self {
+        Self {
+            x: x0,
+            y: y0,
+            width: (x1 - x0).max(0) as u32,
+            height: (y1 - y0).max(0) as u32,
+        }
+    }
+
+    pub(crate) fn len(self) -> usize {
+        (self.width as usize).saturating_mul(self.height as usize)
+    }
+
+    fn is_full(self, width: u32, height: u32) -> bool {
+        self.x == 0 && self.y == 0 && self.width == width && self.height == height
+    }
+
+    pub(crate) fn x1(self) -> i32 {
+        self.x.saturating_add(self.width as i32)
+    }
+
+    pub(crate) fn y1(self) -> i32 {
+        self.y.saturating_add(self.height as i32)
+    }
+
+    fn intersect(self, other: Self) -> Option<Self> {
+        let x0 = self.x.max(other.x);
+        let y0 = self.y.max(other.y);
+        let x1 = self.x1().min(other.x1());
+        let y1 = self.y1().min(other.y1());
+        (x1 > x0 && y1 > y0).then(|| Self::from_bounds((x0, y0, x1, y1)))
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self::from_bounds((
+            self.x.min(other.x),
+            self.y.min(other.y),
+            self.x1().max(other.x1()),
+            self.y1().max(other.y1()),
+        ))
+    }
+
+    #[inline]
+    fn index(self, x: i32, y: i32) -> Option<usize> {
+        let local_x = x.checked_sub(self.x)?;
+        let local_y = y.checked_sub(self.y)?;
+        if local_x < 0
+            || local_y < 0
+            || local_x >= self.width as i32
+            || local_y >= self.height as i32
+        {
+            return None;
+        }
+        Some(local_y as usize * self.width as usize + local_x as usize)
+    }
+
+    /// Row `y` of a plane laid out over this window, if the row is inside.
+    #[inline]
+    pub(crate) fn row(self, plane: &[u8], y: i32) -> Option<&[u8]> {
+        let local_y = y.checked_sub(self.y)?;
+        if local_y < 0 || local_y >= self.height as i32 {
+            return None;
+        }
+        let start = local_y as usize * self.width as usize;
+        plane.get(start..start + self.width as usize)
+    }
+}
+
+/// Copy the `inner` rectangle out of a plane laid out over `outer` (which
+/// must contain it).
+pub(crate) fn crop_plane(plane: &[u8], outer: DenseWindow, inner: DenseWindow) -> Vec<u8> {
+    let mut out = Vec::with_capacity(inner.len());
+    let left = (inner.x - outer.x) as usize;
+    for y in inner.y..inner.y1() {
+        if let Some(row) = outer.row(plane, y) {
+            out.extend_from_slice(&row[left..left + inner.width as usize]);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -219,6 +325,7 @@ impl ClipMask {
             // full page-sized byte plane. They are materialized only when a
             // later operation needs per-pixel mutation or partial coverage.
             mask: Arc::new(Vec::new()),
+            window: DenseWindow::full(width, height),
             solid: Some(true),
             partial_coverage: false,
             run_cache: Arc::new(OnceLock::new()),
@@ -234,6 +341,7 @@ impl ClipMask {
             height,
             // See `all_visible`: solid clips do not allocate a dense mask.
             mask: Arc::new(Vec::new()),
+            window: DenseWindow::full(width, height),
             solid: Some(false),
             partial_coverage: false,
             run_cache: Arc::new(OnceLock::new()),
@@ -291,6 +399,7 @@ impl ClipMask {
             width,
             height,
             mask: Arc::new(Vec::new()),
+            window: DenseWindow::full(width, height),
             solid: None,
             partial_coverage: false,
             run_cache: Arc::new(lock),
@@ -308,20 +417,34 @@ impl ClipMask {
         if bytes.len() != len {
             bytes.resize(len, 0);
         }
-        let mut mask = bytes;
+        Self::from_alpha_window(width, height, DenseWindow::full(width, height), bytes)
+    }
 
-        let mut all_visible = true;
+    /// Classify coverage bytes laid out over `window` (which lies inside the
+    /// page; coverage outside it is zero). A non-solid result keeps only the
+    /// tight bounding box of its nonzero coverage.
+    pub(crate) fn from_alpha_window(
+        width: u32,
+        height: u32,
+        window: DenseWindow,
+        mut mask: Vec<u8>,
+    ) -> Self {
+        let window_width = window.width as usize;
+        if window_width == 0 || window.height == 0 || mask.len() != window.len() {
+            return Self::empty(width, height);
+        }
+
+        let mut all_visible = window.is_full(width, height);
         let mut all_empty = true;
         let mut partial_coverage = false;
         let mut x0 = i32::MAX;
         let mut y0 = i32::MAX;
         let mut x1 = i32::MIN;
         let mut y1 = i32::MIN;
-        let width_usize = width as usize;
         // Row-wise: the first and last nonzero sample bound the row's
         // coverage, and everything outside them is zero, so only that span
         // is classified (with branch-free folds the compiler vectorizes).
-        for (y, row) in mask.chunks_exact(width_usize).enumerate() {
+        for (y, row) in mask.chunks_exact(window_width).enumerate() {
             let Some(first) = row.iter().position(|&value| value != 0) else {
                 all_visible = false;
                 continue;
@@ -329,16 +452,16 @@ impl ClipMask {
             let last = row.iter().rposition(|&value| value != 0).unwrap_or(first);
             let span = &row[first..=last];
             all_empty = false;
-            if all_visible && (first > 0 || last + 1 < width_usize || !all_opaque(span)) {
+            if all_visible && (first > 0 || last + 1 < window_width || !all_opaque(span)) {
                 all_visible = false;
             }
             if !partial_coverage && any_partial(span) {
                 partial_coverage = true;
             }
-            x0 = x0.min(first as i32);
-            x1 = x1.max(last as i32 + 1);
-            y0 = y0.min(y as i32);
-            y1 = y1.max(y as i32 + 1);
+            x0 = x0.min(window.x + first as i32);
+            x1 = x1.max(window.x + last as i32 + 1);
+            y0 = y0.min(window.y + y as i32);
+            y1 = y1.max(window.y + y as i32 + 1);
         }
 
         let solid = if all_visible {
@@ -348,8 +471,15 @@ impl ClipMask {
         } else {
             None
         };
+        let mut plane_window = DenseWindow::full(width, height);
         if solid.is_some() {
             mask.clear();
+        } else {
+            let tight = DenseWindow::from_bounds((x0, y0, x1, y1));
+            if tight != window {
+                mask = crop_plane(&mask, window, tight);
+            }
+            plane_window = tight;
         }
 
         let dense_bounds = OnceLock::new();
@@ -362,6 +492,7 @@ impl ClipMask {
             width,
             height,
             mask: Arc::new(mask),
+            window: plane_window,
             solid,
             partial_coverage: solid.is_none() && partial_coverage,
             run_cache: Arc::new(OnceLock::new()),
@@ -391,11 +522,29 @@ impl ClipMask {
         if x0 == 0 && y0 == 0 && x1 == width as i32 && y1 == height as i32 {
             return Self::all_visible(width, height);
         }
-        let mut rows = vec![Vec::new(); height as usize];
-        for row in y0..y1 {
-            rows[row as usize].push((x0, x1));
+        // Build the flattened run cache directly: one run per covered row,
+        // without the per-row vectors `from_visible_runs` would merge.
+        let (y0, y1) = (y0 as usize, y1 as usize);
+        let mut row_offsets = Vec::with_capacity(height as usize + 1);
+        row_offsets.extend(std::iter::repeat_n(0usize, y0 + 1));
+        row_offsets.extend(1..=y1 - y0);
+        row_offsets.extend(std::iter::repeat_n(y1 - y0, height as usize - y1));
+        let lock = OnceLock::new();
+        let _ = lock.set(ClipRunCache {
+            row_offsets,
+            runs: vec![(x0, x1); y1 - y0],
+        });
+        Self {
+            width,
+            height,
+            mask: Arc::new(Vec::new()),
+            window: DenseWindow::full(width, height),
+            solid: None,
+            partial_coverage: false,
+            run_cache: Arc::new(lock),
+            dense_bounds: Arc::new(OnceLock::new()),
+            dense_fingerprint: Arc::new(OnceLock::new()),
         }
-        Self::from_visible_runs(width, height, rows)
     }
 
     fn invalidate_run_cache(&mut self) {
@@ -410,9 +559,28 @@ impl ClipMask {
             .unwrap_or(0)
     }
 
+    /// Ensure a page-sized dense plane (expanding a windowed one), for the
+    /// mutating operations that index the plane in page coordinates.
     fn materialize_dense_mask(&mut self) {
         let len = self.dense_len();
-        if self.mask.len() == len {
+        if !self.mask.is_empty() {
+            if self.window.is_full(self.width, self.height) {
+                return;
+            }
+            let mut full = vec![0u8; len];
+            let width = self.width as usize;
+            for y in self.window.y..self.window.y1() {
+                if let Some(row) = self.window.row(&self.mask, y) {
+                    let start = y as usize * width + self.window.x as usize;
+                    full[start..start + row.len()].copy_from_slice(row);
+                }
+            }
+            self.mask = Arc::new(full);
+            self.window = DenseWindow::full(self.width, self.height);
+            return;
+        }
+        self.window = DenseWindow::full(self.width, self.height);
+        if len == 0 {
             return;
         }
         let value = match self.solid {
@@ -468,15 +636,12 @@ impl ClipMask {
         if let Some(solid) = self.solid {
             return if solid { 255 } else { 0 };
         }
-        let idx = match (y as usize)
-            .checked_mul(self.width as usize)
-            .and_then(|row| row.checked_add(x as usize))
-        {
-            Some(idx) => idx,
-            None => return 255,
-        };
-        if let Some(value) = self.mask.get(idx).copied() {
-            return value;
+        if !self.mask.is_empty() {
+            return self
+                .window
+                .index(x, y)
+                .and_then(|idx| self.mask.get(idx).copied())
+                .unwrap_or(0);
         }
         let row_runs = self.compressed_runs().row(y as usize);
         if row_runs.iter().any(|(start, end)| x >= *start && x < *end) {
@@ -496,16 +661,53 @@ impl ClipMask {
         self.partial_coverage
     }
 
-    pub(crate) fn shared_partial_alpha_bytes(&self) -> Option<Arc<Vec<u8>>> {
-        (self.partial_coverage && self.mask.len() == self.dense_len())
-            .then(|| Arc::clone(&self.mask))
+    /// The shared dense plane of a partial-coverage clip and the page window
+    /// it covers.
+    pub(crate) fn shared_partial_alpha_plane(&self) -> Option<(Arc<Vec<u8>>, DenseWindow)> {
+        (self.partial_coverage && !self.mask.is_empty())
+            .then(|| (Arc::clone(&self.mask), self.window))
+    }
+
+    /// Opacity bytes for pixels `x0..x0 + out.len()` of row `y`, exactly as
+    /// [`Self::opacity_byte`] reports them, copied a row slice at a time.
+    pub(crate) fn opacity_row(&self, x0: i32, y: i32, out: &mut [u8]) {
+        if self.mask.is_empty() || self.solid.is_some() || y < 0 || y >= self.height as i32 {
+            for (idx, value) in out.iter_mut().enumerate() {
+                *value = self.opacity_byte(x0.saturating_add(idx as i32), y);
+            }
+            return;
+        }
+        // Outside the page reads as fully open; inside it reads the plane,
+        // which is zero outside its window.
+        let len = out.len() as i64;
+        let page_lo = (-i64::from(x0)).clamp(0, len) as usize;
+        let page_hi = (i64::from(self.width) - i64::from(x0)).clamp(0, len) as usize;
+        if page_hi <= page_lo {
+            out.fill(255);
+            return;
+        }
+        out[..page_lo].fill(255);
+        out[page_hi..].fill(255);
+        let inside = &mut out[page_lo..page_hi];
+        inside.fill(0);
+        let Some(row) = self.window.row(&self.mask, y) else {
+            return;
+        };
+        let first_x = i64::from(x0) + page_lo as i64;
+        let inside_len = inside.len() as i64;
+        let lo = (i64::from(self.window.x) - first_x).clamp(0, inside_len) as usize;
+        let hi = (i64::from(self.window.x1()) - first_x).clamp(0, inside_len) as usize;
+        if hi > lo {
+            let src = (first_x + lo as i64 - i64::from(self.window.x)) as usize;
+            inside[lo..hi].copy_from_slice(&row[src..src + (hi - lo)]);
+        }
     }
 
     pub(crate) fn dense_metadata_with_fingerprint(
         &self,
         fingerprint_hint: Option<u64>,
     ) -> Option<DenseClipMetadata> {
-        if !self.partial_coverage || self.mask.len() != self.dense_len() {
+        if !self.partial_coverage || self.mask.is_empty() {
             return None;
         }
         let bounds = *self.dense_bounds.get_or_init(|| {
@@ -513,11 +715,11 @@ impl ClipMask {
             let mut y0 = i32::MAX;
             let mut x1 = i32::MIN;
             let mut y1 = i32::MIN;
-            let width = self.width as usize;
+            let width = self.window.width as usize;
             for (index, value) in self.mask.iter().copied().enumerate() {
                 if value != 0 {
-                    let x = (index % width) as i32;
-                    let y = (index / width) as i32;
+                    let x = self.window.x + (index % width) as i32;
+                    let y = self.window.y + (index / width) as i32;
                     x0 = x0.min(x);
                     y0 = y0.min(y);
                     x1 = x1.max(x + 1);
@@ -526,11 +728,27 @@ impl ClipMask {
             }
             (x1 > x0 && y1 > y0).then_some((x0, y0, x1, y1))
         });
+        // The content hash covers the tight bounds and the coverage inside
+        // them (everything outside is zero), so it does not depend on the
+        // window the plane happens to be stored in.
         let fingerprint = fingerprint_hint.unwrap_or_else(|| {
             *self.dense_fingerprint.get_or_init(|| {
                 let mut hash = Self::dense_hash_seed(self.width, self.height);
-                for value in self.mask.iter().copied() {
-                    Self::dense_hash_mix(&mut hash, value);
+                if let Some((x0, y0, x1, y1)) = bounds {
+                    for part in [x0, y0, x1, y1] {
+                        for byte in part.to_le_bytes() {
+                            Self::dense_hash_mix(&mut hash, byte);
+                        }
+                    }
+                    let left = (x0 - self.window.x) as usize;
+                    let span = (x1 - x0) as usize;
+                    for y in y0..y1 {
+                        if let Some(row) = self.window.row(&self.mask, y) {
+                            for value in row[left..left + span].iter().copied() {
+                                Self::dense_hash_mix(&mut hash, value);
+                            }
+                        }
+                    }
                 }
                 hash
             })
@@ -568,16 +786,15 @@ impl ClipMask {
                 None => {}
             }
             for y in 0..self.height as usize {
-                let row_start = y.saturating_mul(self.width as usize);
-                let row_end = row_start.saturating_add(self.width as usize);
-                let Some(mask_row) = self.mask.get(row_start..row_end) else {
+                let Some(mask_row) = self.window.row(&self.mask, y as i32) else {
                     rows.push(Vec::new());
                     continue;
                 };
+                let origin = self.window.x;
                 let mut row_runs = Vec::new();
                 let mut run_start: Option<i32> = None;
                 for (x, value) in mask_row.iter().enumerate() {
-                    let x = x as i32;
+                    let x = origin + x as i32;
                     if *value > 0 {
                         if run_start.is_none() {
                             run_start = Some(x);
@@ -587,7 +804,7 @@ impl ClipMask {
                     }
                 }
                 if let Some(start) = run_start {
-                    row_runs.push((start, self.width as i32));
+                    row_runs.push((start, self.window.x1()));
                 }
                 rows.push(row_runs);
             }
@@ -642,18 +859,23 @@ impl ClipMask {
     }
 
     fn intersect_dense_with_binary_runs(&mut self, runs: &ClipRunCache) {
-        self.materialize_dense_mask();
-        let width = self.width as usize;
-        for y in 0..self.height as usize {
-            let row_start = y.saturating_mul(width);
-            let row_end = row_start.saturating_add(width);
-            let Some(row) = Arc::make_mut(&mut self.mask).get_mut(row_start..row_end) else {
+        if self.mask.is_empty() {
+            self.materialize_dense_mask();
+        }
+        // Only the plane's window can stay visible: work in window-local
+        // columns and leave the (zero) rest of the page alone.
+        let window = self.window;
+        let width = window.width as usize;
+        let plane = Arc::make_mut(&mut self.mask);
+        for local_y in 0..window.height as usize {
+            let y = window.y as usize + local_y;
+            let Some(row) = plane.get_mut(local_y * width..(local_y + 1) * width) else {
                 continue;
             };
             let mut cursor = 0usize;
             for (start, end) in runs.row(y) {
-                let start = (*start).max(0).min(self.width as i32) as usize;
-                let end = (*end).max(0).min(self.width as i32) as usize;
+                let start = (*start - window.x).max(0).min(width as i32) as usize;
+                let end = (*end - window.x).max(0).min(width as i32) as usize;
                 if end <= start {
                     continue;
                 }
@@ -792,23 +1014,16 @@ impl ClipMask {
 
         let mut out = Self::empty(width, height);
         out.materialize_dense_mask();
-        let src_stride = self.width as usize;
         let dst_stride = width as usize;
-        let src_x = x as usize;
         let mut all_visible = true;
         let mut all_empty = true;
         let mut partial_coverage = false;
         for row in 0..height as usize {
-            let src_start = (y as usize + row)
-                .checked_mul(src_stride)?
-                .checked_add(src_x)?;
-            let src_end = src_start.checked_add(dst_stride)?;
             let dst_start = row.checked_mul(dst_stride)?;
             let dst_end = dst_start.checked_add(dst_stride)?;
-            let src = self.mask.get(src_start..src_end)?;
             let dst = Arc::make_mut(&mut out.mask).get_mut(dst_start..dst_end)?;
-            dst.copy_from_slice(src);
-            for value in src {
+            self.opacity_row(x as i32, (y as usize + row) as i32, dst);
+            for value in dst.iter() {
                 all_visible &= *value == 255;
                 all_empty &= *value == 0;
                 partial_coverage |= *value != 0 && *value != 255;
@@ -931,6 +1146,26 @@ impl ClipMask {
             *self = merged;
             return;
         }
+        if !self.mask.is_empty() && !other.mask.is_empty() {
+            // Both are windowed coverage planes: the result can only be
+            // nonzero where the two windows overlap.
+            let Some(window) = self.window.intersect(other.window) else {
+                *self = Self::empty(self.width, self.height);
+                return;
+            };
+            let mut plane = vec![0u8; window.len()];
+            let mut other_row = vec![0u8; window.width as usize];
+            for (local_y, out) in plane.chunks_exact_mut(window.width as usize).enumerate() {
+                let y = window.y + local_y as i32;
+                self.opacity_row(window.x, y, out);
+                other.opacity_row(window.x, y, &mut other_row);
+                for (a, b) in out.iter_mut().zip(other_row.iter().copied()) {
+                    *a = (*a).min(b);
+                }
+            }
+            *self = Self::from_alpha_window(self.width, self.height, window, plane);
+            return;
+        }
         self.materialize_dense_mask();
         let mut all_visible = true;
         let mut all_empty = true;
@@ -998,6 +1233,23 @@ impl ClipMask {
             let mut merged = other.clone();
             merged.union_dense_with_binary_runs(&lhs);
             *self = merged;
+            return;
+        }
+        if !self.mask.is_empty() && !other.mask.is_empty() {
+            // Both are windowed coverage planes: the union is zero outside
+            // the box around the two windows (e.g. the glyphs of a text clip).
+            let window = self.window.union(other.window);
+            let mut plane = vec![0u8; window.len()];
+            let mut other_row = vec![0u8; window.width as usize];
+            for (local_y, out) in plane.chunks_exact_mut(window.width as usize).enumerate() {
+                let y = window.y + local_y as i32;
+                self.opacity_row(window.x, y, out);
+                other.opacity_row(window.x, y, &mut other_row);
+                for (a, b) in out.iter_mut().zip(other_row.iter().copied()) {
+                    *a = (*a).max(b);
+                }
+            }
+            *self = Self::from_alpha_window(self.width, self.height, window, plane);
             return;
         }
         self.materialize_dense_mask();
@@ -1167,8 +1419,10 @@ impl ClipMask {
                 (end_sample.min((px + 1) * SAMPLES) - first_sample.max(px * SAMPLES)).max(0) as u32
             })
             .collect();
-        let mut coverage = vec![0u8; total_pixels];
-        let row_len = width as usize;
+        // Only the rectangle's own pixels can be covered: store that window.
+        let window = DenseWindow::from_bounds((first_px, y_first, last_px + 1, y_last + 1));
+        let mut coverage = vec![0u8; window.len()];
+        let row_len = window.width as usize;
         for y in y_first..=y_last {
             let rows = (0..SAMPLES)
                 .filter(|sub_y| {
@@ -1179,16 +1433,14 @@ impl ClipMask {
             if rows == 0 {
                 continue;
             }
-            let row = &mut coverage[y as usize * row_len..(y as usize + 1) * row_len];
-            for (slot, &columns) in row[first_px as usize..=last_px as usize]
-                .iter_mut()
-                .zip(&column_samples)
-            {
+            let local_y = (y - y_first) as usize;
+            let row = &mut coverage[local_y * row_len..(local_y + 1) * row_len];
+            for (slot, &columns) in row.iter_mut().zip(&column_samples) {
                 let count = (rows * columns).min(SAMPLE_COUNT);
                 *slot = ((count * 255 + SAMPLE_COUNT / 2) / SAMPLE_COUNT).min(255) as u8;
             }
         }
-        Self::from_alpha_bytes(width, height, coverage)
+        Self::from_alpha_window(width, height, window, coverage)
     }
 
     /// Restore a known partial-coverage mask from an immutable shared plane.
@@ -1198,13 +1450,11 @@ impl ClipMask {
         width: u32,
         height: u32,
         bytes: Arc<Vec<u8>>,
+        window: DenseWindow,
         fingerprint: u64,
         bounds: Option<(i32, i32, i32, i32)>,
     ) -> Self {
-        debug_assert_eq!(
-            bytes.len(),
-            (width as usize).saturating_mul(height as usize)
-        );
+        debug_assert_eq!(bytes.len(), window.len());
         let dense_bounds = OnceLock::new();
         let dense_fingerprint = OnceLock::new();
         let _ = dense_bounds.set(bounds);
@@ -1213,6 +1463,7 @@ impl ClipMask {
             width,
             height,
             mask: bytes,
+            window,
             solid: None,
             partial_coverage: true,
             run_cache: Arc::new(OnceLock::new()),
@@ -1229,7 +1480,7 @@ impl ClipMask {
             }
             return;
         }
-        let all_visible = all_opaque(&self.mask);
+        let all_visible = self.window.is_full(self.width, self.height) && all_opaque(&self.mask);
         let all_empty = !all_visible
             && self
                 .mask
@@ -1254,6 +1505,8 @@ impl ClipMask {
         let clip = Self::empty(width, height);
 
         let mut edges = Vec::new();
+        let mut edge_min_x = f64::INFINITY;
+        let mut edge_max_x = f64::NEG_INFINITY;
         for subpath in &flat.subpaths {
             for segment in subpath.windows(2) {
                 let (x0, y0) = segment[0];
@@ -1261,6 +1514,8 @@ impl ClipMask {
                 if (y0 - y1).abs() < 1e-10 {
                     continue;
                 }
+                edge_min_x = edge_min_x.min(x0).min(x1);
+                edge_max_x = edge_max_x.max(x0).max(x1);
                 let (x_start, y_start, x_end, y_end) = if y0 < y1 {
                     (x0, y0, x1, y1)
                 } else {
@@ -1316,13 +1571,32 @@ impl ClipMask {
         if crossing_work > ANTIALIAS_CROSSING_LIMIT {
             return Self::scanline_fill_binary_edges(&edges, width, height, rule, y_min, y_max);
         }
-        let Some(total_pixels) = (width as usize).checked_mul(height as usize) else {
+        if (width as usize).checked_mul(height as usize).is_none() {
             return clip;
+        }
+        // Every crossing lies within the edges' horizontal extent, so the
+        // coverage plane only spans those columns (plus a pixel of margin for
+        // the sample-to-pixel rounding) and the scanned rows, instead of the
+        // whole page. Four-by-four supersampling has a maximum count of
+        // sixteen, so a byte is sufficient, and the plane becomes the clip's
+        // alpha plane.
+        let (window_x0, window_x1) = if edge_min_x.is_finite() && edge_max_x.is_finite() {
+            (
+                floor_i32(edge_min_x)
+                    .saturating_sub(1)
+                    .clamp(0, width as i32),
+                ceil_i32(edge_max_x)
+                    .saturating_add(2)
+                    .clamp(0, width as i32),
+            )
+        } else {
+            (0, width as i32)
         };
-        // Four-by-four supersampling has a maximum count of sixteen, so a byte
-        // is sufficient.  Reusing this allocation as the final alpha plane
-        // avoids the former u16 coverage plane plus a second full-page u8 mask.
-        let mut coverage = vec![0u8; total_pixels];
+        if window_x1 <= window_x0 {
+            return clip;
+        }
+        let window = DenseWindow::from_bounds((window_x0, y_min, window_x1, y_max + 1));
+        let mut coverage = vec![0u8; window.len()];
         let mut intersections = Vec::<(f64, i32)>::with_capacity(edges.len().min(256));
         let mut spans = Vec::<(f64, f64)>::with_capacity(edges.len().saturating_div(2).min(128));
         // Active-edge list over edges sorted by their top.
@@ -1330,10 +1604,10 @@ impl ClipMask {
         order.sort_by(|a, b| edges[*a].y_min.total_cmp(&edges[*b].y_min));
         let mut next_edge = 0usize;
         let mut active: Vec<usize> = Vec::new();
-        let row_len = width as usize;
+        let row_len = window.width as usize;
 
         for y in y_min..=y_max {
-            let row_base = y as usize * row_len;
+            let row_base = (y - y_min) as usize * row_len;
             for sub_y in 0..SAMPLES {
                 let y_f = y as f64 + (sub_y as f64 + 0.5) / f64::from(SAMPLES);
                 while next_edge < order.len() && edges[order[next_edge]].y_min <= y_f {
@@ -1366,7 +1640,12 @@ impl ClipMask {
                         let px = sample_x / SAMPLES;
                         let pixel_end = ((px + 1) * SAMPLES).min(k1);
                         let count = (pixel_end - sample_x) as u8;
-                        if let Some(slot) = coverage.get_mut(row_base + px as usize) {
+                        let local_px = px - window_x0;
+                        debug_assert!((0..row_len as i32).contains(&local_px));
+                        if let Some(slot) = (local_px >= 0 && local_px < row_len as i32)
+                            .then(|| coverage.get_mut(row_base + local_px as usize))
+                            .flatten()
+                        {
                             *slot = slot.saturating_add(count).min(SAMPLE_COUNT);
                         }
                         sample_x = pixel_end;
@@ -1381,7 +1660,7 @@ impl ClipMask {
             .min(255) as u8;
             *samples = value;
         }
-        let clip = Self::from_alpha_bytes(width, height, coverage);
+        let clip = Self::from_alpha_window(width, height, window, coverage);
         let all_visible = clip.is_all_visible();
         let all_empty = clip.is_empty();
         let partial_coverage = clip.has_partial_coverage();
@@ -1392,31 +1671,7 @@ impl ClipMask {
             return Self::empty(width, height);
         }
         if !partial_coverage {
-            let mut rows = Vec::with_capacity(height as usize);
-            for y in 0..height as usize {
-                let row_start = y.saturating_mul(width as usize);
-                let row_end = row_start.saturating_add(width as usize);
-                let Some(mask_row) = clip.mask.get(row_start..row_end) else {
-                    rows.push(Vec::new());
-                    continue;
-                };
-                let mut row_runs = Vec::new();
-                let mut run_start: Option<i32> = None;
-                for (x, value) in mask_row.iter().enumerate() {
-                    let x = x as i32;
-                    if *value > 0 {
-                        if run_start.is_none() {
-                            run_start = Some(x);
-                        }
-                    } else if let Some(start) = run_start.take() {
-                        row_runs.push((start, x));
-                    }
-                }
-                if let Some(start) = run_start {
-                    row_runs.push((start, width as i32));
-                }
-                rows.push(row_runs);
-            }
+            let rows = clip.compressed_runs().to_rows(height);
             return Self::from_visible_runs(width, height, rows);
         }
         clip
@@ -1512,7 +1767,9 @@ pub struct AlphaMask {
     origin_x: i32,
     origin_y: i32,
     outside_alpha: u8,
-    data: Vec<u8>,
+    // Shared copy-on-write byte plane: graphics-state saves snapshot the
+    // active soft mask by cloning it, which must not copy a page-sized plane.
+    data: Arc<Vec<u8>>,
 }
 
 impl AlphaMask {
@@ -1524,7 +1781,7 @@ impl AlphaMask {
             origin_x: 0,
             origin_y: 0,
             outside_alpha: 255,
-            data: vec![alpha; len],
+            data: Arc::new(vec![alpha; len]),
         }
     }
 
@@ -1620,7 +1877,7 @@ impl AlphaMask {
             origin_x: 0,
             origin_y: 0,
             outside_alpha: 0,
-            data,
+            data: Arc::new(data),
         })
     }
 
@@ -1640,7 +1897,7 @@ impl AlphaMask {
         else {
             return;
         };
-        if let Some(value) = self.data.get_mut(idx) {
+        if let Some(value) = Arc::make_mut(&mut self.data).get_mut(idx) {
             *value = alpha;
         }
     }
@@ -1675,9 +1932,8 @@ impl AlphaMask {
             let Some(src_row) = src.data.get(src_start..src_start.saturating_add(width)) else {
                 continue;
             };
-            let Some(dst_row) = self
-                .data
-                .get_mut(dst_start..dst_start.saturating_add(width))
+            let Some(dst_row) =
+                Arc::make_mut(&mut self.data).get_mut(dst_start..dst_start.saturating_add(width))
             else {
                 continue;
             };
@@ -1694,22 +1950,25 @@ impl AlphaMask {
         let len = (buf.width as usize)
             .checked_mul(buf.height as usize)
             .unwrap_or(0);
-        let mut mask = Self {
+        let mut data = vec![0u8; len];
+        let width = buf.width as usize;
+        if width > 0 {
+            for (y, row) in data.chunks_exact_mut(width).enumerate() {
+                for (x, value) in row.iter_mut().enumerate() {
+                    let p = buf.get_pixel(x as i32, y as i32);
+                    let lum = 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
+                    *value = lum.round_byte();
+                }
+            }
+        }
+        Self {
             width: buf.width,
             height: buf.height,
             origin_x: 0,
             origin_y: 0,
             outside_alpha: 255,
-            data: vec![0u8; len],
-        };
-        for y in 0..buf.height as i32 {
-            for x in 0..buf.width as i32 {
-                let p = buf.get_pixel(x, y);
-                let lum = 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
-                mask.set(x, y, lum.round_byte());
-            }
+            data: Arc::new(data),
         }
-        mask
     }
 
     /// Build an alpha soft mask from a rendered buffer (ExtGState
@@ -1719,27 +1978,30 @@ impl AlphaMask {
         let len = (buf.width as usize)
             .checked_mul(buf.height as usize)
             .unwrap_or(0);
-        let mut mask = Self {
+        let mut data = vec![0u8; len];
+        let width = buf.width as usize;
+        if width > 0 {
+            for (y, row) in data.chunks_exact_mut(width).enumerate() {
+                for (x, value) in row.iter_mut().enumerate() {
+                    *value = buf.get_pixel(x as i32, y as i32)[3];
+                }
+            }
+        }
+        Self {
             width: buf.width,
             height: buf.height,
             origin_x: 0,
             origin_y: 0,
             outside_alpha: 255,
-            data: vec![0u8; len],
-        };
-        for y in 0..buf.height as i32 {
-            for x in 0..buf.width as i32 {
-                mask.set(x, y, buf.get_pixel(x, y)[3]);
-            }
+            data: Arc::new(data),
         }
-        mask
     }
 
     /// Remap every mask value through a transfer-function lookup table
     /// (256 entries, input index -> output byte). Used for ExtGState SMask
     /// `/TR` transfer functions.
     pub fn apply_transfer_lut(&mut self, lut: &[u8; 256]) {
-        for v in self.data.iter_mut() {
+        for v in Arc::make_mut(&mut self.data).iter_mut() {
             *v = lut[*v as usize];
         }
         self.outside_alpha = lut[self.outside_alpha as usize];
@@ -2000,6 +2262,24 @@ fn composite_source_over(
             * inv_alpha,
     ];
     (out_rgb, out_alpha)
+}
+
+/// Last destination pixel and blended result per coverage byte for one fill
+/// colour; see [`PixelBuffer::blend_coverage_run`]. A memo must only be
+/// reused while the buffer's blend state (blend mode, render mode, clip,
+/// soft mask) is unchanged, i.e. within one fill.
+pub(crate) struct CoverageBlendMemo {
+    color: PixelColor,
+    slots: Box<[Option<([u8; 4], [u8; 4])>; 256]>,
+}
+
+impl CoverageBlendMemo {
+    pub(crate) fn new(color: PixelColor) -> Self {
+        Self {
+            color,
+            slots: Box::new([None; 256]),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2729,6 +3009,59 @@ impl PixelBuffer {
     /// Alpha-composite a color with coverage [0.0, 1.0] over the existing pixel.
     pub fn blend_pixel(&mut self, x: i32, y: i32, color: PixelColor, coverage: f32) {
         self.blend_pixel_with_clip_limit(x, y, color, coverage, 1.0);
+    }
+
+    /// [`Self::blend_pixel`] over `x0..x1` on row `y` with the coverage
+    /// `alpha / 255`, reusing earlier results through `memo`.
+    ///
+    /// Without a soft mask or knockout backdrop, and where the clip is fully
+    /// open, `blend_pixel` is a pure function of the destination pixel for a
+    /// fixed colour, coverage and buffer state. Anti-aliased edges mostly land
+    /// on identical destination pixels (paper, flat fills), so a result is
+    /// computed once by `blend_pixel` itself and replayed byte-for-byte.
+    pub(crate) fn blend_coverage_run(
+        &mut self,
+        x0: i32,
+        x1: i32,
+        y: i32,
+        color: PixelColor,
+        alpha: u8,
+        memo: &mut CoverageBlendMemo,
+    ) {
+        let coverage = f32::from(alpha) / 255.0;
+        if self.smask.is_some()
+            || self.knockout_backdrop.is_some()
+            || alpha == 0
+            || alpha == 255
+            || memo.color != color
+        {
+            for x in x0..x1 {
+                self.blend_pixel(x, y, color, coverage);
+            }
+            return;
+        }
+        for x in x0..x1 {
+            let clip_open = self
+                .clip
+                .as_ref()
+                .is_none_or(|clip| clip.opacity_byte(x, y) == 255);
+            let Some(idx) = clip_open.then(|| self.pixel_index(x, y)).flatten() else {
+                self.blend_pixel(x, y, color, coverage);
+                continue;
+            };
+            let pixel = &mut self.data[idx..idx + 4];
+            let dst = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            let slot = &mut memo.slots[usize::from(alpha)];
+            if let Some((seen, out)) = slot {
+                if *seen == dst {
+                    pixel.copy_from_slice(out);
+                    continue;
+                }
+            }
+            self.blend_pixel(x, y, color, coverage);
+            let pixel = &self.data[idx..idx + 4];
+            *slot = Some((dst, [pixel[0], pixel[1], pixel[2], pixel[3]]));
+        }
     }
 
     /// Intersect temporary geometric coverage with the installed clip using the
@@ -6606,9 +6939,7 @@ fn materialize_smask_row(smask: &AlphaMask, x0: i32, row: i32, out: &mut [u8]) {
 }
 
 fn materialize_clip_opacity_row(clip: &ClipMask, x0: i32, row: i32, out: &mut [u8]) {
-    for (idx, value) in out.iter_mut().enumerate() {
-        *value = clip.opacity_byte(x0.saturating_add(idx as i32), row);
-    }
+    clip.opacity_row(x0, row, out);
 }
 
 fn multiply_alpha_row_or_scalar(alpha: &mut [u8], factor: &[u8]) {
@@ -11376,7 +11707,19 @@ fn composite_normal_compat_row_scalar_opaque_dst(dst_row: &mut [u8], src_row: &[
 }
 
 fn row_alpha_is(row: &[u8], alpha: u8) -> bool {
-    row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == alpha)
+    // Branch-free folds over fixed blocks vectorize; the per-pixel early exit
+    // of `all` does not. Rows are checked on every opaque-destination blend.
+    let pixels = row.as_chunks::<4>().0;
+    let mut blocks = pixels.chunks_exact(16);
+    for block in &mut blocks {
+        if !block
+            .iter()
+            .fold(true, |same, pixel| same & (pixel[3] == alpha))
+        {
+            return false;
+        }
+    }
+    blocks.remainder().iter().all(|pixel| pixel[3] == alpha)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11578,6 +11921,98 @@ mod tests {
         assert_eq!(buf.render_mode(), RenderMode::Compat);
         assert_eq!(buf.get_pixel(0, 0), TRANSPARENT);
         assert_eq!(buf.get_pixel(3, 3), TRANSPARENT);
+    }
+
+    fn triangle_clip(width: u32, height: u32, points: [(f64, f64); 3]) -> ClipMask {
+        let mut flat = FlatPath::default();
+        flat.subpaths
+            .push(vec![points[0], points[1], points[2], points[0]]);
+        flat.closed.push(true);
+        ClipMask::from_path(&flat, width, height, FillRule::NonZero)
+    }
+
+    fn assert_same_opacity(actual: &ClipMask, expected: &ClipMask) {
+        for y in -1..actual.height as i32 + 1 {
+            for x in -1..actual.width as i32 + 1 {
+                assert_eq!(
+                    actual.opacity_byte(x, y),
+                    expected.opacity_byte(x, y),
+                    "opacity at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    fn page_plane(clip: &ClipMask) -> ClipMask {
+        let mut expanded = clip.clone();
+        expanded.materialize_dense_mask();
+        assert_eq!(expanded.mask.len(), expanded.dense_len());
+        expanded
+    }
+
+    #[test]
+    fn antialiased_path_clip_stores_only_its_bounding_box() {
+        let clip = triangle_clip(200, 100, [(20.3, 10.7), (60.2, 15.1), (35.5, 70.9)]);
+        assert!(clip.has_partial_coverage());
+        assert!(clip.mask.len() < 60 * 70, "plane {} bytes", clip.mask.len());
+        let (x0, y0, x1, y1) = clip.visible_bounds().expect("visible clip");
+        assert_eq!(clip.window, DenseWindow::from_bounds((x0, y0, x1, y1)));
+        // Expanding to a page plane changes no opacity.
+        assert_same_opacity(&clip, &page_plane(&clip));
+    }
+
+    #[test]
+    fn clip_opacity_row_matches_per_pixel_opacity() {
+        let clip = triangle_clip(64, 48, [(5.5, 4.25), (40.75, 9.5), (20.1, 40.6)]);
+        let binary = ClipMask::from_visible_runs(64, 48, vec![vec![(3, 30)]; 48]);
+        for mask in [&clip, &binary, &page_plane(&clip)] {
+            for y in [-1, 0, 4, 20, 39, 47, 48] {
+                for x0 in [-10, -1, 0, 7, 50, 70] {
+                    let mut row = vec![7u8; 30];
+                    mask.opacity_row(x0, y, &mut row);
+                    for (offset, value) in row.iter().enumerate() {
+                        assert_eq!(*value, mask.opacity_byte(x0 + offset as i32, y));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windowed_clip_intersection_and_union_match_page_planes() {
+        let left = triangle_clip(80, 60, [(4.2, 3.3), (50.6, 8.1), (20.4, 45.7)]);
+        let right = triangle_clip(80, 60, [(30.1, 5.9), (75.3, 30.2), (25.8, 55.4)]);
+        let disjoint = triangle_clip(80, 60, [(70.2, 50.1), (79.5, 52.3), (74.4, 59.1)]);
+
+        let mut windowed = left.clone();
+        windowed.intersect(&right);
+        let mut reference = page_plane(&left);
+        reference.intersect(&page_plane(&right));
+        assert_same_opacity(&windowed, &reference);
+
+        let mut windowed = left.clone();
+        windowed.union_with(&right);
+        let mut reference = page_plane(&left);
+        reference.union_with(&page_plane(&right));
+        assert_same_opacity(&windowed, &reference);
+        assert!(windowed.mask.len() < windowed.dense_len());
+
+        let mut empty = left.clone();
+        empty.intersect(&disjoint);
+        assert!(empty.is_empty());
+
+        let mut cropped = left.clone();
+        let runs = ClipMask::from_visible_runs(80, 60, vec![vec![(10, 25)]; 60]);
+        cropped.intersect(&runs);
+        let mut reference = page_plane(&left);
+        reference.intersect(&runs);
+        assert_same_opacity(&cropped, &reference);
+
+        let window = left.copy_rect_to_new_mask(2, 1, 40, 30).expect("window");
+        let reference = page_plane(&left)
+            .copy_rect_to_new_mask(2, 1, 40, 30)
+            .expect("window");
+        assert_same_opacity(&window, &reference);
     }
 
     #[test]

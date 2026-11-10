@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::buffer::{AlphaMask, ClipMask};
+use super::buffer::{crop_plane, AlphaMask, ClipMask, DenseWindow};
 
 type ClipRow = Vec<(i32, i32)>;
 type ClipRows = Vec<ClipRow>;
@@ -123,6 +123,8 @@ pub enum ClipState {
         runs: Arc<ClipRows>,
     },
     /// Partial-coverage clip mask that must preserve alpha coverage bytes.
+    /// `bytes` covers only `bounds` (the tight box of nonzero coverage, row
+    /// by row), not the whole page: PDFium-style bounded clip storage.
     DenseMask {
         fingerprint: u64,
         width: u32,
@@ -262,6 +264,10 @@ impl ClipNode {
 }
 
 impl ClipBounds {
+    fn window(self) -> DenseWindow {
+        DenseWindow::from_bounds((self.x0, self.y0, self.x1, self.y1))
+    }
+
     fn from_xywh(x: i32, y: i32, w: i32, h: i32) -> Option<Self> {
         if w <= 0 || h <= 0 {
             return None;
@@ -360,22 +366,21 @@ impl ClipState {
                 bounds,
                 bytes,
                 ..
-            } if *mask_width == width && *mask_height == height => {
-                ClipMask::from_shared_partial_alpha_bytes(
+            } if *mask_width == width && *mask_height == height => match bounds {
+                Some(bounds) => ClipMask::from_shared_partial_alpha_bytes(
                     width,
                     height,
                     Arc::clone(bytes),
+                    bounds.window(),
                     *fingerprint,
-                    bounds.map(|bounds| (bounds.x0, bounds.y0, bounds.x1, bounds.y1)),
-                )
+                    Some((bounds.x0, bounds.y0, bounds.x1, bounds.y1)),
+                ),
+                None => ClipMask::empty(width, height),
+            },
+            ClipState::DenseMask { bounds, bytes, .. } => {
+                Self::dense_to_dimensions(bytes, *bounds, width, height)
+                    .unwrap_or_else(|| ClipMask::empty(width, height))
             }
-            ClipState::DenseMask {
-                width: mask_width,
-                height: mask_height,
-                bytes,
-                ..
-            } => Self::dense_to_dimensions(bytes, *mask_width, *mask_height, width, height)
-                .unwrap_or_else(|| ClipMask::empty(width, height)),
             ClipState::Composite { op, lhs, rhs } => match op {
                 ClipCompositeOp::Intersect => {
                     let mut left = lhs.state.to_clip_mask_uncached(width, height);
@@ -449,10 +454,11 @@ impl ClipState {
             ClipState::DenseMask {
                 width: mask_width,
                 height: mask_height,
+                bounds,
                 bytes,
                 ..
             } if *mask_width == source_width && *mask_height == source_height => {
-                Self::dense_window(bytes, source_width, x, y, width, height)
+                Self::dense_window(bytes, *bounds, x, y, width, height)
             }
             ClipState::Composite { op, lhs, rhs } => match op {
                 ClipCompositeOp::Intersect => {
@@ -511,14 +517,23 @@ impl ClipState {
         // run geometry materializes and scans a page-sized run cache that can
         // never classify as a solid rectangle.
         if mask.has_partial_coverage() {
-            let bytes = mask
-                .shared_partial_alpha_bytes()
-                .unwrap_or_else(|| Arc::new(Self::extract_alpha_bytes(mask)));
+            let (plane, window) = mask.shared_partial_alpha_plane().unwrap_or_else(|| {
+                (
+                    Arc::new(Self::extract_alpha_bytes(mask)),
+                    DenseWindow::full(mask.width, mask.height),
+                )
+            });
             let metadata = mask
                 .dense_metadata_with_fingerprint(fingerprint_hint)
                 .unwrap_or_else(|| {
+                    let full = DenseWindow::full(mask.width, mask.height);
+                    let page = if window == full {
+                        plane.as_slice().to_vec()
+                    } else {
+                        Self::extract_alpha_bytes(mask)
+                    };
                     let (fingerprint, bounds) =
-                        Self::dense_metadata(&bytes, mask.width, mask.height);
+                        Self::dense_metadata(&page, mask.width, mask.height);
                     crate::render::buffer::DenseClipMetadata {
                         fingerprint,
                         bounds: bounds.map(|bounds| (bounds.x0, bounds.y0, bounds.x1, bounds.y1)),
@@ -527,6 +542,13 @@ impl ClipState {
             let bounds = metadata
                 .bounds
                 .map(|(x0, y0, x1, y1)| ClipBounds { x0, y0, x1, y1 });
+            // Keep only the tight box; share the clip's plane when it already
+            // is exactly that box.
+            let bytes = match bounds {
+                Some(bounds) if bounds.window() == window => plane,
+                Some(bounds) => Arc::new(crop_plane(&plane, window, bounds.window())),
+                None => Arc::new(Vec::new()),
+            };
             return ClipState::DenseMask {
                 fingerprint: metadata.fingerprint,
                 width: mask.width,
@@ -785,40 +807,45 @@ impl ClipState {
         Some(Self::state_from_alpha_bytes(width, height, bytes, None))
     }
 
-    fn dense_bytes(&self) -> Option<(u32, u32, &[u8])> {
+    /// Page size, plane window and plane bytes of a dense state.
+    fn dense_bytes(&self) -> Option<(u32, u32, DenseWindow, &[u8])> {
         match self {
             ClipState::DenseMask {
                 width,
                 height,
+                bounds: Some(bounds),
                 bytes,
                 ..
-            } => Some((*width, *height, bytes.as_slice())),
+            } if bytes.len() == bounds.window().len() => {
+                Some((*width, *height, bounds.window(), bytes.as_slice()))
+            }
             _ => None,
         }
     }
 
     fn intersect_dense_states(lhs: &Self, rhs: &Self) -> Option<Self> {
-        let (width, height, left_bytes) = lhs.dense_bytes()?;
-        let (right_width, right_height, right_bytes) = rhs.dense_bytes()?;
+        let (width, height, left_window, left_bytes) = lhs.dense_bytes()?;
+        let (right_width, right_height, right_window, right_bytes) = rhs.dense_bytes()?;
         if width != right_width || height != right_height {
             return None;
         }
-        let expected_len = (width as usize).checked_mul(height as usize)?;
-        if left_bytes.len() != expected_len || right_bytes.len() != expected_len {
-            return None;
-        }
-        let mut bytes = Vec::with_capacity(expected_len);
+        // Both planes are zero outside their windows: only the overlap can
+        // survive the minimum.
+        let Some(window) = Self::window_overlap(left_window, right_window) else {
+            return Some(ClipState::Empty);
+        };
+        let mut bytes = Vec::with_capacity(window.len());
         let mut summary = DenseAlphaSummary::new();
-        let width_usize = width as usize;
-        for (y, (left_row, right_row)) in left_bytes
-            .chunks_exact(width_usize)
-            .zip(right_bytes.chunks_exact(width_usize))
-            .enumerate()
-        {
+        let left_offset = (window.x - left_window.x) as usize;
+        let right_offset = (window.x - right_window.x) as usize;
+        let span = window.width as usize;
+        for y in window.y..window.y1() {
+            let left_row = &left_window.row(left_bytes, y)?[left_offset..left_offset + span];
+            let right_row = &right_window.row(right_bytes, y)?[right_offset..right_offset + span];
             for (x, (left, right)) in left_row.iter().zip(right_row.iter()).enumerate() {
                 let alpha = (*left).min(*right);
                 bytes.push(alpha);
-                summary.observe(x as i32, y as i32, alpha);
+                summary.observe(window.x + x as i32, y, alpha);
             }
         }
         let fingerprint = Self::fingerprint_with_tag(
@@ -833,6 +860,7 @@ impl ClipState {
         Some(Self::state_from_classified_alpha_bytes(
             width,
             height,
+            window,
             bytes,
             fingerprint,
             summary,
@@ -846,11 +874,7 @@ impl ClipState {
         w: i32,
         h: i32,
     ) -> Option<Self> {
-        let (width, height, bytes) = state.dense_bytes()?;
-        let expected_len = (width as usize).checked_mul(height as usize)?;
-        if bytes.len() != expected_len {
-            return None;
-        }
+        let (width, height, plane_window, bytes) = state.dense_bytes()?;
         let Some(rect) = ClipBounds::from_xywh(x, y, w, h) else {
             return Some(ClipState::Empty);
         };
@@ -861,18 +885,21 @@ impl ClipState {
         if x1 <= x0 || y1 <= y0 {
             return Some(ClipState::Empty);
         }
+        let Some(window) =
+            Self::window_overlap(plane_window, DenseWindow::from_bounds((x0, y0, x1, y1)))
+        else {
+            return Some(ClipState::Empty);
+        };
 
-        let width_usize = width as usize;
-        let mut out = vec![0; expected_len];
+        let offset = (window.x - plane_window.x) as usize;
+        let span = window.width as usize;
+        let mut out = Vec::with_capacity(window.len());
         let mut summary = DenseAlphaSummary::new();
-        for row in y0 as usize..y1 as usize {
-            let start = row.checked_mul(width_usize)?.checked_add(x0 as usize)?;
-            let end = row.checked_mul(width_usize)?.checked_add(x1 as usize)?;
-            let output = out.get_mut(start..end)?;
-            let input = bytes.get(start..end)?;
-            output.copy_from_slice(input);
+        for row in window.y..window.y1() {
+            let input = &plane_window.row(bytes, row)?[offset..offset + span];
+            out.extend_from_slice(input);
             for (offset, alpha) in input.iter().copied().enumerate() {
-                summary.observe(x0 + offset as i32, row as i32, alpha);
+                summary.observe(window.x + offset as i32, row, alpha);
             }
         }
         let fingerprint = Self::fingerprint_with_tag(
@@ -890,6 +917,7 @@ impl ClipState {
         Some(Self::state_from_classified_alpha_bytes(
             width,
             height,
+            window,
             out,
             fingerprint,
             summary,
@@ -897,37 +925,32 @@ impl ClipState {
     }
 
     fn intersect_dense_with_rows_state(dense: &Self, rows_state: &Self) -> Option<Self> {
-        let (width, height, bytes) = dense.dense_bytes()?;
+        let (width, height, window, bytes) = dense.dense_bytes()?;
         let (row_width, row_height, rows) = rows_state.binary_rows()?;
         if width != row_width || height != row_height {
             return None;
         }
-        let expected_len = (width as usize).checked_mul(height as usize)?;
-        if bytes.len() != expected_len {
-            return None;
-        }
 
-        let width_usize = width as usize;
-        let mut out = vec![0; expected_len];
+        // The result keeps the dense plane's window: runs only zero parts of it.
+        let span = window.width as usize;
+        let mut out = vec![0; window.len()];
         let mut summary = DenseAlphaSummary::new();
-        for y in 0..height as usize {
-            let row_start = y.checked_mul(width_usize)?;
-            let Some(row) = rows.get(y) else {
+        for y in window.y..window.y1() {
+            let Some(row) = rows.get(y as usize) else {
                 continue;
             };
+            let input_row = window.row(bytes, y)?;
+            let row_start = (y - window.y) as usize * span;
             for (start, end) in row {
-                let start = (*start).max(0).min(width as i32) as usize;
-                let end = (*end).max(0).min(width as i32) as usize;
+                let start = (*start - window.x).max(0).min(span as i32) as usize;
+                let end = (*end - window.x).max(0).min(span as i32) as usize;
                 if end <= start {
                     continue;
                 }
-                let copy_start = row_start.checked_add(start)?;
-                let copy_end = row_start.checked_add(end)?;
-                let output = out.get_mut(copy_start..copy_end)?;
-                let input = bytes.get(copy_start..copy_end)?;
-                output.copy_from_slice(input);
+                let input = &input_row[start..end];
+                out[row_start + start..row_start + end].copy_from_slice(input);
                 for (offset, alpha) in input.iter().copied().enumerate() {
-                    summary.observe(start as i32 + offset as i32, y as i32, alpha);
+                    summary.observe(window.x + (start + offset) as i32, y, alpha);
                 }
             }
         }
@@ -943,6 +966,7 @@ impl ClipState {
         Some(Self::state_from_classified_alpha_bytes(
             width,
             height,
+            window,
             out,
             fingerprint,
             summary,
@@ -1060,6 +1084,10 @@ impl ClipState {
         }
 
         let bounds = (x1 > x0 && y1 > y0).then_some(ClipBounds { x0, y0, x1, y1 });
+        let bytes = match bounds {
+            Some(bounds) => crop_plane(&bytes, DenseWindow::full(width, height), bounds.window()),
+            None => Vec::new(),
+        };
         ClipState::DenseMask {
             fingerprint: hash,
             width,
@@ -1069,31 +1097,64 @@ impl ClipState {
         }
     }
 
+    /// Classify coverage laid out over `window` (zero elsewhere) whose
+    /// nonzero extent and partial coverage `summary` already records.
     fn state_from_classified_alpha_bytes(
         width: u32,
         height: u32,
+        window: DenseWindow,
         bytes: Vec<u8>,
         fingerprint: u64,
         summary: DenseAlphaSummary,
     ) -> Self {
-        let expected_len = (width as usize).checked_mul(height as usize).unwrap_or(0);
-        if expected_len == 0 || bytes.len() != expected_len || !summary.saw_nonzero {
+        if window.len() == 0 || bytes.len() != window.len() || !summary.saw_nonzero {
             return ClipState::Empty;
         }
+        let Some(bounds) = summary.bounds else {
+            return ClipState::Empty;
+        };
         if !summary.saw_partial {
-            return Self::state_from_binary_rows(
-                width,
-                height,
-                Self::rows_from_alpha_bytes(width, height, &bytes),
-            );
+            let mut rows = vec![Vec::new(); height as usize];
+            for y in window.y..window.y1() {
+                let (Some(row), Some(out)) = (window.row(&bytes, y), rows.get_mut(y as usize))
+                else {
+                    continue;
+                };
+                let mut run_start: Option<i32> = None;
+                for (x, value) in row.iter().enumerate() {
+                    let x = window.x + x as i32;
+                    if *value != 0 {
+                        run_start.get_or_insert(x);
+                    } else if let Some(start) = run_start.take() {
+                        out.push((start, x));
+                    }
+                }
+                if let Some(start) = run_start {
+                    out.push((start, window.x1()));
+                }
+            }
+            return Self::state_from_binary_rows(width, height, rows);
         }
+        let bytes = if bounds.window() == window {
+            bytes
+        } else {
+            crop_plane(&bytes, window, bounds.window())
+        };
         ClipState::DenseMask {
             fingerprint,
             width,
             height,
-            bounds: summary.bounds,
+            bounds: Some(bounds),
             bytes: Arc::new(bytes),
         }
+    }
+
+    fn window_overlap(a: DenseWindow, b: DenseWindow) -> Option<DenseWindow> {
+        let x0 = a.x.max(b.x);
+        let y0 = a.y.max(b.y);
+        let x1 = a.x1().min(b.x1());
+        let y1 = a.y1().min(b.y1());
+        (x1 > x0 && y1 > y0).then(|| DenseWindow::from_bounds((x0, y0, x1, y1)))
     }
 
     fn dense_metadata(bytes: &[u8], width: u32, height: u32) -> (u64, Option<ClipBounds>) {
@@ -1212,58 +1273,67 @@ impl ClipState {
 
     fn dense_window(
         bytes: &[u8],
-        source_width: u32,
+        bounds: Option<ClipBounds>,
         x: u32,
         y: u32,
         width: u32,
         height: u32,
     ) -> Option<ClipMask> {
-        let source_stride = source_width as usize;
-        let x = x as usize;
-        let y = y as usize;
-        let width_usize = width as usize;
-        let height_usize = height as usize;
-        let mut out = Vec::with_capacity(width_usize.checked_mul(height_usize)?);
-        for row in 0..height_usize {
-            let source_start = y
-                .checked_add(row)?
-                .checked_mul(source_stride)?
-                .checked_add(x)?;
-            let source_end = source_start.checked_add(width_usize)?;
-            out.extend_from_slice(bytes.get(source_start..source_end)?);
+        let len = (width as usize).checked_mul(height as usize)?;
+        let mut out = vec![0u8; len];
+        if let Some(bounds) = bounds {
+            let plane = bounds.window();
+            if bytes.len() != plane.len() {
+                return None;
+            }
+            let x = i64::from(x);
+            let y = i64::from(y);
+            let width_usize = width as usize;
+            for (row, dst) in out.chunks_exact_mut(width_usize).enumerate() {
+                let source_y = y + row as i64;
+                let Some(source_row) = i32::try_from(source_y)
+                    .ok()
+                    .and_then(|source_y| plane.row(bytes, source_y))
+                else {
+                    continue;
+                };
+                let lo = (i64::from(plane.x) - x).clamp(0, width_usize as i64) as usize;
+                let hi = (i64::from(plane.x1()) - x).clamp(0, width_usize as i64) as usize;
+                if hi > lo {
+                    let src = (x + lo as i64 - i64::from(plane.x)) as usize;
+                    dst[lo..hi].copy_from_slice(&source_row[src..src + (hi - lo)]);
+                }
+            }
         }
         Some(ClipMask::from_alpha_bytes(width, height, out))
     }
 
     fn dense_to_dimensions(
         bytes: &[u8],
-        source_width: u32,
-        source_height: u32,
+        bounds: Option<ClipBounds>,
         width: u32,
         height: u32,
     ) -> Option<ClipMask> {
         if width == 0 || height == 0 {
             return Some(ClipMask::empty(width, height));
         }
-        let source_len = (source_width as usize).checked_mul(source_height as usize)?;
-        if bytes.len() != source_len {
+        let Some(bounds) = bounds else {
+            return Some(ClipMask::empty(width, height));
+        };
+        let plane = bounds.window();
+        if bytes.len() != plane.len() {
             return None;
         }
-        let len = (width as usize).checked_mul(height as usize)?;
-        let mut out = vec![0; len];
-        let copy_width = source_width.min(width) as usize;
-        let copy_height = source_height.min(height) as usize;
-        let src_width = source_width as usize;
-        let dst_width = width as usize;
-        for row in 0..copy_height {
-            let src_start = row.checked_mul(src_width)?;
-            let dst_start = row.checked_mul(dst_width)?;
-            let src_end = src_start.checked_add(copy_width)?;
-            let dst_end = dst_start.checked_add(copy_width)?;
-            out.get_mut(dst_start..dst_end)?
-                .copy_from_slice(bytes.get(src_start..src_end)?);
-        }
-        Some(ClipMask::from_alpha_bytes(width, height, out))
+        // The overlap of the plane with the new page keeps its coordinates.
+        let Some(window) = Self::window_overlap(plane, DenseWindow::full(width, height)) else {
+            return Some(ClipMask::empty(width, height));
+        };
+        Some(ClipMask::from_alpha_window(
+            width,
+            height,
+            window,
+            crop_plane(bytes, plane, window),
+        ))
     }
 
     fn state_from_binary_rows(width: u32, height: u32, mut rows: ClipRows) -> Self {
@@ -2297,7 +2367,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!((*width, *height), (3, 1));
-                assert_eq!(bytes.as_slice(), &[0, 128, 255]);
+                // Only the bounding box of the nonzero coverage is stored.
+                assert_eq!(bytes.as_slice(), &[128, 255]);
             }
             other => panic!("expected DenseMask, got {other:?}"),
         }
@@ -2411,7 +2482,7 @@ mod tests {
 
         match &fused.state {
             ClipState::DenseMask { bytes, .. } => {
-                assert_eq!(bytes.as_slice(), &[0, 128, 255, 0]);
+                assert_eq!(bytes.as_slice(), &[128, 255]);
             }
             other => panic!("expected fused DenseMask, got {other:?}"),
         }
@@ -2435,8 +2506,17 @@ mod tests {
         let fused = dag.intersect(&rect, &dense);
 
         match &fused.state {
-            ClipState::DenseMask { bytes, .. } => {
-                assert_eq!(bytes.as_slice(), &[0, 128, 255, 0, 0, 255, 96, 0]);
+            ClipState::DenseMask { bytes, bounds, .. } => {
+                assert_eq!(
+                    *bounds,
+                    Some(ClipBounds {
+                        x0: 1,
+                        y0: 0,
+                        x1: 3,
+                        y1: 2
+                    })
+                );
+                assert_eq!(bytes.as_slice(), &[128, 255, 255, 96]);
             }
             other => panic!("expected fused DenseMask, got {other:?}"),
         }
@@ -2457,7 +2537,7 @@ mod tests {
 
         match &fused.state {
             ClipState::DenseMask { bytes, .. } => {
-                assert_eq!(bytes.as_slice(), &[128, 128, 32, 0]);
+                assert_eq!(bytes.as_slice(), &[128, 128, 32]);
             }
             other => panic!("expected fused DenseMask, got {other:?}"),
         }
@@ -2505,7 +2585,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!((*width, *height), (3, 1));
-                assert_eq!(bytes.as_slice(), &[128, 32, 0]);
+                assert_eq!(bytes.as_slice(), &[128, 32]);
             }
             other => panic!("expected fused DenseMask, got {other:?}"),
         }
