@@ -5,6 +5,25 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- Damaged images keep more of their content. CCITT Group 3 streams
+  resynchronise on the next end-of-line marker after a damaged row, as in
+  Poppler, instead of dropping every later row. JBIG2 streams with a damaged
+  middle segment leave out that segment (and segments referring to it) and
+  still compose the other regions, instead of keeping only the segments
+  before the damage.
+- Colour-key `/Mask` arrays now apply to DCT and JPX images in colour spaces
+  other than DeviceGray/DeviceRGB (CMYK, ICCBased, CalGray, Indexed JPX):
+  the key is compared against the codec's decoded samples, before `/Decode`,
+  as Poppler and PDFium do. Such images were drawn unmasked before.
+- Transfer functions (`/TR`) on tiling patterns apply to the composited
+  pixels of the filled area, like Poppler's Splash, instead of to each paint
+  inside the pattern cell; soft-mask groups render without the masked
+  object's transfer.
+- Anti-aliased dashed strokes render about 25% faster (1,500 page-wide
+  dashed rules: 103 ms to 77 ms), with identical pixels.
+- Annotations are drawn by the render state that drew the page instead of a
+  second one; output is unchanged.
+
 - XFA forms render like PDFium. Static forms get their XFA fields (merged
   datasets values, captions, fonts, para alignment, borders with edges,
   corners and 3-D strokes, solid/linear/radial/pattern fills, check marks,

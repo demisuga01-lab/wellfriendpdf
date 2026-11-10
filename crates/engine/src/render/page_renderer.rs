@@ -4348,6 +4348,8 @@ impl PageRenderer {
         recorded.len()
     }
 
+    /// Render a page's packed plan followed by its annotations (and XFA
+    /// foreground) under the default render contract.
     fn render_packed_vector_plan(
         engine: &ContentEngine,
         page_number: usize,
@@ -4358,6 +4360,7 @@ impl PageRenderer {
     ) -> Result<PixelBuffer> {
         cancel.check("packed plan render start")?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
+        let annotation_policy = AnnotationReplayPolicy::from_contract(contract.clone());
         let resources = engine.get_page_resources(page_number)?;
         let plan = RenderPlan::compile_with_resources_cancellable(
             list.clone(),
@@ -4366,8 +4369,9 @@ impl PageRenderer {
             cancel,
         )?;
         if !plan.packed.requires_native_replay() {
-            // Pure vector path — no RenderState needed
-            let buf = plan
+            // Pure vector path — no RenderState needed for the page content;
+            // annotations get their own state.
+            let mut buf = plan
                 .execute_vector_tile_cancellable(
                     RenderTile::full(list.viewport.width_px, list.viewport.height_px),
                     cancel,
@@ -4378,10 +4382,49 @@ impl PageRenderer {
                     )
                 })?;
             cancel.check("packed vector plan replay")?;
+            Self::render_annotations_into_with_policy(
+                engine,
+                page_number,
+                dpi,
+                &mut buf,
+                annotation_policy,
+            )?;
             return Ok(buf);
         }
         // High-level plan path: dispatch typed descriptors through RenderState
-        Self::execute_plan_with_state(engine, page_number, dpi, &plan, cancel, render_mode)
+        Self::execute_plan_with_state(
+            engine,
+            page_number,
+            dpi,
+            &plan,
+            cancel,
+            render_mode,
+            annotation_policy,
+        )
+    }
+
+    /// Draw the page's annotations and XFA foreground with `state`, the
+    /// state that just rendered the page content, instead of building a
+    /// second render state. The drawing state is reset to what a fresh state
+    /// starts with (graphics state, clip and soft-mask stacks, active
+    /// resources, guards and budgets), while the per-render caches (fonts,
+    /// glyphs, decoded images, programs) carry over. The page buffer's own
+    /// clip and soft mask are kept, as a second state would inherit them.
+    fn render_annotations_with_state(
+        engine: &ContentEngine,
+        page_number: usize,
+        state: &mut RenderState<'_>,
+        policy: AnnotationReplayPolicy,
+    ) -> Result<()> {
+        if !Self::page_has_annotations(engine, page_number)
+            && !Self::page_may_have_xfa_overlay(engine, &policy)
+        {
+            return Ok(());
+        }
+        state.reset_for_annotation_pass();
+        state.apply_annotation_replay_policy(policy);
+        state.render_page_annotations();
+        state.check_fatal_render_error()
     }
 
     /// Execute a compiled `RenderPlan` through a `RenderState`-backed
@@ -4395,6 +4438,7 @@ impl PageRenderer {
         plan: &RenderPlan,
         cancel: &CancelToken,
         render_mode: RenderMode,
+        annotation_policy: AnnotationReplayPolicy,
     ) -> Result<PixelBuffer> {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources_shared(page_number)?;
@@ -4403,7 +4447,7 @@ impl PageRenderer {
         // Fonts, decoded strings and glyphs come from the engine's
         // document-level cache, so a one-shot render of every page parses
         // each font once.
-        let mut buf = engine.with_text_render_cache(|cache| -> Result<PixelBuffer> {
+        let buf = engine.with_text_render_cache(|cache| -> Result<PixelBuffer> {
             let mut state = RenderState::new_with_shared_document_cache(
                 buf,
                 viewport.clone(),
@@ -4436,11 +4480,21 @@ impl PageRenderer {
                 state.return_document_cache(cache);
                 return Err(error);
             }
+            // Annotations draw over the flattened page.
+            if transparent_page_group {
+                state.buf.flatten_onto_background(WHITE);
+            }
+            if let Err(error) = Self::render_annotations_with_state(
+                engine,
+                page_number,
+                &mut state,
+                annotation_policy,
+            ) {
+                state.return_document_cache(cache);
+                return Err(error);
+            }
             Ok(state.into_buffer_and_document_cache(cache))
         })?;
-        if transparent_page_group {
-            buf.flatten_onto_background(WHITE);
-        }
         Ok(buf)
     }
 
@@ -4454,6 +4508,7 @@ impl PageRenderer {
         cancel: &CancelToken,
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
+        annotation_policy: AnnotationReplayPolicy,
     ) -> Result<PixelBuffer> {
         cancel.check("packed plan render start")?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
@@ -4479,7 +4534,7 @@ impl PageRenderer {
             }
         };
         if !plan.packed.requires_native_replay() {
-            let buf = plan
+            let mut buf = plan
                 .execute_vector_tile_cancellable(full_tile, cancel)?
                 .ok_or_else(|| {
                     WellfriendError::UnsupportedFeature(
@@ -4487,6 +4542,14 @@ impl PageRenderer {
                     )
                 })?;
             cancel.check("packed vector plan replay")?;
+            Self::render_annotations_into_with_cache_and_policy(
+                engine,
+                page_number,
+                dpi,
+                &mut buf,
+                cache,
+                annotation_policy,
+            )?;
             return Ok(buf);
         }
         Self::execute_plan_with_state_and_cache(
@@ -4498,9 +4561,11 @@ impl PageRenderer {
             cancel,
             render_mode,
             cache,
+            annotation_policy,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_plan_with_state_and_cache(
         engine: &ContentEngine,
         page_number: usize,
@@ -4510,6 +4575,7 @@ impl PageRenderer {
         cancel: &CancelToken,
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
+        annotation_policy: AnnotationReplayPolicy,
     ) -> Result<PixelBuffer> {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let transparent_contract_fingerprint = plan.contract.cache_fingerprint();
@@ -4559,11 +4625,17 @@ impl PageRenderer {
             state.return_document_cache(cache);
             return Err(error);
         }
-        let mut buf = state.into_buffer_and_document_cache(cache);
+        // Annotations draw over the flattened page.
         if transparent_page_group {
-            buf.flatten_onto_background(WHITE);
+            state.buf.flatten_onto_background(WHITE);
         }
-        Ok(buf)
+        if let Err(error) =
+            Self::render_annotations_with_state(engine, page_number, &mut state, annotation_policy)
+        {
+            state.return_document_cache(cache);
+            return Err(error);
+        }
+        Ok(state.into_buffer_and_document_cache(cache))
     }
 
     /// Return a retained page display list from the caller's document cache, or
@@ -4980,16 +5052,15 @@ impl PageRenderer {
             // form/shading) go through the packed plan path. The plan compiles
             // typed descriptors and dispatches through RenderState for native
             // ops, or through the CPU device for pure vector content.
-            let mut buf = Self::render_packed_vector_plan(
+            // Annotations are drawn by the same render pass.
+            Self::render_packed_vector_plan(
                 engine,
                 page_number,
                 dpi,
                 &list,
                 &CancelToken::none(),
                 render_mode,
-            )?;
-            Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
-            Ok(buf)
+            )
         }
     }
 
@@ -5006,7 +5077,8 @@ impl PageRenderer {
         if list.is_fully_supported() {
             // All fully-supported lists route through the plan path which
             // dispatches text/image/form/shading via typed compiled descriptors.
-            let mut buf = Self::render_packed_vector_plan(
+            // Annotations are drawn by the same render pass.
+            let buf = Self::render_packed_vector_plan(
                 engine,
                 page_number,
                 dpi,
@@ -5014,8 +5086,6 @@ impl PageRenderer {
                 cancel,
                 render_mode,
             )?;
-            cancel.check("display-list plan replay")?;
-            Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
             cancel.check("display-list annotation render")?;
             return Ok(buf);
         }
@@ -5134,7 +5204,8 @@ impl PageRenderer {
         );
 
         let buf = if list.is_fully_supported() {
-            let mut buf = Self::render_packed_vector_plan_with_cache(
+            // Annotations are drawn by the same render pass.
+            Self::render_packed_vector_plan_with_cache(
                 engine,
                 page_number,
                 dpi,
@@ -5143,17 +5214,8 @@ impl PageRenderer {
                 cancel,
                 render_mode,
                 cache,
-            )?;
-            cancel.check("display-list plan replay")?;
-            Self::render_annotations_into_with_cache_and_policy(
-                engine,
-                page_number,
-                dpi,
-                &mut buf,
-                cache,
                 policy,
-            )?;
-            buf
+            )?
         } else {
             if render_mode.is_high_quality() {
                 return Err(exact_contract_unsupported_display_list_error(list));
@@ -6017,20 +6079,6 @@ impl PageRenderer {
                 render_mode,
             )
         }
-    }
-
-    fn render_annotations_into(
-        engine: &ContentEngine,
-        page_number: usize,
-        dpi: u32,
-        buf: &mut PixelBuffer,
-    ) -> Result<()> {
-        let policy = AnnotationReplayPolicy::from_contract(engine.default_render_contract(
-            page_number,
-            dpi,
-            buf.render_mode(),
-        )?);
-        Self::render_annotations_into_with_policy(engine, page_number, dpi, buf, policy)
     }
 
     fn render_annotations_into_with_policy(
@@ -8617,6 +8665,51 @@ impl<'a> RenderState<'a> {
         );
     }
 
+    /// Return the drawing state to what `new_with_shared_document_cache`
+    /// starts with, keeping the page buffer (with its clip and soft mask),
+    /// the per-render caches and the cancellation token. Used to draw the
+    /// annotations with the state that rendered the page content.
+    fn reset_for_annotation_pass(&mut self) {
+        self.gs = GraphicsState::default();
+        self.initial_rendering_intent = self.gs.rendering_intent.clone();
+        self.resources = SharedPageResources::from(Arc::clone(&self.page_resources));
+        self.clip_stack.clear();
+        self.smask_stack.clear();
+        self.path = Path::new();
+        self.pending_clip = None;
+        self.pending_text_clip = None;
+        self.text_object_active = false;
+        // Resource keys embed the font scope, which the annotation contract
+        // identity replaces.
+        self.font_resource_key_cache.clear();
+        self.active_font_resource = None;
+        self.active_fill_color_space_resource = None;
+        self.active_stroke_color_space_resource = None;
+        self.resolved_fill_color_cache = None;
+        self.resolved_stroke_color_cache = None;
+        self.fill_plate_contribution_cache = None;
+        self.stroke_plate_contribution_cache = None;
+        self.active_fill_pattern_resource = None;
+        self.active_stroke_pattern_resource = None;
+        self.active_resource_stack.clear();
+        self.pattern_stack.clear();
+        self.form_depth = 0;
+        self.form_object_stack.clear();
+        self.inline_begin_pending = false;
+        self.pending_inline = None;
+        self.inline_data_pending_end = false;
+        self.base_ctm = Transform2D::identity();
+        self.shading_work_budget = Arc::new(AtomicU64::new(MAX_SHADING_WORK_UNITS));
+        self.fatal_render_error = None;
+        self.oc_visibility_stack.clear();
+        self.oc_current_visible = true;
+        self.forced_color_text_depth = 0;
+        self.forced_color_suppression = 0;
+        self.type3_blue_zones = Type3BlueState::default();
+        self.set_active_fill_color_space("DeviceGray", None);
+        self.set_active_stroke_color_space("DeviceGray", None);
+    }
+
     fn cache_budget(&self, default_budget: usize) -> usize {
         default_budget.min(budget_to_usize(self.resource_budget.max_cache_bytes))
     }
@@ -10006,7 +10099,9 @@ impl<'a> RenderState<'a> {
     /// PDF 32000-1 8.9.6.4 defines the ranges on the raw source samples
     /// before /Decode and colour conversion: for Indexed images they are
     /// palette indices. The raw samples are re-read from the stream and the
-    /// resulting mask is applied to the converted pixels.
+    /// resulting mask is applied to the converted pixels. DCT and JPX images
+    /// have no raw samples, so their codec output (after the codec's colour
+    /// transform, before /Decode) is compared, as Poppler and PDFium do.
     fn apply_raw_sample_color_key_mask(
         &mut self,
         image_ref: &ImageReference,
@@ -10027,13 +10122,8 @@ impl<'a> RenderState<'a> {
             return Err(malformed("expected 2 x component-count entries"));
         }
         let components = items.len() / 2;
-        let bpc = image_ref.bits_per_component;
-        if !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
-            return Err(malformed("unsupported BitsPerComponent"));
-        }
-        let max_sample = (1u32 << bpc) - 1;
-        let mut ranges = Vec::with_capacity(components);
-        for pair in items.chunks_exact(2) {
+        let mut bounds = Vec::with_capacity(components);
+        for pair in items.as_chunks::<2>().0 {
             let lo = pair[0]
                 .as_number()
                 .ok_or_else(|| malformed("non-numeric entry"))?;
@@ -10043,60 +10133,129 @@ impl<'a> RenderState<'a> {
             if !lo.is_finite() || !hi.is_finite() {
                 return Err(malformed("non-finite entry"));
             }
-            // Out-of-range bounds are clamped to the sample range.
-            let lo = lo.round().clamp(0.0, f64::from(max_sample)) as u32;
-            let hi = hi.round().clamp(0.0, f64::from(max_sample)) as u32;
-            ranges.push((lo, hi));
+            bounds.push((lo, hi));
         }
+        // Out-of-range bounds are clamped to the sample range.
+        let clamp_ranges = |max_sample: u32| -> Vec<(u32, u32)> {
+            let max = f64::from(max_sample);
+            bounds
+                .iter()
+                .map(|(lo, hi)| {
+                    (
+                        lo.round().clamp(0.0, max) as u32,
+                        hi.round().clamp(0.0, max) as u32,
+                    )
+                })
+                .collect()
+        };
         let reader = self.engine.document().reader();
         let stream =
             reader.get_object_shared(image_ref.object_number, image_ref.generation_number)?;
-        if !matches!(*stream, PdfObject::Stream { .. }) {
+        let PdfObject::Stream {
+            dict: stream_dict, ..
+        } = stream.as_ref()
+        else {
             return Err(malformed("image is not a stream"));
-        }
+        };
         let decoded = crate::filters::decode_stream_lossless_with_limits(
             &stream,
             reader,
             &self.decode_limits,
         )?;
-        if !matches!(decoded.status, crate::filters::StreamDecodeStatus::Complete) {
-            // DCT/JPX samples are not available before colour conversion;
-            // draw the image unmasked rather than dropping it.
-            log::warn!(
-                "render: color-key mask on a {} image with an image codec filter is not applied",
-                image_ref.color_space
-            );
-            return Ok(converted);
-        }
         let width = image_ref.width as usize;
         let height = image_ref.height as usize;
-        let row_bits = width
-            .checked_mul(components)
-            .and_then(|samples| samples.checked_mul(usize::from(bpc)))
-            .ok_or_else(|| malformed("dimensions overflow"))?;
-        let row_bytes = row_bits.div_ceil(8);
-        let data = &decoded.data;
-        let mut keep = vec![255u8; width.saturating_mul(height)];
-        for y in 0..height {
-            let row = y * row_bytes;
-            for x in 0..width {
-                let mut masked = true;
-                for (component, (lo, hi)) in ranges.iter().enumerate() {
-                    let sample_index = x * components + component;
-                    let Some(sample) = raw_image_sample(data, row, sample_index, bpc) else {
-                        masked = false;
-                        break;
-                    };
-                    if sample < *lo || sample > *hi {
-                        masked = false;
-                        break;
+        // `keep` is the colour-key result on a keep_width x keep_height
+        // sample grid covering the whole image: 0 where the key matches.
+        let (keep, keep_width, keep_height) = match &decoded.status {
+            crate::filters::StreamDecodeStatus::Complete => {
+                let bpc = image_ref.bits_per_component;
+                if !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
+                    return Err(malformed("unsupported BitsPerComponent"));
+                }
+                let ranges = clamp_ranges((1u32 << bpc) - 1);
+                let row_bits = width
+                    .checked_mul(components)
+                    .and_then(|samples| samples.checked_mul(usize::from(bpc)))
+                    .ok_or_else(|| malformed("dimensions overflow"))?;
+                let row_bytes = row_bits.div_ceil(8);
+                let data = &decoded.data;
+                let mut keep = vec![255u8; width.saturating_mul(height)];
+                for y in 0..height {
+                    let row = y * row_bytes;
+                    for x in 0..width {
+                        let mut masked = true;
+                        for (component, (lo, hi)) in ranges.iter().enumerate() {
+                            let sample_index = x * components + component;
+                            let Some(sample) = raw_image_sample(data, row, sample_index, bpc)
+                            else {
+                                masked = false;
+                                break;
+                            };
+                            if sample < *lo || sample > *hi {
+                                masked = false;
+                                break;
+                            }
+                        }
+                        if masked {
+                            keep[y * width + x] = 0;
+                        }
                     }
                 }
-                if masked {
-                    keep[y * width + x] = 0;
-                }
+                (keep, width, height)
             }
-        }
+            crate::filters::StreamDecodeStatus::StoppedAtImageFilter(filter) => {
+                // DCT and JPX images have no raw samples: compare the codec
+                // output before /Decode and colour conversion instead.
+                let samples = match ImageDecoder::decode_codec_samples(
+                    &decoded.data,
+                    filter,
+                    &image_ref.color_space,
+                    stream_dict,
+                    reader,
+                    &self.decode_limits,
+                ) {
+                    Ok(Some(samples)) => samples,
+                    Ok(None) => {
+                        log::warn!(
+                            "render: color-key mask on a {} image with /{filter} is not applied",
+                            image_ref.color_space
+                        );
+                        return Ok(converted);
+                    }
+                    Err(err @ WellfriendError::Cancelled(_)) => return Err(err),
+                    Err(err) => {
+                        log::warn!(
+                            "render: color-key mask on a {} image with /{filter} is not applied: {err}",
+                            image_ref.color_space
+                        );
+                        return Ok(converted);
+                    }
+                };
+                if usize::from(samples.channels) != components {
+                    log::warn!(
+                        "render: color-key mask has {components} component range(s) but the /{filter} image decodes {} components; drawing it unmasked",
+                        samples.channels
+                    );
+                    return Ok(converted);
+                }
+                let ranges = clamp_ranges(samples.max_value);
+                let keep_width = samples.width as usize;
+                let keep_height = samples.height as usize;
+                let mut keep = vec![255u8; keep_width.saturating_mul(keep_height)];
+                for (pixel, keep) in keep.iter_mut().enumerate() {
+                    let base = pixel * components;
+                    let masked = ranges.iter().enumerate().all(|(component, (lo, hi))| {
+                        samples
+                            .value(base + component)
+                            .is_some_and(|sample| (*lo..=*hi).contains(&sample))
+                    });
+                    if masked {
+                        *keep = 0;
+                    }
+                }
+                (keep, keep_width, keep_height)
+            }
+        };
         // Bring the full-image mask into the converted image's frame: it may
         // be a decoded source window and/or a reduced-resolution decode.
         let (window_x, window_y, window_w, window_h) =
@@ -10134,7 +10293,9 @@ impl<'a> RenderState<'a> {
                     3 => ([px[0], px[1], px[2]], 255),
                     _ => ([px[0], px[1], px[2]], px[3]),
                 };
-                let keep_alpha = keep.get(sy * width + sx).copied().unwrap_or(255);
+                let kx = sx * keep_width / width.max(1);
+                let ky = sy * keep_height / height.max(1);
+                let keep_alpha = keep.get(ky * keep_width + kx).copied().unwrap_or(255);
                 pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], alpha.min(keep_alpha)]);
             }
         }
@@ -13644,6 +13805,12 @@ impl<'a> RenderState<'a> {
         mask_gs.fill_alpha = 1.0;
         mask_gs.stroke_alpha = 1.0;
         mask_gs.blend_mode = BlendMode::Normal;
+        // The current transfer curves belong to the final compositing of the
+        // masked object, not to the mask group's content: Splash renders a
+        // soft-mask group with identity transfer (a group that sets /TR
+        // itself still gets its own curves) and the mask's luminosity is
+        // shaped only by the SMask /TR.
+        mask_gs.transfer = None;
         let mask_base_ctm = Transform2D::from(mask_gs.ctm);
         let mask_window = match transparency_group_pixel_window(
             Some(group_bbox),
@@ -16507,13 +16674,66 @@ impl<'a> RenderState<'a> {
         // Pattern cells keep their real colours under a forced colour
         // scheme (PDFium renders tiling cells with normal colour options).
         self.forced_color_suppression += 1;
-        self.paint_tiling_pattern_with_device_clip_inner(
-            pattern_obj,
-            path_clip,
-            flat,
-            use_stroke_color,
-        );
+        match self.gs.transfer.take() {
+            None => self.paint_tiling_pattern_with_device_clip_inner(
+                pattern_obj,
+                path_clip,
+                flat,
+                use_stroke_color,
+            ),
+            Some(lut) => {
+                // Splash draws the cells with identity transfer into a tile
+                // bitmap and applies the transfer when that bitmap is
+                // composited, to the resulting pixels of the filled area.
+                let shape = path_clip.clone();
+                self.paint_with_final_transfer(&lut, &shape, |state| {
+                    state.paint_tiling_pattern_with_device_clip_inner(
+                        pattern_obj,
+                        path_clip,
+                        flat,
+                        use_stroke_color,
+                    );
+                });
+                self.gs.transfer = Some(lut);
+            }
+        }
         self.forced_color_suppression -= 1;
+    }
+
+    /// Run `paint` (with the transfer curves cleared) into a transparent
+    /// page-sized surface, composite the result with the current blend mode
+    /// and soft mask, then apply `lut` to the composited pixels that `shape`
+    /// covers: Poppler's Splash applies the transfer to each composited
+    /// pixel of the painted area, not to the source colours.
+    fn paint_with_final_transfer(
+        &mut self,
+        lut: &crate::content::state::TransferLut,
+        shape: &ClipMask,
+        paint: impl FnOnce(&mut Self),
+    ) {
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        if let Some(clip) = self.buf.clip_mask() {
+            surface.set_clip(clip.clone());
+        }
+        surface.blend_mode = BlendMode::Normal;
+        let mut target = std::mem::replace(&mut self.buf, surface);
+        paint(self);
+        std::mem::swap(&mut self.buf, &mut target);
+        let mut painted = target;
+        painted.clear_clip();
+        painted.clear_smask();
+        // The surface was already clipped; composite without clipping twice.
+        let saved_clip = self.buf.clip_mask().cloned();
+        self.buf.clear_clip();
+        let soft_mask = self.buf.smask_mask().cloned();
+        let blend_mode = self.buf.blend_mode;
+        self.buf
+            .composite_from(&painted, 1.0, blend_mode, soft_mask.as_ref());
+        self.buf.apply_rgba_transfer_in_shape(&lut.channels, shape);
+        self.buf.replace_clip(saved_clip);
+        self.recycle_offscreen_buffer(painted);
     }
 
     fn paint_tiling_pattern_with_device_clip_inner(
@@ -41970,6 +42190,64 @@ mod tests {
 
     const WP2_HELVETICA: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
 
+    const WP2_INVERTING_TRANSFER: &str = "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>";
+
+    #[test]
+    fn transfer_applies_to_the_composited_tiling_pattern_area() {
+        // A 20 x 20 cell with a red 10 x 10 square; the rest of the cell is
+        // transparent. Splash applies the transfer to the composited pixels
+        // of the filled area, so the white page under the transparent part of
+        // the cells is inverted as well, and the red square turns cyan once.
+        let pattern = wp2_stream(
+            "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20 /Resources << >>",
+            b"1 0 0 rg 0 0 10 10 re f",
+        );
+        let pdf = wp2_page_pdf(
+            &format!(
+                "<< /ExtGState << /GS1 << /TR {WP2_INVERTING_TRANSFER} >> >> /Pattern << /P1 5 0 R >> >>"
+            ),
+            b"q /GS1 gs /Pattern cs /P1 scn 0 0 50 100 re f Q",
+            "",
+            &[pattern],
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open tiling transfer PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("tiling pattern with transfer renders");
+        assert_eq!(
+            buf.get_pixel(5, 94),
+            [0, 255, 255, 255],
+            "red cell inverted once"
+        );
+        assert_eq!(buf.get_pixel(5, 74), [0, 255, 255, 255], "next cell row");
+        assert_eq!(buf.get_pixel(15, 94), [0, 0, 0, 255], "uncovered cell area");
+        assert_eq!(buf.get_pixel(75, 50), WHITE, "outside the filled path");
+    }
+
+    #[test]
+    fn soft_mask_group_content_is_drawn_without_the_current_transfer() {
+        // The mask group paints white (luminosity 1). The inverting transfer
+        // active when the soft mask is set applies to the masked blue fill,
+        // not to the mask content, so the fill shows, inverted to yellow.
+        let group = wp2_stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Group << /S /Transparency /CS /DeviceRGB >>",
+            b"1 g 0 0 100 100 re f",
+        );
+        let pdf = wp2_page_pdf(
+            &format!(
+                "<< /ExtGState << /GS1 << /TR {WP2_INVERTING_TRANSFER} >> /GS2 << /SMask << /S /Luminosity /G 5 0 R >> >> >> >>"
+            ),
+            b"/GS1 gs /GS2 gs 0 0 1 rg 0 0 100 100 re f",
+            "",
+            &[group],
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open soft mask transfer PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("soft mask with transfer renders");
+        assert_eq!(buf.get_pixel(50, 50), [255, 255, 0, 255]);
+    }
+
     #[test]
     fn transfer_function_applies_to_fills_images_and_restores_with_q() {
         // An inverting /TR curve: 1 - x.
@@ -42175,6 +42453,95 @@ mod tests {
                 assert!(right[1] > 200 && right[0] < 60, "{label} right: {right:?}");
             }
         }
+    }
+
+    /// A 16x8 JPEG whose left and right 8x8 blocks are `left` and `right`.
+    fn two_block_jpeg(left: &[u8], right: &[u8], color: jpeg_encoder::ColorType) -> Vec<u8> {
+        let mut samples = Vec::new();
+        for _ in 0..8 {
+            for x in 0..16 {
+                samples.extend_from_slice(if x < 8 { left } else { right });
+            }
+        }
+        let mut jpeg = Vec::new();
+        jpeg_encoder::Encoder::new(&mut jpeg, 100)
+            .encode(&samples, 16, 8, color)
+            .expect("encode test JPEG");
+        jpeg
+    }
+
+    fn render_keyed_image(image: Vec<u8>, label: &str) -> PixelBuffer {
+        let pdf = wp2_page_pdf(
+            "<< /XObject << /Im1 5 0 R >> >>",
+            b"q 100 0 0 100 0 0 cm /Im1 Do Q",
+            "",
+            &[image],
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open color-key PDF");
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .unwrap_or_else(|err| panic!("{label}: {err}"))
+    }
+
+    #[test]
+    fn color_key_masks_compare_dct_codec_samples() {
+        // CalGray is converted, so the key is compared on the decoded JPEG
+        // samples: the black left block is keyed out, the gray one stays.
+        let jpeg = two_block_jpeg(&[0], &[128], jpeg_encoder::ColorType::Luma);
+        let dict = "/Type /XObject /Subtype /Image /Width 16 /Height 8 /BitsPerComponent 8 /ColorSpace [/CalGray << /WhitePoint [0.9505 1 1.089] >>] /Filter /DCTDecode /Mask [0 20]";
+        let buf = render_keyed_image(wp2_stream(dict, &jpeg), "CalGray DCT");
+        assert_eq!(buf.get_pixel(25, 50), WHITE, "black block keyed out");
+        let right = buf.get_pixel(75, 50);
+        assert!(
+            (60..200).contains(&right[0]) && right[3] == 255,
+            "gray block kept: {right:?}"
+        );
+
+        // DeviceCMYK: key the red left block on its decoded CMYK samples
+        // (whatever the codec's CMYK convention is, the key uses the same).
+        let jpeg = two_block_jpeg(
+            &[0, 255, 255, 0],
+            &[255, 0, 0, 0],
+            jpeg_encoder::ColorType::Cmyk,
+        );
+        let (samples, _, _, channels) =
+            ImageDecoder::decode_jpeg_with_info(&jpeg).expect("decode test JPEG");
+        assert_eq!(channels, 4);
+        let mask = samples[..4]
+            .iter()
+            .map(|value| format!("{} {}", value.saturating_sub(12), value.saturating_add(12)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let dict = format!(
+            "/Type /XObject /Subtype /Image /Width 16 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceCMYK /Filter /DCTDecode /Mask [{mask}]"
+        );
+        let unmasked = render_keyed_image(
+            wp2_stream(
+                "/Type /XObject /Subtype /Image /Width 16 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceCMYK /Filter /DCTDecode",
+                &jpeg,
+            ),
+            "CMYK DCT unmasked",
+        );
+        let buf = render_keyed_image(wp2_stream(&dict, &jpeg), "CMYK DCT");
+        assert_ne!(
+            unmasked.get_pixel(25, 50),
+            WHITE,
+            "the left block is painted"
+        );
+        assert_eq!(buf.get_pixel(25, 50), WHITE, "left block keyed out");
+        assert_eq!(
+            buf.get_pixel(75, 50),
+            unmasked.get_pixel(75, 50),
+            "right block unchanged"
+        );
+    }
+
+    #[test]
+    fn color_key_with_wrong_component_count_on_dct_draws_unmasked() {
+        let jpeg = two_block_jpeg(&[0], &[128], jpeg_encoder::ColorType::Luma);
+        let dict = "/Type /XObject /Subtype /Image /Width 16 /Height 8 /BitsPerComponent 8 /ColorSpace [/CalGray << /WhitePoint [0.9505 1 1.089] >>] /Filter /DCTDecode /Mask [0 20 0 20 0 20]";
+        let buf = render_keyed_image(wp2_stream(dict, &jpeg), "mismatched key");
+        assert_ne!(buf.get_pixel(25, 50), WHITE);
     }
 
     fn wp2_oc_pdf(content: &[u8], ocproperties: &str) -> Vec<u8> {

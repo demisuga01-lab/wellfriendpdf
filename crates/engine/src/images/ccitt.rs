@@ -119,15 +119,236 @@ fn ccitt_settings(params: CcittDecodeParams) -> Result<hayro_ccitt::DecodeSettin
 /// Run the CCITT decoder into `sink`. Rows decoded before a coding error stay
 /// in the sink (hayro-ccitt writes them incrementally); the sinks pad the
 /// missing rows white on `finish`, as Poppler draws damaged fax images.
+///
+/// Group 3 streams resynchronise after a damaged row, like Poppler's
+/// `CCITTFaxStream`: the damaged row is completed with white, and decoding
+/// restarts at the next end-of-line marker. T.4 guarantees that no valid row
+/// data contains eleven consecutive zero bits, so an EOL found in the
+/// bitstream always starts a new row. hayro-ccitt cannot resume mid-stream,
+/// so each restart decodes a fresh stream that begins at that EOL; a 2-D row
+/// right after a restart refers to an all-white line until the next 1-D row.
 fn decode_with_settings<D: hayro_ccitt::Decoder>(
     data: &[u8],
     settings: hayro_ccitt::DecodeSettings,
     sink: &mut D,
 ) {
-    let mut context = hayro_ccitt::DecoderContext::new(settings);
-    if let Err(err) = hayro_ccitt::decode(data, sink, &mut context) {
-        log::warn!("CCITTFaxDecode stopped early ({err}); keeping the rows decoded so far");
+    let mut rows = RowTracker::new(sink, settings.columns);
+    let Err(mut error) = decode_chunk(data, settings, &mut rows) else {
+        return;
+    };
+    // Group 4 (T.6) has no EOL codes to resynchronise on.
+    if matches!(settings.encoding, hayro_ccitt::EncodingMode::Group4) {
+        log::warn!("CCITTFaxDecode stopped early ({error}); keeping the rows decoded so far");
+        return;
     }
+    let mut stream = ShiftedBitstream::new(data);
+    let mut chunk_start = 0usize;
+    let mut chunk_first_row = 0u32;
+    let mut damaged_rows = 0u32;
+    loop {
+        let chunk_rows = rows.completed - chunk_first_row;
+        let threshold =
+            damaged_row_threshold(stream.view_from_bit(chunk_start), settings, chunk_rows)
+                .map(|bit| chunk_start + bit);
+        if rows.completed < settings.rows {
+            rows.pad_damaged_row();
+            damaged_rows += 1;
+        }
+        let remaining = settings.rows.saturating_sub(rows.completed);
+        let restart = threshold
+            .filter(|_| remaining > 0)
+            .and_then(|bit| next_eol_start(data, bit));
+        let Some(restart) = restart else {
+            log::warn!(
+                "CCITTFaxDecode stopped early ({error}) after {damaged_rows} damaged row(s); keeping the rows decoded so far"
+            );
+            return;
+        };
+        chunk_start = restart;
+        chunk_first_row = rows.completed;
+        let chunk_settings = hayro_ccitt::DecodeSettings {
+            rows: remaining,
+            ..settings
+        };
+        match decode_chunk(stream.view_from_bit(restart), chunk_settings, &mut rows) {
+            Ok(()) => {
+                log::warn!(
+                    "CCITTFaxDecode resynchronised on end-of-line markers after {damaged_rows} damaged row(s)"
+                );
+                return;
+            }
+            Err(next_error) => error = next_error,
+        }
+    }
+}
+
+fn decode_chunk<D: hayro_ccitt::Decoder>(
+    data: &[u8],
+    settings: hayro_ccitt::DecodeSettings,
+    sink: &mut D,
+) -> std::result::Result<(), hayro_ccitt::DecodeError> {
+    let mut context = hayro_ccitt::DecoderContext::new(settings);
+    hayro_ccitt::decode(data, sink, &mut context).map(|_| ())
+}
+
+/// A bit offset into `chunk` that the damaged row (row `complete_rows` of the
+/// chunk) starts at or before: the EOL that ends the damaged row is the first
+/// one whose final `1` bit lies at or after this offset.
+///
+/// With complete rows before the damage, the chunk is decoded again for just
+/// those rows; hayro-ccitt then stops right after the EOL that starts the
+/// damaged row and reports the byte offset rounded up. The damaged row starts
+/// within the 8 bits before that byte boundary, its own EOL ends there too,
+/// and the next EOL (at least 12 bits later) ends past it.
+fn damaged_row_threshold(
+    chunk: &[u8],
+    settings: hayro_ccitt::DecodeSettings,
+    complete_rows: u32,
+) -> Option<usize> {
+    if complete_rows == 0 {
+        return Some(leading_eol_end(chunk));
+    }
+    let prefix = hayro_ccitt::DecodeSettings {
+        rows: complete_rows,
+        ..settings
+    };
+    let mut context = hayro_ccitt::DecoderContext::new(prefix);
+    let bytes = hayro_ccitt::decode(chunk, &mut NullSink, &mut context).ok()?;
+    bytes.checked_mul(8)
+}
+
+/// The bit offset just past any EOL markers (with fill bits) at the start of
+/// `chunk`, read the way hayro-ccitt reads them before the first row.
+fn leading_eol_end(chunk: &[u8]) -> usize {
+    const MAX_FILL_BITS: usize = 24;
+    let total = chunk.len().saturating_mul(8);
+    let mut pos = 0usize;
+    loop {
+        let mut zeros = 0usize;
+        while zeros < MAX_FILL_BITS && pos + zeros < total && !bit_at(chunk, pos + zeros) {
+            zeros += 1;
+        }
+        if zeros >= 11 && pos + zeros < total && bit_at(chunk, pos + zeros) {
+            pos += zeros + 1;
+            continue;
+        }
+        return pos;
+    }
+}
+
+/// The start of the first EOL (`000000000001`) whose final `1` bit is at or
+/// after bit `threshold`. Decoding restarts on its eleven zero bits, so the
+/// decoder reads the EOL (and any EOLs following it) itself.
+fn next_eol_start(data: &[u8], threshold: usize) -> Option<usize> {
+    let total = data.len().saturating_mul(8);
+    let mut zeros = 0usize;
+    for index in threshold.saturating_sub(11)..total {
+        if !bit_at(data, index) {
+            zeros += 1;
+            continue;
+        }
+        if zeros >= 11 && index >= threshold {
+            return Some(index - 11);
+        }
+        zeros = 0;
+    }
+    None
+}
+
+fn bit_at(data: &[u8], index: usize) -> bool {
+    (data[index >> 3] >> (7 - (index & 7))) & 1 == 1
+}
+
+/// Byte views of a bitstream starting at any bit offset. EOL markers are not
+/// byte aligned, so a restart at bit `n` reads a copy of the stream shifted
+/// left by `n % 8` bits; each of the seven shifts is built at most once.
+struct ShiftedBitstream<'a> {
+    data: &'a [u8],
+    shifted: [Option<Vec<u8>>; 8],
+}
+
+impl<'a> ShiftedBitstream<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self {
+            data,
+            shifted: Default::default(),
+        }
+    }
+
+    fn view_from_bit(&mut self, bit: usize) -> &[u8] {
+        let (byte, shift) = (bit / 8, bit % 8);
+        if shift == 0 {
+            return self.data.get(byte..).unwrap_or_default();
+        }
+        let data = self.data;
+        let copy = self.shifted[shift].get_or_insert_with(|| {
+            (0..data.len())
+                .map(|index| {
+                    let next = data.get(index + 1).map_or(0, |next| next >> (8 - shift));
+                    (data[index] << shift) | next
+                })
+                .collect()
+        });
+        copy.get(byte..).unwrap_or_default()
+    }
+}
+
+/// Forwards pixels to the real sink while counting completed rows and the
+/// pixels of the row in progress, so a damaged row can be completed.
+struct RowTracker<'a, D> {
+    inner: &'a mut D,
+    columns: u32,
+    row_pixels: u32,
+    completed: u32,
+}
+
+impl<'a, D: hayro_ccitt::Decoder> RowTracker<'a, D> {
+    fn new(inner: &'a mut D, columns: u32) -> Self {
+        Self {
+            inner,
+            columns,
+            row_pixels: 0,
+            completed: 0,
+        }
+    }
+
+    /// Complete the row in progress with white pixels.
+    fn pad_damaged_row(&mut self) {
+        for _ in self.row_pixels..self.columns {
+            self.inner.push_pixel(true);
+        }
+        hayro_ccitt::Decoder::next_line(self);
+    }
+}
+
+impl<D: hayro_ccitt::Decoder> hayro_ccitt::Decoder for RowTracker<'_, D> {
+    fn push_pixel(&mut self, white: bool) {
+        self.row_pixels = self.row_pixels.saturating_add(1);
+        self.inner.push_pixel(white);
+    }
+
+    fn push_pixel_chunk(&mut self, white: bool, chunk_count: u32) {
+        self.row_pixels = self
+            .row_pixels
+            .saturating_add(chunk_count.saturating_mul(8));
+        self.inner.push_pixel_chunk(white, chunk_count);
+    }
+
+    fn next_line(&mut self) {
+        self.row_pixels = 0;
+        self.completed = self.completed.saturating_add(1);
+        self.inner.next_line();
+    }
+}
+
+struct NullSink;
+
+impl hayro_ccitt::Decoder for NullSink {
+    fn push_pixel(&mut self, _white: bool) {}
+
+    fn push_pixel_chunk(&mut self, _white: bool, _chunk_count: u32) {}
+
+    fn next_line(&mut self) {}
 }
 
 /// Fill the missing tail of a short CCITT bitmap with white samples.
@@ -348,6 +569,94 @@ mod tests {
         assert_eq!(image.height, 3);
         assert_eq!(&image.pixels[..8], &[255, 255, 0, 0, 0, 255, 255, 255]);
         assert!(image.pixels[8..].iter().all(|pixel| *pixel == 255));
+    }
+
+    const EOL: &str = "000000000001";
+    /// White 2, black 3, white 3.
+    const ROW_A: &str = "0111 10 1000";
+    const ROW_A_PIXELS: [u8; 8] = [255, 255, 0, 0, 0, 255, 255, 255];
+
+    fn with_eols(params: CcittDecodeParams) -> CcittDecodeParams {
+        CcittDecodeParams {
+            end_of_line: true,
+            ..params
+        }
+    }
+
+    #[test]
+    fn damaged_group3_1d_row_resynchronises_on_the_next_eol() {
+        // Row 1 is white 2 followed by sixteen zero bits: neither a white nor
+        // a black code, so decoding fails mid-row. The following EOL starts
+        // row 2, which must still be drawn.
+        let bits = format!("{EOL} {ROW_A} {EOL} 0111 0000000000000000 {EOL} {ROW_A}");
+        let image = decode(&pack_bits(&bits), with_eols(params(0, 8, 3))).unwrap();
+        assert_eq!(&image.pixels[..8], &ROW_A_PIXELS, "row before the damage");
+        assert_eq!(&image.pixels[8..16], &[255; 8], "damaged row is white");
+        assert_eq!(&image.pixels[16..], &ROW_A_PIXELS, "row after the EOL");
+    }
+
+    #[test]
+    fn damaged_group3_2d_row_resynchronises_on_the_next_eol() {
+        // K = 2: rows 0 and 2 are 1-D coded (tag 1); row 1 is a 2-D row: V0
+        // (two white pixels), then seven zero bits that are not a mode code.
+        // (The final 1 keeps the zeros from reading as EOL fill bits.)
+        let bits = format!("{EOL} 1 {ROW_A} {EOL} 0 1 0000000 1 {EOL} 1 {ROW_A}");
+        let image = decode(&pack_bits(&bits), with_eols(params(2, 8, 3))).unwrap();
+        assert_eq!(&image.pixels[..8], &ROW_A_PIXELS);
+        assert_eq!(&image.pixels[8..16], &[255; 8]);
+        assert_eq!(&image.pixels[16..], &ROW_A_PIXELS);
+    }
+
+    #[test]
+    fn several_damaged_rows_each_resynchronise() {
+        let damaged = "0111 0000000000000000";
+        let bits =
+            format!("{EOL} {damaged} {EOL} {ROW_A} {EOL} {damaged} {EOL} {damaged} {EOL} {ROW_A}");
+        let image = decode(&pack_bits(&bits), with_eols(params(0, 8, 5))).unwrap();
+        let rows: Vec<&[u8]> = image.pixels.chunks(8).collect();
+        assert_eq!(rows[0], &[255; 8]);
+        assert_eq!(rows[1], &ROW_A_PIXELS);
+        assert_eq!(rows[2], &[255; 8]);
+        assert_eq!(rows[3], &[255; 8]);
+        assert_eq!(rows[4], &ROW_A_PIXELS);
+    }
+
+    #[test]
+    fn resynchronised_rows_land_in_a_source_window() {
+        let bits = format!("{EOL} {ROW_A} {EOL} 0111 0000000000000000 {EOL} {ROW_A}");
+        let image = decode_window(
+            &pack_bits(&bits),
+            with_eols(params(0, 8, 3)),
+            CcittDecodeWindow {
+                x: 1,
+                y: 2,
+                width: 5,
+                height: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(image.pixels, vec![255, 0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn eol_scanner_finds_markers_at_any_bit_offset() {
+        let data = pack_bits(&format!("101 {EOL} 0 {EOL}"));
+        assert_eq!(next_eol_start(&data, 0), Some(3));
+        // The first EOL ends at bit 14; asking for one ending later skips it.
+        assert_eq!(next_eol_start(&data, 15), Some(16));
+        assert_eq!(next_eol_start(&data, 28), None);
+        assert_eq!(leading_eol_end(&pack_bits(&format!("{EOL}{EOL} 1"))), 24);
+        assert_eq!(leading_eol_end(&pack_bits("1")), 0);
+    }
+
+    #[test]
+    fn shifted_bitstream_reads_from_any_bit() {
+        let data = [0b1010_1100, 0b0101_0011];
+        let mut stream = ShiftedBitstream::new(&data);
+        assert_eq!(stream.view_from_bit(0), &data);
+        assert_eq!(stream.view_from_bit(3), &[0b0110_0010, 0b1001_1000]);
+        assert_eq!(stream.view_from_bit(11), &[0b1001_1000]);
+        assert_eq!(stream.view_from_bit(16), &[] as &[u8]);
     }
 
     #[test]

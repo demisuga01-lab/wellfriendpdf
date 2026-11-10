@@ -1962,7 +1962,7 @@ fn fill_flat_cmyk_overprint_preview_scanline(
 
     let mut crossings = take_scanline_crossing_vec();
     let h = (y1 - y0) as usize;
-    let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let edge_buckets = build_sequential_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
     for y in y0..y1 {
         PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
@@ -2071,7 +2071,7 @@ fn fill_flat_scanline_fast(
 
     let mut crossings = take_scanline_crossing_vec();
     let h = (y1 - y0) as usize;
-    let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let edge_buckets = build_sequential_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_cancelled() {
@@ -2821,7 +2821,29 @@ struct ScanlineEdgeBuckets {
     end_links: Vec<usize>,
 }
 
+#[cfg(test)]
 fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<ScanlineEdgeBuckets> {
+    build_scanline_edge_buckets_with(flat, y0, h, true)
+}
+
+/// Edge buckets for a scan that visits the rows in order, which only needs
+/// the start/end events ([`ScanlineActiveEdges`]): the per-row random-access
+/// links are not built. A non-sequential access would still be answered,
+/// exactly, by testing every edge.
+fn build_sequential_scanline_edge_buckets(
+    flat: &FlatPath,
+    y0: i32,
+    h: usize,
+) -> Option<ScanlineEdgeBuckets> {
+    build_scanline_edge_buckets_with(flat, y0, h, false)
+}
+
+fn build_scanline_edge_buckets_with(
+    flat: &FlatPath,
+    y0: i32,
+    h: usize,
+    row_links: bool,
+) -> Option<ScanlineEdgeBuckets> {
     if h == 0 {
         return None;
     }
@@ -2852,7 +2874,8 @@ fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<Sca
     // of per-row links. Sequential scans only need the start/end events, so
     // skip the random-access links instead of abandoning the edge buckets
     // (which used to force an O(rows x edges) brute-force scan).
-    let has_row_links = links <= SCANLINE_EDGE_BUCKET_MAX_LINKS;
+    let links_fit = links <= SCANLINE_EDGE_BUCKET_MAX_LINKS;
+    let has_row_links = row_links && links_fit;
     let mut row_counts = vec![0usize; if has_row_links { h } else { 0 }];
     if has_row_links {
         for &(row_start, row_end) in &spans {
@@ -2863,10 +2886,12 @@ fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<Sca
     }
     PATH_RASTER_EDGE_BUCKET_BUILDS.fetch_add(1, Ordering::Relaxed);
     PATH_RASTER_EDGE_BUCKET_LINKS.fetch_add(links as u64, Ordering::Relaxed);
-    PATH_RASTER_EDGE_BUCKET_ROWS.fetch_add(
-        row_counts.iter().filter(|count| **count > 0).count() as u64,
-        Ordering::Relaxed,
-    );
+    if has_row_links {
+        PATH_RASTER_EDGE_BUCKET_ROWS.fetch_add(
+            row_counts.iter().filter(|count| **count > 0).count() as u64,
+            Ordering::Relaxed,
+        );
+    }
 
     let (row_offsets, flat_links) = if has_row_links {
         let mut row_offsets = vec![0usize; h + 1];
@@ -2907,6 +2932,14 @@ fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<Sca
                 (*row_end < h).then_some((edge_index, *row_end))
             }),
     );
+    if !row_links && links_fit {
+        // The rows with at least one edge, as the row links would count them:
+        // edges started minus edges ended by each row.
+        let rows = (1..=h)
+            .filter(|&end| start_offsets[end] > end_offsets[end])
+            .count();
+        PATH_RASTER_EDGE_BUCKET_ROWS.fetch_add(rows as u64, Ordering::Relaxed);
+    }
 
     Some(ScanlineEdgeBuckets {
         edges,
@@ -3094,8 +3127,15 @@ fn prepare_scanline_crossings(crossings: &mut Vec<(f64, i32)>) -> bool {
     if crossings.len() < 2 {
         return false;
     }
-    crossings.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    sort_scanline_crossings(crossings);
     true
+}
+
+/// Sort crossings by x, then direction. Elements that compare equal under
+/// this total order are bit-identical, so the unstable sort gives exactly
+/// the stable sort's result (and is faster on the short lists of a row).
+fn sort_scanline_crossings(crossings: &mut [(f64, i32)]) {
+    crossings.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 }
 
 fn fill_scanline_span(buf: &mut PixelBuffer, y: i32, x0: f64, x1: f64, bw: i32, color: PixelColor) {
@@ -3169,7 +3209,7 @@ pub(crate) fn rasterize_flat_binary_clip_mask(
     let mut rows = vec![Vec::<(i32, i32)>::new(); height as usize];
     let mut crossings = take_scanline_crossing_vec();
     let h = (y1 - y0) as usize;
-    let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let edge_buckets = build_sequential_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
@@ -3681,7 +3721,7 @@ fn scan_flat_alpha_mask_rows(
     }
     let mut accum = take_scanline_u16_vec(w);
     let mut crossings = take_scanline_crossing_vec();
-    let edge_buckets = build_scanline_edge_buckets(flat, y_start, rows);
+    let edge_buckets = build_sequential_scanline_edge_buckets(flat, y_start, rows);
     let mut active_edges = ScanlineActiveEdges::default();
     let sample_weight = 255.0 / vertical_samples as f64;
     let rescues = thin_subpath_rescues(flat, vertical_samples);
@@ -3778,6 +3818,41 @@ fn add_alpha_span(
     x_end: f64,
     sample_weight: f64,
 ) {
+    add_alpha_span_repeated(accum, row_base, w, x_start, x_end, sample_weight, 1);
+}
+
+/// `(value.round().clamp(0.0, 255.0)) as u16`, computed without a libm call
+/// (`round` is not inlined on baseline x86-64). Exact: for `0 <= value < 255`
+/// the truncated integer and the fractional part are both exact, and ties
+/// round away from zero as `f64::round` does; NaN gives 0 like the cast.
+#[inline(always)]
+fn round_coverage(value: f64) -> u16 {
+    if value >= 255.0 {
+        return 255;
+    }
+    if value.is_nan() || value <= 0.0 {
+        return 0;
+    }
+    let whole = value as u32;
+    let fraction = value - f64::from(whole);
+    (whole + u32::from(fraction >= 0.5)) as u16
+}
+
+/// [`add_alpha_span`] for `repeat` identical sample lines: every cell gets
+/// `repeat` times the single-line increment, which equals adding the span
+/// `repeat` times (the saturating sum of non-negative increments).
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn add_alpha_span_repeated(
+    accum: &mut [u16],
+    row_base: usize,
+    w: usize,
+    x_start: f64,
+    x_end: f64,
+    sample_weight: f64,
+    repeat: u32,
+) {
+    let scaled = |add: u16| -> u16 { (u32::from(add) * repeat).min(u32::from(u16::MAX)) as u16 };
     if x_end <= x_start || !x_start.is_finite() || !x_end.is_finite() {
         return;
     }
@@ -3803,7 +3878,7 @@ fn add_alpha_span(
         if covered <= 0.0 {
             return;
         }
-        let add = (covered * sample_weight).round().clamp(0.0, 255.0) as u16;
+        let add = scaled(round_coverage(covered * sample_weight));
         let idx = row_base + col;
         accum[idx] = accum[idx].saturating_add(add);
     };
@@ -3814,7 +3889,7 @@ fn add_alpha_span(
         add_cell(col);
     }
     if full_hi > full_lo {
-        let add = sample_weight.round().clamp(0.0, 255.0) as u16;
+        let add = scaled(round_coverage(sample_weight));
         for value in &mut accum[row_base + full_lo..row_base + full_hi] {
             *value = value.saturating_add(add);
         }
@@ -3916,6 +3991,93 @@ fn accumulate_scanline_row(
     }
 }
 
+thread_local! {
+    /// Scratch crossings of the next sample line in
+    /// [`accumulate_scanline_row_subsampled`].
+    static NEXT_SAMPLE_CROSSINGS: std::cell::RefCell<Vec<(f64, i32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// True when two unsorted crossing lists are bit-for-bit the same.
+fn same_scanline_crossings(a: &[(f64, i32)], b: &[(f64, i32)]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(a, b)| a.0.to_bits() == b.0.to_bits() && a.1 == b.1)
+}
+
+/// Span accumulation for a run of identical sample lines of one pixel row.
+struct SampleLineGroup {
+    rule: FillRule,
+    x0: i32,
+    w: usize,
+    sample_weight: f64,
+}
+
+impl SampleLineGroup {
+    /// Add the spans of `crossings` (unsorted, as collected) `repeat` times.
+    fn accumulate(
+        &self,
+        crossings: &mut Vec<(f64, i32)>,
+        repeat: u32,
+        row_accum: &mut [u16],
+        touched: &mut (usize, usize),
+    ) {
+        let (x0, w, sample_weight) = (self.x0, self.w, self.sample_weight);
+        if !prepare_scanline_crossings(crossings) {
+            return;
+        }
+        if let (Some(first), Some(last)) = (crossings.first(), crossings.last()) {
+            let lo = safe_floor_i32(first.0 - x0 as f64).clamp(0, w as i32) as usize;
+            let hi = safe_ceil_i32(last.0 - x0 as f64)
+                .saturating_add(1)
+                .clamp(0, w as i32) as usize;
+            *touched = (touched.0.min(lo), touched.1.max(hi));
+        }
+        PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(u64::from(repeat), Ordering::Relaxed);
+        match self.rule {
+            FillRule::EvenOdd => {
+                let mut i = 0usize;
+                while i + 1 < crossings.len() {
+                    add_alpha_span_repeated(
+                        row_accum,
+                        0,
+                        w,
+                        crossings[i].0 - x0 as f64,
+                        crossings[i + 1].0 - x0 as f64,
+                        sample_weight,
+                        repeat,
+                    );
+                    i += 2;
+                }
+            }
+            FillRule::NonZero => {
+                let mut winding = 0i32;
+                let mut start_x: Option<f64> = None;
+                for (x, dir) in crossings.iter().copied() {
+                    if winding != 0 {
+                        if let Some(sx) = start_x.take() {
+                            add_alpha_span_repeated(
+                                row_accum,
+                                0,
+                                w,
+                                sx - x0 as f64,
+                                x - x0 as f64,
+                                sample_weight,
+                                repeat,
+                            );
+                        }
+                    }
+                    winding += dir;
+                    if winding != 0 {
+                        start_x = Some(x);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn accumulate_scanline_row_subsampled(
     flat: &FlatPath,
@@ -3949,61 +4111,42 @@ fn accumulate_scanline_row_subsampled(
     // last sorted crossing of its sample line.
     let mut touched = (w, 0usize);
     let sample_scale = 1.0 / vertical_samples as f64;
-    for sample in 0..vertical_samples {
-        let scan_y = row_y as f64 + (sample as f64 + 0.5) * sample_scale;
-        crossings.clear();
-        collect_scanline_crossings_from_row_source(flat, edge_source, scan_y, crossings);
-        if !prepare_scanline_crossings(crossings) {
-            continue;
-        }
-        if let (Some(first), Some(last)) = (crossings.first(), crossings.last()) {
-            let lo = safe_floor_i32(first.0 - x0 as f64).clamp(0, w as i32) as usize;
-            let hi = safe_ceil_i32(last.0 - x0 as f64)
-                .saturating_add(1)
-                .clamp(0, w as i32) as usize;
-            touched = (touched.0.min(lo), touched.1.max(hi));
-        }
-        PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
-        let sample_weight = 255.0 * sample_scale;
-        match rule {
-            FillRule::EvenOdd => {
-                let mut i = 0usize;
-                while i + 1 < crossings.len() {
-                    add_alpha_span(
-                        row_accum,
-                        0,
-                        w,
-                        crossings[i].0 - x0 as f64,
-                        crossings[i + 1].0 - x0 as f64,
-                        sample_weight,
-                    );
-                    i += 2;
-                }
+    let sample_weight = 255.0 * sample_scale;
+    let group = SampleLineGroup {
+        rule,
+        x0,
+        w,
+        sample_weight,
+    };
+    // Consecutive sample lines that cross exactly the same edges at exactly
+    // the same x (vertical edges: rectangle sides, the butt ends of
+    // horizontal dashes) produce the same spans. They are accumulated once
+    // with a repeat count, which adds the same integer coverage as adding
+    // each sample line separately.
+    crossings.clear();
+    collect_scanline_crossings_from_row_source(
+        flat,
+        edge_source,
+        row_y as f64 + 0.5 * sample_scale,
+        crossings,
+    );
+    let mut repeat = 1u32;
+    NEXT_SAMPLE_CROSSINGS.with(|next| {
+        let mut next = next.borrow_mut();
+        for sample in 1..vertical_samples {
+            let scan_y = row_y as f64 + (sample as f64 + 0.5) * sample_scale;
+            next.clear();
+            collect_scanline_crossings_from_row_source(flat, edge_source, scan_y, &mut next);
+            if same_scanline_crossings(crossings, &next) {
+                repeat += 1;
+                continue;
             }
-            FillRule::NonZero => {
-                let mut winding = 0i32;
-                let mut start_x: Option<f64> = None;
-                for (x, dir) in crossings.iter().copied() {
-                    if winding != 0 {
-                        if let Some(sx) = start_x.take() {
-                            add_alpha_span(
-                                row_accum,
-                                0,
-                                w,
-                                sx - x0 as f64,
-                                x - x0 as f64,
-                                sample_weight,
-                            );
-                        }
-                    }
-                    winding += dir;
-                    if winding != 0 {
-                        start_x = Some(x);
-                    }
-                }
-            }
+            group.accumulate(crossings, repeat, row_accum, &mut touched);
+            std::mem::swap(crossings, &mut *next);
+            repeat = 1;
         }
-    }
+    });
+    group.accumulate(crossings, repeat, row_accum, &mut touched);
     touched
 }
 
@@ -4029,7 +4172,7 @@ where
     let mut crossings = take_scanline_crossing_vec();
     let mut row_accum = take_scanline_u16_vec(w);
     let h = (y1 - y0) as usize;
-    let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let edge_buckets = build_sequential_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
     let mut rescue_cursor = 0usize;
     for y in y0..y1 {
@@ -4104,7 +4247,7 @@ fn fill_flat_with_color_compositor_scanline(
     let mut row_accum = take_scanline_u16_vec(w);
     let mut memo = take_coverage_blend_memo();
     let h = (y1 - y0) as usize;
-    let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
+    let edge_buckets = build_sequential_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
     let mut rescue_cursor = 0usize;
     for y in y0..y1 {
@@ -4181,6 +4324,10 @@ fn paint_alpha_row_runs(
     memo: &mut CoverageBlendMemo,
     mut on_run: impl FnMut(u64),
 ) {
+    // The raster counters are summed per row: one atomic add per row instead
+    // of two per run (short dash pieces make many runs per row).
+    let mut span_pixels = 0u64;
+    let mut solid_pixels = 0u64;
     let mut col = 0usize;
     while col < row_accum.len() {
         let raw = row_accum[col].min(255) as u8;
@@ -4201,15 +4348,21 @@ fn paint_alpha_row_runs(
         let px0 = x0 + run_start as i32;
         let px1 = x0 + run_end as i32;
         let pixels = (px1 - px0).max(0) as u64;
-        PATH_RASTER_SCANLINE_SPAN_PIXELS.fetch_add(pixels, Ordering::Relaxed);
+        span_pixels += pixels;
         on_run(pixels);
         if alpha == 255 {
-            PATH_RASTER_SOLID_RUN_PIXELS.fetch_add(pixels, Ordering::Relaxed);
+            solid_pixels += pixels;
             buf.fill_rect(px0, y, px1 - px0, 1, color);
         } else {
             buf.blend_coverage_run(px0, px1, y, color, alpha, memo);
         }
         col = run_end;
+    }
+    if span_pixels > 0 {
+        PATH_RASTER_SCANLINE_SPAN_PIXELS.fetch_add(span_pixels, Ordering::Relaxed);
+    }
+    if solid_pixels > 0 {
+        PATH_RASTER_SOLID_RUN_PIXELS.fetch_add(solid_pixels, Ordering::Relaxed);
     }
 }
 
@@ -4750,7 +4903,10 @@ fn safe_floor_i32(value: f64) -> i32 {
     } else if value >= i32::MAX as f64 {
         i32::MAX
     } else {
-        value.floor() as i32
+        // `value.floor() as i32` without the libm call: truncation rounds
+        // toward zero, so step down when that landed above `value`.
+        let truncated = value as i32;
+        truncated - i32::from(f64::from(truncated) > value)
     }
 }
 
@@ -4762,7 +4918,9 @@ fn safe_ceil_i32(value: f64) -> i32 {
     } else if value >= i32::MAX as f64 {
         i32::MAX
     } else {
-        value.ceil() as i32
+        // `value.ceil() as i32` without the libm call.
+        let truncated = value as i32;
+        truncated + i32::from(f64::from(truncated) < value)
     }
 }
 
@@ -4770,6 +4928,223 @@ fn safe_ceil_i32(value: f64) -> i32 {
 mod tests {
     use super::*;
     use crate::render::buffer::{RenderMode, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE};
+
+    #[test]
+    fn inline_floor_ceil_and_round_match_libm() {
+        let mut values = vec![
+            0.0,
+            -0.0,
+            0.5,
+            1.5,
+            2.5,
+            -0.5,
+            -1.5,
+            254.5,
+            254.49999999999997,
+            255.0,
+            300.0,
+            0.49999999999999994,
+            -2147483647.5,
+            2147483646.5,
+            1e-300,
+            -1e-300,
+        ];
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        for _ in 0..20_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let unit = (seed >> 11) as f64 / (1u64 << 53) as f64;
+            values.push(unit * 600.0 - 300.0);
+            values.push((unit * 1024.0).round() / 4.0 - 128.0);
+        }
+        for value in values {
+            assert_eq!(safe_floor_i32(value), value.floor() as i32, "floor {value}");
+            assert_eq!(safe_ceil_i32(value), value.ceil() as i32, "ceil {value}");
+            assert_eq!(
+                round_coverage(value),
+                value.round().clamp(0.0, 255.0) as u16,
+                "round {value}"
+            );
+        }
+        assert_eq!(round_coverage(f64::NAN), 0);
+    }
+
+    #[test]
+    fn crossing_sort_matches_the_stable_sort() {
+        let mut seed = 0x2545f4914f6cdd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for len in [0usize, 1, 2, 3, 8, 40, 300] {
+            for pattern in 0..3 {
+                let mut crossings: Vec<(f64, i32)> = (0..len)
+                    .map(|i| {
+                        let x = match pattern {
+                            // Swapped pairs, as dash pieces produce.
+                            0 => (i ^ 1) as f64 * 1.5,
+                            // Random with many ties.
+                            1 => (next() % 7) as f64,
+                            _ => (next() >> 11) as f64 / 1e9,
+                        };
+                        (x, if next() % 2 == 0 { 1 } else { -1 })
+                    })
+                    .collect();
+                let mut expected = crossings.clone();
+                expected.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+                sort_scanline_crossings(&mut crossings);
+                assert_eq!(crossings, expected, "len {len} pattern {pattern}");
+            }
+        }
+    }
+
+    /// The per-sample-line accumulation `accumulate_scanline_row_subsampled`
+    /// did before identical sample lines were grouped.
+    fn reference_row_accumulation(
+        flat: &FlatPath,
+        source: Option<ScanlineEdgeRowSource<'_>>,
+        rule: FillRule,
+        row_y: i32,
+        x0: i32,
+        w: usize,
+    ) -> (Vec<u16>, (usize, usize)) {
+        let samples = PATH_SCANLINE_COLOR_VERTICAL_SAMPLES;
+        let mut accum = vec![0u16; w];
+        let mut touched = (w, 0usize);
+        let mut crossings = Vec::new();
+        let scale = 1.0 / samples as f64;
+        for sample in 0..samples {
+            let scan_y = row_y as f64 + (sample as f64 + 0.5) * scale;
+            crossings.clear();
+            collect_scanline_crossings_from_row_source(flat, source, scan_y, &mut crossings);
+            crossings.retain(|(x, dir): &(f64, i32)| x.is_finite() && *dir != 0);
+            if crossings.len() < 2 {
+                continue;
+            }
+            crossings.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            let lo = safe_floor_i32(crossings[0].0 - x0 as f64).clamp(0, w as i32) as usize;
+            let hi = safe_ceil_i32(crossings[crossings.len() - 1].0 - x0 as f64)
+                .saturating_add(1)
+                .clamp(0, w as i32) as usize;
+            touched = (touched.0.min(lo), touched.1.max(hi));
+            let mut spans = Vec::new();
+            match rule {
+                FillRule::EvenOdd => {
+                    for pair in crossings.as_chunks::<2>().0 {
+                        spans.push((pair[0].0, pair[1].0));
+                    }
+                }
+                FillRule::NonZero => {
+                    let mut winding = 0;
+                    let mut start = None;
+                    for &(x, dir) in &crossings {
+                        if winding != 0 {
+                            if let Some(sx) = start.take() {
+                                spans.push((sx, x));
+                            }
+                        }
+                        winding += dir;
+                        if winding != 0 {
+                            start = Some(x);
+                        }
+                    }
+                }
+            }
+            for (a, b) in spans {
+                add_alpha_span(
+                    &mut accum,
+                    0,
+                    w,
+                    a - x0 as f64,
+                    b - x0 as f64,
+                    255.0 * scale,
+                );
+            }
+        }
+        (accum, touched)
+    }
+
+    #[test]
+    fn grouped_sample_lines_accumulate_exactly_like_separate_ones() {
+        let device = Transform2D::new(2.0, 0.0, 0.0, -2.0, 0.3, 200.7);
+        let mut flats = Vec::new();
+        for (dash, x1, y1) in [
+            (vec![3.0, 2.0], 90.0, 10.0),
+            (vec![3.0, 2.0], 90.0, 13.3),
+            (vec![1.0, 1.0], 10.0, 80.0),
+            (vec![6.0, 3.0], 70.0, 60.0),
+        ] {
+            let line = FlatPath {
+                subpaths: vec![vec![
+                    device.transform_point(10.1, 10.2),
+                    device.transform_point(x1, y1),
+                ]],
+                closed: vec![false],
+            };
+            for cap in [LineCap::Butt, LineCap::Round, LineCap::ProjectingSquare] {
+                flats.push(stroke_flat_path(
+                    &line,
+                    1.4,
+                    &DashState::new(dash.clone(), 0.5),
+                    cap,
+                    LineJoin::Miter,
+                    10.0,
+                ));
+            }
+        }
+        flats.push(FlatPath {
+            subpaths: vec![
+                vec![(2.0, 2.0), (30.5, 2.0), (30.5, 9.25), (2.0, 9.25)],
+                vec![(40.25, 1.5), (60.0, 7.0), (45.0, 12.0)],
+            ],
+            closed: vec![true, false],
+        });
+        for flat in &flats {
+            let (mut x_min, mut y_min, mut x_max, mut y_max) =
+                (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for &(x, y) in flat.subpaths.iter().flatten() {
+                x_min = x_min.min(x);
+                y_min = y_min.min(y);
+                x_max = x_max.max(x);
+                y_max = y_max.max(y);
+            }
+            let x0 = x_min.floor() as i32 - 1;
+            let w = (x_max.ceil() as i32 + 2 - x0) as usize;
+            let (y0, y1) = (y_min.floor() as i32, y_max.ceil() as i32 + 1);
+            let buckets = build_scanline_edge_buckets(flat, y0, (y1 - y0) as usize);
+            for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                let mut active = ScanlineActiveEdges::default();
+                let mut crossings = Vec::new();
+                for y in y0..y1 {
+                    let row = (y - y0) as usize;
+                    let source = buckets.as_ref().map(|buckets| {
+                        let ready = active.advance_to_row(buckets, row);
+                        (buckets, row, ready.then_some(&active))
+                    });
+                    let mut accum = vec![0u16; w];
+                    let touched = accumulate_scanline_row_subsampled(
+                        flat,
+                        source,
+                        rule,
+                        y,
+                        x0,
+                        w,
+                        PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+                        &mut crossings,
+                        &mut accum,
+                        false,
+                    );
+                    let (expected, expected_touched) =
+                        reference_row_accumulation(flat, source, rule, y, x0, w);
+                    assert_eq!(accum, expected, "row {y}");
+                    assert_eq!(touched, expected_touched, "row {y}");
+                }
+            }
+        }
+    }
 
     fn assert_pixel_buffers_eq(actual: &PixelBuffer, expected: &PixelBuffer) {
         let actual_bytes = actual.rgba_bytes();
