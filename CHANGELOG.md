@@ -5,6 +5,16 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- XFA forms render like PDFium. Static forms get their XFA fields (merged
+  datasets values, captions, fonts, para alignment, borders with edges,
+  corners and 3-D strokes, solid/linear/radial/pattern fills, check marks,
+  list and combo boxes, comb and multi-line edits, images, picture-clause
+  formatting) drawn over the page when its widgets have no appearances, or
+  always with the new `RenderContract::xfa = XfaRenderPolicy::Foreground`.
+  Dynamic forms lay out from their page sets with flowing subforms, breaks
+  and overflow; `ContentEngine::xfa_page_count`, `render_xfa_page` and
+  `xfa_layout_pdf` expose those pages, which may outnumber the PDF's own.
+  PDFs without XFA render exactly as before.
 - DOCX and EPUB embed each distinct image once, for its largest placement:
   baseline JPEGs are copied, PNG-predicted Flate images are wrapped as PNG
   without inflating, the rest are decoded (at reduced resolution when far
