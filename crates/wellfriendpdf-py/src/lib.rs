@@ -399,6 +399,111 @@ impl PyRenderContract {
         validate_py_render_contract(contract)
     }
 
+    /// Thin-stroke policy (`pdftoppm -thinlinemode`): `none`, `solid`, or `shape`.
+    fn with_thin_line_mode(&self, thin_line_mode: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.thin_line_mode = parse_render_contract_enum_py("thin_line_mode", thin_line_mode)?;
+        validate_py_render_contract(contract)
+    }
+
+    /// Vector anti-aliasing coverage curve: `linear` or `gamma15`.
+    fn with_vector_antialias_gamma(&self, vector_antialias_gamma: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.vector_antialias_gamma =
+            parse_render_contract_enum_py("vector_antialias_gamma", vector_antialias_gamma)?;
+        validate_py_render_contract(contract)
+    }
+
+    /// Forced (high-contrast) paint colours. Colours are `(r, g, b)` or
+    /// `(r, g, b, a)` tuples; omitted stroke/text colours default to
+    /// `path_fill`.
+    #[pyo3(signature = (path_fill, path_stroke=None, text_fill=None, text_stroke=None, convert_fill_to_stroke=false))]
+    fn with_forced_colors(
+        &self,
+        path_fill: Vec<u8>,
+        path_stroke: Option<Vec<u8>>,
+        text_fill: Option<Vec<u8>>,
+        text_stroke: Option<Vec<u8>>,
+        convert_fill_to_stroke: bool,
+    ) -> PyResult<Self> {
+        let path_fill = py_contract_color("path_fill", &path_fill)?;
+        let color = |name: &str, value: Option<Vec<u8>>| {
+            value.map_or(Ok(path_fill), |value| py_contract_color(name, &value))
+        };
+        let mut contract = self.contract.clone();
+        contract.forced_colors = Some(wellfriendpdf_engine::render::ForcedColorScheme {
+            path_fill,
+            path_stroke: color("path_stroke", path_stroke)?,
+            text_fill: color("text_fill", text_fill)?,
+            text_stroke: color("text_stroke", text_stroke)?,
+            convert_fill_to_stroke,
+        });
+        validate_py_render_contract(contract)
+    }
+
+    fn without_forced_colors(&self) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.forced_colors = None;
+        validate_py_render_contract(contract)
+    }
+
+    /// Form-field highlighting. `color` applies to every field type; the
+    /// per-type keywords override it. Colours are `(r, g, b)` or
+    /// `(r, g, b, a)` tuples (alpha is the highlight opacity). `focus_field`
+    /// draws the focus rectangle around that fully qualified field.
+    #[pyo3(signature = (color=None, *, text=None, push_button=None, check_box=None, radio_button=None, combo_box=None, list_box=None, signature=None, focus_field=None))]
+    fn with_form_highlight(
+        &self,
+        color: Option<Vec<u8>>,
+        text: Option<Vec<u8>>,
+        push_button: Option<Vec<u8>>,
+        check_box: Option<Vec<u8>>,
+        radio_button: Option<Vec<u8>>,
+        combo_box: Option<Vec<u8>>,
+        list_box: Option<Vec<u8>>,
+        signature: Option<Vec<u8>>,
+        focus_field: Option<String>,
+    ) -> PyResult<Self> {
+        let all = color
+            .map(|color| py_contract_color("color", &color))
+            .transpose()?;
+        let pick = |name: &str, value: Option<Vec<u8>>| {
+            value.map_or(Ok(all), |value| py_contract_color(name, &value).map(Some))
+        };
+        let mut contract = self.contract.clone();
+        contract.form_highlight = wellfriendpdf_engine::render::FormHighlightPolicy {
+            text: pick("text", text)?,
+            push_button: pick("push_button", push_button)?,
+            check_box: pick("check_box", check_box)?,
+            radio_button: pick("radio_button", radio_button)?,
+            combo_box: pick("combo_box", combo_box)?,
+            list_box: pick("list_box", list_box)?,
+            signature: pick("signature", signature)?,
+            focus_field: focus_field.filter(|field| !field.trim().is_empty()),
+        };
+        validate_py_render_contract(contract)
+    }
+
+    /// Form-field highlighting from a `FormHighlightPolicy` JSON object.
+    fn with_form_highlight_json(&self, policy_json: &str) -> PyResult<Self> {
+        let policy = if policy_json.trim().is_empty() {
+            wellfriendpdf_engine::render::FormHighlightPolicy::default()
+        } else {
+            serde_json::from_str(policy_json).map_err(|error| {
+                PyValueError::new_err(format!("invalid form highlight policy JSON: {error}"))
+            })?
+        };
+        let mut contract = self.contract.clone();
+        contract.form_highlight = policy;
+        validate_py_render_contract(contract)
+    }
+
+    fn without_form_highlight(&self) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.form_highlight = wellfriendpdf_engine::render::FormHighlightPolicy::default();
+        validate_py_render_contract(contract)
+    }
+
     fn with_resource_budget(
         &self,
         max_pixels: Option<u64>,
@@ -3100,6 +3205,163 @@ impl PyDocument {
         })
     }
 
+    /// Text search with explicit options. Unset options keep the engine
+    /// defaults (case-sensitive, NFKC `normalize_unicode` on, accents and
+    /// partial words matched). Returns a `binding_media.text_search.v1`
+    /// dictionary with `match_count` and `matches` (text, page, quads).
+    #[pyo3(signature = (query, pages=None, *, case_sensitive=None, normalize_unicode=None, ignore_accents=None, whole_word=None, include_hidden=None, max_matches=None, normalize_ligatures=None, ignore_hyphenation=None, collapse_whitespace=None))]
+    fn search_text<'py>(
+        &self,
+        py: Python<'py>,
+        query: &str,
+        pages: Option<Vec<usize>>,
+        case_sensitive: Option<bool>,
+        normalize_unicode: Option<bool>,
+        ignore_accents: Option<bool>,
+        whole_word: Option<bool>,
+        include_hidden: Option<bool>,
+        max_matches: Option<usize>,
+        normalize_ligatures: Option<bool>,
+        ignore_hyphenation: Option<bool>,
+        collapse_whitespace: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        let mut request = wellfriendpdf_engine::binding_media::TextSearchRequest {
+            pages: pages.unwrap_or_default(),
+            ..Default::default()
+        };
+        let options = &mut request.options;
+        let set = |slot: &mut bool, value: Option<bool>| {
+            if let Some(value) = value {
+                *slot = value;
+            }
+        };
+        set(&mut options.case_sensitive, case_sensitive);
+        set(&mut options.normalize_unicode, normalize_unicode);
+        set(&mut options.ignore_accents, ignore_accents);
+        set(&mut options.whole_word, whole_word);
+        set(&mut options.include_hidden, include_hidden);
+        set(&mut options.normalize_ligatures, normalize_ligatures);
+        set(&mut options.ignore_hyphenation, ignore_hyphenation);
+        set(&mut options.collapse_whitespace, collapse_whitespace);
+        if let Some(max_matches) = max_matches {
+            options.max_matches = max_matches;
+        }
+        let report = run_wellfriendpdf(|| {
+            wellfriendpdf_engine::binding_media::search_text_report(&self.engine, query, &request)
+        })?;
+        json_to_py(py, &report)
+    }
+
+    /// The page's embedded thumbnail (`/Thumb`) as `(width, height, rgba)`
+    /// with straight-alpha RGBA8 bytes, or `None` when the page has none.
+    fn page_thumbnail_rgba(&self, page: usize) -> PyResult<Option<(u32, u32, Vec<u8>)>> {
+        let thumbnail = run_wellfriendpdf(|| self.engine.page_thumbnail_rgba(page))?;
+        Ok(thumbnail.map(|image| (image.width, image.height, image.pixels)))
+    }
+
+    /// The page's embedded thumbnail with the decoder's channel layout:
+    /// `{"width", "height", "channels", "bits_per_sample", "data"}`, or `None`.
+    fn decode_page_thumbnail<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        let Some(image) = run_wellfriendpdf(|| self.engine.decode_page_thumbnail(page))? else {
+            return Ok(None);
+        };
+        let dict = PyDict::new(py);
+        dict.set_item("width", image.width)?;
+        dict.set_item("height", image.height)?;
+        dict.set_item("channels", image.channels)?;
+        dict.set_item("bits_per_sample", image.bits_per_sample)?;
+        dict.set_item("data", PyBytes::new(py, &image.pixels))?;
+        Ok(Some(dict.into_any().unbind()))
+    }
+
+    /// The page's embedded thumbnail as RGBA PNG bytes, or `None`.
+    fn page_thumbnail_png(&self, page: usize) -> PyResult<Option<Vec<u8>>> {
+        run_wellfriendpdf(|| {
+            wellfriendpdf_engine::binding_media::page_thumbnail_png(&self.engine, page)
+        })
+    }
+
+    /// Metadata for the page's images; each `index` selects the image for
+    /// `extract_image_original`.
+    fn page_images_info<'py>(&self, py: Python<'py>, page: usize) -> PyResult<Py<PyAny>> {
+        let images = run_wellfriendpdf(|| {
+            wellfriendpdf_engine::binding_media::page_image_infos(&self.engine, page)
+        })?;
+        json_to_py(py, &images)
+    }
+
+    /// One page image as `pdfimages -all` saves it: original JPEG, JPEG 2000,
+    /// JBIG2 or CCITT bytes, otherwise PNG. Returns the info fields plus
+    /// `data` (bytes) and `sidecar_data` (`{extension: bytes}`).
+    fn extract_image_original<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        index: usize,
+    ) -> PyResult<Py<PyAny>> {
+        let (info, image) = run_wellfriendpdf(|| {
+            wellfriendpdf_engine::binding_media::extract_page_image_original(
+                &self.engine,
+                page,
+                index,
+            )
+        })?;
+        let value = json_to_py(py, &info)?;
+        let dict = value.bind(py).cast::<PyDict>()?;
+        dict.set_item("data", PyBytes::new(py, &image.bytes))?;
+        let sidecars = PyDict::new(py);
+        for (extension, bytes) in &image.sidecars {
+            sidecars.set_item(*extension, PyBytes::new(py, bytes))?;
+        }
+        dict.set_item("sidecar_data", sidecars)?;
+        Ok(value)
+    }
+
+    /// Render one image object of a page on its own at its natural size, as
+    /// RGBA PNG bytes. `name` selects by XObject name; otherwise `index`
+    /// (default 0) selects the n-th top-level image `Do` operator.
+    #[pyo3(signature = (page, index=None, name=None))]
+    fn render_image_object(
+        &self,
+        page: usize,
+        index: Option<usize>,
+        name: Option<&str>,
+    ) -> PyResult<Vec<u8>> {
+        run_wellfriendpdf(|| {
+            let selector =
+                wellfriendpdf_engine::binding_media::page_image_object_selector(index, name)?;
+            wellfriendpdf_engine::binding_media::render_page_image_object_png(
+                &self.engine,
+                page,
+                &selector,
+            )
+        })
+    }
+
+    /// Like `render_image_object` but returns `(width, height, rgba)` with
+    /// straight-alpha RGBA8 bytes.
+    #[pyo3(signature = (page, index=None, name=None))]
+    fn render_image_object_rgba(
+        &self,
+        page: usize,
+        index: Option<usize>,
+        name: Option<&str>,
+    ) -> PyResult<(u32, u32, Vec<u8>)> {
+        run_wellfriendpdf(|| {
+            let selector =
+                wellfriendpdf_engine::binding_media::page_image_object_selector(index, name)?;
+            wellfriendpdf_engine::binding_media::render_page_image_object_rgba(
+                &self.engine,
+                page,
+                &selector,
+            )
+        })
+    }
+
     /// TableFormer/Table Transformer hook and backend availability status.
     fn table_proposal_status<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let json = run_wellfriendpdf(sdk::table_proposal_status_json)?;
@@ -5406,6 +5668,17 @@ fn validate_py_render_contract(
         .validate()
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     Ok(PyRenderContract { contract })
+}
+
+/// `(r, g, b)` or `(r, g, b, a)` to a contract colour (alpha defaults to 255).
+fn py_contract_color(field: &str, value: &[u8]) -> PyResult<wellfriendpdf_engine::ContractColor> {
+    match *value {
+        [r, g, b] => Ok(wellfriendpdf_engine::ContractColor { r, g, b, a: 255 }),
+        [r, g, b, a] => Ok(wellfriendpdf_engine::ContractColor { r, g, b, a }),
+        _ => Err(PyValueError::new_err(format!(
+            "{field} must be an (r, g, b) or (r, g, b, a) tuple of bytes"
+        ))),
+    }
 }
 
 fn parse_render_contract_enum_py<T>(field: &str, value: &str) -> PyResult<T>

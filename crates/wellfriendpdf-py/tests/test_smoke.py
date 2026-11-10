@@ -159,3 +159,74 @@ def test_text_reflow_query_surfaces_share_preview_request(sample_pdf):
     assert restored == sample_pdf.read_bytes()
     assert undo["kind"] == "text_reflow_undo_reflow"
     assert undo["report"]["byte_exact_restoration"] is True
+
+
+IMAGE_FIXTURE = ROOT / "crates" / "engine" / "tests" / "fixtures" / "image_only.pdf"
+
+
+def test_render_contract_raster_policy_forced_color_and_form_highlight_builders():
+    doc = wellfriendpdf.open(IMAGE_FIXTURE)
+    contract = doc.default_render_contract(1, 72)
+    built = (
+        contract.with_thin_line_mode("shape")
+        .with_vector_antialias_gamma("gamma15")
+        .with_forced_colors((0, 0, 0), path_stroke=(10, 20, 30, 255), convert_fill_to_stroke=True)
+        .with_form_highlight((0, 0, 255, 80), check_box=(255, 0, 0, 40), focus_field="form.name")
+    )
+    value = json.loads(built.to_json())
+    assert value["thin_line_mode"] == "Shape"
+    assert value["vector_antialias_gamma"] == "Gamma15"
+    assert value["forced_colors"]["path_fill"] == {"r": 0, "g": 0, "b": 0, "a": 255}
+    assert value["forced_colors"]["path_stroke"]["g"] == 20
+    assert value["forced_colors"]["text_fill"] == value["forced_colors"]["path_fill"]
+    assert value["forced_colors"]["convert_fill_to_stroke"] is True
+    assert value["form_highlight"]["text"]["a"] == 80
+    assert value["form_highlight"]["check_box"]["r"] == 255
+    assert value["form_highlight"]["focus_field"] == "form.name"
+    assert doc.render_contract_png(built).startswith(b"\x89PNG")
+
+    cleared = json.loads(built.without_forced_colors().without_form_highlight().to_json())
+    assert "forced_colors" not in cleared and "form_highlight" not in cleared
+    from_json = json.loads(contract.with_form_highlight_json('{"signature":{"r":1,"g":2,"b":3,"a":4}}').to_json())
+    assert from_json["form_highlight"]["signature"]["a"] == 4
+    with pytest.raises(ValueError):
+        contract.with_thin_line_mode("blurry")
+    with pytest.raises(ValueError):
+        contract.with_forced_colors((1, 2))
+
+
+def test_page_media_thumbnail_image_objects_and_original_images():
+    doc = wellfriendpdf.open(IMAGE_FIXTURE)
+    assert doc.page_thumbnail_rgba(1) is None
+    assert doc.decode_page_thumbnail(1) is None
+    assert doc.page_thumbnail_png(1) is None
+
+    images = doc.page_images_info(1)
+    assert images and images[0]["index"] == 0
+    original = doc.extract_image_original(1, images[0]["index"])
+    assert isinstance(original["data"], bytes) and original["data"]
+    assert original["extension"]
+    assert isinstance(original["sidecar_data"], dict)
+    with pytest.raises(wellfriendpdf.WellfriendError):
+        doc.extract_image_original(1, 10_000)
+
+    width, height, rgba = doc.render_image_object_rgba(1, index=0)
+    assert len(rgba) == width * height * 4
+    assert doc.render_image_object(1).startswith(b"\x89PNG")
+    with pytest.raises(wellfriendpdf.WellfriendError):
+        doc.render_image_object(1, name="NoSuchImage")
+
+
+def test_search_text_options():
+    doc = wellfriendpdf.open(FIXTURE)
+    report = doc.search_text("Hello")
+    assert report["schema_version"] == "binding_media.text_search.v1"
+    assert report["match_count"] >= 1
+    assert report["matches"][0]["quads"]
+    insensitive = doc.search_text("hello", pages=[1], case_sensitive=False, whole_word=True)
+    assert insensitive["options"]["case_sensitive"] is False
+    assert insensitive["options"]["whole_word"] is True
+    assert insensitive["match_count"] >= 1
+    assert doc.search_text("hello")["match_count"] == 0
+    with pytest.raises(wellfriendpdf.WellfriendError):
+        doc.search_text("Hello", pages=[999])

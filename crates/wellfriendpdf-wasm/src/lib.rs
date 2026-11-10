@@ -21,9 +21,10 @@ mod wasm_api {
     use serde::de::DeserializeOwned;
     use wasm_bindgen::prelude::*;
 
+    use wellfriendpdf_engine::binding_media::{self, TextSearchRequest};
     use wellfriendpdf_engine::render::{
         apply_render_invalidation_plan_json_to_cache, AlphaMode, ContractColor, DeviceClip,
-        DeviceMatrix, PixelFormat, RenderContract,
+        DeviceMatrix, ForcedColorScheme, FormHighlightPolicy, PixelFormat, RenderContract,
     };
     use wellfriendpdf_engine::{
         sdk, CancelToken, ChunkOptions, ContentEngine, DocType, EvidenceBundle, ExtractOptions,
@@ -891,6 +892,101 @@ mod wasm_api {
         ) -> Result<WellfriendRenderContract, JsValue> {
             let mut contract = self.contract.clone();
             contract.determinism = parse_contract_enum("determinism", determinism)?;
+            validate_render_contract(contract)
+        }
+
+        /// Thin-stroke policy (`pdftoppm -thinlinemode`): none, solid, or shape.
+        #[wasm_bindgen(js_name = withThinLineMode)]
+        pub fn with_thin_line_mode(
+            &self,
+            thin_line_mode: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.thin_line_mode = parse_contract_enum("thin_line_mode", thin_line_mode)?;
+            validate_render_contract(contract)
+        }
+
+        /// Vector anti-aliasing coverage curve: linear or gamma15.
+        #[wasm_bindgen(js_name = withVectorAntialiasGamma)]
+        pub fn with_vector_antialias_gamma(
+            &self,
+            vector_antialias_gamma: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.vector_antialias_gamma =
+                parse_contract_enum("vector_antialias_gamma", vector_antialias_gamma)?;
+            validate_render_contract(contract)
+        }
+
+        /// Forced (high-contrast) paint colours as packed straight-alpha
+        /// `0xRRGGBBAA` numbers for path fill, path stroke, text fill and
+        /// text stroke.
+        #[wasm_bindgen(js_name = withForcedColors)]
+        pub fn with_forced_colors(
+            &self,
+            path_fill_rgba: u32,
+            path_stroke_rgba: u32,
+            text_fill_rgba: u32,
+            text_stroke_rgba: u32,
+            convert_fill_to_stroke: Option<bool>,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.forced_colors = Some(ForcedColorScheme {
+                path_fill: packed_rgba(path_fill_rgba),
+                path_stroke: packed_rgba(path_stroke_rgba),
+                text_fill: packed_rgba(text_fill_rgba),
+                text_stroke: packed_rgba(text_stroke_rgba),
+                convert_fill_to_stroke: convert_fill_to_stroke.unwrap_or(false),
+            });
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withoutForcedColors)]
+        pub fn without_forced_colors(&self) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.forced_colors = None;
+            validate_render_contract(contract)
+        }
+
+        /// Highlight every form-field type with one packed `0xRRGGBBAA`
+        /// colour and optionally draw the focus rectangle around one fully
+        /// qualified field.
+        #[wasm_bindgen(js_name = withFormHighlight)]
+        pub fn with_form_highlight(
+            &self,
+            highlight_rgba: u32,
+            focus_field: Option<String>,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut policy = FormHighlightPolicy::all(packed_rgba(highlight_rgba));
+            policy.focus_field = focus_field.filter(|field| !field.trim().is_empty());
+            let mut contract = self.contract.clone();
+            contract.form_highlight = policy;
+            validate_render_contract(contract)
+        }
+
+        /// Form-field highlighting from a `FormHighlightPolicy` JSON object
+        /// (per-type colours and `focus_field`); blank JSON switches it off.
+        #[wasm_bindgen(js_name = withFormHighlightJson)]
+        pub fn with_form_highlight_json(
+            &self,
+            policy_json: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let policy = if policy_json.trim().is_empty() {
+                FormHighlightPolicy::default()
+            } else {
+                serde_json::from_str(policy_json).map_err(|error| {
+                    JsValue::from_str(&format!("invalid form highlight policy JSON: {error}"))
+                })?
+            };
+            let mut contract = self.contract.clone();
+            contract.form_highlight = policy;
+            validate_render_contract(contract)
+        }
+
+        #[wasm_bindgen(js_name = withoutFormHighlight)]
+        pub fn without_form_highlight(&self) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.form_highlight = FormHighlightPolicy::default();
             validate_render_contract(contract)
         }
 
@@ -2765,6 +2861,147 @@ mod wasm_api {
             })
         }
 
+        /// Text search with options JSON (`pages`, `case_sensitive`,
+        /// `normalize_unicode`, `ignore_accents`, `whole_word`, ...; omitted
+        /// fields keep the engine defaults). Returns a
+        /// `binding_media.text_search.v1` report.
+        #[wasm_bindgen(js_name = searchTextJson)]
+        pub fn search_text_json(
+            &self,
+            query: &str,
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let request = TextSearchRequest::from_json(options_json.as_deref()).map_err(js_err)?;
+            let report =
+                binding_media::search_text_report(&self.engine, query, &request).map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|err| JsValue::from_str(&err.to_string()))
+        }
+
+        /// The page's embedded thumbnail (`/Thumb`) as straight-alpha RGBA8
+        /// bytes; `reportJson()` holds `{width, height, channels}`. Returns
+        /// `undefined` when the page has no thumbnail.
+        #[wasm_bindgen(js_name = pageThumbnailRgba)]
+        pub fn page_thumbnail_rgba(
+            &self,
+            page: usize,
+        ) -> Result<Option<WellfriendOutput>, JsValue> {
+            self.ensure_open()?;
+            let thumbnail = self.engine.page_thumbnail_rgba(page).map_err(js_err)?;
+            thumbnail.map(raw_image_output).transpose()
+        }
+
+        /// The page's embedded thumbnail with the decoder's 8-bit channel
+        /// layout; `reportJson()` holds `{width, height, channels}`.
+        #[wasm_bindgen(js_name = decodePageThumbnail)]
+        pub fn decode_page_thumbnail(
+            &self,
+            page: usize,
+        ) -> Result<Option<WellfriendOutput>, JsValue> {
+            self.ensure_open()?;
+            let thumbnail = self.engine.decode_page_thumbnail(page).map_err(js_err)?;
+            thumbnail.map(raw_image_output).transpose()
+        }
+
+        /// The page's embedded thumbnail as RGBA PNG bytes, or `undefined`.
+        #[wasm_bindgen(js_name = pageThumbnailPng)]
+        pub fn page_thumbnail_png(&self, page: usize) -> Result<Option<Vec<u8>>, JsValue> {
+            self.ensure_open()?;
+            binding_media::page_thumbnail_png(&self.engine, page).map_err(js_err)
+        }
+
+        /// JSON array describing the page's images; each `index` selects the
+        /// image for `extractImageOriginal`.
+        #[wasm_bindgen(js_name = pageImagesJson)]
+        pub fn page_images_json(&self, page: usize) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let images = binding_media::page_image_infos(&self.engine, page).map_err(js_err)?;
+            serde_json::to_string(&images).map_err(|err| JsValue::from_str(&err.to_string()))
+        }
+
+        /// One page image as `pdfimages -all` saves it (original JPEG, JPEG
+        /// 2000, JBIG2 or CCITT bytes, otherwise PNG). `reportJson()` holds
+        /// the extension, filter and sidecar list; sidecar bytes come from
+        /// `extractImageOriginalSidecar`.
+        #[wasm_bindgen(js_name = extractImageOriginal)]
+        pub fn extract_image_original(
+            &self,
+            page: usize,
+            index: usize,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let (info, image) =
+                binding_media::extract_page_image_original(&self.engine, page, index)
+                    .map_err(js_err)?;
+            Ok(WellfriendOutput {
+                bytes: image.bytes,
+                report_json: serde_json::to_string(&info)
+                    .map_err(|err| JsValue::from_str(&err.to_string()))?,
+            })
+        }
+
+        #[wasm_bindgen(js_name = extractImageOriginalSidecar)]
+        pub fn extract_image_original_sidecar(
+            &self,
+            page: usize,
+            index: usize,
+            sidecar_index: usize,
+        ) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
+            let (_, image) = binding_media::extract_page_image_original(&self.engine, page, index)
+                .map_err(js_err)?;
+            let count = image.sidecars.len();
+            image
+                .sidecars
+                .into_iter()
+                .nth(sidecar_index)
+                .map(|(_, bytes)| bytes)
+                .ok_or_else(|| {
+                    JsValue::from_str(&format!(
+                        "sidecar index {sidecar_index} is out of range: the image has {count} sidecar(s)"
+                    ))
+                })
+        }
+
+        /// Render one image object on its own at its natural size as RGBA PNG
+        /// bytes. A non-empty `name` selects by XObject name; otherwise
+        /// `index` (default 0) selects the n-th top-level image `Do`.
+        #[wasm_bindgen(js_name = renderImageObjectPng)]
+        pub fn render_image_object_png(
+            &self,
+            page: usize,
+            index: Option<usize>,
+            name: Option<String>,
+        ) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
+            let selector = image_object_selector(index, name.as_deref())?;
+            binding_media::render_page_image_object_png(&self.engine, page, &selector)
+                .map_err(js_err)
+        }
+
+        /// Like `renderImageObjectPng` but returns straight-alpha RGBA8
+        /// bytes; `reportJson()` holds `{width, height, channels}`.
+        #[wasm_bindgen(js_name = renderImageObjectRgba)]
+        pub fn render_image_object_rgba(
+            &self,
+            page: usize,
+            index: Option<usize>,
+            name: Option<String>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.ensure_open()?;
+            let selector = image_object_selector(index, name.as_deref())?;
+            let (width, height, pixels) =
+                binding_media::render_page_image_object_rgba(&self.engine, page, &selector)
+                    .map_err(js_err)?;
+            raw_image_output(wellfriendpdf_engine::RawImage {
+                width,
+                height,
+                channels: 4,
+                bits_per_sample: 8,
+                pixels,
+            })
+        }
+
         #[wasm_bindgen(js_name = tableProposalStatusJson)]
         pub fn table_proposal_status_json() -> Result<String, JsValue> {
             install_panic_hook();
@@ -3828,6 +4065,35 @@ mod wasm_api {
 
     fn js_err(err: wellfriendpdf_engine::WellfriendError) -> JsValue {
         JsValue::from_str(&err.to_string())
+    }
+
+    /// Unpack a straight-alpha `0xRRGGBBAA` colour.
+    fn packed_rgba(value: u32) -> ContractColor {
+        let [r, g, b, a] = value.to_be_bytes();
+        ContractColor { r, g, b, a }
+    }
+
+    fn raw_image_output(
+        image: wellfriendpdf_engine::RawImage,
+    ) -> Result<WellfriendOutput, JsValue> {
+        let report_json = serde_json::json!({
+            "width": image.width,
+            "height": image.height,
+            "channels": image.channels,
+            "bits_per_sample": image.bits_per_sample,
+        })
+        .to_string();
+        Ok(WellfriendOutput {
+            bytes: image.pixels,
+            report_json,
+        })
+    }
+
+    fn image_object_selector(
+        index: Option<usize>,
+        name: Option<&str>,
+    ) -> Result<wellfriendpdf_engine::PageImageObjectSelector, JsValue> {
+        binding_media::page_image_object_selector(index, name).map_err(js_err)
     }
 
     fn contract_render_report_json(
