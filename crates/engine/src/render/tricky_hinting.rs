@@ -35,7 +35,7 @@ thread_local! {
 
 /// Whether the TrueType program needs its bytecode run to draw correctly.
 pub(crate) fn is_tricky_font(font_bytes: &[u8]) -> bool {
-    let Ok(font) = FontRef::new(font_bytes) else {
+    let Ok(font) = FontRef::from_index(font_bytes, 0) else {
         return false;
     };
     let outlines = font.outline_glyphs();
@@ -139,7 +139,7 @@ impl OutlinePen for FontUnitPen {
 /// an sfnt, the glyph is missing, or the interpreter fails; callers then keep
 /// the unhinted outline.
 pub(crate) fn hinted_outline(font_bytes: &[u8], gid: u16) -> Option<Path> {
-    let font = FontRef::new(font_bytes).ok()?;
+    let font = FontRef::from_index(font_bytes, 0).ok()?;
     let upem = f64::from(
         font.metrics(Size::unscaled(), LocationRef::default())
             .units_per_em,
@@ -201,5 +201,21 @@ mod tests {
             (max_y - f64::from(bbox.y_max)).abs() <= tolerance,
             "{max_y}"
         );
+    }
+
+    #[test]
+    fn installed_mingliu_is_tricky_and_hinted() {
+        // Windows ships MingLiU-ExtB, one of FreeType's tricky families.
+        let Ok(bytes) = std::fs::read("C:/Windows/Fonts/mingliub.ttc") else {
+            eprintln!("NOTE: MingLiU-ExtB not installed; skipping tricky font test");
+            return;
+        };
+        assert!(is_tricky_font(&bytes), "MingLiU must be detected as tricky");
+        let face = ttf_parser::Face::parse(&bytes, 0).expect("MingLiU face");
+        let gid = (1..face.number_of_glyphs().min(2000))
+            .find(|gid| face.glyph_bounding_box(ttf_parser::GlyphId(*gid)).is_some())
+            .expect("a glyph with an outline");
+        let hinted = hinted_outline(&bytes, gid).expect("hinted MingLiU glyph");
+        assert!(!hinted.segments.is_empty());
     }
 }
