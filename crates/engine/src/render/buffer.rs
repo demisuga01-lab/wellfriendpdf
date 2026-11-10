@@ -3781,29 +3781,27 @@ impl PixelBuffer {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn blend_lcd_alpha_mask_strided(
+    /// Blend an LCD glyph coverage mask: three bytes per pixel holding the
+    /// red, green and blue sub-pixel coverage (see
+    /// `path::rasterize_glyph_lcd_mask`). Each colour channel is blended with
+    /// its own coverage, as PDFium's `DrawNormalTextHelper` does; the alpha
+    /// channel takes the average coverage. Exact (HighQuality) rendering,
+    /// non-Normal blend modes and knockout groups fall back to the averaged
+    /// grey coverage (PDFium's normalized LCD path).
+    pub(crate) fn blend_lcd_coverage_mask(
         &mut self,
         dst_x: i32,
         dst_y: i32,
         mask_width: u32,
         mask_height: u32,
-        alpha: &[u8],
-        alpha_stride: usize,
-        alpha_offset: usize,
+        coverage: &[u8],
         color: PixelColor,
     ) {
+        let row_bytes = mask_width as usize * 3;
         if mask_width == 0
             || mask_height == 0
             || color[3] == 0
-            || alpha_stride < mask_width as usize
-            || !alpha_mask_window_fits(
-                alpha.len(),
-                alpha_offset,
-                alpha_stride,
-                mask_width as usize,
-                mask_height as usize,
-            )
+            || coverage.len() != row_bytes.saturating_mul(mask_height as usize)
         {
             return;
         }
@@ -3812,16 +3810,11 @@ impl PixelBuffer {
             || self.blend_mode != BlendMode::Normal
             || self.knockout_backdrop.is_some()
         {
-            self.blend_alpha_mask_strided(
-                dst_x,
-                dst_y,
-                mask_width,
-                mask_height,
-                alpha,
-                alpha_stride,
-                alpha_offset,
-                color,
-            );
+            let averaged: Vec<u8> = coverage
+                .chunks_exact(3)
+                .map(|rgb| ((u16::from(rgb[0]) + u16::from(rgb[1]) + u16::from(rgb[2])) / 3) as u8)
+                .collect();
+            self.blend_alpha_mask(dst_x, dst_y, mask_width, mask_height, &averaged, color);
             return;
         }
 
@@ -3845,11 +3838,11 @@ impl PixelBuffer {
 
         for row in y0..y1 {
             let mask_row = (row - dst_y) as usize;
-            let src_start = alpha_offset
-                .saturating_add(mask_row.saturating_mul(alpha_stride))
-                .saturating_add((x0 - dst_x) as usize);
-            let src_end = src_start.saturating_add((x1 - x0) as usize);
-            let Some(mask_row_alpha) = alpha.get(src_start..src_end) else {
+            let src_start = mask_row
+                .saturating_mul(row_bytes)
+                .saturating_add((x0 - dst_x) as usize * 3);
+            let src_end = src_start.saturating_add((x1 - x0) as usize * 3);
+            let Some(mask_row_coverage) = coverage.get(src_start..src_end) else {
                 continue;
             };
             let Some(dst_start) = (row as usize)
@@ -3861,13 +3854,13 @@ impl PixelBuffer {
             };
             let Some(dst_row) = self
                 .data
-                .get_mut(dst_start..dst_start.saturating_add(mask_row_alpha.len() * 4))
+                .get_mut(dst_start..dst_start.saturating_add((x1 - x0) as usize * 4))
             else {
                 continue;
             };
-            let painted = blend_lcd_alpha_mask_row_normal(
+            let painted = blend_lcd_coverage_row_normal(
                 dst_row,
-                mask_row_alpha,
+                mask_row_coverage,
                 x0,
                 row,
                 color,
@@ -6547,20 +6540,16 @@ impl PixelBuffer {
     }
 }
 
-fn lcd_weighted_channel_coverage(center: u8, neighbor: u8) -> u8 {
-    ((u16::from(center) * 2 + u16::from(neighbor) + 1) / 3).min(255) as u8
-}
-
-fn blend_lcd_alpha_mask_row_normal(
+fn blend_lcd_coverage_row_normal(
     dst_row: &mut [u8],
-    mask_row_alpha: &[u8],
+    mask_row_coverage: &[u8],
     x0: i32,
     row: i32,
     color: PixelColor,
     smask: Option<&AlphaMask>,
     clip: Option<&ClipMask>,
 ) -> u64 {
-    let pixels = mask_row_alpha.len().min(dst_row.len() / 4);
+    let pixels = (mask_row_coverage.len() / 3).min(dst_row.len() / 4);
     if pixels == 0 || color[3] == 0 {
         return 0;
     }
@@ -6574,19 +6563,7 @@ fn blend_lcd_alpha_mask_row_normal(
     ];
     let to_byte = |value: f32| (value * 255.0).round_byte();
 
-    for offset in 0..pixels {
-        let green = mask_row_alpha[offset];
-        let left = if offset == 0 {
-            green
-        } else {
-            mask_row_alpha[offset - 1]
-        };
-        let right = mask_row_alpha.get(offset + 1).copied().unwrap_or(green);
-        let channel_coverage = [
-            lcd_weighted_channel_coverage(green, left),
-            green,
-            lcd_weighted_channel_coverage(green, right),
-        ];
+    for (offset, channel_coverage) in mask_row_coverage.chunks_exact(3).take(pixels).enumerate() {
         if channel_coverage == [0, 0, 0] {
             continue;
         }
@@ -15293,9 +15270,9 @@ mod tests {
     }
 
     #[test]
-    fn lcd_alpha_mask_fuses_partial_clip_and_smask_into_row_path() {
+    fn lcd_coverage_mask_fuses_partial_clip_and_smask_into_row_path() {
         let color = [20, 40, 220, 192];
-        let alpha = [64, 128, 255, 32];
+        let coverage = [0, 64, 128, 128, 255, 255, 255, 200, 32, 32, 0, 0];
         let clip = ClipMask::from_alpha_bytes(5, 1, vec![255, 128, 0, 255, 64]);
         let mut smask = AlphaMask::all_opaque(5, 1);
         smask.set(1, 0, 255);
@@ -15310,27 +15287,12 @@ mod tests {
         let mut expected = PixelBuffer::new_filled(5, 1, [230, 220, 210, 255]);
         expected.set_clip(clip);
         expected.set_smask(smask);
-        for (offset, green) in alpha.iter().copied().enumerate() {
-            let left = if offset == 0 {
-                green
-            } else {
-                alpha[offset - 1]
-            };
-            let right = alpha.get(offset + 1).copied().unwrap_or(green);
-            expected.blend_lcd_pixel(
-                1 + offset as i32,
-                0,
-                color,
-                [
-                    lcd_weighted_channel_coverage(green, left),
-                    green,
-                    lcd_weighted_channel_coverage(green, right),
-                ],
-            );
+        for (offset, rgb) in coverage.chunks_exact(3).enumerate() {
+            expected.blend_lcd_pixel(1 + offset as i32, 0, color, [rgb[0], rgb[1], rgb[2]]);
         }
 
         let before = pixel_compositor_stats();
-        row_path.blend_lcd_alpha_mask_strided(1, 0, 4, 1, &alpha, 4, 0, color);
+        row_path.blend_lcd_coverage_mask(1, 0, 4, 1, &coverage, color);
         let after = pixel_compositor_stats();
 
         assert!(

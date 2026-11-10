@@ -543,6 +543,7 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     push_if_changed!(subpixel_text);
     push_if_changed!(thin_line_mode);
     push_if_changed!(vector_antialias_gamma);
+    push_if_changed!(text_gamma);
     push_if_changed!(grayscale);
     push_if_changed!(forced_colors);
     push_if_changed!(color_scheme);
@@ -2290,6 +2291,7 @@ impl ContentEngine {
         accepted_expected.subpixel_text = contract.subpixel_text;
         accepted_expected.thin_line_mode = contract.thin_line_mode;
         accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
+        accepted_expected.text_gamma = contract.text_gamma;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -2308,6 +2310,8 @@ impl ContentEngine {
             contract.thin_line_mode,
             contract.vector_antialias_gamma,
         );
+        let _text_raster_guard =
+            crate::render::vector_quality::TextRasterContractGuard::enter(contract.text_gamma);
         // Only the requested window is rasterized; objects outside it are
         // culled against their retained device bounds.
         let mut buffer = PageRenderer::render_contract_window_with_cache(
@@ -5671,6 +5675,264 @@ mod tests {
         );
     }
 
+    fn lcd_text_fixture() -> ContentEngine {
+        use crate::{AuthorPageSize, PdfBuilder, StandardFont, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text(
+                "Hillmill",
+                20.3,
+                700.0,
+                &TextStyle::standard(StandardFont::Helvetica, 36.0),
+            )
+            .expect("write LCD text fixture");
+        ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open LCD text fixture")
+    }
+
+    fn lcd_text_contract(engine: &ContentEngine) -> RenderContract {
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 60,
+            width: 200,
+            height: 40,
+        });
+        contract.width = 200;
+        contract.height = 40;
+        contract.stride = 200 * 4;
+        contract
+    }
+
+    #[test]
+    fn contract_lcd_text_blends_rgb_subpixels_in_output_byte_order() {
+        let engine = lcd_text_fixture();
+        let default_contract = lcd_text_contract(&engine);
+        let mut lcd_contract = default_contract.clone();
+        lcd_contract.subpixel_text = crate::render::SmoothingPolicy::Subpixel;
+
+        let default = engine
+            .render_page_with_contract(&default_contract, &CancelToken::none())
+            .expect("default text renders");
+        let lcd = engine
+            .render_page_with_contract(&lcd_contract, &CancelToken::none())
+            .expect("LCD text renders");
+        assert_ne!(default.rgba_bytes(), lcd.rgba_bytes());
+
+        // Black stems on white: the first inked pixel of a run (a left edge)
+        // has its red (leftmost) sub-pixel least covered, so red stays
+        // brightest; the last inked pixel (a right edge) keeps blue
+        // brightest.
+        let width = lcd.width as i32;
+        let white = [255, 255, 255, 255];
+        let (mut left_ok, mut left_wrong, mut right_ok, mut right_wrong) = (0, 0, 0, 0);
+        for y in 0..lcd.height as i32 {
+            for x in 1..width - 1 {
+                let px = lcd.get_pixel(x, y);
+                if px == white {
+                    continue;
+                }
+                if lcd.get_pixel(x - 1, y) == white {
+                    match px[0].cmp(&px[2]) {
+                        std::cmp::Ordering::Greater => left_ok += 1,
+                        std::cmp::Ordering::Less => left_wrong += 1,
+                        std::cmp::Ordering::Equal => {}
+                    }
+                }
+                if lcd.get_pixel(x + 1, y) == white {
+                    match px[2].cmp(&px[0]) {
+                        std::cmp::Ordering::Greater => right_ok += 1,
+                        std::cmp::Ordering::Less => right_wrong += 1,
+                        std::cmp::Ordering::Equal => {}
+                    }
+                }
+            }
+        }
+        assert!(
+            left_ok > 20 && left_wrong == 0,
+            "left edges keep red brightest: {left_ok} vs {left_wrong}"
+        );
+        assert!(
+            right_ok > 20 && right_wrong == 0,
+            "right edges keep blue brightest: {right_ok} vs {right_wrong}"
+        );
+
+        // A BGRA surface carries the same physical sub-pixel colours with the
+        // channel bytes swapped.
+        let mut bgra_contract = lcd_contract.clone();
+        bgra_contract.pixel_format = crate::render::PixelFormat::Bgra8;
+        let mut surface = vec![0u8; bgra_contract.stride * bgra_contract.height as usize];
+        engine
+            .render_page_into_buffer(&bgra_contract, &CancelToken::none(), &mut surface)
+            .expect("LCD text renders into a BGRA surface");
+        for (bgra, rgba) in surface
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(lcd.rgba_bytes().as_chunks::<4>().0.iter())
+        {
+            assert_eq!([bgra[2], bgra[1], bgra[0], bgra[3]], *rgba);
+        }
+    }
+
+    #[test]
+    fn contract_text_gamma_darkens_partial_glyph_coverage_only() {
+        let engine = lcd_text_fixture();
+        let linear_contract = lcd_text_contract(&engine);
+        let mut gamma_contract = linear_contract.clone();
+        gamma_contract.text_gamma = crate::render::TextGamma::Pdfium;
+
+        let linear = engine
+            .render_page_with_contract(&linear_contract, &CancelToken::none())
+            .expect("linear text renders");
+        let gamma = engine
+            .render_page_with_contract(&gamma_contract, &CancelToken::none())
+            .expect("gamma text renders");
+        let mut darker = 0;
+        for (lin, gam) in linear
+            .rgba_bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(gamma.rgba_bytes().as_chunks::<4>().0.iter())
+        {
+            if lin[0] == 0 || lin[0] == 255 {
+                assert_eq!(lin, gam, "solid and empty pixels are unchanged");
+            } else {
+                assert!(gam[0] <= lin[0], "gamma never lightens glyph coverage");
+                if gam[0] < lin[0] {
+                    darker += 1;
+                }
+            }
+        }
+        assert!(darker > 0, "partially covered glyph pixels get darker");
+
+        // With LCD text the table applies to every channel's coverage.
+        let mut lcd_linear = linear_contract.clone();
+        lcd_linear.subpixel_text = crate::render::SmoothingPolicy::Subpixel;
+        let mut lcd_gamma = lcd_linear.clone();
+        lcd_gamma.text_gamma = crate::render::TextGamma::Pdfium;
+        let lcd_linear = engine
+            .render_page_with_contract(&lcd_linear, &CancelToken::none())
+            .expect("linear LCD text renders");
+        let lcd_gamma = engine
+            .render_page_with_contract(&lcd_gamma, &CancelToken::none())
+            .expect("gamma LCD text renders");
+        let lcd_linear_ink: u64 = lcd_linear.rgba_bytes().iter().map(|v| u64::from(*v)).sum();
+        let lcd_gamma_ink: u64 = lcd_gamma.rgba_bytes().iter().map(|v| u64::from(*v)).sum();
+        assert!(lcd_gamma_ink < lcd_linear_ink);
+    }
+
+    #[test]
+    fn contract_text_gamma_leaves_vector_paths_unchanged() {
+        let content = "0.2 0.4 0.6 rg 10.3 10.3 50.4 20.2 re f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 80 40] /Contents 4 0 R >>".to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            )
+            .into_bytes(),
+        ];
+        let engine = ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open path fixture");
+        let contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let mut gamma_contract = contract.clone();
+        gamma_contract.text_gamma = crate::render::TextGamma::Pdfium;
+        let linear = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("path renders");
+        let gamma = engine
+            .render_page_with_contract(&gamma_contract, &CancelToken::none())
+            .expect("path renders with text gamma");
+        assert_eq!(linear.rgba_bytes(), gamma.rgba_bytes());
+    }
+
+    fn shrunk_checker_image_engine(content: &str) -> ContentEngine {
+        // An 8x2 black/white checkerboard, painted below its source size.
+        let mut image_bytes = Vec::new();
+        for row in 0..2 {
+            for column in 0..8 {
+                let value = if (row + column) % 2 == 0 { 0u8 } else { 255 };
+                image_bytes.extend_from_slice(&[value, value, value]);
+            }
+        }
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+            [
+                format!(
+                    "<< /Type /XObject /Subtype /Image /Width 8 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {} >>\nstream\n",
+                    image_bytes.len()
+                )
+                .into_bytes(),
+                image_bytes,
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        ContentEngine::open_bytes(minimal_pdf_from_objects(&objects))
+            .expect("open shrunk image fixture")
+    }
+
+    #[test]
+    fn contract_image_smoothing_disabled_uses_nearest_when_shrinking() {
+        // Axis-aligned and quarter-turned shrinks (8x2 source onto 4x1 device
+        // pixels): the default box filter averages the checkerboard to grey,
+        // "no smooth image" picks one source sample per device pixel.
+        for content in [
+            "q 4 0 0 1 2 2 cm /Im1 Do Q\n",
+            "q 0 4 -1 0 10 2 cm /Im1 Do Q\n",
+        ] {
+            let engine = shrunk_checker_image_engine(content);
+            let mut contract = engine
+                .default_render_contract(1, 72, RenderMode::Compat)
+                .expect("default contract");
+            let painted = |buf: &PixelBuffer| -> Vec<u8> {
+                buf.rgba_bytes()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|px| px[..3] != [255, 255, 255])
+                    .map(|px| px[0])
+                    .collect()
+            };
+            let smooth = engine
+                .render_page_with_contract(&contract, &CancelToken::none())
+                .expect("default image smoothing renders");
+            assert!(
+                painted(&smooth).iter().any(|v| (32..=223).contains(v)),
+                "default shrinking averages the checkerboard ({content})"
+            );
+
+            contract.image_smoothing = crate::render::SmoothingPolicy::Disabled;
+            let crisp = engine
+                .render_page_with_contract(&contract, &CancelToken::none())
+                .expect("disabled image smoothing renders");
+            let crisp_samples = painted(&crisp);
+            assert!(
+                !crisp_samples.is_empty(),
+                "the shrunk image still paints ({content})"
+            );
+            assert!(
+                crisp_samples.iter().all(|v| *v == 0),
+                "no smooth image samples one source pixel per device pixel ({content}): {crisp_samples:?}"
+            );
+        }
+    }
+
     #[test]
     fn contract_path_smoothing_disabled_thresholds_fill_edges() {
         fn partial_red_pixels(buf: &PixelBuffer) -> usize {
@@ -5994,6 +6256,7 @@ mod tests {
         every_field.forced_colors = Some(crate::render::ForcedColorScheme::uniform(
             crate::render::ContractColor::default(),
         ));
+        every_field.text_gamma = crate::render::TextGamma::Pdfium;
         let contract_fields = serde_json::to_value(&every_field)
             .expect("serialize contract")
             .as_object()

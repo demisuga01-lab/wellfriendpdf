@@ -147,6 +147,26 @@ pub enum VectorAntialiasGamma {
     Gamma15,
 }
 
+/// Mapping from glyph coverage to paint opacity for text drawn from glyph
+/// masks (paths, images and clips are unaffected).
+///
+/// * `Linear` (default): opacity equals glyph coverage.
+/// * `Pdfium`: PDFium's 256-entry text gamma table (`kTextGammaAdjust`),
+///   which darkens partially covered glyph pixels before blending. With LCD
+///   text it is applied to each colour channel's coverage separately.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TextGamma {
+    #[default]
+    Linear,
+    Pdfium,
+}
+
+impl TextGamma {
+    pub fn is_linear(&self) -> bool {
+        *self == TextGamma::Linear
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AnnotationRenderPolicy {
     #[default]
@@ -688,6 +708,14 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         effect: "vector-coverage-to-opacity-curve",
     },
     RenderContractFieldEffect {
+        field: "text_gamma",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: false,
+        effect: "glyph-coverage-text-gamma-table",
+    },
+    RenderContractFieldEffect {
         field: "grayscale",
         cache_identity: true,
         validation: false,
@@ -830,6 +858,11 @@ pub struct RenderContract {
     /// without this field deserialize to [`VectorAntialiasGamma::Linear`].
     #[serde(default)]
     pub vector_antialias_gamma: VectorAntialiasGamma,
+    /// Glyph coverage gamma (PDFium text gamma table). Off by default; the
+    /// field is omitted from the serialized contract while linear so existing
+    /// cache identities stay stable.
+    #[serde(default, skip_serializing_if = "TextGamma::is_linear")]
+    pub text_gamma: TextGamma,
     pub grayscale: bool,
     pub color_scheme: ColorScheme,
     /// Optional forced (high-contrast) paint colours for paths and text.
@@ -893,6 +926,7 @@ impl RenderContract {
             subpixel_text: SmoothingPolicy::Disabled,
             thin_line_mode: ThinLineMode::None,
             vector_antialias_gamma: VectorAntialiasGamma::Linear,
+            text_gamma: TextGamma::Linear,
             grayscale: false,
             color_scheme: ColorScheme::Light,
             forced_colors: None,
@@ -1229,6 +1263,25 @@ mod tests {
     }
 
     #[test]
+    fn text_gamma_changes_identity_only_when_set() {
+        let base = contract(1);
+        assert_eq!(base.text_gamma, TextGamma::Linear);
+        let json = serde_json::to_value(&base).expect("serialize contract");
+        assert!(
+            json.get("text_gamma").is_none(),
+            "linear text gamma keeps the legacy serialized identity"
+        );
+        let mut gamma = base.clone();
+        gamma.text_gamma = TextGamma::Pdfium;
+        assert_ne!(base.cache_fingerprint(), gamma.cache_fingerprint());
+        let parsed: RenderContract =
+            serde_json::from_value(serde_json::to_value(&gamma).unwrap()).unwrap();
+        assert_eq!(parsed, gamma);
+        let legacy: RenderContract = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.text_gamma, TextGamma::Linear);
+    }
+
+    #[test]
     fn forced_colors_change_identity_only_when_set() {
         let base = contract(1);
         let json = serde_json::to_value(&base).expect("serialize contract");
@@ -1261,6 +1314,7 @@ mod tests {
         // The form highlight is only serialized while it is switched on.
         contract.form_highlight.focus_field = Some("name".to_string());
         contract.forced_colors = Some(ForcedColorScheme::uniform(ContractColor::default()));
+        contract.text_gamma = TextGamma::Pdfium;
         let serialized = serde_json::to_value(&contract).expect("serialize render contract");
         let serialized_fields = serialized
             .as_object()
