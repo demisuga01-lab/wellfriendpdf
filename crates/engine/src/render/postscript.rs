@@ -14,7 +14,22 @@
 //!   space the raster output lives in), so the emitted PostScript rasterises
 //!   pixel-for-pixel like the raster render.
 //! - the shared [`glyph_outline`](crate::render::glyph_outline) /
-//!   [`text_decode`](crate::render::text_decode) helpers for text-as-outlines.
+//!   [`text_decode`](crate::render::text_decode) helpers for glyph lookup.
+//!
+//! # Curves, fonts and images (`pdftops` parity)
+//!
+//! - Paths keep their Bézier segments (`curveto`); the PDF flatness travels
+//!   as `setflat`.
+//! - Filled text is real PostScript text in embedded fonts — TrueType as
+//!   Type 42, every other outline font as a Type 1 font built from its glyph
+//!   outlines — subset to the glyphs the document uses, defined once in the
+//!   document setup and shown with `xshow`/`xyshow` at each glyph's exact
+//!   origin, so it stays searchable (see `postscript_fonts.rs`). Type 3 and
+//!   unparsable fonts, clip/stroke render modes and pattern-filled text stay
+//!   filled outlines.
+//! - Image samples are Flate-compressed at LanguageLevel 3 (RunLength at
+//!   Level 2) inside ASCII85; DCT (JPEG) and CCITT fax images pass through
+//!   with their original compression.
 //!
 //! # Device-pixel coordinates in a bottom-left PostScript world
 //!
@@ -62,7 +77,8 @@ use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::glyph_outline::{font_size_scale, get_upem};
 use crate::render::line::DashState;
 use crate::render::path::{
-    flatten_path, flatten_path_device_transform, stroke_flat_path, FillRule, FlatPath, Path,
+    device_curve_path, effective_device_flatness, flatten_path, flatten_path_device_transform,
+    stroke_flat_path, CompactNum as PsNum, FillRule, FlatPath, Path, PathSegment,
 };
 use crate::render::text_decode::{
     decoded_glyph_strict_horizontal_advance, decoded_glyph_strict_outline, get_font_bytes,
@@ -86,6 +102,58 @@ use crate::render::vector_fallback::{
     MAX_PATTERN_STENCIL_CLIP_RECTS, MAX_VECTOR_FORM_DEPTH, MAX_VECTOR_TILING_PATTERN_CELLS,
 };
 
+#[path = "postscript_fonts.rs"]
+mod fonts;
+
+pub use fonts::PsFontResources;
+use fonts::{PsFontKind, PsGlyphSource, PsPageText};
+
+/// PostScript output options (`pdftops -level2` / `-level3`, font handling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PsOptions {
+    /// Target PostScript LanguageLevel, 2 or 3 (default 3). Level 3 output
+    /// compresses image samples with `/FlateDecode`; Level 2 output uses
+    /// `/RunLengthDecode`. Both wrap the bytes in ASCII85 and pass DCT
+    /// (JPEG) images through unchanged.
+    pub language_level: u8,
+    /// Embed the PDF's fonts (Type 42 for TrueType, Type 1 for other outline
+    /// fonts) and write searchable text (default `true`). When `false`, text
+    /// is drawn as filled glyph outlines.
+    pub embed_fonts: bool,
+    /// Refuse whole-page raster fallback instead of embedding a rasterized
+    /// page (default `false`); see [`render_page_ps_strict`].
+    pub strict: bool,
+}
+
+impl Default for PsOptions {
+    fn default() -> Self {
+        Self {
+            language_level: 3,
+            embed_fonts: true,
+            strict: false,
+        }
+    }
+}
+
+/// How image samples are compressed inside the ASCII85 wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PsImageFilter {
+    /// LanguageLevel 3 `/FlateDecode` (zlib).
+    Flate,
+    /// LanguageLevel 2 `/RunLengthDecode`.
+    RunLength,
+}
+
+impl PsImageFilter {
+    fn for_options(options: &PsOptions) -> Self {
+        if options.language_level >= 3 {
+            PsImageFilter::Flate
+        } else {
+            PsImageFilter::RunLength
+        }
+    }
+}
+
 /// A single rendered PostScript page body plus the flag indicating whether it
 /// was emitted as true vector PostScript or as a rasterize-and-embed fallback.
 pub struct PsPage {
@@ -108,10 +176,29 @@ pub struct PsPage {
     /// True when the page used regional vector fallback: vector content is
     /// preserved natively around bounded images or vector-safe Form subprograms.
     pub has_regional_images: bool,
+    /// Embedded fonts the body's text refers to. [`assemble_ps_document`] and
+    /// [`assemble_eps_document`] define them once in the document setup; a
+    /// page body with fonts is not self-contained without that setup.
+    pub font_resources: PsFontResources,
 }
 
 pub fn render_page_ps(engine: &ContentEngine, page_number: usize, dpi: u32) -> Result<PsPage> {
-    render_page_ps_with_policy(engine, page_number, dpi, PsWholePageRasterPolicy::Allow)
+    render_page_ps_with_options(engine, page_number, dpi, &PsOptions::default())
+}
+
+/// Render a single page to PostScript with explicit [`PsOptions`].
+pub fn render_page_ps_with_options(
+    engine: &ContentEngine,
+    page_number: usize,
+    dpi: u32,
+    options: &PsOptions,
+) -> Result<PsPage> {
+    let policy = if options.strict {
+        PsWholePageRasterPolicy::Refuse
+    } else {
+        PsWholePageRasterPolicy::Allow
+    };
+    render_page_ps_with_policy(engine, page_number, dpi, policy, options)
 }
 
 /// Render a single page to PostScript without silently rasterizing the whole
@@ -121,7 +208,11 @@ pub fn render_page_ps_strict(
     page_number: usize,
     dpi: u32,
 ) -> Result<PsPage> {
-    render_page_ps_with_policy(engine, page_number, dpi, PsWholePageRasterPolicy::Refuse)
+    let options = PsOptions {
+        strict: true,
+        ..PsOptions::default()
+    };
+    render_page_ps_with_options(engine, page_number, dpi, &options)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +229,7 @@ fn render_page_ps_with_policy(
     page_number: usize,
     dpi: u32,
     whole_page_policy: PsWholePageRasterPolicy,
+    options: &PsOptions,
 ) -> Result<PsPage> {
     let viewport = engine.page_viewport(page_number, dpi)?;
     let ops = engine.get_page_content(page_number)?;
@@ -152,7 +244,9 @@ fn render_page_ps_with_policy(
 
     match decision {
         VectorFallbackDecision::WholePageRaster { reason } => match whole_page_policy {
-            PsWholePageRasterPolicy::Allow => rasterized_page(engine, page_number, &viewport),
+            PsWholePageRasterPolicy::Allow => {
+                rasterized_page(engine, page_number, &viewport, options)
+            }
             PsWholePageRasterPolicy::Refuse => Err(WellfriendError::UnsupportedFeature(format!(
                 "strict PostScript vector output refuses whole-page raster fallback: {reason}"
             ))),
@@ -163,6 +257,7 @@ fn render_page_ps_with_policy(
             &resources,
             &viewport,
             RegionalVectorResources::empty(),
+            options,
         ),
         VectorFallbackDecision::RegionalImageFallback {
             ref image_names,
@@ -182,10 +277,11 @@ fn render_page_ps_with_policy(
                     form_names,
                     shading_names,
                 },
+                options,
             ) {
                 Ok(page) => Ok(page),
                 Err(WellfriendError::UnsupportedFeature(_)) => match whole_page_policy {
-                    PsWholePageRasterPolicy::Allow => rasterized_page(engine, page_number, &viewport),
+                    PsWholePageRasterPolicy::Allow => rasterized_page(engine, page_number, &viewport, options),
                     PsWholePageRasterPolicy::Refuse => Err(WellfriendError::UnsupportedFeature(
                         "strict PostScript vector output refuses regional replay fallback to whole-page raster"
                             .to_string(),
@@ -205,10 +301,13 @@ fn render_vector_ps(
     resources: &PageResources,
     viewport: &Viewport,
     regional: RegionalVectorResources<'_>,
+    options: &PsOptions,
 ) -> Result<PsPage> {
     let (w, h) = (viewport.width_px, viewport.height_px);
     let points_per_pixel = viewport_points_per_pixel(viewport);
-    let mut sink = PsSink::new(w, h).with_points_per_pixel(points_per_pixel);
+    let mut sink = PsSink::new(w, h)
+        .with_points_per_pixel(points_per_pixel)
+        .with_image_filter(PsImageFilter::for_options(options));
     let mut state = PsRenderState {
         engine,
         page_resources: resources.clone(),
@@ -229,6 +328,9 @@ fn render_vector_ps(
         form_object_stack: Vec::new(),
         text_clip_path: None,
         fatal_error: None,
+        embed_fonts: options.embed_fonts,
+        text_font_cache: std::collections::HashMap::new(),
+        text_run: None,
     };
     state.run(ops);
     if let Some(err) = state.fatal_error.take() {
@@ -239,6 +341,7 @@ fn render_vector_ps(
         || !regional.form_names.is_empty()
         || !regional.shading_names.is_empty()
         || regional.active;
+    let font_resources = std::mem::take(&mut sink.text.resources);
     Ok(PsPage {
         body: sink.finish(),
         width: w,
@@ -246,6 +349,7 @@ fn render_vector_ps(
         points_per_pixel,
         is_rasterized: false,
         has_regional_images: has_regional,
+        font_resources,
     })
 }
 
@@ -281,6 +385,29 @@ fn ps_number(value: f64) -> String {
         "0".to_string()
     } else {
         text.to_string()
+    }
+}
+
+/// Device-space geometry of one painted path: Bézier curves kept as is, or
+/// the flattened polyline when the curve form cannot be produced.
+enum DevicePath {
+    Curves(Path),
+    Flat(FlatPath),
+}
+
+impl DevicePath {
+    fn new(path: &Path, ctm: &Transform2D, viewport: &Viewport, flatness: f64) -> Self {
+        match device_curve_path(path, ctm, viewport) {
+            Some(curves) => DevicePath::Curves(curves),
+            None => DevicePath::Flat(flatten_path(path, ctm, viewport, flatness)),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            DevicePath::Curves(path) => path.is_empty(),
+            DevicePath::Flat(flat) => flat.subpaths.iter().all(|s| s.is_empty()),
+        }
     }
 }
 
@@ -493,13 +620,16 @@ fn rasterized_page(
     engine: &ContentEngine,
     page_number: usize,
     viewport: &Viewport,
+    options: &PsOptions,
 ) -> Result<PsPage> {
     let buf = engine.render_page(page_number, viewport.dpi)?;
     let raw = buf.to_raw_image(); // 3 channels, 8-bit
     let (w, h) = (viewport.width_px, viewport.height_px);
 
     let points_per_pixel = viewport_points_per_pixel(viewport);
-    let mut sink = PsSink::new(w, h).with_points_per_pixel(points_per_pixel);
+    let mut sink = PsSink::new(w, h)
+        .with_points_per_pixel(points_per_pixel)
+        .with_image_filter(PsImageFilter::for_options(options));
     sink.emit_raster_image(&raw.pixels, w, h);
     Ok(PsPage {
         body: sink.finish(),
@@ -508,6 +638,7 @@ fn rasterized_page(
         points_per_pixel,
         is_rasterized: true,
         has_regional_images: false,
+        font_resources: PsFontResources::default(),
     })
 }
 
@@ -517,12 +648,14 @@ pub fn assemble_ps_document(pages: &[PsPage]) -> String {
     let mut out = String::new();
     out.push_str("%!PS-Adobe-3.0\n");
     out.push_str("%%Creator: Wellfriend PDF SDK Toolkit\n");
-    let language_level = if pages.iter().any(|page| page.body.contains("shfill")) {
-        3
-    } else {
-        2
-    };
+    let language_level = pages
+        .iter()
+        .map(|page| body_language_level(&page.body))
+        .max()
+        .unwrap_or(2);
     out.push_str(&format!("%%LanguageLevel: {language_level}\n"));
+    let fonts = fonts::merge_page_fonts(pages.iter().map(|page| &page.font_resources));
+    push_supplied_fonts_comment(&fonts, &mut out);
     // The bounding box of a multi-page document is the union; DSC permits the
     // largest page. We report the max width/height across pages.
     // Sizes are PostScript points (1/72 inch), not device pixels, so the
@@ -547,10 +680,7 @@ pub fn assemble_ps_document(pages: &[PsPage]) -> String {
     ));
     out.push_str(&format!("%%Pages: {}\n", pages.len()));
     out.push_str("%%EndComments\n");
-    out.push_str("%%BeginProlog\n");
-    out.push_str("%%EndProlog\n");
-    out.push_str("%%BeginSetup\n");
-    out.push_str("%%EndSetup\n");
+    push_prolog_and_setup(&fonts, &mut out);
 
     for (idx, page) in pages.iter().enumerate() {
         let n = idx + 1;
@@ -587,8 +717,10 @@ pub fn assemble_eps_document(page: &PsPage) -> String {
     let mut out = String::new();
     out.push_str("%!PS-Adobe-3.0 EPSF-3.0\n");
     out.push_str("%%Creator: Wellfriend PDF SDK Toolkit\n");
-    let language_level = if page.body.contains("shfill") { 3 } else { 2 };
+    let language_level = body_language_level(&page.body);
     out.push_str(&format!("%%LanguageLevel: {language_level}\n"));
+    let fonts = fonts::merge_page_fonts([&page.font_resources]);
+    push_supplied_fonts_comment(&fonts, &mut out);
     let (page_w, page_h) = page.size_points();
     out.push_str(&format!(
         "%%BoundingBox: 0 0 {} {}\n",
@@ -601,13 +733,48 @@ pub fn assemble_eps_document(page: &PsPage) -> String {
         ps_number(page_h)
     ));
     out.push_str("%%EndComments\n");
-    out.push_str("%%BeginProlog\n");
-    out.push_str("%%EndProlog\n");
+    push_prolog_and_setup(&fonts, &mut out);
     // The page body is wrapped in its own gsave/grestore (added by PsSink), so
     // it does not leak graphics state to an embedding document. No showpage.
     out.push_str(&page.body);
     out.push_str("%%EOF\n");
     out
+}
+
+/// LanguageLevel a page body needs: 3 for `shfill` or `/FlateDecode`.
+fn body_language_level(body: &str) -> u8 {
+    if body.contains("shfill") || body.contains("/FlateDecode") {
+        3
+    } else {
+        2
+    }
+}
+
+/// `%%DocumentSuppliedResources` for the embedded fonts.
+fn push_supplied_fonts_comment(fonts: &[fonts::PsFontProgram], out: &mut String) {
+    for (index, font) in fonts.iter().enumerate() {
+        let lead = if index == 0 {
+            "%%DocumentSuppliedResources:"
+        } else {
+            "%%+"
+        };
+        out.push_str(&format!("{lead} font {}\n", font.base_name));
+    }
+}
+
+/// The prolog (Wellfriend procedures) and the setup defining every embedded
+/// font once for the whole document.
+fn push_prolog_and_setup(fonts: &[fonts::PsFontProgram], out: &mut String) {
+    out.push_str("%%BeginProlog\n");
+    if !fonts.is_empty() {
+        out.push_str("%%BeginResource: procset WellfriendFonts\n");
+        out.push_str(fonts::PS_FONT_PROLOG);
+        out.push_str("%%EndResource\n");
+    }
+    out.push_str("%%EndProlog\n");
+    out.push_str("%%BeginSetup\n");
+    fonts::write_font_definitions(fonts, out);
+    out.push_str("%%EndSetup\n");
 }
 
 /// Accumulates PostScript operators for one page body and emits it wrapped in a
@@ -616,6 +783,12 @@ struct PsSink {
     height: u32,
     body: String,
     points_per_pixel: f64,
+    image_filter: PsImageFilter,
+    /// Embedded fonts and page-local re-encodings used by the page's text.
+    text: PsPageText,
+    /// Font instance and matrix last selected with `wfsf`, while no
+    /// `grestore` can have restored an earlier font.
+    current_font: Option<(usize, [f64; 4])>,
 }
 
 impl PsSink {
@@ -624,7 +797,15 @@ impl PsSink {
             height,
             body: String::new(),
             points_per_pixel: 1.0,
+            image_filter: PsImageFilter::Flate,
+            text: PsPageText::default(),
+            current_font: None,
         }
+    }
+
+    fn with_image_filter(mut self, image_filter: PsImageFilter) -> Self {
+        self.image_filter = image_filter;
+        self
     }
 
     fn with_points_per_pixel(mut self, points_per_pixel: f64) -> Self {
@@ -635,6 +816,9 @@ impl PsSink {
     }
 
     fn push_line(&mut self, line: &str) {
+        if line.starts_with("grestore") {
+            self.current_font = None;
+        }
         self.body.push_str(line);
         self.body.push('\n');
     }
@@ -654,6 +838,52 @@ impl PsSink {
             if *closed {
                 self.body.push_str("closepath\n");
             }
+        }
+    }
+
+    /// Append a device-space path keeping its Bézier segments as `curveto`
+    /// (`pdftops` behaviour) instead of a flattened polyline.
+    fn append_curve_path(&mut self, path: &Path) {
+        use std::fmt::Write as _;
+        let body = &mut self.body;
+        for seg in &path.segments {
+            match *seg {
+                PathSegment::MoveTo(x, y) => {
+                    let _ = writeln!(body, "{} {} moveto", PsNum(x), PsNum(y));
+                }
+                PathSegment::LineTo(x, y) => {
+                    let _ = writeln!(body, "{} {} lineto", PsNum(x), PsNum(y));
+                }
+                PathSegment::CubicTo {
+                    cp1x,
+                    cp1y,
+                    cp2x,
+                    cp2y,
+                    x,
+                    y,
+                } => {
+                    let _ = writeln!(
+                        body,
+                        "{} {} {} {} {} {} curveto",
+                        PsNum(cp1x),
+                        PsNum(cp1y),
+                        PsNum(cp2x),
+                        PsNum(cp2y),
+                        PsNum(x),
+                        PsNum(y)
+                    );
+                }
+                PathSegment::ClosePath => body.push_str("closepath\n"),
+            }
+        }
+    }
+
+    /// Append the geometry of a vector path: curves when every point maps to
+    /// a finite device coordinate, otherwise the flattened polyline.
+    fn append_device_path(&mut self, path: &DevicePath) {
+        match path {
+            DevicePath::Curves(path) => self.append_curve_path(path),
+            DevicePath::Flat(flat) => self.append_path(flat),
         }
     }
 
@@ -685,9 +915,23 @@ impl PsSink {
     /// end-of-data marker is always consumed before the interpreter resumes
     /// scanning the page body.
     fn push_ascii85_image_data(&mut self, source: &str, image_operator: &str, data: &[u8]) {
-        self.push_line(&format!("/{source} currentfile /ASCII85Decode filter def"));
-        self.push_line(&format!("{{ {image_operator} {source} flushfile }} exec"));
-        self.body.push_str(&ascii85_encode(data));
+        // Samples are compressed (Flate at LanguageLevel 3, RunLength at
+        // Level 2) inside the ASCII85 text wrapper. `source` reads the
+        // decompressed samples; `{source}a85` is the ASCII85 layer, flushed
+        // last so its `~>` end marker is consumed whatever the compression
+        // filter read ahead.
+        let (filter, compressed) = match self.image_filter {
+            PsImageFilter::Flate => ("FlateDecode", zlib_compress(data)),
+            PsImageFilter::RunLength => ("RunLengthDecode", run_length_encode(data)),
+        };
+        self.push_line(&format!(
+            "/{source}a85 currentfile /ASCII85Decode filter def"
+        ));
+        self.push_line(&format!("/{source} {source}a85 /{filter} filter def"));
+        self.push_line(&format!(
+            "{{ {image_operator} {source} flushfile {source}a85 flushfile }} exec"
+        ));
+        self.body.push_str(&ascii85_encode(&compressed));
         self.body.push('\n');
     }
 
@@ -704,6 +948,8 @@ impl PsSink {
         // Map PostScript bottom-left/y-up to our top-left/y-down device space.
         out.push_str(&format!("0 {} translate\n", self.height));
         out.push_str("1 -1 scale\n");
+        // Page-local re-encodings of the embedded fonts the text uses.
+        out.push_str(&self.text.setup());
         out.push_str(&self.body);
         out.push_str("grestore\n");
         out
@@ -740,6 +986,39 @@ struct PsRenderState<'a> {
     form_object_stack: Vec<(u32, u16)>,
     text_clip_path: Option<FlatPath>,
     fatal_error: Option<WellfriendError>,
+    /// Draw ordinary filled text with embedded fonts ([`PsOptions::embed_fonts`]).
+    embed_fonts: bool,
+    /// Embedding decision per font resource name for the current `resources`
+    /// scope (`None`: the program cannot be embedded; outlines are drawn).
+    text_font_cache: std::collections::HashMap<String, Option<std::rc::Rc<PsTextFont>>>,
+    /// Glyphs of the current text-showing operator not yet written.
+    text_run: Option<PsTextRun>,
+}
+
+/// An embeddable font program as the page's text uses it.
+struct PsTextFont {
+    base_name: String,
+    kind: PsFontKind,
+    /// Glyph count of a TrueType program (valid glyph ids are below it).
+    num_glyphs: u16,
+}
+
+/// Consecutive glyphs sharing one font instance, matrix and colour, written
+/// as a single `xshow` / `xyshow`.
+struct PsTextRun {
+    instance: usize,
+    /// Em-space to device-space linear matrix (`makefont` matrix).
+    matrix: [f64; 4],
+    color: RenderColor,
+    codes: Vec<u8>,
+    /// Device-space glyph origins.
+    origins: Vec<(f64, f64)>,
+}
+
+fn same_font_matrix(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    a.iter()
+        .zip(b)
+        .all(|(x, y)| (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0))
 }
 
 impl PsRenderState<'_> {
@@ -1012,6 +1291,17 @@ impl PsRenderState<'_> {
         {
             return Ok(());
         }
+        if !is_mask
+            && self.emit_ccitt_passthrough_region(
+                &dict,
+                &encoded,
+                placement.transform,
+                placement.bounds,
+                &context,
+            )?
+        {
+            return Ok(());
+        }
         let color_space_override = (!is_mask)
             .then(|| {
                 resolved_regional_image_color_space_override(
@@ -1059,6 +1349,11 @@ impl PsRenderState<'_> {
         }
 
         let context = format!("regional PS image /{name}");
+        // A soft-masked image keeps its transparency; fractional alpha then
+        // refuses regional colorimage (PostScript has no soft masks), so the
+        // page takes the raster fallback as with `pdftops`.
+        let raw =
+            crate::render::svg::apply_image_soft_mask(&dict, &image_ref, raw, reader, &context)?;
         self.emit_colorimage_region(
             &raw,
             placement.transform,
@@ -1245,6 +1540,124 @@ impl PsRenderState<'_> {
             .push_line("/regiondctsrc regionpicstr /DCTDecode filter def");
         self.sink.push_line(&format!(
             "{{ << /ImageType 1 /Width {iw} /Height {ih} /BitsPerComponent 8 /Decode {decode} /ImageMatrix [{iw} 0 0 {ih} 0 0] /DataSource regiondctsrc >> image regionpicstr flushfile }} exec"
+        ));
+        self.sink.body.push_str(&ascii85_encode(encoded));
+        self.sink.body.push('\n');
+        self.sink.push_line("grestore");
+        Ok(true)
+    }
+
+    /// Pass a 1-bit DeviceGray CCITT Group 3/4 image XObject through to the
+    /// PostScript `/CCITTFaxDecode` filter (LanguageLevel 2) with the PDF's
+    /// own decode parameters, instead of expanding it to samples. Applies to
+    /// opaque images without /Decode, /SMask or /Mask whose /Columns match
+    /// the width. Returns `false` (emitting nothing) when the image does not
+    /// qualify.
+    fn emit_ccitt_passthrough_region(
+        &mut self,
+        dict: &PdfDictionary,
+        encoded: &[u8],
+        transform: [f64; 6],
+        bounds: [f64; 4],
+        context: &str,
+    ) -> Result<bool> {
+        if !ps_alpha_is_opaque(self.gs.fill_alpha as f32)
+            || dict.contains_key("SMask")
+            || dict.contains_key("Mask")
+            || dict.contains_key("Decode")
+            || dict.contains_key("D")
+        {
+            return Ok(false);
+        }
+        let filters = extract_image_filter_names(dict, context)?;
+        if !matches!(filters.as_slice(), [filter] if filter == "CCITTFaxDecode" || filter == "CCF")
+        {
+            return Ok(false);
+        }
+        if dict
+            .get("BitsPerComponent")
+            .or_else(|| dict.get("BPC"))
+            .and_then(PdfObject::as_number)
+            .is_some_and(|bits| bits != 1.0)
+        {
+            return Ok(false);
+        }
+        let reader = self.engine.document().reader();
+        let Ok(color_space) = extract_image_color_space_name(dict, reader, context) else {
+            return Ok(false);
+        };
+        let color_space = match color_space.as_str() {
+            "DeviceGray" => color_space,
+            name => match self.resources.color_spaces.get(name).map(|object| {
+                reader
+                    .resolve(object.clone())
+                    .unwrap_or_else(|_| object.clone())
+            }) {
+                Some(PdfObject::Name(resolved)) => canonical_image_color_space_name(&resolved),
+                _ => return Ok(false),
+            },
+        };
+        if color_space != "DeviceGray" {
+            return Ok(false);
+        }
+        let iw = regional_image_positive_u32(dict, "Width", "W", context)?;
+        let ih = regional_image_positive_u32(dict, "Height", "H", context)?;
+        let params = match dict.get("DecodeParms").or_else(|| dict.get("DP")) {
+            None | Some(PdfObject::Null) => PdfDictionary::empty(),
+            Some(object) => match reader.resolve(object.clone()) {
+                Ok(PdfObject::Dictionary(params)) => params,
+                Ok(PdfObject::Array(items)) if items.len() == 1 => {
+                    match reader.resolve(items[0].clone()) {
+                        Ok(PdfObject::Dictionary(params)) => params,
+                        Ok(PdfObject::Null) => PdfDictionary::empty(),
+                        _ => return Ok(false),
+                    }
+                }
+                _ => return Ok(false),
+            },
+        };
+        let mut ps_params = String::from("<<");
+        let mut columns = 1728.0;
+        for (key, value) in params.iter() {
+            let value = reader
+                .resolve(value.clone())
+                .unwrap_or_else(|_| value.clone());
+            match (key.as_str(), value) {
+                (
+                    "K" | "Columns" | "Rows" | "DamagedRowsBeforeError",
+                    PdfObject::Integer(number),
+                ) => {
+                    if key == "Columns" {
+                        columns = number as f64;
+                    }
+                    ps_params.push_str(&format!(" /{key} {number}"));
+                }
+                (
+                    "EndOfLine" | "EncodedByteAlign" | "EndOfBlock" | "BlackIs1",
+                    PdfObject::Boolean(flag),
+                ) => ps_params.push_str(&format!(" /{key} {flag}")),
+                _ => return Ok(false),
+            }
+        }
+        ps_params.push_str(" >>");
+        if columns != f64::from(iw) {
+            return Ok(false);
+        }
+
+        self.sink
+            .push_line(&ps_region_comment("image-xobject", bounds));
+        self.sink
+            .push_line("% WellfriendImagePassthrough filter=CCITTFaxDecode");
+        self.sink.push_line("gsave");
+        self.sink.push_line(&ps_concat_matrix(transform));
+        self.sink.push_line("/DeviceGray setcolorspace");
+        self.sink
+            .push_line("/regionpicstr currentfile /ASCII85Decode filter def");
+        self.sink.push_line(&format!(
+            "/regionfaxsrc regionpicstr {ps_params} /CCITTFaxDecode filter def"
+        ));
+        self.sink.push_line(&format!(
+            "{{ << /ImageType 1 /Width {iw} /Height {ih} /BitsPerComponent 1 /Decode [0 1] /ImageMatrix [{iw} 0 0 {ih} 0 0] /DataSource regionfaxsrc >> image regionpicstr flushfile }} exec"
         ));
         self.sink.body.push_str(&ascii85_encode(encoded));
         self.sink.body.push('\n');
@@ -1524,6 +1937,7 @@ impl PsRenderState<'_> {
         self.resources = program.resources.clone();
         self.font_bytes_cache.clear();
         self.font_resolver_cache.clear();
+        self.text_font_cache.clear();
         self.gs = program.inherited_gs.clone();
         let form_t = Transform2D::from(program.form_matrix);
         let current_t = Transform2D::from(saved_gs.ctm);
@@ -1581,6 +1995,7 @@ impl PsRenderState<'_> {
         self.resources = saved_resources;
         self.font_bytes_cache.clear();
         self.font_resolver_cache.clear();
+        self.text_font_cache.clear();
         self.path = saved_path;
         self.pending_clip = saved_pending_clip;
         self.text_clip_path = saved_text_clip;
@@ -1623,13 +2038,13 @@ impl PsRenderState<'_> {
                 return;
             }
             let ctm = self.ctm();
-            let flat = flatten_path(
+            let device = DevicePath::new(
                 &self.path,
                 &ctm,
                 &self.viewport,
                 self.gs.path_flatness_tolerance(),
             );
-            self.sink.append_path(&flat);
+            self.sink.append_device_path(&device);
             match rule {
                 FillRule::EvenOdd => self.sink.push_line("eoclip"),
                 FillRule::NonZero => self.sink.push_line("clip"),
@@ -1693,16 +2108,16 @@ impl PsRenderState<'_> {
             return;
         }
         let ctm = self.ctm();
-        let flat = flatten_path(
-            &self.path,
-            &ctm,
-            &self.viewport,
-            self.gs.path_flatness_tolerance(),
-        );
-        if flat.subpaths.iter().all(|s| s.is_empty()) {
-            return;
-        }
         if self.gs.fill_color_space.is_pattern() {
+            let flat = flatten_path(
+                &self.path,
+                &ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            );
+            if flat.subpaths.iter().all(|s| s.is_empty()) {
+                return;
+            }
             match self.emit_tiling_pattern_clip(
                 self.gs.fill_pattern_name.clone(),
                 &flat,
@@ -1721,6 +2136,15 @@ impl PsRenderState<'_> {
             self.emit_shading_pattern_clip(self.gs.fill_pattern_name.clone(), &flat, rule, "fill");
             return;
         }
+        let device = DevicePath::new(
+            &self.path,
+            &ctm,
+            &self.viewport,
+            self.gs.path_flatness_tolerance(),
+        );
+        if device.is_empty() {
+            return;
+        }
         let Some((color, alpha)) = self.current_fill_color_or_fatal("PostScript fill color") else {
             return;
         };
@@ -1731,8 +2155,9 @@ impl PsRenderState<'_> {
         if keep_path {
             self.sink.push_line("gsave");
         }
+        self.emit_flatness();
         self.sink.push_line("newpath");
-        self.sink.append_path(&flat);
+        self.sink.append_device_path(&device);
         match rule {
             FillRule::EvenOdd => self.sink.push_line("eofill"),
             FillRule::NonZero => self.sink.push_line("fill"),
@@ -1750,16 +2175,16 @@ impl PsRenderState<'_> {
             return;
         }
         let ctm = self.ctm();
-        let flat = flatten_path(
-            &self.path,
-            &ctm,
-            &self.viewport,
-            self.gs.path_flatness_tolerance(),
-        );
-        if flat.subpaths.iter().all(|s| s.is_empty()) {
-            return;
-        }
         if self.gs.stroke_color_space.is_pattern() {
+            let flat = flatten_path(
+                &self.path,
+                &ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            );
+            if flat.subpaths.iter().all(|s| s.is_empty()) {
+                return;
+            }
             let outline = stroke_flat_path(
                 &flat,
                 self.device_line_width(),
@@ -1791,6 +2216,15 @@ impl PsRenderState<'_> {
             );
             return;
         }
+        let device = DevicePath::new(
+            &self.path,
+            &ctm,
+            &self.viewport,
+            self.gs.path_flatness_tolerance(),
+        );
+        if device.is_empty() {
+            return;
+        }
         let Some((color, alpha)) = self.current_stroke_color_or_fatal("PostScript stroke color")
         else {
             return;
@@ -1802,8 +2236,9 @@ impl PsRenderState<'_> {
         let width = self.device_line_width();
         self.sink.push_line(&format!("{width:.3} setlinewidth"));
         self.emit_line_style();
+        self.emit_flatness();
         self.sink.push_line("newpath");
-        self.sink.append_path(&flat);
+        self.sink.append_device_path(&device);
         self.sink.push_line("stroke");
     }
 
@@ -1934,6 +2369,7 @@ impl PsRenderState<'_> {
         self.resources = program.resources.clone();
         self.font_bytes_cache.clear();
         self.font_resolver_cache.clear();
+        self.text_font_cache.clear();
         self.gs = GraphicsState::default();
         self.gs.ctm = tile_ctm.to_array();
         if let Some(color) = forced_color {
@@ -1989,6 +2425,7 @@ impl PsRenderState<'_> {
         self.resources = saved_resources;
         self.font_bytes_cache.clear();
         self.font_resolver_cache.clear();
+        self.text_font_cache.clear();
         self.path = saved_path;
         self.pending_clip = saved_pending_clip;
         self.text_clip_path = saved_text_clip_path;
@@ -2129,6 +2566,21 @@ impl PsRenderState<'_> {
     /// Emit `setrgbcolor`. PostScript vector output only reaches this path for
     /// opaque paint; fully transparent paint is skipped by callers, and
     /// fractional alpha remains a raster-fallback/refusal boundary.
+    /// Carry a non-default PDF flatness tolerance (`i` / ExtGState `/FL`) to
+    /// the PostScript `setflat` operator: curves are emitted as `curveto`, so
+    /// the interpreter flattens them. Coarse requests are clamped to one
+    /// device pixel as the raster renderer does.
+    fn emit_flatness(&mut self) {
+        // 0.5 is `GraphicsState::default().flatness`, the interpreter's own
+        // tolerance when the content never sets one.
+        if self.gs.flatness == 0.5 {
+            return;
+        }
+        let flatness = effective_device_flatness(self.gs.path_flatness_tolerance());
+        self.sink
+            .push_line(&format!("{} setflat", ps_number(flatness)));
+    }
+
     fn emit_setcolor(&mut self, color: RenderColor, alpha: f32) {
         let a = alpha.clamp(0.0, 1.0);
         if !ps_alpha_is_opaque(a) {
@@ -2223,15 +2675,21 @@ impl PsRenderState<'_> {
         };
         for item in items {
             match item {
-                Operand::String(bytes) => self.show_text(bytes),
+                Operand::String(bytes) => self.show_text_glyphs(bytes),
                 Operand::Integer(v) => self.adjust_text_position(-(*v as f64)),
                 Operand::Real(v) => self.adjust_text_position(-*v),
                 _ => {}
             }
         }
+        self.flush_text_run();
     }
 
     fn show_text(&mut self, bytes: &[u8]) {
+        self.show_text_glyphs(bytes);
+        self.flush_text_run();
+    }
+
+    fn show_text_glyphs(&mut self, bytes: &[u8]) {
         let font_name = self.gs.text.font_name.clone();
         let font_size = self.gs.text.font_size;
         if font_size <= 0.0 {
@@ -2287,13 +2745,22 @@ impl PsRenderState<'_> {
                     ));
                     return;
                 };
-                let Some(outline) = decoded_glyph_strict_outline(&glyph, fb) else {
-                    self.record_fatal_error(WellfriendError::UnsupportedFeature(
-                        "PostScript text glyph outline unavailable for vector output".to_string(),
-                    ));
-                    return;
-                };
-                self.emit_glyph_outline(outline, upem);
+                if self.queue_font_glyph(&font_name, fb, &glyph, upem, font_advance) {
+                    if self.fatal_error.is_some() {
+                        return;
+                    }
+                } else {
+                    // Outline fallback: keep painting order with queued text.
+                    self.flush_text_run();
+                    let Some(outline) = decoded_glyph_strict_outline(&glyph, fb) else {
+                        self.record_fatal_error(WellfriendError::UnsupportedFeature(
+                            "PostScript text glyph outline unavailable for vector output"
+                                .to_string(),
+                        ));
+                        return;
+                    };
+                    self.emit_glyph_outline(outline, upem);
+                }
             }
             let advance = if glyph.is_vertical {
                 0.0
@@ -2319,6 +2786,228 @@ impl PsRenderState<'_> {
         }
     }
 
+    /// Embedding decision for the font resource `font_name` (whose program is
+    /// `program`), cached for the current resource scope.
+    fn text_font(&mut self, font_name: &str, program: &[u8]) -> Option<std::rc::Rc<PsTextFont>> {
+        if let Some(cached) = self.text_font_cache.get(font_name) {
+            return cached.clone();
+        }
+        let font = fonts::classify_font_program(program).map(|kind| {
+            let num_glyphs = match &kind {
+                PsFontKind::TrueType(bytes) => ttf_parser::Face::parse(bytes, 0)
+                    .map(|face| face.number_of_glyphs())
+                    .unwrap_or(0),
+                PsFontKind::Outline { .. } => 0,
+            };
+            std::rc::Rc::new(PsTextFont {
+                base_name: fonts::ps_font_base_name(program),
+                kind,
+                num_glyphs,
+            })
+        });
+        self.text_font_cache
+            .insert(font_name.to_string(), font.clone());
+        font
+    }
+
+    /// Queue `glyph` as embedded-font text (filled text in an embeddable
+    /// font). Returns `false` when the glyph must be drawn as an outline
+    /// instead; `true` when it was queued or legitimately paints nothing.
+    fn queue_font_glyph(
+        &mut self,
+        font_name: &str,
+        program: &[u8],
+        glyph: &DecodedGlyph,
+        upem: f64,
+        font_advance: Option<f64>,
+    ) -> bool {
+        if !self.embed_fonts
+            || self.gs.text.rendering_mode != 0
+            || glyph.is_vertical
+            || self.gs.fill_color_space.is_pattern()
+        {
+            return false;
+        }
+        let Some(font) = self.text_font(font_name, program) else {
+            return false;
+        };
+        let (glyph_name, source) = match &font.kind {
+            PsFontKind::TrueType(_) => {
+                let gid = if glyph.is_gid {
+                    Some(glyph.code)
+                } else {
+                    crate::render::glyph_outline::simple_glyph_sfnt_gid(
+                        program,
+                        glyph.code,
+                        glyph.unicode,
+                        glyph.glyph_name.as_deref(),
+                    )
+                };
+                let Some(gid) = gid.filter(|&gid| gid < font.num_glyphs) else {
+                    return false;
+                };
+                (
+                    fonts::ps_glyph_name(glyph.unicode, gid),
+                    PsGlyphSource::Gid(gid),
+                )
+            }
+            PsFontKind::Outline { .. } => {
+                let Some(outline) = decoded_glyph_strict_outline(glyph, program) else {
+                    return false;
+                };
+                let advance = glyph
+                    .width
+                    .filter(|width| width.is_finite())
+                    .or(font_advance)
+                    .unwrap_or(0.0)
+                    * upem
+                    / 1000.0;
+                let ident = fonts::outline_glyph_ident(outline.as_ref(), advance);
+                (
+                    fonts::ps_glyph_name(glyph.unicode, format_args!("{ident:x}")),
+                    PsGlyphSource::Outline {
+                        path: outline,
+                        advance,
+                    },
+                )
+            }
+        };
+
+        let scale = font_size_scale(self.gs.text.font_size, upem);
+        let th = self.gs.text.horizontal_scaling / 100.0;
+        let scale_x = scale * th;
+        if scale <= 0.0 || !scale_x.is_finite() {
+            // The outline path draws nothing for a degenerate size either.
+            return true;
+        }
+        let glyph_ctm = Transform2D::scale(scale_x, scale)
+            .concat(&Transform2D::translation(0.0, self.gs.text.rise))
+            .concat(&Transform2D::from(self.gs.text.tm))
+            .concat(&self.ctm())
+            .concat(&self.viewport.to_transform());
+        let [a, b, c, d, e, f] = glyph_ctm.to_array();
+        let matrix = [a * upem, b * upem, c * upem, d * upem];
+        if !matrix.iter().chain([&e, &f]).all(|v| v.is_finite()) {
+            return false;
+        }
+        if matrix[0] * matrix[3] - matrix[1] * matrix[2] == 0.0 {
+            // A singular text matrix paints nothing.
+            return true;
+        }
+
+        let Some((color, alpha)) = self.current_fill_color_or_fatal("PostScript text fill color")
+        else {
+            return true;
+        };
+        if ps_alpha_is_fully_transparent(alpha) {
+            return true;
+        }
+        if !ps_alpha_is_opaque(alpha) {
+            // Let the outline path report the unsupported alpha.
+            return false;
+        }
+
+        let preferred = u8::try_from(u32::from(glyph.unicode))
+            .ok()
+            .filter(|code| (0x20..0x7F).contains(code) || *code >= 0xA1);
+        let (instance, code) =
+            self.sink
+                .text
+                .code_for(&font.base_name, &font.kind, &glyph_name, preferred, || {
+                    source
+                });
+        let continues = self.text_run.as_ref().is_some_and(|run| {
+            run.instance == instance && same_font_matrix(&run.matrix, &matrix) && run.color == color
+        });
+        if !continues {
+            self.flush_text_run();
+            self.text_run = Some(PsTextRun {
+                instance,
+                matrix,
+                color,
+                codes: Vec::new(),
+                origins: Vec::new(),
+            });
+        }
+        if let Some(run) = self.text_run.as_mut() {
+            run.codes.push(code);
+            run.origins.push((e, f));
+        }
+        true
+    }
+
+    /// Write the queued text run: select the font instance under the run's
+    /// matrix (when it changed), then show the codes with every glyph placed
+    /// at its exact origin (`xshow` / `yshow` / `xyshow`).
+    fn flush_text_run(&mut self) {
+        use std::fmt::Write as _;
+        let Some(run) = self.text_run.take() else {
+            return;
+        };
+        if run.codes.is_empty() {
+            return;
+        }
+        self.emit_setcolor(run.color, 1.0);
+        if self.sink.current_font != Some((run.instance, run.matrix)) {
+            let [a, b, c, d] = run.matrix;
+            self.sink.push_line(&format!(
+                "/{} [{} {} {} {} 0 0] wfsf",
+                PsPageText::instance_name(run.instance),
+                ps_number(a),
+                ps_number(b),
+                ps_number(c),
+                ps_number(d)
+            ));
+            self.sink.current_font = Some((run.instance, run.matrix));
+        }
+        // Positions on a 1/100 device-pixel grid; displacements between the
+        // rounded origins never accumulate rounding drift.
+        let grid: Vec<(i64, i64)> = run
+            .origins
+            .iter()
+            .map(|&(x, y)| ((x * 100.0).round() as i64, (y * 100.0).round() as i64))
+            .collect();
+        let hundredths = |v: i64| PsNum(v as f64 / 100.0);
+        let mut line = format!(
+            "{} {} moveto {}",
+            hundredths(grid[0].0),
+            hundredths(grid[0].1),
+            fonts::ps_code_string(&run.codes)
+        );
+        if grid.len() == 1 {
+            line.push_str(" show");
+            self.sink.push_line(&line);
+            return;
+        }
+        let deltas: Vec<(i64, i64)> = grid
+            .windows(2)
+            .map(|pair| (pair[1].0 - pair[0].0, pair[1].1 - pair[0].1))
+            .chain(std::iter::once((0, 0)))
+            .collect();
+        let (operator, per_line) = if deltas.iter().all(|d| d.1 == 0) {
+            ("xshow", 24)
+        } else if deltas.iter().all(|d| d.0 == 0) {
+            ("yshow", 24)
+        } else {
+            ("xyshow", 12)
+        };
+        line.push_str(" [");
+        for (index, &(dx, dy)) in deltas.iter().enumerate() {
+            if index > 0 && index % per_line == 0 {
+                line.push('\n');
+            } else if index > 0 {
+                line.push(' ');
+            }
+            let _ = match operator {
+                "xshow" => write!(line, "{}", hundredths(dx)),
+                "yshow" => write!(line, "{}", hundredths(dy)),
+                _ => write!(line, "{} {}", hundredths(dx), hundredths(dy)),
+            };
+        }
+        let _ = write!(line, "] {operator}");
+        self.sink.push_line(&line);
+    }
+
     /// Emit one glyph as a filled (or stroked) PostScript path outline, in
     /// device space.
     fn emit_glyph_outline(&mut self, outline: Option<Path>, upem: f64) {
@@ -2336,10 +3025,20 @@ impl PsRenderState<'_> {
             .concat(&Transform2D::translation(0.0, self.gs.text.rise))
             .concat(&Transform2D::from(self.gs.text.tm))
             .concat(&self.ctm());
-        let flat = flatten_path(&glyph_path, &glyph_ctm, &self.viewport, 0.3);
-        if flat.subpaths.iter().all(|s| s.is_empty()) {
+        let device = DevicePath::new(&glyph_path, &glyph_ctm, &self.viewport, 0.3);
+        if device.is_empty() {
             return;
         }
+        // Flattened outlines are only needed for text clipping and for the
+        // pattern-paint clips; plain paints keep the glyph's curves.
+        let needs_flat = matches!(self.gs.text.rendering_mode, 4..=7)
+            || self.gs.fill_color_space.is_pattern()
+            || self.gs.stroke_color_space.is_pattern();
+        let flat = if needs_flat {
+            flatten_path(&glyph_path, &glyph_ctm, &self.viewport, 0.3)
+        } else {
+            FlatPath::default()
+        };
         self.append_text_clip_path(&flat);
 
         match self.gs.text.rendering_mode {
@@ -2373,7 +3072,7 @@ impl PsRenderState<'_> {
                         self.sink.push_line(&format!("{w:.3} setlinewidth"));
                         self.emit_line_style();
                         self.sink.push_line("newpath");
-                        self.sink.append_path(&flat);
+                        self.sink.append_device_path(&device);
                         self.sink.push_line("stroke");
                     }
                 }
@@ -2397,7 +3096,7 @@ impl PsRenderState<'_> {
                     if !ps_alpha_is_fully_transparent(fill_alpha) {
                         self.emit_setcolor(fill_color, fill_alpha);
                         self.sink.push_line("newpath");
-                        self.sink.append_path(&flat);
+                        self.sink.append_device_path(&device);
                         self.sink.push_line("fill");
                     }
                 }
@@ -2430,7 +3129,7 @@ impl PsRenderState<'_> {
                         self.sink.push_line(&format!("{w:.3} setlinewidth"));
                         self.emit_line_style();
                         self.sink.push_line("newpath");
-                        self.sink.append_path(&flat);
+                        self.sink.append_device_path(&device);
                         self.sink.push_line("stroke");
                     }
                 }
@@ -2455,7 +3154,7 @@ impl PsRenderState<'_> {
                     if !ps_alpha_is_fully_transparent(a) {
                         self.emit_setcolor(color, a);
                         self.sink.push_line("newpath");
-                        self.sink.append_path(&flat);
+                        self.sink.append_device_path(&device);
                         // Glyph outlines use the nonzero winding rule.
                         self.sink.push_line("fill");
                     }
@@ -3158,6 +3857,49 @@ fn ascii85_encode(data: &[u8]) -> String {
     out
 }
 
+/// zlib (RFC 1950) stream, the format PostScript's `/FlateDecode` reads.
+fn zlib_compress(data: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::ZlibEncoder::new(
+        Vec::with_capacity(data.len() / 2 + 64),
+        flate2::Compression::default(),
+    );
+    // Writing into a Vec cannot fail.
+    let _ = encoder.write_all(data);
+    encoder.finish().unwrap_or_default()
+}
+
+/// PostScript `/RunLengthDecode` encoding (PackBits with a 128 EOD byte).
+fn run_length_encode(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + data.len() / 128 + 2);
+    let mut i = 0usize;
+    while i < data.len() {
+        // A run of at least two equal bytes (up to 128).
+        let mut run = 1usize;
+        while i + run < data.len() && run < 128 && data[i + run] == data[i] {
+            run += 1;
+        }
+        if run >= 2 {
+            out.push((257 - run) as u8);
+            out.push(data[i]);
+            i += run;
+            continue;
+        }
+        // Literal bytes until the next run of three or the 128-byte cap.
+        let start = i;
+        while i < data.len() && i - start < 128 {
+            if i + 2 < data.len() && data[i] == data[i + 1] && data[i] == data[i + 2] {
+                break;
+            }
+            i += 1;
+        }
+        out.push((i - start - 1) as u8);
+        out.extend_from_slice(&data[start..i]);
+    }
+    out.push(128);
+    out
+}
+
 fn ascii85_group(mut value: u32) -> [u8; 5] {
     let mut group = [0u8; 5];
     for slot in group.iter_mut().rev() {
@@ -3169,7 +3911,7 @@ fn ascii85_group(mut value: u32) -> [u8; 5] {
 
 /// Number of colour components declared by a baseline/progressive JPEG
 /// frame header (SOFn), or `None` when the stream has no readable frame.
-fn jpeg_frame_components(data: &[u8]) -> Option<u8> {
+pub(crate) fn jpeg_frame_components(data: &[u8]) -> Option<u8> {
     if data.get(..2)? != [0xFF, 0xD8] {
         return None;
     }
@@ -3257,6 +3999,9 @@ mod tests {
             form_object_stack: Vec::new(),
             text_clip_path: None,
             fatal_error: None,
+            embed_fonts: true,
+            text_font_cache: std::collections::HashMap::new(),
+            text_run: None,
         };
         state.gs.fill_color_space = ColorSpace::Named("Bad".to_string());
         state.gs.fill_color = Color {
@@ -3303,6 +4048,9 @@ mod tests {
             form_object_stack: Vec::new(),
             text_clip_path: None,
             fatal_error: None,
+            embed_fonts: true,
+            text_font_cache: std::collections::HashMap::new(),
+            text_run: None,
         };
         state.gs.fill_color = Color {
             space: ColorSpace::DeviceRGB,
@@ -3416,14 +4164,68 @@ mod tests {
         sink.emit_raster_image(&rgb, 2, 1);
         let out = sink.finish();
         assert!(
-            out.contains("/picstr currentfile /ASCII85Decode filter def"),
+            out.contains("/picstra85 currentfile /ASCII85Decode filter def"),
             "{out}"
         );
-        assert!(out.contains("picstr false 3 colorimage picstr flushfile } exec"));
+        assert!(
+            out.contains("/picstr picstra85 /FlateDecode filter def"),
+            "{out}"
+        );
+        assert!(
+            out.contains("picstr false 3 colorimage picstr flushfile picstra85 flushfile } exec")
+        );
         assert!(!out.contains("readhexstring"));
-        let encoded = ascii85_encode(&rgb);
+        let encoded = ascii85_encode(&zlib_compress(&rgb));
         assert!(out.contains(&encoded), "{out}");
-        assert_eq!(ascii85_decode_for_test(&encoded), rgb);
+        let mut inflated = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::ZlibDecoder::new(ascii85_decode_for_test(&encoded).as_slice()),
+            &mut inflated,
+        )
+        .unwrap();
+        assert_eq!(inflated, rgb);
+    }
+
+    #[test]
+    fn level2_raster_image_uses_run_length_samples() {
+        let mut sink = PsSink::new(2, 1).with_image_filter(PsImageFilter::RunLength);
+        sink.emit_raster_image(&[7, 7, 7, 7, 7, 7], 2, 1);
+        let out = sink.finish();
+        assert!(
+            out.contains("/picstr picstra85 /RunLengthDecode filter def"),
+            "{out}"
+        );
+        assert!(!out.contains("FlateDecode"));
+        assert_eq!(body_language_level(&out), 2);
+    }
+
+    #[test]
+    fn run_length_encoding_round_trips() {
+        fn decode(data: &[u8]) -> Vec<u8> {
+            let mut out = Vec::new();
+            let mut i = 0;
+            loop {
+                let n = data[i];
+                i += 1;
+                match n {
+                    128 => return out,
+                    0..=127 => {
+                        out.extend_from_slice(&data[i..i + usize::from(n) + 1]);
+                        i += usize::from(n) + 1;
+                    }
+                    _ => {
+                        out.extend(std::iter::repeat_n(data[i], 257 - usize::from(n)));
+                        i += 1;
+                    }
+                }
+            }
+        }
+        let mut sample: Vec<u8> = (0..=255).collect();
+        sample.extend([9u8; 300]);
+        sample.extend([1, 2, 2, 3, 3, 3, 4]);
+        assert_eq!(decode(&run_length_encode(&sample)), sample);
+        assert_eq!(run_length_encode(&[5; 4]), vec![253, 5, 128]);
+        assert_eq!(decode(&run_length_encode(&[])), Vec::<u8>::new());
     }
 
     /// Reference ASCII85 decoder used to prove the encoder round-trips.
@@ -3888,6 +4690,7 @@ mod tests {
                 points_per_pixel: 1.0,
                 is_rasterized: false,
                 has_regional_images: false,
+                font_resources: PsFontResources::default(),
             },
             PsPage {
                 body: "gsave\n0 120 translate\n1 -1 scale\ngrestore\n".into(),
@@ -3896,6 +4699,7 @@ mod tests {
                 points_per_pixel: 1.0,
                 is_rasterized: false,
                 has_regional_images: false,
+                font_resources: PsFontResources::default(),
             },
         ];
         let doc = assemble_ps_document(&pages);
@@ -3920,6 +4724,7 @@ mod tests {
             points_per_pixel: 72.0 / 150.0,
             is_rasterized: false,
             has_regional_images: false,
+            font_resources: PsFontResources::default(),
         };
         let doc = assemble_ps_document(std::slice::from_ref(&page));
         assert!(doc.contains("%%BoundingBox: 0 0 612 792"), "{doc}");
@@ -3948,6 +4753,7 @@ mod tests {
             points_per_pixel: 1.0,
             is_rasterized: false,
             has_regional_images: false,
+            font_resources: PsFontResources::default(),
         };
         let eps = assemble_eps_document(&page);
         assert!(eps.starts_with("%!PS-Adobe-3.0 EPSF-3.0\n"));

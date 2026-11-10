@@ -4474,7 +4474,7 @@ impl ContentEngine {
     /// Render a single page to a PostScript page body (the building block of the
     /// `render --format ps` / `pdftops` equivalent). See
     /// [`crate::render::postscript`]. Pages using only path/text/solid-fill/clip
-    /// operations become true vector PostScript (text as glyph outlines); pages
+    /// operations become true vector PostScript (text in embedded fonts); pages
     /// using images, shadings, patterns, Form XObjects, or soft masks fall back
     /// to a single embedded rasterised page image.
     pub fn render_page_ps(&self, page_number: usize, dpi: u32) -> Result<crate::render::PsPage> {
@@ -4508,6 +4508,41 @@ impl ContentEngine {
             ps_pages.push(page);
         }
         Ok((crate::render::assemble_ps_document(&ps_pages), rasterized))
+    }
+
+    /// Render the given 1-based pages to a PostScript document with explicit
+    /// [`crate::render::PsOptions`] (LanguageLevel, font embedding, strict
+    /// vector policy). Returns the document and the number of pages that
+    /// took the rasterize-embed fallback.
+    pub fn render_document_ps_with_options(
+        &self,
+        pages: &[usize],
+        dpi: u32,
+        options: &crate::render::PsOptions,
+    ) -> Result<(String, usize)> {
+        let mut ps_pages = Vec::with_capacity(pages.len());
+        let mut rasterized = 0usize;
+        for &p in pages {
+            let page = crate::render::render_page_ps_with_options(self, p, dpi, options)?;
+            if page.is_rasterized {
+                rasterized += 1;
+            }
+            ps_pages.push(page);
+        }
+        Ok((crate::render::assemble_ps_document(&ps_pages), rasterized))
+    }
+
+    /// Render one page to an EPS document with explicit
+    /// [`crate::render::PsOptions`]. Returns `(eps, is_rasterized)`.
+    pub fn render_page_eps_with_options(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        options: &crate::render::PsOptions,
+    ) -> Result<(String, bool)> {
+        let page = crate::render::render_page_ps_with_options(self, page_number, dpi, options)?;
+        let rasterized = page.is_rasterized;
+        Ok((crate::render::assemble_eps_document(&page), rasterized))
     }
 
     /// Render the given pages to PostScript with exact vector-output policy.

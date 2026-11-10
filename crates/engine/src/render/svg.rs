@@ -51,8 +51,8 @@ use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::glyph_outline::{font_size_scale, get_upem};
 use crate::render::line::DashState;
 use crate::render::path::{
-    flatten_path, flatten_path_device_transform, stroke_flat_path, FillRule, FlatPath, Path,
-    PathSegment,
+    device_curve_path, flatten_path, flatten_path_device_transform, stroke_flat_path, CompactNum,
+    FillRule, FlatPath, Path, PathSegment,
 };
 use crate::render::text_decode::{
     decoded_glyph_strict_horizontal_advance, decoded_glyph_strict_outline, get_font_bytes,
@@ -414,6 +414,30 @@ fn extract_image_filter_names(dict: &PdfDictionary, context: &str) -> Result<Vec
 }
 
 /// Emit a page as a single embedded raster `<image>` (the fallback).
+/// Combine an image XObject's `/SMask` soft mask into its samples (RGBA), as
+/// the raster renderer does, so the regional image keeps its transparency.
+pub(crate) fn apply_image_soft_mask(
+    dict: &PdfDictionary,
+    image_ref: &ImageReference,
+    raw: crate::images::decoder::RawImage,
+    reader: &PdfReader,
+    context: &str,
+) -> Result<crate::images::decoder::RawImage> {
+    if !matches!(
+        dict.get("SMask"),
+        Some(PdfObject::Reference { .. } | PdfObject::Stream { .. })
+    ) {
+        return Ok(raw);
+    }
+    match crate::images::smask::SmaskLoader::load_and_combine(image_ref, raw.clone(), reader) {
+        Ok(Some(combined)) => Ok(combined),
+        Ok(None) => Ok(raw),
+        Err(err) => Err(WellfriendError::UnsupportedFeature(format!(
+            "{context}: soft mask could not be applied: {err}"
+        ))),
+    }
+}
+
 fn rasterized_page(
     engine: &ContentEngine,
     page_number: usize,
@@ -536,9 +560,13 @@ impl SvgSink {
 
     /// Register a clip path (device-space polylines) and return its id.
     fn add_clip(&mut self, flat: &FlatPath, rule: FillRule, parent_clip: Option<&str>) -> String {
+        self.add_clip_data(&path_data(flat), rule, parent_clip)
+    }
+
+    /// Register a clip path from ready SVG path data and return its id.
+    fn add_clip_data(&mut self, d: &str, rule: FillRule, parent_clip: Option<&str>) -> String {
         let id = format!("clip{}", self.clip_counter);
         self.clip_counter += 1;
-        let d = path_data(flat);
         let rule_attr = match rule {
             FillRule::EvenOdd => " clip-rule=\"evenodd\"",
             FillRule::NonZero => "",
@@ -732,6 +760,21 @@ impl SvgRenderState<'_> {
     fn device_point_with(&self, ctm: Transform2D, x: f64, y: f64) -> (f64, f64) {
         let (ux, uy) = ctm.transform_point(x, y);
         self.viewport.page_to_pixel_f64(ux, uy)
+    }
+
+    /// SVG path data for a user-space path in device space, keeping its
+    /// Bézier segments; flattened only when a point does not map to a finite
+    /// device coordinate.
+    fn device_path_data(&self, path: &Path, ctm: &Transform2D) -> String {
+        match device_curve_path(path, ctm, &self.viewport) {
+            Some(device) => curve_path_data(&device),
+            None => path_data(&flatten_path(
+                path,
+                ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            )),
+        }
     }
 
     fn current_clip(&self) -> Option<&str> {
@@ -958,8 +1001,8 @@ impl SvgRenderState<'_> {
         };
 
         let reader = self.engine.document().reader();
-        let dict = match reader.get_object(obj_num, gen_num) {
-            Ok(crate::object::PdfObject::Stream { dict, .. }) => dict,
+        let (dict, encoded) = match reader.get_object(obj_num, gen_num) {
+            Ok(crate::object::PdfObject::Stream { dict, raw }) => (dict, raw),
             Ok(other) => {
                 return Err(WellfriendError::MalformedPdf(format!(
                     "regional SVG image /{name} resolved to {}, expected stream",
@@ -977,6 +1020,13 @@ impl SvgRenderState<'_> {
         let is_mask = regional_image_bool(&dict, "ImageMask", "IM", &context)?;
         let _ = regional_image_bool(&dict, "Interpolate", "I", &context)?;
         let image_ref = regional_image_reference(name, obj_num, gen_num, &dict, is_mask, reader)?;
+        if !is_mask {
+            if let Some(mime) = self.jpeg_passthrough_mime(&dict, &encoded, &context)? {
+                let b64 = base64_encode(&encoded);
+                self.push_regional_image_element(placement, mime, &b64, false, paint_alpha);
+                return Ok(());
+            }
+        }
         let color_space_override = (!is_mask)
             .then(|| {
                 resolved_regional_image_color_space_override(
@@ -1027,33 +1077,32 @@ impl SvgRenderState<'_> {
             let color = color.to_pixel_color();
             inline_stencil_mask_to_rgba(&raw, color, stencil_mask_paints_ones(&dict)?)?
         } else {
-            raw
+            apply_image_soft_mask(&dict, &image_ref, raw, reader, &context)?
         };
 
-        // Embed at no more than twice the drawn size: a page scan stored at
-        // 300-600 dpi made SVG pages many megabytes. Opaque continuous-tone
-        // images go in as JPEG (as MuPDF does); masks and bilevel art as PNG.
-        let [a, b, c, d, e, f] = placement.transform;
-        let drawn_w = (a * a + b * b).sqrt();
-        let drawn_h = (c * c + d * d).sqrt();
-        let raw = crate::images::decoder::box_downscale_to_fit(
-            raw,
-            (drawn_w * 2.0).ceil().max(1.0) as u32,
-            (drawn_h * 2.0).ceil().max(1.0) as u32,
-        );
-        let bilevel = raw.channels == 1 && raw.pixels.iter().all(|&v| v == 0 || v == 255);
-        let (mime, encoded) = if matches!(raw.channels, 1 | 3) && !bilevel && !is_mask {
-            ("image/jpeg", ImageEncoder::encode_jpeg(&raw, 85))
-        } else {
-            ("image/png", ImageEncoder::encode_png_fast(&raw))
-        };
-        let encoded = encoded.map_err(|err| {
+        // Decoded samples are embedded losslessly at their native resolution
+        // (as `pdftocairo -svg` does), not resampled or re-encoded lossily;
+        // bilevel images are packed to one bit per sample.
+        let encoded = ImageEncoder::encode_png_compact(&raw).map_err(|err| {
             WellfriendError::UnsupportedFeature(format!(
                 "regional SVG image /{name} encode failed: {err}"
             ))
         })?;
-
         let b64 = base64_encode(&encoded);
+        self.push_regional_image_element(placement, "image/png", &b64, is_mask, paint_alpha);
+        Ok(())
+    }
+
+    /// Emit a regional `<image>` for an encoded image placed by `placement`.
+    fn push_regional_image_element(
+        &mut self,
+        placement: crate::render::vector_fallback::ImageDevicePlacement,
+        mime: &str,
+        b64: &str,
+        is_mask: bool,
+        paint_alpha: f32,
+    ) {
+        let [a, b, c, d, e, f] = placement.transform;
         let clip = self.clip_attr();
         let opacity = if is_mask {
             String::new()
@@ -1067,7 +1116,70 @@ impl SvgRenderState<'_> {
              transform=\"matrix({a:.6} {b:.6} {c:.6} {d:.6} {e:.6} {f:.6})\" \
              xlink:href=\"data:{mime};base64,{b64}\"{bounds}{opacity}{blend}{clip}/>"
         ));
-        Ok(())
+    }
+
+    /// The original JPEG data of a DCT image XObject can be embedded as is
+    /// (`data:image/jpeg`, no re-encoding) when it is a plain 8-bit
+    /// DeviceGray or DeviceRGB JPEG without /Decode, masks or decode
+    /// parameters whose frame matches the colour space — everything an SVG
+    /// viewer's JPEG decoder reproduces exactly as the PDF renderer does.
+    fn jpeg_passthrough_mime(
+        &self,
+        dict: &PdfDictionary,
+        encoded: &[u8],
+        context: &str,
+    ) -> Result<Option<&'static str>> {
+        if dict.contains_key("SMask")
+            || dict.contains_key("Mask")
+            || dict.contains_key("Decode")
+            || dict.contains_key("D")
+            || dict.contains_key("SMaskInData")
+        {
+            return Ok(None);
+        }
+        let filters = extract_image_filter_names(dict, context)?;
+        if !matches!(filters.as_slice(), [filter] if filter == "DCTDecode" || filter == "DCT") {
+            return Ok(None);
+        }
+        if dict
+            .get("DecodeParms")
+            .or_else(|| dict.get("DP"))
+            .is_some_and(|params| !matches!(params, PdfObject::Null))
+        {
+            return Ok(None);
+        }
+        if dict
+            .get("BitsPerComponent")
+            .or_else(|| dict.get("BPC"))
+            .and_then(PdfObject::as_number)
+            .is_some_and(|bits| bits != 8.0)
+        {
+            return Ok(None);
+        }
+        let reader = self.engine.document().reader();
+        let Ok(color_space) = extract_image_color_space_name(dict, reader, context) else {
+            return Ok(None);
+        };
+        let color_space = match color_space.as_str() {
+            "DeviceGray" | "DeviceRGB" => color_space,
+            name => match self.resources.color_spaces.get(name).map(|object| {
+                reader
+                    .resolve(object.clone())
+                    .unwrap_or_else(|_| object.clone())
+            }) {
+                Some(PdfObject::Name(resolved)) => canonical_image_color_space_name(&resolved),
+                _ => return Ok(None),
+            },
+        };
+        let components = match color_space.as_str() {
+            "DeviceGray" => 1,
+            "DeviceRGB" => 3,
+            _ => return Ok(None),
+        };
+        if crate::render::postscript::jpeg_frame_components(encoded) != Some(components) {
+            return Ok(None);
+        }
+        Ok(Some("image/jpeg"))
     }
 
     fn emit_shading(&mut self, name: &str) {
@@ -1590,7 +1702,7 @@ impl SvgRenderState<'_> {
         } else {
             region.raw
         };
-        let png = ImageEncoder::encode_png_fast(&raw).map_err(|err| {
+        let png = ImageEncoder::encode_png_compact(&raw).map_err(|err| {
             WellfriendError::UnsupportedFeature(format!(
                 "regional SVG inline image PNG encode failed: {err}"
             ))
@@ -1759,14 +1871,9 @@ impl SvgRenderState<'_> {
                 return;
             }
             let ctm = self.ctm();
-            let flat = flatten_path(
-                &self.path,
-                &ctm,
-                &self.viewport,
-                self.gs.path_flatness_tolerance(),
-            );
+            let d = self.device_path_data(&self.path, &ctm);
             let parent = self.current_clip().map(str::to_string);
-            let id = self.sink.add_clip(&flat, rule, parent.as_deref());
+            let id = self.sink.add_clip_data(&d, rule, parent.as_deref());
             // PDF clips intersect. The new SVG clipPath references the previous
             // active clip when one exists, so replacing the stack top preserves
             // the composed clip identity for subsequent elements.
@@ -1832,17 +1939,16 @@ impl SvgRenderState<'_> {
             return;
         }
         let ctm = self.ctm();
-        let flat = flatten_path(
-            &self.path,
-            &ctm,
-            &self.viewport,
-            self.gs.path_flatness_tolerance(),
-        );
-        let d = path_data(&flat);
-        if d.is_empty() {
-            return;
-        }
         if self.gs.fill_color_space.is_pattern() {
+            let flat = flatten_path(
+                &self.path,
+                &ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            );
+            if flat.subpaths.iter().all(|s| s.is_empty()) {
+                return;
+            }
             match self.emit_tiling_pattern_clip(
                 self.gs.fill_pattern_name.clone(),
                 &flat,
@@ -1867,6 +1973,10 @@ impl SvgRenderState<'_> {
             );
             return;
         }
+        let d = self.device_path_data(&self.path, &ctm);
+        if d.is_empty() {
+            return;
+        }
         let Some((rgb, alpha)) = self.current_fill_color_or_fatal("SVG fill color") else {
             return;
         };
@@ -1887,17 +1997,16 @@ impl SvgRenderState<'_> {
             return;
         }
         let ctm = self.ctm();
-        let flat = flatten_path(
-            &self.path,
-            &ctm,
-            &self.viewport,
-            self.gs.path_flatness_tolerance(),
-        );
-        let d = path_data(&flat);
-        if d.is_empty() {
-            return;
-        }
         if self.gs.stroke_color_space.is_pattern() {
+            let flat = flatten_path(
+                &self.path,
+                &ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            );
+            if flat.subpaths.iter().all(|s| s.is_empty()) {
+                return;
+            }
             let outline = stroke_flat_path(
                 &flat,
                 self.device_line_width(),
@@ -1928,6 +2037,10 @@ impl SvgRenderState<'_> {
                 self.gs.stroke_alpha as f32,
                 "stroke",
             );
+            return;
+        }
+        let d = self.device_path_data(&self.path, &ctm);
+        if d.is_empty() {
             return;
         }
         let Some((rgb, alpha)) = self.current_stroke_color_or_fatal("SVG stroke color") else {
@@ -2574,7 +2687,11 @@ impl SvgRenderState<'_> {
             }
         }
         let flat = flatten_path(&glyph_path, &glyph_ctm, &self.viewport, 0.3);
-        let d = path_data(&flat);
+        // Painted outlines keep the glyph's curves; the flattened copy serves
+        // text clipping and pattern clips.
+        let d = device_curve_path(&glyph_path, &glyph_ctm, &self.viewport)
+            .map(|device| curve_path_data(&device))
+            .unwrap_or_else(|| path_data(&flat));
         if d.is_empty() {
             return;
         }
@@ -2864,6 +2981,41 @@ fn transform_preserves_circles(transform: Transform2D) -> bool {
     dot.is_finite() && dot.abs() <= 1e-6 && (sx - sy).abs() <= 1e-6
 }
 
+/// Build SVG path data (`M x y L x y C … Z`) from a device-space path,
+/// keeping its cubic Bézier segments.
+fn curve_path_data(path: &Path) -> String {
+    use std::fmt::Write as _;
+    let mut d = String::with_capacity(path.segments.len() * 16);
+    for segment in &path.segments {
+        let _ = match *segment {
+            PathSegment::MoveTo(x, y) => write!(d, "M{} {}", CompactNum(x), CompactNum(y)),
+            PathSegment::LineTo(x, y) => write!(d, "L{} {}", CompactNum(x), CompactNum(y)),
+            PathSegment::CubicTo {
+                cp1x,
+                cp1y,
+                cp2x,
+                cp2y,
+                x,
+                y,
+            } => write!(
+                d,
+                "C{} {} {} {} {} {}",
+                CompactNum(cp1x),
+                CompactNum(cp1y),
+                CompactNum(cp2x),
+                CompactNum(cp2y),
+                CompactNum(x),
+                CompactNum(y)
+            ),
+            PathSegment::ClosePath => {
+                d.push('Z');
+                Ok(())
+            }
+        };
+    }
+    d
+}
+
 /// Build SVG path data (`M x y L x y ... Z`) from device-space flattened
 /// polylines. Coordinates are emitted with modest precision.
 fn path_data(flat: &FlatPath) -> String {
@@ -2998,7 +3150,7 @@ fn stencil_mask_to_svg_mask_rgba(
 
 /// Minimal, dependency-free base64 (standard alphabet) for embedding raster
 /// page images as data URIs.
-fn base64_encode(data: &[u8]) -> String {
+pub(crate) fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {

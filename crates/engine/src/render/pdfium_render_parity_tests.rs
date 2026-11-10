@@ -568,6 +568,91 @@ mod pdfium_render_parity {
     }
 
     #[test]
+    fn postscript_passes_ccitt_images_through() {
+        // An 8x2 all-white Group 4 image: one V0 code per row (bits `11`).
+        let engine = ContentEngine::open_bytes(one_page_pdf(
+            "/Resources << /XObject << /Fax 5 0 R >> >>",
+            b"q 40 0 0 10 10 10 cm /Fax Do Q\n",
+            vec![stream(
+                "/Subtype /Image /Width 8 /Height 2 /BitsPerComponent 1 /ColorSpace /DeviceGray /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 8 /Rows 2 >>",
+                &[0xC0],
+            )],
+        ))
+        .unwrap();
+        let page = engine.render_page_ps(1, 72).unwrap();
+        assert!(!page.is_rasterized);
+        let body = &page.body;
+        assert!(
+            body.contains("% WellfriendImagePassthrough filter=CCITTFaxDecode"),
+            "{body}"
+        );
+        assert!(
+            body.contains("<< /Columns 8 /K -1 /Rows 2 >> /CCITTFaxDecode filter def"),
+            "{body}"
+        );
+        assert!(!body.contains("colorimage"), "{body}");
+    }
+
+    #[test]
+    fn svg_embeds_original_jpeg_bytes_and_native_resolution_png() {
+        let rgb = crate::images::decoder::RawImage {
+            width: 2,
+            height: 2,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0],
+        };
+        let jpeg = crate::images::encoder::ImageEncoder::encode_jpeg(&rgb, 90).unwrap();
+        // A 64x64 raw image drawn at 4x4: embedded at its native 64x64.
+        let raw: Vec<u8> = (0..64 * 64 * 3).map(|i| (i % 251) as u8).collect();
+        let engine = ContentEngine::open_bytes(one_page_pdf(
+            "/Resources << /XObject << /Jpg 5 0 R /Raw 6 0 R >> >>",
+            b"q 40 0 0 40 10 10 cm /Jpg Do Q q 4 0 0 4 50 50 cm /Raw Do Q\n",
+            vec![
+                stream(
+                    "/Subtype /Image /Width 2 /Height 2 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /DCTDecode",
+                    &jpeg,
+                ),
+                stream(
+                    "/Subtype /Image /Width 64 /Height 64 /BitsPerComponent 8 /ColorSpace /DeviceRGB",
+                    &raw,
+                ),
+            ],
+        ))
+        .unwrap();
+        let page = engine.render_page_svg(1, 72).unwrap();
+        assert!(!page.is_rasterized);
+        let svg = &page.svg;
+        let jpeg_b64 = crate::render::svg::base64_encode(&jpeg);
+        assert!(
+            svg.contains(&format!("data:image/jpeg;base64,{jpeg_b64}\"")),
+            "the original JPEG bytes are embedded unchanged"
+        );
+        let png_start = svg.find("data:image/png;base64,").expect("PNG image") + 22;
+        let png_b64 = &svg[png_start..png_start + svg[png_start..].find('"').unwrap()];
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bits = 0u32;
+        let mut nbits = 0u32;
+        let mut png = Vec::new();
+        for byte in png_b64.bytes().filter(|&b| b != b'=') {
+            let value = ALPHABET.iter().position(|&c| c == byte).unwrap() as u32;
+            bits = (bits << 6) | value;
+            nbits += 6;
+            if nbits >= 8 {
+                nbits -= 8;
+                png.push((bits >> nbits) as u8);
+                bits &= (1 << nbits) - 1;
+            }
+        }
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((info.width, info.height), (64, 64));
+        assert_eq!(&pixels[..info.buffer_size()], raw.as_slice(), "lossless at native resolution");
+    }
+
+    #[test]
     fn postscript_passes_dct_images_through_and_ascii85_encodes_others() {
         let rgb = crate::images::decoder::RawImage {
             width: 2,
