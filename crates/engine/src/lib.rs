@@ -105,6 +105,7 @@ pub(crate) mod annotation_relationships;
 pub mod arlington;
 pub mod attachments;
 pub mod authoring;
+pub mod binding_media;
 pub mod cancel;
 pub mod chunk;
 pub mod classify;

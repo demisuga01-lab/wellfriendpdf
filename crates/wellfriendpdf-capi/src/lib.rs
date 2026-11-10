@@ -8,9 +8,11 @@ use std::slice;
 use std::sync::{Arc, Mutex};
 
 use serde::de::DeserializeOwned;
+use wellfriendpdf_engine::binding_media::{self, TextSearchRequest};
 use wellfriendpdf_engine::render::{
     apply_render_invalidation_plan_json_to_cache, AlphaMode, ContractColor, DeviceClip,
-    DeviceMatrix, OptionalContentStateId, PixelFormat, RenderContract,
+    DeviceMatrix, ForcedColorScheme, FormHighlightPolicy, OptionalContentStateId, PixelFormat,
+    RenderContract,
 };
 use wellfriendpdf_engine::{
     sdk, CancelToken, ContentEngine, DocType, ExtractOptions, ImageEncoder, OcrPolicy,
@@ -1073,6 +1075,192 @@ pub unsafe extern "C" fn wellfriendpdf_render_contract_with_schema_policies(
             next.determinism = parse_contract_enum("determinism", &value)?;
         }
 
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with the vector raster policies replaced.
+///
+/// `thin_line_mode` accepts `None`, `Solid`, or `Shape` (`pdftoppm
+/// -thinlinemode`); `vector_antialias_gamma` accepts `Linear` or `Gamma15`.
+/// Both are case-insensitive and also accept kebab/snake forms. NULL keeps the
+/// current value.
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// String arguments must be NULL or NUL-terminated UTF-8. `out_contract` must
+/// be a valid writable pointer; on success it receives an owned handle that
+/// the caller must release with `wellfriendpdf_render_contract_free`.
+/// `error_out` may be NULL or a valid writable error-string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_vector_raster_policies(
+    contract: *const WellfriendRenderContract,
+    thin_line_mode: *const c_char,
+    vector_antialias_gamma: *const c_char,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        if let Some(value) = unsafe { optional_c_string(thin_line_mode) }? {
+            next.thin_line_mode = parse_contract_enum("thin_line_mode", &value)?;
+        }
+        if let Some(value) = unsafe { optional_c_string(vector_antialias_gamma) }? {
+            next.vector_antialias_gamma = parse_contract_enum("vector_antialias_gamma", &value)?;
+        }
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with a forced (high-contrast) colour scheme.
+///
+/// Colours are packed straight-alpha `0xRRGGBBAA` values for path fill, path
+/// stroke, text fill, and text stroke. A non-zero `convert_fill_to_stroke`
+/// draws filled paths as strokes in the path stroke colour (PDFium
+/// `FPDF_CONVERT_FILL_TO_STROKE`).
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// `out_contract` must be a valid writable pointer; on success it receives an
+/// owned handle that the caller must release with
+/// `wellfriendpdf_render_contract_free`. `error_out` may be NULL or a valid
+/// writable error-string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_forced_colors(
+    contract: *const WellfriendRenderContract,
+    path_fill_rgba: u32,
+    path_stroke_rgba: u32,
+    text_fill_rgba: u32,
+    text_stroke_rgba: u32,
+    convert_fill_to_stroke: c_int,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        next.forced_colors = Some(ForcedColorScheme {
+            path_fill: packed_rgba(path_fill_rgba),
+            path_stroke: packed_rgba(path_stroke_rgba),
+            text_fill: packed_rgba(text_fill_rgba),
+            text_stroke: packed_rgba(text_stroke_rgba),
+            convert_fill_to_stroke: convert_fill_to_stroke != 0,
+        });
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` without a forced colour scheme.
+///
+/// # Safety
+/// Same contract as `wellfriendpdf_render_contract_with_forced_colors`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_without_forced_colors(
+    contract: *const WellfriendRenderContract,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        next.forced_colors = None;
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with a form-field highlight policy.
+///
+/// `policy_json` is a `FormHighlightPolicy` object whose fields are all
+/// optional: `text`, `push_button`, `check_box`, `radio_button`, `combo_box`,
+/// `list_box`, `signature` (each `{"r":..,"g":..,"b":..,"a":..}` or null) and
+/// `focus_field` (a fully qualified field name). NULL or blank JSON switches
+/// highlighting off.
+///
+/// # Safety
+/// `policy_json` must be NULL or NUL-terminated UTF-8. Otherwise the same
+/// contract as `wellfriendpdf_render_contract_with_forced_colors`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_form_highlight_json(
+    contract: *const WellfriendRenderContract,
+    policy_json: *const c_char,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let policy = match unsafe { optional_c_string(policy_json) }? {
+            Some(json) if !json.trim().is_empty() => {
+                serde_json::from_str::<FormHighlightPolicy>(&json)
+                    .map_err(|err| format!("invalid form highlight policy JSON: {err}"))?
+            }
+            _ => FormHighlightPolicy::default(),
+        };
+        let mut next = contract.contract.clone();
+        next.form_highlight = policy;
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` that highlights every form-field type with one
+/// packed straight-alpha `0xRRGGBBAA` colour (PDFium
+/// `FPDF_SetFormFieldHighlightColor(handle, 0, color)` plus its alpha) and,
+/// when `focus_field` is non-NULL and non-empty, draws the focus rectangle
+/// around that fully qualified field. An alpha of 0 disables the colour.
+///
+/// # Safety
+/// `focus_field` must be NULL or NUL-terminated UTF-8. Otherwise the same
+/// contract as `wellfriendpdf_render_contract_with_forced_colors`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_form_highlight(
+    contract: *const WellfriendRenderContract,
+    highlight_rgba: u32,
+    focus_field: *const c_char,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut policy = FormHighlightPolicy::all(packed_rgba(highlight_rgba));
+        policy.focus_field =
+            unsafe { optional_c_string(focus_field) }?.filter(|field| !field.trim().is_empty());
+        let mut next = contract.contract.clone();
+        next.form_highlight = policy;
         let next = validate_render_contract(next)?;
         unsafe {
             *out_contract = Box::into_raw(Box::new(next));
@@ -9034,6 +9222,414 @@ pub unsafe extern "C" fn wellfriendpdf_document_semantic_search_json(
     }
 }
 
+/// Searches page text with explicit search options and returns owned JSON.
+///
+/// `options_json` may be NULL (all pages, default options) or an object with
+/// any of `pages` (1-based page numbers; empty = all), `case_sensitive`,
+/// `normalize_ligatures`, `ignore_hyphenation`, `collapse_whitespace`,
+/// `include_hidden`, `max_matches`, `normalize_unicode` (NFKC, default on),
+/// `ignore_accents`, and `whole_word`. The result is a
+/// `binding_media.text_search.v1` report with `match_count` and `matches`
+/// (text, page, character range, and highlight quads).
+///
+/// # Safety
+/// `document` must be a valid open document. `query` must be a non-null
+/// NUL-terminated UTF-8 string and `options_json` NULL or NUL-terminated
+/// UTF-8. `out_json` must be writable and freed with
+/// `wellfriendpdf_string_free`. `error_out` follows the standard rules.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_search_text_json(
+    document: *const WellfriendDocument,
+    query: *const c_char,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let query = unsafe { required_c_string(query, "query") }?;
+        let options = unsafe { optional_c_string(options_json) }?;
+        let request = wellfriendpdf(TextSearchRequest::from_json(options.as_deref()))?;
+        let report = wellfriendpdf(binding_media::search_text_report(
+            &doc.engine,
+            &query,
+            &request,
+        ))?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Decodes a page's embedded thumbnail (`/Thumb`) as straight-alpha RGBA8.
+///
+/// When the page has no thumbnail the call succeeds with `*out_found = 0`, an
+/// empty buffer, and zero dimensions. Otherwise `*out_found = 1` and the
+/// buffer holds `width * height * 4` bytes.
+///
+/// # Safety
+/// `document` must be a valid open document. `out_found`, `out_width`,
+/// `out_height`, and `out_buffer` must be writable; the buffer must be freed
+/// with `wellfriendpdf_buffer_free`. `error_out` follows the standard rules.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_page_thumbnail_rgba(
+    document: *const WellfriendDocument,
+    page: usize,
+    out_found: *mut c_int,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_found.is_null() || out_width.is_null() || out_height.is_null() {
+            return Err("out_found, out_width, and out_height must be non-null".into());
+        }
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let thumbnail = wellfriendpdf(doc.engine.page_thumbnail_rgba(page))?;
+        unsafe {
+            write_raw_image(
+                thumbnail, out_found, out_width, out_height, None, out_buffer,
+            )
+        };
+        Ok(())
+    })
+}
+
+/// Decodes a page's embedded thumbnail (`/Thumb`) with the decoder's 8-bit
+/// channel layout (`*out_channels` = 1 for gray, 3 for RGB, ...).
+///
+/// When the page has no thumbnail the call succeeds with `*out_found = 0`.
+///
+/// # Safety
+/// Same as `wellfriendpdf_document_page_thumbnail_rgba`; `out_channels` must
+/// also be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_decode_page_thumbnail(
+    document: *const WellfriendDocument,
+    page: usize,
+    out_found: *mut c_int,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_channels: *mut u32,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_found.is_null()
+            || out_width.is_null()
+            || out_height.is_null()
+            || out_channels.is_null()
+        {
+            return Err(
+                "out_found, out_width, out_height, and out_channels must be non-null".into(),
+            );
+        }
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let thumbnail = wellfriendpdf(doc.engine.decode_page_thumbnail(page))?;
+        unsafe {
+            write_raw_image(
+                thumbnail,
+                out_found,
+                out_width,
+                out_height,
+                Some(out_channels),
+                out_buffer,
+            )
+        };
+        Ok(())
+    })
+}
+
+/// Encodes a page's embedded thumbnail (`/Thumb`) as an RGBA PNG.
+///
+/// When the page has no thumbnail the call succeeds with `*out_found = 0` and
+/// an empty buffer.
+///
+/// # Safety
+/// `document` must be a valid open document. `out_found` and `out_buffer`
+/// must be writable; the buffer must be freed with `wellfriendpdf_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_page_thumbnail_png(
+    document: *const WellfriendDocument,
+    page: usize,
+    out_found: *mut c_int,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_found.is_null() {
+            return Err("out_found pointer is null".into());
+        }
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let png = wellfriendpdf(binding_media::page_thumbnail_png(&doc.engine, page))?;
+        unsafe {
+            *out_found = c_int::from(png.is_some());
+            *out_buffer = png.map(into_buffer).unwrap_or_else(WellfriendBuffer::empty);
+        }
+        Ok(())
+    })
+}
+
+/// Lists a page's images as owned JSON: an array of objects with `index`,
+/// `name`, `object_number`, `width`, `height`, `bits_per_component`,
+/// `color_space`, `filters`, `inline`, `mask`, and `soft_mask`. `index` is the
+/// value accepted by `wellfriendpdf_document_extract_image_original`.
+///
+/// # Safety
+/// `document` must be a valid open document. `out_json` must be writable and
+/// freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_page_images_json(
+    document: *const WellfriendDocument,
+    page: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let images = wellfriendpdf(binding_media::page_image_infos(&doc.engine, page))?;
+        let json = serde_json::to_string(&images).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Extracts one page image as `pdfimages -all` saves it: JPEG, JPEG 2000,
+/// JBIG2, and CCITT data keep their original encoding; every other image is
+/// decoded and returned as PNG.
+///
+/// `image_index` is the zero-based `index` from
+/// `wellfriendpdf_document_page_images_json`. `out_info_json`, when non-NULL,
+/// receives `{page, index, name, extension, filter, passthrough, byte_length,
+/// sidecars: [{extension, byte_length}]}`; fetch sidecar bytes (JBIG2 globals
+/// `jb2g`, CCITT fax2tiff `params`) with
+/// `wellfriendpdf_document_extract_image_original_sidecar`.
+///
+/// # Safety
+/// `document` must be a valid open document. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`. `out_info_json` must be NULL or
+/// writable; a returned string must be freed with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_extract_image_original(
+    document: *const WellfriendDocument,
+    page: usize,
+    image_index: usize,
+    out_buffer: *mut WellfriendBuffer,
+    out_info_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let (info, image) = wellfriendpdf(binding_media::extract_page_image_original(
+            &doc.engine,
+            page,
+            image_index,
+        ))?;
+        let info_json = if out_info_json.is_null() {
+            None
+        } else {
+            Some(serde_json::to_string(&info).map_err(|err| err.to_string())?)
+        };
+        unsafe {
+            *out_buffer = into_buffer(image.bytes);
+            if let Some(json) = info_json {
+                *out_info_json = into_c_string(json);
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Returns the bytes of one sidecar of an original-encoding page image (see
+/// `wellfriendpdf_document_extract_image_original`). `sidecar_index` indexes
+/// the `sidecars` array of the info JSON.
+///
+/// # Safety
+/// `document` must be a valid open document. `out_buffer` must be writable and
+/// freed with `wellfriendpdf_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_extract_image_original_sidecar(
+    document: *const WellfriendDocument,
+    page: usize,
+    image_index: usize,
+    sidecar_index: usize,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let (_, image) = wellfriendpdf(binding_media::extract_page_image_original(
+            &doc.engine,
+            page,
+            image_index,
+        ))?;
+        let count = image.sidecars.len();
+        let (_, bytes) = image.sidecars.into_iter().nth(sidecar_index).ok_or_else(|| {
+            format!("sidecar index {sidecar_index} is out of range: the image has {count} sidecar(s)")
+        })?;
+        unsafe {
+            *out_buffer = into_buffer(bytes);
+        }
+        Ok(())
+    })
+}
+
+/// Renders one image object of a page on its own (with its soft mask or mask)
+/// at its natural size and returns an RGBA PNG: the PDFium
+/// `FPDFImageObj_GetRenderedBitmap` equivalent.
+///
+/// When `object_name` is non-NULL and non-empty it selects the first
+/// top-level occurrence of that image XObject resource and `object_index` is
+/// ignored; otherwise `object_index` is the zero-based position among the
+/// page's top-level image `Do` operators.
+///
+/// # Safety
+/// `document` must be a valid open document. `object_name` must be NULL or
+/// NUL-terminated UTF-8. `out_buffer` must be writable and freed with
+/// `wellfriendpdf_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_image_object_png(
+    document: *const WellfriendDocument,
+    page: usize,
+    object_index: usize,
+    object_name: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let selector = unsafe { image_object_selector(object_index, object_name) }?;
+        let png = wellfriendpdf(binding_media::render_page_image_object_png(
+            &doc.engine,
+            page,
+            &selector,
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
+/// Renders one image object like
+/// `wellfriendpdf_document_render_page_image_object_png` but returns
+/// straight-alpha RGBA8 pixels (`width * height * 4` bytes).
+///
+/// # Safety
+/// As `wellfriendpdf_document_render_page_image_object_png`; `out_width` and
+/// `out_height` must also be writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_image_object_rgba(
+    document: *const WellfriendDocument,
+    page: usize,
+    object_index: usize,
+    object_name: *const c_char,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_width.is_null() || out_height.is_null() || out_buffer.is_null() {
+            return Err("out_width, out_height, and out_buffer must be non-null".into());
+        }
+        let selector = unsafe { image_object_selector(object_index, object_name) }?;
+        let (width, height, rgba) = wellfriendpdf(binding_media::render_page_image_object_rgba(
+            &doc.engine,
+            page,
+            &selector,
+        ))?;
+        unsafe {
+            *out_width = width;
+            *out_height = height;
+            *out_buffer = into_buffer(rgba);
+        }
+        Ok(())
+    })
+}
+
+unsafe fn image_object_selector(
+    object_index: usize,
+    object_name: *const c_char,
+) -> Result<wellfriendpdf_engine::PageImageObjectSelector, String> {
+    let name = unsafe { optional_c_string(object_name) }?.filter(|name| !name.trim().is_empty());
+    let index = if name.is_some() {
+        None
+    } else {
+        Some(object_index)
+    };
+    wellfriendpdf(binding_media::page_image_object_selector(
+        index,
+        name.as_deref(),
+    ))
+}
+
+/// Write an optional decoded image to the thumbnail out-parameters.
+///
+/// # Safety
+/// Every pointer must be non-null and writable.
+unsafe fn write_raw_image(
+    image: Option<wellfriendpdf_engine::RawImage>,
+    out_found: *mut c_int,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_channels: Option<*mut u32>,
+    out_buffer: *mut WellfriendBuffer,
+) {
+    unsafe {
+        match image {
+            Some(image) => {
+                *out_found = 1;
+                *out_width = image.width;
+                *out_height = image.height;
+                if let Some(out_channels) = out_channels {
+                    *out_channels = u32::from(image.channels);
+                }
+                *out_buffer = into_buffer(image.pixels);
+            }
+            None => {
+                *out_found = 0;
+                *out_width = 0;
+                *out_height = 0;
+                if let Some(out_channels) = out_channels {
+                    *out_channels = 0;
+                }
+                *out_buffer = WellfriendBuffer::empty();
+            }
+        }
+    }
+}
+
 /// Produce XFA Runtime XFA preview PDF bytes and a versioned report.
 ///
 /// # Safety
@@ -10226,6 +10822,12 @@ fn parse_alpha_mode(value: Option<&str>) -> Result<AlphaMode, String> {
         "Opaque" | "opaque" => Ok(AlphaMode::Opaque),
         other => Err(format!("unsupported render contract alpha_mode '{other}'")),
     }
+}
+
+/// Unpack a straight-alpha `0xRRGGBBAA` colour.
+fn packed_rgba(value: u32) -> ContractColor {
+    let [r, g, b, a] = value.to_be_bytes();
+    ContractColor { r, g, b, a }
 }
 
 fn parse_contract_enum<T>(field: &str, value: &str) -> Result<T, String>
@@ -14736,5 +15338,494 @@ mod tests {
             wellfriendpdf_error_free(error);
             wellfriendpdf_document_free(doc);
         }
+    }
+}
+
+#[cfg(test)]
+mod media_binding_tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    /// One page with a 2x1 RGB `/Thumb`, an RGB image (`/Rgb`), a DCT image
+    /// kept as passthrough bytes (`/Jpg`), and searchable text.
+    fn media_pdf(with_thumb: bool) -> Vec<u8> {
+        let thumb = if with_thumb { "/Thumb 4 0 R" } else { "" };
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] {thumb} \
+             /Resources << /XObject << /Rgb 5 0 R /Jpg 6 0 R >> /Font << /F1 7 0 R >> >> \
+             /Contents 8 0 R >>"
+        );
+        let content: &[u8] = b"q 20 0 0 10 5 5 cm /Rgb Do Q q 4 0 0 4 50 50 cm /Jpg Do Q \
+BT /F1 12 Tf 10 150 Td (The cat sat; concatenate.) Tj ET";
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            page.into_bytes(),
+            stream(
+                "/Width 2 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB",
+                &[255, 0, 0, 0, 0, 255],
+            ),
+            stream(
+                "/Type /XObject /Subtype /Image /Width 2 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB",
+                &[0, 255, 0, 0, 0, 255],
+            ),
+            stream(
+                "/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB /Filter /DCTDecode",
+                b"\xff\xd8fake\xff\xd9",
+            ),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+            stream("", content),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
+        let mut body = format!("<< {dict} /Length {} >>\nstream\n", data.len()).into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\nendstream");
+        body
+    }
+
+    fn open(pdf: &[u8]) -> *mut WellfriendDocument {
+        let mut error = ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null(), "document opens");
+        doc
+    }
+
+    fn take_string(value: *mut c_char) -> String {
+        assert!(!value.is_null());
+        let text = unsafe { CStr::from_ptr(value) }
+            .to_str()
+            .expect("UTF-8")
+            .to_string();
+        unsafe { wellfriendpdf_string_free(value) };
+        text
+    }
+
+    fn take_buffer(buffer: WellfriendBuffer) -> Vec<u8> {
+        let bytes = if buffer.data.is_null() {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(buffer.data, buffer.len) }.to_vec()
+        };
+        unsafe { wellfriendpdf_buffer_free(buffer) };
+        bytes
+    }
+
+    fn take_error(error: *mut c_char) -> String {
+        assert!(!error.is_null(), "an error message is reported");
+        let message = unsafe { CStr::from_ptr(error) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { wellfriendpdf_error_free(error) };
+        message
+    }
+
+    fn contract_json(contract: *const WellfriendRenderContract) -> serde_json::Value {
+        let mut json = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_render_contract_to_json(contract, &mut json, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        serde_json::from_str(&take_string(json)).expect("contract JSON")
+    }
+
+    #[test]
+    fn capi_contract_builders_set_raster_forced_color_and_form_highlight_fields() {
+        let doc = open(&media_pdf(true));
+        let mut error = ptr::null_mut();
+        let mut json = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                ptr::null(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let base = unsafe { wellfriendpdf_render_contract_from_json(json, &mut error) };
+        assert!(!base.is_null());
+        unsafe { wellfriendpdf_string_free(json) };
+
+        let thin = CString::new("shape").unwrap();
+        let gamma = CString::new("gamma-15").unwrap();
+        let mut raster = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_vector_raster_policies(
+                base,
+                thin.as_ptr(),
+                gamma.as_ptr(),
+                &mut raster,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let value = contract_json(raster);
+        assert_eq!(value["thin_line_mode"], "Shape");
+        assert_eq!(value["vector_antialias_gamma"], "Gamma15");
+
+        let bad = CString::new("blurry").unwrap();
+        let mut rejected = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_vector_raster_policies(
+                base,
+                bad.as_ptr(),
+                ptr::null(),
+                &mut rejected,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_ERROR);
+        assert!(take_error(error).contains("thin_line_mode"));
+        error = ptr::null_mut();
+
+        let mut forced = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_forced_colors(
+                raster,
+                0x0000_00FF,
+                0xFF00_00FF,
+                0x00FF_0080,
+                0x0000_FFFF,
+                1,
+                &mut forced,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let value = contract_json(forced);
+        assert_eq!(value["forced_colors"]["path_stroke"]["r"], 255);
+        assert_eq!(value["forced_colors"]["text_fill"]["g"], 255);
+        assert_eq!(value["forced_colors"]["text_fill"]["a"], 128);
+        assert_eq!(value["forced_colors"]["convert_fill_to_stroke"], true);
+        assert_eq!(value["thin_line_mode"], "Shape", "earlier fields are kept");
+
+        let mut plain = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_without_forced_colors(forced, &mut plain, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(contract_json(plain).get("forced_colors").is_none());
+
+        let policy =
+            CString::new(r#"{"text":{"r":0,"g":0,"b":255,"a":80},"focus_field":"form.name"}"#)
+                .unwrap();
+        let mut highlighted = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_form_highlight_json(
+                base,
+                policy.as_ptr(),
+                &mut highlighted,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let value = contract_json(highlighted);
+        assert_eq!(value["form_highlight"]["text"]["a"], 80);
+        assert_eq!(value["form_highlight"]["focus_field"], "form.name");
+        assert!(value["form_highlight"]["check_box"].is_null());
+
+        let mut cleared = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_form_highlight_json(
+                highlighted,
+                ptr::null(),
+                &mut cleared,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(contract_json(cleared).get("form_highlight").is_none());
+
+        let mut all = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_form_highlight(
+                base,
+                0xFFFF_0040,
+                ptr::null(),
+                &mut all,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let value = contract_json(all);
+        assert_eq!(value["form_highlight"]["signature"]["a"], 64);
+        assert_eq!(value["form_highlight"]["push_button"]["g"], 255);
+
+        let mut png = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_contract_handle(
+                doc, forced, &mut png, &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(take_buffer(png).starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        unsafe {
+            for handle in [base, raster, forced, plain, highlighted, cleared, all] {
+                wellfriendpdf_render_contract_free(handle);
+            }
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_page_thumbnail_variants_report_presence_and_pixels() {
+        let doc = open(&media_pdf(true));
+        let mut error = ptr::null_mut();
+        let (mut found, mut width, mut height, mut channels) = (-1, 0u32, 0u32, 0u32);
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_page_thumbnail_rgba(
+                doc,
+                1,
+                &mut found,
+                &mut width,
+                &mut height,
+                &mut buffer,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!((found, width, height), (1, 2, 1));
+        assert_eq!(take_buffer(buffer), vec![255, 0, 0, 255, 0, 0, 255, 255]);
+
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_decode_page_thumbnail(
+                doc,
+                1,
+                &mut found,
+                &mut width,
+                &mut height,
+                &mut channels,
+                &mut buffer,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!((found, channels), (1, 3));
+        assert_eq!(take_buffer(buffer), vec![255, 0, 0, 0, 0, 255]);
+
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_page_thumbnail_png(doc, 1, &mut found, &mut buffer, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!(found, 1);
+        assert!(take_buffer(buffer).starts_with(b"\x89PNG\r\n\x1a\n"));
+        unsafe { wellfriendpdf_document_free(doc) };
+
+        let doc = open(&media_pdf(false));
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_page_thumbnail_rgba(
+                doc,
+                1,
+                &mut found,
+                &mut width,
+                &mut height,
+                &mut buffer,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!((found, width, height), (0, 0, 0));
+        assert!(buffer.data.is_null() && buffer.len == 0);
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_page_thumbnail_png(doc, 1, &mut found, &mut buffer, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!(found, 0);
+        let status = unsafe {
+            wellfriendpdf_document_page_thumbnail_png(doc, 9, &mut found, &mut buffer, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_ERROR);
+        take_error(error);
+        unsafe { wellfriendpdf_document_free(doc) };
+    }
+
+    #[test]
+    fn capi_page_images_extract_originals_and_render_image_objects() {
+        let doc = open(&media_pdf(true));
+        let mut error = ptr::null_mut();
+        let mut json = ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_document_page_images_json(doc, 1, &mut json, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let images: serde_json::Value = serde_json::from_str(&take_string(json)).unwrap();
+        let images = images.as_array().expect("image array");
+        assert_eq!(images.len(), 2);
+        let jpg = images
+            .iter()
+            .find(|image| image["name"] == "Jpg")
+            .expect("DCT image");
+        let jpg_index = jpg["index"].as_u64().unwrap() as usize;
+
+        let mut buffer = WellfriendBuffer::empty();
+        let mut info = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_extract_image_original(
+                doc,
+                1,
+                jpg_index,
+                &mut buffer,
+                &mut info,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!(take_buffer(buffer), b"\xff\xd8fake\xff\xd9");
+        let info: serde_json::Value = serde_json::from_str(&take_string(info)).unwrap();
+        assert_eq!(info["extension"], "jpg");
+        assert_eq!(info["filter"], "DCTDecode");
+        assert_eq!(info["passthrough"], true);
+        assert_eq!(info["sidecars"].as_array().map(Vec::len), Some(0));
+
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_extract_image_original_sidecar(
+                doc,
+                1,
+                jpg_index,
+                0,
+                &mut buffer,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_ERROR);
+        assert!(take_error(error).contains("sidecar index 0"));
+        error = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_extract_image_original(
+                doc,
+                1,
+                7,
+                &mut buffer,
+                ptr::null_mut(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_ERROR);
+        assert!(take_error(error).contains("out of range"));
+        error = ptr::null_mut();
+
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_image_object_png(
+                doc,
+                1,
+                0,
+                ptr::null(),
+                &mut buffer,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(take_buffer(buffer).starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let name = CString::new("Rgb").unwrap();
+        let (mut width, mut height) = (0u32, 0u32);
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_image_object_rgba(
+                doc,
+                1,
+                99,
+                name.as_ptr(),
+                &mut width,
+                &mut height,
+                &mut buffer,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK, "name wins over the index");
+        assert_eq!((width, height), (20, 10));
+        let rgba = take_buffer(buffer);
+        assert_eq!(rgba.len(), 20 * 10 * 4);
+        assert_eq!(&rgba[..4], &[0, 255, 0, 255]);
+
+        let mut buffer = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_image_object_png(
+                doc,
+                1,
+                5,
+                ptr::null(),
+                &mut buffer,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_ERROR);
+        take_error(error);
+        unsafe { wellfriendpdf_document_free(doc) };
+    }
+
+    #[test]
+    fn capi_search_text_json_honours_options() {
+        let doc = open(&media_pdf(true));
+        let query = CString::new("cat").unwrap();
+        let search = |options: Option<&str>| -> Result<serde_json::Value, String> {
+            let options = options.map(|options| CString::new(options).unwrap());
+            let mut json = ptr::null_mut();
+            let mut error = ptr::null_mut();
+            let status = unsafe {
+                wellfriendpdf_document_search_text_json(
+                    doc,
+                    query.as_ptr(),
+                    options
+                        .as_ref()
+                        .map_or(ptr::null(), |options| options.as_ptr()),
+                    &mut json,
+                    &mut error,
+                )
+            };
+            if status == WELLFRIENDPDF_STATUS_OK {
+                Ok(serde_json::from_str(&take_string(json)).unwrap())
+            } else {
+                Err(take_error(error))
+            }
+        };
+        let all = search(None).expect("default search");
+        assert_eq!(all["schema_version"], "binding_media.text_search.v1");
+        assert_eq!(all["match_count"], 2);
+        assert!(all["matches"][0]["quads"].is_array());
+        let whole = search(Some(r#"{"whole_word":true,"pages":[1]}"#)).unwrap();
+        assert_eq!(whole["match_count"], 1);
+        let insensitive = search(Some(r#"{"case_sensitive":false}"#)).unwrap();
+        assert_eq!(insensitive["options"]["case_sensitive"], false);
+        assert!(search(Some(r#"{"pages":[4]}"#)).is_err());
+        assert!(search(Some("not json"))
+            .unwrap_err()
+            .contains("text search options"));
+        unsafe { wellfriendpdf_document_free(doc) };
     }
 }
