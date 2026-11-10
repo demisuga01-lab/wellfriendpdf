@@ -9399,7 +9399,10 @@ impl<'a> RenderState<'a> {
                 image_ref.color_space
             ))
         };
-        if items.is_empty() || items.len() % 2 != 0 || items.len() > 2 * MAX_COLOR_KEY_COMPONENTS {
+        if items.is_empty()
+            || !items.len().is_multiple_of(2)
+            || items.len() > 2 * MAX_COLOR_KEY_COMPONENTS
+        {
             return Err(malformed("expected 2 x component-count entries"));
         }
         let components = items.len() / 2;
@@ -38715,21 +38718,17 @@ mod tests {
 
     #[test]
     fn malformed_extgstate_blend_mode_returns_typed_refusal() {
-        for (extgstate, expected) in [(
-            "<< /Type /ExtGState /BM 42 >>",
-            "ExtGState /GS1 /BM resolved to Integer, expected Name or Array",
-        )] {
-            let pdf = pdf_with_smask_extgstate(extgstate);
-            let engine = ContentEngine::open_bytes(pdf).expect("open malformed ExtGState /BM PDF");
-            let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
-                .expect_err("malformed ExtGState /BM must not silently select default blend");
-            let message = format!("{error}");
-            assert!(
-                message.contains(expected),
-                "expected {expected:?}, got {message}"
-            );
-        }
+        let expected = "ExtGState /GS1 /BM resolved to Integer, expected Name or Array";
+        let pdf = pdf_with_smask_extgstate("<< /Type /ExtGState /BM 42 >>");
+        let engine = ContentEngine::open_bytes(pdf).expect("open malformed ExtGState /BM PDF");
+        let error = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect_err("malformed ExtGState /BM must not silently select default blend");
+        let message = format!("{error}");
+        assert!(
+            message.contains(expected),
+            "expected {expected:?}, got {message}"
+        );
     }
 
     #[test]
@@ -39811,7 +39810,7 @@ mod tests {
                 {
                     for channel in 0..3 {
                         assert!(
-                            (pixel[channel] as i32 - expected[channel] as i32).abs() <= 2,
+                            (pixel[channel] as i32 - expected[channel]).abs() <= 2,
                             "{transfer}: got {pixel:?}, expected {expected:?}"
                         );
                     }
