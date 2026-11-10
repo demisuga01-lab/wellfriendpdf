@@ -495,6 +495,17 @@ pub(crate) fn decode_stream_lossless_strict_with_limits(
     decode_stream_lossless_mode(stream, reader, limits, DecodeMode::Strict)
 }
 
+/// Strict decode with default limits, for code that rewrites a stream after
+/// reading it (editing, reflow, redaction). Recovering a damaged stream and
+/// then saving it would silently write back the truncated data, so these
+/// callers must refuse damaged input; rendering and extraction stay lenient.
+pub fn decode_stream_lossless_strict(
+    stream: &PdfObject,
+    reader: &PdfReader,
+) -> Result<DecodedStream> {
+    decode_stream_lossless_strict_with_limits(stream, reader, &DecodeLimits::default())
+}
+
 fn decode_stream_lossless_mode(
     stream: &PdfObject,
     reader: &PdfReader,

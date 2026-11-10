@@ -15,7 +15,9 @@ use crate::document::{PdfDocument, PdfPage};
 use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, PageResources};
 use crate::error::{Result, WellfriendError};
-use crate::filters::{decode_stream_lossless, flate_encode, DecodeLimits, StreamDecodeStatus};
+use crate::filters::{
+    decode_stream_lossless_strict, flate_encode, DecodeLimits, StreamDecodeStatus,
+};
 use crate::fonts::FontResolver;
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::info::decode_pdf_text_string;
@@ -2541,7 +2543,7 @@ fn rewrite_page_content_for_redaction(
 
     for (number, generation) in &page.contents {
         let object = reader.get_object(*number, *generation)?;
-        let decoded = decode_stream_lossless(&object, reader)?;
+        let decoded = decode_stream_lossless_strict(&object, reader)?;
         let operations = ContentParser::parse(&decoded.data)?;
         let mut operation_index = 0usize;
         while operation_index < operations.len() {
@@ -3868,7 +3870,7 @@ fn redacted_image_xobject(
     let mut samples = match jpeg {
         Some(pixels) => pixels,
         None => {
-            let decoded = decode_stream_lossless(&obj, reader)?;
+            let decoded = decode_stream_lossless_strict(&obj, reader)?;
             if !matches!(decoded.status, StreamDecodeStatus::Complete) {
                 return Ok(None);
             }
@@ -4279,7 +4281,7 @@ fn indexed_lookup_bytes(dict: &PdfDictionary, reader: &PdfReader) -> Result<Vec<
         Some(value) => match reader.resolve(value.clone())? {
             PdfObject::String(bytes) => Ok(bytes),
             stream @ PdfObject::Stream { .. } => {
-                let decoded = decode_stream_lossless(&stream, reader)?;
+                let decoded = decode_stream_lossless_strict(&stream, reader)?;
                 if !matches!(decoded.status, StreamDecodeStatus::Complete) {
                     return Err(WellfriendError::UnsupportedFeature(
                         "Indexed lookup uses an unsupported image codec".to_string(),
@@ -4330,7 +4332,7 @@ fn redacted_associated_mask(
                 .to_string(),
         ));
     }
-    let decoded = decode_stream_lossless(&object, reader)?;
+    let decoded = decode_stream_lossless_strict(&object, reader)?;
     if !matches!(decoded.status, StreamDecodeStatus::Complete) {
         return Err(WellfriendError::UnsupportedFeature(
             "associated mask codec has no safe lossless decoder".to_string(),
@@ -6212,7 +6214,7 @@ fn scrub_stream_payload(
     let PdfObject::Stream { dict, .. } = stream else {
         return Ok(None);
     };
-    let decoded = decode_stream_lossless(stream, reader)?;
+    let decoded = decode_stream_lossless_strict(stream, reader)?;
     let Some(scrubbed) = scrub_bytes(&decoded.data, removed_text) else {
         return Ok(None);
     };

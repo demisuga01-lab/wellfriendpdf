@@ -782,7 +782,7 @@ fn n_up_pdf_vector(
             for &(number, generation) in streams {
                 let stream = reader.get_object(number, generation)?;
                 data.extend_from_slice(
-                    &crate::filters::decode_stream_lossless(&stream, reader)?.data,
+                    &crate::filters::decode_stream_lossless_strict(&stream, reader)?.data,
                 );
                 data.push(b'\n');
             }
