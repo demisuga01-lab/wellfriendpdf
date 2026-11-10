@@ -29,7 +29,17 @@ locations referenced below.
     Text:    crates/engine/fonts/LICENSE-Liberation.txt
     Source:  https://github.com/liberationfonts/liberation-fonts
 
-  Both font families are permissive (non-copyleft); the fonts are shipped
+  Foxit Symbol / Foxit Dingbats (FoxitSymbol.cff, FoxitDingbats.cff)
+    License: BSD-3-Clause (PDFium); original code copyright 2014 Foxit Software
+             Inc., copyright 2014 The PDFium Authors.
+    Text:    crates/engine/fonts/LICENSE-PDFium.txt
+    Source:  https://pdfium.googlesource.com/pdfium (core/fxge/fontdata/chromefontdata)
+
+  Small numeric tables from PDFium (synthetic-bold strengths kWeightPow*, italic
+  skew kAngleSkew) are reproduced with attribution under the same BSD-3-Clause
+  license.
+
+  All bundled font families are permissive (non-copyleft); the fonts are shipped
   unmodified with their license texts, satisfying the OFL and Bitstream Vera
   redistribution terms. See crates/engine/fonts/README.md for full provenance.
 
