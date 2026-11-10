@@ -62,12 +62,30 @@ fn ghostscript_rasterize(
     width: u32,
     height: u32,
 ) -> Result<wellfriendpdf_engine::images::decoder::RawImage, String> {
+    ghostscript_rasterize_with(gs, ps_path, width, height, false)
+}
+
+/// [`ghostscript_rasterize`], optionally with Ghostscript's 4-bit text and
+/// graphics anti-aliasing (closer to Wellfriend's anti-aliased raster).
+fn ghostscript_rasterize_with(
+    gs: &Path,
+    ps_path: &Path,
+    width: u32,
+    height: u32,
+    antialias: bool,
+) -> Result<wellfriendpdf_engine::images::decoder::RawImage, String> {
     let out_png = std::env::temp_dir().join(format!(
         "wellfriendpdf_ps_gs_{}_{}.png",
         std::process::id(),
         ps_path.file_name().and_then(|n| n.to_str()).unwrap_or("x")
     ));
-    let output = Command::new(gs)
+    let mut command = Command::new(gs);
+    if antialias {
+        command
+            .arg("-dTextAlphaBits=4")
+            .arg("-dGraphicsAlphaBits=4");
+    }
+    let output = command
         .arg("-dSAFER")
         .arg("-dBATCH")
         .arg("-dNOPAUSE")
@@ -331,4 +349,76 @@ fn eps_rasterizes_close_to_wellfriendpdf_raster() {
         psnr >= 22.0,
         "{name} p{page}: EPS-vs-raster PSNR {psnr:.2} dB below floor"
     );
+}
+
+// ── Size / time / fidelity report (manual: `--ignored --nocapture`) ──────────
+
+/// Fixtures measured by the size/time/fidelity reports.
+const REPORT_FIXTURES: [&str; 6] = [
+    "tracemonkey.pdf",
+    "basicapi.pdf",
+    "form_160f.pdf",
+    "multi_stream.pdf",
+    "image_only.pdf",
+    "flate.pdf",
+];
+
+/// Prints, per fixture, the whole-document PostScript size and generation
+/// time and the per-page Ghostscript-vs-raster PSNR. Run in release mode with
+/// `cargo test --release --test ps_output report_ -- --ignored --nocapture`.
+#[test]
+#[ignore = "manual size/time/fidelity report"]
+fn report_ps_output_size_time_and_fidelity() {
+    let gs = find_ghostscript();
+    for name in REPORT_FIXTURES {
+        let e = engine(name);
+        let count = e.page_count().unwrap();
+        let pages: Vec<usize> = (1..=count).collect();
+        let started = std::time::Instant::now();
+        let (ps, rasterized) = e.render_document_ps(&pages, DPI).unwrap();
+        let elapsed = started.elapsed();
+        let mut psnrs = Vec::new();
+        let mut aa_psnrs = Vec::new();
+        if let Some(gs) = gs.as_deref() {
+            for &page in &pages {
+                let vp = e.page_viewport(page, DPI).unwrap();
+                let raster = e.render_page(page, DPI).unwrap().to_raw_image();
+                let (doc, _) = e.render_document_ps(&[page], DPI).unwrap();
+                let path = write_temp(&format!("report_{name}_p{page}.ps"), &doc);
+                if let Some(dir) = std::env::var_os("WELLFRIENDPDF_PS_DIAGNOSTICS") {
+                    let dir = PathBuf::from(dir);
+                    let _ = std::fs::create_dir_all(&dir);
+                    let stem = format!("{}-p{page}", name.trim_end_matches(".pdf"));
+                    let _ = std::fs::write(dir.join(format!("{stem}.ps")), &doc);
+                    let _ = RenderQuality::write_golden(
+                        &dir.join(format!("{stem}-raster.png")),
+                        &raster,
+                    );
+                }
+                for antialias in [false, true] {
+                    let target = if antialias { &mut aa_psnrs } else { &mut psnrs };
+                    match ghostscript_rasterize_with(
+                        gs,
+                        &path,
+                        vp.width_px,
+                        vp.height_px,
+                        antialias,
+                    ) {
+                        Ok(image) => target.push(format!("{:.2}", psnr_rgb(&raster, &image))),
+                        Err(err) => {
+                            target.push(format!("gs-error({})", err.lines().next().unwrap_or("")))
+                        }
+                    }
+                }
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        eprintln!(
+            "PSREPORT {name}: pages={count} bytes={} ms={:.1} rasterized={rasterized} psnr=[{}] aa_psnr=[{}]",
+            ps.len(),
+            elapsed.as_secs_f64() * 1000.0,
+            psnrs.join(" "),
+            aa_psnrs.join(" ")
+        );
+    }
 }

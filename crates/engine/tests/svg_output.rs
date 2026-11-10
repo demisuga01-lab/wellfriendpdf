@@ -341,3 +341,41 @@ fn cross_check_pdftocairo_svg_renders_similarly() {
     );
     eprintln!("Wellfriend SVG vs raster PSNR ({name} p{page}): {wellfriendpdf_psnr:.2} dB");
 }
+
+/// Prints, per fixture, the summed SVG size and generation time over all
+/// pages and the per-page resvg-vs-raster PSNR. Run in release mode with
+/// `cargo test --release --test svg_output report_ -- --ignored --nocapture`.
+#[test]
+#[ignore = "manual size/time/fidelity report"]
+fn report_svg_output_size_time_and_fidelity() {
+    for name in [
+        "tracemonkey.pdf",
+        "basicapi.pdf",
+        "form_160f.pdf",
+        "multi_stream.pdf",
+        "image_only.pdf",
+        "flate.pdf",
+    ] {
+        let e = engine(name);
+        let count = e.page_count().unwrap();
+        let mut bytes = 0usize;
+        let mut elapsed = std::time::Duration::ZERO;
+        let mut rasterized = 0usize;
+        let mut psnrs = Vec::new();
+        for page in 1..=count {
+            let started = std::time::Instant::now();
+            let svg = e.render_page_svg(page, DPI).unwrap();
+            elapsed += started.elapsed();
+            bytes += svg.svg.len();
+            rasterized += usize::from(svg.is_rasterized);
+            let (raster, w, h) = wellfriendpdf_raster_rgba(&e, page);
+            let svg_raster = rasterize_svg(&svg.svg, w, h);
+            psnrs.push(format!("{:.2}", psnr_rgba(&raster, &svg_raster)));
+        }
+        eprintln!(
+            "SVGREPORT {name}: pages={count} bytes={bytes} ms={:.1} rasterized={rasterized} psnr=[{}]",
+            elapsed.as_secs_f64() * 1000.0,
+            psnrs.join(" ")
+        );
+    }
+}

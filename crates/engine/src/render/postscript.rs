@@ -62,7 +62,8 @@ use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::glyph_outline::{font_size_scale, get_upem};
 use crate::render::line::DashState;
 use crate::render::path::{
-    flatten_path, flatten_path_device_transform, stroke_flat_path, FillRule, FlatPath, Path,
+    device_curve_path, effective_device_flatness, flatten_path, flatten_path_device_transform,
+    stroke_flat_path, CompactNum as PsNum, FillRule, FlatPath, Path, PathSegment,
 };
 use crate::render::text_decode::{
     decoded_glyph_strict_horizontal_advance, decoded_glyph_strict_outline, get_font_bytes,
@@ -281,6 +282,29 @@ fn ps_number(value: f64) -> String {
         "0".to_string()
     } else {
         text.to_string()
+    }
+}
+
+/// Device-space geometry of one painted path: Bézier curves kept as is, or
+/// the flattened polyline when the curve form cannot be produced.
+enum DevicePath {
+    Curves(Path),
+    Flat(FlatPath),
+}
+
+impl DevicePath {
+    fn new(path: &Path, ctm: &Transform2D, viewport: &Viewport, flatness: f64) -> Self {
+        match device_curve_path(path, ctm, viewport) {
+            Some(curves) => DevicePath::Curves(curves),
+            None => DevicePath::Flat(flatten_path(path, ctm, viewport, flatness)),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            DevicePath::Curves(path) => path.is_empty(),
+            DevicePath::Flat(flat) => flat.subpaths.iter().all(|s| s.is_empty()),
+        }
     }
 }
 
@@ -654,6 +678,52 @@ impl PsSink {
             if *closed {
                 self.body.push_str("closepath\n");
             }
+        }
+    }
+
+    /// Append a device-space path keeping its Bézier segments as `curveto`
+    /// (`pdftops` behaviour) instead of a flattened polyline.
+    fn append_curve_path(&mut self, path: &Path) {
+        use std::fmt::Write as _;
+        let body = &mut self.body;
+        for seg in &path.segments {
+            match *seg {
+                PathSegment::MoveTo(x, y) => {
+                    let _ = writeln!(body, "{} {} moveto", PsNum(x), PsNum(y));
+                }
+                PathSegment::LineTo(x, y) => {
+                    let _ = writeln!(body, "{} {} lineto", PsNum(x), PsNum(y));
+                }
+                PathSegment::CubicTo {
+                    cp1x,
+                    cp1y,
+                    cp2x,
+                    cp2y,
+                    x,
+                    y,
+                } => {
+                    let _ = writeln!(
+                        body,
+                        "{} {} {} {} {} {} curveto",
+                        PsNum(cp1x),
+                        PsNum(cp1y),
+                        PsNum(cp2x),
+                        PsNum(cp2y),
+                        PsNum(x),
+                        PsNum(y)
+                    );
+                }
+                PathSegment::ClosePath => body.push_str("closepath\n"),
+            }
+        }
+    }
+
+    /// Append the geometry of a vector path: curves when every point maps to
+    /// a finite device coordinate, otherwise the flattened polyline.
+    fn append_device_path(&mut self, path: &DevicePath) {
+        match path {
+            DevicePath::Curves(path) => self.append_curve_path(path),
+            DevicePath::Flat(flat) => self.append_path(flat),
         }
     }
 
@@ -1623,13 +1693,13 @@ impl PsRenderState<'_> {
                 return;
             }
             let ctm = self.ctm();
-            let flat = flatten_path(
+            let device = DevicePath::new(
                 &self.path,
                 &ctm,
                 &self.viewport,
                 self.gs.path_flatness_tolerance(),
             );
-            self.sink.append_path(&flat);
+            self.sink.append_device_path(&device);
             match rule {
                 FillRule::EvenOdd => self.sink.push_line("eoclip"),
                 FillRule::NonZero => self.sink.push_line("clip"),
@@ -1693,16 +1763,16 @@ impl PsRenderState<'_> {
             return;
         }
         let ctm = self.ctm();
-        let flat = flatten_path(
-            &self.path,
-            &ctm,
-            &self.viewport,
-            self.gs.path_flatness_tolerance(),
-        );
-        if flat.subpaths.iter().all(|s| s.is_empty()) {
-            return;
-        }
         if self.gs.fill_color_space.is_pattern() {
+            let flat = flatten_path(
+                &self.path,
+                &ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            );
+            if flat.subpaths.iter().all(|s| s.is_empty()) {
+                return;
+            }
             match self.emit_tiling_pattern_clip(
                 self.gs.fill_pattern_name.clone(),
                 &flat,
@@ -1721,6 +1791,15 @@ impl PsRenderState<'_> {
             self.emit_shading_pattern_clip(self.gs.fill_pattern_name.clone(), &flat, rule, "fill");
             return;
         }
+        let device = DevicePath::new(
+            &self.path,
+            &ctm,
+            &self.viewport,
+            self.gs.path_flatness_tolerance(),
+        );
+        if device.is_empty() {
+            return;
+        }
         let Some((color, alpha)) = self.current_fill_color_or_fatal("PostScript fill color") else {
             return;
         };
@@ -1731,8 +1810,9 @@ impl PsRenderState<'_> {
         if keep_path {
             self.sink.push_line("gsave");
         }
+        self.emit_flatness();
         self.sink.push_line("newpath");
-        self.sink.append_path(&flat);
+        self.sink.append_device_path(&device);
         match rule {
             FillRule::EvenOdd => self.sink.push_line("eofill"),
             FillRule::NonZero => self.sink.push_line("fill"),
@@ -1750,16 +1830,16 @@ impl PsRenderState<'_> {
             return;
         }
         let ctm = self.ctm();
-        let flat = flatten_path(
-            &self.path,
-            &ctm,
-            &self.viewport,
-            self.gs.path_flatness_tolerance(),
-        );
-        if flat.subpaths.iter().all(|s| s.is_empty()) {
-            return;
-        }
         if self.gs.stroke_color_space.is_pattern() {
+            let flat = flatten_path(
+                &self.path,
+                &ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            );
+            if flat.subpaths.iter().all(|s| s.is_empty()) {
+                return;
+            }
             let outline = stroke_flat_path(
                 &flat,
                 self.device_line_width(),
@@ -1791,6 +1871,15 @@ impl PsRenderState<'_> {
             );
             return;
         }
+        let device = DevicePath::new(
+            &self.path,
+            &ctm,
+            &self.viewport,
+            self.gs.path_flatness_tolerance(),
+        );
+        if device.is_empty() {
+            return;
+        }
         let Some((color, alpha)) = self.current_stroke_color_or_fatal("PostScript stroke color")
         else {
             return;
@@ -1802,8 +1891,9 @@ impl PsRenderState<'_> {
         let width = self.device_line_width();
         self.sink.push_line(&format!("{width:.3} setlinewidth"));
         self.emit_line_style();
+        self.emit_flatness();
         self.sink.push_line("newpath");
-        self.sink.append_path(&flat);
+        self.sink.append_device_path(&device);
         self.sink.push_line("stroke");
     }
 
@@ -2129,6 +2219,21 @@ impl PsRenderState<'_> {
     /// Emit `setrgbcolor`. PostScript vector output only reaches this path for
     /// opaque paint; fully transparent paint is skipped by callers, and
     /// fractional alpha remains a raster-fallback/refusal boundary.
+    /// Carry a non-default PDF flatness tolerance (`i` / ExtGState `/FL`) to
+    /// the PostScript `setflat` operator: curves are emitted as `curveto`, so
+    /// the interpreter flattens them. Coarse requests are clamped to one
+    /// device pixel as the raster renderer does.
+    fn emit_flatness(&mut self) {
+        // 0.5 is `GraphicsState::default().flatness`, the interpreter's own
+        // tolerance when the content never sets one.
+        if self.gs.flatness == 0.5 {
+            return;
+        }
+        let flatness = effective_device_flatness(self.gs.path_flatness_tolerance());
+        self.sink
+            .push_line(&format!("{} setflat", ps_number(flatness)));
+    }
+
     fn emit_setcolor(&mut self, color: RenderColor, alpha: f32) {
         let a = alpha.clamp(0.0, 1.0);
         if !ps_alpha_is_opaque(a) {
@@ -2336,10 +2441,20 @@ impl PsRenderState<'_> {
             .concat(&Transform2D::translation(0.0, self.gs.text.rise))
             .concat(&Transform2D::from(self.gs.text.tm))
             .concat(&self.ctm());
-        let flat = flatten_path(&glyph_path, &glyph_ctm, &self.viewport, 0.3);
-        if flat.subpaths.iter().all(|s| s.is_empty()) {
+        let device = DevicePath::new(&glyph_path, &glyph_ctm, &self.viewport, 0.3);
+        if device.is_empty() {
             return;
         }
+        // Flattened outlines are only needed for text clipping and for the
+        // pattern-paint clips; plain paints keep the glyph's curves.
+        let needs_flat = matches!(self.gs.text.rendering_mode, 4..=7)
+            || self.gs.fill_color_space.is_pattern()
+            || self.gs.stroke_color_space.is_pattern();
+        let flat = if needs_flat {
+            flatten_path(&glyph_path, &glyph_ctm, &self.viewport, 0.3)
+        } else {
+            FlatPath::default()
+        };
         self.append_text_clip_path(&flat);
 
         match self.gs.text.rendering_mode {
@@ -2373,7 +2488,7 @@ impl PsRenderState<'_> {
                         self.sink.push_line(&format!("{w:.3} setlinewidth"));
                         self.emit_line_style();
                         self.sink.push_line("newpath");
-                        self.sink.append_path(&flat);
+                        self.sink.append_device_path(&device);
                         self.sink.push_line("stroke");
                     }
                 }
@@ -2397,7 +2512,7 @@ impl PsRenderState<'_> {
                     if !ps_alpha_is_fully_transparent(fill_alpha) {
                         self.emit_setcolor(fill_color, fill_alpha);
                         self.sink.push_line("newpath");
-                        self.sink.append_path(&flat);
+                        self.sink.append_device_path(&device);
                         self.sink.push_line("fill");
                     }
                 }
@@ -2430,7 +2545,7 @@ impl PsRenderState<'_> {
                         self.sink.push_line(&format!("{w:.3} setlinewidth"));
                         self.emit_line_style();
                         self.sink.push_line("newpath");
-                        self.sink.append_path(&flat);
+                        self.sink.append_device_path(&device);
                         self.sink.push_line("stroke");
                     }
                 }
@@ -2455,7 +2570,7 @@ impl PsRenderState<'_> {
                     if !ps_alpha_is_fully_transparent(a) {
                         self.emit_setcolor(color, a);
                         self.sink.push_line("newpath");
-                        self.sink.append_path(&flat);
+                        self.sink.append_device_path(&device);
                         // Glyph outlines use the nonzero winding rule.
                         self.sink.push_line("fill");
                     }

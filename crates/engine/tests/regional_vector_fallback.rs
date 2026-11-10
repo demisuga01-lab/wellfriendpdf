@@ -5319,14 +5319,12 @@ fn svg_output_matrix_tiling_pattern_fill_transforms_native_tiles() {
     assert!(page.svg.contains("fill=\"#FF0000\""), "{}", page.svg);
     assert!(page.svg.contains("fill=\"#0000FF\""), "{}", page.svg);
     assert!(
-        page.svg
-            .contains("M15.00 100.00 L25.00 100.00 L25.00 90.00"),
+        page.svg.contains("M15 100L25 100L25 90"),
         "tiling-pattern Matrix should scale and translate red tile geometry: {}",
         page.svg
     );
     assert!(
-        page.svg
-            .contains("M25.00 100.00 L35.00 100.00 L35.00 90.00"),
+        page.svg.contains("M25 100L35 100L35 90"),
         "tiling-pattern Matrix should scale and translate blue tile geometry: {}",
         page.svg
     );
@@ -5348,13 +5346,13 @@ fn ps_output_matrix_tiling_pattern_fill_transforms_native_tiles() {
     assert!(page.body.contains("0.0000 0.0000 1.0000 setrgbcolor"));
     assert!(
         page.body
-            .contains("15.00 100.00 moveto\n25.00 100.00 lineto\n25.00 90.00 lineto"),
+            .contains("15 100 moveto\n25 100 lineto\n25 90 lineto"),
         "tiling-pattern Matrix should scale and translate red tile geometry: {}",
         page.body
     );
     assert!(
         page.body
-            .contains("25.00 100.00 moveto\n35.00 100.00 lineto\n35.00 90.00 lineto"),
+            .contains("25 100 moveto\n35 100 lineto\n35 90 lineto"),
         "tiling-pattern Matrix should scale and translate blue tile geometry: {}",
         page.body
     );
@@ -7102,13 +7100,20 @@ fn svg_output_safe_extgstate_flatness_changes_curve_sampling() {
         "safe ExtGState FL should keep SVG vector output"
     );
 
-    let loose_segments = loose.svg.matches(" L").count();
-    let tight_segments = tight.svg.matches(" L").count();
+    // Curves are written as exact cubic Bézier segments, so the PDF
+    // flatness tolerance (a rasterizer parameter SVG has no equivalent for)
+    // no longer changes the geometry: both files carry the same `C` segment
+    // and no flattened polyline.
     assert!(
-        tight_segments > loose_segments,
-        "lower FL should emit more SVG curve samples: loose={loose_segments}, tight={tight_segments}\n{}",
+        loose.svg.contains('C') && tight.svg.contains('C'),
+        "{}",
         tight.svg
     );
+    assert_eq!(
+        loose.svg.matches('C').count(),
+        tight.svg.matches('C').count()
+    );
+    assert!(!tight.svg.contains(" L"), "{}", tight.svg);
     assert!(!loose.svg.contains("data:image/png;base64,"));
     assert!(!tight.svg.contains("data:image/png;base64,"));
 }
@@ -7124,13 +7129,15 @@ fn ps_output_safe_extgstate_flatness_changes_curve_sampling() {
         "safe ExtGState FL should keep PS vector output"
     );
 
-    let loose_segments = loose.body.matches(" lineto").count();
-    let tight_segments = tight.body.matches(" lineto").count();
-    assert!(
-        tight_segments > loose_segments,
-        "lower FL should emit more PS curve samples: loose={loose_segments}, tight={tight_segments}\n{}",
-        tight.body
-    );
+    // Curves are written as `curveto`; the PDF flatness tolerance travels
+    // as `setflat`, so the PostScript interpreter samples the curve more
+    // finely for the lower FL (coarse requests clamp to one device pixel, as
+    // in the raster renderer).
+    assert!(loose.body.contains(" curveto"), "{}", loose.body);
+    assert!(tight.body.contains(" curveto"), "{}", tight.body);
+    assert!(!tight.body.contains(" lineto"), "{}", tight.body);
+    assert!(tight.body.contains("0.1 setflat"), "{}", tight.body);
+    assert!(loose.body.contains("1 setflat"), "{}", loose.body);
     assert!(!loose.body.contains("colorimage"));
     assert!(!tight.body.contains("colorimage"));
 }
@@ -7163,7 +7170,7 @@ fn ps_output_safe_extgstate_font_stays_vector_and_applies_font_size() {
         "safe ExtGState Font should not force PS rasterization"
     );
     assert!(
-        page.body.contains("19.85 60.00 moveto") && page.body.contains("11.48 47.62 lineto"),
+        page.body.contains("19.85 60 moveto") && page.body.contains("11.48 47.62 lineto"),
         "ExtGState font size should emit 18pt text outlines: {}",
         page.body
     );

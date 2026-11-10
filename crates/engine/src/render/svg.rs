@@ -51,8 +51,8 @@ use crate::render::color::{ColorSpaceHandler, RenderColor};
 use crate::render::glyph_outline::{font_size_scale, get_upem};
 use crate::render::line::DashState;
 use crate::render::path::{
-    flatten_path, flatten_path_device_transform, stroke_flat_path, FillRule, FlatPath, Path,
-    PathSegment,
+    device_curve_path, flatten_path, flatten_path_device_transform, stroke_flat_path, CompactNum,
+    FillRule, FlatPath, Path, PathSegment,
 };
 use crate::render::text_decode::{
     decoded_glyph_strict_horizontal_advance, decoded_glyph_strict_outline, get_font_bytes,
@@ -536,9 +536,13 @@ impl SvgSink {
 
     /// Register a clip path (device-space polylines) and return its id.
     fn add_clip(&mut self, flat: &FlatPath, rule: FillRule, parent_clip: Option<&str>) -> String {
+        self.add_clip_data(&path_data(flat), rule, parent_clip)
+    }
+
+    /// Register a clip path from ready SVG path data and return its id.
+    fn add_clip_data(&mut self, d: &str, rule: FillRule, parent_clip: Option<&str>) -> String {
         let id = format!("clip{}", self.clip_counter);
         self.clip_counter += 1;
-        let d = path_data(flat);
         let rule_attr = match rule {
             FillRule::EvenOdd => " clip-rule=\"evenodd\"",
             FillRule::NonZero => "",
@@ -732,6 +736,21 @@ impl SvgRenderState<'_> {
     fn device_point_with(&self, ctm: Transform2D, x: f64, y: f64) -> (f64, f64) {
         let (ux, uy) = ctm.transform_point(x, y);
         self.viewport.page_to_pixel_f64(ux, uy)
+    }
+
+    /// SVG path data for a user-space path in device space, keeping its
+    /// Bézier segments; flattened only when a point does not map to a finite
+    /// device coordinate.
+    fn device_path_data(&self, path: &Path, ctm: &Transform2D) -> String {
+        match device_curve_path(path, ctm, &self.viewport) {
+            Some(device) => curve_path_data(&device),
+            None => path_data(&flatten_path(
+                path,
+                ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            )),
+        }
     }
 
     fn current_clip(&self) -> Option<&str> {
@@ -1759,14 +1778,9 @@ impl SvgRenderState<'_> {
                 return;
             }
             let ctm = self.ctm();
-            let flat = flatten_path(
-                &self.path,
-                &ctm,
-                &self.viewport,
-                self.gs.path_flatness_tolerance(),
-            );
+            let d = self.device_path_data(&self.path, &ctm);
             let parent = self.current_clip().map(str::to_string);
-            let id = self.sink.add_clip(&flat, rule, parent.as_deref());
+            let id = self.sink.add_clip_data(&d, rule, parent.as_deref());
             // PDF clips intersect. The new SVG clipPath references the previous
             // active clip when one exists, so replacing the stack top preserves
             // the composed clip identity for subsequent elements.
@@ -1832,17 +1846,16 @@ impl SvgRenderState<'_> {
             return;
         }
         let ctm = self.ctm();
-        let flat = flatten_path(
-            &self.path,
-            &ctm,
-            &self.viewport,
-            self.gs.path_flatness_tolerance(),
-        );
-        let d = path_data(&flat);
-        if d.is_empty() {
-            return;
-        }
         if self.gs.fill_color_space.is_pattern() {
+            let flat = flatten_path(
+                &self.path,
+                &ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            );
+            if flat.subpaths.iter().all(|s| s.is_empty()) {
+                return;
+            }
             match self.emit_tiling_pattern_clip(
                 self.gs.fill_pattern_name.clone(),
                 &flat,
@@ -1867,6 +1880,10 @@ impl SvgRenderState<'_> {
             );
             return;
         }
+        let d = self.device_path_data(&self.path, &ctm);
+        if d.is_empty() {
+            return;
+        }
         let Some((rgb, alpha)) = self.current_fill_color_or_fatal("SVG fill color") else {
             return;
         };
@@ -1887,17 +1904,16 @@ impl SvgRenderState<'_> {
             return;
         }
         let ctm = self.ctm();
-        let flat = flatten_path(
-            &self.path,
-            &ctm,
-            &self.viewport,
-            self.gs.path_flatness_tolerance(),
-        );
-        let d = path_data(&flat);
-        if d.is_empty() {
-            return;
-        }
         if self.gs.stroke_color_space.is_pattern() {
+            let flat = flatten_path(
+                &self.path,
+                &ctm,
+                &self.viewport,
+                self.gs.path_flatness_tolerance(),
+            );
+            if flat.subpaths.iter().all(|s| s.is_empty()) {
+                return;
+            }
             let outline = stroke_flat_path(
                 &flat,
                 self.device_line_width(),
@@ -1928,6 +1944,10 @@ impl SvgRenderState<'_> {
                 self.gs.stroke_alpha as f32,
                 "stroke",
             );
+            return;
+        }
+        let d = self.device_path_data(&self.path, &ctm);
+        if d.is_empty() {
             return;
         }
         let Some((rgb, alpha)) = self.current_stroke_color_or_fatal("SVG stroke color") else {
@@ -2574,7 +2594,11 @@ impl SvgRenderState<'_> {
             }
         }
         let flat = flatten_path(&glyph_path, &glyph_ctm, &self.viewport, 0.3);
-        let d = path_data(&flat);
+        // Painted outlines keep the glyph's curves; the flattened copy serves
+        // text clipping and pattern clips.
+        let d = device_curve_path(&glyph_path, &glyph_ctm, &self.viewport)
+            .map(|device| curve_path_data(&device))
+            .unwrap_or_else(|| path_data(&flat));
         if d.is_empty() {
             return;
         }
@@ -2862,6 +2886,41 @@ fn transform_preserves_circles(transform: Transform2D) -> bool {
     }
     let dot = transform.a * transform.c + transform.b * transform.d;
     dot.is_finite() && dot.abs() <= 1e-6 && (sx - sy).abs() <= 1e-6
+}
+
+/// Build SVG path data (`M x y L x y C … Z`) from a device-space path,
+/// keeping its cubic Bézier segments.
+fn curve_path_data(path: &Path) -> String {
+    use std::fmt::Write as _;
+    let mut d = String::with_capacity(path.segments.len() * 16);
+    for segment in &path.segments {
+        let _ = match *segment {
+            PathSegment::MoveTo(x, y) => write!(d, "M{} {}", CompactNum(x), CompactNum(y)),
+            PathSegment::LineTo(x, y) => write!(d, "L{} {}", CompactNum(x), CompactNum(y)),
+            PathSegment::CubicTo {
+                cp1x,
+                cp1y,
+                cp2x,
+                cp2y,
+                x,
+                y,
+            } => write!(
+                d,
+                "C{} {} {} {} {} {}",
+                CompactNum(cp1x),
+                CompactNum(cp1y),
+                CompactNum(cp2x),
+                CompactNum(cp2y),
+                CompactNum(x),
+                CompactNum(y)
+            ),
+            PathSegment::ClosePath => {
+                d.push('Z');
+                Ok(())
+            }
+        };
+    }
+    d
 }
 
 /// Build SVG path data (`M x y L x y ... Z`) from device-space flattened

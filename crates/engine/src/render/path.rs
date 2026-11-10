@@ -366,6 +366,82 @@ pub fn flatten_path(
     })
 }
 
+/// A device-space coordinate written for vector output (PostScript, SVG)
+/// with two decimals and no trailing zeros (`12.5`, `3`, `-0.25`), without
+/// allocating.
+#[derive(Clone, Copy)]
+pub(crate) struct CompactNum(pub(crate) f64);
+
+impl std::fmt::Display for CompactNum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hundredths = (self.0 * 100.0).round();
+        if !hundredths.is_finite() || hundredths == 0.0 {
+            return f.write_str("0");
+        }
+        if hundredths.abs() >= 1e15 {
+            return write!(f, "{:.2}", self.0);
+        }
+        let hundredths = hundredths as i64;
+        let sign = if hundredths < 0 { "-" } else { "" };
+        let magnitude = hundredths.unsigned_abs();
+        let (whole, frac) = (magnitude / 100, magnitude % 100);
+        match frac {
+            0 => write!(f, "{sign}{whole}"),
+            f2 if f2 % 10 == 0 => write!(f, "{sign}{whole}.{}", f2 / 10),
+            f2 => write!(f, "{sign}{whole}.{f2:02}"),
+        }
+    }
+}
+
+/// Map a path from PDF user space to device-pixel space keeping its Bézier
+/// segments (an affine map takes a cubic to a cubic, so nothing is lost).
+/// Vector output backends emit the result as `curveto` / SVG `C` segments
+/// instead of a flattened polyline. Returns `None` when any point maps to a
+/// non-finite device coordinate, so the caller can fall back to
+/// [`flatten_path`], which drops such points subpath by subpath.
+pub(crate) fn device_curve_path(
+    path: &Path,
+    ctm: &Transform2D,
+    viewport: &Viewport,
+) -> Option<Path> {
+    map_curve_path(path, |x, y| path_point_to_device(x, y, ctm, viewport))
+}
+
+fn map_curve_path<F>(path: &Path, mut to_px: F) -> Option<Path>
+where
+    F: FnMut(f64, f64) -> Option<(f64, f64)>,
+{
+    let mut out = Path::new();
+    out.segments.reserve(path.segments.len());
+    for seg in &path.segments {
+        match *seg {
+            PathSegment::MoveTo(x, y) => {
+                let (x, y) = to_px(x, y)?;
+                out.move_to(x, y);
+            }
+            PathSegment::LineTo(x, y) => {
+                let (x, y) = to_px(x, y)?;
+                out.line_to(x, y);
+            }
+            PathSegment::CubicTo {
+                cp1x,
+                cp1y,
+                cp2x,
+                cp2y,
+                x,
+                y,
+            } => {
+                let (ax, ay) = to_px(cp1x, cp1y)?;
+                let (bx, by) = to_px(cp2x, cp2y)?;
+                let (x, y) = to_px(x, y)?;
+                out.curve_to(ax, ay, bx, by, x, y);
+            }
+            PathSegment::ClosePath => out.close(),
+        }
+    }
+    Some(out)
+}
+
 pub(crate) fn flatten_path_device_transform(
     path: &Path,
     device_t: &Transform2D,
