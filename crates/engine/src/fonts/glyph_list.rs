@@ -4328,7 +4328,7 @@ pub fn glyph_name_to_unicode_text(name: &str) -> Option<String> {
 /// selects hexadecimal over decimal digits.
 pub(crate) fn glyph_name_to_text(name: &str, numeric: Option<bool>) -> Option<String> {
     if let Ok(index) = AGL.binary_search_by(|(entry, _)| (*entry).cmp(name)) {
-        return char::from_u32(AGL[index].1).map(|ch| crate::fonts::resolver::expand_ligature(ch));
+        return char::from_u32(AGL[index].1).map(crate::fonts::resolver::expand_ligature);
     }
     let base = match name.find('.') {
         Some(0) => return None,
