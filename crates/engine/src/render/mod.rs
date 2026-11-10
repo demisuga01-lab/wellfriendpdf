@@ -51,11 +51,12 @@ pub use color::{ColorSpaceHandler, RenderColor};
 pub use contract::{
     render_contract_field_effects, AlphaMode, AnnotationRenderPolicy, BackendSelection,
     ColorManagementPolicy, ColorScheme, CompositingPolicy, ContractColor, DeterminismPolicy,
-    DeviceClip, DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, FormHighlightPolicy,
-    FormRenderPolicy, HalftonePolicy, ObjectIdentityId, OptionalContentStateId, OverprintPolicy, PageBox,
-    PixelFormat, PrintProfile, RenderContract, RenderContractFieldEffect, RenderResourceBudget,
-    RenderingIntent, ResourceId, RevisionId, SmoothingPolicy, SourceLinkId, ThinLineMode,
-    VectorAntialiasGamma, RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
+    DeviceClip, DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, ForcedColorScheme,
+    FormHighlightPolicy, FormRenderPolicy, HalftonePolicy, ObjectIdentityId, OptionalContentStateId,
+    OverprintPolicy, PageBox, PixelFormat, PrintProfile, RenderContract, RenderContractFieldEffect,
+    RenderResourceBudget, RenderingIntent, ResourceId, RevisionId, SmoothingPolicy, SourceLinkId,
+    ThinLineMode, VectorAntialiasGamma, RENDER_CONTRACT_FIELD_EFFECTS,
+    RENDER_CONTRACT_SCHEMA_VERSION,
 };
 pub use display_list::{
     build_display_list, build_display_list_cancellable, render_display_list, replay_display_list,
@@ -87,8 +88,8 @@ pub use image_painter::ImagePainter;
 pub use invalidation::{InvalidationResult, RenderDependencyGraph};
 pub use line::{DashState, LinePainter, WuLineRenderer};
 pub use page_renderer::{
-    skipped_render_object_count, FinalRasterCachePolicy, PageRenderer, RenderArtifactCacheStats,
-    RenderDocumentCache,
+    skipped_render_object_count, FinalRasterCachePolicy, PageImageObjectSelector, PageRenderer,
+    RenderArtifactCacheStats, RenderDocumentCache,
 };
 pub use path::{
     flatten_cubic, flatten_path, path_raster_stats, FillRule, FlatPath, Path, PathPainter,

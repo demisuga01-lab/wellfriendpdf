@@ -228,7 +228,7 @@ impl ImageLocator {
         }
     }
 
-    fn image_ref_from_dict(
+    pub(crate) fn image_ref_from_dict(
         page_number: usize,
         xobject_name: String,
         object_number: u32,

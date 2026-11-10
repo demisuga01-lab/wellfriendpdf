@@ -4318,11 +4318,47 @@ fn ps_output_inline_image_resource_separation_color_space_uses_regional_colorima
     assert!(page.has_regional_images);
     assert!(page.body.contains("regionpicstr"));
     assert!(page.body.contains("colorimage"));
+    let samples = first_ascii85_image_payload(&page.body);
     assert!(
-        page.body.contains("FF0000"),
+        samples.chunks_exact(3).any(|rgb| rgb == [0xFF, 0x00, 0x00]),
         "spot tint transform should produce an opaque red regional pixel: {}",
         page.body
     );
+}
+
+/// Decode the first ASCII85 image payload (the data following an
+/// `... flushfile } exec` image operator) of a PostScript page body.
+fn first_ascii85_image_payload(body: &str) -> Vec<u8> {
+    let start = body
+        .find("flushfile } exec")
+        .expect("ASCII85 image operator")
+        + 16;
+    let rest = &body[start..];
+    let end = rest.find("~>").expect("ASCII85 end-of-data marker");
+    let mut out = Vec::new();
+    let mut group = Vec::new();
+    for ch in rest[..end]
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+    {
+        if ch == b'z' && group.is_empty() {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        group.push(u64::from(ch - b'!'));
+        if group.len() == 5 {
+            let value = group.iter().fold(0u64, |acc, digit| acc * 85 + digit);
+            out.extend_from_slice(&(value as u32).to_be_bytes());
+            group.clear();
+        }
+    }
+    if !group.is_empty() {
+        let kept = group.len() - 1;
+        group.resize(5, 84);
+        let value = group.iter().fold(0u64, |acc, digit| acc * 85 + digit);
+        out.extend_from_slice(&(value as u32).to_be_bytes()[..kept]);
+    }
+    out
 }
 
 #[test]

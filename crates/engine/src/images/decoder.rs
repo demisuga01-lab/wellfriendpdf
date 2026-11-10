@@ -1718,7 +1718,7 @@ impl ImageDecoder {
         )))
     }
 
-    fn apply_filters_direct_with_limits(
+    pub(crate) fn apply_filters_direct_with_limits(
         raw: &[u8],
         filters: &[&str],
         decode_parms: Option<&PdfDictionary>,

@@ -613,16 +613,14 @@ pub fn assemble_eps_document(page: &PsPage) -> String {
 /// Accumulates PostScript operators for one page body and emits it wrapped in a
 /// `gsave` + coordinate-flip prologue and a matching `grestore`.
 struct PsSink {
-    width: u32,
     height: u32,
     body: String,
     points_per_pixel: f64,
 }
 
 impl PsSink {
-    fn new(width: u32, height: u32) -> Self {
+    fn new(_width: u32, height: u32) -> Self {
         Self {
-            width,
             height,
             body: String::new(),
             points_per_pixel: 1.0,
@@ -670,34 +668,31 @@ impl PsSink {
         }
         // Position the unit image square over the full device-space page box.
         self.push_line(&format!("{w} {h} scale"));
-        self.push_line(&format!("{w} {h} 8 [{w} 0 0 {h} 0 0]"));
-        self.push_line("{currentfile picstr readhexstring pop} false 3 colorimage");
-        // `picstr` is a per-row scratch string defined in the body prologue.
-        // Emit the hex sample data, wrapped to a sane line width.
-        const HEXCHARS: &[u8; 16] = b"0123456789ABCDEF";
-        let mut hex = String::with_capacity(rgb.len() * 2 + rgb.len() / 32);
-        let mut col = 0usize;
-        for &byte in rgb {
-            hex.push(HEXCHARS[(byte >> 4) as usize] as char);
-            hex.push(HEXCHARS[(byte & 0xf) as usize] as char);
-            col += 2;
-            if col >= 78 {
-                hex.push('\n');
-                col = 0;
-            }
-        }
-        self.body.push_str(&hex);
+        // The samples are ASCII85-encoded (25% overhead instead of 100% for
+        // hex) and read through an `/ASCII85Decode` filter named `picstr`.
+        self.push_ascii85_image_data(
+            "picstr",
+            &format!("{w} {h} 8 [{w} 0 0 {h} 0 0] picstr false 3 colorimage"),
+            rgb,
+        );
+    }
+
+    /// Emit an image operator reading its samples from an `/ASCII85Decode`
+    /// filter over `currentfile`, followed by the encoded data.
+    ///
+    /// The filter is bound to `source` and the image operator runs inside an
+    /// executed procedure that flushes the filter afterwards, so the `~>`
+    /// end-of-data marker is always consumed before the interpreter resumes
+    /// scanning the page body.
+    fn push_ascii85_image_data(&mut self, source: &str, image_operator: &str, data: &[u8]) {
+        self.push_line(&format!("/{source} currentfile /ASCII85Decode filter def"));
+        self.push_line(&format!("{{ {image_operator} {source} flushfile }} exec"));
+        self.body.push_str(&ascii85_encode(data));
         self.body.push('\n');
     }
 
-    /// Whether the page body emits a raster image (it needs the `picstr` scratch
-    /// string declared in the prologue).
-    fn body_needs_picstr(&self) -> bool {
-        self.body.contains("currentfile picstr readhexstring")
-    }
-
     /// Finish the page body: wrap it with `gsave`, the top-left device-space
-    /// coordinate flip, any required scratch declarations, and `grestore`.
+    /// coordinate flip, and `grestore`.
     fn finish(self) -> String {
         let mut out = String::new();
         out.push_str("gsave\n");
@@ -709,10 +704,6 @@ impl PsSink {
         // Map PostScript bottom-left/y-up to our top-left/y-down device space.
         out.push_str(&format!("0 {} translate\n", self.height));
         out.push_str("1 -1 scale\n");
-        if self.body_needs_picstr() {
-            // Scratch string holding one image row (width * 3 RGB bytes).
-            out.push_str(&format!("/picstr {} string def\n", self.width as usize * 3));
-        }
         out.push_str(&self.body);
         out.push_str("grestore\n");
         out
@@ -991,8 +982,8 @@ impl PsRenderState<'_> {
         };
 
         let reader = self.engine.document().reader();
-        let dict = match reader.get_object(obj_num, gen_num) {
-            Ok(crate::object::PdfObject::Stream { dict, .. }) => dict,
+        let (dict, encoded) = match reader.get_object(obj_num, gen_num) {
+            Ok(crate::object::PdfObject::Stream { dict, raw }) => (dict, raw),
             Ok(other) => {
                 return Err(WellfriendError::MalformedPdf(format!(
                     "regional PS image /{name} resolved to {}, expected stream",
@@ -1010,6 +1001,17 @@ impl PsRenderState<'_> {
         let is_mask = regional_image_bool(&dict, "ImageMask", "IM", &context)?;
         let _ = regional_image_bool(&dict, "Interpolate", "I", &context)?;
         let image_ref = regional_image_reference(name, obj_num, gen_num, &dict, is_mask, reader)?;
+        if !is_mask
+            && self.emit_dct_passthrough_region(
+                &dict,
+                &encoded,
+                placement.transform,
+                placement.bounds,
+                &context,
+            )?
+        {
+            return Ok(());
+        }
         let color_space_override = (!is_mask)
             .then(|| {
                 resolved_regional_image_color_space_override(
@@ -1137,7 +1139,7 @@ impl PsRenderState<'_> {
             Some(RegionalRgbaAlphaState::Opaque) | None => None,
         };
         let allow_binary_alpha = alpha_clip.is_some();
-        let hex = regional_colorimage_hex_with_alpha_policy(raw, context, allow_binary_alpha)?;
+        let rgb = regional_colorimage_rgb_with_alpha_policy(raw, context, allow_binary_alpha)?;
         let iw = raw.width;
         let ih = raw.height;
 
@@ -1150,18 +1152,104 @@ impl PsRenderState<'_> {
             self.sink.push_line("newpath");
         }
         self.sink.push_line(&ps_concat_matrix(transform));
-        self.sink
-            .push_line(&format!("{iw} {ih} 8 [{iw} 0 0 {ih} 0 0]"));
-        let row_bytes = iw as usize * 3;
-        self.sink
-            .push_line(&format!("/regionpicstr {row_bytes} string def"));
-        self.sink
-            .push_line("{currentfile regionpicstr readhexstring pop} false 3 colorimage");
-
-        self.sink.body.push_str(&hex);
-        self.sink.body.push('\n');
+        self.sink.push_ascii85_image_data(
+            "regionpicstr",
+            &format!("{iw} {ih} 8 [{iw} 0 0 {ih} 0 0] regionpicstr false 3 colorimage"),
+            &rgb,
+        );
         self.sink.push_line("grestore");
         Ok(())
+    }
+
+    /// Pass an opaque DCT-encoded (JPEG) image XObject through to the
+    /// PostScript output unchanged, decoded by the printer's `/DCTDecode`
+    /// filter instead of being expanded to uncompressed samples. Applies to
+    /// 8-bit DeviceGray, DeviceRGB and DeviceCMYK JPEGs without /Decode,
+    /// /SMask or /Mask whose frame component count matches the colour
+    /// space. Returns `false` (emitting nothing) when the image does not
+    /// qualify.
+    fn emit_dct_passthrough_region(
+        &mut self,
+        dict: &PdfDictionary,
+        encoded: &[u8],
+        transform: [f64; 6],
+        bounds: [f64; 4],
+        context: &str,
+    ) -> Result<bool> {
+        if !ps_alpha_is_opaque(self.gs.fill_alpha as f32)
+            || dict.contains_key("SMask")
+            || dict.contains_key("Mask")
+            || dict.contains_key("Decode")
+            || dict.contains_key("D")
+            || dict.contains_key("SMaskInData")
+        {
+            return Ok(false);
+        }
+        let filters = extract_image_filter_names(dict, context)?;
+        if !matches!(filters.as_slice(), [filter] if filter == "DCTDecode" || filter == "DCT") {
+            return Ok(false);
+        }
+        if dict
+            .get("DecodeParms")
+            .or_else(|| dict.get("DP"))
+            .is_some_and(|params| !matches!(params, PdfObject::Null))
+        {
+            return Ok(false);
+        }
+        let bits = dict
+            .get("BitsPerComponent")
+            .or_else(|| dict.get("BPC"))
+            .and_then(PdfObject::as_number);
+        if bits.is_some_and(|bits| bits != 8.0) {
+            return Ok(false);
+        }
+        let reader = self.engine.document().reader();
+        let Ok(color_space) = extract_image_color_space_name(dict, reader, context) else {
+            return Ok(false);
+        };
+        let color_space = match color_space.as_str() {
+            "DeviceGray" | "DeviceRGB" | "DeviceCMYK" => color_space,
+            name => match self.resources.color_spaces.get(name).map(|object| {
+                reader
+                    .resolve(object.clone())
+                    .unwrap_or_else(|_| object.clone())
+            }) {
+                Some(PdfObject::Name(resolved)) => canonical_image_color_space_name(&resolved),
+                _ => return Ok(false),
+            },
+        };
+        let (components, decode) = match color_space.as_str() {
+            "DeviceGray" => (1, "[0 1]"),
+            "DeviceRGB" => (3, "[0 1 0 1 0 1]"),
+            "DeviceCMYK" => (4, "[0 1 0 1 0 1 0 1]"),
+            _ => return Ok(false),
+        };
+        if jpeg_frame_components(encoded) != Some(components) {
+            return Ok(false);
+        }
+        let context_width = regional_image_positive_u32(dict, "Width", "W", context)?;
+        let context_height = regional_image_positive_u32(dict, "Height", "H", context)?;
+        let (iw, ih) = (context_width, context_height);
+
+        self.sink
+            .push_line(&ps_region_comment("image-xobject", bounds));
+        self.sink
+            .push_line("% WellfriendImagePassthrough filter=DCTDecode");
+        self.sink.push_line("gsave");
+        self.sink.push_line(&ps_concat_matrix(transform));
+        self.sink
+            .push_line(&format!("/{color_space} setcolorspace"));
+        self.sink
+            .push_line("/regionpicstr currentfile /ASCII85Decode filter def");
+        self.sink
+            .push_line("/regiondctsrc regionpicstr /DCTDecode filter def");
+        self.sink.push_line(&format!(
+            "{{ << /ImageType 1 /Width {iw} /Height {ih} /BitsPerComponent 8 /Decode {decode} /ImageMatrix [{iw} 0 0 {ih} 0 0] /DataSource regiondctsrc >> image regionpicstr flushfile }} exec"
+        ));
+        self.sink.body.push_str(&ascii85_encode(encoded));
+        self.sink.body.push('\n');
+        self.sink.push_line("grestore");
+        Ok(true)
     }
 
     fn emit_stencil_mask_region(
@@ -1190,17 +1278,8 @@ impl PsRenderState<'_> {
         self.sink.push_line("gsave");
         self.sink.push_line(&ps_concat_matrix(transform));
         self.emit_setcolor(color, alpha);
-        self.sink
-            .push_line(&format!("{iw} {ih} true [{iw} 0 0 {ih} 0 0]"));
-        self.sink
-            .push_line(&format!("/regionmaskstr {row_bytes} string def"));
-        self.sink
-            .push_line("{currentfile regionmaskstr readhexstring pop} imagemask");
-
-        const HEXCHARS: &[u8; 16] = b"0123456789ABCDEF";
         let channels = raw.channels as usize;
-        let mut hex = String::with_capacity(row_bytes * ih as usize * 2 + ih as usize);
-        let mut col = 0usize;
+        let mut packed_rows = Vec::with_capacity(row_bytes * ih as usize);
         for row in 0..ih as usize {
             for byte_idx in 0..row_bytes {
                 let mut packed = 0u8;
@@ -1215,17 +1294,14 @@ impl PsRenderState<'_> {
                         packed |= 0x80 >> bit;
                     }
                 }
-                hex.push(HEXCHARS[(packed >> 4) as usize] as char);
-                hex.push(HEXCHARS[(packed & 0x0f) as usize] as char);
-                col += 2;
-                if col >= 78 {
-                    hex.push('\n');
-                    col = 0;
-                }
+                packed_rows.push(packed);
             }
         }
-        self.sink.body.push_str(&hex);
-        self.sink.body.push('\n');
+        self.sink.push_ascii85_image_data(
+            "regionmaskstr",
+            &format!("{iw} {ih} true [{iw} 0 0 {ih} 0 0] regionmaskstr imagemask"),
+            &packed_rows,
+        );
         self.sink.push_line("grestore");
         Ok(())
     }
@@ -2977,11 +3053,35 @@ fn regional_colorimage_hex(raw: &RawImage, context: &str) -> Result<String> {
     regional_colorimage_hex_with_alpha_policy(raw, context, false)
 }
 
+#[cfg(test)]
 fn regional_colorimage_hex_with_alpha_policy(
     raw: &RawImage,
     context: &str,
     allow_binary_alpha: bool,
 ) -> Result<String> {
+    const HEXCHARS: &[u8; 16] = b"0123456789ABCDEF";
+    let rgb = regional_colorimage_rgb_with_alpha_policy(raw, context, allow_binary_alpha)?;
+    let mut hex = String::with_capacity(rgb.len() * 2 + rgb.len() / 39);
+    let mut col = 0usize;
+    for byte in rgb {
+        hex.push(HEXCHARS[(byte >> 4) as usize] as char);
+        hex.push(HEXCHARS[(byte & 0xf) as usize] as char);
+        col += 2;
+        if col >= 78 {
+            hex.push('\n');
+            col = 0;
+        }
+    }
+    Ok(hex)
+}
+
+/// Validate a regional image for `colorimage` and return its samples as
+/// 8-bit RGB, row-major top-to-bottom.
+fn regional_colorimage_rgb_with_alpha_policy(
+    raw: &RawImage,
+    context: &str,
+    allow_binary_alpha: bool,
+) -> Result<Vec<u8>> {
     ensure_regional_raw_image(raw, context)?;
     let iw = raw.width as usize;
     let ih = raw.height as usize;
@@ -3006,36 +3106,102 @@ fn regional_colorimage_hex_with_alpha_policy(
         }
     }
 
-    const HEXCHARS: &[u8; 16] = b"0123456789ABCDEF";
-    let mut hex = String::with_capacity(iw * ih * 6 + iw * ih / 13);
-    let mut col = 0usize;
+    let mut rgb = Vec::with_capacity(iw * ih * 3);
     for row in 0..ih {
         for px in 0..iw {
             let offset = (row * iw + px) * channels;
-            let (r, g, b) = if channels >= 3 {
-                (
-                    raw.pixels[offset],
-                    raw.pixels[offset + 1],
-                    raw.pixels[offset + 2],
-                )
+            if channels >= 3 {
+                rgb.extend_from_slice(&raw.pixels[offset..offset + 3]);
             } else {
                 let v = raw.pixels[offset];
-                (v, v, v)
-            };
-            hex.push(HEXCHARS[(r >> 4) as usize] as char);
-            hex.push(HEXCHARS[(r & 0xf) as usize] as char);
-            hex.push(HEXCHARS[(g >> 4) as usize] as char);
-            hex.push(HEXCHARS[(g & 0xf) as usize] as char);
-            hex.push(HEXCHARS[(b >> 4) as usize] as char);
-            hex.push(HEXCHARS[(b & 0xf) as usize] as char);
-            col += 6;
-            if col >= 78 {
-                hex.push('\n');
-                col = 0;
+                rgb.extend_from_slice(&[v, v, v]);
             }
         }
     }
-    Ok(hex)
+    Ok(rgb)
+}
+
+/// ASCII85-encode `data` (PostScript Level 2 `/ASCII85Decode` input),
+/// wrapped to 75-column lines and terminated by the `~>` end-of-data marker.
+/// Four zero bytes encode as `z`; a final partial group writes `n + 1`
+/// characters.
+fn ascii85_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len() / 4 * 5 + data.len() / 60 + 8);
+    let mut column = 0usize;
+    let mut push = |out: &mut String, text: &[u8]| {
+        for &byte in text {
+            out.push(byte as char);
+            column += 1;
+            if column >= 75 {
+                out.push('\n');
+                column = 0;
+            }
+        }
+    };
+    let chunks = data.chunks_exact(4);
+    let remainder = chunks.remainder();
+    for chunk in chunks {
+        let value = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        if value == 0 {
+            push(&mut out, b"z");
+            continue;
+        }
+        push(&mut out, &ascii85_group(value));
+    }
+    if !remainder.is_empty() {
+        let mut padded = [0u8; 4];
+        padded[..remainder.len()].copy_from_slice(remainder);
+        let group = ascii85_group(u32::from_be_bytes(padded));
+        push(&mut out, &group[..remainder.len() + 1]);
+    }
+    out.push_str("~>");
+    out
+}
+
+fn ascii85_group(mut value: u32) -> [u8; 5] {
+    let mut group = [0u8; 5];
+    for slot in group.iter_mut().rev() {
+        *slot = b'!' + (value % 85) as u8;
+        value /= 85;
+    }
+    group
+}
+
+/// Number of colour components declared by a baseline/progressive JPEG
+/// frame header (SOFn), or `None` when the stream has no readable frame.
+fn jpeg_frame_components(data: &[u8]) -> Option<u8> {
+    if data.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut pos = 2usize;
+    while pos + 4 <= data.len() {
+        if data[pos] != 0xFF {
+            return None;
+        }
+        let marker = data[pos + 1];
+        if marker == 0xFF {
+            pos += 1;
+            continue;
+        }
+        if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            pos += 2;
+            continue;
+        }
+        let length = usize::from(u16::from_be_bytes([data[pos + 2], data[pos + 3]]));
+        if length < 2 {
+            return None;
+        }
+        let is_frame = matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+        if is_frame {
+            // FF Cn Lh Ll P Yh Yl Xh Xl Nf
+            return data.get(pos + 9).copied();
+        }
+        if marker == 0xDA || marker == 0xD9 {
+            return None;
+        }
+        pos = pos.checked_add(2 + length)?;
+    }
+    None
 }
 
 fn ps_concat_matrix(transform: [f64; 6]) -> String {
@@ -3246,12 +3412,80 @@ mod tests {
     fn raster_image_declares_picstr_and_colorimage() {
         let mut sink = PsSink::new(2, 1);
         // 2x1 RGB image: red, green.
-        sink.emit_raster_image(&[255, 0, 0, 0, 255, 0], 2, 1);
+        let rgb = [255, 0, 0, 0, 255, 0];
+        sink.emit_raster_image(&rgb, 2, 1);
         let out = sink.finish();
-        assert!(out.contains("/picstr 6 string def"), "{out}");
-        assert!(out.contains("colorimage"));
-        assert!(out.contains("FF0000"));
-        assert!(out.contains("00FF00"));
+        assert!(
+            out.contains("/picstr currentfile /ASCII85Decode filter def"),
+            "{out}"
+        );
+        assert!(out.contains("picstr false 3 colorimage picstr flushfile } exec"));
+        assert!(!out.contains("readhexstring"));
+        let encoded = ascii85_encode(&rgb);
+        assert!(out.contains(&encoded), "{out}");
+        assert_eq!(ascii85_decode_for_test(&encoded), rgb);
+    }
+
+    /// Reference ASCII85 decoder used to prove the encoder round-trips.
+    fn ascii85_decode_for_test(text: &str) -> Vec<u8> {
+        let body = text.strip_suffix("~>").expect("ASCII85 EOD marker");
+        let mut out = Vec::new();
+        let mut group = Vec::new();
+        for ch in body.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
+            if ch == b'z' && group.is_empty() {
+                out.extend_from_slice(&[0, 0, 0, 0]);
+                continue;
+            }
+            group.push(ch - b'!');
+            if group.len() == 5 {
+                let value = group
+                    .iter()
+                    .fold(0u64, |acc, digit| acc * 85 + u64::from(*digit));
+                out.extend_from_slice(&(value as u32).to_be_bytes());
+                group.clear();
+            }
+        }
+        if !group.is_empty() {
+            let kept = group.len() - 1;
+            while group.len() < 5 {
+                group.push(84);
+            }
+            let value = group
+                .iter()
+                .fold(0u64, |acc, digit| acc * 85 + u64::from(*digit));
+            out.extend_from_slice(&(value as u32).to_be_bytes()[..kept]);
+        }
+        out
+    }
+
+    #[test]
+    fn ascii85_encoder_matches_reference_vectors_and_round_trips() {
+        assert_eq!(ascii85_encode(b"Man "), "9jqo^~>");
+        assert_eq!(ascii85_encode(&[0, 0, 0, 0]), "z~>");
+        assert_eq!(ascii85_encode(b""), "~>");
+        let data: Vec<u8> = (0..1000u32).map(|value| (value * 37 % 251) as u8).collect();
+        for len in [1, 2, 3, 4, 5, 7, 8, 63, 64, 999, 1000] {
+            let encoded = ascii85_encode(&data[..len]);
+            assert!(encoded.lines().all(|line| line.len() <= 75), "{encoded}");
+            assert_eq!(ascii85_decode_for_test(&encoded), &data[..len]);
+            // ASCII85 costs 25% instead of hex's 100%.
+            assert!(encoded.len() <= len * 5 / 4 + len / 75 + 8);
+        }
+    }
+
+    #[test]
+    fn jpeg_frame_components_reads_sof_marker() {
+        // SOI, APP0 (len 4), SOF0 with 3 components, EOI.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00,
+            0x01, 0x00, 0x02, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xFF,
+            0xD9,
+        ];
+        assert_eq!(jpeg_frame_components(&jpeg), Some(3));
+        assert_eq!(jpeg_frame_components(&[0x00, 0x01]), None);
+        // A Huffman table (C4) is not a frame header.
+        let no_frame = [0xFF, 0xD8, 0xFF, 0xC4, 0x00, 0x03, 0x00, 0xFF, 0xD9];
+        assert_eq!(jpeg_frame_components(&no_frame), None);
     }
 
     #[test]

@@ -439,10 +439,20 @@ pub(crate) fn enforce_clipped_contract_temporary_budget(
         return Ok(());
     }
 
-    let full_surface_bytes =
-        canonical_rgba_surface_bytes(full_viewport.width_px, full_viewport.height_px)?;
+    // Clipped renders rasterize only the requested window plus a two-pixel
+    // anti-aliasing overdraw on each side, then crop it away.
+    const WINDOW_OVERDRAW_PX: u32 = 2;
+    let window_width = tile
+        .width
+        .saturating_add(2 * WINDOW_OVERDRAW_PX)
+        .min(full_viewport.width_px);
+    let window_height = tile
+        .height
+        .saturating_add(2 * WINDOW_OVERDRAW_PX)
+        .min(full_viewport.height_px);
+    let window_surface_bytes = canonical_rgba_surface_bytes(window_width, window_height)?;
     let cropped_surface_bytes = canonical_rgba_surface_bytes(tile.width, tile.height)?;
-    let peak_temporary_bytes = full_surface_bytes
+    let peak_temporary_bytes = window_surface_bytes
         .checked_add(cropped_surface_bytes)
         .ok_or_else(|| {
             WellfriendError::ResourceLimit(
@@ -451,11 +461,25 @@ pub(crate) fn enforce_clipped_contract_temporary_budget(
         })?;
     if peak_temporary_bytes > contract.resource_budget.max_temporary_bytes {
         return Err(WellfriendError::ResourceLimit(format!(
-            "render contract clipped render requires {peak_temporary_bytes} temporary bytes for the full-page intermediate plus cropped surface, exceeding max_temporary_bytes {}",
+            "render contract clipped render requires {peak_temporary_bytes} temporary bytes for the windowed intermediate plus cropped surface, exceeding max_temporary_bytes {}",
             contract.resource_budget.max_temporary_bytes
         )));
     }
     Ok(())
+}
+
+/// Optional-content usage selected by a render contract print profile:
+/// print and proof renders use the `/Print` usage and `/AS` print events
+/// (PDFium `CPDF_OCContext::kPrint`); display renders use `/View`.
+pub(crate) fn optional_content_usage_for_print_profile(
+    profile: crate::render::PrintProfile,
+) -> crate::optional_content::OptionalContentUsage {
+    match profile {
+        crate::render::PrintProfile::Display => crate::optional_content::OptionalContentUsage::View,
+        crate::render::PrintProfile::Print | crate::render::PrintProfile::Proof => {
+            crate::optional_content::OptionalContentUsage::Print
+        }
+    }
 }
 
 pub(crate) fn apply_contract_color_scheme(contract: &RenderContract, buffer: &mut PixelBuffer) {
@@ -520,6 +544,7 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     push_if_changed!(thin_line_mode);
     push_if_changed!(vector_antialias_gamma);
     push_if_changed!(grayscale);
+    push_if_changed!(forced_colors);
     push_if_changed!(color_scheme);
     push_if_changed!(reverse_byte_order);
     push_if_changed!(print_profile);
@@ -2119,9 +2144,25 @@ impl ContentEngine {
                 "render contract belongs to a different document revision",
             ));
         }
-        let full_viewport =
+        let page_viewport =
             self.page_viewport_for_box(contract.page_number, contract.dpi, contract.page_box)?;
-        let full_tile = RenderTile::full(full_viewport.width_px, full_viewport.height_px);
+        // The device surface the contract addresses. With a clip, the clip is
+        // a window of the page-box viewport (its natural size at the contract
+        // DPI). Without a clip, the caller may request any output size: the
+        // page is mapped through the page-box viewport transform followed by
+        // the contract device transform (FPDF_RenderPageBitmapWithMatrix) and
+        // whatever lands inside `width` x `height` is rendered.
+        let surface = {
+            let mut surface = page_viewport.with_device_transform(
+                crate::render::Transform2D::from_array(contract.transform.to_f64()),
+            );
+            if contract.clip.is_none() {
+                surface.width_px = contract.width;
+                surface.height_px = contract.height;
+            }
+            surface
+        };
+        let full_tile = RenderTile::full(surface.width_px, surface.height_px);
         let tile = match contract.clip {
             Some(clip) => {
                 if clip.x < 0 || clip.y < 0 {
@@ -2143,8 +2184,8 @@ impl ContentEngine {
                 })?;
                 if tile.width == 0
                     || tile.height == 0
-                    || end_x > full_viewport.width_px
-                    || end_y > full_viewport.height_px
+                    || end_x > surface.width_px
+                    || end_y > surface.height_px
                 {
                     return Err(WellfriendError::invalid_input(
                         "render contract clip lies outside the requested page viewport",
@@ -2162,16 +2203,17 @@ impl ContentEngine {
             contract.page_box,
         )?;
         let optional_content_context =
-            crate::optional_content::OptionalContentContext::from_document_for_state(
+            crate::optional_content::OptionalContentContext::from_document_for_state_and_usage(
                 self.document(),
                 &contract.optional_content.0,
+                optional_content_usage_for_print_profile(contract.print_profile),
             )
             .map_err(|err| {
                 WellfriendError::UnsupportedFeature(format!(
                     "render contract optional_content is unsupported: {err}"
                 ))
             })?;
-        enforce_clipped_contract_temporary_budget(contract, &full_viewport, tile)?;
+        enforce_clipped_contract_temporary_budget(contract, &surface, tile)?;
         let mut normalized = contract.clone();
         normalized.pixel_format = expected.pixel_format;
         normalized.alpha_mode = expected.alpha_mode;
@@ -2181,6 +2223,10 @@ impl ContentEngine {
         // Accept caller-specified policies that are actively implemented.
         // These influence rendering rather than being validation-only metadata.
         let mut accepted_expected = expected.clone();
+        if contract.clip.is_none() {
+            // An unclipped contract addresses its own output surface.
+            accepted_expected.clip = None;
+        }
         accepted_expected.print_profile = contract.print_profile;
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
@@ -2197,6 +2243,7 @@ impl ContentEngine {
         accepted_expected.backend = contract.backend;
         accepted_expected.optional_content = contract.optional_content.clone();
         accepted_expected.color_scheme = contract.color_scheme;
+        accepted_expected.forced_colors = contract.forced_colors;
         accepted_expected.text_smoothing = contract.text_smoothing;
         accepted_expected.image_smoothing = contract.image_smoothing;
         accepted_expected.path_smoothing = contract.path_smoothing;
@@ -2221,67 +2268,18 @@ impl ContentEngine {
             contract.thin_line_mode,
             contract.vector_antialias_gamma,
         );
-        let mut buffer = if tile == full_tile {
-            PageRenderer::render_page_cancellable_with_contract_policies_and_cache(
-                self,
-                contract.page_number,
-                contract.dpi,
-                cancel,
-                contract.render_mode(),
-                contract.backend,
-                contract.print_profile,
-                contract.annotations,
-                contract.forms,
-                &contract.form_highlight,
-                contract.rendering_intent,
-                contract.color_management,
-                contract.overprint,
-                contract.text_smoothing,
-                contract.subpixel_text,
-                contract.path_smoothing,
-                contract.image_smoothing,
-                contract_background_pixel(contract),
-                contract.page_box,
-                crate::render::Transform2D::from_array(contract.transform.to_f64()),
-                contract.resource_budget,
-                render_contract_fingerprint.clone(),
-                contract.exactness,
-                optional_content_context.clone(),
-                cache,
-            )?
-        } else {
-            // For sub-page tiles, render the full page with contract policies
-            // then crop to the requested tile. This preserves correct annotation
-            // visibility while honoring the tile clip.
-            let full_buf = PageRenderer::render_page_cancellable_with_contract_policies_and_cache(
-                self,
-                contract.page_number,
-                contract.dpi,
-                cancel,
-                contract.render_mode(),
-                contract.backend,
-                contract.print_profile,
-                contract.annotations,
-                contract.forms,
-                &contract.form_highlight,
-                contract.rendering_intent,
-                contract.color_management,
-                contract.overprint,
-                contract.text_smoothing,
-                contract.subpixel_text,
-                contract.path_smoothing,
-                contract.image_smoothing,
-                contract_background_pixel(contract),
-                contract.page_box,
-                crate::render::Transform2D::from_array(contract.transform.to_f64()),
-                contract.resource_budget,
-                render_contract_fingerprint,
-                contract.exactness,
-                optional_content_context,
-                cache,
-            )?;
-            crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?
-        };
+        // Only the requested window is rasterized; objects outside it are
+        // culled against their retained device bounds.
+        let mut buffer = PageRenderer::render_contract_window_with_cache(
+            self,
+            contract,
+            &surface,
+            tile,
+            cancel,
+            render_contract_fingerprint,
+            optional_content_context,
+            cache,
+        )?;
         let font_substitution_log = cache.take_font_substitution_log();
         let telemetry_report = RenderContractTelemetryReport::from_contract_cache_with_scope(
             telemetry_scope,
@@ -3704,6 +3702,99 @@ impl ContentEngine {
                 )
             },
         )
+    }
+
+    /// Decode a page's embedded thumbnail image (the page dictionary's
+    /// `/Thumb` stream), the PDFium `FPDFPage_GetThumbnailAsBitmap`
+    /// equivalent. Returns `Ok(None)` when the page has no thumbnail. The
+    /// samples are 8-bit with the decoder's channel layout (1 = gray,
+    /// 3 = RGB); Indexed, CMYK and ICC thumbnails are converted by the image
+    /// decoder.
+    pub fn decode_page_thumbnail(&self, page_number: usize) -> Result<Option<RawImage>> {
+        let page = self.get_page(page_number)?;
+        let reader = self.document().reader();
+        let page_dict = match reader.get_object(page.object_number, page.generation_number)? {
+            PdfObject::Dictionary(dict) => dict,
+            PdfObject::Stream { dict, .. } => dict,
+            other => {
+                return Err(WellfriendError::MalformedPdf(format!(
+                    "page {page_number} object resolved to {}, expected a dictionary",
+                    other.variant_name()
+                )))
+            }
+        };
+        let Some(thumb) = page_dict.get("Thumb") else {
+            return Ok(None);
+        };
+        let PdfObject::Reference { number, generation } = thumb else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "page {page_number} /Thumb must be an indirect image stream"
+            )));
+        };
+        let (number, generation) = (*number, *generation);
+        let PdfObject::Stream { dict, .. } = reader.get_object(number, generation)? else {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "page {page_number} /Thumb {number} {generation} R is not a stream"
+            )));
+        };
+        let image = ImageLocator::image_ref_from_dict(
+            page_number,
+            "Thumb".to_string(),
+            number,
+            generation,
+            &dict,
+        )?;
+        self.decode_image(&image).map(Some)
+    }
+
+    /// Decode a page's embedded thumbnail (`/Thumb`) as straight-alpha
+    /// RGBA8 samples (4 channels, opaque unless the decoder produced alpha).
+    /// Returns `Ok(None)` when the page has no thumbnail.
+    pub fn page_thumbnail_rgba(&self, page_number: usize) -> Result<Option<RawImage>> {
+        let Some(raw) = self.decode_page_thumbnail(page_number)? else {
+            return Ok(None);
+        };
+        let pixel_count = raw.pixel_count();
+        let channels = raw.channels as usize;
+        if raw.bits_per_sample != 8 || channels == 0 || raw.pixels.len() < pixel_count * channels {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "page {page_number} thumbnail decoded to an unsupported {}-channel {}-bit layout",
+                raw.channels, raw.bits_per_sample
+            )));
+        }
+        let mut rgba = Vec::with_capacity(pixel_count * 4);
+        for px in raw.pixels.chunks_exact(channels).take(pixel_count) {
+            match px {
+                [gray] => rgba.extend_from_slice(&[*gray, *gray, *gray, 255]),
+                [gray, alpha] => rgba.extend_from_slice(&[*gray, *gray, *gray, *alpha]),
+                [r, g, b] => rgba.extend_from_slice(&[*r, *g, *b, 255]),
+                [r, g, b, a] => rgba.extend_from_slice(&[*r, *g, *b, *a]),
+                _ => {
+                    return Err(WellfriendError::MalformedPdf(format!(
+                        "page {page_number} thumbnail decoded to {channels} channels"
+                    )))
+                }
+            }
+        }
+        Ok(Some(RawImage {
+            width: raw.width,
+            height: raw.height,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels: rgba,
+        }))
+    }
+
+    /// Render one image object of a page on its own (with its soft mask or
+    /// mask) at its natural size: the PDFium `FPDFImageObj_GetRenderedBitmap`
+    /// equivalent. See [`PageRenderer::render_page_image_object`].
+    pub fn render_page_image_object(
+        &self,
+        page_number: usize,
+        selector: &crate::render::PageImageObjectSelector,
+    ) -> Result<PixelBuffer> {
+        self.validate_page(page_number)?;
+        PageRenderer::render_page_image_object(self, page_number, selector)
     }
 
     /// Encode a decoded RawImage to the specified format.
@@ -5192,7 +5283,7 @@ mod tests {
     }
 
     #[test]
-    fn clipped_contract_rejects_full_page_intermediate_over_temporary_budget() {
+    fn clipped_contract_rejects_window_intermediate_over_temporary_budget() {
         use crate::{AuthorPageSize, PdfBuilder};
 
         let mut builder = PdfBuilder::new();
@@ -5211,15 +5302,21 @@ mod tests {
         contract.width = 4;
         contract.height = 4;
         contract.stride = 4 * 4;
+        // Only the clip window (plus anti-aliasing overdraw) is rasterized, so
+        // a budget far below the full-page intermediate suffices.
         contract.resource_budget.max_temporary_bytes = 1024;
-
         let mut surface = vec![0; contract.stride * contract.height as usize];
+        engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect("clipped contract needs only the window intermediate");
+
+        contract.resource_budget.max_temporary_bytes = 100;
         let err = engine
             .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
-            .expect_err("clipped contract must budget the full-page intermediate");
+            .expect_err("clipped contract must budget the window intermediate");
         let message = err.to_string();
         assert!(message.contains("max_temporary_bytes"));
-        assert!(message.contains("full-page intermediate"));
+        assert!(message.contains("windowed intermediate"));
     }
 
     #[test]
@@ -5832,10 +5929,15 @@ mod tests {
             telemetry.resource_budget_max_cache_bytes,
             contract.resource_budget.max_cache_bytes
         );
-        // The form highlight is serialized only while it is switched on.
-        let mut highlighted = contract.clone();
-        highlighted.form_highlight.focus_field = Some("field".to_string());
-        let contract_fields = serde_json::to_value(&highlighted)
+        // Optional fields are omitted from the serialized contract while unset;
+        // serialize a contract with them set so every field is listed. The form
+        // highlight is serialized only while it is switched on.
+        let mut every_field = contract.clone();
+        every_field.form_highlight.focus_field = Some("field".to_string());
+        every_field.forced_colors = Some(crate::render::ForcedColorScheme::uniform(
+            crate::render::ContractColor::default(),
+        ));
+        let contract_fields = serde_json::to_value(&every_field)
             .expect("serialize contract")
             .as_object()
             .expect("contract object")

@@ -515,6 +515,7 @@ fn prepare_progressive_render_contract(
     accepted_expected.backend = base_contract.backend;
     accepted_expected.optional_content = base_contract.optional_content.clone();
     accepted_expected.color_scheme = base_contract.color_scheme;
+    accepted_expected.forced_colors = base_contract.forced_colors;
     accepted_expected.text_smoothing = base_contract.text_smoothing;
     accepted_expected.image_smoothing = base_contract.image_smoothing;
     accepted_expected.path_smoothing = base_contract.path_smoothing;
@@ -609,9 +610,10 @@ fn prepare_progressive_render_contract(
     if let Some(hint) = viewport_hint {
         tile_order.sort_by_key(|index| tile_priority_key(tiles[*index], hint));
     }
-    let visibility_fingerprint = OptionalContentContext::from_document_for_state(
+    let visibility_fingerprint = OptionalContentContext::from_document_for_state_and_usage(
         engine.document(),
         &base_contract.optional_content.0,
+        crate::engine::optional_content_usage_for_print_profile(base_contract.print_profile),
     )
     .map_err(|err| {
         WellfriendError::UnsupportedFeature(format!(
