@@ -733,11 +733,13 @@ impl PathPainter {
         if cancel.is_cancelled() {
             return false;
         }
-        let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
+        let device_scale = ctm.scale_factor() * viewport.scale;
+        let width_px = (stroke_width * device_scale).max(1.0);
+        let device_dash = dash.scaled(device_scale);
         let outline = stroke_flat_path(
             &flat,
             width_px,
-            dash,
+            &device_dash,
             cap.clone(),
             join.clone(),
             miter_limit,
@@ -831,11 +833,13 @@ impl PathPainter {
         if cancel.is_cancelled() {
             return false;
         }
-        let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
+        let device_scale = ctm.scale_factor() * viewport.scale;
+        let width_px = (stroke_width * device_scale).max(1.0);
+        let device_dash = dash.scaled(device_scale);
         let outline = stroke_flat_path(
             &flat,
             width_px,
-            dash,
+            &device_dash,
             cap.clone(),
             join.clone(),
             miter_limit,
@@ -898,8 +902,10 @@ impl PathPainter {
         }
 
         let flat = flatten_path(path, ctm, viewport, 0.2);
-        let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
-        let outline = stroke_flat_path(&flat, width_px, dash, cap, join, miter_limit);
+        let device_scale = ctm.scale_factor() * viewport.scale;
+        let width_px = (stroke_width * device_scale).max(1.0);
+        let device_dash = dash.scaled(device_scale);
+        let outline = stroke_flat_path(&flat, width_px, &device_dash, cap, join, miter_limit);
         if !outline.subpaths.is_empty() {
             if should_route_general_path_to_scanline(&outline) {
                 let cancel = CancelToken::new();
@@ -1081,11 +1087,13 @@ impl PathPainter {
             return;
         }
         let flat = flatten_path(path, ctm, viewport, bezier_threshold);
-        let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
+        let device_scale = ctm.scale_factor() * viewport.scale;
+        let width_px = (stroke_width * device_scale).max(1.0);
+        let device_dash = dash.scaled(device_scale);
         let outline = stroke_flat_path(
             &flat,
             width_px,
-            dash,
+            &device_dash,
             cap.clone(),
             join.clone(),
             miter_limit,
@@ -3475,6 +3483,10 @@ pub(crate) fn stroke_flat_path(
             dashed_points.push(points[0]);
         }
         for dash_piece in dash_polyline(&dashed_points, dash) {
+            if matches!(style.cap, LineCap::Butt) && is_zero_dash_dot(&dash_piece) {
+                // A zero-length dash with butt caps has no area (PDF 8.4.3.6).
+                continue;
+            }
             if let Some(poly) = stroked_polyline_outline(&dash_piece, false, &style) {
                 push_outline_subpath(&mut outline, poly);
             }
@@ -3518,6 +3530,14 @@ fn normalize_stroke_points(points: &[(f64, f64)], closed: bool) -> Option<Vec<(f
     }
 }
 
+/// Device-space length of the stand-in segment for a zero-length dash. Long
+/// enough to give the stroker a direction, far too short to be visible.
+const ZERO_DASH_DOT_LENGTH: f64 = 1e-4;
+
+fn is_zero_dash_dot(piece: &[(f64, f64)]) -> bool {
+    piece.len() == 2 && distance(piece[0], piece[1]) <= ZERO_DASH_DOT_LENGTH * 1.5
+}
+
 fn dash_polyline(points: &[(f64, f64)], dash: &DashState) -> Vec<Vec<(f64, f64)>> {
     if dash_polyline_would_expand_too_much(points, dash) {
         return vec![points.to_vec()];
@@ -3542,6 +3562,21 @@ fn dash_polyline(points: &[(f64, f64)], dash: &DashState) -> Vec<Vec<(f64, f64)>
         for (t0, t1, drawing) in dash_state.advance(seg_len) {
             if !drawing {
                 finish_dash_piece(&mut pieces, &mut current);
+                continue;
+            }
+            if t1 - t0 <= 1e-10 {
+                // Zero-length dash: a tiny segment along the path direction.
+                // Its caps give the PDF result (round = dot, projecting =
+                // square, butt = nothing visible).
+                finish_dash_piece(&mut pieces, &mut current);
+                let q = (p0.0 + ux * t0, p0.1 + uy * t0);
+                pieces.push(vec![
+                    q,
+                    (
+                        q.0 + ux * ZERO_DASH_DOT_LENGTH,
+                        q.1 + uy * ZERO_DASH_DOT_LENGTH,
+                    ),
+                ]);
                 continue;
             }
 

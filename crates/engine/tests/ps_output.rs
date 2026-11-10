@@ -72,7 +72,9 @@ fn ghostscript_rasterize(
         .arg("-dBATCH")
         .arg("-dNOPAUSE")
         .arg("-sDEVICE=png16m")
-        .arg("-r72")
+        // PostScript pages are sized in points; rasterise at the render DPI so
+        // one PostScript device pixel matches one render pixel.
+        .arg(format!("-r{DPI}"))
         .arg(format!("-g{width}x{height}"))
         .arg(format!("-o{}", out_png.display()))
         .arg(ps_path)
@@ -175,10 +177,10 @@ fn eps_document_is_epsf_conformant() {
     let (eps, _rasterized) = e.render_page_eps(1, DPI).unwrap();
     let vp = e.page_viewport(1, DPI).unwrap();
     assert!(eps.starts_with("%!PS-Adobe-3.0 EPSF-3.0\n"));
-    assert!(eps.contains(&format!(
-        "%%BoundingBox: 0 0 {} {}",
-        vp.width_px, vp.height_px
-    )));
+    // The bounding box is in PostScript points (1/72 inch), not pixels.
+    let width_pt = (f64::from(vp.width_px) * 72.0 / f64::from(DPI)).ceil() as u64;
+    let height_pt = (f64::from(vp.height_px) * 72.0 / f64::from(DPI)).ceil() as u64;
+    assert!(eps.contains(&format!("%%BoundingBox: 0 0 {width_pt} {height_pt}")));
     // EPS must not change global page state.
     assert!(!eps.contains("setpagedevice"));
     assert!(!eps.contains("showpage"));

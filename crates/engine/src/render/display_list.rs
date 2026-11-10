@@ -2680,6 +2680,24 @@ impl<'a> DisplayListBuilder<'a> {
     fn apply_pending_clip(&mut self) {
         if let Some(rule) = self.pending_clip.take() {
             let path = self.path.clone();
+            self.push_clip(path, rule);
+        }
+    }
+
+    fn take_pending_clip_with_path(&mut self) -> Option<(Path, FillRule)> {
+        self.pending_clip
+            .take()
+            .map(|rule| (self.path.clone(), rule))
+    }
+
+    fn apply_clip_after_paint(&mut self, pending: Option<(Path, FillRule)>) {
+        if let Some((path, rule)) = pending {
+            self.push_clip(path, rule);
+        }
+    }
+
+    fn push_clip(&mut self, path: Path, rule: FillRule) {
+        {
             let clip_bounds = RenderBounds::from_path(&path, &self.ctm(), &self.viewport, 0.0);
             self.current_clip_bounds = match (self.current_clip_bounds, clip_bounds) {
                 (None, Some(bounds)) => Some(bounds),
@@ -2711,7 +2729,13 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     fn stroke_and_clear(&mut self, paint_op: &ContentOperation) {
-        self.apply_pending_clip();
+        // W/W* takes effect after the painting operator (PDF 8.5.4).
+        let pending = self.take_pending_clip_with_path();
+        self.stroke_and_clear_unclipped(paint_op);
+        self.apply_clip_after_paint(pending);
+    }
+
+    fn stroke_and_clear_unclipped(&mut self, paint_op: &ContentOperation) {
         if self.active_soft_mask || self.uses_pattern_or_named_space() {
             self.push_stateful_path_run(paint_op);
             self.path.clear();
@@ -2736,7 +2760,13 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     fn fill_and_clear(&mut self, paint_op: &ContentOperation, rule: FillRule) {
-        self.apply_pending_clip();
+        // W/W* takes effect after the painting operator (PDF 8.5.4).
+        let pending = self.take_pending_clip_with_path();
+        self.fill_and_clear_unclipped(paint_op, rule);
+        self.apply_clip_after_paint(pending);
+    }
+
+    fn fill_and_clear_unclipped(&mut self, paint_op: &ContentOperation, rule: FillRule) {
         if self.active_soft_mask || self.uses_pattern_or_named_space() {
             self.push_stateful_path_run(paint_op);
             self.path.clear();
@@ -2760,7 +2790,13 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     fn fill_stroke_and_clear(&mut self, paint_op: &ContentOperation, rule: FillRule) {
-        self.apply_pending_clip();
+        // W/W* takes effect after the painting operator (PDF 8.5.4).
+        let pending = self.take_pending_clip_with_path();
+        self.fill_stroke_and_clear_unclipped(paint_op, rule);
+        self.apply_clip_after_paint(pending);
+    }
+
+    fn fill_stroke_and_clear_unclipped(&mut self, paint_op: &ContentOperation, rule: FillRule) {
         if self.active_soft_mask || self.uses_pattern_or_named_space() {
             self.push_stateful_path_run(paint_op);
             self.path.clear();

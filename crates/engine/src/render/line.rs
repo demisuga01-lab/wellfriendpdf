@@ -147,11 +147,31 @@ const MAX_DASH_ADVANCE_ITERATIONS: usize = 4096;
 
 impl DashState {
     pub fn new(pattern: Vec<f64>, phase: f64) -> Self {
-        let pattern: Vec<f64> = pattern
+        // Zero-length intervals are kept: an "on" interval of length zero is
+        // a dot (visible with round or projecting caps), and dropping a zero
+        // would swap the on/off parity of every following interval.
+        // Negative and non-finite entries are invalid and are discarded.
+        let mut pattern: Vec<f64> = pattern
             .into_iter()
-            .filter(|interval| interval.is_finite() && *interval > 0.0)
-            .map(|interval| interval.max(MIN_RENDERABLE_DASH_INTERVAL))
+            .filter(|interval| interval.is_finite() && *interval >= 0.0)
+            .map(|interval| {
+                if interval == 0.0 {
+                    0.0
+                } else {
+                    interval.max(MIN_RENDERABLE_DASH_INTERVAL)
+                }
+            })
             .collect();
+        // PDF dash arrays repeat as a whole, so an odd-length array alternates
+        // its on/off meaning on every repetition: [3] is "3 on, 3 off" and
+        // [2 1 3] is "2 on 1 off 3 on 2 off 1 on 3 off". Doubling the array
+        // gives an even-length pattern with the same meaning.
+        if pattern.len() % 2 == 1 {
+            pattern.extend_from_within(..);
+        }
+        if pattern.iter().all(|interval| *interval == 0.0) {
+            pattern.clear();
+        }
         let total: f64 = pattern.iter().sum();
         let phase = if total > 0.0 {
             phase.rem_euclid(total)
@@ -164,7 +184,10 @@ impl DashState {
 
         if total > 0.0 {
             for (i, &interval) in pattern.iter().enumerate() {
-                if remaining_phase < interval {
+                // A zero-length interval is "current" when the phase lands
+                // exactly on it, so a pattern starting with a zero dash draws
+                // its first dot at the start of the path.
+                if remaining_phase < interval || (interval == 0.0 && remaining_phase <= 0.0) {
                     current_idx = i;
                     current_pos = remaining_phase;
                     break;
@@ -187,6 +210,26 @@ impl DashState {
                 .len()
                 .saturating_mul(std::mem::size_of::<f64>()),
         )
+    }
+
+    /// The same dash pattern expressed in a coordinate space `factor` times
+    /// larger. PDF dash lengths are in user space; the stroker works on
+    /// device-space (pixel) polylines, so callers scale the pattern by the
+    /// same factor they use to turn the line width into pixels.
+    pub fn scaled(&self, factor: f64) -> Self {
+        if self.pattern.is_empty() || !factor.is_finite() || factor <= 0.0 || factor == 1.0 {
+            return self.clone();
+        }
+        Self {
+            pattern: self
+                .pattern
+                .iter()
+                .map(|interval| interval * factor)
+                .collect(),
+            phase: self.phase * factor,
+            current_pos: self.current_pos * factor,
+            current_idx: self.current_idx,
+        }
     }
 
     /// Solid line (no dashing).
@@ -248,11 +291,15 @@ impl DashState {
         if distance <= 0.0 || !distance.is_finite() || self.pattern.is_empty() {
             return None;
         }
-        let min_interval = self.pattern.iter().copied().fold(f64::INFINITY, f64::min);
-        if !min_interval.is_finite() || min_interval <= 0.0 {
+        // Every repetition of the pattern produces at most one segment per
+        // interval (zero-length intervals included), so the count is bounded
+        // by periods x intervals. This stays finite when an interval is zero.
+        let total: f64 = self.pattern.iter().sum();
+        if !total.is_finite() || total <= 0.0 {
             return None;
         }
-        Some((distance / min_interval).ceil().min(usize::MAX as f64) as usize)
+        let periods = (distance / total).ceil() + 1.0;
+        Some((periods * self.pattern.len() as f64).min(usize::MAX as f64) as usize)
     }
 
     /// Advance along a line by distance units.
@@ -296,6 +343,11 @@ impl DashState {
             let remaining_in_interval = current_interval - self.current_pos;
             let can_travel = (distance - traveled).min(remaining_in_interval);
             if can_travel <= 1e-10 {
+                if current_interval == 0.0 && self.current_idx.is_multiple_of(2) {
+                    // A zero-length "on" dash: report it as a point so the
+                    // stroker can draw its caps (round caps make a dot).
+                    segments.push((traveled, traveled, true));
+                }
                 self.current_pos = 0.0;
                 self.current_idx = (self.current_idx + 1) % self.pattern.len();
                 continue;
@@ -515,6 +567,45 @@ mod tests {
         assert!(ds.is_drawing());
         let ds_gap = DashState::new(vec![5.0, 3.0], 6.0);
         assert!(!ds_gap.is_drawing());
+    }
+
+    fn drawn(segments: &[(f64, f64, bool)]) -> Vec<(f64, f64)> {
+        segments
+            .iter()
+            .filter(|(_, _, on)| *on)
+            .map(|(a, b, _)| (*a, *b))
+            .collect()
+    }
+
+    #[test]
+    fn odd_length_dash_pattern_repeats_with_swapped_parity() {
+        let mut ds = DashState::new(vec![3.0], 0.0);
+        assert_eq!(drawn(&ds.advance(12.0)), vec![(0.0, 3.0), (6.0, 9.0)]);
+        let mut ds = DashState::new(vec![2.0, 1.0, 3.0], 0.0);
+        // 2 on, 1 off, 3 on, 2 off, 1 on, 3 off.
+        assert_eq!(
+            drawn(&ds.advance(12.0)),
+            vec![(0.0, 2.0), (3.0, 6.0), (8.0, 9.0)]
+        );
+    }
+
+    #[test]
+    fn zero_length_on_dashes_are_reported_as_points() {
+        let mut ds = DashState::new(vec![0.0, 5.0], 0.0);
+        let on = drawn(&ds.advance(12.0));
+        assert_eq!(on, vec![(0.0, 0.0), (5.0, 5.0), (10.0, 10.0)]);
+    }
+
+    #[test]
+    fn all_zero_dash_pattern_is_solid() {
+        assert!(DashState::new(vec![0.0, 0.0], 0.0).is_solid());
+    }
+
+    #[test]
+    fn scaled_dash_state_multiplies_pattern_and_phase() {
+        let mut ds = DashState::new(vec![10.0, 10.0], 5.0).scaled(2.0);
+        assert!((ds.phase() - 10.0).abs() < 1e-9);
+        assert_eq!(drawn(&ds.advance(60.0)), vec![(0.0, 10.0), (30.0, 50.0)]);
     }
 
     #[test]

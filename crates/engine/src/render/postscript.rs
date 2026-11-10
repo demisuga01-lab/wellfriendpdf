@@ -98,6 +98,10 @@ pub struct PsPage {
     pub width: u32,
     /// Page height in device pixels.
     pub height: u32,
+    /// PostScript points (1/72 inch) per device pixel: `72 / dpi`. The body
+    /// draws in device pixels and the prologue scales it by this factor, so
+    /// the printed page has the PDF page's physical size at any DPI.
+    pub points_per_pixel: f64,
     /// True when the whole page was embedded as a raster image because it used
     /// operations the vector sink cannot express natively.
     pub is_rasterized: bool,
@@ -203,7 +207,8 @@ fn render_vector_ps(
     regional: RegionalVectorResources<'_>,
 ) -> Result<PsPage> {
     let (w, h) = (viewport.width_px, viewport.height_px);
-    let mut sink = PsSink::new(w, h);
+    let points_per_pixel = viewport_points_per_pixel(viewport);
+    let mut sink = PsSink::new(w, h).with_points_per_pixel(points_per_pixel);
     let mut state = PsRenderState {
         engine,
         page_resources: resources.clone(),
@@ -238,9 +243,45 @@ fn render_vector_ps(
         body: sink.finish(),
         width: w,
         height: h,
+        points_per_pixel,
         is_rasterized: false,
         has_regional_images: has_regional,
     })
+}
+
+/// PostScript points per device pixel for a viewport (`72 / dpi`).
+fn viewport_points_per_pixel(viewport: &Viewport) -> f64 {
+    if viewport.dpi > 0 {
+        72.0 / f64::from(viewport.dpi)
+    } else {
+        1.0
+    }
+}
+
+impl PsPage {
+    /// Page size in PostScript points.
+    pub fn size_points(&self) -> (f64, f64) {
+        let scale = if self.points_per_pixel.is_finite() && self.points_per_pixel > 0.0 {
+            self.points_per_pixel
+        } else {
+            1.0
+        };
+        (
+            f64::from(self.width) * scale,
+            f64::from(self.height) * scale,
+        )
+    }
+}
+
+/// Format a PostScript number with at most six decimals and no trailing zeros.
+fn ps_number(value: f64) -> String {
+    let text = format!("{value:.6}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text.is_empty() || text == "-0" {
+        "0".to_string()
+    } else {
+        text.to_string()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -457,12 +498,14 @@ fn rasterized_page(
     let raw = buf.to_raw_image(); // 3 channels, 8-bit
     let (w, h) = (viewport.width_px, viewport.height_px);
 
-    let mut sink = PsSink::new(w, h);
+    let points_per_pixel = viewport_points_per_pixel(viewport);
+    let mut sink = PsSink::new(w, h).with_points_per_pixel(points_per_pixel);
     sink.emit_raster_image(&raw.pixels, w, h);
     Ok(PsPage {
         body: sink.finish(),
         width: w,
         height: h,
+        points_per_pixel,
         is_rasterized: true,
         has_regional_images: false,
     })
@@ -482,9 +525,26 @@ pub fn assemble_ps_document(pages: &[PsPage]) -> String {
     out.push_str(&format!("%%LanguageLevel: {language_level}\n"));
     // The bounding box of a multi-page document is the union; DSC permits the
     // largest page. We report the max width/height across pages.
-    let max_w = pages.iter().map(|p| p.width).max().unwrap_or(0);
-    let max_h = pages.iter().map(|p| p.height).max().unwrap_or(0);
-    out.push_str(&format!("%%BoundingBox: 0 0 {max_w} {max_h}\n"));
+    // Sizes are PostScript points (1/72 inch), not device pixels, so the
+    // printed page keeps the PDF page's physical size at any render DPI.
+    let max_w = pages
+        .iter()
+        .map(|p| p.size_points().0)
+        .fold(0.0_f64, f64::max);
+    let max_h = pages
+        .iter()
+        .map(|p| p.size_points().1)
+        .fold(0.0_f64, f64::max);
+    out.push_str(&format!(
+        "%%BoundingBox: 0 0 {} {}\n",
+        max_w.ceil() as u64,
+        max_h.ceil() as u64
+    ));
+    out.push_str(&format!(
+        "%%HiResBoundingBox: 0 0 {} {}\n",
+        ps_number(max_w),
+        ps_number(max_h)
+    ));
     out.push_str(&format!("%%Pages: {}\n", pages.len()));
     out.push_str("%%EndComments\n");
     out.push_str("%%BeginProlog\n");
@@ -495,15 +555,18 @@ pub fn assemble_ps_document(pages: &[PsPage]) -> String {
     for (idx, page) in pages.iter().enumerate() {
         let n = idx + 1;
         out.push_str(&format!("%%Page: {n} {n}\n"));
+        let (page_w, page_h) = page.size_points();
         out.push_str(&format!(
             "%%PageBoundingBox: 0 0 {} {}\n",
-            page.width, page.height
+            page_w.ceil() as u64,
+            page_h.ceil() as u64
         ));
         // Each page sets its own media size so viewers/printers select the
         // right page geometry.
         out.push_str(&format!(
             "<< /PageSize [{} {}] >> setpagedevice\n",
-            page.width, page.height
+            ps_number(page_w),
+            ps_number(page_h)
         ));
         out.push_str("%%BeginPageSetup\n");
         out.push_str("%%EndPageSetup\n");
@@ -526,15 +589,16 @@ pub fn assemble_eps_document(page: &PsPage) -> String {
     out.push_str("%%Creator: Wellfriend PDF SDK Toolkit\n");
     let language_level = if page.body.contains("shfill") { 3 } else { 2 };
     out.push_str(&format!("%%LanguageLevel: {language_level}\n"));
+    let (page_w, page_h) = page.size_points();
     out.push_str(&format!(
         "%%BoundingBox: 0 0 {} {}\n",
-        page.width, page.height
+        page_w.ceil() as u64,
+        page_h.ceil() as u64
     ));
-    // A fractional high-resolution bounding box is identical here (integer
-    // device pixels), but DSC encourages emitting it for EPS.
     out.push_str(&format!(
-        "%%HiResBoundingBox: 0 0 {}.0 {}.0\n",
-        page.width, page.height
+        "%%HiResBoundingBox: 0 0 {} {}\n",
+        ps_number(page_w),
+        ps_number(page_h)
     ));
     out.push_str("%%EndComments\n");
     out.push_str("%%BeginProlog\n");
@@ -552,6 +616,7 @@ struct PsSink {
     width: u32,
     height: u32,
     body: String,
+    points_per_pixel: f64,
 }
 
 impl PsSink {
@@ -560,7 +625,15 @@ impl PsSink {
             width,
             height,
             body: String::new(),
+            points_per_pixel: 1.0,
         }
+    }
+
+    fn with_points_per_pixel(mut self, points_per_pixel: f64) -> Self {
+        if points_per_pixel.is_finite() && points_per_pixel > 0.0 {
+            self.points_per_pixel = points_per_pixel;
+        }
+        self
     }
 
     fn push_line(&mut self, line: &str) {
@@ -628,6 +701,11 @@ impl PsSink {
     fn finish(self) -> String {
         let mut out = String::new();
         out.push_str("gsave\n");
+        // The body draws in device pixels; scale them to PostScript points.
+        if (self.points_per_pixel - 1.0).abs() > 1e-12 {
+            let s = ps_number(self.points_per_pixel);
+            out.push_str(&format!("{s} {s} scale\n"));
+        }
         // Map PostScript bottom-left/y-up to our top-left/y-down device space.
         out.push_str(&format!("0 {} translate\n", self.height));
         out.push_str("1 -1 scale\n");
@@ -761,6 +839,7 @@ impl PsRenderState<'_> {
                 };
                 self.fill_path(rule, true);
                 self.stroke_path();
+                self.apply_pending_clip();
                 self.finish_path();
             }
             "b" | "b*" => {
@@ -772,6 +851,7 @@ impl PsRenderState<'_> {
                 };
                 self.fill_path(rule, true);
                 self.stroke_path();
+                self.apply_pending_clip();
                 self.finish_path();
             }
             "n" => {
@@ -3565,6 +3645,7 @@ mod tests {
                 body: "gsave\n0 100 translate\n1 -1 scale\ngrestore\n".into(),
                 width: 80,
                 height: 100,
+                points_per_pixel: 1.0,
                 is_rasterized: false,
                 has_regional_images: false,
             },
@@ -3572,6 +3653,7 @@ mod tests {
                 body: "gsave\n0 120 translate\n1 -1 scale\ngrestore\n".into(),
                 width: 90,
                 height: 120,
+                points_per_pixel: 1.0,
                 is_rasterized: false,
                 has_regional_images: false,
             },
@@ -3588,18 +3670,49 @@ mod tests {
     }
 
     #[test]
+    fn page_size_is_in_points_at_any_dpi() {
+        // A US Letter page rendered at 150 DPI is 1275 x 1650 device pixels;
+        // the PostScript page must still be 612 x 792 points.
+        let page = PsPage {
+            body: "gsave\n0.48 0.48 scale\n0 1650 translate\n1 -1 scale\ngrestore\n".into(),
+            width: 1275,
+            height: 1650,
+            points_per_pixel: 72.0 / 150.0,
+            is_rasterized: false,
+            has_regional_images: false,
+        };
+        let doc = assemble_ps_document(std::slice::from_ref(&page));
+        assert!(doc.contains("%%BoundingBox: 0 0 612 792"), "{doc}");
+        assert!(
+            doc.contains("<< /PageSize [612 792] >> setpagedevice"),
+            "{doc}"
+        );
+        let eps = assemble_eps_document(&page);
+        assert!(eps.contains("%%BoundingBox: 0 0 612 792"), "{eps}");
+        assert!(eps.contains("%%HiResBoundingBox: 0 0 612 792"), "{eps}");
+    }
+
+    #[test]
+    fn sink_scales_device_pixels_to_points() {
+        let sink = PsSink::new(1275, 1650).with_points_per_pixel(72.0 / 150.0);
+        let body = sink.finish();
+        assert!(body.starts_with("gsave\n0.48 0.48 scale\n0 1650 translate\n1 -1 scale\n"));
+    }
+
+    #[test]
     fn eps_document_is_epsf_with_precise_bbox_and_no_showpage() {
         let page = PsPage {
             body: "gsave\n0 50 translate\n1 -1 scale\n1 0 0 setrgbcolor\ngrestore\n".into(),
             width: 42,
             height: 50,
+            points_per_pixel: 1.0,
             is_rasterized: false,
             has_regional_images: false,
         };
         let eps = assemble_eps_document(&page);
         assert!(eps.starts_with("%!PS-Adobe-3.0 EPSF-3.0\n"));
         assert!(eps.contains("%%BoundingBox: 0 0 42 50"));
-        assert!(eps.contains("%%HiResBoundingBox: 0 0 42.0 50.0"));
+        assert!(eps.contains("%%HiResBoundingBox: 0 0 42 50"));
         // EPS conformance: no setpagedevice, no showpage.
         assert!(
             !eps.contains("setpagedevice"),

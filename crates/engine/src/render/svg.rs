@@ -800,6 +800,7 @@ impl SvgRenderState<'_> {
                 };
                 self.fill_path(rule);
                 self.stroke_path();
+                self.apply_pending_clip();
                 self.finish_path();
             }
             "b" | "b*" => {
@@ -811,6 +812,7 @@ impl SvgRenderState<'_> {
                 };
                 self.fill_path(rule);
                 self.stroke_path();
+                self.apply_pending_clip();
                 self.finish_path();
             }
             "n" => {
@@ -1803,14 +1805,15 @@ impl SvgRenderState<'_> {
     }
 
     fn stroke_and_clear(&mut self) {
-        self.apply_pending_clip();
         self.stroke_path();
+        // W/W* clips after the painting operator (PDF 8.5.4).
+        self.apply_pending_clip();
         self.finish_path();
     }
 
     fn fill_and_clear(&mut self, rule: FillRule) {
-        self.apply_pending_clip();
         self.fill_path(rule);
+        self.apply_pending_clip();
         self.finish_path();
     }
 

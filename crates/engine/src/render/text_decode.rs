@@ -100,7 +100,14 @@ pub fn try_decode_text_bytes_with_resolver(
     resolver: &FontResolver,
     reader: &PdfReader,
 ) -> std::result::Result<Vec<DecodedGlyph>, String> {
-    validate_visual_font_metrics(font_dict, Some(reader))?;
+    // Malformed /Widths, /W or /W2 arrays are common in real files (wrong
+    // length, missing FirstChar, stray non-numbers). The width parsers below
+    // tolerate them, so the text is still drawn with the best metrics
+    // available, as Poppler, PDFium and Acrobat do; dropping the whole
+    // string would lose visible content.
+    if let Err(reason) = validate_visual_font_metrics(font_dict, Some(reader)) {
+        log::debug!("render: drawing text with imperfect font metrics: {reason}");
+    }
     if detect_font_subtype(font_dict) == FontSubtype::Type0 {
         return decode_type0_text_with_resolver(bytes, font_dict, resolver, reader);
     }
@@ -149,9 +156,34 @@ fn decode_type0_text_with_resolver(
     let descendant_font = get_descendant_font(font_dict, reader);
     let render_as_gid = cid_font_has_embedded_program(descendant_font.as_ref(), reader);
     let mut glyphs = Vec::new();
-    for decoded in resolver.codes(bytes) {
-        let char_code = match decoded {
-            Ok(decoded) => decoded.code,
+    let mut offset = 0usize;
+    let mut count = 0usize;
+    while offset < bytes.len() {
+        if count.is_multiple_of(256) {
+            crate::cancel::check_current_cancel("PDF character decoding")
+                .map_err(|e| e.to_string())?;
+        }
+        count += 1;
+        let start = offset;
+        let char_code = match resolver.next_code(bytes, &mut offset) {
+            Ok(code) => code,
+            Err(reason)
+                if reason.starts_with("PDF character code outside code space")
+                    || reason.starts_with("PDF character code exceeds four bytes") =>
+            {
+                // PDF 32000-1 9.7.6.3: a byte sequence that matches no
+                // codespace range maps to CID 0 (.notdef). Consume one byte,
+                // keep its advance, and continue with the rest of the string
+                // instead of dropping visible text.
+                log::debug!("visual Type0 text mapped an unmatched code to CID 0: {reason}");
+                offset = start + 1;
+                glyphs.push(notdef_cid_glyph(
+                    descendant_font.as_ref(),
+                    render_as_gid,
+                    resolver.is_vertical(),
+                ));
+                continue;
+            }
             Err(reason) if reason.starts_with("truncated PDF character code") => {
                 // A few widely consumed PDFs end a composite-font string with
                 // an incomplete final code. Preserve and paint the completely
@@ -166,7 +198,8 @@ fn decode_type0_text_with_resolver(
             }
             Err(reason) => return Err(reason),
         };
-        let cid = resolver.cid_for_character(char_code)?;
+        // An unmapped code is CID 0 (.notdef), as in Poppler and PDFium.
+        let cid = resolver.cid_for_character(char_code).unwrap_or(0);
 
         let text = resolver.decode_code(char_code);
         let unicode = text.chars().next().unwrap_or('\u{FFFD}');
@@ -180,7 +213,7 @@ fn decode_type0_text_with_resolver(
             None
         };
         let code = if render_as_gid {
-            match resolver.sfnt_cff_gid(cid)? {
+            match resolver.sfnt_cff_gid(cid).ok().flatten() {
                 Some(gid) => gid,
                 None => cid_to_gid(cid, descendant_font.as_ref(), reader),
             }
@@ -207,6 +240,35 @@ fn decode_type0_text_with_resolver(
         });
     }
     Ok(glyphs)
+}
+
+/// The glyph drawn for a composite-font byte that matches no codespace range:
+/// CID 0 (.notdef) with the descendant font's CID-0 advance.
+fn notdef_cid_glyph(
+    descendant_font: Option<&PdfDictionary>,
+    render_as_gid: bool,
+    vertical: bool,
+) -> DecodedGlyph {
+    let width = descendant_font
+        .map(|desc| crate::fonts::resolver::lookup_cid_width(0, desc))
+        .filter(|width| width.is_finite() && *width >= 0.0);
+    let (vertical_advance, vertical_origin) = if vertical {
+        let half = width.unwrap_or(1000.0) / 2.0;
+        (Some(-1000.0), Some((half, 880.0)))
+    } else {
+        (None, None)
+    };
+    DecodedGlyph {
+        code: 0,
+        unicode: '\u{FFFD}',
+        glyph_name: None,
+        is_space: false,
+        width,
+        is_gid: render_as_gid,
+        is_vertical: vertical,
+        vertical_advance,
+        vertical_origin,
+    }
 }
 
 /// Resolve the embedded (or fallback) font program bytes for a font name.

@@ -45,7 +45,7 @@ pub fn get_upem(font_bytes: &[u8]) -> Option<u16> {
 /// text units) for a Unicode character from a simple font. Falls back to the
 /// standalone CFF parser for bare-CFF (FontFile3 /Type1C) programs.
 pub fn extract_glyph_path(font_bytes: &[u8], ch: char) -> (Option<Path>, f64) {
-    extract_glyph_path_for_simple(font_bytes, fallback_gid(ch), ch, None)
+    extract_glyph_path_for_simple(font_bytes, char_code_for_lookup(ch), ch, None)
 }
 
 /// Extract the outline [`Path`] and advance width for a simple-font glyph,
@@ -110,8 +110,16 @@ pub fn extract_glyph_path_for_simple_var(
     }
 
     let upem = f64::from(face.units_per_em());
-    let glyph_id = glyph_index_for_simple(&face, code, ch, glyph_name)
-        .unwrap_or_else(|| ttf_parser::GlyphId(fallback_gid(ch)));
+    // When no table maps the code, draw nothing rather than guessing a glyph
+    // id: a guessed id draws an unrelated glyph, while "no outline" lets the
+    // caller's per-glyph fallback font draw the right character.
+    let Some(glyph_id) = glyph_index_for_simple(&face, code, ch, glyph_name) else {
+        let advance = face
+            .glyph_hor_advance(ttf_parser::GlyphId(0))
+            .map(|width| f64::from(width) / upem * 1000.0)
+            .unwrap_or(500.0);
+        return (None, advance);
+    };
     let advance = face
         .glyph_hor_advance(glyph_id)
         .map(|width| f64::from(width) / upem * 1000.0)
@@ -405,9 +413,9 @@ pub(crate) fn extract_glyph_path_by_gid_mapped_outline_var(
 
 /// Best-effort fallback glyph id for a char with no cmap mapping, mirroring the
 /// raster path's heuristic (code-point-derived id, saturating).
-fn fallback_gid(ch: char) -> u16 {
-    let code = ch as u32;
-    (code.min(u32::from(u16::MAX)) as u16).saturating_sub(1)
+/// The simple-font character code to try when only a Unicode value is known.
+fn char_code_for_lookup(ch: char) -> u16 {
+    u16::try_from(u32::from(ch)).unwrap_or(0)
 }
 
 fn glyph_index_for_simple(
@@ -428,7 +436,13 @@ fn glyph_index_for_simple(
 }
 
 fn glyph_index_from_non_unicode_cmap(face: &ttf_parser::Face<'_>, code: u32) -> Option<GlyphId> {
-    let cmap = face.tables().cmap?;
+    let Some(cmap) = face.tables().cmap else {
+        // No cmap at all (common in stripped subset fonts): PDF producers
+        // that omit the cmap index glyphs by character code, which is also
+        // what Poppler and PDF.js do.
+        return (code > 0 && code < u32::from(face.number_of_glyphs()))
+            .then_some(GlyphId(code as u16));
+    };
 
     // Prefer the simple-font cmap subtables used by PDF producers for 8-bit
     // subset fonts: Macintosh Roman (1,0) and Windows Symbol (3,0). Only use
@@ -441,6 +455,20 @@ fn glyph_index_from_non_unicode_cmap(face: &ttf_parser::Face<'_>, code: u32) -> 
         for subtable in cmap.subtables {
             if subtable.platform_id == wanted.0 && subtable.encoding_id == wanted.1 {
                 if let Some(gid) = subtable.glyph_index(code) {
+                    return Some(gid);
+                }
+            }
+        }
+    }
+
+    // Symbol fonts (Wingdings, Webdings, Symbol, many Word-generated subsets)
+    // carry only a Windows Symbol (3,0) cmap with their glyphs at
+    // U+F020..U+F0FF; a single-byte PDF code `c` means 0xF000 + c.
+    if code <= 0xFF {
+        for subtable in cmap.subtables {
+            if subtable.platform_id == ttf_parser::PlatformId::Windows && subtable.encoding_id == 0
+            {
+                if let Some(gid) = subtable.glyph_index(0xF000 + code) {
                     return Some(gid);
                 }
             }

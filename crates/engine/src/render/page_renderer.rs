@@ -11610,6 +11610,19 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    fn take_pending_clip_with_path(&mut self) -> Option<(Path, FillRule)> {
+        self.pending_clip
+            .take()
+            .map(|rule| (self.path.clone(), rule))
+    }
+
+    fn apply_clip_after_paint(&mut self, pending: Option<(Path, FillRule)>) {
+        if let Some((path, rule)) = pending {
+            let ctm = self.ctm();
+            self.apply_transformed_path_clip(&path, &ctm, rule);
+        }
+    }
+
     fn apply_pending_clip(&mut self) {
         if let Some(rule) = self.pending_clip.take() {
             let ctm = self.ctm();
@@ -11737,7 +11750,14 @@ impl<'a> RenderState<'a> {
     }
 
     fn stroke_and_clear(&mut self) {
-        self.apply_pending_clip();
+        // PDF applies a W/W* clip after the painting operator, so the path
+        // is painted unclipped by itself and only later content is clipped.
+        let pending = self.take_pending_clip_with_path();
+        self.stroke_and_clear_unclipped();
+        self.apply_clip_after_paint(pending);
+    }
+
+    fn stroke_and_clear_unclipped(&mut self) {
         if !self.reject_current_stroke_ext_g_state_paint_if_needed("stroke paint") {
             self.path.clear();
             return;
@@ -11813,7 +11833,12 @@ impl<'a> RenderState<'a> {
     }
 
     fn fill_and_clear(&mut self, rule: FillRule) {
-        self.apply_pending_clip();
+        let pending = self.take_pending_clip_with_path();
+        self.fill_and_clear_unclipped(rule);
+        self.apply_clip_after_paint(pending);
+    }
+
+    fn fill_and_clear_unclipped(&mut self, rule: FillRule) {
         if !self.reject_current_fill_ext_g_state_paint_if_needed("fill paint") {
             self.path.clear();
             return;
@@ -11877,7 +11902,12 @@ impl<'a> RenderState<'a> {
     }
 
     fn fill_stroke_and_clear(&mut self, rule: FillRule) {
-        self.apply_pending_clip();
+        let pending = self.take_pending_clip_with_path();
+        self.fill_stroke_and_clear_unclipped(rule);
+        self.apply_clip_after_paint(pending);
+    }
+
+    fn fill_stroke_and_clear_unclipped(&mut self, rule: FillRule) {
         if !self.reject_current_fill_ext_g_state_paint_if_needed("fill-stroke fill paint")
             || !self.reject_current_stroke_ext_g_state_paint_if_needed("fill-stroke stroke paint")
         {
@@ -15417,11 +15447,12 @@ impl<'a> RenderState<'a> {
         }
         let ctm = self.ctm();
         let flat = flatten_path(&self.path, &ctm, &self.viewport, 0.2);
-        let width_px = (self.gs.line_width * ctm.scale_factor() * self.viewport.scale).max(1.0);
+        let device_scale = ctm.scale_factor() * self.viewport.scale;
+        let width_px = (self.gs.line_width * device_scale).max(1.0);
         let outline = stroke_flat_path(
             &flat,
             width_px,
-            &self.dash_state(),
+            &self.dash_state().scaled(device_scale),
             self.gs.line_cap.clone(),
             self.gs.line_join.clone(),
             self.gs.miter_limit,
@@ -17718,11 +17749,12 @@ impl<'a> RenderState<'a> {
         }
         for stroke in &geometry.strokes {
             let flat = flatten_path(&stroke.path, glyph_ctm, &self.viewport, 0.25);
-            let width_px = (stroke.width * glyph_ctm.scale_factor() * self.viewport.scale).max(1.0);
+            let device_scale = glyph_ctm.scale_factor() * self.viewport.scale;
+            let width_px = (stroke.width * device_scale).max(1.0);
             let outline = stroke_flat_path(
                 &flat,
                 width_px,
-                &stroke.dash,
+                &stroke.dash.scaled(device_scale),
                 stroke.cap.clone(),
                 stroke.join.clone(),
                 stroke.miter_limit,
@@ -21747,7 +21779,7 @@ fn paint_cached_path_stroke(
     let outline = stroke_flat_path(
         &flat,
         width_px,
-        dash,
+        &dash.scaled(normalized_t.scale_factor()),
         cap.clone(),
         join.clone(),
         miter_limit,
@@ -25808,6 +25840,7 @@ fn select_annotation_appearance(
 }
 
 const FIELD_FLAG_MULTILINE: i64 = 1 << 12;
+const FIELD_FLAG_PASSWORD: i64 = 1 << 13;
 const FIELD_FLAG_RADIO: i64 = 1 << 15;
 const FIELD_FLAG_PUSHBUTTON: i64 = 1 << 16;
 const FIELD_FLAG_COMBO: i64 = 1 << 17;
@@ -25920,9 +25953,16 @@ fn synthesize_annotation_appearance(
     let mut content = String::new();
     match field_type.as_str() {
         "Tx" => {
-            let (text, text_bytes) = value.as_ref().and_then(display_text_from_object)?;
+            let (mut text, mut text_bytes) = value.as_ref().and_then(display_text_from_object)?;
             if text.is_empty() {
                 return None;
+            }
+            if field_flags & FIELD_FLAG_PASSWORD != 0 {
+                // Password fields never show their value: one asterisk per
+                // character, as viewers do (PDF 12.7.5.3, Ff bit 14).
+                let masked_len = text.chars().count();
+                text = "*".repeat(masked_len);
+                text_bytes = vec![b'*'; masked_len];
             }
             append_text_field_appearance(
                 &mut content,
@@ -32082,8 +32122,8 @@ mod tests {
         // object. This is the real corpus content-drop fixed for ICCBased
         // transparency groups.
         let pdf = pdf_with_active_transparency_group_iccbased_form_xobject(3);
-        let engine =
-            ContentEngine::open_bytes(pdf).expect("open active ICCBased RGB transparency group PDF");
+        let engine = ContentEngine::open_bytes(pdf)
+            .expect("open active ICCBased RGB transparency group PDF");
         engine
             .render_page_with_mode(1, 72, RenderMode::Compat)
             .expect("active 3-component ICCBased group should render as DeviceRGB");
@@ -32106,7 +32146,8 @@ mod tests {
             .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("active 4-component ICCBased group must fail closed");
         assert!(
-            format!("{error}").contains("requires unsupported active group color-space compositing"),
+            format!("{error}")
+                .contains("requires unsupported active group color-space compositing"),
             "unexpected ICCBased CMYK group refusal: {error}"
         );
     }
@@ -44867,6 +44908,111 @@ mod tests {
         assert!((cropped_start.1 - original_start.1).abs() < 1e-9);
         assert!((cropped_end.0 - original_end.0).abs() < 1e-9);
         assert!((cropped_end.1 - original_end.1).abs() < 1e-9);
+    }
+
+    fn is_dark(pixel: PixelColor) -> bool {
+        pixel[0] < 128 && pixel[1] < 128 && pixel[2] < 128
+    }
+
+    fn is_white(pixel: PixelColor) -> bool {
+        pixel[0] > 240 && pixel[1] > 240 && pixel[2] > 240
+    }
+
+    #[test]
+    fn clip_operator_takes_effect_after_the_painting_operator() {
+        // PDF 8.5.4: `W S` strokes the whole path unclipped, then clips later
+        // content. The outer half of the 10 pt stroke lies outside the
+        // rectangle and must still be painted.
+        let pdf =
+            simple_vector_pdf("1 0 0 RG 10 w 20 20 60 60 re W S\n0 0 1 rg 0 0 100 100 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).unwrap();
+        let buf = engine.render_page(1, 72).unwrap();
+        let outer_stroke = buf.get_pixel(17, 50);
+        assert!(
+            outer_stroke[0] > 200 && outer_stroke[2] < 60,
+            "outer half of the clipping stroke must be red, got {outer_stroke:?}"
+        );
+        let inside = buf.get_pixel(50, 50);
+        assert!(
+            inside[2] > 200 && inside[0] < 60,
+            "later fill is clipped to the rectangle interior, got {inside:?}"
+        );
+        assert!(
+            is_white(buf.get_pixel(5, 50)),
+            "outside the clip stays white"
+        );
+    }
+
+    #[test]
+    fn fill_with_clip_paints_then_clips() {
+        let pdf = simple_vector_pdf("1 0 0 rg 20 20 60 60 re W f\n0 0 1 rg 0 0 100 100 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).unwrap();
+        let buf = engine.render_page(1, 72).unwrap();
+        assert!(is_white(buf.get_pixel(10, 50)));
+        let inside = buf.get_pixel(50, 50);
+        assert!(inside[2] > 200 && inside[0] < 60, "got {inside:?}");
+    }
+
+    #[test]
+    fn dash_lengths_are_user_space_at_any_dpi() {
+        // A [10 10] dash is 10 pt on, 10 pt off. At 144 DPI that is 20 px on,
+        // 20 px off along the 2 px-wide line at y = 50 pt (100 px).
+        let pdf = simple_vector_pdf("0 0 0 RG 2 w [10 10] 0 d 0 50 m 100 50 l S\n");
+        let engine = ContentEngine::open_bytes(pdf).unwrap();
+        let buf = engine.render_page(1, 144).unwrap();
+        assert!(
+            is_dark(buf.get_pixel(10, 100)),
+            "first dash covers 0..20 px"
+        );
+        assert!(
+            is_white(buf.get_pixel(30, 100)),
+            "first gap covers 20..40 px"
+        );
+        assert!(
+            is_dark(buf.get_pixel(50, 100)),
+            "second dash covers 40..60 px"
+        );
+        assert!(
+            is_white(buf.get_pixel(70, 100)),
+            "second gap covers 60..80 px"
+        );
+    }
+
+    #[test]
+    fn odd_length_dash_array_alternates_on_and_off() {
+        // [10] means 10 on, 10 off (the array repeats with swapped parity).
+        let pdf = simple_vector_pdf("0 0 0 RG 2 w [10] 0 d 0 50 m 100 50 l S\n");
+        let engine = ContentEngine::open_bytes(pdf).unwrap();
+        let buf = engine.render_page(1, 72).unwrap();
+        assert!(is_dark(buf.get_pixel(5, 50)));
+        assert!(is_white(buf.get_pixel(15, 50)));
+        assert!(is_dark(buf.get_pixel(25, 50)));
+        assert!(is_white(buf.get_pixel(35, 50)));
+    }
+
+    #[test]
+    fn zero_length_dashes_with_round_caps_draw_dots() {
+        // [0 10] with round caps: a 4 pt dot every 10 pt, gaps in between.
+        let pdf = simple_vector_pdf("0 0 0 RG 4 w 1 J [0 10] 0 d 0 50 m 100 50 l S\n");
+        let engine = ContentEngine::open_bytes(pdf).unwrap();
+        let buf = engine.render_page(1, 72).unwrap();
+        assert!(is_dark(buf.get_pixel(20, 50)), "dot centred at x = 20");
+        assert!(is_dark(buf.get_pixel(30, 50)), "dot centred at x = 30");
+        assert!(is_white(buf.get_pixel(25, 50)), "gap between dots");
+    }
+
+    #[test]
+    fn zero_length_dashes_with_butt_caps_draw_nothing() {
+        let pdf = simple_vector_pdf("0 0 0 RG 4 w 0 J [0 10] 0 d 0 50 m 100 50 l S\n");
+        let engine = ContentEngine::open_bytes(pdf).unwrap();
+        let buf = engine.render_page(1, 72).unwrap();
+        for x in [10, 20, 25, 30, 50] {
+            let pixel = buf.get_pixel(x, 50);
+            assert!(
+                pixel[0] > 200,
+                "butt-capped zero dash is invisible, got {pixel:?} at {x}"
+            );
+        }
     }
 }
 
