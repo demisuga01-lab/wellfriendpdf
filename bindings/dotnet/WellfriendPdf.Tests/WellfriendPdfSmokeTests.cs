@@ -803,6 +803,77 @@ public sealed class WellfriendPdfSmokeTests
         }
     }
 
+    [Fact]
+    public void RenderContractBuilderSetsRasterPolicyForcedColorAndFormHighlightFields()
+    {
+        using var doc = WellfriendDocument.Open(FixturePath("image_only.pdf"));
+        var contract = RenderContract.FromJson(doc.DefaultRenderContractJson(1, 72));
+        Assert.Null(contract.ForcedColors);
+        Assert.Null(contract.FormHighlight);
+        Assert.DoesNotContain("forced_colors", contract.ToJson());
+
+        var built = contract
+            .WithThinLineMode(RenderContractThinLineMode.Shape)
+            .WithVectorAntialiasGamma(RenderContractVectorAntialiasGamma.Gamma15)
+            .WithForcedColors(
+                new RenderContractColor(0, 0, 0, 255),
+                new RenderContractColor(10, 20, 30, 255),
+                new RenderContractColor(255, 255, 0, 200),
+                new RenderContractColor(1, 2, 3, 255),
+                convertFillToStroke: true)
+            .WithFormHighlight(new RenderContractColor(0, 0, 255, 80), "form.name");
+        using var json = JsonDocument.Parse(built.ToJson());
+        var root = json.RootElement;
+        Assert.Equal("Shape", root.GetProperty("thin_line_mode").GetString());
+        Assert.Equal("Gamma15", root.GetProperty("vector_antialias_gamma").GetString());
+        Assert.Equal(20, root.GetProperty("forced_colors").GetProperty("path_stroke").GetProperty("g").GetInt32());
+        Assert.True(root.GetProperty("forced_colors").GetProperty("convert_fill_to_stroke").GetBoolean());
+        Assert.Equal(80, root.GetProperty("form_highlight").GetProperty("signature").GetProperty("a").GetInt32());
+        Assert.Equal("form.name", root.GetProperty("form_highlight").GetProperty("focus_field").GetString());
+        var reparsed = RenderContract.FromJson(built.ToJson());
+        Assert.Equal(built.ForcedColors, reparsed.ForcedColors);
+        Assert.Equal(RenderContractThinLineMode.Shape, reparsed.ThinLineMode);
+        Assert.Equal("form.name", reparsed.FormHighlight?.FocusField);
+        Assert.StartsWith("\u0089PNG", Encoding.Latin1.GetString(doc.RenderPagePng(built)));
+
+        var cleared = built.WithoutForcedColors().WithoutFormHighlight();
+        Assert.DoesNotContain("forced_colors", cleared.ToJson());
+        Assert.DoesNotContain("form_highlight", cleared.ToJson());
+        Assert.Throws<ArgumentOutOfRangeException>(() => contract.WithThinLineMode((RenderContractThinLineMode)9));
+    }
+
+    [Fact]
+    public void PageMediaThumbnailImageObjectsOriginalImagesAndSearchUseTheNativeCore()
+    {
+        using var doc = WellfriendDocument.Open(FixturePath("image_only.pdf"));
+        Assert.Null(doc.PageThumbnailRgba(1));
+        Assert.Null(doc.DecodePageThumbnail(1));
+        Assert.Null(doc.PageThumbnailPng(1));
+
+        using var images = JsonDocument.Parse(doc.PageImagesJson(1));
+        Assert.True(images.RootElement.GetArrayLength() > 0);
+        var first = images.RootElement[0];
+        var original = doc.ExtractImageOriginal(1, first.GetProperty("index").GetInt32());
+        Assert.NotEmpty(original.Bytes);
+        Assert.False(string.IsNullOrEmpty(original.Extension));
+        Assert.Throws<WellfriendPdfException>(() => doc.ExtractImageOriginal(1, 10_000));
+
+        var rendered = doc.RenderPageImageObjectRgba(1, 0);
+        Assert.True(rendered.Width > 0 && rendered.Height > 0);
+        Assert.Equal((int)(rendered.Width * rendered.Height * 4), rendered.Pixels.Length);
+        Assert.StartsWith("\u0089PNG", Encoding.Latin1.GetString(doc.RenderPageImageObjectPng(1, 0)));
+        Assert.Throws<WellfriendPdfException>(() => doc.RenderPageImageObjectPng(1, "NoSuchImage"));
+
+        using var text = WellfriendDocument.Open(FixturePath());
+        using var all = JsonDocument.Parse(text.SearchTextJson("the", new TextSearchOptions { Pages = [1], CaseSensitive = false }));
+        using var whole = JsonDocument.Parse(text.SearchTextJson("the", new TextSearchOptions { Pages = [1], CaseSensitive = false, WholeWord = true }));
+        Assert.Equal("binding_media.text_search.v1", all.RootElement.GetProperty("schema_version").GetString());
+        Assert.True(all.RootElement.GetProperty("match_count").GetInt32()
+            >= whole.RootElement.GetProperty("match_count").GetInt32());
+        Assert.True(whole.RootElement.GetProperty("options").GetProperty("whole_word").GetBoolean());
+        Assert.Throws<WellfriendPdfException>(() => text.SearchTextJson("the", "{\"pages\":[0]}"));
+    }
+
     private static string FixturePath(string name = "tracemonkey.pdf")
     {
         var env = Environment.GetEnvironmentVariable("WELLFRIENDPDF_FIXTURE_PDF");

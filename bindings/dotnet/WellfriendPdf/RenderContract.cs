@@ -71,6 +71,11 @@ public sealed record RenderContract
     [JsonPropertyName("forms")]
     public RenderContractFormPolicy Forms { get; init; } = RenderContractFormPolicy.Include;
 
+    /// <summary>Form-field highlight and focus rectangle; null (the default) leaves forms unhighlighted.</summary>
+    [JsonPropertyName("form_highlight")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RenderContractFormHighlightPolicy? FormHighlight { get; init; }
+
     [JsonPropertyName("optional_content")]
     public string OptionalContent { get; init; } = "ocg:default";
 
@@ -90,11 +95,23 @@ public sealed record RenderContract
     public RenderContractSmoothingPolicy SubpixelText { get; init; } =
         RenderContractSmoothingPolicy.Disabled;
 
+    [JsonPropertyName("thin_line_mode")]
+    public RenderContractThinLineMode ThinLineMode { get; init; } = RenderContractThinLineMode.None;
+
+    [JsonPropertyName("vector_antialias_gamma")]
+    public RenderContractVectorAntialiasGamma VectorAntialiasGamma { get; init; } =
+        RenderContractVectorAntialiasGamma.Linear;
+
     [JsonPropertyName("grayscale")]
     public bool Grayscale { get; init; }
 
     [JsonPropertyName("color_scheme")]
     public RenderContractColorScheme ColorScheme { get; init; } = RenderContractColorScheme.Light;
+
+    /// <summary>Forced (high-contrast) path and text paint colours; null (the default) leaves rendering unchanged.</summary>
+    [JsonPropertyName("forced_colors")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RenderContractForcedColorScheme? ForcedColors { get; init; }
 
     [JsonPropertyName("reverse_byte_order")]
     public bool ReverseByteOrder { get; init; }
@@ -309,6 +326,67 @@ public sealed record RenderContract
         return this with { Determinism = RequireDefined(determinism, nameof(determinism)) };
     }
 
+    public RenderContract WithThinLineMode(RenderContractThinLineMode thinLineMode)
+    {
+        return this with { ThinLineMode = RequireDefined(thinLineMode, nameof(thinLineMode)) };
+    }
+
+    public RenderContract WithVectorAntialiasGamma(RenderContractVectorAntialiasGamma vectorAntialiasGamma)
+    {
+        return this with
+        {
+            VectorAntialiasGamma = RequireDefined(vectorAntialiasGamma, nameof(vectorAntialiasGamma)),
+        };
+    }
+
+    /// <summary>One forced colour for every path and text paint.</summary>
+    public RenderContract WithForcedColors(RenderContractColor foreground, bool convertFillToStroke = false)
+    {
+        ArgumentNullException.ThrowIfNull(foreground);
+        return WithForcedColors(foreground, foreground, foreground, foreground, convertFillToStroke);
+    }
+
+    public RenderContract WithForcedColors(
+        RenderContractColor pathFill,
+        RenderContractColor pathStroke,
+        RenderContractColor textFill,
+        RenderContractColor textStroke,
+        bool convertFillToStroke = false)
+    {
+        ArgumentNullException.ThrowIfNull(pathFill);
+        ArgumentNullException.ThrowIfNull(pathStroke);
+        ArgumentNullException.ThrowIfNull(textFill);
+        ArgumentNullException.ThrowIfNull(textStroke);
+        return this with
+        {
+            ForcedColors = new RenderContractForcedColorScheme(
+                pathFill, pathStroke, textFill, textStroke, convertFillToStroke),
+        };
+    }
+
+    public RenderContract WithoutForcedColors()
+    {
+        return this with { ForcedColors = null };
+    }
+
+    public RenderContract WithFormHighlight(RenderContractFormHighlightPolicy formHighlight)
+    {
+        ArgumentNullException.ThrowIfNull(formHighlight);
+        return this with { FormHighlight = formHighlight };
+    }
+
+    /// <summary>One highlight colour (its alpha is the opacity) for every field type, plus an optional focused field.</summary>
+    public RenderContract WithFormHighlight(RenderContractColor color, string? focusField = null)
+    {
+        ArgumentNullException.ThrowIfNull(color);
+        return WithFormHighlight(RenderContractFormHighlightPolicy.All(color, focusField));
+    }
+
+    public RenderContract WithoutFormHighlight()
+    {
+        return this with { FormHighlight = null };
+    }
+
     public RenderContract WithResourceBudget(
         ulong? maxPixels = null,
         ulong? maxDecodedBytes = null,
@@ -388,6 +466,8 @@ public sealed record RenderContract
         ValidateEnum(ImageSmoothing, nameof(ImageSmoothing));
         ValidateEnum(PathSmoothing, nameof(PathSmoothing));
         ValidateEnum(SubpixelText, nameof(SubpixelText));
+        ValidateEnum(ThinLineMode, nameof(ThinLineMode));
+        ValidateEnum(VectorAntialiasGamma, nameof(VectorAntialiasGamma));
         ValidateEnum(ColorScheme, nameof(ColorScheme));
         ValidateEnum(PrintProfile, nameof(PrintProfile));
         ValidateEnum(Halftone, nameof(Halftone));
@@ -509,6 +589,60 @@ public sealed record RenderContractColor(
     }
 }
 
+/// <summary>Forced (high-contrast) straight-alpha paint colours (PDFium FPDF_COLORSCHEME).</summary>
+public sealed record RenderContractForcedColorScheme(
+    [property: JsonPropertyName("path_fill")] RenderContractColor PathFill,
+    [property: JsonPropertyName("path_stroke")] RenderContractColor PathStroke,
+    [property: JsonPropertyName("text_fill")] RenderContractColor TextFill,
+    [property: JsonPropertyName("text_stroke")] RenderContractColor TextStroke,
+    [property: JsonPropertyName("convert_fill_to_stroke")] bool ConvertFillToStroke = false);
+
+/// <summary>
+/// Viewer-style form-field highlight colours per field type (alpha is the opacity; null or
+/// alpha 0 leaves that type unhighlighted) and the fully qualified name of a focused field.
+/// </summary>
+public sealed record RenderContractFormHighlightPolicy
+{
+    [JsonPropertyName("text")]
+    public RenderContractColor? Text { get; init; }
+
+    [JsonPropertyName("push_button")]
+    public RenderContractColor? PushButton { get; init; }
+
+    [JsonPropertyName("check_box")]
+    public RenderContractColor? CheckBox { get; init; }
+
+    [JsonPropertyName("radio_button")]
+    public RenderContractColor? RadioButton { get; init; }
+
+    [JsonPropertyName("combo_box")]
+    public RenderContractColor? ComboBox { get; init; }
+
+    [JsonPropertyName("list_box")]
+    public RenderContractColor? ListBox { get; init; }
+
+    [JsonPropertyName("signature")]
+    public RenderContractColor? Signature { get; init; }
+
+    [JsonPropertyName("focus_field")]
+    public string? FocusField { get; init; }
+
+    public static RenderContractFormHighlightPolicy All(RenderContractColor color, string? focusField = null)
+    {
+        return new RenderContractFormHighlightPolicy
+        {
+            Text = color,
+            PushButton = color,
+            CheckBox = color,
+            RadioButton = color,
+            ComboBox = color,
+            ListBox = color,
+            Signature = color,
+            FocusField = string.IsNullOrWhiteSpace(focusField) ? null : focusField,
+        };
+    }
+}
+
 public sealed record RenderContractDeviceClip(
     [property: JsonPropertyName("x")] int X,
     [property: JsonPropertyName("y")] int Y,
@@ -587,6 +721,21 @@ public enum RenderContractSmoothingPolicy
     Disabled,
     Antialiased,
     Subpixel,
+}
+
+/// <summary>Thin-stroke policy (pdftoppm -thinlinemode).</summary>
+public enum RenderContractThinLineMode
+{
+    None,
+    Solid,
+    Shape,
+}
+
+/// <summary>Vector anti-aliasing coverage curve: Linear (PDFium/Skia) or Gamma15 (Poppler/Splash).</summary>
+public enum RenderContractVectorAntialiasGamma
+{
+    Linear,
+    Gamma15,
 }
 
 public enum RenderContractAnnotationPolicy
