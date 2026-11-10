@@ -9423,7 +9423,8 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| format!("unknown render quality '{}'", args.render_quality))?;
 
     // Render pages in parallel for any multi-page document; a one-shot render
-    // never reuses finished page rasters, so caches keep resources only.
+    // renders every page once, so caches keep document resources only (no
+    // per-page display lists, plans or finished rasters).
     const PARALLEL_RENDER_PAGE_THRESHOLD: usize = 2;
     let page_geometry = |page_num: usize| -> Result<CliPageGeometry, String> {
         if scaling.is_plain() {
@@ -9558,12 +9559,12 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             page_nums
                 .par_iter()
                 .map_init(
-                    RenderDocumentCache::resources_only,
+                    RenderDocumentCache::single_pass,
                     |document_cache, &page_num| (page_num, encode_page(page_num, document_cache)),
                 )
                 .collect()
         } else {
-            let mut document_cache = RenderDocumentCache::resources_only();
+            let mut document_cache = RenderDocumentCache::single_pass();
             page_nums
                 .iter()
                 .map(|&page_num| (page_num, encode_page(page_num, &mut document_cache)))

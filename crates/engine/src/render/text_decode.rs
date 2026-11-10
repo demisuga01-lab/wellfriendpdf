@@ -104,9 +104,12 @@ pub fn try_decode_text_bytes_with_resolver(
     // length, missing FirstChar, stray non-numbers). The width parsers below
     // tolerate them, so the text is still drawn with the best metrics
     // available, as Poppler, PDFium and Acrobat do; dropping the whole
-    // string would lose visible content.
-    if let Err(reason) = validate_visual_font_metrics(font_dict, Some(reader)) {
-        log::debug!("render: drawing text with imperfect font metrics: {reason}");
+    // string would lose visible content. The check only feeds a debug log,
+    // so it is skipped (it walks every width) unless that log is enabled.
+    if log::log_enabled!(log::Level::Debug) {
+        if let Err(reason) = validate_visual_font_metrics(font_dict, Some(reader)) {
+            log::debug!("render: drawing text with imperfect font metrics: {reason}");
+        }
     }
     if detect_font_subtype(font_dict) == FontSubtype::Type0 {
         return decode_type0_text_with_resolver(bytes, font_dict, resolver, reader);

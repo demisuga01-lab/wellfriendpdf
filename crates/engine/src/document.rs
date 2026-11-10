@@ -113,6 +113,16 @@ impl PdfDocument {
         Ok(self.cached_pages()?.to_vec())
     }
 
+    /// The `(object, generation)` of the page at `index` (0-based) in the
+    /// full page walk [`Self::get_pages`] returns, without copying the page
+    /// list and its inherited resource dictionaries.
+    pub(crate) fn page_object_id_at(&self, index: usize) -> Result<Option<(u32, u16)>> {
+        Ok(self
+            .cached_pages()?
+            .get(index)
+            .map(|page| (page.object_number, page.generation_number)))
+    }
+
     pub fn page_count(&self) -> Result<usize> {
         if let Some(pages) = self.pages_cache.get() {
             return Ok(pages.len());

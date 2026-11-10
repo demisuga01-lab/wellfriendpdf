@@ -96,10 +96,12 @@ impl EncryptionContext {
     }
 }
 
-type ParsedObjectStream = HashMap<u32, (u32, PdfObject)>;
+/// A parsed object stream as cached: members are shared, never deep-copied
+/// on lookup.
+type SharedObjectStream = HashMap<u32, (u32, Arc<PdfObject>)>;
 
 struct CachedObject {
-    object: PdfObject,
+    object: Arc<PdfObject>,
     estimated_bytes: usize,
 }
 
@@ -111,7 +113,7 @@ struct CachedObject {
 /// every lookup is unnecessary work. This bounded FIFO cache deliberately does
 /// not mutate recency on a read, so the hot path only needs a shared lock.
 struct BoundedObjectCache {
-    objects: HashMap<(u32, u16), CachedObject>,
+    objects: crate::fast_hash::ObjectMap<CachedObject>,
     order: VecDeque<(u32, u16)>,
     max_entries: usize,
     max_bytes: usize,
@@ -129,7 +131,7 @@ pub struct PdfObjectCacheMetrics {
 impl BoundedObjectCache {
     fn new(max_entries: usize, max_bytes: usize) -> Self {
         Self {
-            objects: HashMap::new(),
+            objects: crate::fast_hash::ObjectMap::default(),
             order: VecDeque::new(),
             max_entries: max_entries.max(1),
             max_bytes: max_bytes.max(1),
@@ -137,11 +139,11 @@ impl BoundedObjectCache {
         }
     }
 
-    fn get(&self, id: &(u32, u16)) -> Option<&PdfObject> {
+    fn get(&self, id: &(u32, u16)) -> Option<&Arc<PdfObject>> {
         self.objects.get(id).map(|entry| &entry.object)
     }
 
-    fn insert(&mut self, id: (u32, u16), object: PdfObject) {
+    fn insert(&mut self, id: (u32, u16), object: Arc<PdfObject>) {
         let estimated_bytes = estimate_object_heap_bytes(&object, MAX_CACHED_OBJECT_BYTES);
         if estimated_bytes > MAX_CACHED_OBJECT_BYTES || estimated_bytes > self.max_bytes {
             return;
@@ -217,7 +219,7 @@ fn estimate_object_heap_bytes(object: &PdfObject, stop_after: usize) -> usize {
 }
 
 struct BoundedObjectStreamCache {
-    streams: HashMap<u32, (ParsedObjectStream, usize)>,
+    streams: HashMap<u32, (SharedObjectStream, usize)>,
     order: VecDeque<u32>,
     max_streams: usize,
     total_objects: usize,
@@ -243,11 +245,11 @@ impl BoundedObjectStreamCache {
         self.streams.contains_key(stream_obj)
     }
 
-    fn get(&self, stream_obj: &u32) -> Option<&ParsedObjectStream> {
+    fn get(&self, stream_obj: &u32) -> Option<&SharedObjectStream> {
         self.streams.get(stream_obj).map(|(objects, _)| objects)
     }
 
-    fn insert(&mut self, stream_obj: u32, objects: ParsedObjectStream) {
+    fn insert(&mut self, stream_obj: u32, objects: SharedObjectStream) {
         if objects.len() > self.max_objects {
             return;
         }
@@ -1298,6 +1300,15 @@ impl PdfReader {
     }
 
     pub fn get_object(&self, number: u32, generation: u16) -> Result<PdfObject> {
+        // An object the caches keep is copied out; one they do not keep is
+        // moved out without a copy.
+        self.get_object_shared(number, generation)
+            .map(Arc::unwrap_or_clone)
+    }
+
+    /// [`Self::get_object`] without the copy: cached objects (including
+    /// stream bytes) are shared by reference count.
+    pub fn get_object_shared(&self, number: u32, generation: u16) -> Result<Arc<PdfObject>> {
         let id = (number, generation);
         if let Some(object) = self
             .object_cache
@@ -1306,7 +1317,7 @@ impl PdfReader {
             .get(&id)
         {
             self.object_cache_hits.fetch_add(1, Ordering::Relaxed);
-            return Ok(object.clone());
+            return Ok(Arc::clone(object));
         }
         self.object_cache_misses.fetch_add(1, Ordering::Relaxed);
         let entry = self
@@ -1330,11 +1341,11 @@ impl PdfReader {
                 if parsed.number != number || parsed.generation != generation {
                     return Err(WellfriendError::MissingObject { number, generation });
                 }
-                let object = self.decrypt_object(parsed.object, number, generation)?;
+                let object = Arc::new(self.decrypt_object(parsed.object, number, generation)?);
                 self.object_cache
                     .write()
                     .expect("object cache lock poisoned")
-                    .insert(id, object.clone());
+                    .insert(id, Arc::clone(&object));
                 Ok(object)
             }
             XrefEntry::Compressed { stream_obj, index } => {
@@ -1355,7 +1366,7 @@ impl PdfReader {
                 if *actual_index != index {
                     return Err(WellfriendError::MissingObject { number, generation });
                 }
-                Ok(object.clone())
+                Ok(Arc::clone(object))
             }
         }
     }
@@ -1762,7 +1773,11 @@ impl PdfReader {
     }
 
     pub fn resolve(&self, object: PdfObject) -> Result<PdfObject> {
-        let mut visited = HashSet::new();
+        if !matches!(object, PdfObject::Reference { .. }) {
+            return Ok(object);
+        }
+        // Chains are at most 64 deep: a small vector beats a hashed set.
+        let mut visited = Vec::new();
         self.resolve_inner(object, &mut visited, 0)
     }
 
@@ -1774,7 +1789,7 @@ impl PdfReader {
     fn resolve_inner(
         &self,
         object: PdfObject,
-        visited: &mut HashSet<(u32, u16)>,
+        visited: &mut Vec<(u32, u16)>,
         depth: usize,
     ) -> Result<PdfObject> {
         if depth > 64 {
@@ -1784,11 +1799,12 @@ impl PdfReader {
         }
         match object {
             PdfObject::Reference { number, generation } => {
-                if !visited.insert((number, generation)) {
+                if visited.contains(&(number, generation)) {
                     return Err(WellfriendError::MalformedPdf(format!(
                         "reference cycle at {number} {generation}"
                     )));
                 }
+                visited.push((number, generation));
                 let resolved = self.get_object(number, generation)?;
                 self.resolve_inner(resolved, visited, depth + 1)
             }
@@ -1813,7 +1829,11 @@ impl PdfReader {
         // deadlock. Parsing the same stream twice under a race is harmless and
         // idempotent (the result is value-identical), so we accept that and let
         // the last writer win.
-        let objects = self.parse_object_stream(stream_obj)?;
+        let objects = self
+            .parse_object_stream(stream_obj)?
+            .into_iter()
+            .map(|(number, (index, object))| (number, (index, Arc::new(object))))
+            .collect();
         self.object_stream_cache
             .write()
             .expect("object stream cache lock poisoned")
