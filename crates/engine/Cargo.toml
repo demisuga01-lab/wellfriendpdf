@@ -49,6 +49,8 @@ ttf-parser = "=0.25.1"
 unicode-bidi = "0.3"
 unicode-script = "0.5"
 unicode-segmentation = "1.12"
+# NFKC search normalisation (also in the tree via stringprep); MIT OR Apache-2.0.
+unicode-normalization = "0.1.24"
 unicode-linebreak = "0.1.5"
 unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
 cassowary = "0.3.0"

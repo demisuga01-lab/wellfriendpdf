@@ -7568,6 +7568,34 @@ fn rendering_intent_graphics_state_name(intent: RenderingIntent) -> &'static str
 /// Objects skipped by compatibility rendering in this process, for reports.
 static SKIPPED_RENDER_OBJECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+thread_local! {
+    static TEXT_PAINT_SUPPRESSION_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// While alive, page renders on this thread lay text out (text matrices,
+/// advances and Type 3 widths still run) but paint no glyphs, like Poppler's
+/// `SplashOutputDevNoText`. Used for HTML backgrounds that carry the text as
+/// a separate overlay.
+pub(crate) struct TextPaintSuppressionGuard;
+
+impl TextPaintSuppressionGuard {
+    pub(crate) fn enter() -> Self {
+        TEXT_PAINT_SUPPRESSION_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for TextPaintSuppressionGuard {
+    fn drop(&mut self) {
+        TEXT_PAINT_SUPPRESSION_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+#[inline]
+fn text_paint_suppressed() -> bool {
+    TEXT_PAINT_SUPPRESSION_DEPTH.with(|depth| depth.get() > 0)
+}
+
 /// Number of objects compatibility rendering has skipped in this process
 /// because they could not be drawn (the page was still produced).
 pub fn skipped_render_object_count() -> u64 {
@@ -15492,7 +15520,7 @@ impl<'a> RenderState<'a> {
     }
 
     fn render_text_string(&mut self, bytes: &[u8]) {
-        self.process_text_string(bytes, true);
+        self.process_text_string(bytes, !text_paint_suppressed());
     }
 
     fn advance_text_string_without_paint(&mut self, bytes: &[u8]) {

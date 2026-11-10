@@ -166,60 +166,64 @@ impl ReadingOrderReconstructor {
         columns
             .into_iter()
             .enumerate()
-            .map(|(col_idx, group)| {
-                let repr_y = group.iter().map(|c| c.y).fold(f64::NEG_INFINITY, f64::max);
-                let repr_y = if repr_y.is_finite() { repr_y } else { 0.0 };
-
-                let mut sizes: Vec<f64> = group.iter().map(|c| c.font_size).collect();
-                sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-                let font_size = sizes[sizes.len() / 2].max(1.0);
-
-                let x_min = group.iter().map(|c| c.x).fold(f64::INFINITY, f64::min);
-                let x_min = if x_min.is_finite() { x_min } else { 0.0 };
-                let x_max = group
-                    .iter()
-                    .map(|c| c.x + c.font_size)
-                    .fold(f64::NEG_INFINITY, f64::max);
-                let x_max = if x_max.is_finite() { x_max } else { 0.0 };
-
-                // Glyphs top-to-bottom: in PDF user space y increases upward, so a
-                // higher y is higher on the page and comes first.
-                let mut ordered = group;
-                ordered.sort_by(|a, b| b.y.partial_cmp(&a.y).unwrap_or(Ordering::Equal));
-
-                let mut text = String::new();
-                for (i, chunk) in ordered.iter().enumerate() {
-                    if i > 0 {
-                        let prev = &ordered[i - 1];
-                        // prev sits above chunk; the vertical gap is prev.y minus
-                        // chunk.y minus prev's glyph height (≈ its font size).
-                        let gap = prev.y - chunk.y - prev.font_size;
-                        let ref_size = prev.font_size.min(chunk.font_size).max(1.0);
-                        if gap > ref_size * self.wide_gap_factor {
-                            text.push(' ');
-                        }
-                    }
-                    text.push_str(&chunk.text);
-                }
-
-                TextLine {
-                    text,
-                    y: repr_y,
-                    x_min,
-                    x_max,
-                    font_size,
-                    is_paragraph_break: false,
-                    column: col_idx,
-                }
-            })
+            .map(|(col_idx, group)| self.vertical_column_line(group, col_idx))
             .collect()
+    }
+
+    /// One vertical column (chunks sharing an x position) as a `TextLine`:
+    /// glyphs read top to bottom, with a space where the vertical gap is wide.
+    pub(crate) fn vertical_column_line(&self, group: Vec<TextChunk>, col_idx: usize) -> TextLine {
+        let repr_y = group.iter().map(|c| c.y).fold(f64::NEG_INFINITY, f64::max);
+        let repr_y = if repr_y.is_finite() { repr_y } else { 0.0 };
+
+        let mut sizes: Vec<f64> = group.iter().map(|c| c.font_size).collect();
+        sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        let font_size = sizes[sizes.len() / 2].max(1.0);
+
+        let x_min = group.iter().map(|c| c.x).fold(f64::INFINITY, f64::min);
+        let x_min = if x_min.is_finite() { x_min } else { 0.0 };
+        let x_max = group
+            .iter()
+            .map(|c| c.x + c.font_size)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let x_max = if x_max.is_finite() { x_max } else { 0.0 };
+
+        // Glyphs top-to-bottom: in PDF user space y increases upward, so a
+        // higher y is higher on the page and comes first.
+        let mut ordered = group;
+        ordered.sort_by(|a, b| b.y.partial_cmp(&a.y).unwrap_or(Ordering::Equal));
+
+        let mut text = String::new();
+        for (i, chunk) in ordered.iter().enumerate() {
+            if i > 0 {
+                let prev = &ordered[i - 1];
+                // prev sits above chunk; the vertical gap is prev.y minus
+                // chunk.y minus prev's glyph height (≈ its font size).
+                let gap = prev.y - chunk.y - prev.font_size;
+                let ref_size = prev.font_size.min(chunk.font_size).max(1.0);
+                if gap > ref_size * self.wide_gap_factor {
+                    text.push(' ');
+                }
+            }
+            text.push_str(&chunk.text);
+        }
+
+        TextLine {
+            text,
+            y: repr_y,
+            x_min,
+            x_max,
+            font_size,
+            is_paragraph_break: false,
+            column: col_idx,
+        }
     }
 
     /// Group vertical-text chunks into columns by x-proximity, ordering the
     /// columns right-to-left (rightmost first). Mirrors `group_into_lines` but on
     /// the x axis: two chunks belong to the same column when their x origins are
     /// within a font-size-scaled tolerance.
-    fn group_into_columns(&self, mut chunks: Vec<TextChunk>) -> Vec<Vec<TextChunk>> {
+    pub(crate) fn group_into_columns(&self, mut chunks: Vec<TextChunk>) -> Vec<Vec<TextChunk>> {
         // Process rightmost-first so column ordering is right-to-left.
         chunks.sort_by(|a, b| b.x.partial_cmp(&a.x).unwrap_or(Ordering::Equal));
 

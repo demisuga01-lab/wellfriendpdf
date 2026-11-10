@@ -3547,6 +3547,99 @@ fn image_decode_params(
     Ok(params.get(target_idx).cloned().flatten())
 }
 
+/// An image whose compressed codec bytes can be saved as a file of their own
+/// (`pdfimages -all` style): JPEG, JPEG 2000, JBIG2 and CCITT fax.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassthroughImage {
+    /// The codec data, after any lossless filters (Flate, ASCII85, ...) that
+    /// wrapped it in the PDF stream have been removed.
+    pub bytes: Vec<u8>,
+    /// File extension for [`bytes`](Self::bytes): `jpg`, `jp2`, `jb2e` or
+    /// `ccitt` (or `png` when [`crate::ContentEngine::extract_image_original`]
+    /// had to decode the image).
+    pub extension: &'static str,
+    /// Canonical PDF filter name of the codec (for example `DCTDecode`).
+    pub filter: String,
+    /// Companion files as `(extension, bytes)`: the JBIG2 global segments
+    /// (`jb2g`), or the fax2tiff parameter line for CCITT (`params`).
+    pub sidecars: Vec<(&'static str, Vec<u8>)>,
+}
+
+/// Passthrough bytes for an image XObject whose last filter is an image codec
+/// (DCT, JPX, JBIG2, CCITT). Returns `None` for inline images, for streams with
+/// no codec filter, and for filter chains that continue after the codec.
+pub fn passthrough_image(
+    image: &ImageReference,
+    reader: &PdfReader,
+) -> Result<Option<PassthroughImage>> {
+    if image.is_inline || image.object_number == 0 {
+        return Ok(None);
+    }
+    let object = reader.get_object(image.object_number, image.generation_number)?;
+    let Some((dict, _)) = object.as_stream() else {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "image object {} is not a stream",
+            image.object_number
+        )));
+    };
+    let filters = stream_filter_names(dict, Some(reader))?;
+    let Some(last) = filters.last() else {
+        return Ok(None);
+    };
+    let canonical = canonical_filter_name(last).to_string();
+    let extension = match canonical.as_str() {
+        "DCTDecode" => "jpg",
+        "JPXDecode" => "jp2",
+        "JBIG2Decode" => "jb2e",
+        "CCITTFaxDecode" => "ccitt",
+        _ => return Ok(None),
+    };
+    let limits = DecodeLimits::default();
+    let decoded = decode_stream_lossless_with_limits(&object, reader, &limits)?;
+    match &decoded.status {
+        StreamDecodeStatus::StoppedAtImageFilter(stopped) if same_filter(stopped, last) => {}
+        // The codec is not the first image filter: the chain cannot be dumped
+        // as a single codec file.
+        _ => return Ok(None),
+    }
+    let params = image_decode_params(dict, Some(reader), last)?;
+    let mut sidecars = Vec::new();
+    match canonical.as_str() {
+        "JBIG2Decode" => {
+            if let Some(globals) = jbig2_globals(params.as_ref(), reader, &limits)? {
+                sidecars.push(("jb2g", globals));
+            }
+        }
+        "CCITTFaxDecode" => {
+            let ccitt = ccitt_decode_params(params.as_ref(), image.width, image.height)?;
+            sidecars.push(("params", ccitt_fax2tiff_params(&ccitt).into_bytes()));
+        }
+        _ => {}
+    }
+    Ok(Some(PassthroughImage {
+        bytes: decoded.data,
+        extension,
+        filter: canonical,
+        sidecars,
+    }))
+}
+
+/// fax2tiff command-line options describing a raw CCITT stream, in the form
+/// `pdfimages` writes to its `.params` files.
+fn ccitt_fax2tiff_params(params: &ccitt::CcittDecodeParams) -> String {
+    let encoding = match params.k {
+        k if k < 0 => "-4",
+        0 => "-1",
+        _ => "-2",
+    };
+    let alignment = if params.end_of_line { "-A" } else { "-P" };
+    let polarity = if params.black_is_1 { "-W" } else { "-B" };
+    format!(
+        "{encoding} {alignment} -X {} {polarity} -M\n",
+        params.columns
+    )
+}
+
 fn stream_filter_names(dict: &PdfDictionary, reader: Option<&PdfReader>) -> Result<Vec<String>> {
     let Some(filter_obj) = dict.get("Filter").or_else(|| dict.get("F")) else {
         return Ok(Vec::new());

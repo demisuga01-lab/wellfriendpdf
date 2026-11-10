@@ -11,7 +11,10 @@
 //!   pipeline's [`TextLine`]s (so reading order and BiDi are already correct).
 //!   With `background = true` the page is also rendered to a PNG and placed
 //!   behind the text — the "raster background + selectable text overlay"
-//!   approach. This is the **highest-fidelity** option: the background reproduces
+//!   approach. Like `pdftohtml -c`, the background is rendered **without its
+//!   text** so the overlay is not shown twice; with
+//!   `invisible_text_over_background` the background keeps its text and the
+//!   overlay is transparent instead. This is the **highest-fidelity** option: the background reproduces
 //!   *every* graphic, image, shading, and vector mark in its exact position
 //!   (it IS the raster render), while the overlaid text stays selectable and
 //!   correctly positioned. It also sidesteps the fact that per-image device
@@ -108,7 +111,7 @@ impl HtmlExporter {
         out.push_str("</style>\n</head>\n<body>\n");
 
         for &page in pages {
-            let (w_pt, h_pt, y0) = Self::page_geom(engine, page)?;
+            let (x0, y0, w_pt, h_pt) = Self::page_geom(engine, page)?;
             let scale = options.scale;
             let w_px = w_pt * scale;
             let h_px = h_pt * scale;
@@ -117,9 +120,19 @@ impl HtmlExporter {
                 "<div class=\"page\" id=\"page{page}\" style=\"width:{w_px:.0}px;height:{h_px:.0}px;\">\n"
             ));
 
-            // Optional raster background.
+            // Optional raster background. When the overlay text is visible the
+            // background is rendered without text, so glyphs are not drawn
+            // twice; an invisible overlay needs the rasterised text instead.
             if options.background {
-                if let Ok(png) = engine.render_page_png_fast(page, options.background_dpi) {
+                let rendered = if options.invisible_text_over_background {
+                    engine.render_page(page, options.background_dpi)
+                } else {
+                    engine.render_page_without_text(page, options.background_dpi)
+                };
+                let png = rendered.and_then(|buffer| {
+                    crate::images::encoder::ImageEncoder::encode_png_fast(&buffer.into_raw_image())
+                });
+                if let Ok(png) = png {
                     let b64 = base64_encode(&png);
                     out.push_str(&format!(
                         "<img class=\"bg\" src=\"data:image/png;base64,{b64}\" \
@@ -138,7 +151,7 @@ impl HtmlExporter {
                 // top-left CSS top, lifting by ~the cap height so the glyph box
                 // aligns. Use the line's font size as the baseline-to-top offset.
                 let top_pt = h_pt - (line.y - y0) - line.font_size;
-                let left_px = (line.x_min - 0.0) * scale;
+                let left_px = (line.x_min - x0) * scale;
                 let top_px = top_pt * scale;
                 let size_px = line.font_size * scale;
                 let dir = if is_rtl_line(&line.text) {
@@ -191,7 +204,7 @@ impl HtmlExporter {
         out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         out.push_str("<pdf2xml>\n");
         for &page in pages {
-            let (w_pt, h_pt, y0) = Self::page_geom(engine, page)?;
+            let (x0, y0, w_pt, h_pt) = Self::page_geom(engine, page)?;
             out.push_str(&format!(
                 "<page number=\"{page}\" width=\"{w_pt:.2}\" height=\"{h_pt:.2}\">\n"
             ));
@@ -206,7 +219,7 @@ impl HtmlExporter {
                 out.push_str(&format!(
                     "<text top=\"{top:.2}\" left=\"{:.2}\" width=\"{width:.2}\" \
                      height=\"{:.2}\" font-size=\"{:.2}\">{}</text>\n",
-                    line.x_min,
+                    line.x_min - x0,
                     line.font_size,
                     line.font_size,
                     escape_xml(&line.text)
@@ -218,14 +231,16 @@ impl HtmlExporter {
         Ok(out)
     }
 
-    /// (width_pt, height_pt, y0) for a page — y0 is the MediaBox lower y, used
-    /// to normalize the bottom-left origin.
-    fn page_geom(engine: &ContentEngine, page: usize) -> Result<(f64, f64, f64)> {
+    /// (x0, y0, width_pt, height_pt) of the visible page area: the CropBox
+    /// clipped to the MediaBox, which is also what the raster background
+    /// shows. Text positions are made relative to its lower-left corner, so a
+    /// page whose box does not start at (0, 0) still lines up.
+    fn page_geom(engine: &ContentEngine, page: usize) -> Result<(f64, f64, f64, f64)> {
         let p = engine.get_page(page)?;
-        let w = (p.media_box[2] - p.media_box[0]).abs();
-        let h = (p.media_box[3] - p.media_box[1]).abs();
-        let y0 = p.media_box[1];
-        Ok((w, h, y0))
+        let b = crate::engine::render_page_box(&p, crate::render::PageBox::Crop)?;
+        let (x0, x1) = (b[0].min(b[2]), b[0].max(b[2]));
+        let (y0, y1) = (b[1].min(b[3]), b[1].max(b[3]));
+        Ok((x0, y0, x1 - x0, y1 - y0))
     }
 }
 
@@ -343,6 +358,106 @@ mod tests {
         assert!(is_rtl_line("שלום עולם"));
         assert!(!is_rtl_line("Hello world"));
         assert!(!is_rtl_line("123 456"));
+    }
+
+    /// One page with an offset MediaBox [100 50 400 350] and the word "Hello"
+    /// drawn at user-space x = 120.
+    fn offset_page_pdf() -> Vec<u8> {
+        let content = b"BT /F1 24 Tf 120 200 Td (Hello) Tj ET";
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [100 50 400 350] \
+              /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+            [
+                format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+                content.as_slice(),
+                b"\nendstream",
+            ]
+            .concat(),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            pdf.extend_from_slice(object);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn xml_and_html_positions_are_relative_to_the_page_box() {
+        let engine = ContentEngine::open_bytes(offset_page_pdf()).unwrap();
+        let xml = HtmlExporter::export(
+            &engine,
+            &[1],
+            &HtmlOptions {
+                mode: HtmlMode::Xml,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let left = xml
+            .split("left=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse::<f64>().ok())
+            .expect("text element with a left attribute");
+        assert!(
+            (left - 20.0).abs() < 1.0,
+            "x = 120 on a MediaBox starting at 100 is 20pt from the left, got {left}"
+        );
+        assert!(xml.contains("width=\"300.00\" height=\"300.00\""));
+
+        let html = HtmlExporter::export(&engine, &[1], &HtmlOptions::default()).unwrap();
+        let left_px = html
+            .split("style=\"left:")
+            .nth(1)
+            .and_then(|rest| rest.split("px").next())
+            .and_then(|value| value.parse::<f64>().ok())
+            .expect("positioned text");
+        assert!((left_px - 20.0 * 96.0 / 72.0).abs() < 1.5, "got {left_px}");
+    }
+
+    #[test]
+    fn complex_background_is_rendered_without_text() {
+        let engine = ContentEngine::open_bytes(offset_page_pdf()).unwrap();
+        let dark = |buffer: crate::render::PixelBuffer| {
+            buffer
+                .to_raw_image()
+                .pixels
+                .chunks_exact(3)
+                .filter(|p| p.iter().all(|&c| c < 128))
+                .count()
+        };
+        assert!(
+            dark(engine.render_page(1, 72).unwrap()) > 20,
+            "the normal render paints the glyphs"
+        );
+        assert_eq!(
+            dark(engine.render_page_without_text(1, 72).unwrap()),
+            0,
+            "the no-text render paints no glyphs"
+        );
+        // The guard is scoped: rendering afterwards paints text again.
+        assert!(dark(engine.render_page(1, 72).unwrap()) > 20);
     }
 
     #[test]

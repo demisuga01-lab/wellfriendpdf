@@ -219,16 +219,7 @@ impl ImageEncoder {
         };
 
         match format {
-            ImageOutputFormat::Original => {
-                let ext = if is_dct_only(&image.filter) {
-                    "jpg"
-                } else if image.filter.is_empty() {
-                    "png"
-                } else {
-                    "bin"
-                };
-                Ok(Some((raw, ext)))
-            }
+            ImageOutputFormat::Original => Ok(Some((raw, original_extension(&image.filter)))),
             ImageOutputFormat::Jpeg => {
                 if is_dct_only(&image.filter) {
                     Ok(Some((raw, "jpg")))
@@ -253,6 +244,24 @@ impl ImageEncoder {
             ImageOutputFormat::Webp => Self::encode_webp(image, quality),
             ImageOutputFormat::Original => Self::encode_png(image),
         }
+    }
+}
+
+/// Extension for an image stream's undecoded bytes, chosen by its filter.
+/// Only a single image-codec filter yields a self-contained file; anything
+/// else (Flate, LZW, no filter, chains) is opaque PDF stream data (`bin`).
+/// [`crate::ContentEngine::extract_image_original`] removes lossless wrapper
+/// filters first and converts non-codec images to PNG instead.
+pub fn original_extension(filters: &[String]) -> &'static str {
+    match filters {
+        [only] => match only.as_str() {
+            "DCTDecode" | "DCT" => "jpg",
+            "JPXDecode" | "JPX" => "jp2",
+            "JBIG2Decode" => "jb2e",
+            "CCITTFaxDecode" | "CCF" => "ccitt",
+            _ => "bin",
+        },
+        _ => "bin",
     }
 }
 
@@ -433,6 +442,173 @@ mod tests {
         assert_eq!(ImageOutputFormat::Jpeg.file_extension(), "jpg");
         assert_eq!(ImageOutputFormat::Png.mime_type(), "image/png");
         assert_eq!(ImageOutputFormat::Jpeg.mime_type(), "image/jpeg");
+    }
+
+    /// A one-page PDF whose page draws one image XObject per entry of
+    /// `images` (dictionary entries without /Type, /Subtype, /Length, and the
+    /// stream bytes). Extra objects are appended after the images.
+    fn pdf_with_images(images: &[(&str, Vec<u8>)], extra: &[Vec<u8>]) -> Vec<u8> {
+        let first_image = 5;
+        let mut xobjects = String::new();
+        let mut content = String::new();
+        for (index, _) in images.iter().enumerate() {
+            xobjects.push_str(&format!("/Im{index} {} 0 R ", first_image + index));
+            content.push_str(&format!(
+                "q 10 0 0 10 {} 10 cm /Im{index} Do Q\n",
+                index * 12
+            ));
+        }
+        let mut objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                 /Resources << /XObject << {xobjects}>> >> /Contents 4 0 R >>"
+            )
+            .into_bytes(),
+            [
+                format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+                content.as_bytes(),
+                b"\nendstream",
+            ]
+            .concat(),
+        ];
+        for (dict, data) in images {
+            objects.push(
+                [
+                    format!(
+                        "<< /Type /XObject /Subtype /Image {dict} /Length {} >>\nstream\n",
+                        data.len()
+                    )
+                    .as_bytes(),
+                    data.as_slice(),
+                    b"\nendstream",
+                ]
+                .concat(),
+            );
+        }
+        objects.extend(extra.iter().cloned());
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            pdf.extend_from_slice(object);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn original_extraction_names_files_by_codec_with_sidecars() {
+        let jpeg = ImageEncoder::encode_jpeg(
+            &RawImage {
+                width: 4,
+                height: 4,
+                channels: 3,
+                bits_per_sample: 8,
+                pixels: vec![100; 48],
+            },
+            90,
+        )
+        .unwrap();
+        let flate_jpeg = crate::filters::flate_encode(&jpeg, 6);
+        let rgb = crate::filters::flate_encode(&[200u8; 12], 6);
+        let jb2 = b"JBIG2-embedded-segments".to_vec();
+        let fax = b"\x00\x01ccitt-data".to_vec();
+        // Object 10 (after the 5 images at 5..=9) holds the JBIG2 globals.
+        let globals = b"JBIG2-global-segments";
+        let globals_obj = [
+            format!("<< /Length {} >>\nstream\n", globals.len()).as_bytes(),
+            globals.as_slice(),
+            b"\nendstream",
+        ]
+        .concat();
+        let pdf = pdf_with_images(
+            &[
+                (
+                    "/Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+                    jpeg.clone(),
+                ),
+                (
+                    "/Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 \
+                     /Filter [/FlateDecode /DCTDecode]",
+                    flate_jpeg,
+                ),
+                (
+                    "/Width 8 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1 \
+                     /Filter /JBIG2Decode /DecodeParms << /JBIG2Globals 10 0 R >>",
+                    jb2.clone(),
+                ),
+                (
+                    "/Width 8 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1 \
+                     /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 8 /BlackIs1 true >>",
+                    fax.clone(),
+                ),
+                (
+                    "/Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode",
+                    rgb,
+                ),
+            ],
+            &[globals_obj],
+        );
+        let engine = crate::ContentEngine::open_bytes(pdf).unwrap();
+        let mut images = ImageLocator::find_all_images(
+            &engine,
+            &crate::ImageLocateOptions {
+                min_width: 1,
+                min_height: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        images.sort_by_key(|image| image.object_number);
+        assert_eq!(images.len(), 5);
+        let out: Vec<_> = images
+            .iter()
+            .map(|image| engine.extract_image_original(image).unwrap())
+            .collect();
+
+        assert_eq!(out[0].extension, "jpg");
+        assert_eq!(out[0].bytes, jpeg);
+        assert_eq!(out[1].extension, "jpg", "Flate-wrapped JPEG is unwrapped");
+        assert_eq!(out[1].bytes, jpeg);
+        assert_eq!(out[2].extension, "jb2e");
+        assert_eq!(out[2].bytes, jb2);
+        assert_eq!(out[2].sidecars, vec![("jb2g", globals.to_vec())]);
+        assert_eq!(out[3].extension, "ccitt");
+        assert_eq!(out[3].bytes, fax);
+        assert_eq!(
+            out[3].sidecars,
+            vec![("params", b"-4 -P -X 8 -W -M\n".to_vec())]
+        );
+        assert_eq!(out[4].extension, "png", "non-codec images become PNG");
+        assert!(out[4].bytes.starts_with(b"\x89PNG"));
+
+        // The raw-bytes API names by filter instead of always using .bin.
+        let raw = ImageEncoder::keep_original(
+            &images[0],
+            engine.document().reader(),
+            &ImageOutputFormat::Original,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(raw.1, "jpg");
+        assert_eq!(original_extension(&["JPXDecode".to_string()]), "jp2");
+        assert_eq!(original_extension(&["FlateDecode".to_string()]), "bin");
     }
 
     #[test]
