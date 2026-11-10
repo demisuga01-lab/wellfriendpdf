@@ -70,6 +70,20 @@ pub(crate) mod fallback_fonts {
     /// bundled Liberation fonts. Source: http://dejavu.sourceforge.net/.
     pub static DEJAVU_SANS: &[u8] =
         include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf"));
+
+    /// PDFium's Symbol face (bare CFF, glyph names of the Symbol encoding),
+    /// drawn for non-embedded `Symbol` text so its glyphs have PDFium's exact
+    /// shapes. Licence: PDFium BSD-3-Clause (`fonts/LICENSE-PDFium.txt`).
+    pub(crate) static FOXIT_SYMBOL: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fonts/FoxitSymbol.cff"
+    ));
+    /// PDFium's ZapfDingbats face (bare CFF, glyph names `a1`..`a191`).
+    /// Licence: PDFium BSD-3-Clause (`fonts/LICENSE-PDFium.txt`).
+    pub(crate) static FOXIT_DINGBATS: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fonts/FoxitDingbats.cff"
+    ));
 }
 
 /// Map a PDF font name to a bundled fallback font byte slice.
@@ -78,16 +92,11 @@ pub fn get_fallback_font(font_name: &str) -> Option<&'static [u8]> {
     let raw = raw.find('+').map_or(raw, |idx| &raw[idx + 1..]);
     let name = raw.to_lowercase();
 
-    let is_bold = name.contains("bold")
-        || name.contains("-b")
-        || name.ends_with('b')
-        || name.contains("heavy")
-        || name.contains("black");
-    let is_italic = name.contains("italic")
-        || name.contains("oblique")
-        || name.contains("slant")
-        || name.ends_with("-i")
-        || name.ends_with("-o");
+    // The style the name states (`Arial,Bold`, `Helvetica-BoldOblique`,
+    // `ArialBold`); a family merely ending in "b" is not bold.
+    let style = crate::fonts::substitute_style::parse_name_style(raw);
+    let is_bold = style.is_bold();
+    let is_italic = style.italic;
 
     // Symbolic fonts (Symbol, ZapfDingbats, Wingdings, Webdings) have glyph sets
     // that the Latin Liberation fonts can't represent. Route them to DejaVu Sans,

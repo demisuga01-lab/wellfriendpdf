@@ -314,6 +314,39 @@ impl FontProvider for RegisteredFontProvider {
     }
 }
 
+/// PDFium's own face for a non-embedded `Symbol` (or `SymbolMT`) or
+/// `ZapfDingbats` font: the bare CFF Foxit faces PDFium bundles, so these
+/// glyphs keep PDFium's exact shapes instead of DejaVu stand-ins. Like
+/// PDFium, a TrueType font named Symbol is not redirected (it is usually a
+/// Windows Symbol font keyed by a (3,0) cmap). Style suffixes after a comma
+/// (`Symbol,Bold`) are ignored.
+pub(crate) fn pdfium_standard_symbol_match(base_font: &str, truetype: bool) -> Option<FontMatch> {
+    let name = normalized_font_name(base_font);
+    let family = name.split(',').next().unwrap_or_default();
+    let (bytes, family_name, lookup_name): (&'static [u8], _, _) = match family {
+        "symbol" | "symbolmt" if !truetype => (
+            crate::render::font_rasterizer::fallback_fonts::FOXIT_SYMBOL,
+            "Foxit Symbol",
+            "FoxitSymbol",
+        ),
+        "zapfdingbats" => (
+            crate::render::font_rasterizer::fallback_fonts::FOXIT_DINGBATS,
+            "Foxit Dingbats",
+            "FoxitDingbats",
+        ),
+        _ => return None,
+    };
+    Some(FontMatch {
+        family_name,
+        lookup_name: lookup_name.to_string(),
+        source: FontProviderSource::Standard14,
+        bytes: Cow::Borrowed(bytes),
+        synthetic_bold: false,
+        synthetic_italic: false,
+        match_reason: "pdfium_standard_symbol_face",
+    })
+}
+
 fn selected_lookup_name(request: &FontMatchRequest) -> (String, &'static str) {
     let mut name = request.base_font.clone();
     if request.symbolic && !is_symbolic_lookup_name(&name) {
@@ -363,21 +396,16 @@ fn selected_lookup_name(request: &FontMatchRequest) -> (String, &'static str) {
     (name, reason)
 }
 
+/// Whether a font name states a bold (600 or heavier) style: `Arial,Bold`,
+/// `Arial-BoldMT`, `ArialBold`, `Arial-Black`. A family that merely ends in
+/// the letter "b" is not bold.
 fn lookup_name_contains_bold(name: &str) -> bool {
-    let normalized = normalized_font_name(name);
-    normalized.contains("bold")
-        || normalized.contains("heavy")
-        || normalized.contains("black")
-        || normalized.ends_with('b')
+    super::substitute_style::parse_name_style(name).is_bold()
 }
 
+/// Whether a font name states an italic or oblique style.
 fn lookup_name_contains_italic(name: &str) -> bool {
-    let normalized = normalized_font_name(name);
-    normalized.contains("italic")
-        || normalized.contains("oblique")
-        || normalized.contains("slant")
-        || normalized.ends_with("-i")
-        || normalized.ends_with("-o")
+    super::substitute_style::parse_name_style(name).italic
 }
 
 fn source_for_name(request: &FontMatchRequest, match_reason: &str) -> FontProviderSource {

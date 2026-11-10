@@ -452,17 +452,17 @@ pub fn fallback_font_display_name(font_name: &str) -> &'static str {
     let raw = raw.find('+').map_or(raw, |idx| &raw[idx + 1..]);
     let name = raw.to_lowercase();
 
-    let is_bold = name.contains("bold")
-        || name.contains("-b")
-        || name.ends_with('b')
-        || name.contains("heavy")
-        || name.contains("black");
-    let is_italic = name.contains("italic")
-        || name.contains("oblique")
-        || name.contains("slant")
-        || name.ends_with("-i")
-        || name.ends_with("-o");
+    let style = crate::fonts::substitute_style::parse_name_style(raw);
+    let is_bold = style.is_bold();
+    let is_italic = style.italic;
 
+    // PDFium's own Symbol / ZapfDingbats faces.
+    if name == "foxitsymbol" {
+        return "FoxitSymbol";
+    }
+    if name == "foxitdingbats" {
+        return "FoxitDingbats";
+    }
     if name.contains("symbol")
         || name.contains("dingbat")
         || name.contains("wingding")

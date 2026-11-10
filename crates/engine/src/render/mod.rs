@@ -28,6 +28,8 @@ pub mod progressive;
 pub mod quality;
 pub mod shading;
 pub mod svg;
+pub(crate) mod synthetic_outline;
+pub(crate) mod tricky_hinting;
 pub mod text_decode;
 pub mod transaction_invalidation;
 pub mod transform;

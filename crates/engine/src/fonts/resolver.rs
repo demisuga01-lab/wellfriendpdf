@@ -145,6 +145,10 @@ pub struct FontResolver {
     /// names throughout (`g12`, `cid7`, `Gab`), so such names are read as
     /// character values (Poppler's testForNumericNames). `None` otherwise.
     numeric_glyph_names: Option<bool>,
+    /// Single-byte codes a simple font's /Differences explicitly names
+    /// `.notdef` (sorted). A TrueType font draws its space glyph for them,
+    /// as PDFium does.
+    explicit_notdef: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +303,11 @@ impl FontResolver {
         ("\u{FFFD}".to_string(), FontDecodeSource::Unknown)
     }
 
+    /// Whether /Differences explicitly maps `code` to `.notdef`.
+    pub(crate) fn is_explicit_notdef(&self, code: u16) -> bool {
+        u8::try_from(code).is_ok_and(|code| self.explicit_notdef.binary_search(&code).is_ok())
+    }
+
     pub fn glyph_name(&self, code: u16) -> Option<&str> {
         self.encoding_table
             .as_ref()
@@ -446,6 +455,11 @@ impl FontResolver {
         let numeric_glyph_names = encoding_table
             .as_deref()
             .and_then(|table| numeric_glyph_names(font_dict, reader, table));
+        let explicit_notdef = if encoding_table.is_some() {
+            explicit_notdef_codes(font_dict, reader)
+        } else {
+            Vec::new()
+        };
         let descendant_font = if matches!(font_type, FontType::Type0) {
             get_descendant_font_optional(font_dict, reader)
         } else {
@@ -595,6 +609,7 @@ impl FontResolver {
             unicode_encoding,
             cid_to_unicode,
             numeric_glyph_names,
+            explicit_notdef,
         }
     }
 
@@ -938,7 +953,9 @@ fn build_encoding_table(
     match resolved {
         PdfObject::Name(name) => match forced_base {
             Some(forced) => table_for(forced),
-            None if is_known_base_encoding(&name) => table_for(&name),
+            None if is_known_base_encoding(&name) => table_for(symbolic_truetype_base_encoding(
+                font_dict, reader, font_type, &name,
+            )),
             None => implicit_base(),
         },
         PdfObject::Dictionary(dict) => {
@@ -948,7 +965,9 @@ fn build_encoding_table(
                 .unwrap_or_default();
             let base_table = match (forced_base, dict.get_name("BaseEncoding")) {
                 (Some(forced), _) => table_for(forced),
-                (None, Some(name)) if is_known_base_encoding(name) => table_for(name),
+                (None, Some(name)) if is_known_base_encoding(name) => table_for(
+                    symbolic_truetype_base_encoding(font_dict, reader, font_type, name),
+                ),
                 _ => implicit_base(),
             };
             if diffs.is_empty() {
@@ -959,6 +978,44 @@ fn build_encoding_table(
         }
         _ => forced_base.map(table_for).unwrap_or_else(implicit_base),
     }
+}
+
+/// The codes a simple font's /Differences names `.notdef`, sorted.
+fn explicit_notdef_codes(font_dict: &PdfDictionary, reader: Option<&PdfReader>) -> Vec<u8> {
+    let Some(encoding) = font_dict
+        .get("Encoding")
+        .and_then(|encoding| resolve_optional(encoding, reader).ok())
+    else {
+        return Vec::new();
+    };
+    let PdfObject::Dictionary(encoding) = encoding else {
+        return Vec::new();
+    };
+    let Some(PdfObject::Array(differences)) = encoding
+        .get("Differences")
+        .and_then(|differences| resolve_optional(differences, reader).ok())
+    else {
+        return Vec::new();
+    };
+    let mut codes = Vec::new();
+    let mut code: i64 = 0;
+    for item in &differences {
+        match item {
+            PdfObject::Integer(start) => code = *start,
+            PdfObject::Name(name) => {
+                if name == ".notdef" {
+                    if let Ok(byte) = u8::try_from(code) {
+                        codes.push(byte);
+                    }
+                }
+                code = code.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    codes.sort_unstable();
+    codes.dedup();
+    codes
 }
 
 /// `Some(hex)` when every /Differences name of a simple font is numeric (see
@@ -986,6 +1043,50 @@ fn numeric_glyph_names(
         _ => DifferencesEntry::Other,
     });
     differences_look_numeric(entries, hex).then_some(hex)
+}
+
+/// PDFium's `CPDF_TrueTypeFont::DetermineEncoding`: an embedded symbolic
+/// TrueType font whose named WinAnsi or MacRoman encoding does not match the
+/// cmaps it carries uses the other one. A WinAnsi font with only a Mac (1,0)
+/// cmap is read as MacRoman, a MacRoman font with only Windows or Unicode
+/// cmaps as WinAnsi, so codes reach the glyphs the cmap actually keys.
+fn symbolic_truetype_base_encoding<'a>(
+    font_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+    font_type: &FontType,
+    name: &'a str,
+) -> &'a str {
+    if *font_type != FontType::TrueType || !matches!(name, "WinAnsiEncoding" | "MacRomanEncoding") {
+        return name;
+    }
+    let symbolic = font_descriptor_number(font_dict, reader, "Flags")
+        .is_some_and(|flags| (flags as i64) & 4 != 0);
+    if !symbolic {
+        return name;
+    }
+    let Some(program) = embedded_font_program_bytes(font_dict, reader) else {
+        return name;
+    };
+    let Some(cmap) = ttf_parser::Face::parse(&program, 0)
+        .ok()
+        .and_then(|face| face.tables().cmap)
+    else {
+        return name;
+    };
+    let mut windows = false;
+    let mut mac = false;
+    for subtable in cmap.subtables {
+        match subtable.platform_id {
+            ttf_parser::PlatformId::Unicode | ttf_parser::PlatformId::Windows => windows = true,
+            ttf_parser::PlatformId::Macintosh => mac = true,
+            _ => {}
+        }
+    }
+    match name {
+        "WinAnsiEncoding" if !windows && mac => "MacRomanEncoding",
+        "MacRomanEncoding" if !mac && windows => "WinAnsiEncoding",
+        _ => name,
+    }
 }
 
 /// Encoding names [`Encoding::lookup`] has a table for. Anything else (a
@@ -2263,5 +2364,109 @@ mod tests {
         );
         let resolver = FontResolver::new_from_dict_only(&hex);
         assert_eq!(resolver.decode_string(&[1, 2]), "\u{AB}A");
+    }
+
+    #[test]
+    fn explicit_notdef_differences_are_tracked() {
+        let mut encoding = PdfDictionary::empty();
+        encoding.insert(
+            "Differences",
+            PdfObject::Array(vec![
+                PdfObject::Integer(65),
+                PdfObject::Name(".notdef".into()),
+                PdfObject::Name("B".into()),
+            ]),
+        );
+        let mut font = PdfDictionary::empty();
+        font.insert("Subtype", PdfObject::Name("TrueType".into()));
+        font.insert("Encoding", PdfObject::Dictionary(encoding));
+        let resolver = FontResolver::new_from_dict_only(&font);
+        assert!(resolver.is_explicit_notdef(65));
+        assert!(!resolver.is_explicit_notdef(66));
+        // Codes the base encoding leaves undefined are not explicit.
+        assert!(!resolver.is_explicit_notdef(0x81));
+    }
+
+    /// Liberation Sans with only a Mac Roman (1,0) cmap.
+    fn mac_only_font() -> Vec<u8> {
+        let font = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        let face = ttf_parser::RawFace::parse(font, 0).expect("raw face");
+        let mut tables = std::collections::BTreeMap::new();
+        for record in face.table_records {
+            let start = record.offset as usize;
+            let end = start + record.length as usize;
+            tables.insert(record.tag.to_bytes(), font[start..end].to_vec());
+        }
+        let mut cmap = Vec::new();
+        for value in [0u16, 1, 1, 0] {
+            cmap.extend_from_slice(&value.to_be_bytes());
+        }
+        cmap.extend_from_slice(&12u32.to_be_bytes());
+        for value in [6u16, 10 + 2 * 256, 0, 0, 256] {
+            cmap.extend_from_slice(&value.to_be_bytes());
+        }
+        cmap.extend_from_slice(&[0u8; 512]);
+        tables.insert(*b"cmap", cmap);
+        crate::fonts::sfnt_subset::build_sfnt([0, 1, 0, 0], tables).expect("rebuilt sfnt")
+    }
+
+    #[test]
+    fn symbolic_truetype_encoding_follows_the_cmaps_it_has() {
+        let program = mac_only_font();
+        let build = |flags: i64| {
+            let mut pdf = b"%PDF-1.7\n".to_vec();
+            let mut offsets = Vec::new();
+            let objects: Vec<Vec<u8>> = vec![
+                b"<< /Type /Font /Subtype /TrueType /BaseFont /Pi /Encoding /WinAnsiEncoding /FontDescriptor 2 0 R >>".to_vec(),
+                format!("<< /Type /FontDescriptor /FontName /Pi /Flags {flags} /FontFile2 3 0 R >>")
+                    .into_bytes(),
+                {
+                    let mut stream = format!("<< /Length {} >>\nstream\n", program.len()).into_bytes();
+                    stream.extend_from_slice(&program);
+                    stream.extend_from_slice(b"\nendstream");
+                    stream
+                },
+                b"<< /Type /Catalog /Pages 5 0 R >>".to_vec(),
+                b"<< /Type /Pages /Kids [] /Count 0 >>".to_vec(),
+            ];
+            for (index, object) in objects.iter().enumerate() {
+                offsets.push(pdf.len());
+                pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+                pdf.extend_from_slice(object);
+                pdf.extend_from_slice(b"\nendobj\n");
+            }
+            let xref = pdf.len();
+            pdf.extend_from_slice(
+                format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+            );
+            for offset in &offsets {
+                pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+            }
+            pdf.extend_from_slice(
+                format!(
+                    "trailer\n<< /Size {} /Root 4 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                    objects.len() + 1
+                )
+                .as_bytes(),
+            );
+            let reader = PdfReader::from_bytes(pdf).expect("reader");
+            let font = match reader
+                .resolve(PdfObject::Reference {
+                    number: 1,
+                    generation: 0,
+                })
+                .expect("font")
+            {
+                PdfObject::Dictionary(font) => font,
+                other => panic!("not a font: {other:?}"),
+            };
+            FontResolver::new(&font, &reader)
+                .glyph_name(0x80)
+                .map(str::to_string)
+        };
+        // Symbolic with only a Mac cmap: WinAnsi is read as MacRoman.
+        assert_eq!(build(4).as_deref(), Some("Adieresis"));
+        // Non-symbolic fonts keep their WinAnsi names.
+        assert_eq!(build(32).as_deref(), Some("Euro"));
     }
 }

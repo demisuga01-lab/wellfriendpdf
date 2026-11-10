@@ -10,7 +10,7 @@ documentation = "https://docs.rs/wellfriendpdf-engine"
 homepage = "https://github.com/demisuga01-lab/wellfriendpdf"
 keywords = ["pdf", "parser", "rendering", "documents", "signatures"]
 categories = ["parser-implementations", "rendering", "text-processing"]
-include = ["src/**/*", "examples/**/*", "fonts/*.ttf", "fonts/LICENSE-*.txt", "fonts/README.md", "licenses/*.txt"]
+include = ["src/**/*", "examples/**/*", "fonts/*.ttf", "fonts/*.cff", "fonts/LICENSE-*.txt", "fonts/README.md", "licenses/*.txt"]
 
 [dependencies]
 aes = "0.8"
@@ -46,6 +46,9 @@ serde_json = "1"
 thiserror = "1"
 # Match Rustybuzz's parser and its per-axis avar / phantom-metric fixes.
 ttf-parser = "=0.25.1"
+# TrueType bytecode interpreter for "tricky" fonts (MingLiU, DFKai-SB...) whose
+# glyphs only assemble when hinted; same version subsetter already pulls in.
+skrifa = "=0.42.1"
 unicode-bidi = "0.3"
 unicode-script = "0.5"
 unicode-segmentation = "1.12"
