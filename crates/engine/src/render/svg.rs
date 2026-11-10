@@ -891,6 +891,12 @@ impl SvgRenderState<'_> {
                         let label = format!("ExtGState /{name}");
                         if let Err(err) = self.gs.try_apply_ext_g_state(dict, &label) {
                             self.record_fatal_error(WellfriendError::UnsupportedFeature(err));
+                        } else if crate::content::state::ext_g_state_has_non_identity_transfer(dict)
+                        {
+                            // SVG has no transfer-function operator.
+                            self.record_fatal_error(WellfriendError::UnsupportedFeature(format!(
+                                "{label} non-identity transfer function is not representable in SVG output"
+                            )));
                         }
                     }
                 }

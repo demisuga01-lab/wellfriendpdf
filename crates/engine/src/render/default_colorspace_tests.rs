@@ -312,7 +312,11 @@ fn indexed_palette_streams_decode_filters_and_enforce_a_bounded_byte_table() {
         vec![255, 0, 0, 0, 255, 0]
     );
     assert!(crate::render::colorspace::indexed_lookup_bytes(
-        &PdfObject::String(vec![0; 4097]),
+        &PdfObject::String(vec![
+            0;
+            256 * crate::render::colorspace::MAX_DEVICEN_COMPONENTS
+                + 1
+        ]),
         &reader
     )
     .is_err());

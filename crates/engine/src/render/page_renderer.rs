@@ -6034,6 +6034,9 @@ struct RenderState<'a> {
     pattern_stack: Vec<String>,
     /// Current Form XObject nesting depth, used to bound recursion.
     form_depth: usize,
+    /// Approximate stack address when the page render state was created;
+    /// nested content programs are bounded by the stack they use below it.
+    stack_base: usize,
     /// Source object stack for currently replayed Form XObjects. This catches
     /// direct and indirect cycles before the coarse depth guard would force
     /// repeated full-form replay attempts.
@@ -7828,6 +7831,7 @@ impl<'a> RenderState<'a> {
             current_clip,
             pattern_stack: Vec::new(),
             form_depth: 0,
+            stack_base: current_stack_address(),
             form_object_stack: Vec::new(),
             inline_begin_pending: false,
             pending_inline: None,
@@ -8048,6 +8052,35 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// The nesting bound a nested content program (Form XObject, pattern
+    /// cell, Type 3 glyph, soft mask or annotation appearance) would exceed,
+    /// if any.
+    ///
+    /// The depth limit is Poppler's 100. Each level recurses through the
+    /// interpreter, and a transparency group or soft mask also keeps a
+    /// child render state on the stack, so depth alone is not stack-safe:
+    /// the guard also bounds the stack used below the page render entry to
+    /// `MAX_CONTENT_NESTING_STACK_BYTES`. That leaves room for the deepest
+    /// level's own painting within the 1 MiB default stack of a Windows main
+    /// thread, the smallest stack a library caller commonly renders on.
+    fn content_nesting_limit(&self) -> Option<&'static str> {
+        if self.form_depth >= MAX_CONTENT_NESTING_DEPTH {
+            return Some("depth limit (100)");
+        }
+        let used = self.stack_base.saturating_sub(current_stack_address());
+        (used > MAX_CONTENT_NESTING_STACK_BYTES).then_some("stack budget (512 KiB)")
+    }
+
+    /// Over-deep or cyclic nesting skips the nested object like Poppler
+    /// under the compatibility contract; exact rendering refuses the page.
+    fn record_content_nesting_error(&mut self, reason: String) {
+        if self.exactness_policy == ExactnessPolicy::Compatibility {
+            self.record_fatal_render_error(reason);
+        } else {
+            self.record_guard_render_error(reason);
+        }
+    }
+
     fn record_fatal_render_error(&mut self, reason: impl Into<String>) {
         // Compatibility rendering behaves like Poppler and PDFium: the object
         // that could not be drawn is skipped (each call site returns before
@@ -8173,8 +8206,13 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    // Poppler and PDFium do not enforce BT/ET pairing: a nested BT simply
+    // starts a new text object, a stray ET is ignored, and text operators
+    // outside BT/ET use the current text state. The compatibility contract
+    // does the same; only the exact contract refuses malformed sequences.
+
     fn begin_text_object_or_fatal(&mut self) -> bool {
-        if self.text_object_active {
+        if self.text_object_active && self.exactness_policy != ExactnessPolicy::Compatibility {
             self.record_fatal_render_error(
                 "malformed text-object sequence: nested BT inside active text object",
             );
@@ -8185,7 +8223,7 @@ impl<'a> RenderState<'a> {
     }
 
     fn end_text_object_or_fatal(&mut self) -> bool {
-        if !self.text_object_active {
+        if !self.text_object_active && self.exactness_policy != ExactnessPolicy::Compatibility {
             self.record_fatal_render_error(
                 "malformed text-object sequence: ET has no active text object",
             );
@@ -8196,7 +8234,7 @@ impl<'a> RenderState<'a> {
     }
 
     fn require_text_object_or_fatal(&mut self, operator: &str) -> bool {
-        if !self.text_object_active {
+        if !self.text_object_active && self.exactness_policy != ExactnessPolicy::Compatibility {
             self.record_fatal_render_error(format!(
                 "malformed text-object sequence: operator '{operator}' requires active text object"
             ));
@@ -8645,8 +8683,12 @@ impl<'a> RenderState<'a> {
         }
         if self.text_object_active {
             self.text_object_active = false;
-            self.record_fatal_render_error("malformed text-object sequence: BT has no closing ET");
-            return;
+            if self.exactness_policy != ExactnessPolicy::Compatibility {
+                self.record_fatal_render_error(
+                    "malformed text-object sequence: BT has no closing ET",
+                );
+                return;
+            }
         }
         if self.oc_visibility_stack.len() > marked_content_start_depth {
             let unclosed = self.oc_visibility_stack.len() - marked_content_start_depth;
@@ -9369,6 +9411,151 @@ impl<'a> RenderState<'a> {
         )
     }
 
+    /// Colour-key masking for images whose colour key cannot be compared after
+    /// conversion (Indexed, DeviceCMYK, ICCBased, Separation, DeviceN, ...).
+    /// PDF 32000-1 8.9.6.4 defines the ranges on the raw source samples
+    /// before /Decode and colour conversion: for Indexed images they are
+    /// palette indices. The raw samples are re-read from the stream and the
+    /// resulting mask is applied to the converted pixels.
+    fn apply_raw_sample_color_key_mask(
+        &mut self,
+        image_ref: &ImageReference,
+        items: &[PdfObject],
+        converted: RawImage,
+        source_region: ImageSourceRegion,
+    ) -> Result<RawImage> {
+        let malformed = |reason: &str| {
+            WellfriendError::MalformedPdf(format!(
+                "image Mask color-key array for {} image data is malformed: {reason}",
+                image_ref.color_space
+            ))
+        };
+        if items.is_empty()
+            || !items.len().is_multiple_of(2)
+            || items.len() > 2 * MAX_COLOR_KEY_COMPONENTS
+        {
+            return Err(malformed("expected 2 x component-count entries"));
+        }
+        let components = items.len() / 2;
+        let bpc = image_ref.bits_per_component;
+        if !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
+            return Err(malformed("unsupported BitsPerComponent"));
+        }
+        let max_sample = (1u32 << bpc) - 1;
+        let mut ranges = Vec::with_capacity(components);
+        for pair in items.chunks_exact(2) {
+            let lo = pair[0]
+                .as_number()
+                .ok_or_else(|| malformed("non-numeric entry"))?;
+            let hi = pair[1]
+                .as_number()
+                .ok_or_else(|| malformed("non-numeric entry"))?;
+            if !lo.is_finite() || !hi.is_finite() {
+                return Err(malformed("non-finite entry"));
+            }
+            // Out-of-range bounds are clamped to the sample range.
+            let lo = lo.round().clamp(0.0, f64::from(max_sample)) as u32;
+            let hi = hi.round().clamp(0.0, f64::from(max_sample)) as u32;
+            ranges.push((lo, hi));
+        }
+        let reader = self.engine.document().reader();
+        let stream = reader.get_object(image_ref.object_number, image_ref.generation_number)?;
+        if !matches!(stream, PdfObject::Stream { .. }) {
+            return Err(malformed("image is not a stream"));
+        }
+        let decoded = crate::filters::decode_stream_lossless_with_limits(
+            &stream,
+            reader,
+            &self.decode_limits,
+        )?;
+        if !matches!(decoded.status, crate::filters::StreamDecodeStatus::Complete) {
+            // DCT/JPX samples are not available before colour conversion;
+            // draw the image unmasked rather than dropping it.
+            log::warn!(
+                "render: color-key mask on a {} image with an image codec filter is not applied",
+                image_ref.color_space
+            );
+            return Ok(converted);
+        }
+        let width = image_ref.width as usize;
+        let height = image_ref.height as usize;
+        let row_bits = width
+            .checked_mul(components)
+            .and_then(|samples| samples.checked_mul(usize::from(bpc)))
+            .ok_or_else(|| malformed("dimensions overflow"))?;
+        let row_bytes = row_bits.div_ceil(8);
+        let data = &decoded.data;
+        let mut keep = vec![255u8; width.saturating_mul(height)];
+        for y in 0..height {
+            let row = y * row_bytes;
+            for x in 0..width {
+                let mut masked = true;
+                for (component, (lo, hi)) in ranges.iter().enumerate() {
+                    let sample_index = x * components + component;
+                    let Some(sample) = raw_image_sample(data, row, sample_index, bpc) else {
+                        masked = false;
+                        break;
+                    };
+                    if sample < *lo || sample > *hi {
+                        masked = false;
+                        break;
+                    }
+                }
+                if masked {
+                    keep[y * width + x] = 0;
+                }
+            }
+        }
+        // Bring the full-image mask into the converted image's frame: it may
+        // be a decoded source window and/or a reduced-resolution decode.
+        let (window_x, window_y, window_w, window_h) =
+            match raw_window_from_source_region(source_region) {
+                Some(window) => (
+                    window.x as usize,
+                    window.y as usize,
+                    window.width as usize,
+                    window.height as usize,
+                ),
+                None => (0, 0, width, height),
+            };
+        let out_w = converted.width as usize;
+        let out_h = converted.height as usize;
+        let channels = converted.channels as usize;
+        let pixel_count = out_w.saturating_mul(out_h);
+        if converted.bits_per_sample != 8
+            || !matches!(channels, 1..=4)
+            || converted.pixels.len() < pixel_count * channels
+            || window_w == 0
+            || window_h == 0
+        {
+            return Err(malformed("converted image layout is unsupported"));
+        }
+        let mut pixels = Vec::with_capacity(pixel_count * 4);
+        for oy in 0..out_h {
+            let sy = (window_y + oy * window_h / out_h).min(height.saturating_sub(1));
+            for ox in 0..out_w {
+                let sx = (window_x + ox * window_w / out_w).min(width.saturating_sub(1));
+                let base = (oy * out_w + ox) * channels;
+                let px = &converted.pixels[base..base + channels];
+                let (rgb, alpha) = match channels {
+                    1 => ([px[0], px[0], px[0]], 255),
+                    2 => ([px[0], px[0], px[0]], px[1]),
+                    3 => ([px[0], px[1], px[2]], 255),
+                    _ => ([px[0], px[1], px[2]], px[3]),
+                };
+                let keep_alpha = keep.get(sy * width + sx).copied().unwrap_or(255);
+                pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], alpha.min(keep_alpha)]);
+            }
+        }
+        Ok(RawImage {
+            width: converted.width,
+            height: converted.height,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels,
+        })
+    }
+
     fn scheduled_load_explicit_image_mask(
         &mut self,
         image_ref: &ImageReference,
@@ -9380,6 +9567,12 @@ impl<'a> RenderState<'a> {
             return Ok(None);
         };
         match mask {
+            PdfObject::Array(items)
+                if !color_key_compares_converted_samples(&image_ref.color_space) =>
+            {
+                self.apply_raw_sample_color_key_mask(image_ref, items, raw, source_region)
+                    .map(Some)
+            }
             PdfObject::Array(items) => {
                 let raw_channels = raw.channels;
                 apply_color_key_image_mask(
@@ -9691,7 +9884,9 @@ impl<'a> RenderState<'a> {
         resolved_bbox: Option<[f64; 4]>,
         resolved_matrix: Option<[f64; 6]>,
     ) -> Option<Arc<FormXObjectProgram>> {
-        let parent_resource_fingerprint = page_resources_fingerprint(&self.page_resources);
+        // A Form without /Resources inherits its caller's resources, so the
+        // prepared program depends on the calling scope.
+        let parent_resource_fingerprint = page_resources_fingerprint(&self.resources);
         let cache_key = form_xobject_program_cache_key(
             obj_num,
             gen_num,
@@ -9808,10 +10003,9 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
-        let mut retained_resources =
-            content_resource_scope(resources.as_ref(), &self.page_resources)
-                .as_ref()
-                .clone();
+        let mut retained_resources = content_resource_scope(resources.as_ref(), &self.resources.0)
+            .as_ref()
+            .clone();
         for active in [
             self.active_fill_color_space_resource.as_ref(),
             self.active_stroke_color_space_resource.as_ref(),
@@ -10707,6 +10901,71 @@ impl<'a> RenderState<'a> {
         self.paint_inline_image(&image.params, &image.data);
     }
 
+    /// Handle an operator inside hidden optional content. Like Poppler,
+    /// hidden content paints nothing but still updates the graphics and text
+    /// state, so text shown while hidden advances the text position. Returns
+    /// true when the operator should run through the normal dispatcher.
+    fn dispatch_hidden_optional_content(&mut self, op: &ContentOperation) -> bool {
+        match op.operator.as_str() {
+            "Do" | "sh" | "BI" | "ID" | "EI" | "inline_image_data" => false,
+            "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" => {
+                self.pending_clip = None;
+                self.path.clear();
+                false
+            }
+            "Tj" | "TJ" | "'" | "\"" => {
+                if !self.validate_text_op_or_fatal(op)
+                    || !self.require_text_object_or_fatal(op.operator.as_str())
+                {
+                    return false;
+                }
+                match op.operator.as_str() {
+                    "Tj" => {
+                        if let Some(bytes) = op.string_bytes(0) {
+                            self.advance_text_string_without_paint(bytes);
+                        }
+                    }
+                    "TJ" => {
+                        if let Some(items) = op.operand(0).and_then(Operand::as_array) {
+                            for item in items {
+                                match item {
+                                    Operand::String(bytes) => {
+                                        self.advance_text_string_without_paint(bytes)
+                                    }
+                                    Operand::Integer(value) => {
+                                        self.adjust_text_position(-(*value as f64))
+                                    }
+                                    Operand::Real(value) => self.adjust_text_position(-*value),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    "'" => {
+                        self.move_to_next_text_line();
+                        if let Some(bytes) = op.string_bytes(0) {
+                            self.advance_text_string_without_paint(bytes);
+                        }
+                    }
+                    _ => {
+                        if let Some(word_spacing) = op.number(0) {
+                            self.gs.text.word_spacing = word_spacing;
+                        }
+                        if let Some(char_spacing) = op.number(1) {
+                            self.gs.text.char_spacing = char_spacing;
+                        }
+                        self.move_to_next_text_line();
+                        if let Some(bytes) = op.string_bytes(2) {
+                            self.advance_text_string_without_paint(bytes);
+                        }
+                    }
+                }
+                false
+            }
+            _ => true,
+        }
+    }
+
     fn dispatch(&mut self, op: &ContentOperation) {
         match op.operator.as_str() {
             "BMC" | "BDC" => {
@@ -10727,7 +10986,7 @@ impl<'a> RenderState<'a> {
             }
             _ => {}
         }
-        if !self.oc_current_visible {
+        if !self.oc_current_visible && !self.dispatch_hidden_optional_content(op) {
             return;
         }
         match op.operator.as_str() {
@@ -11122,8 +11381,11 @@ impl<'a> RenderState<'a> {
             ) {
                 Ok(child_visible) => visible = parent_visible && child_visible,
                 Err(err) => {
+                    // Unevaluable membership shows the content (Poppler).
+                    if self.exactness_policy != ExactnessPolicy::Compatibility {
+                        visible = false;
+                    }
                     self.record_fatal_render_error(err);
-                    visible = false;
                 }
             }
         }
@@ -11191,8 +11453,12 @@ impl<'a> RenderState<'a> {
         ) {
             Ok(visible) => visible,
             Err(err) => {
+                // Poppler and PDFium show content whose optional-content
+                // membership cannot be evaluated (malformed configuration,
+                // dictionary or expression) instead of hiding it.
+                let compatibility = self.exactness_policy == ExactnessPolicy::Compatibility;
                 self.record_fatal_render_error(err);
-                false
+                compatibility
             }
         }
     }
@@ -11206,7 +11472,133 @@ impl<'a> RenderState<'a> {
         self.buf.blend_mode = self.gs.blend_mode;
     }
 
+    /// Evaluate the ExtGState `/TR2` or `/TR` transfer function into lookup
+    /// tables and install it on the graphics state. `apply_ext_g_state`
+    /// already reset the curve for `/Identity` and `/Default`. Like Poppler
+    /// and PDFium, a function that cannot be evaluated is ignored (identity)
+    /// instead of rejecting the ExtGState.
+    fn install_ext_g_state_transfer(&mut self, dict: &PdfDictionary, label: &str) {
+        if !crate::content::state::ext_g_state_has_non_identity_transfer(dict) {
+            return;
+        }
+        let Some(object) = crate::content::state::ext_g_state_transfer_object(dict) else {
+            return;
+        };
+        let lut = transfer_lut_from_object(
+            object,
+            self.engine.document().reader(),
+            self.function_resources(),
+        );
+        if lut.is_none() {
+            log::warn!("render: {label} transfer function could not be evaluated; using identity");
+        }
+        self.gs.transfer = lut.filter(|lut| !lut.is_identity()).map(Arc::new);
+    }
+
+    /// Apply the active transfer curves to an output paint colour.
+    fn apply_paint_transfer(&self, pixel: PixelColor) -> PixelColor {
+        match self.gs.transfer.as_deref() {
+            Some(lut) => lut.apply_rgba(pixel),
+            None => pixel,
+        }
+    }
+
+    /// Run `paint` into a transparent page-sized surface, apply the active
+    /// transfer curves to what it painted, and composite the result with the
+    /// current blend mode and soft mask. Used for per-pixel sources
+    /// (shadings) whose colours are not produced by the paint-colour path.
+    fn paint_through_transfer(&mut self, paint: impl FnOnce(&mut Self)) {
+        let Some(lut) = self.gs.transfer.clone() else {
+            paint(self);
+            return;
+        };
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        if let Some(clip) = self.buf.clip_mask() {
+            surface.set_clip(clip.clone());
+        }
+        surface.blend_mode = BlendMode::Normal;
+        let mut target = std::mem::replace(&mut self.buf, surface);
+        paint(self);
+        std::mem::swap(&mut self.buf, &mut target);
+        let mut painted = target;
+        painted.clear_clip();
+        painted.clear_smask();
+        painted.apply_rgba_transfer(&lut.channels);
+        // The surface was already clipped; composite without clipping twice.
+        let saved_clip = self.buf.clip_mask().cloned();
+        self.buf.clear_clip();
+        let soft_mask = self.buf.smask_mask().cloned();
+        let blend_mode = self.buf.blend_mode;
+        self.buf
+            .composite_from(&painted, 1.0, blend_mode, soft_mask.as_ref());
+        self.buf.replace_clip(saved_clip);
+        self.recycle_offscreen_buffer(painted);
+    }
+
+    /// Apply the active transfer curves to decoded image samples before they
+    /// are painted. Gray images are expanded to RGB so per-component curves
+    /// stay exact.
+    fn image_with_paint_transfer(
+        &self,
+        raw: &crate::images::decoder::RawImage,
+    ) -> Option<crate::images::decoder::RawImage> {
+        let lut = self.gs.transfer.as_deref()?;
+        if raw.bits_per_sample != 8 {
+            return None;
+        }
+        let pixel_count = raw.width as usize * raw.height as usize;
+        let channels = raw.channels as usize;
+        if raw.pixels.len() < pixel_count * channels {
+            return None;
+        }
+        let (out_channels, pixels) = match channels {
+            1 | 2 => {
+                let out = if channels == 1 { 3 } else { 4 };
+                let mut pixels = Vec::with_capacity(pixel_count * out);
+                for sample in raw.pixels.chunks_exact(channels).take(pixel_count) {
+                    let gray = sample[0] as usize;
+                    pixels.push(lut.channels[0][gray]);
+                    pixels.push(lut.channels[1][gray]);
+                    pixels.push(lut.channels[2][gray]);
+                    if channels == 2 {
+                        pixels.push(sample[1]);
+                    }
+                }
+                (out as u8, pixels)
+            }
+            3 | 4 => {
+                let mut pixels = raw.pixels.clone();
+                for sample in pixels.chunks_exact_mut(channels) {
+                    sample[0] = lut.channels[0][sample[0] as usize];
+                    sample[1] = lut.channels[1][sample[1] as usize];
+                    sample[2] = lut.channels[2][sample[2] as usize];
+                }
+                (raw.channels, pixels)
+            }
+            _ => return None,
+        };
+        Some(crate::images::decoder::RawImage {
+            width: raw.width,
+            height: raw.height,
+            channels: out_channels,
+            bits_per_sample: 8,
+            pixels,
+        })
+    }
+
     fn fill_pixel_color(&mut self) -> PixelColor {
+        let pixel = self.fill_pixel_color_untransferred();
+        self.apply_paint_transfer(pixel)
+    }
+
+    fn stroke_pixel_color(&mut self) -> PixelColor {
+        let pixel = self.stroke_pixel_color_untransferred();
+        self.apply_paint_transfer(pixel)
+    }
+
+    fn fill_pixel_color_untransferred(&mut self) -> PixelColor {
         if self.is_pattern_fill() {
             if self.gs.fill_pattern_name.is_none() {
                 return crate::render::color::RenderColor::transparent().to_pixel_color();
@@ -11242,7 +11634,7 @@ impl<'a> RenderState<'a> {
         pixel
     }
 
-    fn stroke_pixel_color(&mut self) -> PixelColor {
+    fn stroke_pixel_color_untransferred(&mut self) -> PixelColor {
         if self.is_pattern_stroke() {
             if self.gs.stroke_pattern_name.is_none() {
                 return crate::render::color::RenderColor::transparent().to_pixel_color();
@@ -12135,6 +12527,7 @@ impl<'a> RenderState<'a> {
                 self.record_fatal_render_error(err);
                 return;
             }
+            self.install_ext_g_state_transfer(&dict, &label);
             if let Some(font_name) = Self::packed_ext_g_state_font_name(&dict) {
                 let Some(font) = self.resources.fonts.get(&font_name).cloned() else {
                     self.record_fatal_render_error(format!(
@@ -12188,6 +12581,12 @@ impl<'a> RenderState<'a> {
     }
 
     fn apply_smask(&mut self, mut smask_dict: PdfDictionary, cache_seed: Option<String>) {
+        // A soft-mask group runs as a nested content program; a mask whose
+        // group installs a soft mask again must not recurse without bound.
+        if let Some(limit) = self.content_nesting_limit() {
+            self.record_content_nesting_error(format!("soft mask nesting {limit} exceeded"));
+            return;
+        }
         // /BC may be stored as an indirect array, or hold indirect numbers.
         // Resolve it once here, as Poppler's Dict::lookup and PDFium's
         // GetArrayFor do, so every later reader sees a direct numeric array.
@@ -12264,7 +12663,7 @@ impl<'a> RenderState<'a> {
         };
 
         let mut g_resources = match PageResources::from_content_owner(&g_dict, reader) {
-            Ok(resources) => content_resource_scope(resources.as_ref(), &self.page_resources)
+            Ok(resources) => content_resource_scope(resources.as_ref(), &self.resources.0)
                 .as_ref()
                 .clone(),
             Err(err) => {
@@ -12324,6 +12723,17 @@ impl<'a> RenderState<'a> {
                         };
                         if non_device_alpha_inert {
                             TransparencyGroupColorSpacePolicy::InertNonDevice
+                        } else if self.exactness_policy == ExactnessPolicy::Compatibility
+                            && smask_backdrop_components(&smask_dict)
+                                .ok()
+                                .flatten()
+                                .is_none()
+                        {
+                            // Without an explicit /BC the group space only
+                            // affects blending; composite the mask group in
+                            // DeviceRGB like Poppler and PDFium.
+                            log::warn!("render: SMask /G {err}; compositing in DeviceRGB");
+                            TransparencyGroupColorSpacePolicy::DefaultDeviceRgb
                         } else {
                             self.record_fatal_render_error(format!("SMask /G {err}"));
                             return;
@@ -12610,6 +13020,7 @@ impl<'a> RenderState<'a> {
             current_clip: mask_current_clip,
             pattern_stack: self.pattern_stack.clone(),
             form_depth: self.form_depth + 1,
+            stack_base: self.stack_base,
             form_object_stack: self.form_object_stack.clone(),
             inline_begin_pending: false,
             pending_inline: None,
@@ -12836,6 +13247,44 @@ impl<'a> RenderState<'a> {
     }
 
     fn paint_inline_image_with_resolved_color_space(
+        &mut self,
+        params: &[Operand],
+        data: &[u8],
+        resolved_color_space: Option<&ResolvedInlineImageColorSpace>,
+    ) {
+        let intent = params
+            .chunks_exact(2)
+            .find(|pair| pair[0].as_name() == Some("Intent"))
+            .and_then(|pair| pair[1].as_name())
+            .and_then(image_rendering_intent_name);
+        self.with_image_rendering_intent(intent, |state| {
+            state.paint_inline_image_with_resolved_color_space_inner(
+                params,
+                data,
+                resolved_color_space,
+            )
+        });
+    }
+
+    /// Run `paint` with an image's own `/Intent` as the rendering intent
+    /// for its colour conversion (PDF 32000-1 8.9.5.1), restoring the
+    /// graphics-state intent afterwards.
+    fn with_image_rendering_intent(
+        &mut self,
+        intent: Option<&'static str>,
+        paint: impl FnOnce(&mut Self),
+    ) {
+        match intent {
+            Some(intent) if self.gs.rendering_intent != intent => {
+                let saved = std::mem::replace(&mut self.gs.rendering_intent, intent.to_string());
+                paint(self);
+                self.gs.rendering_intent = saved;
+            }
+            _ => paint(self),
+        }
+    }
+
+    fn paint_inline_image_with_resolved_color_space_inner(
         &mut self,
         params: &[Operand],
         data: &[u8],
@@ -13169,8 +13618,13 @@ impl<'a> RenderState<'a> {
                 return;
             }
         };
+        let pattern_stencil = is_mask && self.is_pattern_fill();
         let raw = if is_mask {
-            let color = self.fill_pixel_color();
+            let color = if pattern_stencil {
+                [255, 255, 255, 255]
+            } else {
+                self.fill_pixel_color()
+            };
             let paints_ones = match inline_image_mask_paints_ones(&dict) {
                 Ok(paints_ones) => paints_ones,
                 Err(err) => {
@@ -13190,7 +13644,10 @@ impl<'a> RenderState<'a> {
                 }
             }
         } else {
-            raw
+            match self.image_with_paint_transfer(&raw) {
+                Some(transferred) => transferred,
+                None => raw,
+            }
         };
 
         let paint_alpha = if is_mask {
@@ -13199,6 +13656,10 @@ impl<'a> RenderState<'a> {
             self.gs.fill_alpha as f32
         };
         let paint_ctm = image_ctm_for_source_region(&ctm, source_region, width, height);
+        if pattern_stencil {
+            self.paint_fill_pattern_through_stencil(&raw, &paint_ctm, interpolate);
+            return;
+        }
         ImagePainter::paint_image_with_options_and_alpha(
             &mut self.buf,
             &raw,
@@ -13361,6 +13822,22 @@ impl<'a> RenderState<'a> {
     }
 
     fn handle_do_image(
+        &mut self,
+        name: &str,
+        obj_num: u32,
+        gen_num: u16,
+        dict: &PdfDictionary,
+        resolved_color_space: Option<&ResolvedInlineImageColorSpace>,
+    ) {
+        let intent = dict
+            .get_name("Intent")
+            .and_then(image_rendering_intent_name);
+        self.with_image_rendering_intent(intent, |state| {
+            state.handle_do_image_inner(name, obj_num, gen_num, dict, resolved_color_space)
+        });
+    }
+
+    fn handle_do_image_inner(
         &mut self,
         name: &str,
         obj_num: u32,
@@ -13689,8 +14166,15 @@ impl<'a> RenderState<'a> {
         match decoded {
             Ok(raw) => {
                 let owned_raw;
+                // A stencil mask filled with a pattern becomes a coverage mask
+                // the pattern is painted through (Poppler, PDFium).
+                let pattern_stencil = image_ref.is_mask && self.is_pattern_fill();
                 let paint_raw = if image_ref.is_mask {
-                    let color = self.fill_pixel_color();
+                    let color = if pattern_stencil {
+                        [255, 255, 255, 255]
+                    } else {
+                        self.fill_pixel_color()
+                    };
                     let paints_ones = match image_mask_paints_ones(dict) {
                         Ok(paints_ones) => paints_ones,
                         Err(err) => {
@@ -13748,6 +14232,14 @@ impl<'a> RenderState<'a> {
                 } else {
                     raw.as_ref()
                 };
+                // Stencil masks already carry the transferred fill colour.
+                let transferred_raw = if image_ref.is_mask {
+                    None
+                } else {
+                    self.image_with_paint_transfer(paint_raw)
+                };
+                let transfer_active = transferred_raw.is_some();
+                let paint_raw = transferred_raw.as_ref().unwrap_or(paint_raw);
                 // ctm was already computed by the decode planner above.
                 let paint_alpha = if image_ref.is_mask {
                     1.0
@@ -13760,7 +14252,12 @@ impl<'a> RenderState<'a> {
                     image_ref.width,
                     image_ref.height,
                 );
+                if pattern_stencil {
+                    self.paint_fill_pattern_through_stencil(paint_raw, &paint_ctm, interpolate);
+                    return;
+                }
                 if !image_ref.is_mask
+                    && !transfer_active
                     && !dict.contains_key("SMask")
                     && !dict.contains_key("Mask")
                     && !interpolate
@@ -13897,15 +14394,15 @@ impl<'a> RenderState<'a> {
         resolved_matrix: Option<[f64; 6]>,
     ) {
         // Depth guard: prevent runaway recursion from malformed or cyclic PDFs.
-        if self.form_depth >= 8 {
-            self.record_guard_render_error(format!(
-                "Form XObject nesting depth limit (8) exceeded at /{name} (obj {obj_num})"
+        if let Some(limit) = self.content_nesting_limit() {
+            self.record_content_nesting_error(format!(
+                "Form XObject nesting {limit} exceeded at /{name} (obj {obj_num})"
             ));
             return;
         }
         let form_key = (obj_num, gen_num);
         if self.form_object_stack.contains(&form_key) {
-            self.record_guard_render_error(format!(
+            self.record_content_nesting_error(format!(
                 "Form XObject cycle detected at /{name} (obj {obj_num} {gen_num})"
             ));
             return;
@@ -13963,8 +14460,9 @@ impl<'a> RenderState<'a> {
 
         // â”€â”€ Step 5: Clip to the BBox (intersected with any existing clip) â”€â”€â”€â”€
 
-        // Step 6: use the Form's complete resource namespace. Legacy omitted
-        // resources select the original page namespace, never the caller Form.
+        // Step 6: use the Form's complete resource namespace. A Form without
+        // /Resources inherits the caller's namespace (Poppler's resource
+        // chain), not the original page namespace.
 
         // â”€â”€ Step 7: Decode and parse the content stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Render the cached Form XObject program; stream decode and content parsing happen once per object revision.
@@ -13978,7 +14476,7 @@ impl<'a> RenderState<'a> {
         let bbox = program.bbox;
         let form_resources = program.resources.as_ref();
         let retained_plan = program.retained_plan.as_deref();
-        let group_resources = content_resource_scope(form_resources, &self.page_resources);
+        let group_resources = content_resource_scope(form_resources, &self.resources.0);
         // Group flags: /I (isolated) and /K (knockout), both default false.
         let (isolated, knockout, group_color_space) = match transparency_group_dict(form_dict) {
             Some(group) => {
@@ -14021,6 +14519,14 @@ impl<'a> RenderState<'a> {
                         );
                         if non_device_inert {
                             TransparencyGroupColorSpacePolicy::InertNonDevice
+                        } else if self.exactness_policy == ExactnessPolicy::Compatibility {
+                            // Poppler and PDFium still draw a group whose
+                            // /CS cannot be parsed; it composites in the
+                            // output RGB space.
+                            log::warn!(
+                                "render: transparency Form XObject /{name} {err}; compositing in DeviceRGB"
+                            );
+                            TransparencyGroupColorSpacePolicy::DefaultDeviceRgb
                         } else {
                             self.record_fatal_render_error(format!(
                                 "transparency Form XObject /{name} {err}"
@@ -14049,7 +14555,9 @@ impl<'a> RenderState<'a> {
                     self.engine.document().reader(),
                 ));
         if group_color_space.requires_inert_active_form_subset()
-            && !group_color_space.composites_acceptably_as_device_rgb()
+            && !group_color_space.composites_acceptably_as_device_rgb(
+                self.exactness_policy == ExactnessPolicy::Compatibility,
+            )
             && !form_program_is_opaque_normal_group_subset(&program.ops, &group_resources, &self.gs)
         {
             self.record_fatal_render_error(format!(
@@ -14273,6 +14781,7 @@ impl<'a> RenderState<'a> {
             current_clip: group_current_clip,
             pattern_stack: self.pattern_stack.clone(),
             form_depth: self.form_depth + 1,
+            stack_base: self.stack_base,
             form_object_stack: self.form_object_stack.clone(),
             inline_begin_pending: false,
             pending_inline: None,
@@ -14606,9 +15115,9 @@ impl<'a> RenderState<'a> {
         rect: [f64; 4],
         no_rotate: bool,
     ) {
-        if self.form_depth >= 8 {
-            self.record_guard_render_error(format!(
-                "annotation appearance nesting depth limit (8) exceeded at '{name}'"
+        if let Some(limit) = self.content_nesting_limit() {
+            self.record_content_nesting_error(format!(
+                "annotation appearance nesting {limit} exceeded at '{name}'"
             ));
             return;
         }
@@ -14698,10 +15207,8 @@ impl<'a> RenderState<'a> {
             self.apply_form_bbox_clip(bb);
         }
 
-        let saved_resources = std::mem::replace(
-            &mut self.resources,
-            content_resource_scope(program.resources.as_ref(), &self.page_resources),
-        );
+        let form_resources = content_resource_scope(program.resources.as_ref(), &self.resources.0);
+        let saved_resources = std::mem::replace(&mut self.resources, form_resources);
 
         log::trace!("PageRenderer: replay cached Form program '{}'", name);
         if let Some(plan) = program.retained_plan.as_ref() {
@@ -14843,17 +15350,21 @@ impl<'a> RenderState<'a> {
             ));
             return;
         }
-        if let Err(reason) = ShadingRenderer::paint_with_options_cancellable(
-            &shading_dict,
-            &ctm,
-            &self.viewport,
-            &mut self.buf,
-            reader,
-            mesh_data.as_deref().map(Vec::as_slice),
-            shading_options,
-            &self.cancel,
-            &self.shading_work_budget,
-        ) {
+        let mut shading_result = Ok(());
+        self.paint_through_transfer(|state| {
+            shading_result = ShadingRenderer::paint_with_options_cancellable(
+                &shading_dict,
+                &ctm,
+                &state.viewport,
+                &mut state.buf,
+                reader,
+                mesh_data.as_deref().map(Vec::as_slice),
+                shading_options,
+                &state.cancel,
+                &state.shading_work_budget,
+            );
+        });
+        if let Err(reason) = shading_result {
             self.record_fatal_render_error(reason);
         }
     }
@@ -14981,10 +15492,10 @@ impl<'a> RenderState<'a> {
         flat: &FlatPath,
         use_stroke_color: bool,
     ) {
-        if self.form_depth >= 8 {
-            self.record_guard_render_error(
-                "tiling pattern nesting depth limit reached before exact replay",
-            );
+        if let Some(limit) = self.content_nesting_limit() {
+            self.record_content_nesting_error(format!(
+                "tiling pattern nesting {limit} reached before exact replay"
+            ));
             return;
         }
         let reader = self.engine.document().reader();
@@ -15058,7 +15569,7 @@ impl<'a> RenderState<'a> {
         let pattern_key =
             tiling_pattern_stack_key(pattern_obj, raw_bytes.len(), bbox, x_step, y_step);
         if self.pattern_stack.iter().any(|key| key == &pattern_key) {
-            self.record_guard_render_error(format!(
+            self.record_content_nesting_error(format!(
                 "recursive tiling pattern resource /{pattern_key} cannot be rendered exactly"
             ));
             return;
@@ -15066,10 +15577,13 @@ impl<'a> RenderState<'a> {
 
         let pat_resources = match PageResources::from_content_owner(&pat_dict, reader) {
             Ok(Some(resources)) => resources,
-            // Unlike legacy Forms, patterns require their own dictionary.
+            // /Resources is required, but Poppler and PDFium render a pattern
+            // without it using the resources in effect where it is painted.
             Ok(None) => {
-                self.record_fatal_render_error("tiling pattern missing /Resources dictionary");
-                return;
+                log::warn!(
+                    "render: tiling pattern missing /Resources dictionary; using the caller's resources"
+                );
+                self.resources.as_ref().clone()
             }
             Err(err) => {
                 self.record_fatal_render_error(format!("tiling pattern invalid /Resources: {err}"));
@@ -15157,15 +15671,21 @@ impl<'a> RenderState<'a> {
             return;
         };
         let surface_pixels = i128::from(self.buf.width) * i128::from(self.buf.height);
-        if let Err(reason) = tiling_pattern_work_budget(
+        let over_budget = tiling_pattern_work_budget(
             tile_count,
             tile_pixel_area,
             program.ops.len() as i128,
             surface_pixels,
             self.buf.render_mode().is_high_quality(),
-        ) {
-            self.record_fatal_render_error(reason);
-            return;
+        )
+        .err();
+        if let Some(reason) = over_budget.as_ref() {
+            // Exact rendering refuses; compatibility rendering degrades to a
+            // single rendered cell repeated as a bitmap (below).
+            if self.exactness_policy != ExactnessPolicy::Compatibility {
+                self.record_fatal_render_error(reason.clone());
+                return;
+            }
         }
 
         // Bind the actual underlying space. Component count is not a colour
@@ -15198,6 +15718,28 @@ impl<'a> RenderState<'a> {
         } else {
             None
         };
+
+        if let Some(reason) = over_budget {
+            log::warn!("render: {reason}; repeating one rendered cell as a bitmap");
+            self.pattern_stack.push(pattern_key);
+            self.paint_tiling_pattern_cell_bitmap(
+                TilingCellBitmapRequest {
+                    program: program.as_ref(),
+                    pattern_to_device: full,
+                    pattern_ctm,
+                    bbox,
+                    x_step,
+                    y_step,
+                    cell: ((i0 + i1) / 2, (j0 + j1) / 2),
+                    device_bounds: (dx0, dy0, dx1, dy1),
+                    forced_color: forced_color.as_ref(),
+                },
+                path_clip,
+            );
+            self.pattern_stack.pop();
+            self.clip_dag.evict_unused();
+            return;
+        }
 
         // Install the path clip, then render each tile (each clips additionally
         // to its own BBox). The path clip bounds the whole fill to the shape.
@@ -15244,6 +15786,143 @@ impl<'a> RenderState<'a> {
         // boundary, where all live graphics-state/stack references remain
         // protected by their Arc owners and unused cell nodes can be released.
         self.clip_dag.evict_unused();
+    }
+
+    /// Degraded tiling for patterns over the work budget (compatibility
+    /// contract only). Like Splash's tiled-image path, one cell is rendered
+    /// once at device resolution and then repeated by mapping every covered
+    /// device pixel back into that cell, so the cost is one cell replay plus
+    /// one pass over the filled area. Cells smaller than a few pixels are
+    /// replaced by their average colour, which is what a fully resolved
+    /// sub-pixel tiling averages to and avoids moire.
+    fn paint_tiling_pattern_cell_bitmap(
+        &mut self,
+        request: TilingCellBitmapRequest<'_>,
+        path_clip: ClipMask,
+    ) {
+        let TilingCellBitmapRequest {
+            program,
+            pattern_to_device,
+            pattern_ctm,
+            bbox,
+            x_step,
+            y_step,
+            cell: (ic, jc),
+            device_bounds: (dx0, dy0, dx1, dy1),
+            forced_color,
+        } = request;
+        let (width, height) = (self.buf.width, self.buf.height);
+        let Some(inverse) = pattern_to_device.inverse() else {
+            return;
+        };
+        let (step_x, step_y) = (x_step.abs(), y_step.abs());
+        let (cell_x, cell_y) = (bbox[0].min(bbox[2]), bbox[1].min(bbox[3]));
+        let origin_u = cell_x + ic as f64 * x_step;
+        let origin_v = cell_y + jc as f64 * y_step;
+        let cell_area = (pattern_to_device.determinant() * step_x * step_y).abs();
+        let surface_pixels = f64::from(width) * f64::from(height);
+        if !cell_area.is_finite() || cell_area > surface_pixels {
+            self.record_fatal_render_error(
+                "tiling pattern over the work budget has a cell larger than the page surface",
+            );
+            return;
+        }
+        // Sub-pixel cells are averaged: render the cell magnified (about its
+        // corner) to roughly 16 x 16 device pixels so its coverage is not lost
+        // to 8-bit quantisation.
+        let averaged = cell_area < 4.0;
+        let magnify = if averaged {
+            (256.0 / cell_area.max(1e-12)).sqrt().min(1e6)
+        } else {
+            1.0
+        };
+        let magnification = Transform2D::translation(-cell_x, -cell_y)
+            .concat(&Transform2D::scale(magnify, magnify))
+            .concat(&Transform2D::translation(cell_x, cell_y));
+        let tile_ctm = magnification.concat(
+            &Transform2D::new(1.0, 0.0, 0.0, 1.0, ic as f64 * x_step, jc as f64 * y_step)
+                .concat(&pattern_ctm),
+        );
+
+        // Render the chosen cell, unclipped by the fill path, into a
+        // transparent page-sized surface at its device position.
+        let render_mode = self.buf.render_mode();
+        let surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        let mut target = std::mem::replace(&mut self.buf, surface);
+        let saved_clip = Arc::clone(&self.current_clip);
+        let full = self.clip_dag.full();
+        self.install_clip_node(full);
+        self.render_pattern_tile(program, tile_ctm, bbox, forced_color, true);
+        std::mem::swap(&mut self.buf, &mut target);
+        let cell_surface = target;
+        self.install_clip_node(Arc::clone(&saved_clip));
+
+        let mut result = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        if averaged {
+            // Average colour of one period: premultiplied sum over the
+            // rendered (magnified) cell divided by its device area.
+            let cell_to_device = tile_ctm.concat(&self.viewport.to_transform());
+            let corners = [
+                cell_to_device.transform_point(cell_x, cell_y),
+                cell_to_device.transform_point(cell_x + step_x, cell_y),
+                cell_to_device.transform_point(cell_x, cell_y + step_y),
+                cell_to_device.transform_point(cell_x + step_x, cell_y + step_y),
+            ];
+            let min_x = corners.iter().map(|c| c.0).fold(f64::MAX, f64::min).floor() as i32 - 1;
+            let max_x = corners.iter().map(|c| c.0).fold(f64::MIN, f64::max).ceil() as i32 + 1;
+            let min_y = corners.iter().map(|c| c.1).fold(f64::MAX, f64::min).floor() as i32 - 1;
+            let max_y = corners.iter().map(|c| c.1).fold(f64::MIN, f64::max).ceil() as i32 + 1;
+            let mut sum = [0f64; 4];
+            for y in min_y.max(0)..max_y.min(height as i32) {
+                for x in min_x.max(0)..max_x.min(width as i32) {
+                    let pixel = cell_surface.get_pixel(x, y);
+                    let alpha = f64::from(pixel[3]) / 255.0;
+                    sum[0] += f64::from(pixel[0]) * alpha;
+                    sum[1] += f64::from(pixel[1]) * alpha;
+                    sum[2] += f64::from(pixel[2]) * alpha;
+                    sum[3] += alpha;
+                }
+            }
+            let area = (cell_area * magnify * magnify).max(f64::EPSILON);
+            let alpha = (sum[3] / area).clamp(0.0, 1.0);
+            if alpha > 0.0 && sum[3] > 0.0 {
+                let color = [
+                    (sum[0] / sum[3]).round().clamp(0.0, 255.0) as u8,
+                    (sum[1] / sum[3]).round().clamp(0.0, 255.0) as u8,
+                    (sum[2] / sum[3]).round().clamp(0.0, 255.0) as u8,
+                    (alpha * 255.0).round() as u8,
+                ];
+                for y in dy0..=dy1 {
+                    for x in dx0..=dx1 {
+                        result.set_pixel(x, y, color);
+                    }
+                }
+            }
+        } else {
+            // Repeat the rendered cell: map each covered device pixel back
+            // into the cell's period and sample the rendered bitmap.
+            for y in dy0..=dy1 {
+                for x in dx0..=dx1 {
+                    let (u, v) = inverse.transform_point(f64::from(x) + 0.5, f64::from(y) + 0.5);
+                    let du = (u - origin_u).rem_euclid(step_x);
+                    let dv = (v - origin_v).rem_euclid(step_y);
+                    let (sx, sy) = pattern_to_device.transform_point(origin_u + du, origin_v + dv);
+                    let pixel = cell_surface.get_pixel(sx.floor() as i32, sy.floor() as i32);
+                    if pixel[3] != 0 {
+                        result.set_pixel(x, y, pixel);
+                    }
+                }
+            }
+        }
+        self.recycle_offscreen_buffer(cell_surface);
+
+        self.apply_clip_mask_node(path_clip);
+        let soft_mask = self.buf.smask_mask().cloned();
+        let blend_mode = self.buf.blend_mode;
+        self.buf
+            .composite_from(&result, 1.0, blend_mode, soft_mask.as_ref());
+        self.recycle_offscreen_buffer(result);
+        self.install_clip_node(saved_clip);
     }
 
     /// Render a single tile of a tiling pattern at `tile_ctm`, clipped to the
@@ -15471,17 +16150,21 @@ impl<'a> RenderState<'a> {
             self.install_clip_node(saved_clip);
             return;
         }
-        if let Err(reason) = ShadingRenderer::paint_with_options_cancellable(
-            &shading_dict,
-            &ctm,
-            &self.viewport,
-            &mut self.buf,
-            reader,
-            mesh_data.as_deref().map(Vec::as_slice),
-            shading_options,
-            &self.cancel,
-            &self.shading_work_budget,
-        ) {
+        let mut shading_result = Ok(());
+        self.paint_through_transfer(|state| {
+            shading_result = ShadingRenderer::paint_with_options_cancellable(
+                &shading_dict,
+                &ctm,
+                &state.viewport,
+                &mut state.buf,
+                reader,
+                mesh_data.as_deref().map(Vec::as_slice),
+                shading_options,
+                &state.cancel,
+                &state.shading_work_budget,
+            );
+        });
+        if let Err(reason) = shading_result {
             self.record_fatal_render_error(reason);
         }
 
@@ -15574,10 +16257,141 @@ impl<'a> RenderState<'a> {
         self.process_text_string(bytes, false);
     }
 
+    /// Text filled with a pattern: the glyph outlines become a coverage mask
+    /// and the pattern is painted through it, as Poppler and PDFium do. The
+    /// glyphs are first run in clip-only mode (which builds that mask and
+    /// advances the text position), then stroked separately when the
+    /// rendering mode also strokes.
+    fn process_pattern_filled_text_string(&mut self, bytes: &[u8]) {
+        let mode = self.gs.text.rendering_mode;
+        let start_tm = self.gs.text.tm;
+        let saved_text_clip = self.pending_text_clip.take();
+        self.gs.text.rendering_mode = 7;
+        self.process_text_string(bytes, true);
+        let glyph_mask = self.pending_text_clip.take();
+        self.pending_text_clip = saved_text_clip;
+        self.gs.text.rendering_mode = mode;
+        if let Some(mask) = glyph_mask {
+            if text_rendering_mode_clips(mode) {
+                self.accumulate_text_clip_mask(mask.clone());
+            }
+            self.paint_fill_pattern_through_device_mask(mask);
+        }
+        if matches!(mode, 2 | 6) {
+            let end_tm = self.gs.text.tm;
+            self.gs.text.tm = start_tm;
+            self.gs.text.rendering_mode = 1;
+            self.process_text_string(bytes, true);
+            self.gs.text.rendering_mode = mode;
+            self.gs.text.tm = end_tm;
+        }
+    }
+
+    /// Paint the current fill pattern through a device-space coverage mask
+    /// (glyph outlines or a stencil image), intersected with the current
+    /// clip.
+    fn paint_fill_pattern_through_device_mask(&mut self, mut mask: ClipMask) {
+        let Some(pattern_name) = self.gs.fill_pattern_name.clone() else {
+            return;
+        };
+        if let Some(existing) = self.buf.clip_mask() {
+            mask.intersect(existing);
+        }
+        let Some((x0, y0, x1, y1)) = mask.visible_bounds() else {
+            return;
+        };
+        let pattern_obj = match self.current_fill_pattern_object(&pattern_name) {
+            Some(obj) => obj,
+            None => {
+                self.record_fatal_render_error(format!(
+                    "pattern fill resource /{pattern_name} is missing"
+                ));
+                return;
+            }
+        };
+        let reader = self.engine.document().reader();
+        let Some(pattern_dict) = resolve_to_dict(&pattern_obj, reader) else {
+            self.record_fatal_render_error(format!(
+                "pattern fill resource /{pattern_name} did not resolve to a dictionary"
+            ));
+            return;
+        };
+        let pattern_dict =
+            match crate::render::parameter_dictionary::pattern(&pattern_dict, Some(reader)) {
+                Ok(dict) => dict.into_owned(),
+                Err(reason) => {
+                    self.record_fatal_render_error(reason);
+                    return;
+                }
+            };
+        let oc_label = format!("pattern fill resource /{pattern_name}");
+        if !self.object_optional_content_visible_or_record(pattern_dict.get("OC"), &oc_label) {
+            return;
+        }
+        match pattern_dict.get_integer("PatternType") {
+            Some(1) => {
+                let (x0, y0, x1, y1) = (x0 as f64, y0 as f64, x1 as f64, y1 as f64);
+                let bounds = FlatPath {
+                    subpaths: vec![vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]],
+                    closed: vec![true],
+                };
+                self.paint_tiling_pattern_with_device_clip(&pattern_obj, mask, &bounds, false);
+            }
+            Some(2) => {
+                self.paint_shading_pattern_with_device_clip(
+                    &pattern_dict,
+                    mask,
+                    self.gs.fill_alpha as f32,
+                );
+            }
+            Some(other) => self.record_fatal_render_error(format!(
+                "pattern fill resource /{pattern_name} has unsupported PatternType {other}"
+            )),
+            None => self.record_fatal_render_error(format!(
+                "pattern fill resource /{pattern_name} missing required /PatternType"
+            )),
+        }
+    }
+
+    /// Paint the current fill pattern through a stencil image mask whose
+    /// painted samples are opaque in `stencil`.
+    fn paint_fill_pattern_through_stencil(
+        &mut self,
+        stencil: &RawImage,
+        paint_ctm: &Transform2D,
+        interpolate: bool,
+    ) {
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        ImagePainter::paint_image_with_options_and_alpha(
+            &mut surface,
+            stencil,
+            paint_ctm,
+            &self.viewport,
+            interpolate,
+            1.0,
+        );
+        let alpha = surface
+            .to_rgba_bytes()
+            .chunks_exact(4)
+            .map(|pixel| pixel[3])
+            .collect::<Vec<_>>();
+        self.recycle_offscreen_buffer(surface);
+        let mask = ClipMask::from_alpha_bytes(width, height, alpha);
+        self.paint_fill_pattern_through_device_mask(mask);
+    }
+
     fn process_text_string(&mut self, bytes: &[u8], paint: bool) {
+        if paint && matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6) && self.is_pattern_fill() {
+            self.process_pattern_filled_text_string(bytes);
+            return;
+        }
         let font_name = self.gs.text.font_name.clone();
         let font_size = self.gs.text.font_size;
-        if font_size <= 0.0 {
+        // A negative size draws mirrored text and advances backwards
+        // (Poppler); only a zero or non-finite size draws nothing.
+        if font_size == 0.0 || !font_size.is_finite() {
             return;
         }
         let (font_dict, font_cache_key) = self.current_text_font_resource(&font_name);
@@ -15978,7 +16792,8 @@ impl<'a> RenderState<'a> {
             substitute_width_fit(pdf_width, advance_width)
         });
         let scale_x = scale * th * width_fit;
-        if scale <= 0.0 || !scale_x.is_finite() {
+        // A negative font size is valid (mirrored text); only zero is skipped.
+        if scale == 0.0 || !scale_x.is_finite() {
             return Some(advance_width);
         }
 
@@ -16189,7 +17004,7 @@ impl<'a> RenderState<'a> {
             return false;
         };
         let scale = font_size_scale(self.gs.text.font_size, upem);
-        if scale <= 0.0 || !scale.is_finite() {
+        if scale == 0.0 || !scale.is_finite() {
             return false;
         }
         let code = u16::try_from(ch as u32).unwrap_or(0);
@@ -17357,8 +18172,8 @@ impl<'a> RenderState<'a> {
         glyph_ctm: Transform2D,
         retained_cache_identity: Option<(String, Option<String>)>,
     ) -> bool {
-        if self.form_depth >= 8 {
-            self.record_guard_render_error("Type 3 charproc nesting depth limit reached");
+        if let Some(limit) = self.content_nesting_limit() {
+            self.record_content_nesting_error(format!("Type 3 charproc nesting {limit} reached"));
             return false;
         }
 
@@ -20096,10 +20911,13 @@ impl<'a, 'b> RenderStatePlanAdapter<'a, 'b> {
     fn effective_vector_fill_color(&mut self, fallback: PixelColor, explicit: bool) -> PixelColor {
         if !explicit {
             if let Some(color) = self.forced_vector_fill_pixel_color {
+                // Already resolved through the caller's paint path, including
+                // its transfer curves.
                 return inherited_type3_vector_color_with_fallback_alpha(color, fallback);
             }
         }
-        self.effective_vector_color(fallback)
+        let color = self.effective_vector_color(fallback);
+        self.state.apply_paint_transfer(color)
     }
 
     fn effective_vector_stroke_color(
@@ -20112,27 +20930,36 @@ impl<'a, 'b> RenderStatePlanAdapter<'a, 'b> {
                 return inherited_type3_vector_color_with_fallback_alpha(color, fallback);
             }
         }
-        self.effective_vector_color(fallback)
+        let color = self.effective_vector_color(fallback);
+        self.state.apply_paint_transfer(color)
     }
 }
 
 impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
     fn dispatch_text(&mut self, desc: &TextDescriptor, bounds: Option<&RenderBounds>) {
-        if !self.state.oc_current_visible {
+        let operator = match desc {
+            TextDescriptor::Show(_) => "Tj",
+            TextDescriptor::ShowArray(_) => "TJ",
+            TextDescriptor::NextLineShow(_) => "'",
+            TextDescriptor::SpacingNextLineShow { .. } => "\"",
+        };
+        if !self.state.require_text_object_or_fatal(operator) {
             return;
         }
+        // Hidden optional content paints nothing but, like Poppler, still
+        // advances the text position so later visible text stays in place.
+        let hidden = !self.state.oc_current_visible;
         // Culling check: skip text painting if entirely outside viewport
-        if self.bounds_are_outside(bounds) {
-            // Still advance text state for non-painting text ops
-            match desc {
-                TextDescriptor::Show(bytes) => {
-                    if !text_rendering_mode_clips(self.state.gs.text.rendering_mode) {
+        if hidden || self.bounds_are_outside(bounds) {
+            let clips = !hidden && text_rendering_mode_clips(self.state.gs.text.rendering_mode);
+            // Still advance text state for non-painting text ops. Clipping
+            // text must still be rasterized to build its clip.
+            if !clips {
+                match desc {
+                    TextDescriptor::Show(bytes) => {
                         self.state.advance_text_string_without_paint(bytes);
-                        return;
                     }
-                }
-                TextDescriptor::ShowArray(items) => {
-                    if !text_rendering_mode_clips(self.state.gs.text.rendering_mode) {
+                    TextDescriptor::ShowArray(items) => {
                         for item in items {
                             match item {
                                 TextArrayItem::Bytes(bytes) => {
@@ -20143,29 +20970,23 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                                 }
                             }
                         }
-                        return;
                     }
-                }
-                TextDescriptor::NextLineShow(bytes) => {
-                    self.state.move_to_next_text_line();
-                    if !text_rendering_mode_clips(self.state.gs.text.rendering_mode) {
+                    TextDescriptor::NextLineShow(bytes) => {
+                        self.state.move_to_next_text_line();
                         self.state.advance_text_string_without_paint(bytes);
-                        return;
                     }
-                }
-                TextDescriptor::SpacingNextLineShow {
-                    word_spacing,
-                    char_spacing,
-                    text,
-                } => {
-                    self.state.gs.text.word_spacing = *word_spacing;
-                    self.state.gs.text.char_spacing = *char_spacing;
-                    self.state.move_to_next_text_line();
-                    if !text_rendering_mode_clips(self.state.gs.text.rendering_mode) {
+                    TextDescriptor::SpacingNextLineShow {
+                        word_spacing,
+                        char_spacing,
+                        text,
+                    } => {
+                        self.state.gs.text.word_spacing = *word_spacing;
+                        self.state.gs.text.char_spacing = *char_spacing;
+                        self.state.move_to_next_text_line();
                         self.state.advance_text_string_without_paint(text);
-                        return;
                     }
                 }
+                return;
             }
         }
         match desc {
@@ -20458,6 +21279,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                         self.state.record_fatal_render_error(err);
                         return;
                     }
+                    self.state.install_ext_g_state_transfer(&dict, &label);
                     if let Some(font) = font {
                         self.state.set_active_text_font(
                             &font.name,
@@ -20476,10 +21298,16 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
 
             // --- Text state operators ---
             BeginText => {
+                if !self.state.begin_text_object_or_fatal() {
+                    return;
+                }
                 self.state.pending_text_clip = None;
                 self.state.gs.text.begin_text();
             }
             EndText => {
+                if !self.state.end_text_object_or_fatal() {
+                    return;
+                }
                 self.state.apply_pending_text_clip();
                 // ET is a no-op on GraphicsState (same as gs.process for "ET")
             }
@@ -20572,8 +21400,12 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                         ) {
                             Ok(child_visible) => visible = parent_visible && child_visible,
                             Err(err) => {
+                                // Unevaluable membership shows the content
+                                // (Poppler) under the compatibility contract.
+                                if self.state.exactness_policy != ExactnessPolicy::Compatibility {
+                                    visible = false;
+                                }
                                 self.state.record_fatal_render_error(err);
-                                visible = false;
                             }
                         }
                     }
@@ -21895,8 +22727,11 @@ fn image_ctm_for_source_region(
     .concat(ctm)
 }
 
+/// Glyph-space to text-space scale. A negative font size is valid: like
+/// Poppler it mirrors the glyphs through the origin (both axes flip) and the
+/// advance runs backwards.
 fn font_size_scale(font_size: f64, upem: f64) -> f64 {
-    if font_size <= 0.0 || upem <= 0.0 || !font_size.is_finite() || !upem.is_finite() {
+    if font_size == 0.0 || upem <= 0.0 || !font_size.is_finite() || !upem.is_finite() {
         0.0
     } else {
         font_size / upem
@@ -23069,6 +23904,36 @@ fn ensure_explicit_mask_buffer_len(role: &str, actual: usize, expected: usize) -
     )))
 }
 
+/// Colour-key arrays are compared on converted 8-bit samples only for gray
+/// and RGB images, whose conversion preserves the raw values.
+fn color_key_compares_converted_samples(color_space: &str) -> bool {
+    matches!(
+        color_space,
+        "DeviceGray" | "G" | "DeviceRGB" | "RGB" | "sRGB"
+    )
+}
+
+/// DeviceN images can have up to 32 colorants.
+const MAX_COLOR_KEY_COMPONENTS: usize = crate::render::colorspace::MAX_DEVICEN_COMPONENTS;
+
+/// Read one packed `bpc`-bit sample (big-endian, rows byte aligned).
+fn raw_image_sample(data: &[u8], row_start: usize, index: usize, bpc: u8) -> Option<u32> {
+    match bpc {
+        8 => data.get(row_start + index).map(|byte| u32::from(*byte)),
+        16 => {
+            let offset = row_start + index * 2;
+            Some(u32::from(*data.get(offset)?) << 8 | u32::from(*data.get(offset + 1)?))
+        }
+        1 | 2 | 4 => {
+            let bit = index * usize::from(bpc);
+            let byte = *data.get(row_start + bit / 8)?;
+            let shift = 8 - usize::from(bpc) - bit % 8;
+            Some(u32::from(byte >> shift) & ((1u32 << bpc) - 1))
+        }
+        _ => None,
+    }
+}
+
 fn apply_color_key_image_mask(
     main: crate::images::decoder::RawImage,
     bpc: u8,
@@ -23624,25 +24489,34 @@ impl TransparencyGroupColorSpacePolicy {
         )
     }
 
-    /// True when an *actively compositing* group in this color space can be
-    /// composited in `DeviceRGB` without a meaningful visual difference, so the
-    /// group renders instead of dropping the whole object.
+    /// True when an *actively compositing* group in this color space is
+    /// composited in the renderer's RGB working space, so the group renders
+    /// instead of dropping the whole object.
     ///
     /// Group blending is defined in the group color space, which the renderer
-    /// does not reproduce for non-`DeviceRGB` spaces. A 3-component `ICCBased`
-    /// profile is an RGB profile and is sRGB-adjacent, and the renderer
-    /// composites everything onto an sRGB-ish RGBA surface anyway, so RGB
-    /// blending matches the intended result closely — and far better than the
-    /// blank region a fail-closed refusal leaves. CMYK, gray, `Lab`, the spot
-    /// and `DeviceN` families, and even calibrated `CalRGB` (whose white point
-    /// and gamma can diverge further) are left to their existing fail-closed
-    /// behavior.
-    fn composites_acceptably_as_device_rgb(&self) -> bool {
-        matches!(
-            self,
-            Self::NonDeviceBackdrop { family, components, .. }
-                if family == "ICCBased" && *components == 3
-        )
+    /// does not reproduce for non-`DeviceRGB` spaces. Poppler (Splash RGB
+    /// output) and PDFium both composite every transparency group in the
+    /// output RGB space regardless of `/CS`, and print-production files
+    /// (InDesign/Illustrator) routinely tag groups `/DeviceCMYK` or with a
+    /// CMYK `ICCBased` profile. For the color spaces the PDF specification
+    /// permits as group spaces (device gray/CMYK, `CalGray`, `CalRGB`, `Lab`
+    /// and 1/3/4-component `ICCBased`) RGB compositing is therefore always
+    /// used: normal-blend results are identical and only non-separable blend
+    /// modes differ slightly. The special families the specification forbids
+    /// as group spaces (`Indexed`, `Separation`, `DeviceN`) are composited in
+    /// RGB under the compatibility contract only.
+    fn composites_acceptably_as_device_rgb(&self, compatibility: bool) -> bool {
+        match self {
+            Self::DeviceGray | Self::DeviceCmyk => true,
+            Self::NonDeviceBackdrop {
+                family, components, ..
+            } => match family.as_str() {
+                "CalGray" | "CalRGB" | "Lab" => true,
+                "ICCBased" => matches!(components, 1 | 3 | 4) || compatibility,
+                _ => compatibility,
+            },
+            _ => false,
+        }
     }
 }
 
@@ -28291,6 +29165,22 @@ fn bounds_within_bbox(bounds: [f64; 4], bbox: [f64; 4]) -> bool {
         && bounds[3] <= bbox[3] + EPSILON
 }
 
+struct TilingCellBitmapRequest<'p> {
+    program: &'p TilingPatternProgram,
+    pattern_to_device: Transform2D,
+    pattern_ctm: Transform2D,
+    bbox: [f64; 4],
+    x_step: f64,
+    y_step: f64,
+    cell: (i64, i64),
+    device_bounds: (i32, i32, i32, i32),
+    forced_color: Option<&'p (
+        ColorSpace,
+        crate::content::state::Color,
+        ActiveColorSpaceResource,
+    )>,
+}
+
 fn tiling_pattern_work_budget(
     tile_count: i128,
     tile_pixel_area: i128,
@@ -28563,6 +29453,81 @@ fn extract_form_matrix_resolved(
 
 /// An explicit content-program dictionary is a complete namespace. Legacy
 /// omitted Form/AP/Type3 scopes fall back to the original page, not the caller.
+/// Evaluate an ExtGState transfer-function value (a function, `/Identity`,
+/// `/Default`, or an array of four of those) into 256-entry lookup tables.
+fn transfer_lut_from_object(
+    object: &PdfObject,
+    reader: &PdfReader,
+    resources: crate::render::function::FunctionResources<'_>,
+) -> Option<crate::content::state::TransferLut> {
+    fn identity_table() -> [u8; 256] {
+        let mut table = [0u8; 256];
+        for (index, value) in table.iter_mut().enumerate() {
+            *value = index as u8;
+        }
+        table
+    }
+    fn table(
+        object: &PdfObject,
+        reader: &PdfReader,
+        resources: crate::render::function::FunctionResources<'_>,
+    ) -> Option<[u8; 256]> {
+        let resolved = reader.resolve(object.clone()).ok()?;
+        if matches!(&resolved, PdfObject::Name(name) if name == "Identity" || name == "Default") {
+            return Some(identity_table());
+        }
+        crate::render::function::PreparedTransfer::prepare_with_resources(
+            object, reader, resources,
+        )?
+        .lookup_table()
+    }
+    let resolved = reader.resolve(object.clone()).ok()?;
+    let channels = match &resolved {
+        PdfObject::Array(items) => {
+            if items.len() != 4 {
+                return None;
+            }
+            let mut channels = [[0u8; 256]; 4];
+            for (slot, item) in channels.iter_mut().zip(items) {
+                *slot = table(item, reader, resources)?;
+            }
+            channels
+        }
+        _ => {
+            let single = table(object, reader, resources)?;
+            [single; 4]
+        }
+    };
+    Some(crate::content::state::TransferLut { channels })
+}
+
+/// The rendering intents an image `/Intent` may select; unknown names keep
+/// the graphics-state intent.
+fn image_rendering_intent_name(name: &str) -> Option<&'static str> {
+    match name {
+        "AbsoluteColorimetric" => Some("AbsoluteColorimetric"),
+        "RelativeColorimetric" => Some("RelativeColorimetric"),
+        "Saturation" => Some("Saturation"),
+        "Perceptual" => Some("Perceptual"),
+        _ => None,
+    }
+}
+
+/// Poppler's nesting limit for forms, patterns, Type 3 glyphs and soft masks.
+const MAX_CONTENT_NESTING_DEPTH: usize = 100;
+/// Stack nested content programs may use below the page render entry (see
+/// `RenderState::content_nesting_limit`).
+const MAX_CONTENT_NESTING_STACK_BYTES: usize = 512 * 1024;
+
+/// An address on the current stack frame. Stacks grow downwards on every
+/// supported target, so the difference to an earlier frame's address is the
+/// stack used in between.
+#[inline(never)]
+fn current_stack_address() -> usize {
+    let marker = 0u8;
+    std::hint::black_box(&marker) as *const u8 as usize
+}
+
 fn content_resource_scope(
     local: Option<&PageResources>,
     page: &Arc<PageResources>,
@@ -32306,10 +33271,6 @@ mod tests {
     fn transparency_group_color_space_returns_typed_refusal() {
         for (group_entries, expected) in [
             (
-                "/CS [/CalRGB << /WhitePoint [1 1 1] >>]",
-                "transparency Form XObject /Fm0 group color space /CalRGB requires unsupported active group color-space compositing",
-            ),
-            (
                 "/CS /MissingCS",
                 "transparency Form XObject /Fm0 group /CS resource /MissingCS is missing",
             ),
@@ -32443,37 +33404,110 @@ mod tests {
     }
 
     #[test]
-    fn active_transparency_group_cmyk_iccbased_color_space_returns_typed_refusal() {
-        // A 4-component (CMYK) ICCBased group is not RGB-adjacent: its blends
-        // would diverge if composited in RGB, so it must still fail closed.
-        let pdf = pdf_with_active_transparency_group_iccbased_form_xobject(4);
-        let engine = ContentEngine::open_bytes(pdf)
-            .expect("open active ICCBased CMYK transparency group PDF");
-        let error = engine
-            .render_page_with_mode(1, 72, RenderMode::HighQuality)
-            .expect_err("active 4-component ICCBased group must fail closed");
-        assert!(
-            format!("{error}")
-                .contains("requires unsupported active group color-space compositing"),
-            "unexpected ICCBased CMYK group refusal: {error}"
+    fn active_transparency_group_cmyk_iccbased_color_space_composites_in_rgb() {
+        // Print-production groups tagged with a CMYK profile composite in the
+        // RGB working space, like Poppler and PDFium, instead of dropping.
+        for mode in [RenderMode::Compat, RenderMode::HighQuality] {
+            let pdf = pdf_with_active_transparency_group_iccbased_form_xobject(4);
+            let engine = ContentEngine::open_bytes(pdf)
+                .expect("open active ICCBased CMYK transparency group PDF");
+            let buf = engine
+                .render_page_with_mode(1, 72, mode)
+                .expect("active 4-component ICCBased group must render");
+            assert_matches_rgb_group(&buf, mode, "ICCBased CMYK group");
+        }
+    }
+
+    /// A group in a print colour space must composite exactly like the same
+    /// group tagged /DeviceRGB (the RGB working space).
+    fn assert_matches_rgb_group(buf: &PixelBuffer, mode: RenderMode, label: &str) {
+        let pdf = pdf_with_transparency_group_form_xobject_group_entries("/CS /DeviceRGB");
+        let engine = ContentEngine::open_bytes(pdf).expect("open RGB group PDF");
+        let reference = engine
+            .render_page_with_mode(1, 72, mode)
+            .expect("RGB group renders");
+        let pixel = buf.get_pixel(50, 50);
+        assert_ne!(pixel, WHITE, "{label}: the group must paint");
+        assert_eq!(pixel, reference.get_pixel(50, 50), "{label}");
+        assert_eq!(
+            buf.get_pixel(10, 10),
+            reference.get_pixel(10, 10),
+            "{label}"
         );
     }
 
     #[test]
-    fn transparency_group_device_cmyk_alpha_color_space_returns_typed_refusal() {
-        let pdf = pdf_with_transparency_group_form_xobject_group_entries("/CS /DeviceCMYK");
-        let engine =
-            ContentEngine::open_bytes(pdf).expect("open alpha DeviceCMYK transparency group PDF");
-        let error = engine
-            .render_page_with_mode(1, 72, RenderMode::HighQuality)
-            .expect_err("alpha DeviceCMYK transparency group must fail closed");
-        let message = format!("{error}");
-        assert!(
-            message.contains(
-                "transparency Form XObject /Fm0 group color space /DeviceCMYK requires unsupported active group color-space compositing"
-            ),
-            "unexpected DeviceCMYK group refusal: {message}"
-        );
+    fn active_transparency_groups_in_print_color_spaces_composite_in_rgb() {
+        for group_entries in [
+            "/CS /DeviceCMYK",
+            "/CS /DeviceGray",
+            "/CS [/CalRGB << /WhitePoint [0.9505 1 1.089] >>]",
+            "/CS [/CalGray << /WhitePoint [0.9505 1 1.089] >>]",
+            "/CS [/Lab << /WhitePoint [0.9505 1 1.089] /Range [-100 100 -100 100] >>]",
+            "/I true /CS /DeviceCMYK",
+            "/K true /CS /DeviceCMYK",
+        ] {
+            for mode in [RenderMode::Compat, RenderMode::HighQuality] {
+                let pdf = pdf_with_transparency_group_form_xobject_group_entries(group_entries);
+                let engine = ContentEngine::open_bytes(pdf).expect("open transparency group PDF");
+                let buf = engine
+                    .render_page_with_mode(1, 72, mode)
+                    .unwrap_or_else(|err| panic!("{group_entries} ({mode:?}) must render: {err}"));
+                assert_matches_rgb_group(&buf, mode, group_entries);
+                assert_eq!(
+                    buf.get_pixel(10, 10),
+                    WHITE,
+                    "{group_entries}: outside the group"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmyk_transparency_group_with_image_and_nested_form_renders() {
+        // The group holds an image, constant opacity and a nested Form.
+        let page_content = "q 1 0 0 1 10 10 cm /Fm0 Do Q\n";
+        let group_content = "q /GsHalf gs 0 1 1 0 k 0 0 40 40 re f Q q 40 0 0 40 40 0 cm /Im0 Do Q q 1 0 0 1 0 45 cm /Fm1 Do Q\n";
+        let inner_content = "0 0 1 rg 0 0 20 20 re f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /XObject << /Fm0 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", page_content.len(), page_content).into_bytes(),
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 80 80] /Group << /S /Transparency /CS /DeviceCMYK /I true >> \
+                 /Resources << /ExtGState << /GsHalf << /ca 0.5 >> >> /XObject << /Im0 6 0 R /Fm1 7 0 R >> >> /Length {} >>\nstream\n{}\nendstream",
+                group_content.len(),
+                group_content
+            )
+            .into_bytes(),
+            b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 3 >>\nstream\n\x00\xff\x00\nendstream".to_vec(),
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 20 20] /Length {} >>\nstream\n{}\nendstream",
+                inner_content.len(),
+                inner_content
+            )
+            .into_bytes(),
+        ];
+        let pdf = build_test_pdf_from_objects(&objects);
+        let engine = ContentEngine::open_bytes(pdf).expect("open CMYK group PDF");
+        for mode in [RenderMode::Compat, RenderMode::HighQuality] {
+            let buf = engine
+                .render_page_with_mode(1, 72, mode)
+                .unwrap_or_else(|err| panic!("CMYK group ({mode:?}) must render: {err}"));
+            // Half-opacity red (0 1 1 0 k) at device (30, 70).
+            let red = buf.get_pixel(30, 70);
+            assert!(
+                red[0] > 200 && red[1] < 200 && red[1] > 60,
+                "red fill: {red:?}"
+            );
+            // The image paints green at device (70, 70).
+            let green = buf.get_pixel(70, 70);
+            assert!(green[1] > 200 && green[0] < 60, "image: {green:?}");
+            // The nested Form paints blue at device (20, 35).
+            let blue = buf.get_pixel(20, 35);
+            assert!(blue[2] > 200 && blue[0] < 60, "nested form: {blue:?}");
+        }
     }
 
     #[test]
@@ -37060,15 +38094,60 @@ mod tests {
 
     #[test]
     fn deep_form_xobject_nesting_returns_typed_refusal() {
-        let pdf = pdf_with_deep_form_xobject_chain();
+        let pdf = pdf_with_deep_form_xobject_chain(130);
         let engine = ContentEngine::open_bytes(pdf).expect("open deep Form XObject PDF");
         let error = engine
             .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("over-deep Form XObject chain must not silently drop paint");
         assert!(
-            format!("{error}").contains("Form XObject nesting depth limit (8) exceeded at /Fm9"),
+            format!("{error}").contains("Form XObject nesting"),
             "got {error}"
         );
+        // Compatibility rendering skips only the over-deep Form, like Poppler.
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("over-deep Form XObject chain skips the deepest Form");
+    }
+
+    #[test]
+    fn form_xobject_nesting_beyond_eight_levels_renders() {
+        // The old limit of 8 dropped real content; Poppler allows 100.
+        for mode in [RenderMode::Compat, RenderMode::HighQuality] {
+            let pdf = pdf_with_deep_form_xobject_chain(24);
+            let engine = ContentEngine::open_bytes(pdf).expect("open nested Form XObject PDF");
+            let buf = engine
+                .render_page_with_mode(1, 72, mode)
+                .expect("24 nested Forms must render");
+            assert_eq!(buf.get_pixel(5, 95), [0, 0, 255, 255]);
+        }
+    }
+
+    #[test]
+    fn form_xobject_cycle_skips_only_the_cyclic_form_in_compat() {
+        let content = "1 0 0 rg 50 50 40 40 re f /Fm1 Do\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << /XObject << /Fm1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] \
+              /Resources << /XObject << /Fm1 5 0 R >> >> /Length 31 >>\nstream\n0 0 1 rg 0 0 10 10 re f /Fm1 Do\nendstream"
+                .to_vec(),
+        ];
+        let pdf = build_test_pdf_from_objects(&objects);
+        let engine = ContentEngine::open_bytes(pdf).expect("open cyclic Form PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("a Form cycle must not fail the page in compatibility mode");
+        assert_eq!(buf.get_pixel(70, 30), [255, 0, 0, 255]);
+        assert_eq!(buf.get_pixel(5, 95), [0, 0, 255, 255]);
+        let error = engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect_err("exact rendering refuses a Form cycle");
+        assert!(format!("{error}").contains("cycle"), "got {error}");
     }
 
     #[test]
@@ -37924,40 +39003,46 @@ mod tests {
     }
 
     #[test]
-    fn malformed_extgstate_blend_mode_returns_typed_refusal() {
-        for (extgstate, expected) in [
-            (
-                "<< /Type /ExtGState /BM 42 >>",
-                "ExtGState /GS1 /BM resolved to Integer, expected Name or Array",
-            ),
-            (
-                "<< /Type /ExtGState /BM [] >>",
-                "ExtGState /GS1 /BM array is empty",
-            ),
-            (
-                "<< /Type /ExtGState /BM [/VendorUnsupported 7 /Multiply] >>",
-                "ExtGState /GS1 /BM array entry 2 resolved to Integer, expected Name",
-            ),
-            (
-                "<< /Type /ExtGState /BM [/VendorUnsupported] >>",
-                "ExtGState /GS1 /BM array contains no supported blend mode",
-            ),
-            (
-                "<< /Type /ExtGState /BM /VendorUnsupported >>",
-                "ExtGState /GS1 /BM has unsupported blend mode /VendorUnsupported",
-            ),
+    fn unknown_extgstate_blend_mode_names_keep_the_extgstate() {
+        // Poppler and PDFium: an unknown single name is Normal and an array
+        // uses its first known name. The ExtGState (here its 0.5 opacity)
+        // must still apply instead of being rejected as a whole.
+        for extgstate in [
+            "<< /Type /ExtGState /ca 0.5 /BM [] >>",
+            "<< /Type /ExtGState /ca 0.5 /BM [/VendorUnsupported 7 /Multiply] >>",
+            "<< /Type /ExtGState /ca 0.5 /BM [/VendorUnsupported] >>",
+            "<< /Type /ExtGState /ca 0.5 /BM /VendorUnsupported >>",
         ] {
             let pdf = pdf_with_smask_extgstate(extgstate);
-            let engine = ContentEngine::open_bytes(pdf).expect("open malformed ExtGState /BM PDF");
-            let error = engine
+            let engine = ContentEngine::open_bytes(pdf).expect("open ExtGState /BM PDF");
+            let buf = engine
                 .render_page_with_mode(1, 72, RenderMode::Compat)
-                .expect_err("malformed ExtGState /BM must not silently select default blend");
-            let message = format!("{error}");
+                .unwrap_or_else(|err| panic!("{extgstate} must render: {err}"));
+            let pixel = buf.get_pixel(100, 80);
+            // 0.2 0.6 0.9 at half opacity over white (Normal and Multiply
+            // agree on a white backdrop).
             assert!(
-                message.contains(expected),
-                "expected {expected:?}, got {message}"
+                (pixel[0] as i32 - 153).abs() <= 3
+                    && (pixel[1] as i32 - 204).abs() <= 3
+                    && (pixel[2] as i32 - 242).abs() <= 3,
+                "{extgstate}: expected half-opacity fill, got {pixel:?}"
             );
         }
+    }
+
+    #[test]
+    fn malformed_extgstate_blend_mode_returns_typed_refusal() {
+        let expected = "ExtGState /GS1 /BM resolved to Integer, expected Name or Array";
+        let pdf = pdf_with_smask_extgstate("<< /Type /ExtGState /BM 42 >>");
+        let engine = ContentEngine::open_bytes(pdf).expect("open malformed ExtGState /BM PDF");
+        let error = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect_err("malformed ExtGState /BM must not silently select default blend");
+        let message = format!("{error}");
+        assert!(
+            message.contains(expected),
+            "expected {expected:?}, got {message}"
+        );
     }
 
     #[test]
@@ -38892,18 +39977,406 @@ mod tests {
         );
 
         for (content, expected) in [
-            ("(Hi) Tj\n", "requires active text object"),
+            (
+                "/F1 12 Tf 10 10 Td (Hi) Tj\n",
+                "requires active text object",
+            ),
             ("ET\n", "ET has no active text object"),
             ("BT BT ET\n", "nested BT"),
-            ("BT\n", "BT has no closing ET"),
         ] {
-            let pdf = simple_vector_pdf(content);
+            let pdf = simple_text_pdf_with_extgstate(content, "<< /Type /ExtGState >>");
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed text-sequence PDF");
-            let error = engine
+            // Poppler and PDFium tolerate malformed BT/ET sequences.
+            engine
                 .render_page_with_mode(1, 72, RenderMode::Compat)
-                .expect_err("malformed text-object sequence must not render with default state");
+                .unwrap_or_else(|err| panic!("{content:?} must render in compat: {err}"));
+            let error = engine
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
+                .expect_err("exact rendering refuses a malformed text-object sequence");
             assert!(format!("{error}").contains(expected), "got {error}");
         }
+        let engine = ContentEngine::open_bytes(simple_vector_pdf("BT\n")).expect("open PDF");
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("an unclosed text object renders");
+    }
+
+    fn dark_pixels_in(buf: &PixelBuffer, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+        let mut count = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let pixel = buf.get_pixel(x, y);
+                if pixel[0] < 128 && pixel[1] < 128 && pixel[2] < 128 && pixel[3] > 0 {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn red_pixels_in(buf: &PixelBuffer, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+        let mut count = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let pixel = buf.get_pixel(x, y);
+                if pixel[0] > 200 && pixel[1] < 80 && pixel[2] < 80 {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn text_outside_bt_et_draws_in_compat() {
+        let pdf = simple_text_pdf_with_extgstate(
+            "/F1 40 Tf 1 0 0 1 10 40 Tm (H) Tj\n",
+            "<< /Type /ExtGState >>",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open text PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("text outside BT/ET renders");
+        assert!(
+            dark_pixels_in(&buf, 8, 25, 45, 62) > 50,
+            "the H must be drawn"
+        );
+    }
+
+    #[test]
+    fn negative_font_size_draws_mirrored_text() {
+        let pdf = simple_text_pdf_with_extgstate(
+            "BT /F1 -40 Tf 1 0 0 1 60 60 Tm (H) Tj ET\n",
+            "<< /Type /ExtGState >>",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open text PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("negative font size renders");
+        // Mirrored through the origin: the glyph lies left of and below the
+        // text origin (device y grows downwards).
+        assert!(dark_pixels_in(&buf, 25, 40, 60, 70) > 50, "mirrored H");
+        assert_eq!(dark_pixels_in(&buf, 60, 5, 100, 40), 0, "no upright H");
+    }
+
+    fn wp2_page_pdf(
+        resources: &str,
+        content: &[u8],
+        catalog_extra: &str,
+        extra: &[Vec<u8>],
+    ) -> Vec<u8> {
+        // Objects 1-4 are fixed; `extra` objects start at number 5.
+        let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+        stream.extend_from_slice(content);
+        stream.extend_from_slice(b"\nendstream");
+        let mut objects = vec![
+            format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>").into_bytes(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources {resources} /Contents 4 0 R >>"
+            )
+            .into_bytes(),
+            stream,
+        ];
+        objects.extend(extra.iter().cloned());
+        build_test_pdf_from_objects(&objects)
+    }
+
+    fn wp2_stream(dict: &str, content: &[u8]) -> Vec<u8> {
+        let mut out = format!("<< {dict} /Length {} >>\nstream\n", content.len()).into_bytes();
+        out.extend_from_slice(content);
+        out.extend_from_slice(b"\nendstream");
+        out
+    }
+
+    const WP2_HELVETICA: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+    #[test]
+    fn transfer_function_applies_to_fills_images_and_restores_with_q() {
+        // An inverting /TR curve: 1 - x.
+        let content = b"q /GS1 gs 0.2 0.4 0.6 rg 0 50 100 50 re f \
+            q 100 0 0 50 0 0 cm BI /W 1 /H 1 /CS /RGB /BPC 8 ID 3fz EI Q Q \
+            0.2 0.4 0.6 rg 0 0 10 10 re f";
+        for (transfer, expected) in [
+            (
+                "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>",
+                [[204, 153, 102], [204, 153, 133]],
+            ),
+            (
+                "[<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >> /Identity /Identity /Identity]",
+                [[204, 102, 153], [204, 102, 122]],
+            ),
+        ] {
+            let pdf = wp2_page_pdf(
+                &format!("<< /ExtGState << /GS1 << /Type /ExtGState /TR {transfer} >> >> >>"),
+                content,
+                "",
+                &[],
+            );
+            let engine = ContentEngine::open_bytes(pdf).expect("open transfer PDF");
+            for mode in [RenderMode::Compat, RenderMode::HighQuality] {
+                let buf = engine
+                    .render_page_with_mode(1, 72, mode)
+                    .unwrap_or_else(|err| panic!("{transfer}: {err}"));
+                for (pixel, expected) in [buf.get_pixel(50, 25), buf.get_pixel(50, 75)]
+                    .into_iter()
+                    .zip(expected)
+                {
+                    for channel in 0..3 {
+                        assert!(
+                            (pixel[channel] as i32 - expected[channel]).abs() <= 2,
+                            "{transfer}: got {pixel:?}, expected {expected:?}"
+                        );
+                    }
+                }
+                // Q restores the identity transfer.
+                let restored = buf.get_pixel(5, 95);
+                assert!(
+                    (restored[0] as i32 - 51).abs() <= 2 && (restored[2] as i32 - 153).abs() <= 2,
+                    "Q must restore the identity transfer, got {restored:?}"
+                );
+            }
+        }
+    }
+
+    fn wp2_red_tiling_pattern(with_resources: bool) -> Vec<u8> {
+        let resources = if with_resources {
+            "/Resources << >>"
+        } else {
+            ""
+        };
+        wp2_stream(
+            &format!(
+                "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 {resources}"
+            ),
+            b"1 0 0 rg 0 0 10 10 re f",
+        )
+    }
+
+    #[test]
+    fn pattern_filled_text_paints_the_pattern_through_the_glyphs() {
+        for (pattern, label) in [
+            (wp2_red_tiling_pattern(true), "tiling"),
+            (
+                b"<< /Type /Pattern /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [1 0 0] /N 1 >> >> >>".to_vec(),
+                "shading",
+            ),
+        ] {
+            let pdf = wp2_page_pdf(
+                &format!("<< /Font << /F1 {WP2_HELVETICA} >> /Pattern << /P1 5 0 R >> >>"),
+                b"/Pattern cs /P1 scn BT /F1 60 Tf 10 30 Td (H) Tj ET",
+                "",
+                &[pattern],
+            );
+            let engine = ContentEngine::open_bytes(pdf).expect("open pattern text PDF");
+            let buf = engine
+                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .unwrap_or_else(|err| panic!("{label}: {err}"));
+            assert!(
+                red_pixels_in(&buf, 0, 0, 100, 100) > 200,
+                "{label}: pattern must paint through the glyph"
+            );
+            // Outside the glyph the page stays white.
+            assert_eq!(buf.get_pixel(95, 5), WHITE, "{label}");
+            assert_eq!(buf.get_pixel(95, 95), WHITE, "{label}");
+        }
+    }
+
+    #[test]
+    fn pattern_filled_stencil_mask_paints_the_pattern_through_the_mask() {
+        let mut content =
+            b"/Pattern cs /P1 scn q 50 0 0 50 25 25 cm BI /W 8 /H 1 /IM true /BPC 1 ID ".to_vec();
+        content.push(0x0f);
+        content.extend_from_slice(b" EI Q");
+        let pdf = wp2_page_pdf(
+            "<< /Pattern << /P1 5 0 R >> >>",
+            &content,
+            "",
+            &[wp2_red_tiling_pattern(true)],
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open pattern stencil PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("pattern stencil renders");
+        // Samples 0 paint (default /Decode [0 1]): the left half.
+        assert_eq!(buf.get_pixel(30, 50), [255, 0, 0, 255]);
+        assert_eq!(buf.get_pixel(70, 50), WHITE);
+    }
+
+    #[test]
+    fn tiling_pattern_without_resources_renders_with_caller_resources() {
+        let pdf = wp2_page_pdf(
+            "<< /Pattern << /P1 5 0 R >> >>",
+            b"/Pattern cs /P1 scn 0 0 100 100 re f",
+            "",
+            &[wp2_red_tiling_pattern(false)],
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open pattern PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("pattern without /Resources renders");
+        assert_eq!(buf.get_pixel(50, 50), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn over_budget_tiling_pattern_degrades_instead_of_skipping() {
+        for (step, content, label) in [
+            // 10^8 sub-pixel cells, half red: averages to half-opacity red.
+            ("0.01", "1 0 0 rg 0 0 0.005 0.01 re f", "average"),
+            // A 4x4 pt cell with a replay budget blown by many operations.
+            ("4", "1 0 0 rg 0 0 2 4 re f", "bitmap"),
+        ] {
+            let mut body = content.to_string();
+            if label == "bitmap" {
+                body.push_str(&" 0 0 0 0 re f".repeat(20_000));
+            }
+            let pattern = wp2_stream(
+                &format!(
+                    "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 {step} {step}] /XStep {step} /YStep {step} /Resources << >>"
+                ),
+                body.as_bytes(),
+            );
+            let pdf = wp2_page_pdf(
+                "<< /Pattern << /P1 5 0 R >> >>",
+                b"/Pattern cs /P1 scn 0 0 100 100 re f",
+                "",
+                &[pattern],
+            );
+            let engine = ContentEngine::open_bytes(pdf).expect("open pattern PDF");
+            let buf = engine
+                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .unwrap_or_else(|err| panic!("{label}: {err}"));
+            if label == "average" {
+                let pixel = buf.get_pixel(50, 50);
+                assert!(
+                    pixel[0] > 240 && (90..170).contains(&pixel[1]),
+                    "{label}: expected half-opacity red, got {pixel:?}"
+                );
+            } else {
+                // Cells are 4 px wide with the left 2 px red.
+                let reds = (0..100).filter(|x| buf.get_pixel(*x, 50)[1] < 60).count();
+                assert!((35..65).contains(&reds), "{label}: {reds} red columns");
+            }
+            engine
+                .render_page_with_mode(1, 72, RenderMode::HighQuality)
+                .expect_err("exact rendering still refuses an over-budget pattern");
+        }
+    }
+
+    #[test]
+    fn color_key_masks_compare_raw_indexed_and_cmyk_samples() {
+        // Indexed: palette index 0 is keyed out.
+        let indexed = wp2_stream(
+            "/Type /XObject /Subtype /Image /Width 2 /Height 1 /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 <ff000000ff00>] /Mask [0 0]",
+            &[0, 1],
+        );
+        // CMYK: the cyan sample is keyed out, the magenta one stays.
+        let cmyk = wp2_stream(
+            "/Type /XObject /Subtype /Image /Width 2 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceCMYK /Mask [255 255 0 0 0 0 0 0]",
+            &[0, 255, 0, 0, 255, 0, 0, 0],
+        );
+        for (image, left_kept, label) in [(indexed, false, "Indexed"), (cmyk, true, "CMYK")] {
+            let pdf = wp2_page_pdf(
+                "<< /XObject << /Im1 5 0 R >> >>",
+                b"q 100 0 0 100 0 0 cm /Im1 Do Q",
+                "",
+                &[image],
+            );
+            let engine = ContentEngine::open_bytes(pdf).expect("open color-key PDF");
+            let buf = engine
+                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .unwrap_or_else(|err| panic!("{label}: {err}"));
+            let left = buf.get_pixel(25, 50);
+            let right = buf.get_pixel(75, 50);
+            if left_kept {
+                assert!(left[1] < 120 && left[0] > 150, "{label} left: {left:?}");
+                assert_eq!(right, WHITE, "{label} right keyed out");
+            } else {
+                assert_eq!(left, WHITE, "{label} left keyed out");
+                assert!(right[1] > 200 && right[0] < 60, "{label} right: {right:?}");
+            }
+        }
+    }
+
+    fn wp2_oc_pdf(content: &[u8], ocproperties: &str) -> Vec<u8> {
+        wp2_page_pdf(
+            &format!(
+                "<< /Font << /F1 {WP2_HELVETICA} >> /Properties << /MC0 << /Type /OCMD /VE [/And 5 0 R [/Not 6 0 R]] >> /MC1 << /Type /OCMD /VE [/Or 6 0 R [/And 6 0 R 5 0 R]] >> /Off 6 0 R >> >>"
+            ),
+            content,
+            &format!("/OCProperties {ocproperties}"),
+            &[
+                b"<< /Type /OCG /Name (On) >>".to_vec(),
+                b"<< /Type /OCG /Name (Off) >>".to_vec(),
+            ],
+        )
+    }
+
+    #[test]
+    fn ocmd_visibility_expressions_select_content() {
+        let pdf = wp2_oc_pdf(
+            b"/OC /MC0 BDC 1 0 0 rg 0 0 50 100 re f EMC /OC /MC1 BDC 0 0 1 rg 50 0 50 100 re f EMC",
+            "<< /OCGs [5 0 R 6 0 R] /D << /OFF [6 0 R] >> >>",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open OCMD PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("OCMD /VE renders");
+        assert_eq!(
+            buf.get_pixel(25, 50),
+            [255, 0, 0, 255],
+            "And(On, Not Off) is visible"
+        );
+        assert_eq!(
+            buf.get_pixel(75, 50),
+            WHITE,
+            "Or(Off, And(Off, On)) is hidden"
+        );
+    }
+
+    #[test]
+    fn malformed_optional_content_configuration_shows_all_content() {
+        let pdf = wp2_oc_pdf(
+            b"/OC /Off BDC 0 0 1 rg 0 0 100 100 re f EMC",
+            "<< /OCGs [5 0 R 6 0 R] /D 42 /OFF [6 0 R] >>",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open malformed OC PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("malformed OC configuration renders");
+        assert_eq!(buf.get_pixel(50, 50), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn hidden_text_still_advances_the_text_position() {
+        let pdf = wp2_oc_pdf(
+            b"BT /F1 20 Tf 10 50 Td /OC /Off BDC (HHHH) Tj EMC (H) Tj ET",
+            "<< /OCGs [5 0 R 6 0 R] /D << /OFF [6 0 R] >> >>",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open hidden text PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("hidden text renders");
+        // Four hidden H advances (4 x 14.44 pt) put the visible H at x ~68.
+        assert!(
+            dark_pixels_in(&buf, 64, 30, 90, 52) > 20,
+            "visible H after hidden text"
+        );
+        assert_eq!(
+            dark_pixels_in(&buf, 0, 30, 60, 52),
+            0,
+            "hidden text paints nothing"
+        );
+    }
+
+    #[test]
+    fn text_with_extra_operands_uses_the_last_operands() {
+        let pdf = simple_vector_pdf("0 0 0 1 0 0 rg 0 0 100 100 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("extra operands use the last ones");
+        assert_eq!(buf.get_pixel(50, 50), [255, 0, 0, 255]);
     }
 
     #[test]
@@ -38999,7 +40472,7 @@ mod tests {
 
     #[test]
     fn malformed_path_operator_returns_typed_refusal() {
-        for (content, expected) in [("10 10 l S\n", "l"), ("0 0 m 10 10 l 1 S\n", "S")] {
+        for (content, expected) in [("10 10 l S\n", "l"), ("0 0 m 10 l S\n", "l")] {
             let pdf = simple_vector_pdf(content);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed path PDF");
             let error = engine
@@ -39539,7 +41012,7 @@ mod tests {
             .render_page_with_mode(1, 72, RenderMode::HighQuality)
             .expect_err("recursive Type3 charproc must not silently skip glyph paint");
         assert!(
-            format!("{error}").contains("Type 3 charproc nesting depth limit reached"),
+            format!("{error}").contains("Type 3 charproc nesting"),
             "unexpected Type3 recursion refusal: {error}"
         );
     }
@@ -40115,7 +41588,7 @@ mod tests {
         build_test_pdf_from_objects(&objects)
     }
 
-    fn pdf_with_deep_form_xobject_chain() -> Vec<u8> {
+    fn pdf_with_deep_form_xobject_chain(depth: usize) -> Vec<u8> {
         let page_content = "q /Fm1 Do Q\n";
         let mut objects = vec![
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -40130,8 +41603,8 @@ mod tests {
             )
             .into_bytes(),
         ];
-        for idx in 1..=9 {
-            let next_resource = if idx < 9 {
+        for idx in 1..=depth {
+            let next_resource = if idx < depth {
                 format!(
                     "/Resources << /XObject << /Fm{} {} 0 R >> >>",
                     idx + 1,
@@ -40140,7 +41613,7 @@ mod tests {
             } else {
                 "/Resources << >>".to_string()
             };
-            let form_content = if idx < 9 {
+            let form_content = if idx < depth {
                 format!("q /Fm{} Do Q\n", idx + 1)
             } else {
                 "0 0 1 rg 0 0 10 10 re f\n".to_string()

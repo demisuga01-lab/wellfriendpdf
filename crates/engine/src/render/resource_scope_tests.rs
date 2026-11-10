@@ -134,7 +134,9 @@ mod resource_scopes {
     }
 
     #[test]
-    fn legacy_nested_form_uses_original_page_scope_including_inside_group() {
+    fn legacy_nested_form_inherits_caller_scope_including_inside_group() {
+        // Poppler's resource chain: a Form without /Resources looks names up
+        // in its caller's resources, not the original page's.
         for group in [false, true] {
             let engine = ContentEngine::open_bytes(fixture_pdf(group, "", "/Shared Do")).unwrap();
             let mut state = state(&engine);
@@ -143,8 +145,8 @@ mod resource_scopes {
             state.check_fatal_render_error().unwrap();
             assert_eq!(
                 state.buf.get_pixel(5, 5),
-                RED,
-                "must use page /Shared, not blue caller /Shared"
+                BLUE,
+                "must use the blue caller /Shared, not the red page /Shared"
             );
             assert_eq!(page_resources_fingerprint(&state.resources), before);
         }
@@ -165,7 +167,7 @@ mod resource_scopes {
     }
 
     #[test]
-    fn form_cache_is_page_scoped_not_caller_scoped_and_rejects_bad_resources() {
+    fn form_cache_is_caller_scoped_and_rejects_bad_resources() {
         let engine = ContentEngine::open_bytes(fixture_pdf(false, "", "/Shared Do")).unwrap();
         let mut state = state(&engine);
         state.exactness_policy = ExactnessPolicy::HighQualityExact;
@@ -176,7 +178,9 @@ mod resource_scopes {
         let nested = state
             .cached_form_xobject_program("Nested", 7, 0, None, None)
             .unwrap();
-        assert!(Arc::ptr_eq(&page, &nested));
+        // A Form without /Resources inherits its caller's scope, so the page
+        // and the Outer Form prepare different programs.
+        assert!(!Arc::ptr_eq(&page, &nested));
         for invalid in ["/Resources 42", "/Resources 11 0 R"] {
             let engine = ContentEngine::open_bytes(fixture_pdf(false, invalid, "")).unwrap();
             let mut state = self::state(&engine);
@@ -331,10 +335,12 @@ mod resource_scopes {
     }
 
     #[test]
-    fn tiling_pattern_has_a_complete_required_scope_and_legacy_children_use_page() {
+    fn tiling_pattern_scope_and_legacy_children_inherit_the_caller() {
         let engine = ContentEngine::open_bytes(fixture_pdf(false, "", "/Shared Do")).unwrap();
         for (resources, content, expected) in [
-            (None, "/Shared Do", None),
+            // A pattern without /Resources uses the resources where it is
+            // painted (Poppler, PDFium): here the page's red /Shared.
+            (None, "/Shared Do", Some(RED)),
             (Some(PdfDictionary::empty()), "/Shared Do", None),
             (
                 Some(dict_with(&[(
@@ -370,8 +376,10 @@ mod resource_scopes {
                         ),
                     ])),
                 )])),
+                // The Nested Form has no /Resources and inherits the
+                // pattern's blue /Shared.
                 "/Nested Do",
-                Some(RED),
+                Some(BLUE),
             ),
         ] {
             let mut state = state(&engine);

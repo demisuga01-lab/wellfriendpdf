@@ -410,7 +410,65 @@ pub struct GraphicsState {
     pub fill_pattern_name: Option<String>,
     /// Name of the current stroke pattern resource, set by `SCN /PatternName`.
     pub stroke_pattern_name: Option<String>,
+    /// Active ExtGState `/TR` or `/TR2` transfer curves, evaluated into
+    /// 256-entry lookup tables by the renderer. `None` is the identity
+    /// (also `/Identity` and `/Default`).
+    pub transfer: Option<std::sync::Arc<TransferLut>>,
     stack: Vec<GraphicsStateSnapshot>,
+}
+
+/// Per-component transfer-function lookup tables (PDF 32000-1 10.5).
+///
+/// Tables 0..3 hold the curves for the red/green/blue (or cyan/magenta/
+/// yellow) components and table 3 the gray (or black) component. A single
+/// transfer function fills all four tables with the same curve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferLut {
+    pub channels: [[u8; 256]; 4],
+}
+
+impl TransferLut {
+    /// Apply the curves to an RGBA output pixel (alpha is unchanged).
+    #[inline]
+    pub fn apply_rgba(&self, pixel: [u8; 4]) -> [u8; 4] {
+        [
+            self.channels[0][pixel[0] as usize],
+            self.channels[1][pixel[1] as usize],
+            self.channels[2][pixel[2] as usize],
+            pixel[3],
+        ]
+    }
+
+    /// Apply the curves in place to straight (non-premultiplied) RGBA bytes.
+    pub fn apply_rgba_slice(&self, pixels: &mut [u8]) {
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel[0] = self.channels[0][pixel[0] as usize];
+            pixel[1] = self.channels[1][pixel[1] as usize];
+            pixel[2] = self.channels[2][pixel[2] as usize];
+        }
+    }
+
+    pub fn is_identity(&self) -> bool {
+        self.channels.iter().all(|table| {
+            table
+                .iter()
+                .enumerate()
+                .all(|(index, value)| usize::from(*value) == index)
+        })
+    }
+}
+
+/// The transfer-function object an ExtGState selects: `/TR2` takes
+/// precedence over `/TR` (PDF 32000-1 Table 58).
+pub fn ext_g_state_transfer_object(dict: &PdfDictionary) -> Option<&PdfObject> {
+    dict.get("TR2").or_else(|| dict.get("TR"))
+}
+
+/// True when the ExtGState sets a transfer function that is not the
+/// identity (`/Identity`, `/Default`, or four `/Identity` names).
+pub fn ext_g_state_has_non_identity_transfer(dict: &PdfDictionary) -> bool {
+    ext_g_state_transfer_object(dict)
+        .is_some_and(|value| !ext_g_state_transfer_value_is_identity(value))
 }
 
 #[derive(Debug, Clone)]
@@ -441,6 +499,7 @@ struct GraphicsStateSnapshot {
     clip_dirty: bool,
     fill_pattern_name: Option<String>,
     stroke_pattern_name: Option<String>,
+    transfer: Option<std::sync::Arc<TransferLut>>,
 }
 
 fn parse_ext_g_state_dash(items: &[PdfObject]) -> Option<LineDash> {
@@ -518,15 +577,14 @@ fn validate_ext_g_state_metadata(
     validate_ext_g_state_bool(dict, "SA", label)?;
     validate_ext_g_state_bool(dict, "AIS", label)?;
     validate_ext_g_state_bool(dict, "TK", label)?;
-    // Transfer functions affect painted colour, not text decoding, text
-    // matrices, advances, or visibility.  Renderers must still fail closed
-    // when this compact graphics state cannot represent a non-identity
-    // transfer function.  Text collectors, however, must not reject a valid
-    // PDF merely because (for example) it uses the spec-defined
-    // `/TR2 /Default` value.
+    // Transfer functions affect painted colour only. The raster renderer
+    // evaluates real curves into lookup tables, and a curve it cannot
+    // evaluate is treated as the identity (Poppler, PDFium) instead of
+    // rejecting the whole ExtGState with its opacity and soft mask. Render
+    // callers keep the structural type check.
     if require_identity_transfer {
-        validate_ext_g_state_identity_transfer(dict, "TR", label)?;
-        validate_ext_g_state_identity_transfer(dict, "TR2", label)?;
+        validate_ext_g_state_transfer_type(dict, "TR", label)?;
+        validate_ext_g_state_transfer_type(dict, "TR2", label)?;
     }
     validate_ext_g_state_nonnegative_number(dict, "FL", label)?;
     validate_ext_g_state_nonnegative_number(dict, "SM", label)?;
@@ -557,39 +615,25 @@ fn validate_ext_g_state_blend_mode(
     };
 
     match value {
+        // Like Poppler and PDFium, an unknown blend-mode name is not an
+        // error: a single unknown name selects Normal and an array uses its
+        // first recognised name (Normal when it has none). Rejecting the
+        // whole ExtGState would also lose its opacity and soft mask.
         PdfObject::Name(name) => {
-            if BlendMode::from_supported_name(name).is_some() {
-                Ok(())
-            } else {
-                Err(format!("{label} /BM has unsupported blend mode /{name}"))
+            if BlendMode::from_supported_name(name).is_none() {
+                log::warn!("{label} /BM has unknown blend mode /{name}; using Normal");
             }
+            Ok(())
         }
         PdfObject::Array(items) => {
-            if items.is_empty() {
-                return Err(format!("{label} /BM array is empty"));
+            if !items
+                .iter()
+                .filter_map(PdfObject::as_name)
+                .any(|name| BlendMode::from_supported_name(name).is_some())
+            {
+                log::warn!("{label} /BM array contains no known blend mode; using Normal");
             }
-
-            let mut has_supported = false;
-            for (idx, item) in items.iter().enumerate() {
-                let Some(name) = item.as_name() else {
-                    return Err(format!(
-                        "{label} /BM array entry {} resolved to {}, expected Name",
-                        idx + 1,
-                        item.variant_name()
-                    ));
-                };
-                if BlendMode::from_supported_name(name).is_some() {
-                    has_supported = true;
-                }
-            }
-
-            if has_supported {
-                Ok(())
-            } else {
-                Err(format!(
-                    "{label} /BM array contains no supported blend mode"
-                ))
-            }
+            Ok(())
         }
         other => Err(format!(
             "{label} /BM resolved to {}, expected Name or Array",
@@ -729,7 +773,7 @@ fn validate_ext_g_state_bool(
     }
 }
 
-fn validate_ext_g_state_identity_transfer(
+fn validate_ext_g_state_transfer_type(
     dict: &PdfDictionary,
     key: &str,
     label: &str,
@@ -737,15 +781,14 @@ fn validate_ext_g_state_identity_transfer(
     let Some(value) = dict.get(key) else {
         return Ok(());
     };
-    if ext_g_state_transfer_value_is_identity(value) {
-        return Ok(());
-    }
     match value {
-        PdfObject::Name(_) | PdfObject::Array(_) => Err(format!(
-            "{label} /{key} must be /Identity, /Default, or four /Identity names"
-        )),
+        PdfObject::Name(_)
+        | PdfObject::Array(_)
+        | PdfObject::Dictionary(_)
+        | PdfObject::Stream { .. }
+        | PdfObject::Reference { .. } => Ok(()),
         other => Err(format!(
-            "{label} /{key} resolved to {}, expected Name or Array",
+            "{label} /{key} resolved to {}, expected a function, Name or Array",
             other.variant_name()
         )),
     }
@@ -907,6 +950,7 @@ impl Default for GraphicsState {
             clip_dirty: false,
             fill_pattern_name: None,
             stroke_pattern_name: None,
+            transfer: None,
             stack: Vec::new(),
         }
     }
@@ -945,6 +989,7 @@ impl GraphicsState {
             clip_dirty: self.clip_dirty,
             fill_pattern_name: self.fill_pattern_name.clone(),
             stroke_pattern_name: self.stroke_pattern_name.clone(),
+            transfer: self.transfer.clone(),
         });
     }
 
@@ -977,6 +1022,7 @@ impl GraphicsState {
                 self.clip_dirty = snap.clip_dirty;
                 self.fill_pattern_name = snap.fill_pattern_name;
                 self.stroke_pattern_name = snap.stroke_pattern_name;
+                self.transfer = snap.transfer;
             }
             None => log::warn!("GraphicsState::pop called on empty stack"),
         }
@@ -1097,13 +1143,23 @@ impl GraphicsState {
             self.miter_limit = ml.max(1.0);
         }
         if let Some(bm_name) = dict.get_name("BM") {
+            // Unknown names fall back to Normal (Poppler, PDFium).
             self.blend_mode = BlendMode::from_name(bm_name);
-        } else if let Some(first_supported) = dict.get_array("BM").and_then(|arr| {
-            arr.iter()
+        } else if let Some(arr) = dict.get_array("BM") {
+            // The first recognised name wins; an array with none is Normal.
+            self.blend_mode = arr
+                .iter()
                 .filter_map(PdfObject::as_name)
                 .find_map(BlendMode::from_supported_name)
-        }) {
-            self.blend_mode = first_supported;
+                .unwrap_or(BlendMode::Normal);
+        }
+        if let Some(transfer) = ext_g_state_transfer_object(dict) {
+            // Identity and Default reset the curve here. A real function is
+            // evaluated by the renderer, which owns function evaluation, and
+            // installed right after this call.
+            if ext_g_state_transfer_value_is_identity(transfer) {
+                self.transfer = None;
+            }
         }
         if let Some(intent) = dict.get_name("RI") {
             self.rendering_intent = intent.to_string();
@@ -1757,13 +1813,8 @@ mod tests {
             ),
             (
                 "TR2",
-                PdfObject::Array(vec![
-                    PdfObject::Name("Identity".to_string()),
-                    PdfObject::Name("Default".to_string()),
-                    PdfObject::Name("Identity".to_string()),
-                    PdfObject::Name("Identity".to_string()),
-                ]),
-                "/TR2 must be /Identity, /Default, or four /Identity names",
+                PdfObject::Integer(3),
+                "/TR2 resolved to Integer, expected a function, Name or Array",
             ),
             (
                 "Type",
@@ -2183,6 +2234,55 @@ mod tests {
         gs.apply_ext_g_state(&ext);
 
         assert_eq!(gs.blend_mode, BlendMode::Multiply);
+    }
+
+    #[test]
+    fn unknown_blend_mode_names_select_normal_without_rejecting() {
+        for bm in [
+            PdfObject::Name("VendorUnsupported".to_string()),
+            PdfObject::Array(vec![PdfObject::Name("VendorUnsupported".to_string())]),
+            PdfObject::Array(Vec::new()),
+        ] {
+            let mut gs = GraphicsState::new();
+            gs.blend_mode = BlendMode::Multiply;
+            let mut ext = PdfDictionary::empty();
+            ext.insert("ca", PdfObject::Real(0.25));
+            ext.insert("BM", bm);
+            gs.try_apply_ext_g_state(&ext, "ExtGState /GS1")
+                .expect("unknown blend modes must not reject the ExtGState");
+            assert_eq!(gs.blend_mode, BlendMode::Normal);
+            assert_eq!(gs.fill_alpha, 0.25);
+        }
+    }
+
+    #[test]
+    fn transfer_function_state_is_saved_and_reset_by_identity() {
+        let mut gs = GraphicsState::new();
+        let mut channels = [[0u8; 256]; 4];
+        for table in &mut channels {
+            for (index, value) in table.iter_mut().enumerate() {
+                *value = 255 - index as u8;
+            }
+        }
+        let lut = std::sync::Arc::new(TransferLut { channels });
+        assert!(!lut.is_identity());
+        assert_eq!(lut.apply_rgba([0, 10, 255, 7]), [255, 245, 0, 7]);
+        let mut function = PdfDictionary::empty();
+        function.insert("FunctionType", PdfObject::Integer(2));
+        let mut ext = PdfDictionary::empty();
+        ext.insert("TR", PdfObject::Dictionary(function));
+        assert!(ext_g_state_has_non_identity_transfer(&ext));
+        gs.try_apply_ext_g_state(&ext, "ExtGState /GS1")
+            .expect("a real transfer function must not reject the ExtGState");
+        gs.transfer = Some(lut.clone());
+        gs.push();
+        let mut identity = PdfDictionary::empty();
+        identity.insert("TR2", PdfObject::Name("Default".to_string()));
+        assert!(!ext_g_state_has_non_identity_transfer(&identity));
+        gs.apply_ext_g_state(&identity);
+        assert!(gs.transfer.is_none());
+        gs.pop();
+        assert_eq!(gs.transfer.as_deref(), Some(lut.as_ref()));
     }
 
     #[test]

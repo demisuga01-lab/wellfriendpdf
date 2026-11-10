@@ -502,6 +502,20 @@ impl OptionalContentContext {
         reader: &PdfReader,
         visiting: &mut HashSet<String>,
     ) -> Result<bool, String> {
+        // A visibility expression takes precedence over /OCGs and /P
+        // (PDF 32000-1 8.11.2.2). A malformed expression falls back to them,
+        // as Poppler does.
+        if let Some(expression) = dict.get("VE") {
+            match self.evaluate_visibility_expression(expression, reader, visiting, 0) {
+                Ok(visible) => return Ok(visible),
+                Err(err) => {
+                    log::warn!("OCMD /VE ignored: {err}");
+                    if dict.get("OCGs").is_none() {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         let policy = match dict.get("P") {
             Some(PdfObject::Name(name)) => name.as_str(),
             Some(object) => {
@@ -539,6 +553,73 @@ impl OptionalContentContext {
             }
         };
         Ok(visible)
+    }
+
+    /// Evaluate an OCMD `/VE` visibility expression: an array whose first
+    /// element is `/And`, `/Or` or `/Not` and whose operands are OCG
+    /// references or nested expressions (PDF 32000-1 Table 99).
+    fn evaluate_visibility_expression(
+        &self,
+        expression: &PdfObject,
+        reader: &PdfReader,
+        visiting: &mut HashSet<String>,
+        depth: usize,
+    ) -> Result<bool, String> {
+        // Poppler bounds visibility expressions at 50 levels.
+        const MAX_VISIBILITY_EXPRESSION_DEPTH: usize = 50;
+        if depth > MAX_VISIBILITY_EXPRESSION_DEPTH {
+            return Err("visibility expression nesting exceeds 50 levels".to_string());
+        }
+        let resolved = reader
+            .resolve(expression.clone())
+            .map_err(|err| format!("visibility expression failed to resolve: {err}"))?;
+        match &resolved {
+            PdfObject::Array(items) => {
+                let Some(operator) = items.first().and_then(PdfObject::as_name) else {
+                    return Err("visibility expression is missing its operator".to_string());
+                };
+                let operands = &items[1..];
+                let mut evaluate = |operand: &PdfObject| -> Result<bool, String> {
+                    self.evaluate_visibility_expression(operand, reader, visiting, depth + 1)
+                };
+                match operator {
+                    "Not" => {
+                        let [operand] = operands else {
+                            return Err(format!(
+                                "visibility expression /Not expects one operand, got {}",
+                                operands.len()
+                            ));
+                        };
+                        Ok(!evaluate(operand)?)
+                    }
+                    "And" | "Or" => {
+                        if operands.is_empty() {
+                            return Err(format!(
+                                "visibility expression /{operator} has no operands"
+                            ));
+                        }
+                        let mut result = operator == "And";
+                        for operand in operands {
+                            let value = evaluate(operand)?;
+                            if operator == "And" {
+                                result &= value;
+                            } else {
+                                result |= value;
+                            }
+                        }
+                        Ok(result)
+                    }
+                    other => Err(format!(
+                        "visibility expression has unsupported operator /{other}"
+                    )),
+                }
+            }
+            PdfObject::Dictionary(_) => self.is_object_visible_inner(expression, reader, visiting),
+            other => Err(format!(
+                "visibility expression operand resolved to {}, expected OCG or Array",
+                other.variant_name()
+            )),
+        }
     }
 }
 
