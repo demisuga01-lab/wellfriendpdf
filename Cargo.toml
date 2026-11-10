@@ -33,3 +33,10 @@ default-members = [
 # decryption fixes vendored here.
 [patch.crates-io]
 lopdf = { path = "vendor/lopdf-unlock" }
+
+# Release builds use thin link-time optimisation across crates: the renderer
+# calls through crate boundaries (engine, render-simd, codecs) on hot paths.
+# panic = "abort" is deliberately not used: the engine relies on
+# catch_unwind to contain codec panics.
+[profile.release]
+lto = "thin"

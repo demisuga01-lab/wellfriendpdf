@@ -10171,7 +10171,7 @@ impl<'a> RenderState<'a> {
                     )));
                 };
                 let mask_ref =
-                    explicit_image_mask_reference(image_ref, *number, *generation, &mask_dict)?;
+                    explicit_image_mask_reference(image_ref, *number, *generation, mask_dict)?;
                 let mask_raw = if explicit_image_mask_supports_shared_raw_window(
                     image_ref, &mask_ref, image_dict,
                 ) {
@@ -10198,7 +10198,7 @@ impl<'a> RenderState<'a> {
                     self.scheduled_decode_image(&mask_ref, "renderer explicit image mask decode")?
                 };
                 let mask_paints_ones = if mask_ref.is_mask {
-                    image_mask_paints_ones(&mask_dict)?
+                    image_mask_paints_ones(mask_dict)?
                 } else {
                     true
                 };
@@ -14440,7 +14440,7 @@ impl<'a> RenderState<'a> {
                     return;
                 }
             };
-            match image_mask_to_stencil_rgba(raw, color, paints_ones) {
+            match image_mask_to_stencil_rgba(&raw, color, paints_ones) {
                 Ok(masked) => masked,
                 Err(err) => {
                     self.record_fatal_render_error(format!(
@@ -15016,7 +15016,7 @@ impl<'a> RenderState<'a> {
                             return;
                         }
                     };
-                    match image_mask_to_stencil_rgba((*raw).clone(), color, paints_ones) {
+                    match image_mask_to_stencil_rgba(raw.as_ref(), color, paints_ones) {
                         Ok(masked) => {
                             owned_raw = Some(masked);
                             owned_raw.as_ref().expect("image mask owned raw")
@@ -17463,7 +17463,7 @@ impl<'a> RenderState<'a> {
         {
             let glyph_coverage = font_substitution_glyph_coverage(
                 font_bytes.as_slice(),
-                &variation,
+                variation,
                 decoded.as_slice(),
             );
             if let Some(event) = self.font_substitution_log.event_mut(event_index) {
@@ -17573,7 +17573,7 @@ impl<'a> RenderState<'a> {
                             is_gid: glyph.is_gid,
                             font_bytes: font_bytes.as_slice(),
                             font_hash,
-                            variation: &variation,
+                            variation,
                             upem: prepared_font.upem,
                             light_hinting_supported: prepared_font.light_hinting_supported,
                             offset_x: glyph.vertical_origin.map(|(vx, _)| -vx).unwrap_or(0.0),
@@ -17600,7 +17600,7 @@ impl<'a> RenderState<'a> {
                     }
                 } else {
                     ttf_advance = font_bytes.as_deref().and_then(|bytes| {
-                        strict_glyph_horizontal_advance(glyph, bytes.as_slice(), &variation)
+                        strict_glyph_horizontal_advance(glyph, bytes.as_slice(), variation)
                     });
                 }
             }
@@ -17610,7 +17610,7 @@ impl<'a> RenderState<'a> {
                 glyph,
                 ttf_advance,
                 font_bytes.as_deref().map(Vec::as_slice),
-                &variation,
+                variation,
                 is_type3,
             ) {
                 Ok(advance) => advance * type3_width_scale,
@@ -24972,7 +24972,7 @@ fn explicit_image_mask_allows_shared_raw_window(
             else {
                 return false;
             };
-            explicit_image_mask_reference(image_ref, *number, *generation, &mask_dict).is_ok_and(
+            explicit_image_mask_reference(image_ref, *number, *generation, mask_dict).is_ok_and(
                 |mask_ref| {
                     explicit_image_mask_supports_shared_raw_window(image_ref, &mask_ref, image_dict)
                 },
@@ -25004,7 +25004,7 @@ fn image_smask_allows_shared_source_window(
             else {
                 return false;
             };
-            image_smask_reference(image_ref, *number, *generation, &smask_dict).is_ok_and(
+            image_smask_reference(image_ref, *number, *generation, smask_dict).is_ok_and(
                 |smask_ref| {
                     smask_ref.filter.is_empty()
                         && matches!(smask_ref.color_space.as_str(), "DeviceGray" | "G")
@@ -25038,7 +25038,7 @@ fn image_smask_allows_shared_reduction(
     else {
         return false;
     };
-    let Ok(smask_ref) = image_smask_reference(image_ref, *number, *generation, &smask_dict) else {
+    let Ok(smask_ref) = image_smask_reference(image_ref, *number, *generation, smask_dict) else {
         return false;
     };
     let streamed_gray = smask_ref.width == image_ref.width
@@ -25060,7 +25060,7 @@ fn image_smask_allows_shared_reduction(
                     | "A85"
             )
         })
-        && smask_decode_array_is_default(&smask_dict);
+        && smask_decode_array_is_default(smask_dict);
     // A JPEG/JPEG 2000 image is only ever reduced, never windowed, so any
     // other mask (the JBIG2 text masks of scanned MRC pages, 1-bit, a
     // /Decode inversion) can be decoded whole by the unreduced path's decoder
@@ -25198,7 +25198,7 @@ fn image_smask_reference(
 }
 
 fn image_mask_to_stencil_rgba(
-    raw: crate::images::decoder::RawImage,
+    raw: &crate::images::decoder::RawImage,
     color: PixelColor,
     paint_ones: bool,
 ) -> Result<crate::images::decoder::RawImage> {
@@ -25216,18 +25216,19 @@ fn image_mask_to_stencil_rgba(
     }
     let channels = raw.channels as usize;
     ensure_image_mask_buffer_len(raw.pixels.len(), pixel_count * channels)?;
-    let mut pixels = Vec::with_capacity(pixel_count * 4);
-    for i in 0..pixel_count {
-        let sample = raw.pixels[i * channels];
+    let mut pixels = vec![0u8; pixel_count * 4];
+    let painted = [color[0], color[1], color[2], color[3]];
+    let unpainted = [color[0], color[1], color[2], 0];
+    for (out, &sample) in pixels
+        .chunks_exact_mut(4)
+        .zip(raw.pixels.iter().step_by(channels))
+    {
         let paint = if paint_ones {
             sample >= 128
         } else {
             sample < 128
         };
-        pixels.push(color[0]);
-        pixels.push(color[1]);
-        pixels.push(color[2]);
-        pixels.push(if paint { color[3] } else { 0 });
+        out.copy_from_slice(if paint { &painted } else { &unpainted });
     }
     Ok(crate::images::decoder::RawImage {
         width: raw.width,
@@ -48392,7 +48393,7 @@ mod tests {
             pixels: vec![255],
         };
 
-        let error = image_mask_to_stencil_rgba(raw, [10, 20, 30, 255], true)
+        let error = image_mask_to_stencil_rgba(&raw, [10, 20, 30, 255], true)
             .expect_err("short image mask must not be padded");
         assert!(
             format!("{error}").contains("image mask decoded 1 bytes, expected 2"),
