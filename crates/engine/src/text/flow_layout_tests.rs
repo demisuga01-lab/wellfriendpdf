@@ -106,7 +106,14 @@ fn character_spacing_does_not_widen_glyph_boxes() {
     // them together.
     let mut chunks = Vec::new();
     for (i, ch) in "SPACED".chars().enumerate() {
-        chunks.push(run(&ch.to_string(), 72.0 + 9.0 * i as f64, 700.0, 10.0, &[6.0], i as u32));
+        chunks.push(run(
+            &ch.to_string(),
+            72.0 + 9.0 * i as f64,
+            700.0,
+            10.0,
+            &[6.0],
+            i as u32,
+        ));
     }
     assert_eq!(text_of(&chunks), "SPACED");
 }
@@ -181,7 +188,14 @@ fn interleaved_fake_bold_glyphs_are_removed() {
     for (i, ch) in "Hi!".chars().enumerate() {
         let x = 72.0 + 5.0 * i as f64;
         chunks.push(run(&ch.to_string(), x, 700.0, 10.0, &[5.0], 2 * i as u32));
-        chunks.push(run(&ch.to_string(), x + 0.25, 700.0, 10.0, &[5.0], 2 * i as u32 + 1));
+        chunks.push(run(
+            &ch.to_string(),
+            x + 0.25,
+            700.0,
+            10.0,
+            &[5.0],
+            2 * i as u32 + 1,
+        ));
     }
     assert_eq!(text_of(&chunks), "Hi!");
 }
@@ -218,8 +232,12 @@ fn two_columns_are_read_one_after_the_other() {
         pos += 20;
     }
     let text = text_of(&chunks);
-    let lefts: Vec<usize> = (0..4).map(|r| text.find(&format!("left{r}")).unwrap()).collect();
-    let rights: Vec<usize> = (0..4).map(|r| text.find(&format!("right{r}")).unwrap()).collect();
+    let lefts: Vec<usize> = (0..4)
+        .map(|r| text.find(&format!("left{r}")).unwrap())
+        .collect();
+    let rights: Vec<usize> = (0..4)
+        .map(|r| text.find(&format!("right{r}")).unwrap())
+        .collect();
     assert!(lefts.windows(2).all(|w| w[0] < w[1]), "{text}");
     assert!(rights.windows(2).all(|w| w[0] < w[1]), "{text}");
     assert!(lefts[3] < rights[0], "left column first: {text}");
@@ -235,7 +253,12 @@ fn heading_spanning_columns_comes_first_and_footer_last() {
         chunks.push(line(&format!("beta{row}"), 320.0, y, pos + 10));
         pos += 20;
     }
-    chunks.push(line("a footer line that runs across the whole width of the page", 72.0, 600.0, 500));
+    chunks.push(line(
+        "a footer line that runs across the whole width of the page",
+        72.0,
+        600.0,
+        500,
+    ));
     let text = text_of(&chunks);
     let heading = text.find("heading").unwrap();
     let alpha = text.find("alpha0").unwrap();
@@ -279,7 +302,15 @@ fn rotated_text_is_grouped_in_its_own_pool() {
 #[test]
 fn upside_down_text_reads_in_its_own_direction() {
     // Text rotated 180 degrees: glyphs advance to the left.
-    let chunk = run_with_matrix("upside", 300.0, 400.0, 10.0, &[5.0; 6], 0, [-10.0, 0.0, 0.0, -10.0]);
+    let chunk = run_with_matrix(
+        "upside",
+        300.0,
+        400.0,
+        10.0,
+        &[5.0; 6],
+        0,
+        [-10.0, 0.0, 0.0, -10.0],
+    );
     let page = analyze_flows(&[chunk], Some(&frame()), &FlowLayoutOptions::default());
     assert_eq!(page.text(), "upside");
     assert_eq!(page.primary_rotation, 180);
@@ -312,7 +343,14 @@ fn diagonal_text_is_flagged_and_can_be_discarded() {
 #[test]
 fn rtl_line_is_emitted_in_logical_order() {
     // Hebrew alef-bet-gimel placed left to right visually as gimel bet alef.
-    let chunks = vec![run("\u{05D2}\u{05D1}\u{05D0}", 72.0, 700.0, 10.0, &[5.0; 3], 0)];
+    let chunks = vec![run(
+        "\u{05D2}\u{05D1}\u{05D0}",
+        72.0,
+        700.0,
+        10.0,
+        &[5.0; 3],
+        0,
+    )];
     let page = analyze_flows(&chunks, Some(&frame()), &FlowLayoutOptions::default());
     assert_eq!(page.text(), "\u{05D0}\u{05D1}\u{05D2}");
     assert!(!page.primary_lr);
@@ -320,7 +358,10 @@ fn rtl_line_is_emitted_in_logical_order() {
 
 #[test]
 fn glyphs_off_the_page_are_dropped() {
-    let chunks = vec![line("visible", 72.0, 700.0, 0), line("hidden", 700.0, 700.0, 20)];
+    let chunks = vec![
+        line("visible", 72.0, 700.0, 0),
+        line("hidden", 700.0, 700.0, 20),
+    ];
     assert_eq!(text_of(&chunks), "visible");
 }
 

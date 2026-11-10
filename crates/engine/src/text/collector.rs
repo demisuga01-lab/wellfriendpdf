@@ -489,7 +489,8 @@ impl<'a> TextCollector<'a> {
 
             let is_space = code.is_word_space();
             // The glyph's origin before this code advances the text matrix.
-            let glyph_to_page = crate::content::state::concat_matrix(&self.gs.text.tm, &self.gs.ctm);
+            let glyph_to_page =
+                crate::content::state::concat_matrix(&self.gs.text.tm, &self.gs.ctm);
             let (glyph_x, glyph_y) =
                 crate::content::state::transform_point(&glyph_to_page, 0.0, rise);
             let code_len = (offset - code_start).min(usize::from(u8::MAX)) as u8;
@@ -503,9 +504,7 @@ impl<'a> TextCollector<'a> {
                 stream_pos: self.stream_pos,
                 code_len,
             };
-            self.stream_pos = self
-                .stream_pos
-                .saturating_add(u32::from(code_len.max(1)));
+            self.stream_pos = self.stream_pos.saturating_add(u32::from(code_len.max(1)));
 
             if is_vertical {
                 // Vertical writing mode: glyphs advance downward by the font's

@@ -1,9 +1,10 @@
 //! Poppler-style text layout: glyphs → words → lines → blocks → flows, read
 //! in the order `pdftotext` uses by default.
 //!
-//! This is a reimplementation of the algorithm described for Poppler's
-//! `TextOutputDev` (see `docs` and Poppler's own documentation), working on
-//! the per-glyph geometry the collector records ([`TextChunk::glyph_run`]):
+//! This is an independent implementation of the algorithm Poppler's
+//! `TextOutputDev` uses (same rules and thresholds, no shared code), working
+//! on the per-glyph geometry the collector records
+//! ([`TextChunk::glyph_run`]):
 //!
 //! * **Characters.** Each glyph contributes its own origin and advance with
 //!   character/word spacing removed. Glyphs off the page or with non-finite
@@ -168,7 +169,10 @@ impl PageFrame {
             return (x, y);
         }
         let (tx, ty) = (x - m[4], y - m[5]);
-        ((m[3] * tx - m[2] * ty) / det, (-m[1] * tx + m[0] * ty) / det)
+        (
+            (m[3] * tx - m[2] * ty) / det,
+            (-m[1] * tx + m[0] * ty) / det,
+        )
     }
 }
 
@@ -868,10 +872,7 @@ impl<'o> WordBuilder<'o> {
             return;
         }
         if self.clip
-            && (x1 + w1 < 0.0
-                || x1 > self.frame.width
-                || y1 + h1 < 0.0
-                || y1 > self.frame.height)
+            && (x1 + w1 < 0.0 || x1 > self.frame.width || y1 + h1 < 0.0 || y1 > self.frame.height)
         {
             return;
         }
@@ -1148,17 +1149,27 @@ fn build_blocks(
             let mut idx = pool.base_idx(min_base);
             let lowest = pool.base_idx(min_base - line_space);
             while idx >= lowest {
-                take_words(&mut pool, idx, |w, rect| {
-                    let take = w.base < min_base
-                        && w.base >= min_base - line_space
-                        && w.rect.p0 < rect.p1
-                        && w.rect.p1 > rect.p0
-                        && (w.font_size - font_size).abs() < MAX_BLOCK_FONT_SIZE_DELTA1 * font_size;
-                    if take {
-                        new_min = w.base;
-                    }
-                    take
-                }, words, &mut rect, &mut members, &mut found, usize::MAX);
+                take_words(
+                    &mut pool,
+                    idx,
+                    |w, rect| {
+                        let take = w.base < min_base
+                            && w.base >= min_base - line_space
+                            && w.rect.p0 < rect.p1
+                            && w.rect.p1 > rect.p0
+                            && (w.font_size - font_size).abs()
+                                < MAX_BLOCK_FONT_SIZE_DELTA1 * font_size;
+                        if take {
+                            new_min = w.base;
+                        }
+                        take
+                    },
+                    words,
+                    &mut rect,
+                    &mut members,
+                    &mut found,
+                    usize::MAX,
+                );
                 idx -= 1;
             }
             min_base = new_min;
@@ -1168,17 +1179,27 @@ fn build_blocks(
             let mut idx = pool.base_idx(max_base);
             let highest = pool.base_idx(max_base + line_space);
             while idx <= highest {
-                take_words(&mut pool, idx, |w, rect| {
-                    let take = w.base > max_base
-                        && w.base <= max_base + line_space
-                        && w.rect.p0 < rect.p1
-                        && w.rect.p1 > rect.p0
-                        && (w.font_size - font_size).abs() < MAX_BLOCK_FONT_SIZE_DELTA1 * font_size;
-                    if take {
-                        new_max = w.base;
-                    }
-                    take
-                }, words, &mut rect, &mut members, &mut found, usize::MAX);
+                take_words(
+                    &mut pool,
+                    idx,
+                    |w, rect| {
+                        let take = w.base > max_base
+                            && w.base <= max_base + line_space
+                            && w.rect.p0 < rect.p1
+                            && w.rect.p1 > rect.p0
+                            && (w.font_size - font_size).abs()
+                                < MAX_BLOCK_FONT_SIZE_DELTA1 * font_size;
+                        if take {
+                            new_max = w.base;
+                        }
+                        take
+                    },
+                    words,
+                    &mut rect,
+                    &mut members,
+                    &mut found,
+                    usize::MAX,
+                );
                 idx += 1;
             }
             max_base = new_max;
@@ -1188,13 +1209,23 @@ fn build_blocks(
             let lo = pool.base_idx(min_base - intra_line);
             let hi = pool.base_idx(max_base + intra_line);
             for idx in lo..=hi {
-                take_words(&mut pool, idx, |w, rect| {
-                    w.base >= min_base - intra_line
-                        && w.base <= max_base + intra_line
-                        && w.rect.p0 < rect.p1 + col_space1
-                        && w.rect.p1 > rect.p0 - col_space1
-                        && (w.font_size - font_size).abs() < MAX_BLOCK_FONT_SIZE_DELTA2 * font_size
-                }, words, &mut rect, &mut members, &mut found, usize::MAX);
+                take_words(
+                    &mut pool,
+                    idx,
+                    |w, rect| {
+                        w.base >= min_base - intra_line
+                            && w.base <= max_base + intra_line
+                            && w.rect.p0 < rect.p1 + col_space1
+                            && w.rect.p1 > rect.p0 - col_space1
+                            && (w.font_size - font_size).abs()
+                                < MAX_BLOCK_FONT_SIZE_DELTA2 * font_size
+                    },
+                    words,
+                    &mut rect,
+                    &mut members,
+                    &mut found,
+                    usize::MAX,
+                );
             }
             if found {
                 continue;
@@ -1229,13 +1260,22 @@ fn build_blocks(
                 for idx in lo..=hi {
                     let (lo_base, hi_base) = (min_base, max_base);
                     let mut taken_base = None;
-                    take_words(&mut pool, idx, |w, rect| {
-                        let take = matches(w, rect, lo_base, hi_base);
-                        if take {
-                            taken_base = Some(w.base);
-                        }
-                        take
-                    }, words, &mut rect, &mut members, &mut found, 1);
+                    take_words(
+                        &mut pool,
+                        idx,
+                        |w, rect| {
+                            let take = matches(w, rect, lo_base, hi_base);
+                            if take {
+                                taken_base = Some(w.base);
+                            }
+                            take
+                        },
+                        words,
+                        &mut rect,
+                        &mut members,
+                        &mut found,
+                        1,
+                    );
                     if let Some(base) = taken_base {
                         if base < min_base {
                             min_base = base;
@@ -1356,9 +1396,8 @@ fn coalesce_block(
                             overlap = true;
                             break 'buckets;
                         }
-                        let better = best.is_none_or(|(bi, bk)| {
-                            w.rect.p0 < words[pool.bucket(bi)[bk]].rect.p0
-                        });
+                        let better = best
+                            .is_none_or(|(bi, bk)| w.rect.p0 < words[pool.bucket(bi)[bk]].rect.p0);
                         if delta < word_spacing && better {
                             best = Some((idx, k));
                         }
@@ -1383,7 +1422,11 @@ fn coalesce_block(
                     .0
                     .partial_cmp(b)
                     .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(key.1.partial_cmp(&r.p0).unwrap_or(std::cmp::Ordering::Equal));
+                    .then(
+                        key.1
+                            .partial_cmp(&r.p0)
+                            .unwrap_or(std::cmp::Ordering::Equal),
+                    );
                 cmp != std::cmp::Ordering::Greater
             })
             .unwrap_or(lines.len());
@@ -1468,9 +1511,8 @@ fn duplicate_overlap(w0: &Word, w1: &Word, pri: f64, sec: f64) -> (usize, usize)
     if a.p0 > b.p1 || a.p1 < b.p0 || a.s0 > b.s1 || a.s1 < b.s0 {
         return (0, l1);
     }
-    let equal_text = |len: usize, offset: usize| {
-        (0..len).all(|i| w0.chars[offset + i].ch == w1.chars[i].ch)
-    };
+    let equal_text =
+        |len: usize, offset: usize| (0..len).all(|i| w0.chars[offset + i].ch == w1.chars[i].ch);
     let match_edges = |len: usize, offset: usize| {
         (w0.chars[offset].edge - w1.chars[0].edge).abs() < pri
             && (w0.chars[offset + len - 1].edge - w1.chars[len - 1].edge).abs() < pri
@@ -1543,7 +1585,8 @@ fn coalesce_line(words: &[Word], ids: &[usize], rect: Rect) -> Line {
         let mut current = iter.next().expect("line has a word");
         for next in iter {
             let delta = gap(&current, &next);
-            let same_font = current.chars.last().map(|c| c.font) == next.chars.first().map(|c| c.font);
+            let same_font =
+                current.chars.last().map(|c| c.font) == next.chars.first().map(|c| c.font);
             let adjacent = next.chars.first().map(|c| c.pos) == Some(current.pos_end);
             if delta >= space {
                 merged.push(std::mem::replace(&mut current, next));
@@ -1823,7 +1866,8 @@ fn reading_order(
     }
     // Rule 1: `a` overlaps `b` horizontally and lies above it.
     let rule1 = |a: &PageBlock, b: &PageBlock| -> bool {
-        let overlap = (a.e.p0 <= b.e.p0 && b.e.p0 <= a.e.p1) || (b.e.p0 <= a.e.p0 && a.e.p0 <= b.e.p1);
+        let overlap =
+            (a.e.p0 <= b.e.p0 && b.e.p0 <= a.e.p1) || (b.e.p0 <= a.e.p0 && a.e.p0 <= b.e.p1);
         overlap && a.e.s0 < b.e.s0
     };
     // Rule 2: `a` lies entirely left of `b` (right of it on an RTL page).
@@ -1922,7 +1966,8 @@ fn build_flows(blocks: &[Block], pb: &[PageBlock], order: &[usize]) -> Vec<Vec<u
             let cur = &pb[index];
             let spacing = MAX_BLOCK_SPACING * blocks[last].first_font_size;
             let secondary_delta = cur.r.s0 - prev.r.s1;
-            let below = cur.r.p0 >= prev.pri_min && cur.r.p1 <= prev.pri_max && cur.r.s0 > prev.r.s0;
+            let below =
+                cur.r.p0 >= prev.pri_min && cur.r.p1 <= prev.pri_max && cur.r.s0 > prev.r.s0;
             let fits = blocks[index].first_font_size <= blocks[last].first_font_size
                 && cur.r.p0 >= pri_min
                 && cur.r.p1 <= pri_max;

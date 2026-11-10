@@ -3415,7 +3415,11 @@ mod tests {
             font_matrix: [10.0, 0.0, 0.0, 10.0],
             ascent: 0.95,
             descent: -0.35,
-            glyphs: vec![glyph(10.0, 12.0, 0, 1), glyph(22.0, 4.0, 1, 2), glyph(26.0, 8.0, 2, 4)],
+            glyphs: vec![
+                glyph(10.0, 12.0, 0, 1),
+                glyph(22.0, 4.0, 1, 2),
+                glyph(26.0, 8.0, 2, 4),
+            ],
         }));
         let page = build_text_semantic_page(
             1,
