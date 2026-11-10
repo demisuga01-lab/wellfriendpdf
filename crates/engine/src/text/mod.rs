@@ -1,5 +1,6 @@
 pub mod collector;
 pub mod extractor;
+pub mod flow_layout;
 pub mod formatter;
 pub mod poppler_modes;
 pub mod reading_order;
@@ -7,9 +8,12 @@ pub mod semantic_model;
 
 pub use collector::{
     MarkedContentId, MarkedTextChunk, ScopedTextChunk, TextAppearanceInvocation, TextChunk,
-    TextCollector, TextFormInvocation, TextTraversalLimits,
+    TextCollector, TextFormInvocation, TextGlyph, TextGlyphRun, TextTraversalLimits,
 };
 pub use extractor::{bounded_text_parallel_window, TextExtractOptions, TextExtractor};
+pub use flow_layout::{
+    analyze_flows, FlowBlock, FlowLayoutOptions, FlowLine, FlowPage, FlowWord, PageFrame, TextFlow,
+};
 pub use formatter::{LineEnding, TextFormatOptions, TextFormatter};
 pub use reading_order::{ReadingOrderReconstructor, TextLine};
 pub use semantic_model::{

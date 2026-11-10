@@ -1867,6 +1867,7 @@ fn build_line_from_text(
         is_invisible: false,
         is_actual_text: false,
         mapping_sources: Vec::new(),
+        glyph_run: None,
     };
     build_line_from_chunks(
         &[ChunkRef {
@@ -2099,6 +2100,50 @@ fn build_line_from_chunks(
     }
 }
 
+/// Character boxes from the chunk's recorded glyph geometry: each glyph's
+/// own advance, split equally among the characters it maps to (ligatures).
+/// `None` for vertical or rotated runs, runs without geometry, or when the
+/// glyphs do not cover the text exactly; callers then estimate.
+fn glyph_char_quads(chunk: &TextChunk, char_count: usize) -> Option<Vec<TextQuad>> {
+    let run = chunk.glyph_run.as_deref()?;
+    if chunk.is_vertical || run.glyphs.is_empty() {
+        return None;
+    }
+    let [a, b, _, d] = run.font_matrix;
+    // Upright, unrotated text only: the box is then x-aligned.
+    if a <= 0.0 || d <= 0.0 || b.abs() > a * 1e-3 {
+        return None;
+    }
+    let height = chunk.font_size.max(1.0);
+    let mut quads = Vec::with_capacity(char_count);
+    let mut covered = 0usize;
+    for glyph in &run.glyphs {
+        if glyph.text_start as usize != covered {
+            return None;
+        }
+        let text = chunk
+            .text
+            .get(glyph.text_start as usize..glyph.text_end as usize)?;
+        covered = glyph.text_end as usize;
+        let n = text.chars().count();
+        if n == 0 {
+            continue;
+        }
+        let step = glyph.dx / n as f64;
+        for i in 0..n {
+            let x0 = glyph.x + step * i as f64;
+            let x1 = x0 + step;
+            quads.push(TextQuad {
+                x0: x0.min(x1),
+                y0: chunk.y,
+                x1: x0.max(x1),
+                y1: chunk.y + height,
+            });
+        }
+    }
+    (covered == chunk.text.len() && quads.len() == char_count).then_some(quads)
+}
+
 fn char_quads_for_chunk(
     chunk: &TextChunk,
     chunk_index: usize,
@@ -2107,6 +2152,18 @@ fn char_quads_for_chunk(
     let chars: Vec<char> = chunk.text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
+    }
+    if let Some(quads) = glyph_char_quads(chunk, chars.len()) {
+        return chars
+            .into_iter()
+            .zip(quads)
+            .enumerate()
+            .map(|(idx, (ch, quad))| {
+                let global = *global_char_index;
+                *global_char_index += 1;
+                (idx, ch, quad, global)
+            })
+            .collect();
     }
     let mut out = Vec::with_capacity(chars.len());
     let count = chars.len().max(1) as f64;
@@ -3316,6 +3373,7 @@ mod tests {
             is_invisible: false,
             is_actual_text: false,
             mapping_sources: Vec::new(),
+            glyph_run: None,
         }
     }
 

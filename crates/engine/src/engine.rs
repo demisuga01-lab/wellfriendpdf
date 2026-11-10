@@ -2960,19 +2960,135 @@ impl ContentEngine {
         Ok(self.analyze_page_layout(page_number)?.text())
     }
 
-    /// Default page text for `extract-text`: always recover multi-column
-    /// reading order via XY-cut layout analysis, falling back to raw
-    /// content-stream order only when structured analysis yields nothing
-    /// (image-only/scanned pages) or errors. This makes layout-aware ordering
-    /// the default without ever returning *less* text than the raw path, so it
-    /// is safe to use unconditionally. Internal callers (search, redaction) keep
-    /// using [`get_page_text`](Self::get_page_text), whose conservative
+    /// Default page text for `extract-text`: the Poppler-style reading order
+    /// of [`analyze_page_flows`](Self::analyze_page_flows) (per-glyph words,
+    /// rotation pools, duplicate removal, accent merging, Breuel block order,
+    /// flows, dehyphenation, bidi). Falls back to the XY-cut order of
+    /// [`get_page_text_xycut_order`](Self::get_page_text_xycut_order) when
+    /// the flow layout yields nothing, so it never returns *less* text.
+    /// Internal callers (search, redaction) keep using
+    /// [`get_page_text`](Self::get_page_text), whose conservative
     /// auto-upgrade is unchanged.
     pub fn get_page_text_reading_order(&self, page_number: usize) -> Result<String> {
+        self.get_page_text_reading_order_with(
+            page_number,
+            &crate::text::FlowLayoutOptions::default(),
+        )
+    }
+
+    /// [`get_page_text_reading_order`](Self::get_page_text_reading_order)
+    /// with explicit layout options (e.g. discarding diagonal text).
+    pub fn get_page_text_reading_order_with(
+        &self,
+        page_number: usize,
+        options: &crate::text::FlowLayoutOptions,
+    ) -> Result<String> {
+        if let Ok(page) = self.analyze_page_flows(page_number, options) {
+            let text = page.text_with(options.dehyphenate);
+            if !text.trim().is_empty() {
+                return Ok(text);
+            }
+        }
+        self.get_page_text_xycut_order(page_number)
+    }
+
+    /// The previous default reading order: XY-cut layout analysis
+    /// ([`get_page_text_structured`](Self::get_page_text_structured)),
+    /// falling back to [`get_page_text`](Self::get_page_text) when it yields
+    /// nothing (image-only/scanned pages) or errors.
+    pub fn get_page_text_xycut_order(&self, page_number: usize) -> Result<String> {
         match self.get_page_text_structured(page_number) {
             Ok(structured) if !structured.trim().is_empty() => Ok(structured),
             _ => self.get_page_text(page_number),
         }
+    }
+
+    /// Poppler-style text layout of a page: words from per-glyph geometry,
+    /// grouped per rotation into blocks, ordered by T. Breuel's topological
+    /// sort (table-aware) and joined into flows. See
+    /// [`crate::text::flow_layout`]. Coordinates in the result are PDF user
+    /// space. As with `pdftotext`, the page is its media box shown with its
+    /// `/Rotate`, and the normal appearances of annotations that are not
+    /// hidden (filled-in form fields, stamps, free text) follow the page
+    /// content.
+    pub fn analyze_page_flows(
+        &self,
+        page_number: usize,
+        options: &crate::text::FlowLayoutOptions,
+    ) -> Result<crate::text::FlowPage> {
+        let page = self.get_page(page_number)?;
+        let page_box = render_page_box(&page, PageBox::Media)?;
+        let frame = crate::text::PageFrame::new(page_box, page.rotate);
+        let mut chunks = self.collect_page_text_chunks(page_number)?;
+        chunks.extend(self.visible_annotation_text_chunks(page_number, &chunks));
+        Ok(crate::text::analyze_flows(&chunks, Some(&frame), options))
+    }
+
+    /// Text of the normal appearances of the page's annotations that are
+    /// shown on screen (neither Hidden nor NoView). Best effort: an
+    /// annotation set whose appearances cannot be walked contributes nothing.
+    /// Glyph stream positions continue after those of `page_chunks`.
+    fn visible_annotation_text_chunks(
+        &self,
+        page_number: usize,
+        page_chunks: &[crate::text::TextChunk],
+    ) -> Vec<crate::text::TextChunk> {
+        const HIDDEN: i64 = 1 << 1;
+        const NO_VIEW: i64 = 1 << 5;
+        let Ok(annotations) = self.page_text_annotations(page_number) else {
+            return Vec::new();
+        };
+        let reader = self.doc.reader();
+        let visible: Vec<PdfObject> = annotations
+            .into_iter()
+            .filter(|annotation| {
+                let Ok(object) = reader.resolve(annotation.clone()) else {
+                    return false;
+                };
+                let Some(dict) = object.as_dict() else {
+                    return false;
+                };
+                let flags = dict
+                    .get("F")
+                    .and_then(|value| reader.resolve(value.clone()).ok())
+                    .and_then(|value| value.as_integer())
+                    .unwrap_or(0);
+                flags & (HIDDEN | NO_VIEW) == 0 && dict.get("AP").is_some()
+            })
+            .collect();
+        if visible.is_empty() {
+            return Vec::new();
+        }
+        let Ok(resources) = self.get_page_resources(page_number) else {
+            return Vec::new();
+        };
+        let cancel = crate::cancel::current_cancel_token();
+        let limits = self.page_text_limits(page_number);
+        let mut collector = crate::text::TextCollector::new(resources, reader);
+        let Ok(scoped) = collector.collect_scoped_with_appearances(&[], &visible, &limits, &cancel)
+        else {
+            return Vec::new();
+        };
+        let offset = page_chunks
+            .iter()
+            .filter_map(|chunk| chunk.glyph_run.as_deref())
+            .filter_map(|run| run.glyphs.last())
+            .map(|glyph| glyph.stream_pos.saturating_add(u32::from(glyph.code_len)))
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        scoped
+            .into_iter()
+            .map(|item| {
+                let mut chunk = item.chunk;
+                if let Some(run) = chunk.glyph_run.as_mut() {
+                    for glyph in &mut std::sync::Arc::make_mut(run).glyphs {
+                        glyph.stream_pos = glyph.stream_pos.saturating_add(offset);
+                    }
+                }
+                chunk
+            })
+            .collect()
     }
 
     /// Page text in true content-stream order (`pdftotext -raw`): runs are

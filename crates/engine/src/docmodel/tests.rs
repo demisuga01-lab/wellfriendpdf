@@ -654,6 +654,7 @@ fn rot_chunk_90_swaps_width_and_height_into_upright_run() {
         is_invisible: false,
         is_actual_text: false,
         mapping_sources: Vec::new(),
+        glyph_run: None,
     };
     rot.rotate_chunk(&mut c);
     // Box corners (50,400)→(400,750) and (150,410)→(410,650) give a hull of
