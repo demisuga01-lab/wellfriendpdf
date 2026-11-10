@@ -155,6 +155,79 @@ pub(crate) fn decode_with_target_resolution(
     })
 }
 
+/// JPX colour components before any colour-space conversion, for images whose
+/// PDF dictionary supplies `/ColorSpace` (which overrides the JPX-internal
+/// colour specification, PDF 32000-1 section 7.4.9).
+pub(crate) struct JpxComponents {
+    pub width: u32,
+    pub height: u32,
+    pub original_width: u32,
+    pub original_height: u32,
+    pub color_channels: u8,
+    pub original_bit_depth: u8,
+    /// Interleaved colour components, 8 bits per sample.
+    pub samples: Vec<u8>,
+    /// The JPX opacity channel, when present.
+    pub alpha: Option<Vec<u8>>,
+}
+
+/// Decode JPX colour components without applying the JPX colour space.
+///
+/// `resolve_palette` is false for PDF `/Indexed` images so the codestream's
+/// index values reach the PDF palette. With no `target_resolution` the largest
+/// resolution level that fits `limits` is used, as in [`decode_with_limits`].
+pub(crate) fn decode_components(
+    data: &[u8],
+    limits: &DecodeLimits,
+    resolve_palette: bool,
+    target_resolution: Option<(u32, u32)>,
+) -> Result<JpxComponents> {
+    let data = &*repair_jp2c_length(data);
+    validate_jpx_limits(data, limits)?;
+    let target_resolution =
+        target_resolution.or_else(|| reduced_target_within_limits(data, limits));
+    let original = Image::new(data, &DecodeSettings::default())
+        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
+    let (original_width, original_height) = (original.width(), original.height());
+    let settings = DecodeSettings {
+        resolve_palette_indices: resolve_palette,
+        target_resolution,
+        ..DecodeSettings::default()
+    };
+    let image = Image::new(data, &settings)
+        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
+    let metadata = metadata_from_image(&image)?;
+    validate_decoded_shape(&metadata, limits)?;
+    let decoded = image
+        .decode()
+        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode failed: {err}")))?;
+    ensure_exact_jpx_decoded_len(
+        metadata.width,
+        metadata.height,
+        metadata.stored_channels,
+        decoded.len(),
+    )?;
+    let (samples, alpha) = if metadata.has_alpha {
+        split_trailing_alpha(
+            &decoded,
+            usize::from(metadata.stored_channels),
+            usize::from(metadata.color_channels),
+        )
+    } else {
+        (decoded, None)
+    };
+    Ok(JpxComponents {
+        width: metadata.width,
+        height: metadata.height,
+        original_width,
+        original_height,
+        color_channels: metadata.color_channels,
+        original_bit_depth: metadata.original_bit_depth,
+        samples,
+        alpha,
+    })
+}
+
 fn decode_with_settings(
     data: &[u8],
     settings: DecodeSettings,

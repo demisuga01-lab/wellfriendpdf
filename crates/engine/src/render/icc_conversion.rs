@@ -7,7 +7,7 @@ use super::{
 };
 use crate::engine::PageResources;
 use crate::error::{Result, WellfriendError};
-use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
+use crate::filters::{decode_stream_lossless_strict_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::{PdfDictionary, PdfObject, PdfReader};
 use std::cell::Cell;
 
@@ -140,7 +140,8 @@ impl PreparedIcc {
                 max_decoded_bytes_per_document: cmm::DEFAULT_MAX_ICC_PROFILE_BYTES as u64,
                 ..DecodeLimits::default()
             };
-            let decoded = decode_stream_lossless_with_limits(profile, reader, &limits)?;
+            // A partially recovered profile is useless: decode strictly.
+            let decoded = decode_stream_lossless_strict_with_limits(profile, reader, &limits)?;
             if !matches!(decoded.status, StreamDecodeStatus::Complete) {
                 return Err(invalid("ICC profile stream contains an image codec filter"));
             }

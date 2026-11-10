@@ -548,6 +548,43 @@ impl Read for PdfRangeReader<'_> {
     }
 }
 
+thread_local! {
+    /// Objects currently being fetched by `PdfReader::get_object` on this
+    /// thread, keyed by reader address so independent readers never collide.
+    static RESOLVING_OBJECTS: std::cell::RefCell<Vec<(usize, u32, u16)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// RAII marker for an in-progress object fetch (see `get_object`).
+struct ResolvingGuard {
+    key: (usize, u32, u16),
+}
+
+impl ResolvingGuard {
+    fn enter(reader: &PdfReader, id: (u32, u16)) -> Option<Self> {
+        let key = (reader as *const PdfReader as usize, id.0, id.1);
+        RESOLVING_OBJECTS.with(|resolving| {
+            let mut resolving = resolving.borrow_mut();
+            if resolving.contains(&key) {
+                return None;
+            }
+            resolving.push(key);
+            Some(Self { key })
+        })
+    }
+}
+
+impl Drop for ResolvingGuard {
+    fn drop(&mut self) {
+        RESOLVING_OBJECTS.with(|resolving| {
+            let mut resolving = resolving.borrow_mut();
+            if let Some(index) = resolving.iter().rposition(|key| *key == self.key) {
+                resolving.remove(index);
+            }
+        });
+    }
+}
+
 struct LargeStreamLayout {
     number: u32,
     generation: u16,
@@ -685,7 +722,8 @@ impl PdfReader {
     /// password verifies, [`WellfriendError::EncryptedPdf`] is returned.
     pub fn from_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
         let mut repair_diagnostics = Vec::new();
-        let version = parse_header_version(&data)?;
+        let version = parse_header_version_lenient(&data, &mut repair_diagnostics);
+        let data = compensate_header_junk_prefix(data, &mut repair_diagnostics);
         let mut xref = crate::fast_hash::ObjectMap::default();
         let mut trailer = None;
         let mut visited = HashSet::new();
@@ -793,7 +831,8 @@ impl PdfReader {
         provider: &PubSecKeyProvider,
     ) -> Result<Self> {
         let mut repair_diagnostics = Vec::new();
-        let version = parse_header_version(&data)?;
+        let version = parse_header_version_lenient(&data, &mut repair_diagnostics);
+        let data = compensate_header_junk_prefix(data, &mut repair_diagnostics);
         let mut xref = crate::fast_hash::ObjectMap::default();
         let mut trailer = None;
         let mut visited = HashSet::new();
@@ -894,9 +933,9 @@ impl PdfReader {
     }
 
     fn from_seekable_source_with_password(source: PdfSource, password: &[u8]) -> Result<Self> {
-        let repair_diagnostics = Vec::new();
+        let mut repair_diagnostics = Vec::new();
         let prefix = source.read_prefix(1024)?;
-        let version = parse_header_version(&prefix)?;
+        let version = parse_header_version_lenient(&prefix, &mut repair_diagnostics);
         let mut xref = crate::fast_hash::ObjectMap::default();
         let mut trailer = None;
         let mut visited = HashSet::new();
@@ -1275,6 +1314,14 @@ impl PdfReader {
             .get(&id)
             .cloned()
             .ok_or(WellfriendError::MissingObject { number, generation })?;
+        // A stream whose /Length refers to the stream itself (directly or via
+        // its object stream) would re-enter this fetch forever. Refuse the
+        // nested fetch; the parser then delimits the body by `endstream`.
+        let _resolving = ResolvingGuard::enter(self, id).ok_or_else(|| {
+            WellfriendError::ParseError(format!(
+                "object {number} {generation} is already being resolved (self-reference)"
+            ))
+        })?;
 
         match entry {
             XrefEntry::Free => Err(WellfriendError::MissingObject { number, generation }),
@@ -1357,30 +1404,40 @@ impl PdfReader {
         if header.number != number || header.generation != generation {
             return Ok(None);
         }
-        let Some(length) = header.length else {
-            return Ok(None);
-        };
-        let length = usize::try_from(length)
-            .map_err(|_| WellfriendError::MalformedPdf("stream Length is too large".to_string()))?;
         let stream_start = offset.checked_add(header.stream_start).ok_or_else(|| {
             WellfriendError::MalformedPdf("stream start offset overflows".to_string())
         })?;
-        let stream_end = stream_start
-            .checked_add(length)
-            .ok_or_else(|| WellfriendError::MalformedPdf("stream Length overflows".to_string()))?;
-        if stream_end > self.source.len() {
-            return Err(WellfriendError::ParseError(format!(
-                "stream range {stream_start}..{stream_end} exceeds input length {}",
-                self.source.len()
-            )));
-        }
-        if let Some(boundary) = self.next_object_boundary(offset) {
-            if stream_end > boundary {
-                return Err(WellfriendError::ParseError(format!(
-                    "stream range for object {number} {generation} crosses next object boundary"
-                )));
+        let window_end = self
+            .next_object_boundary(offset)
+            .unwrap_or_else(|| self.source.len())
+            .min(self.source.len());
+        // Trust the declared /Length only when `endstream` follows it inside
+        // the object; otherwise (Length too short, too long, or missing) find
+        // the real end of the body, as Poppler does.
+        let declared_end = header
+            .length
+            .and_then(|length| usize::try_from(length).ok())
+            .and_then(|length| stream_start.checked_add(length))
+            .filter(|end| *end <= window_end);
+        let verified_end = match declared_end {
+            Some(end) if self.endstream_follows(end, window_end)? => Some(end),
+            _ => None,
+        };
+        let stream_end = match verified_end {
+            Some(end) => end,
+            None => {
+                let Some(end) = self.scan_stream_end(stream_start, window_end)? else {
+                    return Ok(None);
+                };
+                log::warn!(
+                    "content stream {number} {generation}: /Length {:?} does not end at endstream; using scanned length {}",
+                    header.length,
+                    end - stream_start
+                );
+                end
             }
-        }
+        };
+        let length = stream_end - stream_start;
         Ok(Some(ContentStreamRange {
             dict: header.dict,
             reader: PdfRangeReader {
@@ -1389,6 +1446,53 @@ impl PdfReader {
                 remaining: length,
             },
         }))
+    }
+
+    /// True when `endstream` (after optional whitespace) starts at `offset`.
+    fn endstream_follows(&self, offset: usize, window_end: usize) -> Result<bool> {
+        const PROBE_BYTES: usize = 64;
+        if offset >= window_end {
+            return Ok(false);
+        }
+        let probe = self
+            .source
+            .read_at(offset, (window_end - offset).min(PROBE_BYTES))?;
+        let start = probe
+            .iter()
+            .position(|byte| !is_pdf_whitespace(*byte))
+            .unwrap_or(probe.len());
+        Ok(probe[start..].starts_with(b"endstream"))
+    }
+
+    /// Offset where a stream body really ends: the first `endstream` after
+    /// `stream_start` inside the object window, minus one preceding EOL.
+    fn scan_stream_end(&self, stream_start: usize, window_end: usize) -> Result<Option<usize>> {
+        if stream_start > window_end {
+            return Ok(None);
+        }
+        let owned;
+        let window: &[u8] = match self.source.as_bytes() {
+            Some(data) => &data[stream_start..window_end],
+            None => {
+                owned = self
+                    .source
+                    .read_at(stream_start, window_end - stream_start)?;
+                &owned
+            }
+        };
+        let Some(marker) = find_marker_accelerated(window, b"endstream") else {
+            return Ok(None);
+        };
+        let mut end = marker;
+        if end > 0 && window[end - 1] == b'\n' {
+            end -= 1;
+            if end > 0 && window[end - 1] == b'\r' {
+                end -= 1;
+            }
+        } else if end > 0 && window[end - 1] == b'\r' {
+            end -= 1;
+        }
+        Ok(Some(stream_start + end))
     }
 
     fn parse_uncompressed_object_at(&self, offset: usize) -> Result<crate::parser::IndirectObject> {
@@ -3016,11 +3120,104 @@ fn nonnegative_usize(value: i64, label: &str) -> Result<usize> {
         .map_err(|_| WellfriendError::MalformedPdf(format!("{label} is too large")))
 }
 
-fn parse_header_version(data: &[u8]) -> Result<String> {
+/// Offset of `%PDF-` within the first 1024 bytes.
+fn header_offset(data: &[u8]) -> Option<usize> {
     let search_len = data.len().min(1024);
-    let header_offset = data[..search_len]
+    data[..search_len]
         .windows(b"%PDF-".len())
         .position(|window| window == b"%PDF-")
+}
+
+const DEFAULT_LENIENT_PDF_VERSION: &str = "1.7";
+
+/// Lenient header check used by the repairing open paths: a missing or
+/// unusual `%PDF-` version is accepted with a diagnostic (Poppler continues
+/// with "May not be a PDF file"). Strict mode keeps `parse_header_version`.
+fn parse_header_version_lenient(data: &[u8], diagnostics: &mut Vec<ParserDiagnostic>) -> String {
+    let error = match parse_header_version(data) {
+        Ok(version) => return version,
+        Err(error) => error,
+    };
+    let salvaged = header_offset(data).and_then(|offset| {
+        let digits: Vec<u8> = data[offset + b"%PDF-".len()..]
+            .iter()
+            .copied()
+            .take_while(|byte| byte.is_ascii_digit() || *byte == b'.')
+            .take(3)
+            .collect();
+        match digits.as_slice() {
+            [b'1', b'.', minor] if minor.is_ascii_digit() => {
+                Some(String::from_utf8_lossy(&digits).into_owned())
+            }
+            [b'2', b'.', b'0'] => Some("2.0".to_string()),
+            _ => None,
+        }
+    });
+    let version = salvaged.unwrap_or_else(|| DEFAULT_LENIENT_PDF_VERSION.to_string());
+    log::warn!("{error}; continuing as PDF {version}");
+    diagnostics.push(
+        ParserDiagnostic::new(
+            ParserSeverity::RecoverableError,
+            ParserCategory::Source,
+            "pdf_header_version_repaired",
+            format!("{error}; continuing as PDF {version}"),
+        )
+        .with_recovery("accepted the file without a standard %PDF-1.x/2.0 header"),
+    );
+    version
+}
+
+/// When junk precedes `%PDF-` and the file's offsets are relative to the
+/// header (Poppler's `moveStart`), drop the junk so xref offsets line up.
+/// The bytes are left untouched when the original offsets already work.
+fn compensate_header_junk_prefix(
+    mut data: Vec<u8>,
+    diagnostics: &mut Vec<ParserDiagnostic>,
+) -> Vec<u8> {
+    let Some(offset) = header_offset(&data).filter(|offset| *offset > 0) else {
+        return data;
+    };
+    // `startxref` lands exactly on an xref table or xref-stream object.
+    let startxref_is_exact = |bytes: &[u8]| {
+        find_startxref(bytes).is_ok_and(|startxref| {
+            let pos = skip_ws_and_comments(bytes, startxref);
+            bytes_at(bytes, pos, b"xref") || parse_indirect_object_header(bytes, pos).is_some()
+        })
+    };
+    let xref_chain_reads = |bytes: &[u8]| {
+        let mut xref = crate::fast_hash::ObjectMap::default();
+        let mut trailer = None;
+        let mut visited = HashSet::new();
+        find_startxref(bytes)
+            .and_then(|startxref| {
+                read_xref_chain(bytes, startxref, &mut xref, &mut trailer, &mut visited)
+            })
+            .is_ok()
+            && trailer.is_some()
+    };
+    let shifted = &data[offset..];
+    if startxref_is_exact(&data) || !startxref_is_exact(shifted) || !xref_chain_reads(shifted) {
+        return data;
+    }
+    data.drain(..offset);
+    log::warn!("ignored {offset} junk byte(s) before the %PDF- header");
+    diagnostics.push(
+        ParserDiagnostic::new(
+            ParserSeverity::RecoverableError,
+            ParserCategory::Source,
+            "pdf_header_junk_prefix_skipped",
+            format!(
+                "{offset} byte(s) before %PDF- were skipped; offsets are relative to the header"
+            ),
+        )
+        .at_offset(0)
+        .with_recovery("shifted all file offsets past the junk prefix"),
+    );
+    data
+}
+
+fn parse_header_version(data: &[u8]) -> Result<String> {
+    let header_offset = header_offset(data)
         .ok_or_else(|| WellfriendError::MalformedPdf("missing PDF header".to_string()))?;
     let version_start = header_offset + b"%PDF-".len();
     let mut version_end = version_start;
@@ -3278,6 +3475,129 @@ mod tests {
             .as_bytes(),
         );
         pdf
+    }
+
+    /// A classic-xref PDF from raw object bodies (`N 0 obj` / `endobj` added).
+    fn pdf_from_object_bodies(header: &[u8], objects: &[&[u8]]) -> Vec<u8> {
+        let mut pdf = header.to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    fn content_range_bytes(reader: &PdfReader, number: u32) -> Option<Vec<u8>> {
+        let mut range = reader.content_stream_range(number, 0).unwrap()?;
+        let mut out = Vec::new();
+        range.reader.read_to_end(&mut out).unwrap();
+        Some(out)
+    }
+
+    #[test]
+    fn content_stream_fast_path_corrects_wrong_length() {
+        let body = b"BT /F1 12 Tf (Hello) Tj ET";
+        for declared in [5usize, body.len(), body.len() + 40] {
+            let stream = format!(
+                "<< /Length {declared} >>\nstream\n{}\nendstream",
+                std::str::from_utf8(body).unwrap()
+            );
+            let pdf = pdf_from_object_bodies(
+                b"%PDF-1.7\n",
+                &[
+                    b"<< /Type /Catalog /Pages 2 0 R >>",
+                    b"<< /Type /Pages /Count 0 /Kids [] >>",
+                    stream.as_bytes(),
+                    b"<< /Filler true >>",
+                ],
+            );
+            let reader = PdfReader::from_bytes(pdf).unwrap();
+            assert_eq!(
+                content_range_bytes(&reader, 3).as_deref(),
+                Some(&body[..]),
+                "declared /Length {declared}"
+            );
+        }
+    }
+
+    #[test]
+    fn self_referential_stream_length_does_not_recurse() {
+        let pdf = pdf_from_object_bodies(
+            b"%PDF-1.7\n",
+            &[
+                b"<< /Type /Catalog /Pages 2 0 R >>",
+                b"<< /Type /Pages /Count 0 /Kids [] >>",
+                b"<< /Length 3 0 R >>\nstream\nq Q\nendstream",
+            ],
+        );
+        let reader = PdfReader::from_bytes(pdf).unwrap();
+        let object = reader.get_object(3, 0).unwrap();
+        let (_, raw) = object.as_stream().unwrap();
+        assert_eq!(raw, &b"q Q"[..]);
+        assert_eq!(
+            content_range_bytes(&reader, 3).as_deref(),
+            Some(&b"q Q"[..])
+        );
+    }
+
+    #[test]
+    fn missing_or_unusual_header_version_is_accepted_leniently() {
+        let objects: [&[u8]; 2] = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Count 0 /Kids [] >>",
+        ];
+        for (header, version) in [
+            (&b""[..], "1.7"),
+            (&b"%PDF-1.x\n"[..], "1.7"),
+            (&b"%PDF-1.4abc\n"[..], "1.4"),
+        ] {
+            let pdf = pdf_from_object_bodies(header, &objects);
+            assert!(PdfReader::from_bytes_strict(pdf.clone()).is_err());
+            let reader = PdfReader::from_bytes(pdf).unwrap();
+            assert_eq!(reader.version(), version);
+            assert!(reader
+                .parser_diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "pdf_header_version_repaired"));
+            assert_eq!(reader.root_reference(), Some((1, 0)));
+        }
+    }
+
+    #[test]
+    fn junk_before_header_is_compensated() {
+        let mut pdf = b"Content-Type: application/pdf\r\nX-Junk: yes\r\n\r\n".to_vec();
+        pdf.extend_from_slice(&tiny_pdf());
+        let reader = PdfReader::from_bytes(pdf).unwrap();
+        assert!(reader
+            .parser_diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "pdf_header_junk_prefix_skipped"));
+        assert!(reader.file_bytes().starts_with(b"%PDF-1.7"));
+        assert_recovered_catalog_reader(&reader);
+        let pages = reader.get_and_resolve(2, 0).unwrap();
+        assert_eq!(pages.as_dict().unwrap().get_name("Type"), Some("Pages"));
+    }
+
+    fn assert_recovered_catalog_reader(reader: &PdfReader) {
+        let root = reader.get_and_resolve(1, 0).unwrap();
+        assert_eq!(root.as_dict().unwrap().get_name("Type"), Some("Catalog"));
     }
 
     #[test]

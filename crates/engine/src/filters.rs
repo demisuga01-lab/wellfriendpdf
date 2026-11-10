@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{self, Cursor, Read};
+use std::io::{self, Read};
 use std::sync::OnceLock;
 
-use flate2::read::{DeflateDecoder, ZlibDecoder};
+use flate2::{Decompress, FlushDecompress, Status};
 use serde::{Deserialize, Serialize};
 
 use crate::cancel::CancelToken;
@@ -59,6 +59,19 @@ pub struct DecodedStream {
 pub(crate) struct DecodedStreamReader<'a> {
     pub reader: Box<dyn Read + 'a>,
     pub status: StreamDecodeStatus,
+}
+
+/// How the lossless filters react to damaged data.
+///
+/// `Lenient` is the render/content policy (Poppler's "draw what you can"):
+/// keep every byte decoded before the damage, skip stray characters, accept a
+/// short final predictor row and ignore invalid predictor parameters. `Strict`
+/// is kept for validation/reporting paths that must surface the damage.
+/// Resource caps, cancellation and missing passwords fail in both modes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DecodeMode {
+    Strict,
+    Lenient,
 }
 
 /// Resource limits applied by the shared stream decode layer.
@@ -468,6 +481,26 @@ pub fn decode_stream_lossless_with_limits(
     reader: &PdfReader,
     limits: &DecodeLimits,
 ) -> Result<DecodedStream> {
+    decode_stream_lossless_mode(stream, reader, limits, DecodeMode::Lenient)
+}
+
+/// Strict counterpart of [`decode_stream_lossless_with_limits`] for data that
+/// is useless when only partially recovered (ICC profiles): damaged input is
+/// an error instead of a truncated result.
+pub(crate) fn decode_stream_lossless_strict_with_limits(
+    stream: &PdfObject,
+    reader: &PdfReader,
+    limits: &DecodeLimits,
+) -> Result<DecodedStream> {
+    decode_stream_lossless_mode(stream, reader, limits, DecodeMode::Strict)
+}
+
+fn decode_stream_lossless_mode(
+    stream: &PdfObject,
+    reader: &PdfReader,
+    limits: &DecodeLimits,
+    mode: DecodeMode,
+) -> Result<DecodedStream> {
     let (dict, raw) = stream.as_stream().ok_or_else(|| {
         WellfriendError::MalformedPdf("decode_stream requires a stream object".to_string())
     })?;
@@ -477,7 +510,7 @@ pub fn decode_stream_lossless_with_limits(
         estimate_stream_decode_bytes(stream),
         &cancel,
         "raw stream lossless decode",
-        || decode_stream_parts_with_limits(dict, raw, Some(reader), limits),
+        || decode_stream_parts_with_limits(dict, raw, Some(reader), limits, mode),
     )
 }
 
@@ -490,13 +523,33 @@ pub(crate) fn decode_stream_from_dict_with_limits(
     raw: &[u8],
     limits: &DecodeLimits,
 ) -> Result<Vec<u8>> {
+    decode_stream_from_dict_mode(dict, raw, limits, DecodeMode::Lenient)
+}
+
+/// Strict counterpart of [`decode_stream_from_dict_with_limits`] for rewrite
+/// paths (recompression, deduplication) that must never persist a stream
+/// recovered from damaged data.
+pub(crate) fn decode_stream_from_dict_strict_with_limits(
+    dict: &PdfDictionary,
+    raw: &[u8],
+    limits: &DecodeLimits,
+) -> Result<Vec<u8>> {
+    decode_stream_from_dict_mode(dict, raw, limits, DecodeMode::Strict)
+}
+
+fn decode_stream_from_dict_mode(
+    dict: &PdfDictionary,
+    raw: &[u8],
+    limits: &DecodeLimits,
+    mode: DecodeMode,
+) -> Result<Vec<u8>> {
     let scheduler = DecodeSchedulerContext::new(limits);
     let cancel = crate::cancel::current_cancel_token();
     let decoded = scheduler.run(
         estimate_raw_stream_decode_bytes(raw.len()),
         &cancel,
         "filter-chain stream decode",
-        || decode_stream_parts_with_limits(dict, raw, None, limits),
+        || decode_stream_parts_with_limits(dict, raw, None, limits, mode),
     )?;
     match decoded.status {
         StreamDecodeStatus::Complete => Ok(decoded.data),
@@ -539,38 +592,67 @@ pub(crate) fn apply_filter_bytes_in_process_with_limits(
     decode_parms: Option<&PdfDictionary>,
     limits: &DecodeLimits,
 ) -> Result<Vec<u8>> {
+    apply_filter_bytes_mode(
+        filter_name,
+        input,
+        decode_parms,
+        limits,
+        DecodeMode::Lenient,
+    )
+}
+
+/// Apply one lossless filter to `input`. In [`DecodeMode::Lenient`] damaged
+/// data keeps whatever was decoded before the damage (Poppler's "draw what
+/// you can" policy); resource caps and cancellation still fail.
+fn apply_filter_bytes_mode(
+    filter_name: &str,
+    input: &[u8],
+    decode_parms: Option<&PdfDictionary>,
+    limits: &DecodeLimits,
+    mode: DecodeMode,
+) -> Result<Vec<u8>> {
+    let cap = limits.max_decoded_bytes_per_stream;
     match filter_name {
         "FlateDecode" | "Fl" => {
-            let data = flate_decode_capped(input, limits.max_decoded_bytes_per_stream)?;
-            apply_predictor_with_limits(data, decode_parms, limits)
+            let data = flate_decode_capped(input, cap, mode)?;
+            apply_predictor_mode(data, decode_parms, limits, mode)
         }
         "LZWDecode" | "LZW" => {
-            let early_change = int_param(decode_parms, "EarlyChange", 1)?;
-            if !(0..=1).contains(&early_change) {
-                return Err(WellfriendError::MalformedPdf(format!(
-                    "invalid LZW EarlyChange value {early_change}"
-                )));
+            let early_change = lzw_early_change(decode_parms, mode)?;
+            let data = lzw_decode_capped(input, early_change, cap, mode)?;
+            apply_predictor_mode(data, decode_parms, limits, mode)
+        }
+        "ASCIIHexDecode" | "AHx" => ascii_hex_decode_capped(input, cap, mode),
+        "ASCII85Decode" | "A85" => ascii85_decode_capped(input, cap, mode),
+        "RunLengthDecode" | "RL" => run_length_decode_capped(input, cap, mode),
+        other => match mode {
+            DecodeMode::Strict => Err(WellfriendError::UnsupportedFeature(format!(
+                "unsupported inline image filter {other}"
+            ))),
+            DecodeMode::Lenient => {
+                log::warn!("unsupported filter /{other}; treating the stream as empty");
+                Ok(Vec::new())
             }
-            let data = lzw_decode_capped(
-                input,
-                early_change as u8,
-                limits.max_decoded_bytes_per_stream,
-            )?;
-            apply_predictor_with_limits(data, decode_parms, limits)
-        }
-        "ASCIIHexDecode" | "AHx" => {
-            ascii_hex_decode_capped(input, limits.max_decoded_bytes_per_stream)
-        }
-        "ASCII85Decode" | "A85" => {
-            ascii85_decode_capped(input, limits.max_decoded_bytes_per_stream)
-        }
-        "RunLengthDecode" | "RL" => {
-            run_length_decode_capped(input, limits.max_decoded_bytes_per_stream)
-        }
-        other => Err(WellfriendError::UnsupportedFeature(format!(
-            "unsupported inline image filter {other}"
-        ))),
+        },
     }
+}
+
+fn lzw_early_change(params: Option<&PdfDictionary>, mode: DecodeMode) -> Result<u8> {
+    let early_change = match int_param(params, "EarlyChange", 1) {
+        Ok(value) => value,
+        Err(err) if mode == DecodeMode::Strict => return Err(err),
+        Err(_) => 1,
+    };
+    if !(0..=1).contains(&early_change) {
+        if mode == DecodeMode::Strict {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "invalid LZW EarlyChange value {early_change}"
+            )));
+        }
+        log::warn!("invalid LZW EarlyChange value {early_change}; using 1");
+        return Ok(1);
+    }
+    Ok(early_change as u8)
 }
 
 /// Build a structured report for one PDF stream without changing normal open behavior.
@@ -631,7 +713,9 @@ pub fn decode_stream_report_from_dict(
         return report;
     }
 
-    match decode_stream_parts_with_limits(dict, raw, reader, limits) {
+    // Validation/reporting path: stay strict so damaged streams are reported
+    // instead of being silently recovered.
+    match decode_stream_parts_with_limits(dict, raw, reader, limits, DecodeMode::Strict) {
         Ok(decoded) => {
             report.status = Some(decoded.status);
             report.metrics.streams_decoded = 1;
@@ -1065,7 +1149,13 @@ fn decode_stream_parts(
     raw: &[u8],
     reader: Option<&PdfReader>,
 ) -> Result<DecodedStream> {
-    decode_stream_parts_with_limits(dict, raw, reader, &DecodeLimits::default())
+    decode_stream_parts_with_limits(
+        dict,
+        raw,
+        reader,
+        &DecodeLimits::default(),
+        DecodeMode::Lenient,
+    )
 }
 
 fn decode_stream_parts_with_limits(
@@ -1073,41 +1163,26 @@ fn decode_stream_parts_with_limits(
     raw: &[u8],
     reader: Option<&PdfReader>,
     limits: &DecodeLimits,
+    mode: DecodeMode,
 ) -> Result<DecodedStream> {
     let filters = filter_names(dict, reader)?;
     enforce_filter_chain_depth_with_limit(filters.len(), limits.max_filter_chain_depth)?;
-    let params = decode_params(dict, reader, filters.len())?;
+    let params = match decode_params(dict, reader, filters.len()) {
+        Ok(params) => params,
+        Err(err) if mode == DecodeMode::Strict => return Err(err),
+        Err(err) => {
+            log::warn!("ignoring malformed /DecodeParms: {err}");
+            vec![None; filters.len()]
+        }
+    };
     let mut data = raw.to_vec();
 
     for (idx, filter) in filters.iter().enumerate() {
         let param = params.get(idx).and_then(Option::as_ref);
         match filter.as_str() {
-            "FlateDecode" | "Fl" => {
-                data = flate_decode_capped(&data, limits.max_decoded_bytes_per_stream)?;
-                data = apply_predictor_with_limits(data, param, limits)?;
-            }
-            "LZWDecode" | "LZW" => {
-                let early_change = int_param(param, "EarlyChange", 1)?;
-                if !(0..=1).contains(&early_change) {
-                    return Err(WellfriendError::MalformedPdf(format!(
-                        "invalid LZW EarlyChange value {early_change}"
-                    )));
-                }
-                data = lzw_decode_capped(
-                    &data,
-                    early_change as u8,
-                    limits.max_decoded_bytes_per_stream,
-                )?;
-                data = apply_predictor_with_limits(data, param, limits)?;
-            }
-            "ASCIIHexDecode" | "AHx" => {
-                data = ascii_hex_decode_capped(&data, limits.max_decoded_bytes_per_stream)?
-            }
-            "ASCII85Decode" | "A85" => {
-                data = ascii85_decode_capped(&data, limits.max_decoded_bytes_per_stream)?
-            }
-            "RunLengthDecode" | "RL" => {
-                data = run_length_decode_capped(&data, limits.max_decoded_bytes_per_stream)?
+            "FlateDecode" | "Fl" | "LZWDecode" | "LZW" | "ASCIIHexDecode" | "AHx"
+            | "ASCII85Decode" | "A85" | "RunLengthDecode" | "RL" => {
+                data = apply_filter_bytes_mode(filter, &data, param, limits, mode)?;
             }
             // The reader applies PDF crypt filters while fetching stream
             // objects, because decryption needs object/generation numbers and
@@ -1133,9 +1208,18 @@ fn decode_stream_parts_with_limits(
                 });
             }
             other => {
-                return Err(WellfriendError::UnsupportedFeature(format!(
-                    "unsupported stream filter {other}"
-                )));
+                if mode == DecodeMode::Strict {
+                    return Err(WellfriendError::UnsupportedFeature(format!(
+                        "unsupported stream filter {other}"
+                    )));
+                }
+                // Poppler replaces a stream with an unknown filter by an empty
+                // (EOF) stream, so the rest of the page still draws.
+                log::warn!("unsupported stream filter /{other}; treating the stream as empty");
+                return Ok(DecodedStream {
+                    data: Vec::new(),
+                    status: StreamDecodeStatus::Complete,
+                });
             }
         }
     }
@@ -1154,7 +1238,10 @@ fn decode_stream_reader_with_cap<'a, R: Read + 'a>(
 ) -> Result<DecodedStreamReader<'a>> {
     let filters = filter_names(dict, reader)?;
     enforce_filter_chain_depth(filters.len())?;
-    let params = decode_params(dict, reader, filters.len())?;
+    let params = decode_params(dict, reader, filters.len()).unwrap_or_else(|err| {
+        log::warn!("ignoring malformed /DecodeParms: {err}");
+        vec![None; filters.len()]
+    });
     let mut current: Box<dyn Read + 'a> = Box::new(raw);
 
     for (idx, filter) in filters.iter().enumerate() {
@@ -1170,14 +1257,9 @@ fn decode_stream_reader_with_cap<'a, R: Read + 'a>(
                 current = streaming_predictor_reader(current, param)?;
             }
             "LZWDecode" | "LZW" => {
-                let early_change = int_param(param, "EarlyChange", 1)?;
-                if !(0..=1).contains(&early_change) {
-                    return Err(WellfriendError::MalformedPdf(format!(
-                        "invalid LZW EarlyChange value {early_change}"
-                    )));
-                }
+                let early_change = lzw_early_change(param, DecodeMode::Lenient)?;
                 current = Box::new(CappedReader::new(
-                    LzwReader::new(current, early_change as u8),
+                    LzwReader::new(current, early_change),
                     cap,
                     "LZWDecode output exceeds decompression cap",
                 ));
@@ -1221,9 +1303,13 @@ fn decode_stream_reader_with_cap<'a, R: Read + 'a>(
                 });
             }
             other => {
-                return Err(WellfriendError::UnsupportedFeature(format!(
-                    "unsupported stream filter {other}"
-                )));
+                // Streaming decode feeds page content: an unknown filter
+                // yields an empty stream instead of failing the page.
+                log::warn!("unsupported stream filter /{other}; treating the stream as empty");
+                return Ok(DecodedStreamReader {
+                    reader: Box::new(io::empty()),
+                    status: StreamDecodeStatus::Complete,
+                });
             }
         }
     }
@@ -1238,11 +1324,16 @@ fn streaming_predictor_reader<'a>(
     current: Box<dyn Read + 'a>,
     params: Option<&PdfDictionary>,
 ) -> Result<Box<dyn Read + 'a>> {
-    let predictor = int_param(params, "Predictor", 1)?;
-    if predictor == 1 {
-        return Ok(current);
-    }
-    Ok(Box::new(PredictorReader::new(current, params)?))
+    let layout = match predictor_layout(params) {
+        Ok(Some(layout)) => layout,
+        Ok(None) => return Ok(current),
+        Err(err) => {
+            log::warn!("ignoring invalid predictor parameters: {err}");
+            return Ok(current);
+        }
+    };
+    validate_predictor_row_len(layout.row_len)?;
+    Ok(Box::new(PredictorReader::new(current, &layout)?))
 }
 
 fn reader_error(message: impl Into<String>) -> io::Error {
@@ -1261,61 +1352,88 @@ fn read_one<R: Read>(inner: &mut R) -> io::Result<Option<u8>> {
     }
 }
 
-struct PrefixReader<R> {
-    prefix: Cursor<Vec<u8>>,
+/// Streaming inflate that stops cleanly at corruption, truncation or a bad
+/// Adler-32 checksum, keeping every byte produced before it (lenient policy).
+struct StreamingFlateReader<R: Read> {
     inner: R,
-}
-
-impl<R> PrefixReader<R> {
-    fn new(prefix: Vec<u8>, inner: R) -> Self {
-        Self {
-            prefix: Cursor::new(prefix),
-            inner,
-        }
-    }
-}
-
-impl<R: Read> Read for PrefixReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let prefix_read = self.prefix.read(buf)?;
-        if prefix_read > 0 {
-            return Ok(prefix_read);
-        }
-        self.inner.read(buf)
-    }
-}
-
-enum StreamingFlateReader<R: Read> {
-    Zlib(ZlibDecoder<PrefixReader<R>>),
-    Raw(DeflateDecoder<PrefixReader<R>>),
+    inflater: Decompress,
+    input: Vec<u8>,
+    input_pos: usize,
+    input_len: usize,
+    input_eof: bool,
+    done: bool,
 }
 
 impl<R: Read> StreamingFlateReader<R> {
     fn new(mut inner: R) -> io::Result<Self> {
-        let mut prefix = Vec::with_capacity(2);
-        while prefix.len() < 2 {
-            match read_one(&mut inner)? {
-                Some(byte) => prefix.push(byte),
-                None => break,
+        const INPUT_BYTES: usize = 32 * 1024;
+        let mut input = vec![0u8; INPUT_BYTES];
+        let mut filled = 0usize;
+        let mut input_eof = false;
+        while filled < 2 {
+            let n = inner.read(&mut input[filled..])?;
+            if n == 0 {
+                input_eof = true;
+                break;
             }
+            filled += n;
         }
-        let reader = PrefixReader::new(prefix.clone(), inner);
-        if looks_like_zlib_header(&prefix) {
-            Ok(Self::Zlib(ZlibDecoder::new(reader)))
-        } else {
-            Ok(Self::Raw(DeflateDecoder::new(reader)))
-        }
+        let zlib = looks_like_zlib_header(&input[..filled]);
+        Ok(Self {
+            inner,
+            inflater: Decompress::new(zlib),
+            input,
+            input_pos: 0,
+            input_len: filled,
+            input_eof,
+            done: false,
+        })
     }
 }
 
 impl<R: Read> Read for StreamingFlateReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Zlib(reader) => reader.read(buf),
-            Self::Raw(reader) => reader.read(buf),
+        if self.done || buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.input_pos == self.input_len && !self.input_eof {
+                let n = self.inner.read(&mut self.input)?;
+                self.input_pos = 0;
+                self.input_len = n;
+                self.input_eof = n == 0;
+            }
+            let before_in = self.inflater.total_in();
+            let before_out = self.inflater.total_out();
+            let status = self.inflater.decompress(
+                &self.input[self.input_pos..self.input_len],
+                buf,
+                FlushDecompress::None,
+            );
+            let consumed = (self.inflater.total_in() - before_in) as usize;
+            let produced = (self.inflater.total_out() - before_out) as usize;
+            self.input_pos = (self.input_pos + consumed).min(self.input_len);
+            match status {
+                Ok(Status::StreamEnd) => {
+                    self.done = true;
+                    return Ok(produced);
+                }
+                Ok(_) if produced > 0 => return Ok(produced),
+                Ok(_) if consumed > 0 => {}
+                Ok(_) if self.input_pos == self.input_len && !self.input_eof => {}
+                Ok(_) => {
+                    log::warn!("FlateDecode stream is truncated; keeping the data decoded so far");
+                    self.done = true;
+                    return Ok(0);
+                }
+                Err(error) => {
+                    log::warn!(
+                        "FlateDecode stream is damaged ({error}); keeping the data decoded so far"
+                    );
+                    self.done = true;
+                    return Ok(produced);
+                }
+            }
         }
     }
 }
@@ -1370,6 +1488,7 @@ struct AsciiHexReader<R> {
     high: Option<u8>,
     pending: VecDeque<u8>,
     done: bool,
+    warned: bool,
 }
 
 impl<R> AsciiHexReader<R> {
@@ -1379,6 +1498,7 @@ impl<R> AsciiHexReader<R> {
             high: None,
             pending: VecDeque::new(),
             done: false,
+            warned: false,
         }
     }
 }
@@ -1403,15 +1523,18 @@ impl<R: Read> Read for AsciiHexReader<R> {
                     self.done = true;
                 }
                 Some(byte) if is_pdf_whitespace(byte) => {}
-                Some(byte) => {
-                    let value = hex_value(byte).ok_or_else(|| {
-                        reader_error(format!("invalid ASCIIHex digit 0x{byte:02X}"))
-                    })?;
-                    match self.high.take() {
+                Some(byte) => match hex_value(byte) {
+                    Some(value) => match self.high.take() {
                         Some(high) => self.pending.push_back((high << 4) | value),
                         None => self.high = Some(value),
+                    },
+                    None => {
+                        if !self.warned {
+                            log::warn!("ASCIIHexDecode skipping invalid digit 0x{byte:02X}");
+                            self.warned = true;
+                        }
                     }
-                }
+                },
                 None => {
                     if let Some(high) = self.high.take() {
                         self.pending.push_back(high << 4);
@@ -1443,7 +1566,13 @@ impl<R: Read> Ascii85Reader<R> {
 
     fn push_group(&mut self, output_len: usize) -> io::Result<()> {
         let mut out = Vec::new();
-        result_to_io(push_ascii85_group(&self.group, output_len, &mut out))?;
+        result_to_io(push_ascii85_group_capped(
+            &self.group,
+            output_len,
+            &mut out,
+            u64::MAX,
+            DecodeMode::Lenient,
+        ))?;
         self.pending.extend(out);
         self.group.clear();
         Ok(())
@@ -1454,7 +1583,9 @@ impl<R: Read> Ascii85Reader<R> {
             return Ok(());
         }
         if self.group.len() == 1 {
-            return Err(reader_error("ASCII85 final group cannot contain one digit"));
+            // A single trailing digit carries no complete byte; drop it.
+            self.group.clear();
+            return Ok(());
         }
         let output_len = self.group.len() - 1;
         while self.group.len() < 5 {
@@ -1474,33 +1605,23 @@ impl<R: Read> Ascii85Reader<R> {
                 continue;
             }
             if byte == b'~' {
-                let mut saw_end = false;
-                while let Some(next) = read_one(&mut self.inner)? {
-                    if is_pdf_whitespace(next) {
-                        continue;
-                    }
-                    if next == b'>' {
-                        saw_end = true;
-                        break;
-                    }
-                    return Err(reader_error("ASCII85 '~' must be followed by '>'"));
-                }
-                if !saw_end {
-                    return Err(reader_error("unterminated ASCII85 EOD marker"));
-                }
+                // `~>` ends the data; a lone or unterminated `~` is treated
+                // as the end too (lenient, like Poppler).
                 self.finish_partial()?;
                 self.done = true;
                 break;
             }
             if byte == b'z' {
                 if !self.group.is_empty() {
-                    return Err(reader_error("ASCII85 'z' cannot appear inside a group"));
+                    log::warn!("ASCII85Decode skipping 'z' inside a group");
+                    continue;
                 }
                 self.pending.extend([0, 0, 0, 0]);
                 break;
             }
             if !(b'!'..=b'u').contains(&byte) {
-                return Err(reader_error(format!("invalid ASCII85 byte 0x{byte:02X}")));
+                log::warn!("ASCII85Decode skipping invalid byte 0x{byte:02X}");
+                continue;
             }
             self.group.push(byte - b'!');
             if self.group.len() == 5 {
@@ -1554,15 +1675,23 @@ impl<R: Read> RunLengthReader<R> {
                 0..=127 => {
                     let count = usize::from(len) + 1;
                     for _ in 0..count {
-                        let byte = read_one(&mut self.inner)?
-                            .ok_or_else(|| reader_error("truncated RunLength literal run"))?;
+                        let Some(byte) = read_one(&mut self.inner)? else {
+                            log::warn!(
+                                "truncated RunLength literal run; keeping the bytes present"
+                            );
+                            self.done = true;
+                            break;
+                        };
                         self.pending.push_back(byte);
                     }
                 }
                 128 => self.done = true,
                 129..=255 => {
-                    let byte = read_one(&mut self.inner)?
-                        .ok_or_else(|| reader_error("truncated RunLength repeat run"))?;
+                    let Some(byte) = read_one(&mut self.inner)? else {
+                        log::warn!("truncated RunLength repeat run; stopping");
+                        self.done = true;
+                        break;
+                    };
                     let count = usize::from(257u16 - u16::from(len));
                     self.pending.extend(std::iter::repeat_n(byte, count));
                 }
@@ -1673,23 +1802,19 @@ impl<R: Read> LzwReader<R> {
                 257 => self.done = true,
                 code => {
                     let code_usize = usize::from(code);
-                    let entry = if code_usize < self.table.len() {
-                        self.table[code_usize].clone().ok_or_else(|| {
-                            reader_error(format!("invalid empty LZW code {code_usize}"))
-                        })?
-                    } else if code_usize == self.next_code {
-                        let prev = self
-                            .previous
-                            .as_ref()
-                            .ok_or_else(|| reader_error("LZW KwKwK code without previous entry"))?;
-                        let mut synthesized = prev.clone();
-                        let first = *prev
-                            .first()
-                            .ok_or_else(|| reader_error("empty LZW previous entry"))?;
-                        synthesized.push(first);
-                        synthesized
-                    } else {
-                        return Err(reader_error(format!("invalid LZW code {code_usize}")));
+                    let entry = match lzw_entry(
+                        &self.table,
+                        code_usize,
+                        self.next_code,
+                        self.previous.as_ref(),
+                    ) {
+                        Ok(entry) => entry,
+                        Err(err) => {
+                            // Stop at a bad code and keep what was decoded.
+                            log::warn!("{err}; stopping LZW decode");
+                            self.done = true;
+                            break;
+                        }
                     };
 
                     self.pending.extend(entry.iter().copied());
@@ -1761,38 +1886,21 @@ enum PredictorMode {
 }
 
 impl<R: Read> PredictorReader<R> {
-    fn new(inner: R, params: Option<&PdfDictionary>) -> Result<Self> {
-        let predictor = int_param(params, "Predictor", 1)?;
-        let columns = positive_usize_param(params, "Columns", 1)?;
-        let colors = positive_usize_param(params, "Colors", 1)?;
-        let bits_per_component = positive_usize_param(params, "BitsPerComponent", 8)?;
-        let row_bits = columns
-            .checked_mul(colors)
-            .and_then(|v| v.checked_mul(bits_per_component))
-            .ok_or_else(|| {
-                WellfriendError::MalformedPdf(
-                    "predictor row dimensions overflow (Columns x Colors x BitsPerComponent)"
-                        .to_string(),
-                )
-            })?;
-        let row_len = ceil_div(row_bits, 8);
-        validate_predictor_row_len(row_len)?;
-        let mode = match predictor {
+    fn new(inner: R, layout: &PredictorLayout) -> Result<Self> {
+        let mode = match layout.predictor {
             2 => PredictorMode::Tiff {
-                row_len,
-                colors,
-                bits_per_component,
+                row_len: layout.row_len,
+                colors: layout.colors,
+                bits_per_component: layout.bits_per_component,
             },
-            10..=15 => PredictorMode::Png {
-                row_len,
-                bytes_per_pixel: predictor_bytes_per_pixel(colors, bits_per_component)?,
-                prev_row: vec![0; row_len],
+            _ => PredictorMode::Png {
+                row_len: layout.row_len,
+                bytes_per_pixel: predictor_bytes_per_pixel(
+                    layout.colors,
+                    layout.bits_per_component,
+                )?,
+                prev_row: vec![0; layout.row_len],
             },
-            other => {
-                return Err(WellfriendError::UnsupportedFeature(format!(
-                    "unsupported predictor {other}"
-                )));
-            }
         };
         Ok(Self {
             inner,
@@ -1802,7 +1910,9 @@ impl<R: Read> PredictorReader<R> {
         })
     }
 
-    fn read_exact_or_eof(&mut self, len: usize, context: &str) -> io::Result<Option<Vec<u8>>> {
+    /// Read one row; a short final row is returned as-is (lenient) and marks
+    /// the reader done.
+    fn read_row_or_eof(&mut self, len: usize, context: &str) -> io::Result<Option<Vec<u8>>> {
         let mut row = vec![0u8; len];
         let mut filled = 0usize;
         while filled < len {
@@ -1811,9 +1921,10 @@ impl<R: Read> PredictorReader<R> {
                 if filled == 0 {
                     return Ok(None);
                 }
-                return Err(reader_error(format!(
-                    "{context} data length is not row-aligned"
-                )));
+                log::warn!("{context} data ends with a partial row; keeping the bytes present");
+                row.truncate(filled);
+                self.done = true;
+                return Ok(Some(row));
             }
             filled += n;
         }
@@ -1862,7 +1973,7 @@ impl<R: Read> PredictorReader<R> {
                 colors,
                 bits_per_component,
             } => {
-                let Some(mut row) = self.read_exact_or_eof(row_len, "TIFF predictor")? else {
+                let Some(mut row) = self.read_row_or_eof(row_len, "TIFF predictor")? else {
                     self.done = true;
                     return Ok(());
                 };
@@ -1882,12 +1993,12 @@ impl<R: Read> PredictorReader<R> {
                 let row_with_filter = row_len
                     .checked_add(1)
                     .ok_or_else(|| reader_error("PNG predictor row dimensions overflow"))?;
-                let Some(encoded_row) = self.read_exact_or_eof(row_with_filter, "PNG predictor")?
+                let Some(encoded_row) = self.read_row_or_eof(row_with_filter, "PNG predictor")?
                 else {
                     self.done = true;
                     return Ok(());
                 };
-                let filter = encoded_row[0];
+                let filter = result_to_io(png_row_filter(encoded_row[0], DecodeMode::Lenient))?;
                 let mut row = encoded_row[1..].to_vec();
                 result_to_io(decode_png_predictor_row(
                     &mut row,
@@ -2023,92 +2134,185 @@ fn decode_params(
     }
 }
 
+/// Strict FlateDecode: any corruption (including a bad Adler-32 checksum) is
+/// an error. Used by rewrite paths (recompression, replacement validation)
+/// that must never persist a silently truncated stream.
 pub(crate) fn flate_decode(data: &[u8]) -> Result<Vec<u8>> {
-    flate_decode_capped(data, MAX_FLATE_DECOMPRESSED_BYTES)
+    flate_decode_capped(data, MAX_FLATE_DECOMPRESSED_BYTES, DecodeMode::Strict)
 }
 
 /// FlateDecode with an explicit decompressed-size cap (parameterized so tests
 /// can exercise the bomb guard without allocating the full production cap).
-pub(crate) fn flate_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
-    // Cap reads at one byte over the limit so we can distinguish "exactly at the
-    // limit" (fine) from "exceeded it" (bomb). `take` makes the decoder stop
-    // reading past the cap instead of inflating unbounded into memory.
-    let read_cap = cap + 1;
-    let zlib = ZlibDecoder::new(data).take(read_cap);
-    match read_filter_decoder_cancellable(zlib, "FlateDecode zlib") {
-        Ok(out) => check_decompressed_size(out, cap),
-        Err(error) if matches!(&error, WellfriendError::Cancelled(_)) => Err(error),
-        Err(zlib_error) => {
-            let deflate = DeflateDecoder::new(data).take(read_cap);
-            match read_filter_decoder_cancellable(deflate, "FlateDecode raw deflate") {
-                Ok(raw_out) => check_decompressed_size(raw_out, cap),
-                Err(error) if matches!(&error, WellfriendError::Cancelled(_)) => Err(error),
-                Err(_) => Err(WellfriendError::ParseError(format!(
-                    "FlateDecode failed: {zlib_error}"
-                ))),
+///
+/// In [`DecodeMode::Lenient`] a stream that is corrupt part-way through, is
+/// truncated, or fails its Adler-32 check keeps every byte inflated before the
+/// problem, like Poppler (which never verifies the checksum). The output cap
+/// and cancellation are enforced in both modes.
+pub(crate) fn flate_decode_capped(data: &[u8], cap: u64, mode: DecodeMode) -> Result<Vec<u8>> {
+    let zlib = inflate_partial(data, true, cap)?;
+    if zlib.error.is_none() {
+        return Ok(zlib.output);
+    }
+    // Some producers omit the zlib wrapper; retry as raw deflate.
+    let raw = inflate_partial(data, false, cap)?;
+    if raw.error.is_none() && raw.output.len() >= zlib.output.len() {
+        return Ok(raw.output);
+    }
+    let zlib_error = zlib.error.unwrap_or_default();
+    if mode == DecodeMode::Strict {
+        return Err(WellfriendError::ParseError(format!(
+            "FlateDecode failed: {zlib_error}"
+        )));
+    }
+    let best = if raw.output.len() > zlib.output.len() {
+        raw.output
+    } else {
+        zlib.output
+    };
+    log::warn!(
+        "FlateDecode stream is damaged ({zlib_error}); keeping {} bytes decoded before the damage",
+        best.len()
+    );
+    Ok(best)
+}
+
+struct PartialInflate {
+    output: Vec<u8>,
+    /// `None` when the deflate stream ended cleanly.
+    error: Option<String>,
+}
+
+/// Inflate `data`, keeping every output byte produced before an error.
+fn inflate_partial(data: &[u8], zlib_header: bool, cap: u64) -> Result<PartialInflate> {
+    const CHUNK_BYTES: usize = 64 * 1024;
+    let mut inflater = Decompress::new(zlib_header);
+    let mut output = Vec::new();
+    let mut input = data;
+    loop {
+        crate::cancel::check_current_cancel("FlateDecode")?;
+        if output.len() as u64 > cap {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "FlateDecode output exceeds {cap} byte limit (possible decompression bomb)"
+            )));
+        }
+        output.reserve(CHUNK_BYTES);
+        let before_in = inflater.total_in();
+        let before_out = inflater.total_out();
+        let status = inflater.decompress_vec(input, &mut output, FlushDecompress::None);
+        let consumed = usize::try_from(inflater.total_in() - before_in).unwrap_or(input.len());
+        let produced = inflater.total_out() - before_out;
+        input = &input[consumed.min(input.len())..];
+        if output.len() as u64 > cap {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "FlateDecode output exceeds {cap} byte limit (possible decompression bomb)"
+            )));
+        }
+        match status {
+            Ok(Status::StreamEnd) => {
+                return Ok(PartialInflate {
+                    output,
+                    error: None,
+                })
+            }
+            Ok(_) if consumed == 0 && produced == 0 => {
+                // No progress with free output space: the input ended before
+                // the final deflate block (truncated stream).
+                return Ok(PartialInflate {
+                    output,
+                    error: Some("unexpected end of deflate data".to_string()),
+                });
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Ok(PartialInflate {
+                    output,
+                    error: Some(error.to_string()),
+                })
             }
         }
     }
 }
 
-fn read_filter_decoder_cancellable<R: Read>(mut decoder: R, context: &str) -> Result<Vec<u8>> {
-    const CHUNK_BYTES: usize = 64 * 1024;
-    let mut output = Vec::new();
-    let mut chunk = [0u8; CHUNK_BYTES];
-    loop {
-        crate::cancel::check_current_cancel(context)?;
-        let read = decoder
-            .read(&mut chunk)
-            .map_err(|error| WellfriendError::ParseError(format!("{context} failed: {error}")))?;
-        if read == 0 {
-            break;
-        }
-        output.extend_from_slice(&chunk[..read]);
-    }
-    Ok(output)
-}
-
-/// Reject output that hit the decompression-bomb backstop.
-fn check_decompressed_size(out: Vec<u8>, cap: u64) -> Result<Vec<u8>> {
-    if out.len() as u64 > cap {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "FlateDecode output exceeds {} byte limit (possible decompression bomb)",
-            cap
-        )));
-    }
-    Ok(out)
-}
-
 #[allow(dead_code)]
 pub(crate) fn apply_predictor(data: Vec<u8>, params: Option<&PdfDictionary>) -> Result<Vec<u8>> {
-    apply_predictor_with_limits(data, params, &DecodeLimits::default())
+    apply_predictor_mode(data, params, &DecodeLimits::default(), DecodeMode::Strict)
 }
 
-pub(crate) fn apply_predictor_with_limits(
+pub(crate) fn apply_predictor_mode(
     data: Vec<u8>,
     params: Option<&PdfDictionary>,
     limits: &DecodeLimits,
+    mode: DecodeMode,
 ) -> Result<Vec<u8>> {
-    let predictor = int_param(params, "Predictor", 1)?;
-    if predictor == 1 {
+    let layout = match predictor_layout(params) {
+        Ok(layout) => layout,
+        Err(err) if mode == DecodeMode::Strict => return Err(err),
+        Err(err) => {
+            // Poppler drops an invalid predictor and passes the data through.
+            log::warn!("ignoring invalid predictor parameters: {err}");
+            return Ok(data);
+        }
+    };
+    let Some(layout) = layout else {
+        return Ok(data);
+    };
+    if layout.columns > limits.max_predictor_columns {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "predictor Columns {} exceeds limit of {}",
+            layout.columns, limits.max_predictor_columns
+        )));
+    }
+    if layout.colors > limits.max_predictor_colors {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "predictor Colors {} exceeds limit of {}",
+            layout.colors, limits.max_predictor_colors
+        )));
+    }
+    if layout.row_len == 0 {
         return Ok(data);
     }
+    validate_predictor_row_len_with_limit(layout.row_len, limits.max_predictor_row_bytes)?;
 
+    match layout.predictor {
+        2 => tiff_predictor(
+            data,
+            layout.row_len,
+            layout.colors,
+            layout.bits_per_component,
+            mode,
+        ),
+        _ => png_predictor(
+            data,
+            layout.row_len,
+            layout.colors,
+            layout.bits_per_component,
+            mode,
+        ),
+    }
+}
+
+struct PredictorLayout {
+    predictor: i64,
+    columns: usize,
+    colors: usize,
+    bits_per_component: usize,
+    row_len: usize,
+}
+
+/// Validated predictor parameters, or `None` when no predictor applies.
+fn predictor_layout(params: Option<&PdfDictionary>) -> Result<Option<PredictorLayout>> {
+    let predictor = int_param(params, "Predictor", 1)?;
+    if predictor == 1 {
+        return Ok(None);
+    }
+    if !matches!(predictor, 2 | 10..=15) {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "unsupported predictor {predictor}"
+        )));
+    }
     let columns = positive_usize_param(params, "Columns", 1)?;
     let colors = positive_usize_param(params, "Colors", 1)?;
     let bits_per_component = positive_usize_param(params, "BitsPerComponent", 8)?;
-    if columns > limits.max_predictor_columns {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "predictor Columns {columns} exceeds limit of {}",
-            limits.max_predictor_columns
-        )));
-    }
-    if colors > limits.max_predictor_colors {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "predictor Colors {colors} exceeds limit of {}",
-            limits.max_predictor_colors
-        )));
-    }
     // Columns/Colors/BitsPerComponent are attacker-controlled. Computing the
     // row length by plain multiplication can overflow `usize` on crafted input
     // (e.g. a huge /Columns), which panics under overflow checks and silently
@@ -2123,19 +2327,18 @@ pub(crate) fn apply_predictor_with_limits(
                     .to_string(),
             )
         })?;
-    let row_len = ceil_div(row_bits, 8);
-    if row_len == 0 {
-        return Ok(data);
+    if predictor == 2 && !matches!(bits_per_component, 8 | 16) {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "TIFF predictor with {bits_per_component} bits per component"
+        )));
     }
-    validate_predictor_row_len_with_limit(row_len, limits.max_predictor_row_bytes)?;
-
-    match predictor {
-        2 => tiff_predictor(data, row_len, colors, bits_per_component),
-        10..=15 => png_predictor(data, row_len, colors, bits_per_component),
-        other => Err(WellfriendError::UnsupportedFeature(format!(
-            "unsupported predictor {other}"
-        ))),
-    }
+    Ok(Some(PredictorLayout {
+        predictor,
+        columns,
+        colors,
+        bits_per_component,
+        row_len: ceil_div(row_bits, 8),
+    }))
 }
 
 fn int_param(params: Option<&PdfDictionary>, key: &str, default: i64) -> Result<i64> {
@@ -2170,11 +2373,15 @@ fn tiff_predictor(
     row_len: usize,
     colors: usize,
     bits_per_component: usize,
+    mode: DecodeMode,
 ) -> Result<Vec<u8>> {
     if !data.len().is_multiple_of(row_len) {
-        return Err(WellfriendError::MalformedPdf(
-            "TIFF predictor data length is not row-aligned".to_string(),
-        ));
+        if mode == DecodeMode::Strict {
+            return Err(WellfriendError::MalformedPdf(
+                "TIFF predictor data length is not row-aligned".to_string(),
+            ));
+        }
+        log::warn!("TIFF predictor data ends with a partial row; decoding the bytes present");
     }
 
     for (row_index, row) in data.chunks_mut(row_len).enumerate() {
@@ -2230,33 +2437,49 @@ fn png_predictor(
     row_len: usize,
     colors: usize,
     bits_per_component: usize,
+    mode: DecodeMode,
 ) -> Result<Vec<u8>> {
     let row_with_filter = row_len.checked_add(1).ok_or_else(|| {
         WellfriendError::MalformedPdf("PNG predictor row dimensions overflow".to_string())
     })?;
     if !data.len().is_multiple_of(row_with_filter) {
-        return Err(WellfriendError::MalformedPdf(
-            "PNG predictor data length is not row-aligned".to_string(),
-        ));
+        if mode == DecodeMode::Strict {
+            return Err(WellfriendError::MalformedPdf(
+                "PNG predictor data length is not row-aligned".to_string(),
+            ));
+        }
+        log::warn!("PNG predictor data ends with a partial row; keeping the bytes present");
     }
 
     let bytes_per_pixel = predictor_bytes_per_pixel(colors, bits_per_component)?;
-    let mut out = Vec::with_capacity((data.len() / row_with_filter) * row_len);
+    let mut out = Vec::with_capacity((data.len() / row_with_filter + 1) * row_len);
     let mut prev_row = vec![0u8; row_len];
 
     for (row_index, encoded_row) in data.chunks(row_with_filter).enumerate() {
         if row_index % 64 == 0 {
             crate::cancel::check_current_cancel("PNG predictor decode")?;
         }
-        let filter = encoded_row[0];
+        let filter = png_row_filter(encoded_row[0], mode)?;
         let encoded = &encoded_row[1..];
         let mut row = encoded.to_vec();
         decode_png_predictor_row(&mut row, filter, &prev_row, bytes_per_pixel)?;
         out.extend_from_slice(&row);
-        prev_row = row;
+        if row.len() == row_len {
+            prev_row = row;
+        }
     }
 
     Ok(out)
+}
+
+/// The PNG row filter tag; an invalid tag is treated as `None` (0) in lenient
+/// mode, as Poppler does.
+fn png_row_filter(tag: u8, mode: DecodeMode) -> Result<u8> {
+    if tag <= 4 || mode == DecodeMode::Strict {
+        return Ok(tag);
+    }
+    log::warn!("invalid PNG predictor row filter {tag}; treating the row as unfiltered");
+    Ok(0)
 }
 
 fn decode_png_predictor_row(
@@ -2363,12 +2586,13 @@ fn predictor_bytes_per_pixel(colors: usize, bits_per_component: usize) -> Result
 
 #[allow(dead_code)]
 fn ascii_hex_decode(data: &[u8]) -> Result<Vec<u8>> {
-    ascii_hex_decode_capped(data, MAX_FILTER_OUTPUT_BYTES)
+    ascii_hex_decode_capped(data, MAX_FILTER_OUTPUT_BYTES, DecodeMode::Strict)
 }
 
-fn ascii_hex_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
+fn ascii_hex_decode_capped(data: &[u8], cap: u64, mode: DecodeMode) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut high: Option<u8> = None;
+    let mut skipped = 0usize;
 
     for (index, &byte) in data.iter().enumerate() {
         if index % 65_536 == 0 {
@@ -2380,9 +2604,15 @@ fn ascii_hex_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
         if is_pdf_whitespace(byte) {
             continue;
         }
-        let value = hex_value(byte).ok_or_else(|| {
-            WellfriendError::ParseError(format!("invalid ASCIIHex digit 0x{byte:02X}"))
-        })?;
+        let Some(value) = hex_value(byte) else {
+            if mode == DecodeMode::Strict {
+                return Err(WellfriendError::ParseError(format!(
+                    "invalid ASCIIHex digit 0x{byte:02X}"
+                )));
+            }
+            skipped += 1;
+            continue;
+        };
         match high.take() {
             Some(high_nibble) => {
                 push_capped(&mut out, (high_nibble << 4) | value, cap, "ASCIIHexDecode")?
@@ -2394,19 +2624,24 @@ fn ascii_hex_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     if let Some(high_nibble) = high {
         push_capped(&mut out, high_nibble << 4, cap, "ASCIIHexDecode")?;
     }
+    if skipped > 0 {
+        log::warn!("ASCIIHexDecode skipped {skipped} invalid character(s)");
+    }
 
     Ok(out)
 }
 
 #[allow(dead_code)]
 fn ascii85_decode(data: &[u8]) -> Result<Vec<u8>> {
-    ascii85_decode_capped(data, MAX_FILTER_OUTPUT_BYTES)
+    ascii85_decode_capped(data, MAX_FILTER_OUTPUT_BYTES, DecodeMode::Strict)
 }
 
-fn ascii85_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
+fn ascii85_decode_capped(data: &[u8], cap: u64, mode: DecodeMode) -> Result<Vec<u8>> {
+    let strict = mode == DecodeMode::Strict;
     let mut out = Vec::new();
     let mut group: Vec<u8> = Vec::with_capacity(5);
     let mut idx = 0;
+    let mut skipped = 0usize;
 
     while idx < data.len() {
         if idx % 65_536 == 0 {
@@ -2431,11 +2666,16 @@ fn ascii85_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
                     saw_end = true;
                     break;
                 }
-                return Err(WellfriendError::ParseError(
-                    "ASCII85 '~' must be followed by '>'".to_string(),
-                ));
+                if strict {
+                    return Err(WellfriendError::ParseError(
+                        "ASCII85 '~' must be followed by '>'".to_string(),
+                    ));
+                }
+                // Lenient: a lone '~' still ends the data.
+                saw_end = true;
+                break;
             }
-            if !saw_end {
+            if !saw_end && strict {
                 return Err(WellfriendError::ParseError(
                     "unterminated ASCII85 EOD marker".to_string(),
                 ));
@@ -2445,38 +2685,53 @@ fn ascii85_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
 
         if byte == b'z' {
             if !group.is_empty() {
-                return Err(WellfriendError::ParseError(
-                    "ASCII85 'z' cannot appear inside a group".to_string(),
-                ));
+                if strict {
+                    return Err(WellfriendError::ParseError(
+                        "ASCII85 'z' cannot appear inside a group".to_string(),
+                    ));
+                }
+                skipped += 1;
+                continue;
             }
             extend_capped(&mut out, &[0, 0, 0, 0], cap, "ASCII85Decode")?;
             continue;
         }
 
         if !(b'!'..=b'u').contains(&byte) {
-            return Err(WellfriendError::ParseError(format!(
-                "invalid ASCII85 byte 0x{byte:02X}"
-            )));
+            if strict {
+                return Err(WellfriendError::ParseError(format!(
+                    "invalid ASCII85 byte 0x{byte:02X}"
+                )));
+            }
+            skipped += 1;
+            continue;
         }
 
         group.push(byte - b'!');
         if group.len() == 5 {
-            push_ascii85_group_capped(&group, 4, &mut out, cap)?;
+            push_ascii85_group_capped(&group, 4, &mut out, cap, mode)?;
             group.clear();
         }
     }
 
     if !group.is_empty() {
         if group.len() == 1 {
-            return Err(WellfriendError::ParseError(
-                "ASCII85 final group cannot contain one digit".to_string(),
-            ));
+            if strict {
+                return Err(WellfriendError::ParseError(
+                    "ASCII85 final group cannot contain one digit".to_string(),
+                ));
+            }
+            skipped += 1;
+        } else {
+            let output_len = group.len() - 1;
+            while group.len() < 5 {
+                group.push(84);
+            }
+            push_ascii85_group_capped(&group, output_len, &mut out, cap, mode)?;
         }
-        let output_len = group.len() - 1;
-        while group.len() < 5 {
-            group.push(84);
-        }
-        push_ascii85_group_capped(&group, output_len, &mut out, cap)?;
+    }
+    if skipped > 0 {
+        log::warn!("ASCII85Decode skipped {skipped} invalid character(s)");
     }
 
     Ok(out)
@@ -2487,9 +2742,21 @@ fn push_ascii85_group_capped(
     output_len: usize,
     out: &mut Vec<u8>,
     cap: u64,
+    mode: DecodeMode,
 ) -> Result<()> {
     let before = out.len();
-    push_ascii85_group(group, output_len, out)?;
+    match push_ascii85_group(group, output_len, out) {
+        Ok(()) => {}
+        Err(err) if mode == DecodeMode::Strict => return Err(err),
+        Err(_) => {
+            // Overflowing group ("s8W-!" and above): wrap like Poppler's
+            // unsigned arithmetic instead of dropping the stream.
+            let value = group.iter().fold(0u32, |value, &digit| {
+                value.wrapping_mul(85).wrapping_add(u32::from(digit))
+            });
+            out.extend_from_slice(&value.to_be_bytes()[..output_len.min(4)]);
+        }
+    }
     if out.len() as u64 > cap {
         out.truncate(before);
         return Err(WellfriendError::MalformedPdf(format!(
@@ -2519,10 +2786,10 @@ fn push_ascii85_group(group: &[u8], output_len: usize, out: &mut Vec<u8>) -> Res
 
 #[allow(dead_code)]
 fn run_length_decode(data: &[u8]) -> Result<Vec<u8>> {
-    run_length_decode_capped(data, MAX_FILTER_OUTPUT_BYTES)
+    run_length_decode_capped(data, MAX_FILTER_OUTPUT_BYTES, DecodeMode::Strict)
 }
 
-fn run_length_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
+fn run_length_decode_capped(data: &[u8], cap: u64, mode: DecodeMode) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut idx = 0;
     let mut runs = 0usize;
@@ -2549,9 +2816,14 @@ fn run_length_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
                     WellfriendError::ParseError("RunLength literal count overflow".to_string())
                 })?;
                 if end > data.len() {
-                    return Err(WellfriendError::ParseError(
-                        "truncated RunLength literal run".to_string(),
-                    ));
+                    if mode == DecodeMode::Strict {
+                        return Err(WellfriendError::ParseError(
+                            "truncated RunLength literal run".to_string(),
+                        ));
+                    }
+                    log::warn!("truncated RunLength literal run; keeping the bytes present");
+                    extend_capped(&mut out, &data[idx..], cap, "RunLengthDecode")?;
+                    break;
                 }
                 extend_capped(&mut out, &data[idx..end], cap, "RunLengthDecode")?;
                 idx = end;
@@ -2559,9 +2831,13 @@ fn run_length_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
             128 => break,
             129..=255 => {
                 if idx >= data.len() {
-                    return Err(WellfriendError::ParseError(
-                        "truncated RunLength repeat run".to_string(),
-                    ));
+                    if mode == DecodeMode::Strict {
+                        return Err(WellfriendError::ParseError(
+                            "truncated RunLength repeat run".to_string(),
+                        ));
+                    }
+                    log::warn!("truncated RunLength repeat run; stopping");
+                    break;
                 }
                 let count = usize::from(257u16 - u16::from(len));
                 extend_repeat_capped(&mut out, data[idx], count, cap, "RunLengthDecode")?;
@@ -2575,10 +2851,15 @@ fn run_length_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
 
 #[allow(dead_code)]
 fn lzw_decode(data: &[u8], early_change: u8) -> Result<Vec<u8>> {
-    lzw_decode_capped(data, early_change, MAX_FILTER_OUTPUT_BYTES)
+    lzw_decode_capped(
+        data,
+        early_change,
+        MAX_FILTER_OUTPUT_BYTES,
+        DecodeMode::Strict,
+    )
 }
 
-fn lzw_decode_capped(data: &[u8], early_change: u8, cap: u64) -> Result<Vec<u8>> {
+fn lzw_decode_capped(data: &[u8], early_change: u8, cap: u64, mode: DecodeMode) -> Result<Vec<u8>> {
     let mut reader = MsbBitReader::new(data);
     let mut table = initial_lzw_table();
     let mut code_width = 9usize;
@@ -2609,26 +2890,14 @@ fn lzw_decode_capped(data: &[u8], early_change: u8, cap: u64) -> Result<Vec<u8>>
             257 => break,
             code => {
                 let code_usize = usize::from(code);
-                let entry = if code_usize < table.len() {
-                    table[code_usize].clone().ok_or_else(|| {
-                        WellfriendError::ParseError(format!("invalid empty LZW code {code_usize}"))
-                    })?
-                } else if code_usize == next_code {
-                    let prev = previous.as_ref().ok_or_else(|| {
-                        WellfriendError::ParseError(
-                            "LZW KwKwK code without previous entry".to_string(),
-                        )
-                    })?;
-                    let mut synthesized = prev.clone();
-                    let first = *prev.first().ok_or_else(|| {
-                        WellfriendError::ParseError("empty LZW previous entry".to_string())
-                    })?;
-                    synthesized.push(first);
-                    synthesized
-                } else {
-                    return Err(WellfriendError::ParseError(format!(
-                        "invalid LZW code {code_usize}"
-                    )));
+                let entry = match lzw_entry(&table, code_usize, next_code, previous.as_ref()) {
+                    Ok(entry) => entry,
+                    Err(err) if mode == DecodeMode::Strict => return Err(err),
+                    Err(err) => {
+                        // Poppler stops at a bad code and keeps the prefix.
+                        log::warn!("{err}; keeping {} LZW bytes decoded so far", out.len());
+                        break;
+                    }
                 };
 
                 extend_capped(&mut out, &entry, cap, "LZWDecode")?;
@@ -2659,6 +2928,33 @@ fn lzw_decode_capped(data: &[u8], early_change: u8, cap: u64) -> Result<Vec<u8>>
     }
 
     Ok(out)
+}
+
+fn lzw_entry(
+    table: &[Option<Vec<u8>>],
+    code: usize,
+    next_code: usize,
+    previous: Option<&Vec<u8>>,
+) -> Result<Vec<u8>> {
+    if code < table.len() {
+        return table[code]
+            .clone()
+            .ok_or_else(|| WellfriendError::ParseError(format!("invalid empty LZW code {code}")));
+    }
+    if code == next_code {
+        let prev = previous.ok_or_else(|| {
+            WellfriendError::ParseError("LZW KwKwK code without previous entry".to_string())
+        })?;
+        let first = *prev
+            .first()
+            .ok_or_else(|| WellfriendError::ParseError("empty LZW previous entry".to_string()))?;
+        let mut synthesized = prev.clone();
+        synthesized.push(first);
+        return Ok(synthesized);
+    }
+    Err(WellfriendError::ParseError(format!(
+        "invalid LZW code {code}"
+    )))
 }
 
 fn push_capped(out: &mut Vec<u8>, byte: u8, cap: u64, filter: &str) -> Result<()> {
@@ -2912,7 +3208,10 @@ mod tests {
             max_decoded_bytes_per_stream: 2,
             ..DecodeLimits::default()
         };
-        assert!(decode_stream_parts_with_limits(&dict, &raw, None, &limits).is_err());
+        assert!(
+            decode_stream_parts_with_limits(&dict, &raw, None, &limits, DecodeMode::Lenient)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2947,13 +3246,13 @@ mod tests {
 
     #[test]
     fn buffered_ascii_filters_enforce_output_cap() {
-        let hex_err = ascii_hex_decode_capped(b"6162>", 1).unwrap_err();
+        let hex_err = ascii_hex_decode_capped(b"6162>", 1, DecodeMode::Strict).unwrap_err();
         assert!(
             matches!(hex_err, WellfriendError::MalformedPdf(ref message) if message.contains("ASCIIHexDecode output")),
             "expected ASCIIHex cap diagnostic, got {hex_err:?}"
         );
 
-        let ascii85_err = ascii85_decode_capped(b"zz~>", 4).unwrap_err();
+        let ascii85_err = ascii85_decode_capped(b"zz~>", 4, DecodeMode::Strict).unwrap_err();
         assert!(
             matches!(ascii85_err, WellfriendError::MalformedPdf(ref message) if message.contains("ASCII85Decode output")),
             "expected ASCII85 cap diagnostic, got {ascii85_err:?}"
@@ -2962,15 +3261,19 @@ mod tests {
 
     #[test]
     fn buffered_run_length_and_lzw_enforce_output_cap() {
-        let run_err =
-            run_length_decode_capped(&[4, b'a', b'b', b'c', b'd', b'e', 128], 3).unwrap_err();
+        let run_err = run_length_decode_capped(
+            &[4, b'a', b'b', b'c', b'd', b'e', 128],
+            3,
+            DecodeMode::Strict,
+        )
+        .unwrap_err();
         assert!(
             matches!(run_err, WellfriendError::MalformedPdf(ref message) if message.contains("RunLengthDecode output")),
             "expected RunLength cap diagnostic, got {run_err:?}"
         );
 
         let encoded = pack_lzw_codes(&[65, 66, 67, 257], 9);
-        let lzw_err = lzw_decode_capped(&encoded, 1, 2).unwrap_err();
+        let lzw_err = lzw_decode_capped(&encoded, 1, 2, DecodeMode::Strict).unwrap_err();
         assert!(
             matches!(lzw_err, WellfriendError::MalformedPdf(ref message) if message.contains("LZWDecode output")),
             "expected LZW cap diagnostic, got {lzw_err:?}"
@@ -3006,14 +3309,14 @@ mod tests {
             compressed.len()
         );
         // Cap of 1 MiB < 4 MiB decompressed => rejected.
-        let err = flate_decode_capped(&compressed, 1024 * 1024).unwrap_err();
+        let err = flate_decode_capped(&compressed, 1024 * 1024, DecodeMode::Strict).unwrap_err();
         assert!(
             matches!(err, WellfriendError::MalformedPdf(ref m) if m.contains("decompression bomb")),
             "expected decompression-bomb rejection, got {:?}",
             err
         );
         // The same data under a generous cap decodes fine.
-        let ok = flate_decode_capped(&compressed, 8 * 1024 * 1024).unwrap();
+        let ok = flate_decode_capped(&compressed, 8 * 1024 * 1024, DecodeMode::Strict).unwrap();
         assert_eq!(ok.len(), raw.len());
     }
 
@@ -3048,6 +3351,276 @@ mod tests {
         assert!(
             matches!(err, WellfriendError::MalformedPdf(_)),
             "expected MalformedPdf on dimension overflow, got {err:?}"
+        );
+    }
+
+    // ---- lenient ("draw what you can") decoding ----
+
+    fn flate_dict() -> PdfDictionary {
+        dict(&[("Filter", PdfObject::Name("FlateDecode".to_string()))])
+    }
+
+    fn sample_content(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|index| b"0 0 m 10 10 l S q Q BT ET "[index % 26])
+            .collect()
+    }
+
+    /// A zlib stream whose second deflate block is corrupt: everything before
+    /// the sync-flush point (`prefix`) is recoverable.
+    fn zlib_with_corrupt_tail(prefix: &[u8], rest: &[u8]) -> Vec<u8> {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write as _;
+
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(prefix).unwrap();
+        enc.flush().unwrap();
+        let flushed = enc.get_ref().len();
+        enc.write_all(rest).unwrap();
+        let mut bytes = enc.finish().unwrap();
+        // BFINAL=1, BTYPE=11 (reserved): an invalid block header.
+        for byte in &mut bytes[flushed..flushed + 4] {
+            *byte = 0xFF;
+        }
+        bytes
+    }
+
+    #[test]
+    fn flate_bad_adler_checksum_keeps_all_data_in_lenient_mode() {
+        let content = sample_content(10_000);
+        let mut compressed = zlib_bytes(&content);
+        let last = compressed.len() - 1;
+        compressed[last] ^= 0xFF;
+
+        assert!(flate_decode_capped(&compressed, 1 << 20, DecodeMode::Strict).is_err());
+        assert_eq!(
+            flate_decode_capped(&compressed, 1 << 20, DecodeMode::Lenient).unwrap(),
+            content
+        );
+    }
+
+    #[test]
+    fn flate_mid_stream_corruption_keeps_decoded_prefix() {
+        let prefix = sample_content(1_000);
+        let compressed = zlib_with_corrupt_tail(&prefix, &sample_content(5_000));
+
+        assert!(flate_decode_capped(&compressed, 1 << 20, DecodeMode::Strict).is_err());
+        assert_eq!(
+            flate_decode_capped(&compressed, 1 << 20, DecodeMode::Lenient).unwrap(),
+            prefix
+        );
+        // The content-stream decode path is lenient; the report stays strict.
+        let decoded = decode_stream_parts(&flate_dict(), &compressed, None).unwrap();
+        assert_eq!(decoded.data, prefix);
+        let report = decode_stream_report_from_dict(
+            &flate_dict(),
+            &compressed,
+            None,
+            &DecodeLimits::default(),
+            None,
+        );
+        assert!(!report.ok);
+    }
+
+    #[test]
+    fn flate_truncated_stream_keeps_decoded_prefix() {
+        let content = sample_content(50_000);
+        let compressed = zlib_bytes(&content);
+        let truncated = &compressed[..compressed.len() / 2];
+        let decoded = flate_decode_capped(truncated, 1 << 20, DecodeMode::Lenient).unwrap();
+        assert!(!decoded.is_empty());
+        assert!(decoded.len() < content.len());
+        assert_eq!(decoded, content[..decoded.len()]);
+    }
+
+    #[test]
+    fn lenient_flate_still_enforces_output_cap() {
+        let compressed = zlib_bytes(&vec![0u8; 64 * 1024]);
+        assert!(flate_decode_capped(&compressed, 1024, DecodeMode::Lenient).is_err());
+    }
+
+    #[test]
+    fn lzw_invalid_code_stops_and_keeps_prefix() {
+        let encoded = pack_lzw_codes(&[256, 65, 66, 4000, 67, 257], 9);
+        assert!(lzw_decode(&encoded, 1).is_err());
+        assert_eq!(
+            lzw_decode_capped(&encoded, 1, 1 << 20, DecodeMode::Lenient).unwrap(),
+            b"AB"
+        );
+    }
+
+    #[test]
+    fn run_length_truncated_runs_keep_available_bytes() {
+        let literal = [4, b'a', b'b'];
+        assert!(run_length_decode(&literal).is_err());
+        assert_eq!(
+            run_length_decode_capped(&literal, 1 << 20, DecodeMode::Lenient).unwrap(),
+            b"ab"
+        );
+        let repeat = [2, b'a', b'b', b'c', 250];
+        assert!(run_length_decode(&repeat).is_err());
+        assert_eq!(
+            run_length_decode_capped(&repeat, 1 << 20, DecodeMode::Lenient).unwrap(),
+            b"abc"
+        );
+    }
+
+    #[test]
+    fn png_predictor_accepts_truncated_last_row_and_invalid_tags() {
+        let params = dict(&[
+            ("Predictor", PdfObject::Integer(12)),
+            ("Columns", PdfObject::Integer(3)),
+        ]);
+        let limits = DecodeLimits::default();
+        // Up rows, then a one-byte partial row.
+        let truncated = vec![2, 1, 2, 3, 2, 1, 1, 1, 2, 5];
+        assert!(apply_predictor(truncated.clone(), Some(&params)).is_err());
+        assert_eq!(
+            apply_predictor_mode(truncated, Some(&params), &limits, DecodeMode::Lenient).unwrap(),
+            vec![1, 2, 3, 2, 3, 4, 7]
+        );
+        // Row tag 7 is invalid: treated as None.
+        let bad_tag = vec![7, 9, 9, 9];
+        assert!(apply_predictor(bad_tag.clone(), Some(&params)).is_err());
+        assert_eq!(
+            apply_predictor_mode(bad_tag, Some(&params), &limits, DecodeMode::Lenient).unwrap(),
+            vec![9, 9, 9]
+        );
+    }
+
+    #[test]
+    fn invalid_predictor_params_pass_data_through() {
+        let limits = DecodeLimits::default();
+        let data = vec![1, 2, 3, 4];
+        for params in [
+            dict(&[
+                ("Predictor", PdfObject::Integer(12)),
+                ("Columns", PdfObject::Integer(0)),
+            ]),
+            dict(&[("Predictor", PdfObject::Integer(99))]),
+            dict(&[("Predictor", PdfObject::Name("Up".to_string()))]),
+            dict(&[
+                ("Predictor", PdfObject::Integer(2)),
+                ("BitsPerComponent", PdfObject::Integer(4)),
+            ]),
+        ] {
+            assert!(apply_predictor(data.clone(), Some(&params)).is_err());
+            assert_eq!(
+                apply_predictor_mode(data.clone(), Some(&params), &limits, DecodeMode::Lenient)
+                    .unwrap(),
+                data
+            );
+        }
+    }
+
+    #[test]
+    fn ascii_filters_skip_invalid_characters() {
+        assert!(ascii_hex_decode(b"61 6x2>").is_err());
+        assert_eq!(
+            ascii_hex_decode_capped(b"61 6x2>", 1 << 20, DecodeMode::Lenient).unwrap(),
+            b"ab"
+        );
+        let noisy = b"87cUR{D]i,\"Ebo7~>";
+        assert!(ascii85_decode(noisy).is_err());
+        assert_eq!(
+            ascii85_decode_capped(noisy, 1 << 20, DecodeMode::Lenient).unwrap(),
+            b"Hello World"
+        );
+        // A lone `~` ends the data; a single trailing digit is dropped.
+        assert_eq!(
+            ascii85_decode_capped(b"87cURD]i,\"Ebo7~x", 1 << 20, DecodeMode::Lenient).unwrap(),
+            b"Hello World"
+        );
+        assert_eq!(
+            ascii85_decode_capped(b"z!", 1 << 20, DecodeMode::Lenient).unwrap(),
+            [0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn unknown_filter_yields_empty_stream_on_content_path() {
+        let unknown = dict(&[("Filter", PdfObject::Name("BogusDecode".to_string()))]);
+        let decoded = decode_stream_parts(&unknown, b"abc", None).unwrap();
+        assert!(decoded.data.is_empty());
+        assert_eq!(decoded.status, StreamDecodeStatus::Complete);
+        assert!(decode_stream_from_dict(&unknown, b"abc")
+            .unwrap()
+            .is_empty());
+        assert!(decode_stream_from_dict_strict_with_limits(
+            &unknown,
+            b"abc",
+            &DecodeLimits::default()
+        )
+        .is_err());
+
+        use std::io::Read as _;
+        let mut streaming =
+            decode_stream_lossless_reader(&unknown, std::io::Cursor::new(b"abc".to_vec()), None)
+                .unwrap();
+        let mut out = Vec::new();
+        streaming.reader.read_to_end(&mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn malformed_decode_parms_are_ignored_on_lenient_path() {
+        let stream = dict(&[
+            ("Filter", PdfObject::Name("FlateDecode".to_string())),
+            ("DecodeParms", PdfObject::Integer(7)),
+        ]);
+        let decoded = decode_stream_parts(&stream, &zlib_bytes(b"q Q"), None).unwrap();
+        assert_eq!(decoded.data, b"q Q");
+    }
+
+    #[test]
+    fn streaming_reader_keeps_partial_output_of_damaged_filters() {
+        use std::io::Read as _;
+
+        let read_all = |dict: &PdfDictionary, raw: &[u8]| {
+            let mut streaming =
+                decode_stream_lossless_reader(dict, std::io::Cursor::new(raw.to_vec()), None)
+                    .unwrap();
+            let mut out = Vec::new();
+            streaming.reader.read_to_end(&mut out).unwrap();
+            out
+        };
+
+        let prefix = sample_content(1_000);
+        let corrupt = zlib_with_corrupt_tail(&prefix, &sample_content(5_000));
+        assert_eq!(read_all(&flate_dict(), &corrupt), prefix);
+
+        let content = sample_content(10_000);
+        let mut bad_adler = zlib_bytes(&content);
+        let last = bad_adler.len() - 1;
+        bad_adler[last] ^= 0xFF;
+        assert_eq!(read_all(&flate_dict(), &bad_adler), content);
+
+        let lzw = dict(&[("Filter", PdfObject::Name("LZWDecode".to_string()))]);
+        assert_eq!(
+            read_all(&lzw, &pack_lzw_codes(&[256, 65, 66, 4000, 67, 257], 9)),
+            b"AB"
+        );
+        let run_length = dict(&[("Filter", PdfObject::Name("RunLengthDecode".to_string()))]);
+        assert_eq!(read_all(&run_length, &[4, b'a', b'b']), b"ab");
+        let hex = dict(&[("Filter", PdfObject::Name("ASCIIHexDecode".to_string()))]);
+        assert_eq!(read_all(&hex, b"61 6x2>"), b"ab");
+        let a85 = dict(&[("Filter", PdfObject::Name("ASCII85Decode".to_string()))]);
+        assert_eq!(read_all(&a85, b"87cUR{D]i,\"Ebo7~>"), b"Hello World");
+
+        let predicted = dict(&[
+            ("Filter", PdfObject::Name("FlateDecode".to_string())),
+            (
+                "DecodeParms",
+                PdfObject::Dictionary(dict(&[
+                    ("Predictor", PdfObject::Integer(12)),
+                    ("Columns", PdfObject::Integer(3)),
+                ])),
+            ),
+        ]);
+        assert_eq!(
+            read_all(&predicted, &zlib_bytes(&[2, 1, 2, 3, 7, 1, 1, 1, 2, 5])),
+            vec![1, 2, 3, 1, 1, 1, 6]
         );
     }
 

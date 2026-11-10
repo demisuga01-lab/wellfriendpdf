@@ -1068,7 +1068,10 @@ pub fn object_key(file_key: &[u8], obj_num: u32, gen_num: u16, is_aes: bool) -> 
 ///
 /// For V1/V2/V4: a per-object key is derived via [`object_key`].
 ///
-/// On any AES failure the original bytes are returned unchanged, so a single
+/// A malformed AES padding block does not discard the plaintext: the data is
+/// decrypted without padding and a plausible PKCS#7 tail is trimmed, like
+/// Poppler. Only when AES cannot run at all (bad key length or ciphertext
+/// shorter than the IV) are the original bytes returned unchanged, so a single
 /// corrupt object can never poison the rest of the document.
 pub fn decrypt_string(
     data: &[u8],
@@ -1083,15 +1086,52 @@ pub fn decrypt_string(
     }
     if is_v5 {
         // V5: use file_key directly with AES-256-CBC; IV prepended.
-        aes256_cbc_decrypt(file_key, data).unwrap_or_else(|_| data.to_vec())
+        aes256_cbc_decrypt(file_key, data)
+            .or_else(|_| aes_cbc_decrypt_lenient_padding(file_key, data))
+            .unwrap_or_else(|_| data.to_vec())
     } else {
         let key = object_key(file_key, obj_num, gen_num, is_aes);
         if is_aes {
-            aes128_cbc_decrypt(&key, data).unwrap_or_else(|_| data.to_vec())
+            aes128_cbc_decrypt(&key, data)
+                .or_else(|_| aes_cbc_decrypt_lenient_padding(&key, data))
+                .unwrap_or_else(|_| data.to_vec())
         } else {
             Rc4::apply(&key, data)
         }
     }
+}
+
+/// AES-CBC decryption (IV prepended) for data whose PKCS#7 padding is
+/// invalid. Decrypts without padding, then removes `n` trailing bytes when the
+/// last byte `n` is a plausible pad length (1..=16); otherwise keeps every
+/// decrypted byte. The key length selects AES-128 or AES-256.
+fn aes_cbc_decrypt_lenient_padding(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
+    if ciphertext.len() < 16 {
+        return Err(WellfriendError::MalformedPdf(
+            "AES: ciphertext shorter than IV (16 bytes)".to_string(),
+        ));
+    }
+    let (iv, data) = ciphertext.split_at(16);
+    let padded_len = data.len().div_ceil(16) * 16;
+    let mut blocks = data.to_vec();
+    blocks.resize(padded_len, 0);
+    let mut plain = match key.len() {
+        16 => decrypt_aes128_cbc_no_pad(key, iv, &blocks)?,
+        32 => aes256_cbc_no_pad(key, iv, &blocks)?,
+        other => {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "AES: key must be 16 or 32 bytes, got {other}"
+            )))
+        }
+    };
+    if let Some(&pad) = plain.last() {
+        let pad = usize::from(pad);
+        if (1..=16).contains(&pad) && pad <= plain.len() {
+            plain.truncate(plain.len() - pad);
+        }
+    }
+    log::warn!("AES-encrypted data has invalid padding; using the decrypted bytes");
+    Ok(plain)
 }
 
 /// Decrypt a PDF stream's raw bytes. Streams use the same logic as strings.
@@ -2245,6 +2285,56 @@ mod tests {
 
         let decrypted = decrypt_string(&ciphertext, &file_key, 1, 0, false, true);
         assert_eq!(decrypted, plain.to_vec());
+    }
+
+    fn encrypt_cbc_no_pad(key: &[u8], iv: &[u8; 16], plain: &[u8]) -> Vec<u8> {
+        use aes::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyIvInit};
+        let mut buf = plain.to_vec();
+        let len = buf.len();
+        let ct = match key.len() {
+            16 => cbc::Encryptor::<aes::Aes128>::new_from_slices(key, iv)
+                .unwrap()
+                .encrypt_padded_mut::<NoPadding>(&mut buf, len)
+                .unwrap()
+                .to_vec(),
+            _ => cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
+                .unwrap()
+                .encrypt_padded_mut::<NoPadding>(&mut buf, len)
+                .unwrap()
+                .to_vec(),
+        };
+        let mut out = iv.to_vec();
+        out.extend_from_slice(&ct);
+        out
+    }
+
+    #[test]
+    fn aes_string_with_invalid_padding_returns_plaintext_not_ciphertext() {
+        // 32 plaintext bytes ending in 0x00: not valid PKCS#7 padding.
+        let mut plain = b"BT /F1 12 Tf (Hello) Tj ET".to_vec();
+        plain.resize(32, 0);
+        let file_key = [0x33u8; 32];
+        let ciphertext = encrypt_cbc_no_pad(&file_key, &[0x11; 16], &plain);
+        assert!(aes256_cbc_decrypt(&file_key, &ciphertext).is_err());
+
+        let decrypted = decrypt_string(&ciphertext, &file_key, 1, 0, false, true);
+        assert_eq!(decrypted, plain);
+    }
+
+    #[test]
+    fn aes128_stream_with_bad_padding_trims_plausible_pad_length() {
+        // Last byte 3 is a plausible pad length but the pad bytes disagree,
+        // so strict PKCS#7 rejects it; the lenient path still trims 3 bytes.
+        let mut plain = b"0 0 m 10 10 l S %".to_vec();
+        plain.resize(29, b'x');
+        plain.extend_from_slice(&[9, 9, 3]);
+        let file_key = [0x44u8; 16];
+        let key = object_key(&file_key, 7, 0, true);
+        let ciphertext = encrypt_cbc_no_pad(&key, &[0x22; 16], &plain);
+        assert!(aes128_cbc_decrypt(&key, &ciphertext).is_err());
+
+        let decrypted = decrypt_stream(&ciphertext, &file_key, 7, 0, true, false);
+        assert_eq!(decrypted, plain[..29].to_vec());
     }
 
     // --- verify_user_password (V1/V2/V4) ---
