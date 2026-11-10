@@ -1,9 +1,9 @@
 use crate::error::{Result, WellfriendError};
 use crate::images::decoder::RawImage;
 
-/// How many shorter segment prefixes are tried when a damaged JBIG2 stream
-/// fails to decode as a whole.
-const MAX_PARTIAL_DECODE_ATTEMPTS: usize = 8;
+/// How many whole-stream decodes may be spent isolating damaged segments
+/// when a JBIG2 stream fails to decode as a whole.
+const MAX_PARTIAL_DECODE_ATTEMPTS: usize = 24;
 
 /// Decode an embedded PDF JBIG2 stream into Wellfriend's grayscale RawImage.
 ///
@@ -14,35 +14,165 @@ const MAX_PARTIAL_DECODE_ATTEMPTS: usize = 8;
 ///
 /// The decoder only emits the page bitmap after every segment succeeded, so a
 /// damaged or truncated stream would lose the whole image. When the full
-/// decode fails, the longest prefix of complete segments that still decodes
-/// is used instead (regions after the damage are missing, the rest is drawn).
+/// decode fails, the damaged segments are left out and the others are
+/// composed onto the page, as Poppler's JBIG2Stream skips a segment it cannot
+/// read: region segments are independent, so regions after a damaged one are
+/// still drawn. Segments that refer to a left-out segment (a text region
+/// using a damaged symbol dictionary, say) are left out with it, and a
+/// truncated tail that cannot be delimited is dropped.
 pub fn decode(data: &[u8], globals: Option<&[u8]>) -> Result<RawImage> {
     let error = match decode_complete(data, globals) {
         Ok(image) => return Ok(image),
         Err(error) => error,
     };
-    if matches!(
-        error,
-        WellfriendError::ResourceLimit(_) | WellfriendError::Cancelled(_)
-    ) {
+    if is_fatal(&error) {
         return Err(error);
     }
-    let ends = embedded_segment_ends(data);
-    for &end in ends
-        .iter()
-        .rev()
-        .filter(|end| **end < data.len())
-        .take(MAX_PARTIAL_DECODE_ATTEMPTS)
-    {
-        if let Ok(image) = decode_complete(&data[..end], globals) {
+    let segments = embedded_segments(data);
+    match decode_without_damaged_segments(data, globals, &segments)? {
+        Some(partial) => {
             log::warn!(
-                "{error}; drew the JBIG2 image from its first {end} of {} bytes",
+                "{error}; drew the JBIG2 image without {} damaged or dependent segment(s) of {} ({} of {} bytes delimited)",
+                partial.left_out,
+                segments.len(),
+                segments.last().map_or(0, |segment| segment.end),
                 data.len()
             );
-            return Ok(image);
+            Ok(partial.image)
+        }
+        None => Err(error),
+    }
+}
+
+fn is_fatal(error: &WellfriendError) -> bool {
+    matches!(
+        error,
+        WellfriendError::ResourceLimit(_) | WellfriendError::Cancelled(_)
+    )
+}
+
+struct PartialDecode {
+    image: RawImage,
+    left_out: usize,
+}
+
+enum Attempt {
+    Decoded(RawImage),
+    Failed,
+    Exhausted,
+}
+
+/// Decodes chosen subsets of a stream's segments within an attempt budget.
+struct SegmentDecoder<'a> {
+    data: &'a [u8],
+    globals: Option<&'a [u8]>,
+    segments: &'a [SegmentSpan],
+    budget: usize,
+}
+
+impl SegmentDecoder<'_> {
+    fn attempt(&mut self, indices: &[usize]) -> Result<Attempt> {
+        // The whole delimited stream is the input that already failed.
+        let whole = indices.len() == self.segments.len()
+            && self.segments.last().map(|segment| segment.end) == Some(self.data.len());
+        if whole {
+            return Ok(Attempt::Failed);
+        }
+        if self.budget == 0 {
+            return Ok(Attempt::Exhausted);
+        }
+        self.budget -= 1;
+        let mut bytes = Vec::new();
+        for &index in indices {
+            let segment = &self.segments[index];
+            bytes.extend_from_slice(&self.data[segment.start..segment.end]);
+        }
+        match decode_complete(&bytes, self.globals) {
+            Ok(image) => Ok(Attempt::Decoded(image)),
+            Err(error) if is_fatal(&error) => Err(error),
+            Err(_) => Ok(Attempt::Failed),
         }
     }
-    Err(error)
+}
+
+/// Find the damaged segments one at a time and decode the rest.
+///
+/// Segments are composed onto the page in order, so a decode of a segment
+/// prefix fails exactly when the prefix contains a damaged segment: the first
+/// damaged one is found by bisecting the undecided segments, then it (and
+/// every segment referring to it) is left out and the search continues after
+/// it. The result is the decode of all kept segments, or the largest verified
+/// subset when the attempt budget runs out.
+fn decode_without_damaged_segments(
+    data: &[u8],
+    globals: Option<&[u8]>,
+    segments: &[SegmentSpan],
+) -> Result<Option<PartialDecode>> {
+    let mut decoder = SegmentDecoder {
+        data,
+        globals,
+        segments,
+        budget: MAX_PARTIAL_DECODE_ATTEMPTS,
+    };
+    let mut kept: Vec<usize> = Vec::new();
+    let mut left_out: Vec<u32> = Vec::new();
+    let mut best: Option<RawImage> = None;
+    let mut next = 0usize;
+    let finish = |image: Option<RawImage>, kept: usize| {
+        image.map(|image| PartialDecode {
+            image,
+            left_out: segments.len() - kept,
+        })
+    };
+    loop {
+        let mut remaining = Vec::new();
+        for (index, segment) in segments.iter().enumerate().skip(next) {
+            if segment
+                .referred
+                .iter()
+                .any(|number| left_out.contains(number))
+            {
+                if !left_out.contains(&segment.number) {
+                    left_out.push(segment.number);
+                }
+                continue;
+            }
+            remaining.push(index);
+        }
+        if remaining.is_empty() {
+            return Ok(finish(best, kept.len()));
+        }
+        let mut candidate = kept.clone();
+        candidate.extend_from_slice(&remaining);
+        match decoder.attempt(&candidate)? {
+            Attempt::Decoded(image) => return Ok(finish(Some(image), candidate.len())),
+            Attempt::Exhausted => return Ok(finish(best, kept.len())),
+            Attempt::Failed => {}
+        }
+        // Invariant: kept + remaining[..good] decodes, kept + remaining[..bad]
+        // does not.
+        let (mut good, mut bad) = (0usize, remaining.len());
+        while bad - good > 1 {
+            let mid = good + (bad - good) / 2;
+            candidate.truncate(kept.len());
+            candidate.extend_from_slice(&remaining[..mid]);
+            match decoder.attempt(&candidate)? {
+                Attempt::Decoded(image) => {
+                    good = mid;
+                    best = Some(image);
+                }
+                Attempt::Failed => bad = mid,
+                Attempt::Exhausted => {
+                    kept.extend_from_slice(&remaining[..good]);
+                    return Ok(finish(best, kept.len()));
+                }
+            }
+        }
+        let damaged = remaining[bad - 1];
+        kept.extend_from_slice(&remaining[..bad - 1]);
+        left_out.push(segments[damaged].number);
+        next = damaged + 1;
+    }
 }
 
 fn decode_complete(data: &[u8], globals: Option<&[u8]>) -> Result<RawImage> {
@@ -60,26 +190,35 @@ fn decode_complete(data: &[u8], globals: Option<&[u8]>) -> Result<RawImage> {
     Ok(sink.finish())
 }
 
-/// Byte offsets just past each complete segment of an embedded
-/// (sequential-organization) JBIG2 stream, per T.88 section 7.2. Parsing stops
-/// at the first truncated header, at a segment whose data runs past the end,
-/// or at an unknown-length segment (which cannot be delimited cheaply).
-fn embedded_segment_ends(data: &[u8]) -> Vec<usize> {
-    let mut ends = Vec::new();
+/// One complete segment of an embedded JBIG2 stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SegmentSpan {
+    start: usize,
+    end: usize,
+    number: u32,
+    referred: Vec<u32>,
+}
+
+/// The complete segments of an embedded (sequential-organization) JBIG2
+/// stream, per T.88 section 7.2. Parsing stops at the first truncated header,
+/// at a segment whose data runs past the end, or at an unknown-length segment
+/// (which cannot be delimited cheaply).
+fn embedded_segments(data: &[u8]) -> Vec<SegmentSpan> {
+    let mut segments = Vec::new();
     let mut pos = 0usize;
     while pos < data.len() {
-        match segment_end(data, pos) {
-            Some(end) if end > pos => {
-                ends.push(end);
-                pos = end;
+        match parse_segment_span(data, pos) {
+            Some(segment) if segment.end > pos => {
+                pos = segment.end;
+                segments.push(segment);
             }
             _ => break,
         }
     }
-    ends
+    segments
 }
 
-fn segment_end(data: &[u8], start: usize) -> Option<usize> {
+fn parse_segment_span(data: &[u8], start: usize) -> Option<SegmentSpan> {
     let be_u32 = |at: usize| -> Option<u32> {
         let bytes = data.get(at..at.checked_add(4)?)?;
         Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
@@ -108,14 +247,24 @@ fn segment_end(data: &[u8], start: usize) -> Option<usize> {
     } else {
         4
     };
-    pos = pos.checked_add(referred_count.checked_mul(referred_size)?)?;
-    pos = pos.checked_add(page_association_bytes)?;
+    let referred_end = pos.checked_add(referred_count.checked_mul(referred_size)?)?;
+    let referred = data
+        .get(pos..referred_end)?
+        .chunks_exact(referred_size)
+        .map(|bytes| bytes.iter().fold(0u32, |n, byte| n << 8 | u32::from(*byte)))
+        .collect();
+    pos = referred_end.checked_add(page_association_bytes)?;
     let data_length = be_u32(pos)?;
     if data_length == u32::MAX {
         return None;
     }
     let end = (pos + 4).checked_add(data_length as usize)?;
-    (end <= data.len()).then_some(end)
+    (end <= data.len()).then_some(SegmentSpan {
+        start,
+        end,
+        number: segment_number,
+        referred,
+    })
 }
 
 struct GrayscaleSink {
@@ -224,7 +373,87 @@ mod tests {
         let mut truncated = segment(2, 38, &[0], &[1, 2, 3, 4]);
         truncated.truncate(truncated.len() - 2);
         data.extend_from_slice(&truncated);
-        assert_eq!(embedded_segment_ends(&data), vec![first_end, second_end]);
+        let segments = embedded_segments(&data);
+        let ends: Vec<usize> = segments.iter().map(|segment| segment.end).collect();
+        assert_eq!(ends, vec![first_end, second_end]);
+        assert_eq!(segments[1].start, first_end);
+        assert_eq!(segments[1].number, 1);
+    }
+
+    #[test]
+    fn segment_scanner_reads_referred_segment_numbers() {
+        let mut data = page_information(8, 2);
+        data.extend_from_slice(&segment(3, 6, &[1, 2], &[]));
+        let segments = embedded_segments(&data);
+        assert_eq!(segments[1].referred, vec![1, 2]);
+        assert!(segments[0].referred.is_empty());
+    }
+
+    /// An immediate MMR generic region painting one black 8-pixel row at `y`.
+    fn black_row_region(number: u32, y: u32, referred: &[u8]) -> Vec<u8> {
+        let mut payload = 8u32.to_be_bytes().to_vec(); // width
+        payload.extend_from_slice(&1u32.to_be_bytes()); // height
+        payload.extend_from_slice(&0u32.to_be_bytes()); // x
+        payload.extend_from_slice(&y.to_be_bytes()); // y
+        payload.push(0); // region flags: OR
+        payload.push(1); // generic region flags: MMR
+
+        // MMR row: horizontal mode (001), white 0 (00110101), black 8 (000101).
+        payload.extend_from_slice(&[0x26, 0xA2, 0x80]);
+        segment(number, 38, referred, &payload)
+    }
+
+    /// A generic region whose region information is cut short.
+    fn damaged_region(number: u32) -> Vec<u8> {
+        segment(number, 38, &[], &[0, 0, 0])
+    }
+
+    fn rows(image: &RawImage) -> Vec<Vec<u8>> {
+        image
+            .pixels
+            .chunks(image.width as usize)
+            .map(<[u8]>::to_vec)
+            .collect()
+    }
+
+    #[test]
+    fn regions_after_a_damaged_middle_segment_are_still_drawn() {
+        let mut data = page_information(8, 2);
+        data.extend_from_slice(&black_row_region(1, 0, &[]));
+        data.extend_from_slice(&damaged_region(2));
+        data.extend_from_slice(&black_row_region(3, 1, &[]));
+        decode_complete(&data, None).expect_err("the damaged region fails the whole decode");
+
+        let image = decode(&data, None).expect("partial decode");
+        assert_eq!(rows(&image), vec![vec![0; 8], vec![0; 8]]);
+    }
+
+    #[test]
+    fn segments_referring_to_a_damaged_segment_are_left_out() {
+        let mut data = page_information(8, 3);
+        data.extend_from_slice(&black_row_region(1, 0, &[]));
+        data.extend_from_slice(&damaged_region(2));
+        data.extend_from_slice(&black_row_region(3, 1, &[2]));
+        data.extend_from_slice(&black_row_region(4, 2, &[]));
+
+        let image = decode(&data, None).expect("partial decode");
+        assert_eq!(rows(&image), vec![vec![0; 8], vec![255; 8], vec![0; 8]]);
+    }
+
+    #[test]
+    fn several_damaged_segments_are_each_skipped() {
+        let mut data = page_information(8, 4);
+        data.extend_from_slice(&damaged_region(1));
+        data.extend_from_slice(&black_row_region(2, 1, &[]));
+        data.extend_from_slice(&damaged_region(3));
+        data.extend_from_slice(&damaged_region(4));
+        data.extend_from_slice(&black_row_region(5, 3, &[]));
+
+        let image = decode(&data, None).expect("partial decode");
+        assert_eq!(
+            rows(&image),
+            vec![vec![255; 8], vec![0; 8], vec![255; 8], vec![0; 8]]
+        );
     }
 
     #[test]
