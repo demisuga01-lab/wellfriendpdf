@@ -207,6 +207,91 @@ fn pure_vector_page_emits_true_vector_not_raster() {
     );
 }
 
+/// The text content of the SVG's invisible text layer: the `<text>` elements'
+/// character data with entities decoded, one element per line.
+fn text_layer_content(svg: &str) -> Option<String> {
+    let start = svg.find("<g class=\"text-layer\"")?;
+    let layer = &svg[start..];
+    let layer = &layer[..layer.find("</g>")?];
+    let mut out = String::new();
+    for element in layer.split("<text").skip(1) {
+        let body = &element[element.find('>')? + 1..element.find("</text>")?];
+        out.push_str(
+            &body
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&"),
+        );
+        out.push('\n');
+    }
+    Some(out)
+}
+
+/// Rasterize with the system fonts loaded, so `<text>` elements would draw if
+/// they were visible.
+fn rasterize_svg_with_fonts(svg: &str, width: u32, height: u32) -> Vec<u8> {
+    let mut opt = resvg::usvg::Options::default();
+    opt.fontdb_mut().load_system_fonts();
+    let tree = resvg::usvg::Tree::from_str(svg, &opt).expect("usvg parses Wellfriend SVG");
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).expect("alloc pixmap");
+    pixmap.fill(resvg::tiny_skia::Color::WHITE);
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.data().to_vec()
+}
+
+#[test]
+fn svg_text_is_searchable_through_an_invisible_text_layer() {
+    let e = engine("tracemonkey.pdf");
+    let vp = e.page_viewport(3, DPI).unwrap();
+    let page = e.render_page_svg(3, DPI).unwrap();
+    assert!(!page.is_rasterized, "tracemonkey p3 is true vector SVG");
+    let text = text_layer_content(&page.svg).expect("SVG carries a text layer");
+    for phrase in [
+        "load primes from the trace activation record",
+        "store primes to interpreter stack",
+        "v2 := i2f(v1)",
+    ] {
+        assert!(
+            text.contains(phrase),
+            "text layer lacks {phrase:?}:\n{text}"
+        );
+    }
+    // Glyphs are still outlines; the layer is transparent, preserves spaces
+    // and sits after the drawn content.
+    assert!(page.svg.contains("<use "), "glyph outlines are kept");
+    let layer_at = page.svg.find("<g class=\"text-layer\"").unwrap();
+    let layer_head = &page.svg[layer_at..layer_at + 200];
+    assert!(layer_head.contains("fill-opacity=\"0\""), "{layer_head}");
+    assert!(
+        layer_head.contains("xml:space=\"preserve\""),
+        "{layer_head}"
+    );
+    // Invisible: with fonts available to resvg the page renders exactly as
+    // it does without the layer.
+    let without_layer = format!("{}</svg>\n", &page.svg[..layer_at]);
+    let with = rasterize_svg_with_fonts(&page.svg, vp.width_px, vp.height_px);
+    let without = rasterize_svg_with_fonts(&without_layer, vp.width_px, vp.height_px);
+    assert!(
+        with == without,
+        "the text layer must not change the rendering"
+    );
+
+    // A page embedded as a raster image is searchable too.
+    let raster_page = e.render_page_svg(2, DPI).unwrap();
+    if raster_page.is_rasterized {
+        let text = text_layer_content(&raster_page.svg).expect("raster page text layer");
+        assert!(
+            text.split_whitespace().count() > 50,
+            "raster page text layer holds the page words:\n{text}"
+        );
+    }
+}
+
 #[test]
 fn svg_rasterizes_close_to_wellfriendpdf_raster() {
     // Compare on pages with ACTUAL visible marks (a blank page trivially matches

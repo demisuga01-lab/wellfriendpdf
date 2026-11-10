@@ -31129,6 +31129,7 @@ mod tests {
         DecodedGlyph {
             code: unicode as u16,
             unicode,
+            text: unicode.to_string(),
             glyph_name: glyph_name.map(str::to_string),
             is_space: unicode == ' ',
             width: None,

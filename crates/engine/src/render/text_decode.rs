@@ -27,6 +27,9 @@ pub struct DecodedGlyph {
     pub code: u16,
     /// Unicode character (for fallback/lookup).
     pub unicode: char,
+    /// The complete Unicode text the code decodes to (a ligature glyph may
+    /// stand for several characters); `unicode` is its first character.
+    pub text: String,
     /// PDF simple-font glyph name resolved from Encoding/Differences.
     pub glyph_name: Option<String>,
     /// Whether this is encoded single-byte 0x20 (PDF Tw applies). Unicode
@@ -137,6 +140,7 @@ pub fn try_decode_text_bytes_with_resolver(
         glyphs.push(DecodedGlyph {
             code,
             unicode: ch,
+            text,
             glyph_name,
             is_space: char_code.is_word_space(),
             width,
@@ -233,6 +237,7 @@ fn decode_type0_text_with_resolver(
         glyphs.push(DecodedGlyph {
             code,
             unicode,
+            text,
             glyph_name: None,
             is_space: char_code.is_word_space(),
             width,
@@ -264,6 +269,7 @@ fn notdef_cid_glyph(
     DecodedGlyph {
         code: 0,
         unicode: '\u{FFFD}',
+        text: "\u{FFFD}".to_string(),
         glyph_name: None,
         is_space: false,
         width,
@@ -344,6 +350,7 @@ fn latin1_glyphs(bytes: &[u8]) -> Vec<DecodedGlyph> {
         .map(|byte| DecodedGlyph {
             code: u16::from(*byte),
             unicode: decode_win_ansi(*byte),
+            text: decode_win_ansi(*byte).to_string(),
             glyph_name: None,
             is_space: *byte == b' ',
             width: None,
