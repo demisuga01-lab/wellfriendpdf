@@ -76,6 +76,30 @@ impl RawImage {
 
 pub struct ImageDecoder;
 
+/// Interleaved codec output samples of a DCT or JPX image; see
+/// [`ImageDecoder::decode_codec_samples`].
+pub(crate) struct CodecSamples {
+    pub width: u32,
+    pub height: u32,
+    pub channels: u8,
+    /// Largest sample value at the codestream's bit depth. `samples` hold
+    /// 8-bit values (the codecs scale to 8 bits); [`CodecSamples::value`]
+    /// maps them back to this range.
+    pub max_value: u32,
+    pub samples: Vec<u8>,
+}
+
+impl CodecSamples {
+    /// Sample `index` at the codestream's bit depth.
+    pub fn value(&self, index: usize) -> Option<u32> {
+        let sample = u32::from(*self.samples.get(index)?);
+        if self.max_value == 255 {
+            return Some(sample);
+        }
+        Some((sample * self.max_value + 127) / 255)
+    }
+}
+
 struct DecodedJpeg {
     pixels: Vec<u8>,
     width: u32,
@@ -1322,6 +1346,59 @@ impl ImageDecoder {
             pdf_jpeg_color_transform(decode_params),
         )?;
         Ok((jpeg.pixels, jpeg.width, jpeg.height, jpeg.channels))
+    }
+
+    /// Decode the samples a `DCTDecode` or `JPXDecode` codec produces for an
+    /// image whose stream has been decoded up to that `filter`, for
+    /// colour-key masking. Returns `None` for any other filter.
+    ///
+    /// The samples come after the codec's own colour transform (YCbCr/YCCK
+    /// for JPEG, the JPEG 2000 component transform) and before `/Decode` and
+    /// PDF colour conversion: the closest thing to raw image samples these
+    /// codecs have. Poppler compares its colour key against the same values
+    /// (its `ImageStream` reads the `DCTStream`/`JPXStream` output) and so
+    /// does PDFium (the codec's output scanlines).
+    pub(crate) fn decode_codec_samples(
+        data: &[u8],
+        filter: &str,
+        color_space: &str,
+        dict: &PdfDictionary,
+        reader: &PdfReader,
+        limits: &DecodeLimits,
+    ) -> Result<Option<CodecSamples>> {
+        match filter {
+            "DCTDecode" | "DCT" => {
+                let decode_params = image_decode_params(dict, Some(reader), filter)
+                    .ok()
+                    .flatten();
+                let (samples, width, height, channels) =
+                    Self::decode_pdf_jpeg(data, decode_params.as_ref())?;
+                Ok(Some(CodecSamples {
+                    width,
+                    height,
+                    channels,
+                    max_value: 255,
+                    samples,
+                }))
+            }
+            "JPXDecode" | "JPX" => {
+                // PDF /Indexed JPX samples are palette indices; keep them.
+                let resolve_palette = color_space != "Indexed";
+                let components = jpx::decode_components(data, limits, resolve_palette, None)?;
+                let depth = components.original_bit_depth;
+                if depth == 0 || depth > 16 {
+                    return Ok(None);
+                }
+                Ok(Some(CodecSamples {
+                    width: components.width,
+                    height: components.height,
+                    channels: components.color_channels,
+                    max_value: (1u32 << depth) - 1,
+                    samples: components.samples,
+                }))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Read JPEG dimensions/channel count without allocating the decoded pixel

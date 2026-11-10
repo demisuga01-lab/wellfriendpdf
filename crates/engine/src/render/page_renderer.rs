@@ -10006,7 +10006,9 @@ impl<'a> RenderState<'a> {
     /// PDF 32000-1 8.9.6.4 defines the ranges on the raw source samples
     /// before /Decode and colour conversion: for Indexed images they are
     /// palette indices. The raw samples are re-read from the stream and the
-    /// resulting mask is applied to the converted pixels.
+    /// resulting mask is applied to the converted pixels. DCT and JPX images
+    /// have no raw samples, so their codec output (after the codec's colour
+    /// transform, before /Decode) is compared, as Poppler and PDFium do.
     fn apply_raw_sample_color_key_mask(
         &mut self,
         image_ref: &ImageReference,
@@ -10027,13 +10029,8 @@ impl<'a> RenderState<'a> {
             return Err(malformed("expected 2 x component-count entries"));
         }
         let components = items.len() / 2;
-        let bpc = image_ref.bits_per_component;
-        if !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
-            return Err(malformed("unsupported BitsPerComponent"));
-        }
-        let max_sample = (1u32 << bpc) - 1;
-        let mut ranges = Vec::with_capacity(components);
-        for pair in items.chunks_exact(2) {
+        let mut bounds = Vec::with_capacity(components);
+        for pair in items.as_chunks::<2>().0 {
             let lo = pair[0]
                 .as_number()
                 .ok_or_else(|| malformed("non-numeric entry"))?;
@@ -10043,60 +10040,129 @@ impl<'a> RenderState<'a> {
             if !lo.is_finite() || !hi.is_finite() {
                 return Err(malformed("non-finite entry"));
             }
-            // Out-of-range bounds are clamped to the sample range.
-            let lo = lo.round().clamp(0.0, f64::from(max_sample)) as u32;
-            let hi = hi.round().clamp(0.0, f64::from(max_sample)) as u32;
-            ranges.push((lo, hi));
+            bounds.push((lo, hi));
         }
+        // Out-of-range bounds are clamped to the sample range.
+        let clamp_ranges = |max_sample: u32| -> Vec<(u32, u32)> {
+            let max = f64::from(max_sample);
+            bounds
+                .iter()
+                .map(|(lo, hi)| {
+                    (
+                        lo.round().clamp(0.0, max) as u32,
+                        hi.round().clamp(0.0, max) as u32,
+                    )
+                })
+                .collect()
+        };
         let reader = self.engine.document().reader();
         let stream =
             reader.get_object_shared(image_ref.object_number, image_ref.generation_number)?;
-        if !matches!(*stream, PdfObject::Stream { .. }) {
+        let PdfObject::Stream {
+            dict: stream_dict, ..
+        } = stream.as_ref()
+        else {
             return Err(malformed("image is not a stream"));
-        }
+        };
         let decoded = crate::filters::decode_stream_lossless_with_limits(
             &stream,
             reader,
             &self.decode_limits,
         )?;
-        if !matches!(decoded.status, crate::filters::StreamDecodeStatus::Complete) {
-            // DCT/JPX samples are not available before colour conversion;
-            // draw the image unmasked rather than dropping it.
-            log::warn!(
-                "render: color-key mask on a {} image with an image codec filter is not applied",
-                image_ref.color_space
-            );
-            return Ok(converted);
-        }
         let width = image_ref.width as usize;
         let height = image_ref.height as usize;
-        let row_bits = width
-            .checked_mul(components)
-            .and_then(|samples| samples.checked_mul(usize::from(bpc)))
-            .ok_or_else(|| malformed("dimensions overflow"))?;
-        let row_bytes = row_bits.div_ceil(8);
-        let data = &decoded.data;
-        let mut keep = vec![255u8; width.saturating_mul(height)];
-        for y in 0..height {
-            let row = y * row_bytes;
-            for x in 0..width {
-                let mut masked = true;
-                for (component, (lo, hi)) in ranges.iter().enumerate() {
-                    let sample_index = x * components + component;
-                    let Some(sample) = raw_image_sample(data, row, sample_index, bpc) else {
-                        masked = false;
-                        break;
-                    };
-                    if sample < *lo || sample > *hi {
-                        masked = false;
-                        break;
+        // `keep` is the colour-key result on a keep_width x keep_height
+        // sample grid covering the whole image: 0 where the key matches.
+        let (keep, keep_width, keep_height) = match &decoded.status {
+            crate::filters::StreamDecodeStatus::Complete => {
+                let bpc = image_ref.bits_per_component;
+                if !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
+                    return Err(malformed("unsupported BitsPerComponent"));
+                }
+                let ranges = clamp_ranges((1u32 << bpc) - 1);
+                let row_bits = width
+                    .checked_mul(components)
+                    .and_then(|samples| samples.checked_mul(usize::from(bpc)))
+                    .ok_or_else(|| malformed("dimensions overflow"))?;
+                let row_bytes = row_bits.div_ceil(8);
+                let data = &decoded.data;
+                let mut keep = vec![255u8; width.saturating_mul(height)];
+                for y in 0..height {
+                    let row = y * row_bytes;
+                    for x in 0..width {
+                        let mut masked = true;
+                        for (component, (lo, hi)) in ranges.iter().enumerate() {
+                            let sample_index = x * components + component;
+                            let Some(sample) = raw_image_sample(data, row, sample_index, bpc)
+                            else {
+                                masked = false;
+                                break;
+                            };
+                            if sample < *lo || sample > *hi {
+                                masked = false;
+                                break;
+                            }
+                        }
+                        if masked {
+                            keep[y * width + x] = 0;
+                        }
                     }
                 }
-                if masked {
-                    keep[y * width + x] = 0;
-                }
+                (keep, width, height)
             }
-        }
+            crate::filters::StreamDecodeStatus::StoppedAtImageFilter(filter) => {
+                // DCT and JPX images have no raw samples: compare the codec
+                // output before /Decode and colour conversion instead.
+                let samples = match ImageDecoder::decode_codec_samples(
+                    &decoded.data,
+                    filter,
+                    &image_ref.color_space,
+                    stream_dict,
+                    reader,
+                    &self.decode_limits,
+                ) {
+                    Ok(Some(samples)) => samples,
+                    Ok(None) => {
+                        log::warn!(
+                            "render: color-key mask on a {} image with /{filter} is not applied",
+                            image_ref.color_space
+                        );
+                        return Ok(converted);
+                    }
+                    Err(err @ WellfriendError::Cancelled(_)) => return Err(err),
+                    Err(err) => {
+                        log::warn!(
+                            "render: color-key mask on a {} image with /{filter} is not applied: {err}",
+                            image_ref.color_space
+                        );
+                        return Ok(converted);
+                    }
+                };
+                if usize::from(samples.channels) != components {
+                    log::warn!(
+                        "render: color-key mask has {components} component range(s) but the /{filter} image decodes {} components; drawing it unmasked",
+                        samples.channels
+                    );
+                    return Ok(converted);
+                }
+                let ranges = clamp_ranges(samples.max_value);
+                let keep_width = samples.width as usize;
+                let keep_height = samples.height as usize;
+                let mut keep = vec![255u8; keep_width.saturating_mul(keep_height)];
+                for (pixel, keep) in keep.iter_mut().enumerate() {
+                    let base = pixel * components;
+                    let masked = ranges.iter().enumerate().all(|(component, (lo, hi))| {
+                        samples
+                            .value(base + component)
+                            .is_some_and(|sample| (*lo..=*hi).contains(&sample))
+                    });
+                    if masked {
+                        *keep = 0;
+                    }
+                }
+                (keep, keep_width, keep_height)
+            }
+        };
         // Bring the full-image mask into the converted image's frame: it may
         // be a decoded source window and/or a reduced-resolution decode.
         let (window_x, window_y, window_w, window_h) =
@@ -10134,7 +10200,9 @@ impl<'a> RenderState<'a> {
                     3 => ([px[0], px[1], px[2]], 255),
                     _ => ([px[0], px[1], px[2]], px[3]),
                 };
-                let keep_alpha = keep.get(sy * width + sx).copied().unwrap_or(255);
+                let kx = sx * keep_width / width.max(1);
+                let ky = sy * keep_height / height.max(1);
+                let keep_alpha = keep.get(ky * keep_width + kx).copied().unwrap_or(255);
                 pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], alpha.min(keep_alpha)]);
             }
         }
@@ -42151,6 +42219,95 @@ mod tests {
                 assert!(right[1] > 200 && right[0] < 60, "{label} right: {right:?}");
             }
         }
+    }
+
+    /// A 16x8 JPEG whose left and right 8x8 blocks are `left` and `right`.
+    fn two_block_jpeg(left: &[u8], right: &[u8], color: jpeg_encoder::ColorType) -> Vec<u8> {
+        let mut samples = Vec::new();
+        for _ in 0..8 {
+            for x in 0..16 {
+                samples.extend_from_slice(if x < 8 { left } else { right });
+            }
+        }
+        let mut jpeg = Vec::new();
+        jpeg_encoder::Encoder::new(&mut jpeg, 100)
+            .encode(&samples, 16, 8, color)
+            .expect("encode test JPEG");
+        jpeg
+    }
+
+    fn render_keyed_image(image: Vec<u8>, label: &str) -> PixelBuffer {
+        let pdf = wp2_page_pdf(
+            "<< /XObject << /Im1 5 0 R >> >>",
+            b"q 100 0 0 100 0 0 cm /Im1 Do Q",
+            "",
+            &[image],
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open color-key PDF");
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .unwrap_or_else(|err| panic!("{label}: {err}"))
+    }
+
+    #[test]
+    fn color_key_masks_compare_dct_codec_samples() {
+        // CalGray is converted, so the key is compared on the decoded JPEG
+        // samples: the black left block is keyed out, the gray one stays.
+        let jpeg = two_block_jpeg(&[0], &[128], jpeg_encoder::ColorType::Luma);
+        let dict = "/Type /XObject /Subtype /Image /Width 16 /Height 8 /BitsPerComponent 8 /ColorSpace [/CalGray << /WhitePoint [0.9505 1 1.089] >>] /Filter /DCTDecode /Mask [0 20]";
+        let buf = render_keyed_image(wp2_stream(dict, &jpeg), "CalGray DCT");
+        assert_eq!(buf.get_pixel(25, 50), WHITE, "black block keyed out");
+        let right = buf.get_pixel(75, 50);
+        assert!(
+            (60..200).contains(&right[0]) && right[3] == 255,
+            "gray block kept: {right:?}"
+        );
+
+        // DeviceCMYK: key the red left block on its decoded CMYK samples
+        // (whatever the codec's CMYK convention is, the key uses the same).
+        let jpeg = two_block_jpeg(
+            &[0, 255, 255, 0],
+            &[255, 0, 0, 0],
+            jpeg_encoder::ColorType::Cmyk,
+        );
+        let (samples, _, _, channels) =
+            ImageDecoder::decode_jpeg_with_info(&jpeg).expect("decode test JPEG");
+        assert_eq!(channels, 4);
+        let mask = samples[..4]
+            .iter()
+            .map(|value| format!("{} {}", value.saturating_sub(12), value.saturating_add(12)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let dict = format!(
+            "/Type /XObject /Subtype /Image /Width 16 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceCMYK /Filter /DCTDecode /Mask [{mask}]"
+        );
+        let unmasked = render_keyed_image(
+            wp2_stream(
+                "/Type /XObject /Subtype /Image /Width 16 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceCMYK /Filter /DCTDecode",
+                &jpeg,
+            ),
+            "CMYK DCT unmasked",
+        );
+        let buf = render_keyed_image(wp2_stream(&dict, &jpeg), "CMYK DCT");
+        assert_ne!(
+            unmasked.get_pixel(25, 50),
+            WHITE,
+            "the left block is painted"
+        );
+        assert_eq!(buf.get_pixel(25, 50), WHITE, "left block keyed out");
+        assert_eq!(
+            buf.get_pixel(75, 50),
+            unmasked.get_pixel(75, 50),
+            "right block unchanged"
+        );
+    }
+
+    #[test]
+    fn color_key_with_wrong_component_count_on_dct_draws_unmasked() {
+        let jpeg = two_block_jpeg(&[0], &[128], jpeg_encoder::ColorType::Luma);
+        let dict = "/Type /XObject /Subtype /Image /Width 16 /Height 8 /BitsPerComponent 8 /ColorSpace [/CalGray << /WhitePoint [0.9505 1 1.089] >>] /Filter /DCTDecode /Mask [0 20 0 20 0 20]";
+        let buf = render_keyed_image(wp2_stream(dict, &jpeg), "mismatched key");
+        assert_ne!(buf.get_pixel(25, 50), WHITE);
     }
 
     fn wp2_oc_pdf(content: &[u8], ocproperties: &str) -> Vec<u8> {
