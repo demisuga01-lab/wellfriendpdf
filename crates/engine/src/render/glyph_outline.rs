@@ -406,6 +406,19 @@ pub(crate) fn extract_glyph_path_for_simple_mapped_outline_var(
     )
 }
 
+/// Glyph id a simple font's code selects in an sfnt program, by the same
+/// lookup [`extract_glyph_path_for_simple_mapped_outline`] uses, so an
+/// embedded TrueType glyph is the glyph the outline renderers draw.
+pub(crate) fn simple_glyph_sfnt_gid(
+    font_bytes: &[u8],
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+) -> Option<u16> {
+    let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
+    glyph_index_for_simple(&face, code, ch, glyph_name).map(|gid| gid.0)
+}
+
 /// Extract the outline [`Path`] and advance width for a glyph id (CID fonts).
 /// Falls back to the standalone CFF parser for bare CFF (/CIDFontType0C).
 pub fn extract_glyph_path_by_gid(font_bytes: &[u8], gid: u16) -> (Option<Path>, f64) {

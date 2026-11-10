@@ -4358,6 +4358,15 @@ fn first_ascii85_image_payload(body: &str) -> Vec<u8> {
         let value = group.iter().fold(0u64, |acc, digit| acc * 85 + digit);
         out.extend_from_slice(&(value as u32).to_be_bytes()[..kept]);
     }
+    // LanguageLevel 3 output compresses the samples inside the ASCII85 layer.
+    if body[..start].contains("/FlateDecode filter") {
+        use std::io::Read as _;
+        let mut inflated = Vec::new();
+        flate2::read::ZlibDecoder::new(out.as_slice())
+            .read_to_end(&mut inflated)
+            .expect("FlateDecode image payload inflates");
+        return inflated;
+    }
     out
 }
 
@@ -7169,11 +7178,14 @@ fn ps_output_safe_extgstate_font_stays_vector_and_applies_font_size() {
         !page.is_rasterized,
         "safe ExtGState Font should not force PS rasterization"
     );
+    // The text is shown in the embedded font under an 18 px em matrix
+    // (72 dpi, y flipped into device space) at the text origin.
     assert!(
-        page.body.contains("19.85 60 moveto") && page.body.contains("11.48 47.62 lineto"),
-        "ExtGState font size should emit 18pt text outlines: {}",
+        page.body.contains("[18 0 0 -18 0 0] wfsf") && page.body.contains("10 60 moveto (Hi)"),
+        "ExtGState font size should select the embedded font at 18pt: {}",
         page.body
     );
+    assert_eq!(page.font_resources.len(), 1);
     assert!(!page.body.contains("colorimage"));
 }
 

@@ -101,7 +101,8 @@ pub use plan::{
     PatternPathDescriptor, PlanDispatcher, RenderBatch, RenderPlan, RenderSpatialIndex,
 };
 pub use postscript::{
-    assemble_eps_document, assemble_ps_document, render_page_ps, render_page_ps_strict, PsPage,
+    assemble_eps_document, assemble_ps_document, render_page_ps, render_page_ps_strict,
+    render_page_ps_with_options, PsFontResources, PsOptions, PsPage,
 };
 pub use print_profile::{PrintProfileRefusal, PrintProfileRefusalCategory};
 pub use progressive::{
