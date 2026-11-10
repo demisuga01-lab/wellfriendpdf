@@ -17971,6 +17971,10 @@ impl<'a> RenderState<'a> {
                 && is_fallback_candidate_char(request.ch)
                 // A TrueType code named `.notdef` is deliberately blank.
                 && !(request.glyph_lookup.truetype && request.glyph_name == Some(".notdef"))
+                // So is a glyph the embedded program defines without contours
+                // (a spacer or zero-width joiner glyph): its Unicode, often an
+                // unmapped CID read as a code point, is no reason to paint.
+                && !(request.is_gid && embedded_glyph_is_defined(request.font_bytes, request.code))
             {
                 self.paint_fallback_glyph(
                     request.ch,
@@ -23642,14 +23646,26 @@ fn should_paint_decoded_glyph(glyph: &DecodedGlyph) -> bool {
     if glyph.is_gid {
         return true;
     }
+    // A code the font's Encoding names selects that glyph whatever Unicode it
+    // decodes to: fonts converted from TrueType name glyphs `g<index>`, and
+    // such codes may sit at 0x09-0x0D, which decode as whitespace controls.
+    if glyph
+        .glyph_name
+        .as_deref()
+        .is_some_and(|name| name != ".notdef")
+    {
+        return true;
+    }
     if glyph.unicode == '\u{FFFD}' {
-        return glyph
-            .glyph_name
-            .as_deref()
-            .is_some_and(|name| name != ".notdef");
+        return false;
     }
     let codepoint = glyph.unicode as u32;
     !(codepoint < 0x20 || codepoint == 0x7F)
+}
+
+/// Whether an embedded sfnt program defines glyph `gid` (it may be blank).
+fn embedded_glyph_is_defined(font_bytes: &[u8], gid: u16) -> bool {
+    ttf_parser::Face::parse(font_bytes, 0).is_ok_and(|face| gid < face.number_of_glyphs())
 }
 
 fn font_substitution_glyph_coverage(
@@ -33338,6 +33354,13 @@ mod tests {
         assert!(should_paint_decoded_glyph(&decoded_glyph('A', false, None)));
         assert!(should_paint_decoded_glyph(&decoded_glyph(
             '\u{FFFD}', true, None
+        )));
+        // A code the Encoding names paints even when it decodes to a control
+        // (`g145` at code 9 of a font converted from TrueType).
+        assert!(should_paint_decoded_glyph(&decoded_glyph(
+            '\t',
+            false,
+            Some("g145")
         )));
     }
 
