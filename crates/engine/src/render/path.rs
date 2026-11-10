@@ -1538,15 +1538,9 @@ fn stroke_impl(
     }
 }
 
-/// Largest on-buffer bounding box (in pixels) painted through a one-shot
-/// coverage mask; larger or partly off-buffer paths use the row-streaming
-/// compositor so memory stays bounded by the clipped path width.
-const MASKED_AA_MAX_CELLS: usize = 1 << 20;
-
-/// Anti-aliased fill of a device-space outline. Small, on-buffer outlines
-/// (dash pieces, ordinary strokes) are rasterized into a coverage mask and
-/// composited with the row-blending mask compositor, which is markedly
-/// cheaper than per-pixel blending of partial runs; everything else streams.
+/// Anti-aliased fill of a device-space outline through the row-streaming
+/// compositor (memory bounded by the clipped path width; per-row work bounded
+/// by the columns the outline actually touches).
 fn fill_flat_antialiased(
     buf: &mut PixelBuffer,
     flat: &FlatPath,
@@ -1555,23 +1549,6 @@ fn fill_flat_antialiased(
     cancel: &CancelToken,
     lut: Option<&[u8; 256]>,
 ) -> bool {
-    if let Some((min_x, min_y, max_x, max_y)) = flat_bounds(flat) {
-        let (bw, bh) = (f64::from(buf.width), f64::from(buf.height));
-        let width = max_x.ceil() - min_x.floor() + 1.0;
-        let height = max_y.ceil() - min_y.floor() + 1.0;
-        if min_x >= -1.0
-            && min_y >= -1.0
-            && max_x <= bw + 1.0
-            && max_y <= bh + 1.0
-            && width * height <= MASKED_AA_MAX_CELLS as f64
-        {
-            if let Some(mut mask) = rasterize_flat_alpha_mask(flat, rule) {
-                mask.apply_coverage_lut(lut);
-                mask.paint(buf, 0, 0, color);
-                return true;
-            }
-        }
-    }
     fill_flat_with_color_compositor(buf, flat, color, rule, Some(cancel), lut)
 }
 
@@ -1659,10 +1636,11 @@ fn add_thin_subpath_rescues_for_row(
     row_accum: &mut [u16],
     row_base: usize,
     crossings: &mut Vec<(f64, i32)>,
-) {
+) -> bool {
     while *cursor < rescues.len() && rescues[*cursor].row < row {
         *cursor += 1;
     }
+    let mut added = false;
     let mut index = *cursor;
     while index < rescues.len() && rescues[index].row == row {
         let rescue = rescues[index];
@@ -1687,7 +1665,9 @@ fn add_thin_subpath_rescues_for_row(
             x0,
             255.0 * rescue.weight,
         );
+        added = true;
     }
+    added
 }
 
 /// Add the coverage spans of one sorted crossing list to an accumulation row.
@@ -3573,6 +3553,7 @@ fn add_alpha_span(
     }
 }
 
+#[cfg(test)]
 fn flat_bounds(flat: &FlatPath) -> Option<(f64, f64, f64, f64)> {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
@@ -3678,8 +3659,11 @@ fn accumulate_scanline_row_subsampled(
     vertical_samples: usize,
     crossings: &mut Vec<(f64, i32)>,
     row_accum: &mut [u16],
-) {
-    row_accum.fill(0);
+    clear_row: bool,
+) -> (usize, usize) {
+    if clear_row {
+        row_accum.fill(0);
+    }
     if vertical_samples <= 1 {
         accumulate_scanline_row(
             flat,
@@ -3691,8 +3675,11 @@ fn accumulate_scanline_row_subsampled(
             crossings,
             row_accum,
         );
-        return;
+        return (0, w);
     }
+    // Columns this row touches: every span lies between the first and the
+    // last sorted crossing of its sample line.
+    let mut touched = (w, 0usize);
     let sample_scale = 1.0 / vertical_samples as f64;
     for sample in 0..vertical_samples {
         let scan_y = row_y as f64 + (sample as f64 + 0.5) * sample_scale;
@@ -3700,6 +3687,13 @@ fn accumulate_scanline_row_subsampled(
         collect_scanline_crossings_from_row_source(flat, edge_source, scan_y, crossings);
         if !prepare_scanline_crossings(crossings) {
             continue;
+        }
+        if let (Some(first), Some(last)) = (crossings.first(), crossings.last()) {
+            let lo = safe_floor_i32(first.0 - x0 as f64).clamp(0, w as i32) as usize;
+            let hi = safe_ceil_i32(last.0 - x0 as f64)
+                .saturating_add(1)
+                .clamp(0, w as i32) as usize;
+            touched = (touched.0.min(lo), touched.1.max(hi));
         }
         PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(1, Ordering::Relaxed);
         let sample_weight = 255.0 * sample_scale;
@@ -3742,6 +3736,7 @@ fn accumulate_scanline_row_subsampled(
             }
         }
     }
+    touched
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3781,7 +3776,7 @@ where
             let active = active_edges.advance_to_row(buckets, row);
             edge_source = Some((buckets, row, active.then_some(&active_edges)));
         }
-        accumulate_scanline_row_subsampled(
+        let _ = accumulate_scanline_row_subsampled(
             flat,
             edge_source,
             rule,
@@ -3791,6 +3786,7 @@ where
             vertical_samples,
             &mut crossings,
             &mut row_accum,
+            true,
         );
         if !rescues.is_empty() {
             add_thin_subpath_rescues_for_row(
@@ -3854,7 +3850,10 @@ fn fill_flat_with_color_compositor_scanline(
             let active = active_edges.advance_to_row(buckets, row);
             edge_source = Some((buckets, row, active.then_some(&active_edges)));
         }
-        accumulate_scanline_row_subsampled(
+        // `row_accum` is all zero here: only the touched column range is
+        // painted and cleared, so per-row work follows the outline's width
+        // at this row rather than the whole bounding box.
+        let mut touched = accumulate_scanline_row_subsampled(
             flat,
             edge_source,
             rule,
@@ -3864,9 +3863,10 @@ fn fill_flat_with_color_compositor_scanline(
             vertical_samples,
             &mut crossings,
             &mut row_accum,
+            false,
         );
-        if !rescues.is_empty() {
-            add_thin_subpath_rescues_for_row(
+        if !rescues.is_empty()
+            && add_thin_subpath_rescues_for_row(
                 flat,
                 rescues,
                 &mut rescue_cursor,
@@ -3877,10 +3877,23 @@ fn fill_flat_with_color_compositor_scanline(
                 &mut row_accum,
                 0,
                 &mut crossings,
-            );
+            )
+        {
+            touched = (0, w);
         }
-
-        paint_alpha_row_runs(buf, &row_accum, x0, y, color, lut, |_| {});
+        if touched.0 < touched.1 {
+            let (lo, hi) = touched;
+            paint_alpha_row_runs(
+                buf,
+                &row_accum[lo..hi],
+                x0 + lo as i32,
+                y,
+                color,
+                lut,
+                |_| {},
+            );
+            row_accum[lo..hi].fill(0);
+        }
     }
     return_scanline_u16_vec(row_accum);
     return_scanline_crossing_vec(crossings);
