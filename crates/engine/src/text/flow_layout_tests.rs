@@ -212,12 +212,23 @@ fn hyphenated_line_is_joined_with_its_continuation() {
 }
 
 #[test]
-fn hyphen_before_a_capitalised_line_is_kept() {
+fn hyphenated_compounds_and_ranges_keep_their_hyphen() {
     let chunks = vec![
         line("the anti-", 72.0, 700.0, 0),
         line("American", 72.0, 688.0, 20),
     ];
-    assert_eq!(text_of(&chunks), "the anti-\nAmerican");
+    assert_eq!(text_of(&chunks), "the anti-American");
+    let chunks = vec![
+        line("pages 34-", 72.0, 700.0, 0),
+        line("35 and on", 72.0, 688.0, 20),
+    ];
+    assert_eq!(text_of(&chunks), "pages 34-35 and on");
+    // A letter-hyphen before a digit is not a broken word.
+    let chunks = vec![
+        line("see al-", 72.0, 700.0, 0),
+        line("1 more", 72.0, 688.0, 20),
+    ];
+    assert_eq!(text_of(&chunks), "see al-\n1 more");
 }
 
 #[test]
@@ -398,4 +409,51 @@ fn table_cells_are_read_row_by_row() {
         .map(|t| text.find(t).unwrap())
         .collect();
     assert!(order.windows(2).all(|w| w[0] < w[1]), "{text}");
+}
+
+/// A vertical-writing run: glyphs advance `step` points down the page.
+fn vertical_run(text: &str, x: f64, y: f64, size: f64, pos: u32) -> TextChunk {
+    let mut glyphs = Vec::new();
+    for (index, (offset, ch)) in text.char_indices().enumerate() {
+        glyphs.push(TextGlyph {
+            x,
+            y: y - size * index as f64,
+            dx: 0.0,
+            dy: -size,
+            text_start: offset as u32,
+            text_end: (offset + ch.len_utf8()) as u32,
+            stream_pos: pos + index as u32,
+            code_len: 2,
+        });
+    }
+    TextChunk {
+        text: text.to_string(),
+        x,
+        y,
+        font_size: size,
+        font_name: "V1".to_string(),
+        width: size * text.chars().count() as f64,
+        is_rtl: false,
+        is_vertical: true,
+        is_invisible: false,
+        is_actual_text: false,
+        mapping_sources: Vec::new(),
+        glyph_run: Some(Arc::new(TextGlyphRun {
+            font_matrix: [size, 0.0, 0.0, size],
+            ascent: 0.88,
+            descent: -0.12,
+            glyphs,
+        })),
+    }
+}
+
+#[test]
+fn vertical_columns_read_top_down_right_to_left() {
+    let chunks = vec![
+        vertical_run("\u{4E09}\u{56DB}", 286.0, 700.0, 12.0, 10),
+        vertical_run("\u{4E00}\u{4E8C}", 300.0, 700.0, 12.0, 0),
+    ];
+    let page = analyze_flows(&chunks, Some(&frame()), &FlowLayoutOptions::default());
+    assert_eq!(page.text(), "\u{4E00}\u{4E8C}\n\u{4E09}\u{56DB}");
+    assert_eq!(page.primary_rotation, 90);
 }

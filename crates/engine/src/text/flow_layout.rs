@@ -33,7 +33,8 @@
 //!   joined into flows (stories) when the next one sits below the previous one
 //!   in its column with a font no larger.
 //! * **Output.** Flows, blocks, lines; an end-of-line hyphen before a
-//!   lower-case continuation is removed and the halves joined; right-to-left
+//!   lower-case continuation is removed and the halves joined (a compound
+//!   or number range broken at its hyphen is joined keeping it); right-to-left
 //!   lines are put in logical order with the Unicode bidirectional algorithm;
 //!   flows are separated by a blank line.
 //!
@@ -79,6 +80,9 @@ const MAX_TINY_CHARS: usize = 50_000;
 /// Above this many blocks the rule-2 "no block in between" check (two n × n
 /// bit matrices) is skipped so pathological pages stay bounded.
 const MAX_BLOCKS_FOR_INTERVENING_CHECK: usize = 6_000;
+/// Glyphs further than this from the displayed page origin are dropped
+/// (far beyond the largest page PDF allows).
+const MAX_COORDINATE: f64 = 100_000.0;
 /// Stream positions given to glyphs synthesised for chunks without recorded
 /// geometry; they never claim adjacency with real glyphs.
 const SYNTHETIC_STREAM_POS: u32 = 0x8000_0000;
@@ -242,20 +246,28 @@ impl FlowPage {
         self.text_with(true)
     }
 
-    /// [`text`](Self::text) without joining hyphenated lines.
+    /// [`text`](Self::text), joining lines broken at a hyphen only when
+    /// `dehyphenate` is set.
     pub fn text_with(&self, dehyphenate: bool) -> String {
         let mut out = String::new();
         for flow in &self.flows {
             let lines: Vec<&FlowLine> = flow.blocks.iter().flat_map(|b| b.lines.iter()).collect();
             for (index, line) in lines.iter().enumerate() {
-                let next = lines.get(index + 1);
-                if dehyphenate && line.hyphenated && next.is_some_and(|n| joins_hyphen(line, n)) {
-                    let mut text = line.text.clone();
-                    text.pop();
-                    out.push_str(&text);
-                } else {
-                    out.push_str(&line.text);
-                    out.push('\n');
+                let join = match lines.get(index + 1) {
+                    Some(next) if dehyphenate && line.hyphenated => hyphen_join(line, next),
+                    _ => HyphenJoin::None,
+                };
+                match join {
+                    HyphenJoin::Remove => {
+                        let mut text = line.text.clone();
+                        text.pop();
+                        out.push_str(&text);
+                    }
+                    HyphenJoin::Keep => out.push_str(&line.text),
+                    HyphenJoin::None => {
+                        out.push_str(&line.text);
+                        out.push('\n');
+                    }
                 }
             }
             out.push('\n');
@@ -267,18 +279,40 @@ impl FlowPage {
     }
 }
 
-/// A hyphen ending `line` is a word break when a letter precedes it and the
-/// next line starts with a lower-case letter. (Poppler joins every hyphenated
-/// line; keeping "anti-" + "American" or "Jean-" + "Paul" apart avoids
-/// gluing compounds that really are hyphenated.)
-fn joins_hyphen(line: &FlowLine, next: &FlowLine) -> bool {
+/// How a line ending in a hyphen continues on the next line of its flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HyphenJoin {
+    /// A word broken across lines: drop the hyphen and join the halves.
+    Remove,
+    /// A hyphenated compound or range broken at its hyphen: join, keeping
+    /// the hyphen ("Anglo-" + "American", "34-" + "35").
+    Keep,
+    /// Not a broken word: keep the line break.
+    None,
+}
+
+/// Poppler joins every hyphenated line, which glues compounds ("Anglo-" +
+/// "American" becomes "AngloAmerican") and running heads or page numbers
+/// ("al-" + "1"). Here only a letter-hyphen before a lower-case letter is a
+/// broken word; a letter before a capital, or a digit before a digit, is a
+/// compound or range kept whole; anything else keeps its line break.
+fn hyphen_join(line: &FlowLine, next: &FlowLine) -> HyphenJoin {
     let mut chars = line.text.chars().rev();
     if !chars.next().is_some_and(is_hyphen) {
-        return false;
+        return HyphenJoin::None;
     }
-    let before = chars.next();
-    let first = next.text.chars().next();
-    before.is_some_and(char::is_alphabetic) && first.is_some_and(char::is_lowercase)
+    let (Some(before), Some(first)) = (chars.next(), next.text.chars().next()) else {
+        return HyphenJoin::None;
+    };
+    if before.is_alphabetic() && first.is_lowercase() {
+        HyphenJoin::Remove
+    } else if (before.is_alphabetic() && first.is_uppercase())
+        || (before.is_ascii_digit() && first.is_ascii_digit())
+    {
+        HyphenJoin::Keep
+    } else {
+        HyphenJoin::None
+    }
 }
 
 fn is_hyphen(ch: char) -> bool {
@@ -874,6 +908,11 @@ impl<'o> WordBuilder<'o> {
         if self.clip
             && (x1 + w1 < 0.0 || x1 > self.frame.width || y1 + h1 < 0.0 || y1 > self.frame.height)
         {
+            return;
+        }
+        // Bound the coordinates the baseline pools are indexed by, also for a
+        // missing or absurd page box (huge positions would make them huge).
+        if x1.abs() > MAX_COORDINATE || y1.abs() > MAX_COORDINATE {
             return;
         }
         if w1.abs() < 3.0 && h1.abs() < 3.0 {
