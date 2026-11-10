@@ -511,6 +511,7 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     push_if_changed!(compositing);
     push_if_changed!(annotations);
     push_if_changed!(forms);
+    push_if_changed!(form_highlight);
     push_if_changed!(optional_content);
     push_if_changed!(text_smoothing);
     push_if_changed!(image_smoothing);
@@ -2181,6 +2182,7 @@ impl ContentEngine {
         accepted_expected.print_profile = contract.print_profile;
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
+        accepted_expected.form_highlight = contract.form_highlight.clone();
         accepted_expected.execution_mode = contract.execution_mode;
         accepted_expected.halftone = contract.halftone;
         accepted_expected.background = contract.background;
@@ -2222,6 +2224,7 @@ impl ContentEngine {
                 contract.print_profile,
                 contract.annotations,
                 contract.forms,
+                &contract.form_highlight,
                 contract.rendering_intent,
                 contract.color_management,
                 contract.overprint,
@@ -2252,6 +2255,7 @@ impl ContentEngine {
                 contract.print_profile,
                 contract.annotations,
                 contract.forms,
+                &contract.form_highlight,
                 contract.rendering_intent,
                 contract.color_management,
                 contract.overprint,
@@ -5820,7 +5824,10 @@ mod tests {
             telemetry.resource_budget_max_cache_bytes,
             contract.resource_budget.max_cache_bytes
         );
-        let contract_fields = serde_json::to_value(&contract)
+        // The form highlight is serialized only while it is switched on.
+        let mut highlighted = contract.clone();
+        highlighted.form_highlight.focus_field = Some("field".to_string());
+        let contract_fields = serde_json::to_value(&highlighted)
             .expect("serialize contract")
             .as_object()
             .expect("contract object")

@@ -126,6 +126,66 @@ pub enum FormRenderPolicy {
     Exclude,
 }
 
+/// Viewer-style form-field highlighting, like PDFium's
+/// `FPDF_SetFormFieldHighlightColor` / `FPDF_SetFormFieldHighlightAlpha`:
+/// a translucent colour painted over every visible, non-read-only widget of
+/// a field type after its appearance, plus an optional dashed focus
+/// rectangle around the widgets of one field. Off by default; the default
+/// value does not change rendering or the contract's cache identity.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FormHighlightPolicy {
+    /// Text fields (`/FT /Tx`). The colour's `a` is the highlight opacity;
+    /// `None` or `a == 0` leaves the field type unhighlighted.
+    pub text: Option<ContractColor>,
+    /// Push buttons.
+    pub push_button: Option<ContractColor>,
+    /// Check boxes.
+    pub check_box: Option<ContractColor>,
+    /// Radio buttons.
+    pub radio_button: Option<ContractColor>,
+    /// Combo boxes.
+    pub combo_box: Option<ContractColor>,
+    /// List boxes.
+    pub list_box: Option<ContractColor>,
+    /// Signature fields.
+    pub signature: Option<ContractColor>,
+    /// Fully qualified name (`parent.child`) of the focused field: its
+    /// widgets get PDFium's black dotted focus rectangle, 1pt outside the
+    /// widget rectangle.
+    pub focus_field: Option<String>,
+}
+
+impl FormHighlightPolicy {
+    /// The same colour for every field type, like
+    /// `FPDF_SetFormFieldHighlightColor(handle, 0, color)`.
+    pub fn all(color: ContractColor) -> Self {
+        Self {
+            text: Some(color),
+            push_button: Some(color),
+            check_box: Some(color),
+            radio_button: Some(color),
+            combo_box: Some(color),
+            list_box: Some(color),
+            signature: Some(color),
+            focus_field: None,
+        }
+    }
+
+    /// True when nothing is highlighted and no focus rectangle is drawn.
+    pub fn is_off(&self) -> bool {
+        let off = |color: &Option<ContractColor>| color.is_none_or(|color| color.a == 0);
+        off(&self.text)
+            && off(&self.push_button)
+            && off(&self.check_box)
+            && off(&self.radio_button)
+            && off(&self.combo_box)
+            && off(&self.list_box)
+            && off(&self.signature)
+            && self.focus_field.as_deref().is_none_or(str::is_empty)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ColorScheme {
     #[default]
@@ -484,6 +544,14 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         effect: "form-widget-appearance-inclusion",
     },
     RenderContractFieldEffect {
+        field: "form_highlight",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: false,
+        effect: "form-field-highlight-and-focus-rectangle",
+    },
+    RenderContractFieldEffect {
         field: "optional_content",
         cache_identity: true,
         validation: true,
@@ -641,6 +709,10 @@ pub struct RenderContract {
     pub compositing: CompositingPolicy,
     pub annotations: AnnotationRenderPolicy,
     pub forms: FormRenderPolicy,
+    /// Form-field highlight and focus rectangle (off by default; omitted
+    /// from the serialized contract while off).
+    #[serde(default, skip_serializing_if = "FormHighlightPolicy::is_off")]
+    pub form_highlight: FormHighlightPolicy,
     pub optional_content: OptionalContentStateId,
     pub text_smoothing: SmoothingPolicy,
     pub image_smoothing: SmoothingPolicy,
@@ -695,6 +767,7 @@ impl RenderContract {
             compositing: render_mode.into(),
             annotations: AnnotationRenderPolicy::Include,
             forms: FormRenderPolicy::Include,
+            form_highlight: FormHighlightPolicy::default(),
             optional_content: OptionalContentStateId::default(),
             text_smoothing: SmoothingPolicy::Antialiased,
             image_smoothing: SmoothingPolicy::Antialiased,
@@ -917,6 +990,39 @@ mod tests {
     }
 
     #[test]
+    fn form_highlight_is_off_by_default_and_changes_identity_when_on() {
+        let base = contract(1);
+        assert!(base.form_highlight.is_off());
+        let json = serde_json::to_value(&base).expect("serialize contract");
+        assert!(json.get("form_highlight").is_none(), "off: not serialized");
+        let parsed: RenderContract = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(parsed, base);
+
+        let mut highlighted = base.clone();
+        highlighted.form_highlight = FormHighlightPolicy::all(ContractColor {
+            r: 0,
+            g: 0,
+            b: 255,
+            a: 80,
+        });
+        assert!(!highlighted.form_highlight.is_off());
+        assert_ne!(highlighted.cache_fingerprint(), base.cache_fingerprint());
+        let json = serde_json::to_value(&highlighted).expect("serialize contract");
+        assert_eq!(json["form_highlight"]["text"]["a"], 80);
+        let parsed: RenderContract = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(parsed, highlighted);
+
+        let mut transparent = base.clone();
+        transparent.form_highlight.text = Some(ContractColor {
+            r: 0,
+            g: 0,
+            b: 255,
+            a: 0,
+        });
+        assert!(transparent.form_highlight.is_off());
+    }
+
+    #[test]
     fn defaults_are_deterministic_and_valid() {
         let contract = contract(7);
         contract.validate().expect("default contract is valid");
@@ -982,7 +1088,9 @@ mod tests {
 
     #[test]
     fn field_effect_registry_covers_every_serialized_contract_field() {
-        let contract = contract(1);
+        let mut contract = contract(1);
+        // The form highlight is only serialized while it is switched on.
+        contract.form_highlight.focus_field = Some("name".to_string());
         let serialized = serde_json::to_value(&contract).expect("serialize render contract");
         let serialized_fields = serialized
             .as_object()

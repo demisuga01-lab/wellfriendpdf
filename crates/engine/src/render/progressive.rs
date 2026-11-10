@@ -502,6 +502,7 @@ fn prepare_progressive_render_contract(
     accepted_expected.print_profile = base_contract.print_profile;
     accepted_expected.annotations = base_contract.annotations;
     accepted_expected.forms = base_contract.forms;
+    accepted_expected.form_highlight = base_contract.form_highlight.clone();
     accepted_expected.execution_mode = base_contract.execution_mode;
     accepted_expected.halftone = base_contract.halftone;
     accepted_expected.background = base_contract.background;

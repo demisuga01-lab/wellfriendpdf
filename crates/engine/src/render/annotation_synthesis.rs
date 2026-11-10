@@ -7,6 +7,7 @@
 //! Wellfriend's own vector designs: sticky-note / attachment / sound icons,
 //! standard stamps (rounded border + bold label), line endings, cloudy
 //! borders, word-wrapped FreeText and form-field text layout.
+use super::widget_synthesis::{append_drop_button, WidgetChrome, DROP_BUTTON_WIDTH};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use std::collections::BTreeMap;
@@ -139,7 +140,7 @@ pub(crate) struct BorderStyle {
 }
 
 impl BorderStyle {
-    fn dash_op(&self) -> String {
+    pub(crate) fn dash_op(&self) -> String {
         if self.kind == BorderKind::Dashed && !self.dash.is_empty() {
             let parts: Vec<String> = self.dash.iter().map(|v| n(*v)).collect();
             format!("[{}] 0 d", parts.join(" "))
@@ -276,12 +277,17 @@ fn rect_differences(annot: &PdfDictionary, reader: &PdfReader, w: f64, h: f64) -
 #[derive(Default)]
 pub(crate) struct Resources {
     fonts: BTreeMap<String, PdfObject>,
+    xobjects: BTreeMap<String, PdfObject>,
     alpha: Option<f64>,
 }
 
 impl Resources {
     pub(crate) fn add_font(&mut self, name: &str, obj: PdfObject) {
         self.fonts.entry(name.to_string()).or_insert(obj);
+    }
+
+    pub(crate) fn add_xobject(&mut self, name: &str, obj: PdfObject) {
+        self.xobjects.entry(name.to_string()).or_insert(obj);
     }
 
     fn into_dict(self) -> PdfDictionary {
@@ -292,6 +298,13 @@ impl Resources {
                 fonts.insert(name, obj);
             }
             resources.insert("Font", PdfObject::Dictionary(fonts));
+        }
+        if !self.xobjects.is_empty() {
+            let mut xobjects = PdfDictionary::empty();
+            for (name, obj) in self.xobjects {
+                xobjects.insert(name, obj);
+            }
+            resources.insert("XObject", PdfObject::Dictionary(xobjects));
         }
         if let Some(alpha) = self.alpha {
             let mut gs = PdfDictionary::empty();
@@ -353,7 +366,7 @@ fn standard_font_dict(base: &str) -> PdfDictionary {
 
 const KAPPA: f64 = 0.552_284_749_830_793_6;
 
-fn ellipse_path(out: &mut String, cx: f64, cy: f64, rx: f64, ry: f64) {
+pub(crate) fn ellipse_path(out: &mut String, cx: f64, cy: f64, rx: f64, ry: f64) {
     let kx = rx * KAPPA;
     let ky = ry * KAPPA;
     let _ = writeln!(
@@ -1885,6 +1898,133 @@ impl SimpleFont {
     }
 }
 
+/// A composite (`/Type0`) field font from `/DR`: characters are encoded
+/// through the font's own `/ToUnicode` (or predefined Unicode CMap) in
+/// reverse, looked up on demand and cached.
+struct CompositeFont {
+    resource_name: String,
+    object: PdfObject,
+    resolver: crate::fonts::resolver::FontResolver,
+    ascent: f64,
+    descent: f64,
+    cache: std::cell::RefCell<BTreeMap<char, Option<(Vec<u8>, f64)>>>,
+}
+
+impl CompositeFont {
+    fn from_dict(
+        resource_name: &str,
+        object: PdfObject,
+        dict: &PdfDictionary,
+        reader: &PdfReader,
+    ) -> Option<Self> {
+        let resolver = crate::fonts::resolver::FontResolver::new(dict, reader);
+        // Field text is laid out horizontally.
+        if resolver.is_vertical() || resolver.validate_encoding().is_err() {
+            return None;
+        }
+        let descendant = crate::fonts::resolver::get_descendant_font(dict, reader);
+        let (ascent, descent) = match descendant.as_ref() {
+            Some(descendant) => font_vertical_metrics(descendant, Some(reader)),
+            None => font_vertical_metrics(dict, Some(reader)),
+        };
+        Some(Self {
+            resource_name: resource_name.to_string(),
+            object,
+            resolver,
+            ascent,
+            descent,
+            cache: std::cell::RefCell::new(BTreeMap::new()),
+        })
+    }
+
+    /// Code bytes and width (1/1000 em) of `ch`, `None` when the font has
+    /// no code for it.
+    fn lookup(&self, ch: char) -> Option<(Vec<u8>, f64)> {
+        if let Some(hit) = self.cache.borrow().get(&ch) {
+            return hit.clone();
+        }
+        let found = self
+            .resolver
+            .encoding_candidates(ch.encode_utf8(&mut [0; 4]))
+            .ok()
+            .and_then(|codes| codes.into_iter().next())
+            .map(|code| {
+                let width = self.resolver.width_for_code(code);
+                let width = if width > 0.0 && width.is_finite() {
+                    width
+                } else {
+                    1000.0
+                };
+                (code.bytes(), width)
+            });
+        self.cache.borrow_mut().insert(ch, found.clone());
+        found
+    }
+}
+
+/// The field's own font: a simple font or a composite font.
+enum PrimaryFont {
+    Simple(SimpleFont),
+    Composite(CompositeFont),
+}
+
+impl PrimaryFont {
+    fn resource_name(&self) -> &str {
+        match self {
+            PrimaryFont::Simple(font) => &font.resource_name,
+            PrimaryFont::Composite(font) => &font.resource_name,
+        }
+    }
+
+    fn object(&self) -> &PdfObject {
+        match self {
+            PrimaryFont::Simple(font) => &font.object,
+            PrimaryFont::Composite(font) => &font.object,
+        }
+    }
+
+    fn ascent(&self) -> f64 {
+        match self {
+            PrimaryFont::Simple(font) => font.ascent,
+            PrimaryFont::Composite(font) => font.ascent,
+        }
+    }
+
+    fn descent(&self) -> f64 {
+        match self {
+            PrimaryFont::Simple(font) => font.descent,
+            PrimaryFont::Composite(font) => font.descent,
+        }
+    }
+
+    /// Width in 1/1000 em of `ch`, `None` when the font cannot encode it.
+    fn char_width(&self, ch: char) -> Option<f64> {
+        match self {
+            PrimaryFont::Simple(font) => font.encode.get(&ch).map(|code| font.code_width(*code)),
+            PrimaryFont::Composite(font) => font.lookup(ch).map(|(_, width)| width),
+        }
+    }
+
+    /// Encoded bytes of `text` (characters without a code become `?`).
+    fn encode_lossy(&self, text: &str) -> Vec<u8> {
+        match self {
+            PrimaryFont::Simple(font) => text
+                .chars()
+                .map(|ch| font.encode.get(&ch).copied().unwrap_or(b'?'))
+                .collect(),
+            PrimaryFont::Composite(font) => {
+                let mut bytes = Vec::new();
+                for ch in text.chars() {
+                    if let Some((code, _)) = font.lookup(ch).or_else(|| font.lookup('?')) {
+                        bytes.extend_from_slice(&code);
+                    }
+                }
+                bytes
+            }
+        }
+    }
+}
+
 fn font_vertical_metrics(dict: &PdfDictionary, reader: Option<&PdfReader>) -> (f64, f64) {
     let descriptor = match (dict.get("FontDescriptor"), reader) {
         (Some(PdfObject::Dictionary(d)), _) => Some(d.clone()),
@@ -1904,35 +2044,88 @@ fn font_vertical_metrics(dict: &PdfDictionary, reader: Option<&PdfReader>) -> (f
     (ascent / 1000.0, descent / 1000.0)
 }
 
-/// Unicode fallback: the bundled DejaVu Sans embedded as an Identity-H
-/// CIDFontType2 so values outside the field font's encoding still render.
+/// Unicode fallback: a TrueType/OpenType program embedded as an Identity-H
+/// composite font so values outside the field font's encoding still
+/// render. The bundled DejaVu Sans comes first; installed system faces
+/// cover what DejaVu lacks (CJK, Indic, Thai...).
 struct UnicodeFont {
     face: Option<ttf_parser::Face<'static>>,
+    bytes: &'static [u8],
+    base_name: String,
+    resource: String,
+    /// CFF outlines: embedded as `FontFile3 /OpenType` under a
+    /// `CIDFontType0`, with CIDs from a CID-keyed CFF charset.
+    cff: bool,
     upem: f64,
     used: BTreeMap<u16, (char, f64)>,
 }
 
 const UNICODE_FONT_RESOURCE: &str = "WFUni";
 
+/// At most this many installed fallback faces per text block.
+const MAX_SYSTEM_FALLBACK_FONTS: usize = 4;
+
 impl UnicodeFont {
     fn new() -> Self {
-        let face = ttf_parser::Face::parse(
+        Self::from_program(
             crate::render::font_rasterizer::fallback_fonts::DEJAVU_SANS,
-            0,
+            "DejaVuSans",
+            UNICODE_FONT_RESOURCE.to_string(),
         )
-        .ok();
+    }
+
+    fn from_program(bytes: &'static [u8], base_name: &str, resource: String) -> Self {
+        let face = ttf_parser::Face::parse(bytes, 0).ok();
         let upem = face
             .as_ref()
             .map(|face| f64::from(face.units_per_em()))
             .filter(|v| *v > 0.0)
             .unwrap_or(2048.0);
+        let cff = bytes.starts_with(b"OTTO");
+        let base_name: String = base_name
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+            .collect();
         Self {
             face,
+            bytes,
+            base_name: if base_name.is_empty() {
+                "WFFallback".to_string()
+            } else {
+                base_name
+            },
+            resource,
+            cff,
             upem,
             used: BTreeMap::new(),
         }
     }
 
+    /// An installed face that draws `ch`, as fallback number `index`.
+    fn installed_for(ch: char, index: usize) -> Option<Self> {
+        if ch.is_whitespace() || ch.is_control() {
+            return None;
+        }
+        let program = crate::fonts::installed::installed_font_covering(
+            ch.encode_utf8(&mut [0; 4]),
+            &crate::fonts::installed::InstalledFontStyle::default(),
+        )?;
+        let font = Self::from_program(
+            program.bytes,
+            &program.face.post_script_name,
+            format!("{UNICODE_FONT_RESOURCE}{}", index + 1),
+        );
+        font.has_glyph(ch).then_some(font)
+    }
+
+    fn has_glyph(&self, ch: char) -> bool {
+        self.face
+            .as_ref()
+            .and_then(|face| face.glyph_index(ch))
+            .is_some_and(|gid| gid.0 != 0)
+    }
+
+    /// Code (glyph id, or CID for CID-keyed CFF) and advance of `ch`.
     fn glyph(&self, ch: char) -> (u16, f64) {
         let Some(face) = self.face.as_ref() else {
             return (0, 500.0);
@@ -1942,7 +2135,15 @@ impl UnicodeFont {
             .glyph_hor_advance(ttf_parser::GlyphId(gid))
             .map(|a| f64::from(a) * 1000.0 / self.upem)
             .unwrap_or(500.0);
-        (gid, advance)
+        let code = if self.cff {
+            face.tables()
+                .cff
+                .and_then(|cff| cff.glyph_cid(ttf_parser::GlyphId(gid)))
+                .unwrap_or(gid)
+        } else {
+            gid
+        };
+        (code, advance)
     }
 
     fn measure_char(&self, ch: char) -> f64 {
@@ -1952,46 +2153,69 @@ impl UnicodeFont {
     fn encode(&mut self, text: &str) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(text.len() * 2);
         for ch in text.chars() {
-            let (gid, advance) = self.glyph(ch);
-            self.used.entry(gid).or_insert((ch, advance));
-            bytes.extend_from_slice(&gid.to_be_bytes());
+            let (code, advance) = self.glyph(ch);
+            self.used.entry(code).or_insert((ch, advance));
+            bytes.extend_from_slice(&code.to_be_bytes());
         }
         bytes
     }
 
+    /// Font descriptor metrics in 1/1000 em: bbox, ascent, descent, cap
+    /// height.
+    fn metrics(&self) -> ([i64; 4], i64, i64, i64) {
+        let Some(face) = self.face.as_ref() else {
+            return ([-1021, -463, 1793, 1232], 928, -236, 729);
+        };
+        let scale = |v: i16| (f64::from(v) * 1000.0 / self.upem).round() as i64;
+        let bbox = face.global_bounding_box();
+        (
+            [
+                scale(bbox.x_min),
+                scale(bbox.y_min),
+                scale(bbox.x_max),
+                scale(bbox.y_max),
+            ],
+            scale(face.ascender()),
+            scale(face.descender()),
+            face.capital_height()
+                .map(scale)
+                .unwrap_or_else(|| scale(face.ascender())),
+        )
+    }
+
     fn font_object(&self) -> PdfObject {
-        let bytes = crate::render::font_rasterizer::fallback_fonts::DEJAVU_SANS;
+        let bytes = self.bytes;
         let mut file_dict = PdfDictionary::empty();
         file_dict.insert("Length", PdfObject::Integer(bytes.len() as i64));
-        file_dict.insert("Length1", PdfObject::Integer(bytes.len() as i64));
+        if self.cff {
+            file_dict.insert("Subtype", PdfObject::Name("OpenType".into()));
+        } else {
+            file_dict.insert("Length1", PdfObject::Integer(bytes.len() as i64));
+        }
+        let (bbox, ascent, descent, cap_height) = self.metrics();
         let mut descriptor = PdfDictionary::empty();
         descriptor.insert("Type", PdfObject::Name("FontDescriptor".into()));
-        descriptor.insert("FontName", PdfObject::Name("DejaVuSans".into()));
+        descriptor.insert("FontName", PdfObject::Name(self.base_name.clone()));
         descriptor.insert("Flags", PdfObject::Integer(32));
         descriptor.insert(
             "FontBBox",
-            PdfObject::Array(
-                [-1021, -463, 1793, 1232]
-                    .iter()
-                    .map(|v| PdfObject::Integer(*v))
-                    .collect(),
-            ),
+            PdfObject::Array(bbox.iter().map(|v| PdfObject::Integer(*v)).collect()),
         );
         descriptor.insert("ItalicAngle", PdfObject::Integer(0));
-        descriptor.insert("Ascent", PdfObject::Integer(928));
-        descriptor.insert("Descent", PdfObject::Integer(-236));
-        descriptor.insert("CapHeight", PdfObject::Integer(729));
+        descriptor.insert("Ascent", PdfObject::Integer(ascent));
+        descriptor.insert("Descent", PdfObject::Integer(descent));
+        descriptor.insert("CapHeight", PdfObject::Integer(cap_height));
         descriptor.insert("StemV", PdfObject::Integer(80));
         descriptor.insert(
-            "FontFile2",
+            if self.cff { "FontFile3" } else { "FontFile2" },
             PdfObject::Stream {
                 dict: file_dict,
                 raw: bytes.to_vec(),
             },
         );
         let mut widths = Vec::new();
-        for (gid, (_, advance)) in &self.used {
-            widths.push(PdfObject::Integer(i64::from(*gid)));
+        for (code, (_, advance)) in &self.used {
+            widths.push(PdfObject::Integer(i64::from(*code)));
             widths.push(PdfObject::Array(vec![PdfObject::Real(advance.round())]));
         }
         let mut system_info = PdfDictionary::empty();
@@ -2000,11 +2224,23 @@ impl UnicodeFont {
         system_info.insert("Supplement", PdfObject::Integer(0));
         let mut cid_font = PdfDictionary::empty();
         cid_font.insert("Type", PdfObject::Name("Font".into()));
-        cid_font.insert("Subtype", PdfObject::Name("CIDFontType2".into()));
-        cid_font.insert("BaseFont", PdfObject::Name("DejaVuSans".into()));
+        cid_font.insert(
+            "Subtype",
+            PdfObject::Name(
+                if self.cff {
+                    "CIDFontType0"
+                } else {
+                    "CIDFontType2"
+                }
+                .into(),
+            ),
+        );
+        cid_font.insert("BaseFont", PdfObject::Name(self.base_name.clone()));
         cid_font.insert("CIDSystemInfo", PdfObject::Dictionary(system_info));
         cid_font.insert("FontDescriptor", PdfObject::Dictionary(descriptor));
-        cid_font.insert("CIDToGIDMap", PdfObject::Name("Identity".into()));
+        if !self.cff {
+            cid_font.insert("CIDToGIDMap", PdfObject::Name("Identity".into()));
+        }
         cid_font.insert("DW", PdfObject::Integer(1000));
         cid_font.insert("W", PdfObject::Array(widths));
         let cmap = self.to_unicode_cmap();
@@ -2013,7 +2249,7 @@ impl UnicodeFont {
         let mut font = PdfDictionary::empty();
         font.insert("Type", PdfObject::Name("Font".into()));
         font.insert("Subtype", PdfObject::Name("Type0".into()));
-        font.insert("BaseFont", PdfObject::Name("DejaVuSans".into()));
+        font.insert("BaseFont", PdfObject::Name(self.base_name.clone()));
         font.insert("Encoding", PdfObject::Name("Identity-H".into()));
         font.insert(
             "DescendantFonts",
@@ -2052,12 +2288,24 @@ impl UnicodeFont {
     }
 }
 
+/// Which font draws a character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FontSlot {
+    Primary,
+    /// The bundled DejaVu Sans.
+    Unicode,
+    /// Installed fallback face number `n`.
+    System(usize),
+}
+
 /// Field/annotation text font: the `/DA` font when it is a usable simple
-/// font, otherwise Helvetica, plus a Unicode fallback for characters the
-/// primary font cannot encode.
+/// or composite font, otherwise Helvetica, plus Unicode fallbacks (DejaVu
+/// Sans, then installed faces) for characters the primary font cannot
+/// encode — PDFium's per-character font switching.
 pub(crate) struct TextFonts {
-    primary: SimpleFont,
+    primary: PrimaryFont,
     unicode: Option<UnicodeFont>,
+    system: Vec<UnicodeFont>,
 }
 
 impl TextFonts {
@@ -2076,112 +2324,145 @@ impl TextFonts {
                         PdfObject::Dictionary(dict) => dict,
                         _ => return None,
                     };
-                    match dict.get_name("Subtype") {
-                        Some("Type1") | Some("TrueType") | Some("MMType1") => {}
-                        _ => return None,
-                    }
                     if dict.get_name("BaseFont").is_some_and(is_symbolic_base_font) {
                         return None;
                     }
-                    Some(SimpleFont::from_dict(
-                        &resource_safe_name(name),
-                        font_obj,
-                        &dict,
-                        Some(reader),
-                    ))
+                    let resource_name = resource_safe_name(name);
+                    match dict.get_name("Subtype") {
+                        Some("Type1") | Some("TrueType") | Some("MMType1") => {
+                            Some(PrimaryFont::Simple(SimpleFont::from_dict(
+                                &resource_name,
+                                font_obj,
+                                &dict,
+                                Some(reader),
+                            )))
+                        }
+                        Some("Type0") => {
+                            CompositeFont::from_dict(&resource_name, font_obj, &dict, reader)
+                                .map(PrimaryFont::Composite)
+                        }
+                        _ => None,
+                    }
                 })
             })
-            .unwrap_or_else(|| SimpleFont::standard(standard_base_for(font_name)));
+            .unwrap_or_else(|| {
+                PrimaryFont::Simple(SimpleFont::standard(standard_base_for(font_name)))
+            });
         Self {
             primary,
             unicode: None,
+            system: Vec::new(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn helvetica() -> Self {
         Self {
-            primary: SimpleFont::standard("Helvetica"),
+            primary: PrimaryFont::Simple(SimpleFont::standard("Helvetica")),
             unicode: None,
+            system: Vec::new(),
         }
-    }
-
-    fn primary_can_encode(&self, ch: char) -> bool {
-        self.primary.encode.contains_key(&ch)
     }
 
     fn unicode(&mut self) -> &mut UnicodeFont {
         self.unicode.get_or_insert_with(UnicodeFont::new)
     }
 
+    /// The font that draws `ch`: the primary font when it encodes it, else
+    /// DejaVu Sans when it has a glyph, else an installed face covering it
+    /// (loaded on first use), else DejaVu Sans (its missing glyph).
+    fn slot(&mut self, ch: char) -> FontSlot {
+        if self.primary.char_width(ch).is_some() {
+            return FontSlot::Primary;
+        }
+        if self.unicode().has_glyph(ch) || ch.is_whitespace() || ch.is_control() {
+            return FontSlot::Unicode;
+        }
+        if let Some(index) = self.system.iter().position(|font| font.has_glyph(ch)) {
+            return FontSlot::System(index);
+        }
+        if self.system.len() < MAX_SYSTEM_FALLBACK_FONTS {
+            if let Some(font) = UnicodeFont::installed_for(ch, self.system.len()) {
+                self.system.push(font);
+                return FontSlot::System(self.system.len() - 1);
+            }
+        }
+        FontSlot::Unicode
+    }
+
+    fn slot_width(&mut self, slot: FontSlot, ch: char) -> f64 {
+        match slot {
+            FontSlot::Primary => self.primary.char_width(ch).unwrap_or(500.0),
+            FontSlot::Unicode => self.unicode().measure_char(ch),
+            FontSlot::System(index) => self.system[index].measure_char(ch),
+        }
+    }
+
     /// Width of `text` at `size` points.
     pub(crate) fn measure(&mut self, text: &str, size: f64) -> f64 {
         let mut units = 0.0;
         for ch in text.chars() {
-            if let Some(code) = self.primary.encode.get(&ch) {
-                units += self.primary.code_width(*code);
-            } else {
-                units += self.unicode().measure_char(ch);
-            }
+            let slot = self.slot(ch);
+            units += self.slot_width(slot, ch);
         }
         units * size / 1000.0
     }
 
     pub(crate) fn ascent(&self) -> f64 {
-        self.primary.ascent
+        self.primary.ascent()
     }
 
     pub(crate) fn descent(&self) -> f64 {
-        self.primary.descent
+        self.primary.descent()
     }
 
     /// Emits text-showing operators (inside BT/ET, after Td) for `text`,
-    /// switching to the Unicode fallback for characters the primary font
-    /// cannot encode.
+    /// switching fonts for characters the primary font cannot encode.
     pub(crate) fn show(&mut self, out: &mut String, text: &str, size: f64) {
         let mut run = String::new();
-        let mut run_primary = true;
-        let mut first = true;
-        let flush = |fonts: &mut TextFonts, out: &mut String, run: &str, primary: bool| {
-            if run.is_empty() {
-                return;
-            }
-            if primary {
-                let bytes = fonts.primary.encode_lossy(run);
-                let _ = writeln!(
-                    out,
-                    "/{} {} Tf {} Tj",
-                    fonts.primary.resource_name,
-                    n(size),
-                    hex_string(&bytes)
-                );
-            } else {
-                let bytes = fonts.unicode().encode(run);
-                let _ = writeln!(
-                    out,
-                    "/{UNICODE_FONT_RESOURCE} {} Tf {} Tj",
-                    n(size),
-                    hex_string(&bytes)
-                );
-            }
-        };
+        let mut run_slot = FontSlot::Primary;
         for ch in text.chars() {
-            let primary = self.primary_can_encode(ch);
-            if !first && primary != run_primary {
+            let slot = self.slot(ch);
+            if !run.is_empty() && slot != run_slot {
                 let taken = std::mem::take(&mut run);
-                flush(self, out, &taken, run_primary);
+                self.flush_run(out, &taken, run_slot, size);
             }
-            run_primary = primary;
-            first = false;
+            run_slot = slot;
             run.push(ch);
         }
-        flush(self, out, &run, run_primary);
+        self.flush_run(out, &run, run_slot, size);
+    }
+
+    fn flush_run(&mut self, out: &mut String, run: &str, slot: FontSlot, size: f64) {
+        if run.is_empty() {
+            return;
+        }
+        let (resource, bytes) = match slot {
+            FontSlot::Primary => (
+                self.primary.resource_name().to_string(),
+                self.primary.encode_lossy(run),
+            ),
+            FontSlot::Unicode => {
+                let font = self.unicode();
+                (font.resource.clone(), font.encode(run))
+            }
+            FontSlot::System(index) => {
+                let font = &mut self.system[index];
+                (font.resource.clone(), font.encode(run))
+            }
+        };
+        let _ = writeln!(out, "/{resource} {} Tf {} Tj", n(size), hex_string(&bytes));
     }
 
     pub(crate) fn add_to(&self, resources: &mut Resources) {
-        resources.add_font(&self.primary.resource_name, self.primary.object.clone());
-        if let Some(unicode) = self.unicode.as_ref().filter(|u| !u.used.is_empty()) {
-            resources.add_font(UNICODE_FONT_RESOURCE, unicode.font_object());
+        resources.add_font(self.primary.resource_name(), self.primary.object().clone());
+        for font in self
+            .unicode
+            .iter()
+            .chain(self.system.iter())
+            .filter(|font| !font.used.is_empty())
+        {
+            resources.add_font(&font.resource, font.font_object());
         }
     }
 }
@@ -2210,7 +2491,7 @@ fn resource_safe_name(name: &str) -> String {
         .chars()
         .filter(|ch| ch.is_ascii_graphic() && !"()<>[]{}/%#".contains(*ch))
         .collect();
-    if safe.is_empty() || safe == UNICODE_FONT_RESOURCE {
+    if safe.is_empty() || safe.starts_with(UNICODE_FONT_RESOURCE) {
         "WFFont".to_string()
     } else {
         safe
@@ -2462,116 +2743,6 @@ fn free_text(
 // Widgets: text fields and choice fields
 // ---------------------------------------------------------------------------
 
-/// Background and border from `/MK` (`BG`, `BC`) with the widget border
-/// style. Nothing is drawn for absent entries.
-pub(crate) fn append_widget_chrome(
-    out: &mut String,
-    width: f64,
-    height: f64,
-    mk: Option<&PdfDictionary>,
-    border: &BorderStyle,
-    round: bool,
-) {
-    let bg = mk
-        .and_then(|mk| AnnotColor::from_object(mk.get("BG")))
-        .flatten();
-    let bc = mk
-        .and_then(|mk| AnnotColor::from_object(mk.get("BC")))
-        .flatten();
-    if let Some(bg) = bg {
-        let _ = writeln!(out, "q {}", bg.fill_op());
-        if round {
-            let r = width.min(height) * 0.5;
-            ellipse_path(out, width * 0.5, height * 0.5, r, r);
-            out.push_str("f Q\n");
-        } else {
-            let _ = writeln!(out, "0 0 {} {} re f Q", n(width), n(height));
-        }
-    }
-    let bw = border.width;
-    let Some(bc) = bc.filter(|_| bw > 0.0) else {
-        return;
-    };
-    let _ = writeln!(out, "q {} {} w {}", bc.stroke_op(), n(bw), border.dash_op());
-    if round {
-        let r = (width.min(height) - bw) * 0.5;
-        ellipse_path(out, width * 0.5, height * 0.5, r.max(0.0), r.max(0.0));
-        out.push_str("S Q\n");
-        return;
-    }
-    match border.kind {
-        BorderKind::Underline => {
-            let _ = writeln!(
-                out,
-                "0 {} m {} {} l S Q",
-                n(bw * 0.5),
-                n(width),
-                n(bw * 0.5)
-            );
-        }
-        BorderKind::Beveled | BorderKind::Inset => {
-            let _ = writeln!(
-                out,
-                "{} {} {} {} re S",
-                n(bw * 0.5),
-                n(bw * 0.5),
-                n((width - bw).max(0.0)),
-                n((height - bw).max(0.0))
-            );
-            // Upper-left / lower-right bevel bands.
-            let (light, dark) = if border.kind == BorderKind::Beveled {
-                (AnnotColor::WHITE, AnnotColor::Gray(0.5))
-            } else {
-                (AnnotColor::Gray(0.5), AnnotColor::Gray(0.75))
-            };
-            let _ = writeln!(
-                out,
-                "{} {} {} m {} {} l {} {} l {} {} l {} {} l {} {} l f",
-                light.fill_op(),
-                n(bw),
-                n(bw),
-                n(bw),
-                n(height - bw),
-                n(width - bw),
-                n(height - bw),
-                n(width - 2.0 * bw),
-                n(height - 2.0 * bw),
-                n(2.0 * bw),
-                n(height - 2.0 * bw),
-                n(2.0 * bw),
-                n(2.0 * bw)
-            );
-            let _ = writeln!(
-                out,
-                "{} {} {} m {} {} l {} {} l {} {} l {} {} l {} {} l f Q",
-                dark.fill_op(),
-                n(width - bw),
-                n(height - bw),
-                n(width - bw),
-                n(bw),
-                n(bw),
-                n(bw),
-                n(2.0 * bw),
-                n(2.0 * bw),
-                n(width - 2.0 * bw),
-                n(2.0 * bw),
-                n(width - 2.0 * bw),
-                n(height - 2.0 * bw)
-            );
-        }
-        _ => {
-            let _ = writeln!(
-                out,
-                "{} {} {} {} re S Q",
-                n(bw * 0.5),
-                n(bw * 0.5),
-                n((width - bw).max(0.0)),
-                n((height - bw).max(0.0))
-            );
-        }
-    }
-}
-
 pub(crate) struct WidgetTextLayout<'a> {
     pub width: f64,
     pub height: f64,
@@ -2582,6 +2753,8 @@ pub(crate) struct WidgetTextLayout<'a> {
     pub multiline: bool,
     /// `MaxLen` when the comb flag is set.
     pub comb: Option<usize>,
+    /// Combo box: reserve PDFium's 13pt drop button at the right edge.
+    pub drop_button: bool,
 }
 
 /// Comb cell count for a text field: requires the comb flag (bit 25), no
@@ -2613,22 +2786,32 @@ pub(crate) fn text_field_appearance(
         alignment,
         multiline,
         comb,
+        drop_button,
     } = layout;
     let mut out = String::new();
-    append_widget_chrome(&mut out, width, height, mk, &border, false);
+    let chrome = WidgetChrome::from_mk(mk, border);
+    chrome.append_rect(&mut out, width, height);
+    let bw = chrome.content_inset();
+    // The text area ends where the drop button starts.
+    let width = if drop_button {
+        let inset = chrome.client_inset();
+        let button = [
+            width - inset - DROP_BUTTON_WIDTH,
+            inset,
+            width - inset,
+            height - inset,
+        ];
+        let mut drawn = String::new();
+        append_drop_button(&mut drawn, button);
+        out.push_str(&drawn);
+        (width - (DROP_BUTTON_WIDTH + inset - bw).max(DROP_BUTTON_WIDTH)).max(2.0 * bw)
+    } else {
+        width
+    };
     let mut resources = Resources::default();
     if text.is_empty() {
         return Some((out, resources));
     }
-    let bw = if mk
-        .and_then(|mk| AnnotColor::from_object(mk.get("BC")))
-        .flatten()
-        .is_some()
-    {
-        border.width
-    } else {
-        0.0
-    };
     let pad = bw + 2.0;
     let inner_w = (width - 2.0 * pad).max(1.0);
     let inner_h = (height - 2.0 * bw).max(1.0);
@@ -2750,16 +2933,9 @@ pub(crate) fn list_box_appearance(
         ..
     } = layout;
     let mut out = String::new();
-    append_widget_chrome(&mut out, width, height, mk, &border, false);
-    let bw = if mk
-        .and_then(|mk| AnnotColor::from_object(mk.get("BC")))
-        .flatten()
-        .is_some()
-    {
-        border.width
-    } else {
-        0.0
-    };
+    let chrome = WidgetChrome::from_mk(mk, border);
+    chrome.append_rect(&mut out, width, height);
+    let bw = chrome.content_inset();
     let size = if da.font_size > 0.0 {
         da.font_size
     } else {
@@ -2809,11 +2985,12 @@ pub(crate) fn list_box_appearance(
     Some((out, resources))
 }
 
-/// Wraps widget content into a Form XObject the size of the widget.
-pub(crate) fn widget_form(
+/// Wraps widget content into a Form XObject with `bbox` and an optional
+/// `/Matrix` (`/MK /R` widget rotation).
+pub(crate) fn widget_form_with(
     content: String,
-    width: f64,
-    height: f64,
+    bbox: [f64; 4],
+    matrix: Option<[f64; 6]>,
     resources: Resources,
 ) -> (PdfDictionary, Vec<u8>) {
     let content = if content.trim().is_empty() {
@@ -2828,13 +3005,14 @@ pub(crate) fn widget_form(
     dict.insert("Subtype", PdfObject::Name("Form".into()));
     dict.insert(
         "BBox",
-        PdfObject::Array(vec![
-            PdfObject::Real(0.0),
-            PdfObject::Real(0.0),
-            PdfObject::Real(width),
-            PdfObject::Real(height),
-        ]),
+        PdfObject::Array(bbox.iter().map(|v| PdfObject::Real(*v)).collect()),
     );
+    if let Some(matrix) = matrix {
+        dict.insert(
+            "Matrix",
+            PdfObject::Array(matrix.iter().map(|v| PdfObject::Real(*v)).collect()),
+        );
+    }
     dict.insert("Resources", PdfObject::Dictionary(resources.into_dict()));
     dict.insert("Length", PdfObject::Integer(content.len() as i64));
     (dict, content.into_bytes())
