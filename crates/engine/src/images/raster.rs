@@ -87,21 +87,16 @@ impl BilevelImage {
 }
 
 /// How grey levels are reduced to black and white.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BilevelMethod {
     /// Pixels darker than the threshold become black.
     Threshold(u8),
     /// Ordered dispersed-dot dithering with an 8x8 Bayer screen: a halftone
     /// in the spirit of Splash's default screen.
+    #[default]
     Halftone,
     /// Floyd-Steinberg error diffusion.
     ErrorDiffusion,
-}
-
-impl Default for BilevelMethod {
-    fn default() -> Self {
-        Self::Halftone
-    }
 }
 
 const BAYER_8X8: [[u8; 8]; 8] = [
