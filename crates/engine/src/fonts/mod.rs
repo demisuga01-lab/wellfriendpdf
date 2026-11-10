@@ -45,6 +45,7 @@ pub(crate) mod sfnt_subset;
 pub mod shaper;
 pub mod shaping_context;
 pub(crate) mod standard14_metrics;
+pub(crate) mod substitute_style;
 pub mod tab_stops;
 mod tt_bytecode;
 pub(crate) mod tt_hint_instance;

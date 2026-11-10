@@ -72,6 +72,26 @@ pub fn extract_glyph_path_for_simple_var(
     glyph_name: Option<&str>,
     request: &VariationRequest,
 ) -> (Option<Path>, f64) {
+    extract_glyph_path_for_simple_lookup(
+        font_bytes,
+        code,
+        ch,
+        glyph_name,
+        request,
+        SimpleGlyphLookup::default(),
+    )
+}
+
+/// [`extract_glyph_path_for_simple_var`] with the PDF font's TrueType lookup
+/// rules (symbolic flag, TrueType `.notdef` handling).
+pub(crate) fn extract_glyph_path_for_simple_lookup(
+    font_bytes: &[u8],
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+    request: &VariationRequest,
+    lookup: SimpleGlyphLookup,
+) -> (Option<Path>, f64) {
     let mut face = match ttf_parser::Face::parse(font_bytes, 0) {
         Ok(face) => face,
         Err(_) => {
@@ -113,7 +133,7 @@ pub fn extract_glyph_path_for_simple_var(
     // When no table maps the code, draw nothing rather than guessing a glyph
     // id: a guessed id draws an unrelated glyph, while "no outline" lets the
     // caller's per-glyph fallback font draw the right character.
-    let Some(glyph_id) = glyph_index_for_simple(&face, code, ch, glyph_name) else {
+    let Some(glyph_id) = glyph_index_for_simple_with(&face, code, ch, glyph_name, lookup) else {
         let advance = face
             .glyph_hor_advance(ttf_parser::GlyphId(0))
             .map(|width| f64::from(width) / upem * 1000.0)
@@ -149,14 +169,38 @@ pub(crate) fn extract_vertical_glyph_path_for_simple_var(
     glyph_name: Option<&str>,
     request: &VariationRequest,
 ) -> (Option<Path>, f64) {
+    extract_vertical_glyph_path_for_simple_lookup(
+        font_bytes,
+        code,
+        ch,
+        glyph_name,
+        request,
+        SimpleGlyphLookup::default(),
+    )
+}
+
+/// [`extract_vertical_glyph_path_for_simple_var`] with the PDF font's
+/// TrueType lookup rules.
+pub(crate) fn extract_vertical_glyph_path_for_simple_lookup(
+    font_bytes: &[u8],
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+    request: &VariationRequest,
+    lookup: SimpleGlyphLookup,
+) -> (Option<Path>, f64) {
     let Ok(mut face) = ttf_parser::Face::parse(font_bytes, 0) else {
-        return extract_glyph_path_for_simple_var(font_bytes, code, ch, glyph_name, request);
+        return extract_glyph_path_for_simple_lookup(
+            font_bytes, code, ch, glyph_name, request, lookup,
+        );
     };
     if variations::apply_request_checked(&mut face, request).is_err() {
         return (None, 500.0);
     }
-    let Some(glyph_id) = glyph_index_for_simple(&face, code, ch, glyph_name) else {
-        return extract_glyph_path_for_simple_var(font_bytes, code, ch, glyph_name, request);
+    let Some(glyph_id) = glyph_index_for_simple_with(&face, code, ch, glyph_name, lookup) else {
+        return extract_glyph_path_for_simple_lookup(
+            font_bytes, code, ch, glyph_name, request, lookup,
+        );
     };
     let glyph_id = vertical_form_glyph(&face, glyph_id);
     let upem = f64::from(face.units_per_em());
@@ -504,12 +548,155 @@ fn char_code_for_lookup(ch: char) -> u16 {
     u16::try_from(u32::from(ch)).unwrap_or(0)
 }
 
+/// How a PDF simple font's codes reach the glyphs of a TrueType (sfnt)
+/// program, following PDFium's `CPDF_TrueTypeFont::LoadGlyphMap`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub(crate) struct SimpleGlyphLookup {
+    /// The PDF font is symbolic (Symbolic flag without Nonsymbolic, and not
+    /// a plain WinAnsi/MacRoman encoding): the Windows Symbol (3,0) cmap is
+    /// tried first with the code and the 0xF000, 0xF100 and 0xF200 prefixes,
+    /// then the Mac (1,0) cmap with the raw code, before glyph names and
+    /// Unicode.
+    pub symbolic: bool,
+    /// The PDF font is a TrueType font: a code whose /Differences name is
+    /// `.notdef` draws the space glyph.
+    pub truetype: bool,
+}
+
 fn glyph_index_for_simple(
     face: &ttf_parser::Face<'_>,
     code: u16,
     ch: char,
     glyph_name: Option<&str>,
 ) -> Option<GlyphId> {
+    glyph_index_for_simple_with(face, code, ch, glyph_name, SimpleGlyphLookup::default())
+}
+
+/// The cmap subtables of `face` with the given platform and encoding.
+fn cmap_subtables<'a>(
+    face: &ttf_parser::Face<'a>,
+    platform: ttf_parser::PlatformId,
+    encoding: u16,
+) -> impl Iterator<Item = ttf_parser::cmap::Subtable<'a>> {
+    face.tables()
+        .cmap
+        .into_iter()
+        .flat_map(|cmap| cmap.subtables.into_iter())
+        .filter(move |subtable| {
+            subtable.platform_id == platform && subtable.encoding_id == encoding
+        })
+}
+
+/// A single-byte code through the Windows Symbol (3,0) cmap, with the
+/// prefixes PDFium tries (`GetGlyphIndexForMSSymbol`): the code itself, then
+/// 0xF000, 0xF100 and 0xF200 plus the code.
+fn ms_symbol_glyph(face: &ttf_parser::Face<'_>, code: u16) -> Option<GlyphId> {
+    if code > 0xFF {
+        return None;
+    }
+    let code = u32::from(code);
+    for prefix in [0u32, 0xF000, 0xF100, 0xF200] {
+        for subtable in cmap_subtables(face, ttf_parser::PlatformId::Windows, 0) {
+            if let Some(gid) = subtable.glyph_index(prefix + code).filter(|gid| gid.0 != 0) {
+                return Some(gid);
+            }
+        }
+    }
+    None
+}
+
+/// A code through the Mac Roman (1,0) cmap.
+fn mac_roman_cmap_glyph(face: &ttf_parser::Face<'_>, code: u32) -> Option<GlyphId> {
+    cmap_subtables(face, ttf_parser::PlatformId::Macintosh, 0)
+        .find_map(|subtable| subtable.glyph_index(code).filter(|gid| gid.0 != 0))
+}
+
+/// The space glyph, which PDFium draws for a TrueType code named `.notdef`.
+fn space_glyph(face: &ttf_parser::Face<'_>) -> Option<GlyphId> {
+    face.glyph_index(' ')
+        .or_else(|| ms_symbol_glyph(face, 0x20))
+        .or_else(|| mac_roman_cmap_glyph(face, 0x20))
+}
+
+fn has_unicode_cmap(face: &ttf_parser::Face<'_>) -> bool {
+    face.tables().cmap.is_some_and(|cmap| {
+        cmap.subtables
+            .into_iter()
+            .any(|subtable| subtable.is_unicode())
+    })
+}
+
+/// The Mac OS Roman code of a glyph, from its PDF glyph name (the
+/// MacRomanEncoding table, PDF 32000-1 9.6.6.4) or else its Unicode value
+/// (including the Apple Roman symbols PDF's table leaves out).
+fn mac_roman_code(glyph_name: Option<&str>, ch: char) -> Option<u32> {
+    use crate::fonts::encoding::MAC_ROMAN_ENCODING;
+    if let Some(name) = glyph_name {
+        if let Some(code) = MAC_ROMAN_ENCODING
+            .iter()
+            .position(|entry| *entry == Some(name))
+        {
+            return Some(code as u32);
+        }
+    }
+    if (' '..='~').contains(&ch) {
+        return Some(ch as u32);
+    }
+    let apple_extra = match ch {
+        '\u{2260}' => Some(0xAD),
+        '\u{221E}' => Some(0xB0),
+        '\u{2264}' => Some(0xB2),
+        '\u{2265}' => Some(0xB3),
+        '\u{2202}' => Some(0xB6),
+        '\u{2211}' => Some(0xB7),
+        '\u{220F}' => Some(0xB8),
+        '\u{03C0}' => Some(0xB9),
+        '\u{222B}' => Some(0xBA),
+        '\u{2126}' | '\u{03A9}' => Some(0xBD),
+        '\u{221A}' => Some(0xC3),
+        '\u{2248}' => Some(0xC5),
+        '\u{2206}' | '\u{0394}' => Some(0xC6),
+        '\u{25CA}' => Some(0xD7),
+        '\u{20AC}' => Some(0xDB),
+        '\u{F8FF}' => Some(0xF0),
+        _ => None,
+    };
+    if apple_extra.is_some() {
+        return apple_extra;
+    }
+    MAC_ROMAN_ENCODING
+        .iter()
+        .position(|entry| {
+            entry.is_some_and(|name| {
+                crate::fonts::glyph_list::glyph_name_to_unicode(name) == Some(ch)
+            })
+        })
+        .map(|code| code as u32)
+}
+
+pub(crate) fn glyph_index_for_simple_with(
+    face: &ttf_parser::Face<'_>,
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+    lookup: SimpleGlyphLookup,
+) -> Option<GlyphId> {
+    let notdef = glyph_name == Some(".notdef");
+    if lookup.symbolic {
+        // A symbolic TrueType font keys its glyphs by code in the Windows
+        // Symbol cmap (often at U+F0xx), or else by raw code in the Mac cmap.
+        if let Some(gid) = ms_symbol_glyph(face, code) {
+            return Some(gid);
+        }
+        if !notdef {
+            if let Some(gid) = mac_roman_cmap_glyph(face, u32::from(code)) {
+                return Some(gid);
+            }
+        }
+    }
+    if notdef && lookup.truetype {
+        return space_glyph(face);
+    }
     if let Some(name) = glyph_name.filter(|name| *name != ".notdef") {
         if let Some(gid) = face.glyph_index_by_name(name) {
             return Some(gid);
@@ -523,6 +710,16 @@ fn glyph_index_for_simple(
     }
     if let Some(gid) = face.glyph_index(ch) {
         return Some(gid);
+    }
+    // A non-symbolic font with a Mac Roman cmap but no Unicode cmap: the
+    // glyph's Mac Roman code, not the PDF code, keys the cmap (WinAnsi 0xE9
+    // e-acute is Mac Roman 0x8E).
+    if !lookup.symbolic && !notdef && !has_unicode_cmap(face) {
+        if let Some(gid) =
+            mac_roman_code(glyph_name, ch).and_then(|mac| mac_roman_cmap_glyph(face, mac))
+        {
+            return Some(gid);
+        }
     }
     glyph_index_from_non_unicode_cmap(face, u32::from(code))
 }
@@ -555,15 +752,11 @@ fn glyph_index_from_non_unicode_cmap(face: &ttf_parser::Face<'_>, code: u32) -> 
 
     // Symbol fonts (Wingdings, Webdings, Symbol, many Word-generated subsets)
     // carry only a Windows Symbol (3,0) cmap with their glyphs at
-    // U+F020..U+F0FF; a single-byte PDF code `c` means 0xF000 + c.
-    if code <= 0xFF {
-        for subtable in cmap.subtables {
-            if subtable.platform_id == ttf_parser::PlatformId::Windows && subtable.encoding_id == 0
-            {
-                if let Some(gid) = subtable.glyph_index(0xF000 + code) {
-                    return Some(gid);
-                }
-            }
+    // U+F020..U+F0FF (or U+F1xx, U+F2xx); a single-byte PDF code `c` means
+    // 0xF000 + c.
+    if let Ok(code) = u16::try_from(code) {
+        if let Some(gid) = ms_symbol_glyph(face, code) {
+            return Some(gid);
         }
     }
 
@@ -946,6 +1139,164 @@ mod tests {
         assert_eq!(
             resolve_glyph_id_for_simple(&face, 0, '\u{FFFD}', Some("f_i")),
             Some(fi)
+        );
+    }
+
+    fn with_table(font: &[u8], table_tag: &[u8; 4], data: Vec<u8>) -> Vec<u8> {
+        let face = ttf_parser::RawFace::parse(font, 0).expect("raw face");
+        let mut tables = std::collections::BTreeMap::new();
+        for record in face.table_records {
+            let tag = record.tag.to_bytes();
+            let start = record.offset as usize;
+            let end = start + record.length as usize;
+            tables.insert(tag, font[start..end].to_vec());
+        }
+        tables.insert(*table_tag, data);
+        crate::fonts::sfnt_subset::build_sfnt([0, 1, 0, 0], tables).expect("rebuilt sfnt")
+    }
+
+    /// A cmap with one Mac Roman (1,0) format 6 subtable covering `codes`.
+    fn mac_cmap(map: &[(u8, u16)]) -> Vec<u8> {
+        let mut glyphs = [0u16; 256];
+        for (code, gid) in map {
+            glyphs[usize::from(*code)] = *gid;
+        }
+        let mut out = Vec::new();
+        for value in [0u16, 1, 1, 0] {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+        out.extend_from_slice(&12u32.to_be_bytes());
+        // Format 6: trimmed table of 256 entries starting at code 0.
+        for value in [6u16, 10 + 2 * 256, 0, 0, 256] {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+        for gid in glyphs {
+            out.extend_from_slice(&gid.to_be_bytes());
+        }
+        out
+    }
+
+    /// A cmap with one Windows Symbol (3,0) format 4 subtable.
+    fn symbol_cmap(map: &[(u16, u16)]) -> Vec<u8> {
+        let mut map = map.to_vec();
+        map.sort();
+        let segments = map.len() + 1;
+        let mut ends = Vec::new();
+        let mut starts = Vec::new();
+        let mut deltas = Vec::new();
+        for (code, gid) in &map {
+            ends.push(*code);
+            starts.push(*code);
+            deltas.push(gid.wrapping_sub(*code));
+        }
+        ends.push(0xFFFF);
+        starts.push(0xFFFF);
+        deltas.push(1);
+        let mut sub = Vec::new();
+        let length = 16 + segments * 8;
+        for value in [4u16, length as u16, 0, (segments * 2) as u16, 0, 0, 0] {
+            sub.extend_from_slice(&value.to_be_bytes());
+        }
+        for value in &ends {
+            sub.extend_from_slice(&value.to_be_bytes());
+        }
+        sub.extend_from_slice(&0u16.to_be_bytes());
+        for value in starts.iter().chain(&deltas) {
+            sub.extend_from_slice(&value.to_be_bytes());
+        }
+        for _ in 0..segments {
+            sub.extend_from_slice(&0u16.to_be_bytes());
+        }
+        let mut out = Vec::new();
+        for value in [0u16, 1, 3, 0] {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+        out.extend_from_slice(&12u32.to_be_bytes());
+        out.extend_from_slice(&sub);
+        out
+    }
+
+    fn liberation_gid(ch: char) -> u16 {
+        let font = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        ttf_parser::Face::parse(font, 0)
+            .expect("bundled face")
+            .glyph_index(ch)
+            .expect("glyph")
+            .0
+    }
+
+    #[test]
+    fn mac_roman_cmap_is_keyed_by_the_mac_roman_code() {
+        let base = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        let eacute = liberation_gid('\u{e9}');
+        let a = liberation_gid('A');
+        // Mac Roman 0x8E is e-acute; WinAnsi puts it at 0xE9.
+        let font = with_table(base, b"cmap", mac_cmap(&[(0x8E, eacute), (0x41, a)]));
+        let face = ttf_parser::Face::parse(&font, 0).expect("font with mac cmap");
+        let lookup = SimpleGlyphLookup::default();
+        assert_eq!(
+            glyph_index_for_simple_with(&face, 0xE9, '\u{e9}', None, lookup),
+            Some(GlyphId(eacute))
+        );
+        assert_eq!(
+            glyph_index_for_simple_with(&face, 0x41, 'A', None, lookup),
+            Some(GlyphId(a))
+        );
+    }
+
+    #[test]
+    fn symbolic_fonts_try_the_symbol_cmap_with_every_prefix_first() {
+        let base = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        let (a, b, c) = (
+            liberation_gid('A'),
+            liberation_gid('B'),
+            liberation_gid('C'),
+        );
+        let font = with_table(base, b"cmap", symbol_cmap(&[(0xF041, b), (0xF142, c)]));
+        let face = ttf_parser::Face::parse(&font, 0).expect("font with symbol cmap");
+        let symbolic = SimpleGlyphLookup {
+            symbolic: true,
+            truetype: true,
+        };
+        // The (3,0) cmap beats the glyph name for a symbolic font...
+        assert_eq!(
+            glyph_index_for_simple_with(&face, 0x41, 'A', Some("A"), symbolic),
+            Some(GlyphId(b))
+        );
+        // ...while a non-symbolic font still trusts the name.
+        assert_eq!(
+            glyph_index_for_simple_with(&face, 0x41, 'A', Some("A"), SimpleGlyphLookup::default()),
+            Some(GlyphId(a))
+        );
+        // The 0xF100 prefix is tried too.
+        assert_eq!(
+            glyph_index_for_simple_with(&face, 0x42, 'B', None, symbolic),
+            Some(GlyphId(c))
+        );
+    }
+
+    #[test]
+    fn truetype_notdef_draws_the_space_glyph() {
+        let font = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        let face = ttf_parser::Face::parse(font, 0).expect("bundled face");
+        let truetype = SimpleGlyphLookup {
+            symbolic: false,
+            truetype: true,
+        };
+        assert_eq!(
+            glyph_index_for_simple_with(&face, 0x41, 'A', Some(".notdef"), truetype),
+            Some(GlyphId(liberation_gid(' ')))
+        );
+        // Other font types keep the old behaviour.
+        assert_eq!(
+            glyph_index_for_simple_with(
+                &face,
+                0x41,
+                'A',
+                Some(".notdef"),
+                SimpleGlyphLookup::default()
+            ),
+            Some(GlyphId(liberation_gid('A')))
         );
     }
 }

@@ -13,6 +13,7 @@ texts are included in this directory as the licenses require.
 |---|---|---|---|
 | `DejaVuSans.ttf` | DejaVu Sans | DejaVu / Bitstream Vera (permissive, MIT-like) + Arev; DejaVu changes public domain | [`LICENSE-DejaVu.txt`](LICENSE-DejaVu.txt) |
 | `LiberationSans-*.ttf`, `LiberationSerif-*.ttf`, `LiberationMono-*.ttf` | Liberation Sans / Serif / Mono | SIL Open Font License (OFL) 1.1 | [`LICENSE-Liberation.txt`](LICENSE-Liberation.txt) |
+| `FoxitSymbol.cff`, `FoxitDingbats.cff` | PDFium's Symbol / ZapfDingbats faces (bare CFF) | PDFium BSD-3-Clause | [`LICENSE-PDFium.txt`](LICENSE-PDFium.txt) |
 
 ## Provenance
 
@@ -25,6 +26,13 @@ texts are included in this directory as the licenses require.
   metric-compatible substitutes for Arial / Times New Roman / Courier New.
   Digitized data © 2010 Google Corporation; © 2012 Red Hat, Inc. Licensed
   under the SIL OFL 1.1 (Reserved Font Name: "Liberation").
+
+- **Foxit Symbol / Dingbats** — the font data PDFium bundles in
+  `core/fxge/fontdata/chromefontdata` (© 2014 The PDFium Authors, original
+  code © 2014 Foxit Software Inc.), extracted byte for byte. The renderer
+  draws non-embedded `Symbol` and `ZapfDingbats` text with them, so those
+  glyphs have the exact shapes PDFium draws; other symbolic fonts still use
+  DejaVu Sans for its Unicode coverage.
 
 ## License-compliance notes
 

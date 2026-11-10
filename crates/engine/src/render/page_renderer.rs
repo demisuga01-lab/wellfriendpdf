@@ -6178,6 +6178,8 @@ struct GlyphMaskCacheKey {
     frac_f: i64,
     hinting: bool,
     binary_alpha: bool,
+    /// Synthetic emboldening weight and skew of a substitute glyph.
+    synthetic: crate::fonts::substitute_style::SyntheticStyle,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16471,11 +16473,46 @@ impl<'a> RenderState<'a> {
                 if let Some(metadata) = self.prepared_font_metadata.get(&font_cache_key).copied() {
                     metadata
                 } else {
+                    let reader = self.engine.document().reader();
+                    let is_substitute = substitution_event_index.is_some()
+                        || font_dict
+                            .as_deref()
+                            .is_none_or(|font_dict| !font_dict_declares_program(font_dict, reader));
+                    let fallback_language = font_dict
+                        .as_deref()
+                        .and_then(|font_dict| font_cjk_language(font_dict, reader));
+                    let substitute_style = is_substitute.then(|| {
+                        let lookup_name = font_dict
+                            .as_deref()
+                            .map(|font_dict| {
+                                fallback_font_lookup_name(&font_name, font_dict, reader)
+                            })
+                            .unwrap_or_else(|| font_name.clone());
+                        crate::fonts::substitute_style::RequestedFontStyle::from_font(
+                            &lookup_name,
+                            font_dict.as_deref(),
+                            Some(reader),
+                            fallback_language.is_some(),
+                        )
+                    });
+                    let synthetic = substitute_style
+                        .map(|requested| {
+                            crate::fonts::substitute_style::SyntheticStyle::for_substitute(
+                                &requested,
+                                crate::fonts::substitute_style::FaceStyle::of_program(
+                                    bytes.as_slice(),
+                                ),
+                                fallback_language,
+                            )
+                        })
+                        .unwrap_or_default();
+                    let mut glyph_cache_hash =
+                        font_resource_glyph_cache_hash(bytes.as_slice(), &font_cache_key);
+                    if !synthetic.is_none() {
+                        fnv1a_update(&mut glyph_cache_hash, &synthetic.cache_bytes());
+                    }
                     let metadata = PreparedFontMetadata {
-                        glyph_cache_hash: font_resource_glyph_cache_hash(
-                            bytes.as_slice(),
-                            &font_cache_key,
-                        ),
+                        glyph_cache_hash,
                         upem: Self::get_upem(bytes.as_slice())
                             .map(f64::from)
                             .filter(|value| *value > 0.0)
@@ -16483,16 +16520,15 @@ impl<'a> RenderState<'a> {
                         light_hinting_supported: ttf_parser::Face::parse(bytes.as_slice(), 0)
                             .is_ok()
                             || crate::fonts::type1::Type1Font::is_type1(bytes.as_slice()),
-                        is_substitute: substitution_event_index.is_some()
-                            || font_dict.as_deref().is_none_or(|font_dict| {
-                                !font_dict_declares_program(
-                                    font_dict,
-                                    self.engine.document().reader(),
-                                )
-                            }),
-                        fallback_language: font_dict.as_deref().and_then(|font_dict| {
-                            font_cjk_language(font_dict, self.engine.document().reader())
-                        }),
+                        is_substitute,
+                        fallback_language,
+                        synthetic,
+                        all_cap: substitute_style.is_some_and(|style| style.all_cap),
+                        glyph_lookup: font_dict
+                            .as_deref()
+                            .map(|font_dict| simple_glyph_lookup(font_dict, reader))
+                            .unwrap_or_default(),
+                        tricky: crate::render::tricky_hinting::is_tricky_font(bytes.as_slice()),
                     };
                     self.prepared_font_metadata
                         .insert(font_cache_key.clone(), metadata);
@@ -16506,6 +16542,10 @@ impl<'a> RenderState<'a> {
             light_hinting_supported: false,
             is_substitute: false,
             fallback_language: None,
+            synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
+            all_cap: false,
+            glyph_lookup: crate::render::glyph_outline::SimpleGlyphLookup::default(),
+            tricky: false,
         });
 
         if let Some(refusal) = exact_font_refusal {
@@ -16591,13 +16631,47 @@ impl<'a> RenderState<'a> {
                                 "text_stroke",
                             );
                         }
+                        // AllCap fonts draw lowercase codes with the
+                        // uppercase glyphs (PDFium's LoadCommon). Only for
+                        // substitutes: an embedded program has its own glyphs.
+                        let all_cap = if prepared_font.all_cap && !glyph.is_gid {
+                            all_cap_uppercase_code(glyph.code).and_then(|upper| {
+                                let font_dict = font_dict.as_ref()?;
+                                let resolver = self.get_font_resolver(&font_cache_key, font_dict);
+                                let mut uppercase = glyph.unicode.to_uppercase();
+                                let ch = match (uppercase.next(), uppercase.next()) {
+                                    (Some(ch), None) => ch,
+                                    _ => glyph.unicode,
+                                };
+                                Some((upper, ch, resolver.glyph_name(upper).map(str::to_string)))
+                            })
+                        } else {
+                            None
+                        };
+                        let (code, ch, glyph_name) = match &all_cap {
+                            Some((code, ch, name)) => (*code, *ch, name.as_deref()),
+                            None => (glyph.code, glyph.unicode, glyph.glyph_name.as_deref()),
+                        };
+                        // A TrueType code /Differences names `.notdef` draws
+                        // the space glyph (PDFium); say so to the lookup.
+                        let glyph_name = if glyph_name.is_none()
+                            && !glyph.is_gid
+                            && prepared_font.glyph_lookup.truetype
+                            && font_dict.as_ref().is_some_and(|font_dict| {
+                                self.get_font_resolver(&font_cache_key, font_dict)
+                                    .is_explicit_notdef(code)
+                            }) {
+                            Some(".notdef")
+                        } else {
+                            glyph_name
+                        };
                         ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
                             font_name: &font_name,
                             font_program_cache_key: &font_cache_key,
                             font_subtype: font_subtype.clone(),
-                            code: glyph.code,
-                            ch: glyph.unicode,
-                            glyph_name: glyph.glyph_name.as_deref(),
+                            code,
+                            ch,
+                            glyph_name,
                             is_gid: glyph.is_gid,
                             font_bytes: font_bytes.as_slice(),
                             font_hash,
@@ -16614,6 +16688,9 @@ impl<'a> RenderState<'a> {
                             fallback_pdf_width: glyph.width.filter(|_| !glyph.is_vertical),
                             vertical: glyph.is_vertical,
                             fallback_language: prepared_font.fallback_language,
+                            synthetic: prepared_font.synthetic,
+                            glyph_lookup: prepared_font.glyph_lookup,
+                            tricky: prepared_font.tricky,
                         });
                     }
                 }
@@ -16760,21 +16837,70 @@ impl<'a> RenderState<'a> {
                     // embedded CID program is addressed by glyph id): use the
                     // substitute's GSUB vertical forms, as Poppler does, so
                     // brackets and punctuation turn upright in the column.
-                    crate::render::glyph_outline::extract_vertical_glyph_path_for_simple_var(
+                    crate::render::glyph_outline::extract_vertical_glyph_path_for_simple_lookup(
                         request.font_bytes,
                         request.code,
                         request.ch,
                         request.glyph_name,
                         request.variation,
+                        request.glyph_lookup,
                     )
                 } else {
-                    crate::render::glyph_outline::extract_glyph_path_for_simple_var(
+                    crate::render::glyph_outline::extract_glyph_path_for_simple_lookup(
                         request.font_bytes,
                         request.code,
                         request.ch,
                         request.glyph_name,
                         request.variation,
+                        request.glyph_lookup,
                     )
+                };
+                // Tricky fonts (MingLiU, DFKai-SB...) only assemble their
+                // glyphs when the TrueType instructions run, as in PDFium.
+                let path = if request.tricky
+                    && color_mode == 0
+                    && type1_program.is_none()
+                    && variation_hash == 0
+                {
+                    let gid = if request.is_gid {
+                        Some(request.code)
+                    } else {
+                        ttf_parser::Face::parse(request.font_bytes, 0)
+                            .ok()
+                            .and_then(|face| {
+                                crate::render::glyph_outline::glyph_index_for_simple_with(
+                                    &face,
+                                    request.code,
+                                    request.ch,
+                                    request.glyph_name,
+                                    request.glyph_lookup,
+                                )
+                            })
+                            .map(|gid| gid.0)
+                    };
+                    gid.and_then(|gid| {
+                        crate::render::tricky_hinting::hinted_outline(request.font_bytes, gid)
+                    })
+                    .filter(|hinted| !hinted.segments.is_empty())
+                    .or(path)
+                } else {
+                    path
+                };
+                // Synthetic bold/italic for a substitute face lacking the
+                // requested style. Colour glyphs keep their designed shape.
+                // The font hash already carries the style, so the outline
+                // cache never mixes styled and plain outlines.
+                let path = match path {
+                    Some(path) if color_mode == 0 && !request.synthetic.is_none() => Some(
+                        crate::render::synthetic_outline::apply_synthetic_style(
+                            &path,
+                            request.synthetic,
+                            request.upem,
+                            request.vertical,
+                        )
+                        .unwrap_or(path),
+                    ),
+                    other => other,
                 };
                 let cached = CachedGlyph::from_path(path, advance_width);
                 self.glyph_cache.insert(cache_key.clone(), cached.clone());
@@ -16873,6 +16999,8 @@ impl<'a> RenderState<'a> {
                 && self.exactness_policy == ExactnessPolicy::Compatibility
                 && text_rendering_mode_paints(self.gs.text.rendering_mode)
                 && is_fallback_candidate_char(request.ch)
+                // A TrueType code named `.notdef` is deliberately blank.
+                && !(request.glyph_lookup.truetype && request.glyph_name == Some(".notdef"))
             {
                 self.paint_fallback_glyph(
                     request.ch,
@@ -16904,6 +17032,7 @@ impl<'a> RenderState<'a> {
                         &glyph_ctm,
                         fill_color,
                         glyph_hinting,
+                        request.synthetic,
                     )
                 {
                     if self.text_smoothing_disabled() {
@@ -16941,6 +17070,7 @@ impl<'a> RenderState<'a> {
                         &glyph_ctm,
                         fill_color,
                         glyph_hinting,
+                        request.synthetic,
                     )
                 {
                     if self.text_smoothing_disabled() {
@@ -17357,6 +17487,7 @@ impl<'a> RenderState<'a> {
         glyph_ctm: &Transform2D,
         fill_color: PixelColor,
         glyph_hinting: GlyphHinting,
+        synthetic: crate::fonts::substitute_style::SyntheticStyle,
     ) -> bool {
         let device_t = glyph_ctm.concat(&self.viewport.to_transform());
         if [
@@ -17403,6 +17534,7 @@ impl<'a> RenderState<'a> {
             frac_f: quantize_glyph_mask_fraction(normalized_t.f),
             hinting: glyph_hinting.should_apply(),
             binary_alpha,
+            synthetic,
         };
         let dx = if origin_x <= i32::MIN as f64 {
             i32::MIN
@@ -19347,6 +19479,16 @@ impl<'a> RenderState<'a> {
                 return Some((bytes, selection));
             }
         }
+        // Non-embedded Symbol and ZapfDingbats are drawn with PDFium's own
+        // faces, ahead of installed or bundled stand-ins, as PDFium does.
+        let truetype = font_dict
+            .is_some_and(|font_dict| detect_font_subtype(font_dict) == FontSubtype::TrueType);
+        if let Some(font_match) =
+            crate::fonts::provider::pdfium_standard_symbol_match(fallback_name, truetype)
+        {
+            let selection = FontReplacementSelection::from_font_match(&font_match);
+            return Some((font_match.bytes.to_vec(), selection));
+        }
         // The installed face of the requested name (the real Arial, Calibri,
         // MS Mincho...) beats a metric-compatible bundled stand-in. Host
         // fonts are never part of the exact render contract.
@@ -19463,6 +19605,17 @@ struct PreparedFontMetadata {
     /// The CJK language of a composite font's character collection, used to
     /// choose a per-glyph fallback face built for that language.
     fallback_language: Option<crate::fonts::FontLanguage>,
+    /// Synthetic bold/italic for a substitute face that lacks the requested
+    /// weight or slant. Always none for embedded programs.
+    synthetic: crate::fonts::substitute_style::SyntheticStyle,
+    /// The descriptor's AllCap flag on a substituted font: lowercase codes
+    /// draw the uppercase glyphs.
+    all_cap: bool,
+    /// The TrueType cmap lookup rules of the PDF font (symbolic flag,
+    /// `.notdef` handling).
+    glyph_lookup: crate::render::glyph_outline::SimpleGlyphLookup,
+    /// A "tricky" TrueType font whose glyphs need their instructions run.
+    tricky: bool,
 }
 
 struct GlyphRenderRequest<'a> {
@@ -19494,6 +19647,46 @@ struct GlyphRenderRequest<'a> {
     vertical: bool,
     /// The source font's CJK language, for choosing fallback faces.
     fallback_language: Option<crate::fonts::FontLanguage>,
+    /// Synthetic bold/italic applied to a substitute outline (none for
+    /// embedded programs and colour glyphs).
+    synthetic: crate::fonts::substitute_style::SyntheticStyle,
+    /// TrueType cmap lookup rules of the PDF font.
+    glyph_lookup: crate::render::glyph_outline::SimpleGlyphLookup,
+    /// The program is a tricky TrueType font: draw hinted outlines.
+    tricky: bool,
+}
+
+/// The TrueType glyph lookup rules for a simple font (PDFium's
+/// `CPDF_TrueTypeFont::LoadGlyphMap`): symbolic when the descriptor says
+/// Symbolic and not Nonsymbolic and the encoding is not a plain WinAnsi or
+/// MacRoman name, and the TrueType `.notdef`-is-space rule.
+fn simple_glyph_lookup(
+    font_dict: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+) -> crate::render::glyph_outline::SimpleGlyphLookup {
+    let subtype = detect_font_subtype(font_dict);
+    if subtype == FontSubtype::Type0 || subtype == FontSubtype::Type3 {
+        return crate::render::glyph_outline::SimpleGlyphLookup::default();
+    }
+    let flags = resolve_descriptor(font_dict, reader)
+        .and_then(|descriptor| descriptor.get("Flags").and_then(PdfObject::as_number))
+        .map_or(0, |flags| flags as i64);
+    let symbolic_flags = flags & crate::fonts::substitute_style::FLAG_SYMBOLIC != 0
+        && flags & crate::fonts::substitute_style::FLAG_NONSYMBOLIC == 0;
+    let plain_latin_encoding = matches!(
+        font_dict.get_name("Encoding"),
+        Some("WinAnsiEncoding" | "MacRomanEncoding")
+    );
+    crate::render::glyph_outline::SimpleGlyphLookup {
+        symbolic: symbolic_flags && !plain_latin_encoding,
+        truetype: subtype == FontSubtype::TrueType,
+    }
+}
+
+/// The uppercase code an AllCap font draws for a lowercase code: `a`..`z`
+/// and the Latin-1 lowercase letters (PDFium's ranges), shifted by 32.
+fn all_cap_uppercase_code(code: u16) -> Option<u16> {
+    matches!(code, 0x61..=0x7A | 0xE0..=0xF6 | 0xF8..=0xFD).then(|| code - 32)
 }
 
 const TYPE3_MAX_CHARPROC_BYTES: usize = 1_048_576;
@@ -21663,55 +21856,30 @@ fn resolve_descriptor(
     }
 }
 
-const FONT_DESCRIPTOR_FIXED_PITCH_FLAG: i64 = 1;
-const FONT_DESCRIPTOR_SERIF_FLAG: i64 = 1 << 1;
-const FONT_DESCRIPTOR_SYMBOLIC_FLAG: i64 = 1 << 2;
-const FONT_DESCRIPTOR_NONSYMBOLIC_FLAG: i64 = 1 << 5;
-const FONT_DESCRIPTOR_ITALIC_FLAG: i64 = 1 << 6;
-const FONT_DESCRIPTOR_FORCE_BOLD_FLAG: i64 = 1 << 18;
-
 fn font_match_request_for_replacement(
     fallback_name: &str,
     font_dict: Option<&PdfDictionary>,
     reader: &crate::reader::PdfReader,
 ) -> FontMatchRequest {
     let mut request = FontMatchRequest::new(fallback_name.to_string());
-    let Some(descriptor) =
-        font_dict.and_then(|font_dict| fallback_font_descriptor(font_dict, reader))
-    else {
+    let Some(font_dict) = font_dict else {
         return request;
     };
-
-    if let Some(flags) = descriptor.get_integer("Flags") {
-        request.symbolic = (flags & FONT_DESCRIPTOR_SYMBOLIC_FLAG) != 0
-            && (flags & FONT_DESCRIPTOR_NONSYMBOLIC_FLAG) == 0;
-        request.italic |= (flags & FONT_DESCRIPTOR_ITALIC_FLAG) != 0;
-        request.fixed_pitch = (flags & FONT_DESCRIPTOR_FIXED_PITCH_FLAG) != 0;
-        request.serif = (flags & FONT_DESCRIPTOR_SERIF_FLAG) != 0;
-        request.bold |= (flags & FONT_DESCRIPTOR_FORCE_BOLD_FLAG) != 0;
-    }
-    if descriptor
-        .get("FontWeight")
-        .and_then(PdfObject::as_number)
-        .is_some_and(|weight| weight.is_finite() && weight >= 700.0)
-    {
-        request.bold = true;
-    }
+    // Weight from /FontWeight or /StemV, italic from the Italic flag or a
+    // negative /ItalicAngle, pitch from the flags or uniform /Widths, and the
+    // style the name states (`Arial,Bold`, `-BoldItalic`).
+    let style = crate::fonts::substitute_style::RequestedFontStyle::from_font(
+        fallback_name,
+        Some(font_dict),
+        Some(reader),
+        font_cjk_language(font_dict, reader).is_some(),
+    );
+    request.symbolic = style.symbolic;
+    request.italic = style.italic;
+    request.fixed_pitch = style.fixed_pitch;
+    request.serif = style.serif;
+    request.bold = style.wants_bold_face();
     request
-}
-
-fn fallback_font_descriptor(
-    font_dict: &PdfDictionary,
-    reader: &crate::reader::PdfReader,
-) -> Option<PdfDictionary> {
-    if detect_font_subtype(font_dict) == FontSubtype::Type0 {
-        if let Some(descendant_font) = get_descendant_font(font_dict, reader) {
-            if let Some(descriptor) = resolve_descriptor(&descendant_font, reader) {
-                return Some(descriptor);
-            }
-        }
-    }
-    resolve_descriptor(font_dict, reader)
 }
 
 fn fallback_font_lookup_name(
@@ -30515,6 +30683,9 @@ mod tests {
             fallback_pdf_width: None,
             vertical: false,
             fallback_language: None,
+            synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
+            glyph_lookup: crate::render::glyph_outline::SimpleGlyphLookup::default(),
+            tricky: false,
         };
         let op = crate::render::color_glyph::ColrPaintOp {
             glyph_id: glyph_id.0,
@@ -36037,6 +36208,7 @@ mod tests {
                 frac_f: 0,
                 hinting: false,
                 binary_alpha: false,
+                synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
             },
             Arc::clone(&mask),
         );
@@ -45727,6 +45899,7 @@ mod tests {
                 frac_f: 0,
                 hinting: false,
                 binary_alpha: false,
+                synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
             }
         }
 
@@ -45777,6 +45950,7 @@ mod tests {
             frac_f: 0,
             hinting: false,
             binary_alpha: false,
+            synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
         };
         let mask = Arc::new(
             RasterizedGlyphMask::from_alpha(0, 0, 2, 2, vec![0, 255, 128, 255])
@@ -45817,6 +45991,7 @@ mod tests {
             frac_f: 0,
             hinting: false,
             binary_alpha: false,
+            synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
         };
         let mask =
             Arc::new(RasterizedGlyphMask::from_alpha(0, 0, 1, 1, vec![255]).expect("valid mask"));
@@ -47545,6 +47720,173 @@ mod tests {
             }
         }
         max_x
+    }
+
+    fn dark_pixel_x_extent(buf: &PixelBuffer) -> Option<(u32, u32)> {
+        let mut extent: Option<(u32, u32)> = None;
+        for y in 0..buf.height {
+            for x in 0..buf.width {
+                let pixel = buf.get_pixel(x as i32, y as i32);
+                if pixel[0] < 128 && pixel[1] < 128 && pixel[2] < 128 {
+                    extent = Some(extent.map_or((x, x), |(lo, hi)| (lo.min(x), hi.max(x))));
+                }
+            }
+        }
+        extent
+    }
+
+    fn descriptor_font_page(descriptor: &str, content: &str) -> PixelBuffer {
+        render_font_test_page(
+            "<< /Type /Font /Subtype /TrueType /BaseFont /UnknownFace /FontDescriptor 6 0 R >>",
+            &[descriptor.as_bytes().to_vec()],
+            content,
+        )
+    }
+
+    #[test]
+    fn requested_weight_beyond_the_bold_face_is_synthesised() {
+        // Liberation Sans Bold (700) stands in for both; weight 900 adds
+        // PDFium's synthetic emboldening for the missing 200.
+        let content = "BT /F1 40 Tf 10 30 Td (llll) Tj ET";
+        let bold = descriptor_font_page(
+            "<< /Type /FontDescriptor /FontName /UnknownFace /Flags 32 /FontWeight 700 >>",
+            content,
+        );
+        let black = descriptor_font_page(
+            "<< /Type /FontDescriptor /FontName /UnknownFace /Flags 32 /FontWeight 900 >>",
+            content,
+        );
+        let (bold_ink, black_ink) = (count_dark_pixels(&bold), count_dark_pixels(&black));
+        assert!(
+            black_ink > bold_ink + bold_ink / 20,
+            "weight 900 should be bolder than the bold face: {black_ink} vs {bold_ink}"
+        );
+    }
+
+    #[test]
+    fn stem_v_and_name_style_choose_the_bold_face() {
+        let content = "BT /F1 40 Tf 10 30 Td (llll) Tj ET";
+        let regular = descriptor_font_page(
+            "<< /Type /FontDescriptor /FontName /UnknownFace /Flags 32 /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>",
+            content,
+        );
+        let heavy_stem = descriptor_font_page(
+            "<< /Type /FontDescriptor /FontName /UnknownFace /Flags 32 /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 150 >>",
+            content,
+        );
+        assert!(
+            count_dark_pixels(&heavy_stem) > count_dark_pixels(&regular) * 5 / 4,
+            "StemV 150 (weight 740) should draw the bold face"
+        );
+    }
+
+    #[test]
+    fn synthetic_bold_and_italic_apply_to_a_regular_registered_face() {
+        let page = |descriptor: &str| {
+            let content = "BT /F1 80 Tf 20 20 Td (l) Tj ET";
+            let objects = [
+                b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 120] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+                format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                    .into_bytes(),
+                b"<< /Type /Font /Subtype /TrueType /BaseFont /WpEightFace /FontDescriptor 6 0 R >>"
+                    .to_vec(),
+                descriptor.as_bytes().to_vec(),
+            ];
+            let mut engine = ContentEngine::open_bytes(build_test_pdf_from_objects(&objects))
+                .expect("open registered font PDF");
+            engine
+                .register_font_bytes(
+                    "WpEightFace",
+                    crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR
+                        .to_vec(),
+                )
+                .expect("register regular face");
+            engine
+                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .expect("render registered font page")
+        };
+        let plain = page("<< /Type /FontDescriptor /FontName /WpEightFace /Flags 32 /FontWeight 400 /ItalicAngle 0 >>");
+        let styled = page("<< /Type /FontDescriptor /FontName /WpEightFace /Flags 32 /FontWeight 700 /ItalicAngle -12 >>");
+        let (plain_lo, plain_hi) = dark_pixel_x_extent(&plain).expect("plain l paints");
+        let (styled_lo, styled_hi) = dark_pixel_x_extent(&styled).expect("styled l paints");
+        // The slant leans the 58 px tall stem about 12 px to the right.
+        assert!(
+            styled_hi - styled_lo >= plain_hi - plain_lo + 8,
+            "italic must slant: {plain_lo}..{plain_hi} vs {styled_lo}..{styled_hi}"
+        );
+        assert!(
+            count_dark_pixels(&styled) > count_dark_pixels(&plain),
+            "bold must thicken the stem"
+        );
+    }
+
+    #[test]
+    fn all_cap_fonts_draw_lowercase_codes_as_capitals() {
+        let all_cap = "<< /Type /FontDescriptor /FontName /UnknownFace /Flags 65568 >>";
+        let plain = "<< /Type /FontDescriptor /FontName /UnknownFace /Flags 32 >>";
+        let lower_all_cap = descriptor_font_page(all_cap, "BT /F1 40 Tf 10 30 Td (a) Tj ET");
+        let upper = descriptor_font_page(plain, "BT /F1 40 Tf 10 30 Td (A) Tj ET");
+        let lower = descriptor_font_page(plain, "BT /F1 40 Tf 10 30 Td (a) Tj ET");
+        assert_eq!(
+            count_dark_pixels(&lower_all_cap),
+            count_dark_pixels(&upper),
+            "AllCap 'a' should draw the 'A' glyph"
+        );
+        assert_ne!(count_dark_pixels(&lower), count_dark_pixels(&upper));
+    }
+
+    #[test]
+    fn standard_symbol_fonts_use_the_pdfium_faces() {
+        for (base_font, text, family) in [
+            ("Symbol", "abg", "FoxitSymbol"),
+            ("ZapfDingbats", "4n", "FoxitDingbats"),
+        ] {
+            let pdf = build_test_pdf_from_objects(&[
+                b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+                {
+                    let content = format!("BT /F1 30 Tf 10 30 Td ({text}) Tj ET");
+                    format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                        .into_bytes()
+                },
+                format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base_font} >>").into_bytes(),
+            ]);
+            let engine = ContentEngine::open_bytes(pdf).expect("open symbol PDF");
+            let (buffer, log) = engine
+                .render_page_with_font_substitution_report(1, 72, RenderMode::Compat)
+                .expect("render symbol page");
+            let event = log
+                .events()
+                .iter()
+                .find(|event| event.requested_pdf_font == base_font)
+                .expect("substitution event");
+            assert_eq!(event.selected_fallback, family, "{base_font}");
+            assert!(count_dark_pixels(&buffer) > 100, "{base_font} glyphs paint");
+        }
+    }
+
+    #[test]
+    fn foxit_faces_hold_the_standard_symbol_glyph_names() {
+        use crate::render::font_rasterizer::cff_support::outline_by_name;
+        use crate::render::font_rasterizer::fallback_fonts::{FOXIT_DINGBATS, FOXIT_SYMBOL};
+        for name in [
+            "alpha",
+            "beta",
+            "summation",
+            "integral",
+            "arrowright",
+            "Omega",
+        ] {
+            let (path, advance) = outline_by_name(FOXIT_SYMBOL, name).expect(name);
+            assert!(path.is_some() && advance > 0.0, "{name}");
+        }
+        for name in ["a1", "a20", "a71", "a191"] {
+            let (path, advance) = outline_by_name(FOXIT_DINGBATS, name).expect(name);
+            assert!(path.is_some() && advance > 0.0, "{name}");
+        }
     }
 
     const FOUR_EMS: &str = "BT /F1 40 Tf 10 50 Td (mmmm) Tj ET";
