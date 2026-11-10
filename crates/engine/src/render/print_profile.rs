@@ -18,7 +18,9 @@
 //! - Bit 9 (ToggleNoView, value 256): content visible but inverted w.r.t. NoView.
 //!
 //! Display mode shows annotations that are not Hidden, not Invisible (legacy),
-//! and not NoView (the existing renderer baseline behavior).
+//! and not NoView. The renderer applies the Invisible bit only to unknown
+//! annotation subtypes (`annotation_visible_for_profile_and_subtype`), as
+//! Poppler and PDFium do.
 //!
 //! Print mode shows annotations that are not Hidden and have the Print flag
 //! set. NoView annotations with Print set ARE shown in print mode.
@@ -71,6 +73,23 @@ pub(crate) fn annotation_visible_for_profile(flags: i64, profile: PrintProfile) 
             flags & annotation_flags::PRINT != 0
         }
     }
+}
+
+/// Visibility for an annotation of a known `subtype`. The legacy Invisible
+/// flag only applies to annotation types without a handler (ISO 32000-2,
+/// Table 167), so it is ignored for the standard subtypes, as Poppler and
+/// PDFium do.
+pub(crate) fn annotation_visible_for_profile_and_subtype(
+    flags: i64,
+    subtype: &str,
+    profile: PrintProfile,
+) -> bool {
+    let flags = if crate::render::annotation_synthesis::is_standard_annotation_subtype(subtype) {
+        flags & !annotation_flags::INVISIBLE
+    } else {
+        flags
+    };
+    annotation_visible_for_profile(flags, profile)
 }
 
 /// Returns a short stable string label for the `PrintProfile` suitable for
@@ -276,6 +295,30 @@ mod tests {
         // NoView + Print is hidden on display
         assert!(!annotation_visible_for_profile(
             annotation_flags::NO_VIEW | annotation_flags::PRINT,
+            PrintProfile::Display
+        ));
+    }
+
+    #[test]
+    fn invisible_flag_is_ignored_for_standard_subtypes_only() {
+        assert!(annotation_visible_for_profile_and_subtype(
+            annotation_flags::INVISIBLE,
+            "Text",
+            PrintProfile::Display
+        ));
+        assert!(annotation_visible_for_profile_and_subtype(
+            annotation_flags::INVISIBLE | annotation_flags::PRINT,
+            "Widget",
+            PrintProfile::Print
+        ));
+        assert!(!annotation_visible_for_profile_and_subtype(
+            annotation_flags::INVISIBLE,
+            "VendorCustom",
+            PrintProfile::Display
+        ));
+        assert!(!annotation_visible_for_profile_and_subtype(
+            annotation_flags::INVISIBLE | annotation_flags::HIDDEN,
+            "Text",
             PrintProfile::Display
         ));
     }
