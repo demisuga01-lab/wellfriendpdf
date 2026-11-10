@@ -1017,6 +1017,25 @@ public final class WellfriendPdf {
         }
     }
 
+    /** Decoded 8-bit samples, {@code channels} per pixel, row-major. */
+    public record RawImage(int width, int height, int channels, byte[] pixels) {
+    }
+
+    /**
+     * A page image as {@code pdfimages -all} saves it: original JPEG ({@code jpg}), JPEG 2000
+     * ({@code jp2}), JBIG2 ({@code jb2e}) or CCITT ({@code ccitt}) bytes, otherwise a PNG.
+     * {@code sidecars} maps a sidecar extension ({@code jb2g}, {@code params}) to its bytes.
+     */
+    public record OriginalImage(
+        byte[] bytes,
+        String extension,
+        String filter,
+        boolean passthrough,
+        Map<String, byte[]> sidecars,
+        String infoJson
+    ) {
+    }
+
     public static final class RenderContract {
         private static final long SCHEMA_VERSION = 1;
 
@@ -1237,6 +1256,91 @@ public final class WellfriendPdf {
             return withEnum("determinism", determinism, "determinism");
         }
 
+        public RenderContract withThinLineMode(ThinLineMode thinLineMode) {
+            return withEnum("thin_line_mode", thinLineMode, "thinLineMode");
+        }
+
+        public RenderContract withVectorAntialiasGamma(VectorAntialiasGamma vectorAntialiasGamma) {
+            return withEnum("vector_antialias_gamma", vectorAntialiasGamma, "vectorAntialiasGamma");
+        }
+
+        /** One forced colour, packed straight-alpha {@code 0xRRGGBBAA}, for every path and text paint. */
+        public RenderContract withForcedColors(int foregroundRgba) {
+            return withForcedColors(foregroundRgba, foregroundRgba, foregroundRgba, foregroundRgba, false);
+        }
+
+        /** Forced (high-contrast) paint colours, each packed straight-alpha {@code 0xRRGGBBAA}. */
+        public RenderContract withForcedColors(
+            int pathFillRgba,
+            int pathStrokeRgba,
+            int textFillRgba,
+            int textStrokeRgba,
+            boolean convertFillToStroke
+        ) {
+            LinkedHashMap<String, Object> scheme = new LinkedHashMap<>();
+            scheme.put("path_fill", packedColor(pathFillRgba));
+            scheme.put("path_stroke", packedColor(pathStrokeRgba));
+            scheme.put("text_fill", packedColor(textFillRgba));
+            scheme.put("text_stroke", packedColor(textStrokeRgba));
+            scheme.put("convert_fill_to_stroke", convertFillToStroke);
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("forced_colors", scheme);
+            return new RenderContract(next);
+        }
+
+        public RenderContract withoutForcedColors() {
+            LinkedHashMap<String, Object> next = copyValues();
+            next.remove("forced_colors");
+            return new RenderContract(next);
+        }
+
+        /**
+         * Highlight every form-field type with one packed {@code 0xRRGGBBAA} colour (alpha is
+         * the opacity); {@code focusField}, when non-blank, gets the focus rectangle.
+         */
+        public RenderContract withFormHighlight(int highlightRgba, String focusField) {
+            LinkedHashMap<String, Object> policy = new LinkedHashMap<>();
+            for (String type : FORM_HIGHLIGHT_TYPES) {
+                policy.put(type, packedColor(highlightRgba));
+            }
+            policy.put("focus_field", focusField == null || focusField.isBlank() ? null : focusField);
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("form_highlight", policy);
+            return new RenderContract(next);
+        }
+
+        /** Form highlighting from a FormHighlightPolicy JSON object; blank JSON switches it off. */
+        public RenderContract withFormHighlightJson(String policyJson) {
+            Objects.requireNonNull(policyJson, "policyJson");
+            if (policyJson.isBlank()) {
+                return withoutFormHighlight();
+            }
+            if (!(Json.parse(policyJson) instanceof Map<?, ?> policy)) {
+                throw new IllegalArgumentException("form highlight policy JSON must be an object");
+            }
+            LinkedHashMap<String, Object> next = copyValues();
+            next.put("form_highlight", copyObject(policy));
+            return new RenderContract(next);
+        }
+
+        public RenderContract withoutFormHighlight() {
+            LinkedHashMap<String, Object> next = copyValues();
+            next.remove("form_highlight");
+            return new RenderContract(next);
+        }
+
+        private static final List<String> FORM_HIGHLIGHT_TYPES = List.of(
+            "text", "push_button", "check_box", "radio_button", "combo_box", "list_box", "signature");
+
+        private static LinkedHashMap<String, Object> packedColor(int rgba) {
+            LinkedHashMap<String, Object> color = new LinkedHashMap<>();
+            color.put("r", (long) ((rgba >>> 24) & 0xff));
+            color.put("g", (long) ((rgba >>> 16) & 0xff));
+            color.put("b", (long) ((rgba >>> 8) & 0xff));
+            color.put("a", (long) (rgba & 0xff));
+            return color;
+        }
+
         public RenderContract withResourceBudget(
             Long maxPixels,
             Long maxDecodedBytes,
@@ -1313,6 +1417,21 @@ public final class WellfriendPdf {
             requiredEnum("color_management", ColorManagementPolicy.class);
             requiredEnum("exactness", ExactnessPolicy.class);
             requiredEnum("determinism", DeterminismPolicy.class);
+            optionalEnum("thin_line_mode", ThinLineMode.class);
+            optionalEnum("vector_antialias_gamma", VectorAntialiasGamma.class);
+            Object forcedColors = values.get("forced_colors");
+            if (forcedColors != null) {
+                if (!(forcedColors instanceof Map<?, ?>)) {
+                    throw new IllegalArgumentException("render contract forced_colors must be an object or absent");
+                }
+                for (String field : List.of("path_fill", "path_stroke", "text_fill", "text_stroke")) {
+                    validateByteObject(objectValue("forced_colors"), field);
+                }
+            }
+            Object formHighlight = values.get("form_highlight");
+            if (formHighlight != null && !(formHighlight instanceof Map<?, ?>)) {
+                throw new IllegalArgumentException("render contract form_highlight must be an object or absent");
+            }
             requiredBoolean("grayscale");
             requiredBoolean("reverse_byte_order");
         }
@@ -1368,6 +1487,21 @@ public final class WellfriendPdf {
                 throw new IllegalArgumentException("render contract transform must contain only finite values");
             }
             return decoded;
+        }
+
+        private static void validateByteObject(Map<?, ?> parent, String objectName) {
+            if (!(parent.get(objectName) instanceof Map<?, ?> object)) {
+                throw new IllegalArgumentException("render contract " + objectName + " must be an object");
+            }
+            for (String field : List.of("r", "g", "b", "a")) {
+                checkedByte(requiredLong(object, field), field);
+            }
+        }
+
+        private <E extends Enum<E>> void optionalEnum(String name, Class<E> enumType) {
+            if (values.get(name) != null) {
+                requiredEnum(name, enumType);
+            }
         }
 
         private void validateByteObject(String objectName, String... fields) {
@@ -1589,6 +1723,19 @@ public final class WellfriendPdf {
         public enum CompositingPolicy {
             Compatibility,
             HighQuality
+        }
+
+        /** Thin-stroke policy ({@code pdftoppm -thinlinemode}). */
+        public enum ThinLineMode {
+            None,
+            Solid,
+            Shape
+        }
+
+        /** Vector anti-aliasing coverage curve: Linear (PDFium/Skia) or Gamma15 (Poppler/Splash). */
+        public enum VectorAntialiasGamma {
+            Linear,
+            Gamma15
         }
     }
 
@@ -3927,6 +4074,220 @@ public final class WellfriendPdf {
             return Native.documentStringReport(handle, Native.SEMANTIC_SEARCH, query, "semantic_search");
         }
 
+        /**
+         * Text search returning a {@code binding_media.text_search.v1} JSON report.
+         * {@code optionsJson} may be null or hold {@code pages}, {@code case_sensitive},
+         * {@code normalize_unicode}, {@code ignore_accents}, {@code whole_word}, ...
+         */
+        public String searchTextJson(String query, String optionsJson) {
+            ensureOpen();
+            Objects.requireNonNull(query, "query");
+            if (query.isEmpty()) {
+                throw new IllegalArgumentException("query must not be empty");
+            }
+            return Native.documentTwoStringReport(handle, Native.SEARCH_TEXT, query, optionsJson, "search_text");
+        }
+
+        public String searchTextJson(String query) {
+            return searchTextJson(query, null);
+        }
+
+        /** The page's embedded thumbnail as straight-alpha RGBA8, or null when it has none. */
+        public RawImage pageThumbnailRgba(int pageNumber) {
+            ensureOpen();
+            requirePage(pageNumber);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment found = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment width = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment height = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PAGE_THUMBNAIL_RGBA.invokeExact(
+                    handle, (long) pageNumber, found, width, height, buffer, err);
+                Native.throwError(status, err);
+                byte[] pixels = Native.takeBuffer(buffer);
+                return found.get(ValueLayout.JAVA_INT, 0) == 0 ? null : new RawImage(
+                    width.get(ValueLayout.JAVA_INT, 0), height.get(ValueLayout.JAVA_INT, 0), 4, pixels);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend page_thumbnail_rgba failed", ex);
+            }
+        }
+
+        /** The page's embedded thumbnail with the decoder's channel layout, or null. */
+        public RawImage decodePageThumbnail(int pageNumber) {
+            ensureOpen();
+            requirePage(pageNumber);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment found = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment width = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment height = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment channels = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.DECODE_PAGE_THUMBNAIL.invokeExact(
+                    handle, (long) pageNumber, found, width, height, channels, buffer, err);
+                Native.throwError(status, err);
+                byte[] pixels = Native.takeBuffer(buffer);
+                return found.get(ValueLayout.JAVA_INT, 0) == 0 ? null : new RawImage(
+                    width.get(ValueLayout.JAVA_INT, 0), height.get(ValueLayout.JAVA_INT, 0),
+                    channels.get(ValueLayout.JAVA_INT, 0), pixels);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend decode_page_thumbnail failed", ex);
+            }
+        }
+
+        /** The page's embedded thumbnail as RGBA PNG bytes, or null when it has none. */
+        public byte[] pageThumbnailPng(int pageNumber) {
+            ensureOpen();
+            requirePage(pageNumber);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment found = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PAGE_THUMBNAIL_PNG.invokeExact(
+                    handle, (long) pageNumber, found, buffer, err);
+                Native.throwError(status, err);
+                byte[] png = Native.takeBuffer(buffer);
+                return found.get(ValueLayout.JAVA_INT, 0) == 0 ? null : png;
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend page_thumbnail_png failed", ex);
+            }
+        }
+
+        /** JSON array describing the page's images; each {@code index} selects an image for {@link #extractImageOriginal}. */
+        public String pageImagesJson(int pageNumber) {
+            ensureOpen();
+            requirePage(pageNumber);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PAGE_IMAGES.invokeExact(handle, (long) pageNumber, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend page_images failed", ex);
+            }
+        }
+
+        public OriginalImage extractImageOriginal(int pageNumber, int imageIndex) {
+            ensureOpen();
+            requirePage(pageNumber);
+            if (imageIndex < 0) throw new IllegalArgumentException("imageIndex must be non-negative");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment infoOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.EXTRACT_IMAGE_ORIGINAL.invokeExact(
+                    handle, (long) pageNumber, (long) imageIndex, buffer, infoOut, err);
+                Native.throwError(status, err);
+                byte[] bytes = Native.takeBuffer(buffer);
+                String infoJson = Native.takeString(infoOut);
+                if (!(Json.parse(infoJson) instanceof Map<?, ?> info)) {
+                    throw new IllegalStateException("image info JSON must be an object");
+                }
+                LinkedHashMap<String, byte[]> sidecars = new LinkedHashMap<>();
+                if (info.get("sidecars") instanceof List<?> list) {
+                    for (int sidecarIndex = 0; sidecarIndex < list.size(); sidecarIndex++) {
+                        MemorySegment sidecarBuffer = arena.allocate(Native.BUFFER_LAYOUT);
+                        MemorySegment sidecarErr = arena.allocate(ValueLayout.ADDRESS);
+                        int sidecarStatus = (int) Native.EXTRACT_IMAGE_ORIGINAL_SIDECAR.invokeExact(
+                            handle, (long) pageNumber, (long) imageIndex, (long) sidecarIndex,
+                            sidecarBuffer, sidecarErr);
+                        Native.throwError(sidecarStatus, sidecarErr);
+                        Object extension = list.get(sidecarIndex) instanceof Map<?, ?> entry
+                            ? entry.get("extension") : null;
+                        sidecars.put(String.valueOf(extension), Native.takeBuffer(sidecarBuffer));
+                    }
+                }
+                return new OriginalImage(
+                    bytes,
+                    String.valueOf(info.get("extension")),
+                    String.valueOf(info.get("filter")),
+                    Boolean.TRUE.equals(info.get("passthrough")),
+                    Map.copyOf(sidecars),
+                    infoJson);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend extract_image_original failed", ex);
+            }
+        }
+
+        /** Render the n-th top-level image object of a page on its own as RGBA PNG. */
+        public byte[] renderPageImageObjectPng(int pageNumber, int objectIndex) {
+            if (objectIndex < 0) throw new IllegalArgumentException("objectIndex must be non-negative");
+            return renderImageObjectPng(pageNumber, objectIndex, null);
+        }
+
+        /** Render the first top-level occurrence of a named image XObject as RGBA PNG. */
+        public byte[] renderPageImageObjectPng(int pageNumber, String objectName) {
+            Objects.requireNonNull(objectName, "objectName");
+            if (objectName.isBlank()) throw new IllegalArgumentException("objectName must not be blank");
+            return renderImageObjectPng(pageNumber, 0, objectName);
+        }
+
+        public RawImage renderPageImageObjectRgba(int pageNumber, int objectIndex) {
+            if (objectIndex < 0) throw new IllegalArgumentException("objectIndex must be non-negative");
+            return renderImageObjectRgba(pageNumber, objectIndex, null);
+        }
+
+        public RawImage renderPageImageObjectRgba(int pageNumber, String objectName) {
+            Objects.requireNonNull(objectName, "objectName");
+            if (objectName.isBlank()) throw new IllegalArgumentException("objectName must not be blank");
+            return renderImageObjectRgba(pageNumber, 0, objectName);
+        }
+
+        private byte[] renderImageObjectPng(int pageNumber, int objectIndex, String objectName) {
+            ensureOpen();
+            requirePage(pageNumber);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment name = objectName == null ? MemorySegment.NULL : arena.allocateFrom(objectName);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_IMAGE_OBJECT_PNG.invokeExact(
+                    handle, (long) pageNumber, (long) objectIndex, name, buffer, err);
+                Native.throwError(status, err);
+                return Native.takeBuffer(buffer);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render_page_image_object_png failed", ex);
+            }
+        }
+
+        private RawImage renderImageObjectRgba(int pageNumber, int objectIndex, String objectName) {
+            ensureOpen();
+            requirePage(pageNumber);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment name = objectName == null ? MemorySegment.NULL : arena.allocateFrom(objectName);
+                MemorySegment width = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment height = arena.allocate(ValueLayout.JAVA_INT);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_IMAGE_OBJECT_RGBA.invokeExact(
+                    handle, (long) pageNumber, (long) objectIndex, name, width, height, buffer, err);
+                Native.throwError(status, err);
+                byte[] pixels = Native.takeBuffer(buffer);
+                return new RawImage(width.get(ValueLayout.JAVA_INT, 0), height.get(ValueLayout.JAVA_INT, 0), 4, pixels);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render_page_image_object_rgba failed", ex);
+            }
+        }
+
+        private static void requirePage(int pageNumber) {
+            if (pageNumber < 1) throw new IllegalArgumentException("pageNumber must be 1-based");
+        }
+
         public BinaryResult xfaRender(String scriptPolicy, boolean executeEvents, int dpi) {
             ensureOpen();
             return Native.xfaRender(handle, scriptPolicy, executeEvents, dpi);
@@ -5740,6 +6101,54 @@ public final class WellfriendPdf {
         private static final MethodHandle ADVANCED_CHUNKS = documentReport("wellfriendpdf_document_advanced_chunks_json");
         private static final MethodHandle SEMANTIC_BUNDLE = documentReport("wellfriendpdf_document_semantic_bundle_json");
         private static final MethodHandle SEMANTIC_SEARCH = documentStringReport("wellfriendpdf_document_semantic_search_json");
+        private static final MethodHandle SEARCH_TEXT = downcall(
+            "wellfriendpdf_document_search_text_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PAGE_THUMBNAIL_RGBA = downcall(
+            "wellfriendpdf_document_page_thumbnail_rgba",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle DECODE_PAGE_THUMBNAIL = downcall(
+            "wellfriendpdf_document_decode_page_thumbnail",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PAGE_THUMBNAIL_PNG = downcall(
+            "wellfriendpdf_document_page_thumbnail_png",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PAGE_IMAGES = downcall(
+            "wellfriendpdf_document_page_images_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle EXTRACT_IMAGE_ORIGINAL = downcall(
+            "wellfriendpdf_document_extract_image_original",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle EXTRACT_IMAGE_ORIGINAL_SIDECAR = downcall(
+            "wellfriendpdf_document_extract_image_original_sidecar",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_IMAGE_OBJECT_PNG = downcall(
+            "wellfriendpdf_document_render_page_image_object_png",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_IMAGE_OBJECT_RGBA = downcall(
+            "wellfriendpdf_document_render_page_image_object_rgba",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle XFA_RENDER = downcall(
             "wellfriendpdf_document_xfa_render_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)

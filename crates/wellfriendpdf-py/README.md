@@ -102,6 +102,10 @@ doc.text_semantic(); doc.chunks(); doc.semantic_document()
 doc.semantic_bundle()          # full Semantic Closeout semantic report
 doc.advanced_chunks()          # provenance/table/CJK/security-aware chunks
 doc.semantic_search("invoice") # semantic + dictionary-token provenance
+doc.search_text("resume", ignore_accents=True, whole_word=True, case_sensitive=False)
+doc.page_thumbnail_png(1)      # embedded /Thumb as PNG, or None
+doc.page_images_info(1); doc.extract_image_original(1, 0)  # pdfimages -all bytes + sidecars
+doc.render_image_object(1, name="Im1")                     # one image object, RGBA PNG
 doc.image_decode_capability_report()
 doc.progressive_image_decode_lifecycle_report('{"image_index":0}')
 doc.table_proposal_status()    # hook/runtime/privacy status, no model load
@@ -117,6 +121,12 @@ data, rep = doc.editing_transactions_transaction_apply_with_render_invalidation(
     request_json,
     render_invalidation_options_json='{"page_number":1,"dpi":72,"tile_width":256,"tile_height":256}',
 )
+
+contract = (doc.default_render_contract(1, 150)
+            .with_thin_line_mode("shape").with_vector_antialias_gamma("gamma15")
+            .with_forced_colors((0, 0, 0), text_fill=(0, 0, 160))
+            .with_form_highlight((0, 0, 255, 80), focus_field="form.name"))
+png = doc.render_contract_png(contract)
 
 cache = doc.render_cache()
 png = doc.render_contract_png_with_render_cache(contract_json, cache)

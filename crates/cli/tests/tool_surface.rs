@@ -2688,3 +2688,266 @@ fn extract_images_original_names_jpeg_as_jpg() {
         "JPEG bytes are passed through unchanged"
     );
 }
+
+/// One page with a 2x1 RGB `/Thumb` (optional), a 2x1 RGB image object
+/// (`/Rgb`) and the text "The cat sat; concatenate the café." written to a
+/// temporary file.
+fn media_fixture(name: &str, with_thumb: bool) -> PathBuf {
+    fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
+        let mut body = format!("<< {dict} /Length {} >>\nstream\n", data.len()).into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\nendstream");
+        body
+    }
+    let thumb = if with_thumb { "/Thumb 4 0 R" } else { "" };
+    let content: &[u8] = b"q 20 0 0 10 5 5 cm /Rgb Do Q \
+BT /F1 12 Tf 10 150 Td (The cat sat; concatenate the caf\xe9.) Tj ET";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] {thumb} \
+             /Resources << /XObject << /Rgb 5 0 R >> /Font << /F1 6 0 R >> >> /Contents 7 0 R >>"
+        )
+        .into_bytes(),
+        stream(
+            "/Width 2 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB",
+            &[255, 0, 0, 0, 0, 255],
+        ),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 2 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceRGB",
+            &[0, 255, 0, 0, 0, 255],
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_vec(),
+        stream("", content),
+    ];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        pdf.extend_from_slice(body);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    let path = tmp(name);
+    std::fs::write(&path, pdf).expect("write media fixture");
+    path
+}
+
+#[test]
+fn thumbnail_writes_png_and_raw_and_reports_missing_thumb() {
+    let pdf = media_fixture("thumb_fixture.pdf", true);
+    let png = tmp("thumb.png");
+    let out = run(&[
+        "thumbnail",
+        pdf.to_str().unwrap(),
+        "--page",
+        "1",
+        "-o",
+        png.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&out, "thumbnail");
+    assert_eq!(json["op"], "thumbnail");
+    assert_eq!(json["width"], 2);
+    assert_eq!(json["height"], 1);
+    assert!(std::fs::read(&png)
+        .unwrap()
+        .starts_with(b"\x89PNG\r\n\x1a\n"));
+
+    let raw = tmp("thumb.raw");
+    let out = run(&[
+        "thumbnail",
+        pdf.to_str().unwrap(),
+        "-o",
+        raw.to_str().unwrap(),
+        "--format",
+        "raw",
+    ]);
+    assert_ok(&out, "thumbnail raw");
+    assert_eq!(
+        std::fs::read(&raw).unwrap(),
+        vec![255, 0, 0, 255, 0, 0, 255, 255]
+    );
+
+    let bare = media_fixture("thumb_missing.pdf", false);
+    let missing = tmp("thumb_missing.png");
+    let out = run(&[
+        "thumbnail",
+        bare.to_str().unwrap(),
+        "-o",
+        missing.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success(), "a page without /Thumb must fail");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no embedded thumbnail"));
+    for path in [pdf, png, raw, bare, missing] {
+        remove_path(&path);
+    }
+}
+
+#[test]
+fn render_image_object_by_index_and_name_runs() {
+    let pdf = media_fixture("image_object_fixture.pdf", false);
+    let png = tmp("image_object.png");
+    let out = run(&[
+        "render-image-object",
+        pdf.to_str().unwrap(),
+        "--page",
+        "1",
+        "--index",
+        "0",
+        "-o",
+        png.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&out, "render-image-object --index");
+    assert_eq!(json["op"], "render-image-object");
+    assert_eq!(json["selector"]["index"], 0);
+    assert_eq!(json["width"], 20);
+    assert_eq!(json["height"], 10);
+    assert!(std::fs::read(&png)
+        .unwrap()
+        .starts_with(b"\x89PNG\r\n\x1a\n"));
+
+    let raw = tmp("image_object.raw");
+    let out = run(&[
+        "render-image-object",
+        pdf.to_str().unwrap(),
+        "--name",
+        "Rgb",
+        "--format",
+        "raw",
+        "-o",
+        raw.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&out, "render-image-object --name");
+    assert_eq!(json["selector"]["name"], "Rgb");
+    let pixels = std::fs::read(&raw).unwrap();
+    assert_eq!(pixels.len(), 20 * 10 * 4);
+    assert_eq!(&pixels[..4], &[0, 255, 0, 255]);
+
+    let out = run(&[
+        "render-image-object",
+        pdf.to_str().unwrap(),
+        "--index",
+        "3",
+        "-o",
+        png.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success(), "a missing image object must fail");
+
+    let out = run(&[
+        "render-image-object",
+        fx("image_only.pdf").to_str().unwrap(),
+        "-o",
+        png.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&out, "render-image-object image_only.pdf");
+    assert!(json["width"].as_u64().unwrap() > 0);
+    for path in [pdf, png, raw] {
+        remove_path(&path);
+    }
+}
+
+#[test]
+fn search_text_options_run() {
+    let pdf = media_fixture("search_fixture.pdf", false);
+    let search = |extra: &[&str]| {
+        let mut args = vec!["search-text", pdf.to_str().unwrap(), "cat"];
+        args.extend_from_slice(extra);
+        assert_json(&run(&args), "search-text")
+    };
+    let all = search(&[]);
+    assert_eq!(all["schema_version"], "binding_media.text_search.v1");
+    assert_eq!(all["match_count"], 2);
+    assert!(all["matches"][0]["quads"].is_array());
+    assert_eq!(search(&["--whole-word"])["match_count"], 1);
+    assert_eq!(search(&["-p", "1", "-w"])["options"]["whole_word"], true);
+    assert_eq!(search(&["-i"])["options"]["case_sensitive"], false);
+
+    let accent = |extra: &[&str]| {
+        let mut args = vec!["search-text", pdf.to_str().unwrap(), "cafe"];
+        args.extend_from_slice(extra);
+        assert_json(&run(&args), "search-text cafe")["match_count"].clone()
+    };
+    assert_eq!(accent(&[]), 0);
+    assert_eq!(accent(&["--ignore-accents"]), 1);
+
+    let out = run(&["search-text", pdf.to_str().unwrap(), "cat", "-p", "5"]);
+    assert!(!out.status.success(), "out-of-range pages must fail");
+    remove_path(&pdf);
+}
+
+#[test]
+fn render_contract_raster_policy_options_reach_the_contract() {
+    let pdf = media_fixture("raster_policy_fixture.pdf", false);
+    let o = tmp("raster_policy.zip");
+    let out = run(&[
+        "render",
+        pdf.to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "--dpi",
+        "36",
+        "--thin-line-mode",
+        "shape",
+        "--aa-gamma",
+        "gamma15",
+        "--forced-colors",
+        "0,0,0/10,20,30/255,255,0,200/1,2,3",
+        "--convert-fill-to-stroke",
+        "--form-highlight",
+        "0,0,255,80",
+        "--form-focus-field",
+        "form.name",
+        "--write-contract-json",
+        "--json",
+    ]);
+    let json = assert_json(&out, "render raster policies");
+    assert_eq!(json["render_contract"], true);
+    let entries = zip_entries(&o);
+    let contract = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.contract.json")
+        .expect("contract sidecar");
+    let contract: serde_json::Value = serde_json::from_slice(&contract.1).unwrap();
+    assert_eq!(contract["thin_line_mode"], "Shape");
+    assert_eq!(contract["vector_antialias_gamma"], "Gamma15");
+    assert_eq!(contract["forced_colors"]["path_fill"]["a"], 255);
+    assert_eq!(contract["forced_colors"]["path_stroke"]["g"], 20);
+    assert_eq!(contract["forced_colors"]["text_fill"]["a"], 200);
+    assert_eq!(contract["forced_colors"]["text_stroke"]["b"], 3);
+    assert_eq!(contract["forced_colors"]["convert_fill_to_stroke"], true);
+    assert_eq!(contract["form_highlight"]["check_box"]["a"], 80);
+    assert_eq!(contract["form_highlight"]["focus_field"], "form.name");
+    assert!(entries.iter().any(|(name, _)| name == "page-001.png"));
+
+    let out = run(&[
+        "render",
+        pdf.to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "--forced-colors",
+        "1,2",
+    ]);
+    assert!(!out.status.success(), "a malformed colour must fail");
+    remove_path(&pdf);
+    remove_path(&o);
+}

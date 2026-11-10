@@ -190,6 +190,10 @@ export type RenderContractColorManagementPolicy = "PortableQcms" | "NativeLittle
 export type RenderContractExactnessPolicy = "Compatibility" | "HighQualityExact" | "compatibility" | "high-quality-exact";
 /** "BestEffortResearch"/"best-effort-research" are deprecated aliases of "BestEffort". */
 export type RenderContractDeterminismPolicy = "Required" | "BestEffort" | "required" | "best-effort" | "BestEffortResearch" | "best-effort-research";
+export type RenderContractThinLineMode = "None" | "Solid" | "Shape" | "none" | "solid" | "shape";
+export type RenderContractVectorAntialiasGamma = "Linear" | "Gamma15" | "linear" | "gamma15";
+/** Packed straight-alpha colour, 0xRRGGBBAA. */
+export type RenderContractPackedRgba = number;
 
 export class WellfriendRenderContract {
   static fromJson(json: string): WellfriendRenderContract;
@@ -221,6 +225,14 @@ export class WellfriendRenderContract {
   withExactness(exactness: RenderContractExactnessPolicy): WellfriendRenderContract;
   withDeterminism(determinism: RenderContractDeterminismPolicy): WellfriendRenderContract;
   withResourceBudget(maxPixels?: RenderContractBudgetValue, maxDecodedBytes?: RenderContractBudgetValue, maxTemporaryBytes?: RenderContractBudgetValue, maxCacheBytes?: RenderContractBudgetValue): WellfriendRenderContract;
+  withThinLineMode(thinLineMode: RenderContractThinLineMode): WellfriendRenderContract;
+  withVectorAntialiasGamma(vectorAntialiasGamma: RenderContractVectorAntialiasGamma): WellfriendRenderContract;
+  withForcedColors(pathFill: RenderContractPackedRgba, pathStroke: RenderContractPackedRgba, textFill: RenderContractPackedRgba, textStroke: RenderContractPackedRgba, convertFillToStroke?: boolean): WellfriendRenderContract;
+  withoutForcedColors(): WellfriendRenderContract;
+  withFormHighlight(highlight: RenderContractPackedRgba, focusField?: string): WellfriendRenderContract;
+  /** FormHighlightPolicy JSON: text/push_button/check_box/radio_button/combo_box/list_box/signature colours and focus_field. */
+  withFormHighlightJson(policyJson: string): WellfriendRenderContract;
+  withoutFormHighlight(): WellfriendRenderContract;
 }
 
 export class ProgressiveRenderJob {
@@ -462,6 +474,18 @@ export class WellfriendPdf {
   advancedChunksJson(): ReportJson;
   semanticBundleJson(): ReportJson;
   semanticSearchJson(query: string): ReportJson;
+  /** Options JSON: pages, case_sensitive, normalize_unicode, ignore_accents, whole_word, include_hidden, max_matches, ... */
+  searchTextJson(query: string, optionsJson?: string): ReportJson;
+  /** RGBA8 thumbnail; reportJson() has width/height/channels. undefined when the page has no /Thumb. */
+  pageThumbnailRgba(page: number): WellfriendOutput | undefined;
+  decodePageThumbnail(page: number): WellfriendOutput | undefined;
+  pageThumbnailPng(page: number): Uint8Array | undefined;
+  pageImagesJson(page: number): ReportJson;
+  /** pdfimages -all style original bytes; reportJson() has extension, filter and sidecars. */
+  extractImageOriginal(page: number, index: number): WellfriendOutput;
+  extractImageOriginalSidecar(page: number, index: number, sidecarIndex: number): Uint8Array;
+  renderImageObjectPng(page: number, index?: number, name?: string): Uint8Array;
+  renderImageObjectRgba(page: number, index?: number, name?: string): WellfriendOutput;
   editing_transactionsReportJson(): ReportJson;
   editing_transactionsSceneReportJson(pagesJson?: string): ReportJson;
   editing_transactionsSceneSelectJson(requestJson: string): ReportJson;

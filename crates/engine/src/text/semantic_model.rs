@@ -1187,7 +1187,11 @@ impl TextSemanticDocument {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Text search options. Deserializes from a partial JSON object: absent
+/// fields keep their [`Default`] values, which is how the language bindings
+/// accept optional search settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TextSearchOptions {
     pub case_sensitive: bool,
     pub normalize_ligatures: bool,
@@ -3463,6 +3467,19 @@ mod tests {
         assert!(doc
             .search("resume", &TextSearchOptions::default())
             .is_empty());
+    }
+
+    #[test]
+    fn search_options_deserialize_from_partial_json() {
+        let options: TextSearchOptions =
+            serde_json::from_str(r#"{"ignore_accents":true,"whole_word":true}"#)
+                .expect("partial options");
+        assert!(options.ignore_accents && options.whole_word);
+        assert!(options.case_sensitive && options.normalize_unicode);
+        assert_eq!(
+            options.max_matches,
+            TextSearchOptions::default().max_matches
+        );
     }
 
     #[test]

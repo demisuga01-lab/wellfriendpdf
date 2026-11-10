@@ -311,6 +311,48 @@ WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_schema_policies(
     WellfriendRenderContract **out_contract,
     char **error_out);
 
+/* thin_line_mode: None|Solid|Shape; vector_antialias_gamma: Linear|Gamma15.
+ * NULL keeps the current value. */
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_vector_raster_policies(
+    const WellfriendRenderContract *contract,
+    const char *thin_line_mode,
+    const char *vector_antialias_gamma,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+/* Forced (high-contrast) colours as packed straight-alpha 0xRRGGBBAA values. */
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_forced_colors(
+    const WellfriendRenderContract *contract,
+    uint32_t path_fill_rgba,
+    uint32_t path_stroke_rgba,
+    uint32_t text_fill_rgba,
+    uint32_t text_stroke_rgba,
+    int convert_fill_to_stroke,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_without_forced_colors(
+    const WellfriendRenderContract *contract,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+/* FormHighlightPolicy JSON (per-field-type colours + focus_field); NULL or
+ * blank JSON switches highlighting off. */
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_form_highlight_json(
+    const WellfriendRenderContract *contract,
+    const char *policy_json,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+/* One packed 0xRRGGBBAA highlight colour for every field type; focus_field
+ * may be NULL. */
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_form_highlight(
+    const WellfriendRenderContract *contract,
+    uint32_t highlight_rgba,
+    const char *focus_field,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
 WELLFRIENDPDF_API int wellfriendpdf_document_page_count(
     const WellfriendDocument *document,
     size_t *out_count,
@@ -1414,6 +1456,90 @@ WELLFRIENDPDF_API int wellfriendpdf_document_semantic_search_json(
     const WellfriendDocument *document,
     const char *query,
     char **out_json,
+    char **error_out);
+
+/* Text search with options JSON (NULL = all pages, defaults): pages,
+ * case_sensitive, normalize_unicode, ignore_accents, whole_word, ... */
+WELLFRIENDPDF_API int wellfriendpdf_document_search_text_json(
+    const WellfriendDocument *document,
+    const char *query,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+
+/* Embedded page thumbnails (/Thumb). A page without a thumbnail succeeds with
+ * *out_found = 0 and an empty buffer. Free buffers with wellfriendpdf_buffer_free. */
+WELLFRIENDPDF_API int wellfriendpdf_document_page_thumbnail_rgba(
+    const WellfriendDocument *document,
+    size_t page,
+    int *out_found,
+    uint32_t *out_width,
+    uint32_t *out_height,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_decode_page_thumbnail(
+    const WellfriendDocument *document,
+    size_t page,
+    int *out_found,
+    uint32_t *out_width,
+    uint32_t *out_height,
+    uint32_t *out_channels,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_page_thumbnail_png(
+    const WellfriendDocument *document,
+    size_t page,
+    int *out_found,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+/* Page image list JSON; each entry's index selects the image for
+ * wellfriendpdf_document_extract_image_original. */
+WELLFRIENDPDF_API int wellfriendpdf_document_page_images_json(
+    const WellfriendDocument *document,
+    size_t page,
+    char **out_json,
+    char **error_out);
+
+/* pdfimages -all style extraction: original JPEG/JPX/JBIG2/CCITT bytes or a
+ * PNG. out_info_json (may be NULL) describes extension, filter and sidecars. */
+WELLFRIENDPDF_API int wellfriendpdf_document_extract_image_original(
+    const WellfriendDocument *document,
+    size_t page,
+    size_t image_index,
+    WellfriendBuffer *out_buffer,
+    char **out_info_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_extract_image_original_sidecar(
+    const WellfriendDocument *document,
+    size_t page,
+    size_t image_index,
+    size_t sidecar_index,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+/* Render one image object at its natural size. A non-NULL, non-empty
+ * object_name selects by XObject name; otherwise object_index selects the
+ * n-th top-level image Do operator. */
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_image_object_png(
+    const WellfriendDocument *document,
+    size_t page,
+    size_t object_index,
+    const char *object_name,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_image_object_rgba(
+    const WellfriendDocument *document,
+    size_t page,
+    size_t object_index,
+    const char *object_name,
+    uint32_t *out_width,
+    uint32_t *out_height,
+    WellfriendBuffer *out_buffer,
     char **error_out);
 
 /* XFA Runtime output operations. Returned buffers and JSON strings are owned by

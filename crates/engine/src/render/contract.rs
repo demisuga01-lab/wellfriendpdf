@@ -628,7 +628,7 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         cache_identity: true,
         validation: false,
         active_execution: true,
-        binding_builder: false,
+        binding_builder: true,
         effect: "form-field-highlight-and-focus-rectangle",
     },
     RenderContractFieldEffect {
@@ -676,7 +676,7 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         cache_identity: true,
         validation: false,
         active_execution: true,
-        binding_builder: false,
+        binding_builder: true,
         effect: "thin-stroke-solid-or-shape-policy",
     },
     RenderContractFieldEffect {
@@ -684,7 +684,7 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         cache_identity: true,
         validation: false,
         active_execution: true,
-        binding_builder: false,
+        binding_builder: true,
         effect: "vector-coverage-to-opacity-curve",
     },
     RenderContractFieldEffect {
@@ -708,7 +708,7 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         cache_identity: true,
         validation: false,
         active_execution: true,
-        binding_builder: false,
+        binding_builder: true,
         effect: "forced-path-and-text-paint-colors-and-fill-to-stroke",
     },
     RenderContractFieldEffect {

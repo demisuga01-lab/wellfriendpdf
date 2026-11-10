@@ -42,7 +42,7 @@ fn long_version() -> &'static str {
     about = "Wellfriend — pure-Rust PDF processing tool",
     version,
     long_version = long_version(),
-    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html, text-to-pdf, markdown-to-pdf, csv-to-pdf, json-to-pdf, svg-to-pdf\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  wellfriendpdf extract-text input.pdf --structured --format json\n  wellfriendpdf parser-report input.pdf --mode audit\n  wellfriendpdf pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  wellfriendpdf image-to-pdf img1.jpg img2.png --out combined.pdf\n  wellfriendpdf pdf-to-xlsx report.pdf --out report.xlsx\n  wellfriendpdf pdf-to-pptx deck.pdf --out deck.pptx\n  wellfriendpdf pdf-to-docx report.pdf --out report.docx\n  wellfriendpdf xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  wellfriendpdf watermark input.pdf --text CONFIDENTIAL --out out.pdf"
+    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, search-text, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, thumbnail, render-image-object, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html, text-to-pdf, markdown-to-pdf, csv-to-pdf, json-to-pdf, svg-to-pdf\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  wellfriendpdf extract-text input.pdf --structured --format json\n  wellfriendpdf parser-report input.pdf --mode audit\n  wellfriendpdf pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  wellfriendpdf image-to-pdf img1.jpg img2.png --out combined.pdf\n  wellfriendpdf pdf-to-xlsx report.pdf --out report.xlsx\n  wellfriendpdf pdf-to-pptx deck.pdf --out deck.pptx\n  wellfriendpdf pdf-to-docx report.pdf --out report.docx\n  wellfriendpdf xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  wellfriendpdf watermark input.pdf --text CONFIDENTIAL --out out.pdf"
 )]
 struct Cli {
     /// Public execution mode. Standard is the only mode; optional capabilities
@@ -556,6 +556,12 @@ enum Commands {
     ExtractImages(ExtractImagesArgs),
     /// Render PDF pages to images as a ZIP
     Render(RenderArgs),
+    /// Write a page's embedded thumbnail (/Thumb) image
+    Thumbnail(ThumbnailArgs),
+    /// Render one image object of a page on its own at its natural size
+    RenderImageObject(RenderImageObjectArgs),
+    /// Search page text (case, accent, whole-word and Unicode options) as JSON
+    SearchText(SearchTextArgs),
     /// Render a PDF corpus in one process and write JSONL/summary evidence
     RenderCorpus(RenderCorpusArgs),
     /// Emit Native Renderer display-list/native-replay counters for rendered pages
@@ -3112,9 +3118,118 @@ struct RenderArgs {
     /// Render form/widget appearances in contract mode: include or exclude.
     #[arg(long, default_value = "include", value_parser = ["include", "exclude"])]
     forms: String,
+    /// Thin-stroke policy (pdftoppm -thinlinemode): none, solid (sub-pixel
+    /// strokes drawn as opaque 1 px lines), or shape (opacity scaled by width).
+    #[arg(long, default_value = "none", value_parser = ["none", "solid", "shape"])]
+    thin_line_mode: String,
+    /// Vector anti-aliasing coverage curve: linear (PDFium/Skia) or gamma15
+    /// (Poppler/Splash, crisper edges).
+    #[arg(long = "aa-gamma", alias = "vector-antialias-gamma", default_value = "linear", value_parser = ["linear", "gamma15"])]
+    aa_gamma: String,
+    /// Forced (high-contrast) colours for path and text paint: one r,g,b[,a]
+    /// colour for everything, or four separated by '/' in the order
+    /// path-fill/path-stroke/text-fill/text-stroke. Images and shadings keep
+    /// their colours.
+    #[arg(long, value_name = "COLORS")]
+    forced_colors: Option<String>,
+    /// With --forced-colors, draw filled paths as strokes in the path stroke
+    /// colour (PDFium FPDF_CONVERT_FILL_TO_STROKE).
+    #[arg(long, requires = "forced_colors")]
+    convert_fill_to_stroke: bool,
+    /// Highlight every visible, editable form field with this r,g,b,a colour
+    /// (the alpha is the highlight opacity), like PDFium's form highlight.
+    #[arg(long, value_name = "R,G,B,A")]
+    form_highlight: Option<String>,
+    /// Draw the focus rectangle around the widgets of this fully qualified
+    /// form field name.
+    #[arg(long, value_name = "FIELD")]
+    form_focus_field: Option<String>,
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Parser)]
+struct ThumbnailArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Page number (1-based)
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Output file
+    #[arg(short, long, default_value = "thumbnail.png")]
+    output: PathBuf,
+    /// Output format: png (RGBA) or raw (straight-alpha RGBA8 samples)
+    #[arg(short, long, default_value = "png", value_parser = ["png", "raw"])]
+    format: String,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct RenderImageObjectArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Page number (1-based)
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Zero-based position among the page's top-level image Do operators
+    #[arg(long, conflicts_with = "name")]
+    index: Option<usize>,
+    /// Image XObject resource name (first top-level occurrence)
+    #[arg(long)]
+    name: Option<String>,
+    /// Output file
+    #[arg(short, long, default_value = "image-object.png")]
+    output: PathBuf,
+    /// Output format: png (RGBA) or raw (straight-alpha RGBA8 samples)
+    #[arg(short, long, default_value = "png", value_parser = ["png", "raw"])]
+    format: String,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct SearchTextArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Text to search for
+    query: String,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Case-insensitive matching
+    #[arg(short = 'i', long)]
+    ignore_case: bool,
+    /// Ignore diacritics ("resume" matches "résumé")
+    #[arg(long)]
+    ignore_accents: bool,
+    /// Only report matches that are not part of a longer word
+    #[arg(short = 'w', long)]
+    whole_word: bool,
+    /// Compare text exactly instead of after Unicode NFKC normalisation
+    #[arg(long)]
+    no_normalize_unicode: bool,
+    /// Also search hidden (invisible) text
+    #[arg(long)]
+    include_hidden: bool,
+    /// Maximum number of matches to report
+    #[arg(long)]
+    max_matches: Option<usize>,
+    /// Output file for the JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
 }
 
 #[derive(Parser)]
@@ -4549,6 +4664,9 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::EvalScore(args) => run_eval_score(args),
         Commands::ExtractImages(args) => run_extract_images(args),
         Commands::Render(args) => run_render(args),
+        Commands::Thumbnail(args) => run_thumbnail(args),
+        Commands::RenderImageObject(args) => run_render_image_object(args),
+        Commands::SearchText(args) => run_search_text(args),
         Commands::RenderCorpus(args) => run_render_corpus(args),
         Commands::RenderCompare(args) => run_render_compare(args),
         Commands::PdfToJpg(args) => run_pdf_to_jpg(args),
@@ -8160,6 +8278,131 @@ fn run_document_model(args: DocumentModelArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_thumbnail(args: ThumbnailArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let thumbnail = engine
+        .page_thumbnail_rgba(args.page)?
+        .ok_or_else(|| format!("page {} has no embedded thumbnail (/Thumb)", args.page))?;
+    let bytes = if args.format == "raw" {
+        thumbnail.pixels.clone()
+    } else {
+        wellfriendpdf_engine::ImageEncoder::encode_png(&thumbnail)?
+    };
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "thumbnail",
+                "output": args.output.display().to_string(),
+                "page": args.page,
+                "format": args.format,
+                "width": thumbnail.width,
+                "height": thumbnail.height,
+                "output_bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!(
+            "Thumbnail of page {} ({}x{}) -> {}.",
+            args.page,
+            thumbnail.width,
+            thumbnail.height,
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_render_image_object(args: RenderImageObjectArgs) -> Result<(), Box<dyn Error>> {
+    use wellfriendpdf_engine::binding_media;
+
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let selector = binding_media::page_image_object_selector(args.index, args.name.as_deref())?;
+    let (width, height, rgba) =
+        binding_media::render_page_image_object_rgba(&engine, args.page, &selector)?;
+    let bytes = if args.format == "raw" {
+        rgba
+    } else {
+        wellfriendpdf_engine::ImageEncoder::encode_png(&wellfriendpdf_engine::RawImage {
+            width,
+            height,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels: rgba,
+        })?
+    };
+    std::fs::write(&args.output, &bytes)?;
+    let selected = match &selector {
+        wellfriendpdf_engine::PageImageObjectSelector::Index(index) => {
+            serde_json::json!({ "index": index })
+        }
+        wellfriendpdf_engine::PageImageObjectSelector::Name(name) => {
+            serde_json::json!({ "name": name })
+        }
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "render-image-object",
+                "output": args.output.display().to_string(),
+                "page": args.page,
+                "selector": selected,
+                "format": args.format,
+                "width": width,
+                "height": height,
+                "output_bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!(
+            "Image object on page {} ({width}x{height}) -> {}.",
+            args.page,
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_search_text(args: SearchTextArgs) -> Result<(), Box<dyn Error>> {
+    use wellfriendpdf_engine::binding_media;
+
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = if args.pages == "all" {
+        Vec::new()
+    } else {
+        let pages = parse_page_range_cli(&args.pages, total)?;
+        if pages.is_empty() {
+            return Err(usage_error(format!(
+                "--pages '{}' selects no page of this {total}-page document",
+                args.pages
+            )));
+        }
+        pages
+    };
+    let mut request = binding_media::TextSearchRequest {
+        pages,
+        ..Default::default()
+    };
+    request.options.case_sensitive = !args.ignore_case;
+    request.options.ignore_accents = args.ignore_accents;
+    request.options.whole_word = args.whole_word;
+    request.options.normalize_unicode = !args.no_normalize_unicode;
+    request.options.include_hidden = args.include_hidden;
+    if let Some(max_matches) = args.max_matches {
+        request.options.max_matches = max_matches;
+    }
+    let report = binding_media::search_text_report(&engine, &args.query, &request)?;
+    let json = serde_json::to_string_pretty(&report)?;
+    match &args.output {
+        Some(path) => std::fs::write(path, json)?,
+        None => println!("{json}"),
+    }
+    Ok(())
+}
+
 fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
     use wellfriendpdf_engine::{ImageLocateOptions, ImageLocator, ImageOutputFormat};
@@ -8463,7 +8706,7 @@ impl CliRenderRasterFormat {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct CliRenderContractOptions {
     page_box: wellfriendpdf_engine::render::PageBox,
     transform: wellfriendpdf_engine::render::DeviceMatrix,
@@ -8482,6 +8725,10 @@ struct CliRenderContractOptions {
     determinism: wellfriendpdf_engine::render::DeterminismPolicy,
     annotations: wellfriendpdf_engine::render::AnnotationRenderPolicy,
     forms: wellfriendpdf_engine::render::FormRenderPolicy,
+    thin_line_mode: wellfriendpdf_engine::render::ThinLineMode,
+    vector_antialias_gamma: wellfriendpdf_engine::render::VectorAntialiasGamma,
+    forced_colors: Option<wellfriendpdf_engine::render::ForcedColorScheme>,
+    form_highlight: wellfriendpdf_engine::render::FormHighlightPolicy,
     max_render_pixels: Option<u64>,
     max_decoded_bytes: Option<u64>,
     max_temporary_bytes: Option<u64>,
@@ -8519,9 +8766,20 @@ fn render_args_have_contract_options(args: &RenderArgs) -> bool {
         || !args.determinism.eq_ignore_ascii_case("required")
         || !args.annotations.eq_ignore_ascii_case("include")
         || !args.forms.eq_ignore_ascii_case("include")
+        || render_args_have_raster_policy_options(args)
         || args.max_decoded_bytes.is_some()
         || args.max_temporary_bytes.is_some()
         || args.max_cache_bytes.is_some()
+}
+
+/// Contract-only raster policies: thin lines, AA gamma, forced colours and
+/// form highlighting.
+fn render_args_have_raster_policy_options(args: &RenderArgs) -> bool {
+    !args.thin_line_mode.eq_ignore_ascii_case("none")
+        || !args.aa_gamma.eq_ignore_ascii_case("linear")
+        || args.forced_colors.is_some()
+        || args.form_highlight.is_some()
+        || args.form_focus_field.is_some()
 }
 
 fn render_args_have_contract_builder_options(args: &RenderArgs) -> bool {
@@ -8545,6 +8803,7 @@ fn render_args_have_contract_builder_options(args: &RenderArgs) -> bool {
         || !args.determinism.eq_ignore_ascii_case("required")
         || !args.annotations.eq_ignore_ascii_case("include")
         || !args.forms.eq_ignore_ascii_case("include")
+        || render_args_have_raster_policy_options(args)
         || args.max_decoded_bytes.is_some()
         || args.max_temporary_bytes.is_some()
         || args.max_cache_bytes.is_some()
@@ -8592,6 +8851,17 @@ fn parse_cli_render_contract_options(
         determinism: parse_render_determinism_cli(&args.determinism)?,
         annotations: parse_render_annotations_cli(&args.annotations)?,
         forms: parse_render_forms_cli(&args.forms)?,
+        thin_line_mode: parse_render_thin_line_mode_cli(&args.thin_line_mode)?,
+        vector_antialias_gamma: parse_render_aa_gamma_cli(&args.aa_gamma)?,
+        forced_colors: args
+            .forced_colors
+            .as_deref()
+            .map(|spec| parse_forced_colors_cli(spec, args.convert_fill_to_stroke))
+            .transpose()?,
+        form_highlight: parse_form_highlight_cli(
+            args.form_highlight.as_deref(),
+            args.form_focus_field.as_deref(),
+        )?,
         max_render_pixels: args.max_render_pixels,
         max_decoded_bytes: args.max_decoded_bytes,
         max_temporary_bytes: args.max_temporary_bytes,
@@ -8815,6 +9085,102 @@ fn parse_render_forms_cli(
     }
 }
 
+fn parse_render_thin_line_mode_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::ThinLineMode, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "none" => Ok(wellfriendpdf_engine::render::ThinLineMode::None),
+        "solid" => Ok(wellfriendpdf_engine::render::ThinLineMode::Solid),
+        "shape" => Ok(wellfriendpdf_engine::render::ThinLineMode::Shape),
+        other => Err(usage_error(format!(
+            "unknown --thin-line-mode '{other}'; use none, solid, or shape"
+        ))),
+    }
+}
+
+fn parse_render_aa_gamma_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::VectorAntialiasGamma, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "linear" => Ok(wellfriendpdf_engine::render::VectorAntialiasGamma::Linear),
+        "gamma15" => Ok(wellfriendpdf_engine::render::VectorAntialiasGamma::Gamma15),
+        other => Err(usage_error(format!(
+            "unknown --aa-gamma '{other}'; use linear or gamma15"
+        ))),
+    }
+}
+
+/// `r,g,b[,a]` for every path/text paint, or four such colours separated by
+/// `/` (path fill, path stroke, text fill, text stroke).
+fn parse_forced_colors_cli(
+    spec: &str,
+    convert_fill_to_stroke: bool,
+) -> Result<wellfriendpdf_engine::render::ForcedColorScheme, Box<dyn Error>> {
+    let colors = spec
+        .split('/')
+        .map(|color| parse_cli_rgba(color, "--forced-colors"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut scheme = match colors.as_slice() {
+        [all] => wellfriendpdf_engine::render::ForcedColorScheme::uniform(*all),
+        [path_fill, path_stroke, text_fill, text_stroke] => {
+            wellfriendpdf_engine::render::ForcedColorScheme {
+                path_fill: *path_fill,
+                path_stroke: *path_stroke,
+                text_fill: *text_fill,
+                text_stroke: *text_stroke,
+                convert_fill_to_stroke: false,
+            }
+        }
+        _ => {
+            return Err(usage_error(
+                "--forced-colors takes one r,g,b[,a] colour or four separated by '/' (path-fill/path-stroke/text-fill/text-stroke)",
+            ))
+        }
+    };
+    scheme.convert_fill_to_stroke = convert_fill_to_stroke;
+    Ok(scheme)
+}
+
+fn parse_form_highlight_cli(
+    color: Option<&str>,
+    focus_field: Option<&str>,
+) -> Result<wellfriendpdf_engine::render::FormHighlightPolicy, Box<dyn Error>> {
+    let mut policy = match color {
+        Some(spec) => wellfriendpdf_engine::render::FormHighlightPolicy::all(parse_cli_rgba(
+            spec,
+            "--form-highlight",
+        )?),
+        None => wellfriendpdf_engine::render::FormHighlightPolicy::default(),
+    };
+    policy.focus_field = focus_field
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(str::to_string);
+    Ok(policy)
+}
+
+fn parse_cli_rgba(
+    spec: &str,
+    flag: &str,
+) -> Result<wellfriendpdf_engine::render::ContractColor, Box<dyn Error>> {
+    let values = spec
+        .split(',')
+        .map(|value| value.trim().parse::<u8>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| usage_error(format!("{flag} colours must be r,g,b or r,g,b,a bytes")))?;
+    match values.as_slice() {
+        [r, g, b] => Ok(wellfriendpdf_engine::render::ContractColor::rgba(
+            *r, *g, *b, 255,
+        )),
+        [r, g, b, a] => Ok(wellfriendpdf_engine::render::ContractColor::rgba(
+            *r, *g, *b, *a,
+        )),
+        _ => Err(usage_error(format!(
+            "{flag} colours must be r,g,b or r,g,b,a bytes"
+        ))),
+    }
+}
+
 fn parse_device_clip_cli(
     spec: &str,
 ) -> Result<wellfriendpdf_engine::render::DeviceClip, Box<dyn Error>> {
@@ -8875,6 +9241,10 @@ fn build_cli_render_contract(
     contract.determinism = options.determinism;
     contract.annotations = options.annotations;
     contract.forms = options.forms;
+    contract.thin_line_mode = options.thin_line_mode;
+    contract.vector_antialias_gamma = options.vector_antialias_gamma;
+    contract.forced_colors = options.forced_colors;
+    contract.form_highlight = options.form_highlight;
     if let Some(cap) = options.max_render_pixels {
         contract.resource_budget.max_pixels = cap;
     }
@@ -9459,7 +9829,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                     page_num,
                     geometry.render_dpi,
                     render_mode,
-                    contract_options,
+                    contract_options.clone(),
                 )
                 .map_err(|err| err.to_string())?;
                 apply_cli_page_geometry(&mut contract, &geometry).map_err(|err| err.to_string())?;

@@ -23,8 +23,9 @@ use serde::Serialize;
 use wellfriendpdf_engine::render::{
     AlphaMode, AnnotationRenderPolicy, BackendSelection, ColorManagementPolicy, ColorScheme,
     CompositingPolicy, ContractColor, DeterminismPolicy, DeviceClip, DeviceMatrix, ExactnessPolicy,
-    ExecutionMode, FormRenderPolicy, HalftonePolicy, OptionalContentStateId, OverprintPolicy,
-    PageBox, PixelFormat, PrintProfile, RenderContract, RenderingIntent, SmoothingPolicy,
+    ExecutionMode, ForcedColorScheme, FormHighlightPolicy, FormRenderPolicy, HalftonePolicy,
+    OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RenderContract,
+    RenderingIntent, SmoothingPolicy, ThinLineMode, VectorAntialiasGamma,
 };
 use wellfriendpdf_engine::{
     ContentEngine, FontSubstitutionLog, RenderContractTelemetryReport, RenderMode,
@@ -83,6 +84,10 @@ struct ContractFields {
     color_management: Option<String>,
     exactness: Option<String>,
     determinism: Option<String>,
+    thin_line_mode: Option<String>,
+    vector_antialias_gamma: Option<String>,
+    forced_colors: Option<String>,
+    form_highlight: Option<String>,
     max_pixels: Option<String>,
     max_decoded_bytes: Option<String>,
     max_temporary_bytes: Option<String>,
@@ -516,6 +521,12 @@ async fn read_fields(mut multipart: Multipart) -> ServerResult<ContractFields> {
             Some("color_management") => f.color_management = text!("color_management"),
             Some("exactness") => f.exactness = text!("exactness"),
             Some("determinism") => f.determinism = text!("determinism"),
+            Some("thin_line_mode") => f.thin_line_mode = text!("thin_line_mode"),
+            Some("vector_antialias_gamma") | Some("aa_gamma") => {
+                f.vector_antialias_gamma = text!("vector_antialias_gamma")
+            }
+            Some("forced_colors") => f.forced_colors = text!("forced_colors"),
+            Some("form_highlight") => f.form_highlight = text!("form_highlight"),
             Some("max_pixels") => f.max_pixels = text!("max_pixels"),
             Some("max_decoded_bytes") => f.max_decoded_bytes = text!("max_decoded_bytes"),
             Some("max_temporary_bytes") => f.max_temporary_bytes = text!("max_temporary_bytes"),
@@ -915,7 +926,67 @@ fn apply_policy_overrides(
     if let Some(value) = optional_text(fields.determinism.as_deref()) {
         contract.determinism = parse_determinism_policy(value)?;
     }
+    if let Some(value) = optional_text(fields.thin_line_mode.as_deref()) {
+        contract.thin_line_mode = parse_thin_line_mode(value)?;
+    }
+    if let Some(value) = optional_text(fields.vector_antialias_gamma.as_deref()) {
+        contract.vector_antialias_gamma = parse_vector_antialias_gamma(value)?;
+    }
+    if let Some(value) = optional_text(fields.forced_colors.as_deref()) {
+        contract.forced_colors = if is_off_token(value) {
+            None
+        } else {
+            Some(parse_json_field::<ForcedColorScheme>(
+                value,
+                "forced_colors",
+            )?)
+        };
+    }
+    if let Some(value) = optional_text(fields.form_highlight.as_deref()) {
+        contract.form_highlight = if is_off_token(value) {
+            FormHighlightPolicy::default()
+        } else {
+            parse_json_field::<FormHighlightPolicy>(value, "form_highlight")?
+        };
+    }
     Ok(())
+}
+
+fn parse_thin_line_mode(value: &str) -> ServerResult<ThinLineMode> {
+    match normalized_policy_token(value).as_str() {
+        "none" => Ok(ThinLineMode::None),
+        "solid" => Ok(ThinLineMode::Solid),
+        "shape" => Ok(ThinLineMode::Shape),
+        _ => Err(ServerError::InvalidParameter(format!(
+            "thin_line_mode must be None, Solid, or Shape; got '{}'",
+            value
+        ))),
+    }
+}
+
+fn parse_vector_antialias_gamma(value: &str) -> ServerResult<VectorAntialiasGamma> {
+    match normalized_policy_token(value).as_str() {
+        "linear" => Ok(VectorAntialiasGamma::Linear),
+        "gamma15" | "gamma-15" | "gamma-1.5" | "1.5" => Ok(VectorAntialiasGamma::Gamma15),
+        _ => Err(ServerError::InvalidParameter(format!(
+            "vector_antialias_gamma must be Linear or Gamma15; got '{}'",
+            value
+        ))),
+    }
+}
+
+/// `none`, `off`, `null`, or `false`: switch an optional policy off.
+fn is_off_token(value: &str) -> bool {
+    matches!(
+        normalized_policy_token(value).as_str(),
+        "none" | "off" | "null" | "false"
+    )
+}
+
+fn parse_json_field<T: serde::de::DeserializeOwned>(value: &str, field: &str) -> ServerResult<T> {
+    serde_json::from_str(value).map_err(|err| {
+        ServerError::InvalidParameter(format!("{field} must be a JSON object: {err}"))
+    })
 }
 
 fn apply_budget_overrides(

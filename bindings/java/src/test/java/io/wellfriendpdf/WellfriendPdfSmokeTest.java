@@ -17,6 +17,7 @@ public final class WellfriendPdfSmokeTest {
             return;
         }
         authenticatedPaintPartitionReceiptRoundTrips();
+        pageMediaRasterPoliciesAndSearchUseTheNativeCore();
         Path fixture = fixturePath();
         Path semantic_closeoutFixture = locateFixture("multi_stream.pdf");
         try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(fixture)) {
@@ -922,6 +923,43 @@ public final class WellfriendPdfSmokeTest {
 
     private static String escape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static void pageMediaRasterPoliciesAndSearchUseTheNativeCore() throws Exception {
+        try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(locateFixture("image_only.pdf"))) {
+            WellfriendPdf.RenderContract contract = doc.defaultRenderContract(1, 72)
+                .withThinLineMode(WellfriendPdf.RenderContract.ThinLineMode.Shape)
+                .withVectorAntialiasGamma(WellfriendPdf.RenderContract.VectorAntialiasGamma.Gamma15)
+                .withForcedColors(0x000000ff, 0x0a141eff, 0xffff00c8, 0x010203ff, true)
+                .withFormHighlight(0x0000ff50, "form.name");
+            String json = contract.toJson();
+            assertTrue(json.contains("\"thin_line_mode\":\"Shape\""), "thin line mode builder");
+            assertTrue(json.contains("\"vector_antialias_gamma\":\"Gamma15\""), "AA gamma builder");
+            assertTrue(json.contains("\"path_stroke\":{\"r\":10,\"g\":20,\"b\":30,\"a\":255}"),
+                "forced colour builder");
+            assertTrue(json.contains("\"focus_field\":\"form.name\""), "form highlight builder");
+            byte[] png = doc.renderPagePng(contract);
+            assertTrue(png.length > 8 && png[0] == (byte) 0x89, "contract with new policies renders");
+            String cleared = contract.withoutForcedColors().withoutFormHighlight().toJson();
+            assertTrue(!cleared.contains("forced_colors") && !cleared.contains("form_highlight"),
+                "forced colours and form highlight can be removed");
+
+            assertTrue(doc.pageThumbnailRgba(1) == null, "no embedded thumbnail");
+            assertTrue(doc.pageThumbnailPng(1) == null, "no embedded thumbnail PNG");
+            assertTrue(doc.pageImagesJson(1).contains("\"index\":0"), "page image list");
+            WellfriendPdf.OriginalImage original = doc.extractImageOriginal(1, 0);
+            assertTrue(original.bytes().length > 0 && !original.extension().isBlank(), "original image");
+            WellfriendPdf.RawImage rendered = doc.renderPageImageObjectRgba(1, 0);
+            assertTrue(rendered.pixels().length == rendered.width() * rendered.height() * 4,
+                "rendered image object RGBA");
+            byte[] objectPng = doc.renderPageImageObjectPng(1, 0);
+            assertTrue(objectPng.length > 8 && objectPng[0] == (byte) 0x89, "rendered image object PNG");
+        }
+        try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(fixturePath())) {
+            String report = doc.searchTextJson("the", "{\"pages\":[1],\"case_sensitive\":false,\"whole_word\":true}");
+            assertTrue(report.contains("\"schema_version\":\"binding_media.text_search.v1\""), "search report");
+            assertTrue(report.contains("\"whole_word\":true"), "search options echoed");
+        }
     }
 
     private static void assertTrue(boolean value, String label) {
