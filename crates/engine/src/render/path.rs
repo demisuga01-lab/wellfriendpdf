@@ -1311,7 +1311,7 @@ fn thin_line_paint_policy(
     line_width: f64,
     true_device_width: f64,
 ) -> StrokePaintPolicy {
-    let thin = !(true_device_width >= 1.0);
+    let thin = true_device_width.is_nan() || true_device_width < 1.0;
     match mode {
         ThinLineMode::None => StrokePaintPolicy::NORMAL,
         ThinLineMode::Solid if thin => StrokePaintPolicy {
@@ -1600,7 +1600,7 @@ fn thin_subpath_rescues(flat: &FlatPath, vertical_samples: usize) -> Vec<ThinSub
                 y_max = y_max.max(y);
             }
         }
-        if !(y_max > y_min) || !y_min.is_finite() || !y_max.is_finite() {
+        if y_max <= y_min || !y_min.is_finite() || !y_max.is_finite() {
             continue;
         }
         // The first sample line at or below y_min; the subpath is sampled

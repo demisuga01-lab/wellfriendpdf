@@ -453,7 +453,7 @@ impl StrokePen {
             },
             dash_scale: mean_scale,
         };
-        if !(line_width > 0.0) || !line_width.is_finite() {
+        if line_width.is_nan() || line_width <= 0.0 || !line_width.is_finite() {
             return fallback;
         }
         let Some((sigma_max, sigma_min, v1)) = singular_values(device_t) else {
