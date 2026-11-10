@@ -4778,6 +4778,7 @@ impl PageRenderer {
             plan_contract.path_smoothing = contract.path_smoothing;
             plan_contract.image_smoothing = contract.image_smoothing;
             plan_contract.form_highlight = contract.form_highlight.clone();
+            plan_contract.xfa = contract.xfa;
             plan_contract.thin_line_mode = contract.thin_line_mode;
             plan_contract.vector_antialias_gamma = contract.vector_antialias_gamma;
             plan_contract.text_gamma = contract.text_gamma;
@@ -4823,6 +4824,7 @@ impl PageRenderer {
             state.annotation_policy = contract.annotations;
             state.form_policy = contract.forms;
             state.form_highlight = form_highlight_state(contract.form_highlight.clone());
+            state.xfa_policy = contract.xfa;
             state.backend_policy = contract.backend;
             state.color_management_policy = contract.color_management;
             state.overprint_policy = contract.overprint;
@@ -5576,6 +5578,7 @@ impl PageRenderer {
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
         accepted_expected.form_highlight = contract.form_highlight.clone();
+        accepted_expected.xfa = contract.xfa;
         accepted_expected.execution_mode = contract.execution_mode;
         accepted_expected.halftone = contract.halftone;
         accepted_expected.background = contract.background;
@@ -5759,6 +5762,7 @@ impl PageRenderer {
         state.annotation_policy = contract.annotations;
         state.form_policy = contract.forms;
         state.form_highlight = form_highlight_state(contract.form_highlight.clone());
+        state.xfa_policy = contract.xfa;
         state.backend_policy = contract.backend;
         state.color_management_policy = contract.color_management;
         state.overprint_policy = contract.overprint;
@@ -6036,7 +6040,9 @@ impl PageRenderer {
         buf: &mut PixelBuffer,
         policy: AnnotationReplayPolicy,
     ) -> Result<()> {
-        if !Self::page_has_annotations(engine, page_number) {
+        if !Self::page_has_annotations(engine, page_number)
+            && !Self::page_may_have_xfa_overlay(engine, &policy)
+        {
             return Ok(());
         }
         let viewport = engine.page_viewport(page_number, dpi)?;
@@ -6072,7 +6078,9 @@ impl PageRenderer {
         cache: &mut RenderDocumentCache,
         policy: AnnotationReplayPolicy,
     ) -> Result<()> {
-        if !Self::page_has_annotations(engine, page_number) {
+        if !Self::page_has_annotations(engine, page_number)
+            && !Self::page_may_have_xfa_overlay(engine, &policy)
+        {
             return Ok(());
         }
         let viewport = engine.page_viewport(page_number, dpi)?;
@@ -6096,6 +6104,14 @@ impl PageRenderer {
         }
         *buf = state.into_buffer_and_document_cache(cache);
         Ok(())
+    }
+
+    /// Whether the XFA foreground overlay may draw on this document's pages
+    /// (the annotation pass then runs even without /Annots).
+    fn page_may_have_xfa_overlay(engine: &ContentEngine, policy: &AnnotationReplayPolicy) -> bool {
+        policy.xfa_policy != crate::render::XfaRenderPolicy::Off
+            && policy.form_policy == FormRenderPolicy::Include
+            && crate::xfa::render::document_has_xfa_overlay(engine)
     }
 
     fn page_has_annotations(engine: &ContentEngine, page_number: usize) -> bool {
@@ -6493,6 +6509,8 @@ struct RenderState<'a> {
     /// Form-field highlight / focus rectangle from the render contract
     /// (`None` = off).
     form_highlight: Option<Arc<FormHighlightPolicy>>,
+    /// XFA foreground overlay policy from the render contract.
+    xfa_policy: crate::render::XfaRenderPolicy,
     /// Active text smoothing policy from the render contract.
     text_smoothing_policy: SmoothingPolicy,
     /// Active LCD/subpixel text policy from the render contract.
@@ -6530,6 +6548,7 @@ struct AnnotationReplayPolicy {
     annotation_policy: AnnotationRenderPolicy,
     form_policy: FormRenderPolicy,
     form_highlight: FormHighlightPolicy,
+    xfa_policy: crate::render::XfaRenderPolicy,
     render_contract_fingerprint: String,
     resource_budget: RenderResourceBudget,
     exactness_policy: ExactnessPolicy,
@@ -6549,6 +6568,7 @@ impl AnnotationReplayPolicy {
             annotation_policy: contract.annotations,
             form_policy: contract.forms,
             form_highlight: contract.form_highlight.clone(),
+            xfa_policy: contract.xfa,
             render_contract_fingerprint: contract.cache_fingerprint(),
             resource_budget: contract.resource_budget,
             exactness_policy: contract.exactness,
@@ -8367,6 +8387,7 @@ impl<'a> RenderState<'a> {
             annotation_policy: AnnotationRenderPolicy::Include,
             form_policy: FormRenderPolicy::Include,
             form_highlight: None,
+            xfa_policy: crate::render::XfaRenderPolicy::Auto,
             text_smoothing_policy: SmoothingPolicy::Antialiased,
             subpixel_text_policy: SmoothingPolicy::Disabled,
             path_smoothing_policy: SmoothingPolicy::Antialiased,
@@ -8581,6 +8602,7 @@ impl<'a> RenderState<'a> {
         self.annotation_policy = policy.annotation_policy;
         self.form_policy = policy.form_policy;
         self.form_highlight = form_highlight_state(policy.form_highlight);
+        self.xfa_policy = policy.xfa_policy;
         self.exactness_policy = policy.exactness_policy;
         self.backend_policy = policy.backend_policy;
         self.color_management_policy = policy.color_management_policy;
@@ -10867,6 +10889,7 @@ impl<'a> RenderState<'a> {
         contract.annotations = self.annotation_policy;
         contract.forms = self.form_policy;
         contract.form_highlight = self.form_highlight.as_deref().cloned().unwrap_or_default();
+        contract.xfa = self.xfa_policy;
         Some(contract)
     }
 
@@ -13851,6 +13874,7 @@ impl<'a> RenderState<'a> {
             annotation_policy: self.annotation_policy,
             form_policy: self.form_policy,
             form_highlight: self.form_highlight.clone(),
+            xfa_policy: self.xfa_policy,
             text_smoothing_policy: self.text_smoothing_policy,
             subpixel_text_policy: self.subpixel_text_policy,
             path_smoothing_policy: self.path_smoothing_policy,
@@ -15688,6 +15712,7 @@ impl<'a> RenderState<'a> {
             annotation_policy: self.annotation_policy,
             form_policy: self.form_policy,
             form_highlight: self.form_highlight.clone(),
+            xfa_policy: self.xfa_policy,
             text_smoothing_policy: self.text_smoothing_policy,
             subpixel_text_policy: self.subpixel_text_policy,
             path_smoothing_policy: self.path_smoothing_policy,
@@ -15847,10 +15872,36 @@ impl<'a> RenderState<'a> {
     }
 
     fn render_page_annotations(&mut self) {
+        // XFA foreground (static XFA forms): the XFA fields replace the
+        // page's widget annotations and are drawn after the other annotations.
+        let xfa_overlay = if self.form_policy == FormRenderPolicy::Include {
+            crate::xfa::render::foreground_overlay(self.engine, self.page_number, self.xfa_policy)
+        } else {
+            None
+        };
         // Respect the AnnotationRenderPolicy from the render contract.
-        if self.annotation_policy == AnnotationRenderPolicy::Exclude {
-            return;
+        if self.annotation_policy != AnnotationRenderPolicy::Exclude {
+            self.render_page_annotation_list(xfa_overlay.is_some());
         }
+        if let Some((dict, raw, rect)) = xfa_overlay {
+            if self.cancel.is_cancelled() {
+                return;
+            }
+            let name = "XFAForeground";
+            if let Some(program) = self.cached_annotation_appearance_program(
+                name,
+                &PdfObject::Null,
+                usize::MAX,
+                &dict,
+                raw,
+                rect,
+            ) {
+                self.render_annotation_appearance_program(name, &program, rect, false);
+            }
+        }
+    }
+
+    fn render_page_annotation_list(&mut self, skip_widgets: bool) {
         let reader = self.engine.document().reader();
         let page = match self
             .engine
@@ -15915,6 +15966,9 @@ impl<'a> RenderState<'a> {
             // Respect FormRenderPolicy: exclude Widget annotations when forms
             // are excluded from the render contract.
             if self.form_policy == FormRenderPolicy::Exclude && annot_subtype == "Widget" {
+                continue;
+            }
+            if skip_widgets && annot_subtype == "Widget" {
                 continue;
             }
             if !self.object_optional_content_visible_or_record(annot.get("OC"), &annot_label) {

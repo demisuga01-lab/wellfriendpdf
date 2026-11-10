@@ -55,7 +55,7 @@ pub use contract::{
     FormHighlightPolicy, FormRenderPolicy, HalftonePolicy, ObjectIdentityId,
     OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RenderContract,
     RenderContractFieldEffect, RenderResourceBudget, RenderingIntent, ResourceId, RevisionId,
-    SmoothingPolicy, SourceLinkId, TextGamma, ThinLineMode, VectorAntialiasGamma,
+    SmoothingPolicy, SourceLinkId, TextGamma, ThinLineMode, VectorAntialiasGamma, XfaRenderPolicy,
     RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
 };
 pub use display_list::{

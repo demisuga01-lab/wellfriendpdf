@@ -6,8 +6,17 @@
 //! entities; scripts are disabled by default; JavaScript is always inventory
 //! only; and every recursive or generated structure is capped.
 
+mod form;
+mod layout;
+mod paint;
+mod picture;
+pub(crate) mod render;
 mod script;
+mod style;
+mod text;
 pub(crate) mod xml;
+
+pub use self::render::XfaFormType;
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
