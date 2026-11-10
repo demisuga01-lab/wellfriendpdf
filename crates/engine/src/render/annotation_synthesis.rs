@@ -1465,35 +1465,33 @@ fn poly(
         (false, false) => "n",
     };
     let _ = writeln!(out, "{paint}");
-    if !closed {
-        if stroke.is_some() {
-            let (le_start, le_end) = line_endings(annot, reader);
-            let ending_fill = interior_color(annot);
-            if let Some(dir) = unit(points[0].0 - points[1].0, points[0].1 - points[1].1) {
-                let seg = distance(points[0], points[1]);
-                append_line_ending(
-                    &mut out,
-                    le_start,
-                    points[0],
-                    dir,
-                    ending_size(border.width, seg),
-                    ending_fill,
-                    &mut bounds,
-                );
-            }
-            let last = points[points.len() - 1];
-            let prev = points[points.len() - 2];
-            if let Some(dir) = unit(last.0 - prev.0, last.1 - prev.1) {
-                append_line_ending(
-                    &mut out,
-                    le_end,
-                    last,
-                    dir,
-                    ending_size(border.width, distance(prev, last)),
-                    ending_fill,
-                    &mut bounds,
-                );
-            }
+    if !closed && stroke.is_some() {
+        let (le_start, le_end) = line_endings(annot, reader);
+        let ending_fill = interior_color(annot);
+        if let Some(dir) = unit(points[0].0 - points[1].0, points[0].1 - points[1].1) {
+            let seg = distance(points[0], points[1]);
+            append_line_ending(
+                &mut out,
+                le_start,
+                points[0],
+                dir,
+                ending_size(border.width, seg),
+                ending_fill,
+                &mut bounds,
+            );
+        }
+        let last = points[points.len() - 1];
+        let prev = points[points.len() - 2];
+        if let Some(dir) = unit(last.0 - prev.0, last.1 - prev.1) {
+            append_line_ending(
+                &mut out,
+                le_end,
+                last,
+                dir,
+                ending_size(border.width, distance(prev, last)),
+                ending_fill,
+                &mut bounds,
+            );
         }
     }
     out.push_str("Q\n");
@@ -2100,6 +2098,7 @@ impl TextFonts {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn helvetica() -> Self {
         Self {
             primary: SimpleFont::standard("Helvetica"),
