@@ -583,15 +583,7 @@ pub(crate) fn apply_filter_bytes_with_limits(
     decode_parms: Option<&PdfDictionary>,
     limits: &DecodeLimits,
 ) -> Result<Vec<u8>> {
-    apply_filter_bytes_in_process_with_limits(filter_name, input, decode_parms, limits)
-}
-
-pub(crate) fn apply_filter_bytes_in_process_with_limits(
-    filter_name: &str,
-    input: &[u8],
-    decode_parms: Option<&PdfDictionary>,
-    limits: &DecodeLimits,
-) -> Result<Vec<u8>> {
+    // Image/inline-image (render) path: lenient.
     apply_filter_bytes_mode(
         filter_name,
         input,
@@ -599,6 +591,17 @@ pub(crate) fn apply_filter_bytes_in_process_with_limits(
         limits,
         DecodeMode::Lenient,
     )
+}
+
+/// Codec-isolation service entry point: the caller asks for a verdict on the
+/// input, so damaged data is reported as a failure (strict mode).
+pub(crate) fn apply_filter_bytes_in_process_with_limits(
+    filter_name: &str,
+    input: &[u8],
+    decode_parms: Option<&PdfDictionary>,
+    limits: &DecodeLimits,
+) -> Result<Vec<u8>> {
+    apply_filter_bytes_mode(filter_name, input, decode_parms, limits, DecodeMode::Strict)
 }
 
 /// Apply one lossless filter to `input`. In [`DecodeMode::Lenient`] damaged
