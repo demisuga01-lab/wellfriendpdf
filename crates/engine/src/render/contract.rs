@@ -181,6 +181,31 @@ pub enum FormRenderPolicy {
     Exclude,
 }
 
+/// XFA form drawing (PDFium `kXFAForeground`). `Auto` (the default) draws
+/// the XFA fields of a static XFA form over a page only when that page has
+/// no widget annotations or a widget without a normal appearance; PDFs
+/// without XFA are never affected. `Foreground` always draws the XFA layout
+/// over the PDF pages of any XFA document (dynamic forms included); `Off`
+/// never does. Widget annotations of a page with an XFA overlay are not
+/// drawn: the XFA fields replace them. Dynamic forms' own pages are
+/// rendered with `ContentEngine::render_xfa_page`. Omitted from the
+/// serialized contract while `Auto`, so existing cache identities stay
+/// stable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum XfaRenderPolicy {
+    #[default]
+    Auto,
+    Foreground,
+    Off,
+}
+
+impl XfaRenderPolicy {
+    pub fn is_auto(&self) -> bool {
+        *self == XfaRenderPolicy::Auto
+    }
+}
+
 /// Viewer-style form-field highlighting, like PDFium's
 /// `FPDF_SetFormFieldHighlightColor` / `FPDF_SetFormFieldHighlightAlpha`:
 /// a translucent colour painted over every visible, non-read-only widget of
@@ -708,6 +733,14 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         effect: "vector-coverage-to-opacity-curve",
     },
     RenderContractFieldEffect {
+        field: "xfa",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: false,
+        effect: "xfa-foreground-form-overlay-policy",
+    },
+    RenderContractFieldEffect {
         field: "text_gamma",
         cache_identity: true,
         validation: false,
@@ -845,6 +878,9 @@ pub struct RenderContract {
     /// from the serialized contract while off).
     #[serde(default, skip_serializing_if = "FormHighlightPolicy::is_off")]
     pub form_highlight: FormHighlightPolicy,
+    /// XFA foreground drawing (see [`XfaRenderPolicy`]).
+    #[serde(default, skip_serializing_if = "XfaRenderPolicy::is_auto")]
+    pub xfa: XfaRenderPolicy,
     pub optional_content: OptionalContentStateId,
     pub text_smoothing: SmoothingPolicy,
     pub image_smoothing: SmoothingPolicy,
@@ -919,6 +955,7 @@ impl RenderContract {
             annotations: AnnotationRenderPolicy::Include,
             forms: FormRenderPolicy::Include,
             form_highlight: FormHighlightPolicy::default(),
+            xfa: XfaRenderPolicy::Auto,
             optional_content: OptionalContentStateId::default(),
             text_smoothing: SmoothingPolicy::Antialiased,
             image_smoothing: SmoothingPolicy::Antialiased,
@@ -1314,6 +1351,7 @@ mod tests {
         // The form highlight is only serialized while it is switched on.
         contract.form_highlight.focus_field = Some("name".to_string());
         contract.forced_colors = Some(ForcedColorScheme::uniform(ContractColor::default()));
+        contract.xfa = XfaRenderPolicy::Foreground;
         contract.text_gamma = TextGamma::Pdfium;
         let serialized = serde_json::to_value(&contract).expect("serialize render contract");
         let serialized_fields = serialized

@@ -536,6 +536,7 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     push_if_changed!(annotations);
     push_if_changed!(forms);
     push_if_changed!(form_highlight);
+    push_if_changed!(xfa);
     push_if_changed!(optional_content);
     push_if_changed!(text_smoothing);
     push_if_changed!(image_smoothing);
@@ -1504,6 +1505,9 @@ pub struct ContentEngine {
     /// rasterized once per document instead of once per page. Bounded by the
     /// cache byte budgets; page programs, images and rasters are not kept.
     text_render_cache: Arc<Mutex<Option<RenderDocumentCache>>>,
+    /// The painted XFA form model (layout + page content), built on first
+    /// use; `None` for documents without a renderable XFA template.
+    xfa_render: crate::xfa::render::XfaRenderCache,
 }
 
 impl ContentEngine {
@@ -1543,7 +1547,12 @@ impl ContentEngine {
             retain_image_placements: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             edit_policy_cache: Arc::new(RwLock::new(HashMap::new())),
             text_render_cache: Arc::new(Mutex::new(None)),
+            xfa_render: Default::default(),
         }
+    }
+
+    pub(crate) fn xfa_render_cache(&self) -> &crate::xfa::render::XfaRenderCache {
+        &self.xfa_render
     }
 
     pub(crate) fn cached_edit_policy(
@@ -2272,6 +2281,7 @@ impl ContentEngine {
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
         accepted_expected.form_highlight = contract.form_highlight.clone();
+        accepted_expected.xfa = contract.xfa;
         accepted_expected.execution_mode = contract.execution_mode;
         accepted_expected.halftone = contract.halftone;
         accepted_expected.background = contract.background;
@@ -6408,6 +6418,7 @@ mod tests {
             crate::render::ContractColor::default(),
         ));
         every_field.text_gamma = crate::render::TextGamma::Pdfium;
+        every_field.xfa = crate::render::XfaRenderPolicy::Foreground;
         let contract_fields = serde_json::to_value(&every_field)
             .expect("serialize contract")
             .as_object()

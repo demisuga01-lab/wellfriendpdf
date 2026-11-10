@@ -290,7 +290,7 @@ impl Resources {
         self.xobjects.entry(name.to_string()).or_insert(obj);
     }
 
-    fn into_dict(self) -> PdfDictionary {
+    pub(crate) fn into_dict(self) -> PdfDictionary {
         let mut resources = PdfDictionary::empty();
         if !self.fonts.is_empty() {
             let mut fonts = PdfDictionary::empty();
@@ -1865,8 +1865,17 @@ impl SimpleFont {
     }
 
     fn standard(base: &str) -> Self {
+        Self::standard_named(base, "WFHelv")
+    }
+
+    fn standard_named(base: &str, resource_name: &str) -> Self {
         let dict = standard_font_dict(base);
-        Self::from_dict("WFHelv", PdfObject::Dictionary(dict.clone()), &dict, None)
+        Self::from_dict(
+            resource_name,
+            PdfObject::Dictionary(dict.clone()),
+            &dict,
+            None,
+        )
     }
 
     fn code_width(&self, code: u8) -> f64 {
@@ -2066,11 +2075,11 @@ const UNICODE_FONT_RESOURCE: &str = "WFUni";
 const MAX_SYSTEM_FALLBACK_FONTS: usize = 4;
 
 impl UnicodeFont {
-    fn new() -> Self {
+    fn new(prefix: &str) -> Self {
         Self::from_program(
             crate::render::font_rasterizer::fallback_fonts::DEJAVU_SANS,
             "DejaVuSans",
-            UNICODE_FONT_RESOURCE.to_string(),
+            prefix.to_string(),
         )
     }
 
@@ -2102,7 +2111,7 @@ impl UnicodeFont {
     }
 
     /// An installed face that draws `ch`, as fallback number `index`.
-    fn installed_for(ch: char, index: usize) -> Option<Self> {
+    fn installed_for(ch: char, index: usize, prefix: &str) -> Option<Self> {
         if ch.is_whitespace() || ch.is_control() {
             return None;
         }
@@ -2113,7 +2122,7 @@ impl UnicodeFont {
         let font = Self::from_program(
             program.bytes,
             &program.face.post_script_name,
-            format!("{UNICODE_FONT_RESOURCE}{}", index + 1),
+            format!("{prefix}{}", index + 1),
         );
         font.has_glyph(ch).then_some(font)
     }
@@ -2306,6 +2315,8 @@ pub(crate) struct TextFonts {
     primary: PrimaryFont,
     unicode: Option<UnicodeFont>,
     system: Vec<UnicodeFont>,
+    /// Resource name of the DejaVu fallback; installed fallbacks append 1, 2...
+    fallback_prefix: String,
 }
 
 impl TextFonts {
@@ -2352,6 +2363,7 @@ impl TextFonts {
             primary,
             unicode: None,
             system: Vec::new(),
+            fallback_prefix: UNICODE_FONT_RESOURCE.to_string(),
         }
     }
 
@@ -2361,11 +2373,55 @@ impl TextFonts {
             primary: PrimaryFont::Simple(SimpleFont::standard("Helvetica")),
             unicode: None,
             system: Vec::new(),
+            fallback_prefix: UNICODE_FONT_RESOURCE.to_string(),
         }
     }
 
+    /// A standard-14 font (`base`, WinAnsi) under the resource name
+    /// `resource`, with its Unicode fallbacks named `<fallback_prefix>`,
+    /// `<fallback_prefix>1`... so several text fonts can share one
+    /// resource dictionary (XFA page painting).
+    pub(crate) fn standard_named(base: &str, resource: &str, fallback_prefix: &str) -> Self {
+        Self {
+            primary: PrimaryFont::Simple(SimpleFont::standard_named(base, resource)),
+            unicode: None,
+            system: Vec::new(),
+            fallback_prefix: fallback_prefix.to_string(),
+        }
+    }
+
+    /// A document font (`/Type1` or `/TrueType`, usually an indirect
+    /// reference in `object`) under the resource name `resource`; `None`
+    /// for symbolic or non-simple fonts.
+    pub(crate) fn simple_document_font(
+        object: PdfObject,
+        dict: &PdfDictionary,
+        reader: &PdfReader,
+        resource: &str,
+        fallback_prefix: &str,
+    ) -> Option<Self> {
+        if dict.get_name("BaseFont").is_some_and(is_symbolic_base_font) {
+            return None;
+        }
+        if !matches!(dict.get_name("Subtype"), Some("Type1" | "TrueType")) {
+            return None;
+        }
+        let font = SimpleFont::from_dict(resource, object, dict, Some(reader));
+        // A font that cannot encode basic Latin letters is unusable here.
+        if !font.encode.contains_key(&'a') || !font.encode.contains_key(&'0') {
+            return None;
+        }
+        Some(Self {
+            primary: PrimaryFont::Simple(font),
+            unicode: None,
+            system: Vec::new(),
+            fallback_prefix: fallback_prefix.to_string(),
+        })
+    }
+
     fn unicode(&mut self) -> &mut UnicodeFont {
-        self.unicode.get_or_insert_with(UnicodeFont::new)
+        let prefix = &self.fallback_prefix;
+        self.unicode.get_or_insert_with(|| UnicodeFont::new(prefix))
     }
 
     /// The font that draws `ch`: the primary font when it encodes it, else
@@ -2382,7 +2438,9 @@ impl TextFonts {
             return FontSlot::System(index);
         }
         if self.system.len() < MAX_SYSTEM_FALLBACK_FONTS {
-            if let Some(font) = UnicodeFont::installed_for(ch, self.system.len()) {
+            if let Some(font) =
+                UnicodeFont::installed_for(ch, self.system.len(), &self.fallback_prefix)
+            {
                 self.system.push(font);
                 return FontSlot::System(self.system.len() - 1);
             }

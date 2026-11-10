@@ -21,6 +21,13 @@ pub(crate) struct XmlNode {
     pub children: Vec<XmlNode>,
     pub start_offset: usize,
     pub end_offset: usize,
+    /// Mixed-content order for rich text: the character data inside this
+    /// element before its first child element (`head`) and the character
+    /// data after this element inside its parent (`tail`). Unlike `text`,
+    /// these keep single-line whitespace runs (`<b>a</b> <i>b</i>`); runs
+    /// that contain a line break (indentation) are dropped.
+    pub head: String,
+    pub tail: String,
 }
 
 impl XmlNode {
@@ -146,10 +153,15 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
                 metrics.text_bytes = metrics.text_bytes.saturating_add(text.len());
                 if let Some(current) = stack.last_mut() {
                     current.node.text.push_str(&text);
+                    push_mixed_text(&mut current.node, &text);
                 } else {
                     return Err(WellfriendError::MalformedPdf(
                         "XFA XML has non-whitespace text outside the root".to_string(),
                     ));
+                }
+            } else if !raw.is_empty() && !raw.contains(['\n', '\r']) {
+                if let Some(current) = stack.last_mut() {
+                    push_mixed_text(&mut current.node, raw);
                 }
             }
             pos = end;
@@ -197,6 +209,7 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
                 WellfriendError::MalformedPdf("XFA XML CDATA appears outside the root".into())
             })?;
             current.node.text.push_str(text);
+            push_mixed_text(&mut current.node, text);
             pos = end_start + 3;
             continue;
         }
@@ -283,6 +296,8 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
             children: Vec::new(),
             start_offset: pos,
             end_offset: end,
+            head: String::new(),
+            tail: String::new(),
         };
         if self_closing {
             attach_finished(node, &mut stack, &mut root)?;
@@ -426,6 +441,15 @@ fn parse_start_tag(
     Ok((name, attributes, self_closing, pos))
 }
 
+/// Appends character data to the mixed-content slot of `node`: its `head`
+/// before the first child element, otherwise the last child's `tail`.
+fn push_mixed_text(node: &mut XmlNode, text: &str) {
+    match node.children.last_mut() {
+        Some(last) => last.tail.push_str(text),
+        None => node.head.push_str(text),
+    }
+}
+
 fn attach_finished(
     node: XmlNode,
     stack: &mut [OpenNode],
@@ -450,12 +474,20 @@ fn decode_entities(raw: &str, limits: &XfaLimits, metrics: &mut XmlMetrics) -> R
     while let Some(relative) = raw[pos..].find('&') {
         let amp = pos + relative;
         out.push_str(&raw[pos..amp]);
-        let semicolon = raw[amp + 1..]
-            .find(';')
-            .map(|offset| amp + 1 + offset)
-            .ok_or_else(|| {
-                WellfriendError::MalformedPdf("unterminated XFA XML entity reference".into())
-            })?;
+        // A bare `&` that does not start a reference (`&name;`, `&#..;`) is
+        // kept literally, like PDFium's lenient XML parser does for
+        // real-world datasets.
+        let reference_end = raw[amp + 1..]
+            .char_indices()
+            .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '#' || *ch == ';')
+            .find(|(_, ch)| *ch == ';')
+            .map(|(offset, _)| amp + 1 + offset)
+            .filter(|end| *end > amp + 1);
+        let Some(semicolon) = reference_end else {
+            out.push('&');
+            pos = amp + 1;
+            continue;
+        };
         metrics.entity_references = metrics.entity_references.saturating_add(1);
         if metrics.entity_references > limits.max_entity_references {
             return Err(resource_limit(format!(
@@ -654,5 +686,20 @@ mod tests {
             ..XfaLimits::default()
         };
         assert!(parse_xml(b"<a><b><c/></b></a>", &limits).is_err());
+    }
+
+    #[test]
+    fn bare_ampersands_and_mixed_content_are_kept() {
+        let parsed = parse_xml(
+            b"<p>AT&T &amp; co <b>bold</b> <i>it</i>\n  </p>",
+            &XfaLimits::default(),
+        )
+        .unwrap();
+        let root = parsed.root;
+        assert_eq!(root.head, "AT&T & co ");
+        assert_eq!(root.children[0].head, "bold");
+        assert_eq!(root.children[0].tail, " ");
+        assert_eq!(root.children[1].tail, "");
+        assert!(parse_xml(b"<x>&bomb;</x>", &XfaLimits::default()).is_err());
     }
 }
