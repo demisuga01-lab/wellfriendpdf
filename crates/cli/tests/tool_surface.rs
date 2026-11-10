@@ -2394,3 +2394,297 @@ fn phase4_office_conversions_run_across_cli_surface() {
     remove_path(&from_pptx);
     remove_path(&from_docx);
 }
+
+// ---------------------------------------------------------------------------
+// pdftoppm / pdftotext / pdfimages parity (render formats, scaling, text modes,
+// image extraction naming).
+
+/// (width, height, colour type, bit depth) from a PNG's IHDR chunk.
+fn png_header(bytes: &[u8]) -> (u32, u32, u8, u8) {
+    assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    (width, height, bytes[25], bytes[24])
+}
+
+fn render_single_page(label: &str, extra: &[&str]) -> (String, Vec<u8>) {
+    let o = tmp(&format!("render_{label}.zip"));
+    let pdf = fx("multi_stream.pdf");
+    let mut args = vec![
+        "render",
+        pdf.to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "-p",
+        "1",
+    ];
+    args.extend_from_slice(extra);
+    let out = run(&args);
+    assert_ok(&out, label);
+    let mut entries = zip_entries(&o);
+    let _ = std::fs::remove_file(&o);
+    assert_eq!(entries.len(), 1, "{label}: one page image");
+    entries.remove(0)
+}
+
+#[test]
+fn render_png_carries_dpi_and_gray_mono_transparent_modes() {
+    let (name, png) = render_single_page("png_default", &["--dpi", "72"]);
+    assert_eq!(name, "page-001.png");
+    let (w72, h72, color, _) = png_header(&png);
+    assert_eq!(color, 2, "RGB by default");
+    assert!(png.windows(4).any(|w| w == b"pHYs"), "PNG records its DPI");
+
+    let (_, gray) = render_single_page("png_gray", &["--dpi", "72", "--gray"]);
+    assert_eq!(png_header(&gray), (w72, h72, 0, 8));
+
+    let (_, mono) = render_single_page("png_mono", &["--dpi", "72", "--mono"]);
+    assert_eq!(png_header(&mono), (w72, h72, 0, 1));
+
+    let (_, rgba) = render_single_page("png_transparent", &["--dpi", "72", "--transparent"]);
+    assert_eq!(
+        png_header(&rgba),
+        (w72, h72, 6, 8),
+        "RGBA with --transparent"
+    );
+}
+
+#[test]
+fn render_fractional_separate_and_scale_to_sizes() {
+    let (_, base) = render_single_page("scale_base", &["--dpi", "72"]);
+    let (w72, h72, _, _) = png_header(&base);
+
+    let (_, xy) = render_single_page("scale_rx_ry", &["--rx", "72", "--ry", "144"]);
+    let (w, h, _, _) = png_header(&xy);
+    assert_eq!(w, w72);
+    assert!(h.abs_diff(h72 * 2) <= 1, "{h} vs {}", h72 * 2);
+
+    let (_, frac) = render_single_page("scale_fractional", &["--dpi", "36.5"]);
+    let (w, _, _, _) = png_header(&frac);
+    let expected = (f64::from(w72) * 36.5 / 72.0).ceil() as u32;
+    assert!(w.abs_diff(expected) <= 1, "{w} vs {expected}");
+
+    let (_, fit) = render_single_page("scale_to", &["--scale-to", "100"]);
+    let (w, h, _, _) = png_header(&fit);
+    assert_eq!(w.max(h), 100, "longer side is exactly 100: {w}x{h}");
+
+    let (_, fit_x) =
+        render_single_page("scale_to_x", &["--scale-to-x", "50", "--scale-to-y", "-1"]);
+    let (w, h, _, _) = png_header(&fit_x);
+    assert_eq!(w, 50);
+    let expected_h = f64::from(h72) * 50.0 / f64::from(w72);
+    assert!(
+        (f64::from(h) - expected_h).abs() <= 1.0,
+        "{h} vs {expected_h}"
+    );
+
+    let (_, both) = render_single_page("scale_both", &["--scale-to-x", "40", "--scale-to-y", "30"]);
+    let (w, h, _, _) = png_header(&both);
+    assert_eq!((w, h), (40, 30));
+
+    // Above the old 600 DPI cap is now accepted.
+    let out = run(&[
+        "render",
+        fx("multi_stream.pdf").to_str().unwrap(),
+        "-o",
+        tmp("render_high_dpi.zip").to_str().unwrap(),
+        "-p",
+        "1",
+        "--dpi",
+        "700",
+        "--json",
+    ]);
+    let json = assert_json(&out, "render --dpi 700");
+    assert_eq!(json["dpi"], 700);
+    let _ = std::fs::remove_file(tmp("render_high_dpi.zip"));
+}
+
+#[test]
+fn render_tiff_and_pnm_outputs() {
+    let (name, tif) = render_single_page("tiff", &["--dpi", "36", "--format", "tiff"]);
+    assert_eq!(name, "page-001.tif");
+    assert!(tif.starts_with(b"II*\0"));
+
+    let (name, cmyk) = render_single_page(
+        "tiff_cmyk",
+        &[
+            "--dpi",
+            "36",
+            "--format",
+            "tiff",
+            "--cmyk",
+            "--tiff-compression",
+            "packbits",
+        ],
+    );
+    assert_eq!(name, "page-001.tif");
+    assert!(cmyk.starts_with(b"II*\0"));
+
+    let (name, ppm) = render_single_page("ppm", &["--dpi", "36", "--format", "pnm"]);
+    assert_eq!(name, "page-001.ppm");
+    assert!(ppm.starts_with(b"P6\n"));
+
+    let (name, pgm) = render_single_page("pgm", &["--dpi", "36", "--format", "pnm", "--gray"]);
+    assert_eq!(name, "page-001.pgm");
+    assert!(pgm.starts_with(b"P5\n"));
+
+    let (name, pbm) = render_single_page("pbm", &["--dpi", "36", "--format", "pnm", "--mono"]);
+    assert_eq!(name, "page-001.pbm");
+    assert!(pbm.starts_with(b"P4\n"));
+
+    let (name, jpg) = render_single_page("jpg_gray", &["--dpi", "36", "--format", "jpg", "--gray"]);
+    assert_eq!(name, "page-001.jpg");
+    assert_eq!(&jpg[6..11], b"JFIF\0");
+    assert_eq!(u16::from_be_bytes([jpg[14], jpg[15]]), 36, "JFIF density");
+}
+
+#[test]
+fn render_rejects_mono_jpeg() {
+    let out = run(&[
+        "render",
+        fx("multi_stream.pdf").to_str().unwrap(),
+        "-o",
+        tmp("render_bad.zip").to_str().unwrap(),
+        "--format",
+        "jpg",
+        "--mono",
+    ]);
+    assert!(!out.status.success());
+}
+
+fn extract_text(extra: &[&str]) -> String {
+    let pdf = fx("tracemonkey.pdf");
+    let mut args = vec!["extract-text", pdf.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    let out = run(&args);
+    assert_ok(&out, "extract-text");
+    String::from_utf8(out.stdout).expect("utf-8 text")
+}
+
+#[test]
+fn extract_text_layout_raw_tsv_and_page_breaks() {
+    let layout = extract_text(&["-p", "1-2", "--layout"]);
+    assert_eq!(layout.matches('\x0c').count(), 2, "one form feed per page");
+    assert!(
+        layout
+            .lines()
+            .any(|line| line.contains("   ") && line.trim().len() > 40),
+        "layout output keeps columns apart with runs of spaces"
+    );
+    let no_breaks = extract_text(&["-p", "1-2", "--layout", "--nopgbrk"]);
+    assert!(!no_breaks.contains('\x0c'));
+
+    let raw = extract_text(&["-p", "1", "--raw"]);
+    assert!(raw.ends_with('\x0c'));
+    assert!(raw.contains("Trace"), "raw text present");
+
+    let dos = extract_text(&["-p", "1", "--layout", "--eol", "dos"]);
+    assert!(dos.contains("\r\n"));
+    assert!(!dos.replace("\r\n", "").contains('\n'));
+
+    let tsv = extract_text(&["-p", "1", "--tsv"]);
+    let mut rows = tsv.lines();
+    assert_eq!(
+        rows.next().unwrap(),
+        "level\tpage_num\tpar_num\tblock_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"
+    );
+    let page_row: Vec<&str> = rows.next().unwrap().split('\t').collect();
+    assert_eq!(page_row[0], "1");
+    assert_eq!(page_row[11], "###PAGE###");
+    let words: Vec<Vec<&str>> = tsv
+        .lines()
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .filter(|cols| cols[0] == "5")
+        .collect();
+    assert!(words.len() > 100, "word rows for page 1");
+    assert!(words
+        .iter()
+        .all(|cols| cols.len() == 12 && cols[10] == "100"));
+    let top: f64 = words[0][7].parse().unwrap();
+    assert!((0.0..800.0).contains(&top), "top-left origin coordinates");
+}
+
+/// A one-page PDF with a single DCT (JPEG) image XObject.
+fn pdf_with_jpeg_image(jpeg: &[u8]) -> Vec<u8> {
+    let content = b"q 50 0 0 50 10 10 cm /Im0 Do Q";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+          /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>"
+            .to_vec(),
+        [
+            format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+            content.as_slice(),
+            b"\nendstream",
+        ]
+        .concat(),
+        [
+            format!(
+                "<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB \
+                 /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+                jpeg.len()
+            )
+            .as_bytes(),
+            jpeg,
+            b"\nendstream",
+        ]
+        .concat(),
+    ];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        pdf.extend_from_slice(object);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
+#[test]
+fn extract_images_original_names_jpeg_as_jpg() {
+    let jpeg = wellfriendpdf_engine::ImageEncoder::encode_jpeg(
+        &wellfriendpdf_engine::RawImage {
+            width: 4,
+            height: 4,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![90; 48],
+        },
+        90,
+    )
+    .unwrap();
+    let pdf = tmp("jpeg_image.pdf");
+    std::fs::write(&pdf, pdf_with_jpeg_image(&jpeg)).unwrap();
+    let o = tmp("jpeg_images.zip");
+    let out = run(&[
+        "extract-images",
+        pdf.to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+    ]);
+    assert_ok(&out, "extract-images original");
+    let entries = zip_entries(&o);
+    let _ = std::fs::remove_file(&o);
+    let _ = std::fs::remove_file(&pdf);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, "page-001-image-001.jpg");
+    assert_eq!(
+        entries[0].1, jpeg,
+        "JPEG bytes are passed through unchanged"
+    );
+}
