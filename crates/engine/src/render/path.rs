@@ -893,14 +893,7 @@ impl PathPainter {
         if binary_alpha {
             return fill_flat_scanline_fast(buf, &flat, color, rule, cancel);
         }
-        fill_flat_with_color_compositor(
-            buf,
-            &flat,
-            color,
-            rule,
-            Some(cancel),
-            options.coverage_lut(),
-        )
+        fill_flat_antialiased(buf, &flat, color, rule, cancel, options.coverage_lut())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1540,16 +1533,46 @@ fn stroke_impl(
             } else {
                 options.coverage_lut()
             };
-            fill_flat_with_color_compositor(
-                buf,
-                &stroke.outline,
-                color,
-                FillRule::NonZero,
-                Some(cancel),
-                lut,
-            )
+            fill_flat_antialiased(buf, &stroke.outline, color, FillRule::NonZero, cancel, lut)
         }
     }
+}
+
+/// Largest on-buffer bounding box (in pixels) painted through a one-shot
+/// coverage mask; larger or partly off-buffer paths use the row-streaming
+/// compositor so memory stays bounded by the clipped path width.
+const MASKED_AA_MAX_CELLS: usize = 1 << 20;
+
+/// Anti-aliased fill of a device-space outline. Small, on-buffer outlines
+/// (dash pieces, ordinary strokes) are rasterized into a coverage mask and
+/// composited with the row-blending mask compositor, which is markedly
+/// cheaper than per-pixel blending of partial runs; everything else streams.
+fn fill_flat_antialiased(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    color: PixelColor,
+    rule: FillRule,
+    cancel: &CancelToken,
+    lut: Option<&[u8; 256]>,
+) -> bool {
+    if let Some((min_x, min_y, max_x, max_y)) = flat_bounds(flat) {
+        let (bw, bh) = (f64::from(buf.width), f64::from(buf.height));
+        let width = max_x.ceil() - min_x.floor() + 1.0;
+        let height = max_y.ceil() - min_y.floor() + 1.0;
+        if min_x >= -1.0
+            && min_y >= -1.0
+            && max_x <= bw + 1.0
+            && max_y <= bh + 1.0
+            && width * height <= MASKED_AA_MAX_CELLS as f64
+        {
+            if let Some(mut mask) = rasterize_flat_alpha_mask(flat, rule) {
+                mask.apply_coverage_lut(lut);
+                mask.paint(buf, 0, 0, color);
+                return true;
+            }
+        }
+    }
+    fill_flat_with_color_compositor(buf, flat, color, rule, Some(cancel), lut)
 }
 
 /// Coverage curve for a stroke mask under `paint` and `options`.
@@ -3550,7 +3573,6 @@ fn add_alpha_span(
     }
 }
 
-#[cfg(test)]
 fn flat_bounds(flat: &FlatPath) -> Option<(f64, f64, f64, f64)> {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
