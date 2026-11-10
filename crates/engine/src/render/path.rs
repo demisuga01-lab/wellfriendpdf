@@ -498,7 +498,10 @@ pub(crate) struct RasterizedGlyphMask {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    /// One coverage byte per pixel, or (for an LCD mask) three per pixel:
+    /// the red, green and blue sub-pixel coverage, left to right.
     alpha: Vec<u8>,
+    lcd: bool,
 }
 
 impl RasterizedGlyphMask {
@@ -518,35 +521,33 @@ impl RasterizedGlyphMask {
             width,
             height,
             alpha,
+            lcd: false,
         })
     }
 
+    /// Whether this mask carries separate red/green/blue sub-pixel coverage.
+    pub(crate) fn is_lcd(&self) -> bool {
+        self.lcd
+    }
+
     pub(crate) fn paint(&self, buf: &mut PixelBuffer, dx: i32, dy: i32, color: PixelColor) {
+        if self.lcd {
+            buf.blend_lcd_coverage_mask(
+                dx.saturating_add(self.x),
+                dy.saturating_add(self.y),
+                self.width,
+                self.height,
+                &self.alpha,
+                color,
+            );
+            return;
+        }
         buf.blend_alpha_mask(
             dx.saturating_add(self.x),
             dy.saturating_add(self.y),
             self.width,
             self.height,
             &self.alpha,
-            color,
-        );
-    }
-
-    pub(crate) fn paint_subpixel_rgb(
-        &self,
-        buf: &mut PixelBuffer,
-        dx: i32,
-        dy: i32,
-        color: PixelColor,
-    ) {
-        buf.blend_lcd_alpha_mask_strided(
-            dx.saturating_add(self.x),
-            dy.saturating_add(self.y),
-            self.width,
-            self.height,
-            &self.alpha,
-            self.width as usize,
-            0,
             color,
         );
     }
@@ -591,6 +592,104 @@ pub(crate) fn rasterize_glyph_alpha_mask(
         light_grid_fit_flat_glyph(&mut flat, device_t);
     }
     rasterize_flat_alpha_mask(&flat, rule)
+}
+
+/// FreeType's default LCD filter (`FT_LCD_FILTER_DEFAULT`), as PDFium applies
+/// it to 3x horizontal glyph bitmaps (`cfx_face.cpp`).
+const LCD_FILTER_WEIGHTS: [u16; 5] = [8, 77, 86, 77, 8];
+
+/// Rasterize a glyph outline for LCD (sub-pixel) text, the way PDFium builds
+/// its LCD glyph bitmaps: the outline is scan converted at three times the
+/// horizontal resolution, each 3x row is run through the 5-tap
+/// [`LCD_FILTER_WEIGHTS`] filter (with two sub-pixels of padding on each
+/// side), and every output pixel takes three consecutive filtered samples as
+/// its red, green and blue coverage (red leftmost, the usual RGB stripe).
+///
+/// `phase` (0..=2) shifts the outline right by that many sub-pixels, which is
+/// how PDFium positions an LCD glyph whose origin is floored to a whole
+/// pixel. `device_t` maps glyph space to device pixels as for
+/// [`rasterize_glyph_alpha_mask`]; light hinting runs in device pixels before
+/// the horizontal scale is applied.
+pub(crate) fn rasterize_glyph_lcd_mask(
+    path: &Path,
+    device_t: &Transform2D,
+    rule: FillRule,
+    hinting: GlyphHinting,
+    phase: u8,
+) -> Option<RasterizedGlyphMask> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut flat = flatten_path_device_transform(path, device_t, 0.2);
+    if hinting.should_apply() {
+        light_grid_fit_flat_glyph(&mut flat, device_t);
+    }
+    let phase = f64::from(phase.min(2));
+    for subpath in &mut flat.subpaths {
+        for point in subpath {
+            point.0 = point.0 * 3.0 + phase;
+        }
+    }
+    let (sub_x0, y0, sub_w, h) = flat_alpha_mask_bounds(&flat)?;
+    // Two sub-pixels of filter padding on each side, widened to whole pixels.
+    let pad_start = i64::from(sub_x0) - 2;
+    let pad_end = i64::from(sub_x0) + sub_w as i64 + 2;
+    let px0 = pad_start.div_euclid(3);
+    let px1 = (pad_end + 2).div_euclid(3);
+    let width = usize::try_from(px1 - px0).ok().filter(|width| *width > 0)?;
+    let x = i32::try_from(px0).ok()?;
+    let sub_row = width.checked_mul(3)?;
+    let offset = usize::try_from(i64::from(sub_x0) - px0 * 3).ok()?;
+    if offset.checked_add(sub_w)? > sub_row || sub_row.checked_mul(h)? > ACCUMULATOR_MAX_CELLS {
+        return None;
+    }
+    let mut coverage = vec![0u8; sub_row * h];
+    let mut raw = vec![0u8; sub_row];
+    scan_flat_alpha_mask_rows(
+        &flat,
+        rule,
+        sub_x0,
+        y0,
+        sub_w,
+        h,
+        GLYPH_SCANLINE_ALPHA_VERTICAL_SAMPLES,
+        |y, row| {
+            raw.fill(0);
+            for (dst, value) in raw[offset..offset + sub_w].iter_mut().zip(row.iter()) {
+                *dst = (*value).min(255) as u8;
+            }
+            let start = (y - y0) as usize * sub_row;
+            lcd_filter_row(&raw, &mut coverage[start..start + sub_row]);
+        },
+    );
+    Some(RasterizedGlyphMask {
+        x,
+        y: y0,
+        width: width as u32,
+        height: h as u32,
+        alpha: coverage,
+        lcd: true,
+    })
+}
+
+/// Apply [`LCD_FILTER_WEIGHTS`] to one row of 3x coverage, exactly as
+/// PDFium's `ft_smooth_lcd_spans()` port does (saturating sum of the rounded
+/// per-tap contributions).
+fn lcd_filter_row(raw: &[u8], filtered: &mut [u8]) {
+    let len = raw.len().min(filtered.len());
+    filtered[..len].fill(0);
+    for (x, &value) in raw[..len].iter().enumerate() {
+        if value == 0 {
+            continue;
+        }
+        for (tap, weight) in LCD_FILTER_WEIGHTS.iter().enumerate() {
+            let Some(dst_x) = (x + tap).checked_sub(2).filter(|dst_x| *dst_x < len) else {
+                continue;
+            };
+            let contribution = ((u16::from(value) * weight + 85) >> 8) as u8;
+            filtered[dst_x] = filtered[dst_x].saturating_add(contribution);
+        }
+    }
 }
 
 pub struct PathPainter;
@@ -3430,6 +3529,7 @@ pub(crate) fn rasterize_flat_alpha_mask(
         width: w as u32,
         height: h as u32,
         alpha,
+        lcd: false,
     })
 }
 
@@ -6306,5 +6406,100 @@ mod tests {
             &LineCap::Round,
         );
         assert_ne!(buf.get_pixel(30, 50), TRANSPARENT);
+    }
+
+    fn lcd_stem_path() -> Path {
+        // A two-pixel-wide stem covering device x 2..4 and rows 1..3.
+        let mut path = Path::new();
+        path.move_to(2.0, 1.0);
+        path.line_to(4.0, 1.0);
+        path.line_to(4.0, 3.0);
+        path.line_to(2.0, 3.0);
+        path.close();
+        path
+    }
+
+    #[test]
+    fn lcd_glyph_mask_filters_three_x_coverage_into_rgb_triplets() {
+        let mask = rasterize_glyph_lcd_mask(
+            &lcd_stem_path(),
+            &Transform2D::identity(),
+            FillRule::NonZero,
+            GlyphHinting::disabled(),
+            0,
+        )
+        .expect("stem rasterizes");
+        assert!(mask.is_lcd());
+        assert_eq!((mask.x, mask.y, mask.width), (1, 1, 4));
+        let row_bytes = mask.width as usize * 3;
+        // Sub-pixels 6..12 are covered; the 5-tap {8, 77, 86, 77, 8} filter
+        // spreads the edges over two sub-pixels on each side. Red is the
+        // leftmost sub-pixel of each pixel.
+        assert_eq!(
+            &mask.alpha_slice()[..row_bytes],
+            &[0, 8, 85, 170, 247, 255, 255, 247, 170, 85, 8, 0]
+        );
+        assert_eq!(
+            &mask.alpha_slice()[row_bytes..2 * row_bytes],
+            &mask.alpha_slice()[..row_bytes],
+            "every covered row filters the same way"
+        );
+    }
+
+    #[test]
+    fn lcd_glyph_mask_phase_shifts_by_whole_subpixels() {
+        let mask = rasterize_glyph_lcd_mask(
+            &lcd_stem_path(),
+            &Transform2D::identity(),
+            FillRule::NonZero,
+            GlyphHinting::disabled(),
+            1,
+        )
+        .expect("stem rasterizes");
+        assert_eq!((mask.x, mask.width), (1, 5));
+        assert_eq!(
+            &mask.alpha_slice()[..15],
+            &[0, 0, 8, 85, 170, 247, 255, 255, 247, 170, 85, 8, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn lcd_glyph_mask_blends_each_channel_with_its_own_coverage() {
+        let mask = rasterize_glyph_lcd_mask(
+            &lcd_stem_path(),
+            &Transform2D::identity(),
+            FillRule::NonZero,
+            GlyphHinting::disabled(),
+            0,
+        )
+        .expect("stem rasterizes");
+        let mut buf = PixelBuffer::new_filled(8, 4, WHITE);
+        mask.paint(&mut buf, 0, 0, BLACK);
+        // Left edge: the red sub-pixel is the least covered.
+        assert_eq!(buf.get_pixel(1, 1), [255, 247, 170, 255]);
+        assert_eq!(buf.get_pixel(2, 1), [85, 8, 0, 255]);
+        assert_eq!(buf.get_pixel(3, 1), [0, 8, 85, 255]);
+        // Right edge: the blue sub-pixel is the least covered.
+        assert_eq!(buf.get_pixel(4, 1), [170, 247, 255, 255]);
+        assert_eq!(buf.get_pixel(0, 1), WHITE);
+        assert_eq!(buf.get_pixel(5, 1), WHITE);
+    }
+
+    #[test]
+    fn pdfium_text_gamma_table_darkens_partial_coverage_only() {
+        let lut = crate::render::vector_quality::text_gamma_lut(
+            crate::render::contract::TextGamma::Pdfium,
+        )
+        .expect("pdfium table");
+        assert_eq!(lut[0], 0);
+        assert_eq!(lut[255], 255);
+        assert_eq!(lut[64], 73);
+        assert_eq!(lut[128], 136);
+        assert!(lut.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!((1..255).all(|value| lut[value] >= value as u8));
+        assert!(crate::render::vector_quality::text_gamma_lut(
+            crate::render::contract::TextGamma::Linear
+        )
+        .is_none());
     }
 }

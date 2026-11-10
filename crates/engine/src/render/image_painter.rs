@@ -16,6 +16,9 @@ enum SmoothMode {
     CenterBilinear,
     /// Always nearest-neighbour when magnifying (stencil masks).
     Nearest,
+    /// The contract disabled image smoothing (PDFium `bNoSmoothing`):
+    /// nearest-neighbour for both shrinking and enlarging, never averaging.
+    NoSmooth,
 }
 
 /// Magnification factor (per axis, truncated as Splash's integer
@@ -150,6 +153,20 @@ impl ImagePainter {
             SmoothMode::None
         };
         Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha);
+    }
+
+    /// Paint an image or stencil mask with image smoothing disabled by the
+    /// render contract: every device pixel takes its nearest source sample,
+    /// whether the image is shrunk or enlarged (PDFium's "no smooth image"
+    /// rendering, `bNoSmoothing` in the stretch engine).
+    pub(crate) fn paint_image_unsmoothed_with_alpha(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        paint_alpha: f32,
+    ) {
+        Self::paint_image_with_mode(buf, image, ctm, viewport, SmoothMode::NoSmooth, paint_alpha);
     }
 
     /// Return an exact integer-pixel target for a non-skewed image draw.
@@ -799,6 +816,9 @@ impl ImagePainter {
         dst_h: f64,
         requested: SmoothMode,
     ) -> SmoothMode {
+        if requested == SmoothMode::NoSmooth {
+            return SmoothMode::None;
+        }
         if !Self::magnifying(image, dst_w, dst_h) {
             return match requested {
                 SmoothMode::None | SmoothMode::Nearest => SmoothMode::LegacyBilinear,
@@ -850,7 +870,9 @@ impl ImagePainter {
             Self::area_average_sample(image, u, v, footprint_x.max(1.0), footprint_y.max(1.0))
         } else {
             match smooth_mode {
-                SmoothMode::None | SmoothMode::Nearest => Self::nearest_sample(image, u, v),
+                SmoothMode::None | SmoothMode::Nearest | SmoothMode::NoSmooth => {
+                    Self::nearest_sample(image, u, v)
+                }
                 SmoothMode::Interpolate => Self::interpolated_sample(image, u, v),
                 SmoothMode::LegacyBilinear => Self::bilinear_sample(image, u, v),
                 SmoothMode::CenterBilinear => Self::center_bilinear_sample(image, u, v),
@@ -882,7 +904,8 @@ impl ImagePainter {
         let footprint_x = image.width as f64 / dst_w;
         let footprint_y = image.height as f64 / dst_h;
         let smooth = Self::effective_smooth_mode(image, dst_w, dst_h, smooth_mode);
-        let use_area_average = footprint_x > 1.0 || footprint_y > 1.0;
+        let use_area_average =
+            smooth_mode != SmoothMode::NoSmooth && (footprint_x > 1.0 || footprint_y > 1.0);
         let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
         if x0 > x1 || y0 > y1 {
             return;
@@ -1694,7 +1717,8 @@ impl ImagePainter {
         let image_w_px = combined.a.hypot(combined.b).max(1.0);
         let image_h_px = combined.c.hypot(combined.d).max(1.0);
         let smooth = Self::effective_smooth_mode(image, image_w_px, image_h_px, smooth_mode);
-        let use_area_average = footprint_x > 1.0 || footprint_y > 1.0;
+        let use_area_average =
+            smooth_mode != SmoothMode::NoSmooth && (footprint_x > 1.0 || footprint_y > 1.0);
         let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
         if x0 > x1 || y0 > y1 {
             return;

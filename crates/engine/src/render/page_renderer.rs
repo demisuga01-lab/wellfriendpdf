@@ -66,8 +66,8 @@ use crate::render::line::DashState;
 use crate::render::path::{
     axis_aligned_integer_rect, device_stroke_outline, flat_alpha_mask_bounds, flatten_path,
     paint_flat_alpha_mask_rows, rasterize_flat_alpha_mask, rasterize_flat_binary_clip_mask,
-    rasterize_glyph_alpha_mask, stroke_coverage_lut, stroke_paint_policy, FillRule, FlatPath,
-    GlyphHinting, Path, PathPainter, PathSegment, RasterizedGlyphMask,
+    rasterize_glyph_alpha_mask, rasterize_glyph_lcd_mask, stroke_coverage_lut, stroke_paint_policy,
+    FillRule, FlatPath, GlyphHinting, Path, PathPainter, PathSegment, RasterizedGlyphMask,
 };
 use crate::render::plan::{
     graphics_state_color_component_arity_refusal, graphics_state_operand_refusal,
@@ -4780,6 +4780,7 @@ impl PageRenderer {
             plan_contract.form_highlight = contract.form_highlight.clone();
             plan_contract.thin_line_mode = contract.thin_line_mode;
             plan_contract.vector_antialias_gamma = contract.vector_antialias_gamma;
+            plan_contract.text_gamma = contract.text_gamma;
             plan_contract.forced_colors = contract.forced_colors;
             let mut plan_resource_budget = resource_budget;
             let full_plan_pixels =
@@ -5594,6 +5595,7 @@ impl PageRenderer {
         accepted_expected.subpixel_text = contract.subpixel_text;
         accepted_expected.thin_line_mode = contract.thin_line_mode;
         accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
+        accepted_expected.text_gamma = contract.text_gamma;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -5736,6 +5738,8 @@ impl PageRenderer {
             contract.thin_line_mode,
             contract.vector_antialias_gamma,
         );
+        let _text_raster_guard =
+            crate::render::vector_quality::TextRasterContractGuard::enter(contract.text_gamma);
         let mut state = RenderState::new_with_shared_document_cache(
             buf,
             viewport.clone(),
@@ -6576,6 +6580,11 @@ struct GlyphMaskCacheKey {
     frac_f: i64,
     hinting: bool,
     binary_alpha: bool,
+    /// LCD (sub-pixel) mask: three coverage bytes per pixel, `frac_e` holds
+    /// the sub-pixel phase (0..=2) instead of a 1/64-pixel fraction.
+    lcd: bool,
+    /// Coverage remapped through the PDFium text gamma table.
+    text_gamma: bool,
     /// Synthetic emboldening weight and skew of a substitute glyph.
     synthetic: crate::fonts::substitute_style::SyntheticStyle,
 }
@@ -6704,7 +6713,8 @@ impl GlyphMaskAtlas {
         mask: &RasterizedGlyphMask,
         max_extra_bytes: usize,
     ) -> Option<GlyphAtlasPlacement> {
-        if mask.width == 0
+        if mask.is_lcd()
+            || mask.width == 0
             || mask.height == 0
             || mask.width > Self::MAX_MASK_EDGE
             || mask.height > Self::MAX_MASK_EDGE
@@ -6751,7 +6761,6 @@ impl GlyphMaskAtlas {
         dx: i32,
         dy: i32,
         color: PixelColor,
-        subpixel_rgb: bool,
     ) -> bool {
         let Some(page) = self.pages.get(&placement.page_id) else {
             self.stats.misses = self.stats.misses.saturating_add(1);
@@ -6765,29 +6774,16 @@ impl GlyphMaskAtlas {
             return false;
         };
         self.stats.hits = self.stats.hits.saturating_add(1);
-        if subpixel_rgb {
-            buf.blend_lcd_alpha_mask_strided(
-                dx.saturating_add(placement.mask_x),
-                dy.saturating_add(placement.mask_y),
-                placement.width,
-                placement.height,
-                &page.alpha,
-                page.width as usize,
-                offset,
-                color,
-            );
-        } else {
-            buf.blend_alpha_mask_strided(
-                dx.saturating_add(placement.mask_x),
-                dy.saturating_add(placement.mask_y),
-                placement.width,
-                placement.height,
-                &page.alpha,
-                page.width as usize,
-                offset,
-                color,
-            );
-        }
+        buf.blend_alpha_mask_strided(
+            dx.saturating_add(placement.mask_x),
+            dy.saturating_add(placement.mask_y),
+            placement.width,
+            placement.height,
+            &page.alpha,
+            page.width as usize,
+            offset,
+            color,
+        );
         true
     }
 
@@ -6904,7 +6900,6 @@ impl GlyphMaskCache {
         dx: i32,
         dy: i32,
         color: PixelColor,
-        subpixel_rgb: bool,
     ) -> bool {
         let usage = self.next_usage();
         let Some((mask, placement)) = self.entries.get_mut(key).map(|entry| {
@@ -6917,18 +6912,11 @@ impl GlyphMaskCache {
         self.record_usage(usage, key.clone());
         self.stats.hits = self.stats.hits.saturating_add(1);
         if let Some(placement) = placement.as_ref() {
-            if self
-                .atlas
-                .paint(placement, buf, dx, dy, color, subpixel_rgb)
-            {
+            if self.atlas.paint(placement, buf, dx, dy, color) {
                 return true;
             }
         }
-        if subpixel_rgb {
-            mask.paint_subpixel_rgb(buf, dx, dy, color);
-        } else {
-            mask.paint(buf, dx, dy, color);
-        }
+        mask.paint(buf, dx, dy, color);
         true
     }
 
@@ -8463,6 +8451,45 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// Paint a decoded image (or an expanded stencil mask) under the
+    /// contract's image smoothing policy. `Disabled` is PDFium's "no smooth
+    /// image": nearest-neighbour sampling for shrinking as well as enlarging.
+    /// The other policies keep the regular sampler, smoothing magnification
+    /// when `interpolate` is set.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_image_with_smoothing_policy(
+        policy: SmoothingPolicy,
+        stencil: bool,
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        interpolate: bool,
+        paint_alpha: f32,
+    ) {
+        if policy == SmoothingPolicy::Disabled {
+            ImagePainter::paint_image_unsmoothed_with_alpha(buf, image, ctm, viewport, paint_alpha);
+        } else if stencil {
+            ImagePainter::paint_stencil_with_options_and_alpha(
+                buf,
+                image,
+                ctm,
+                viewport,
+                interpolate,
+                paint_alpha,
+            );
+        } else {
+            ImagePainter::paint_image_with_options_and_alpha(
+                buf,
+                image,
+                ctm,
+                viewport,
+                interpolate,
+                paint_alpha,
+            );
+        }
+    }
+
     fn effective_image_interpolate(&self, pdf_interpolate: bool) -> bool {
         match self.image_smoothing_policy {
             SmoothingPolicy::Disabled => false,
@@ -8510,10 +8537,14 @@ impl<'a> RenderState<'a> {
         } else if text_smoothing_policy == SmoothingPolicy::Subpixel
             || subpixel_text_policy == SmoothingPolicy::Subpixel
         {
-            let Some(mask) = rasterize_glyph_alpha_mask(path, ctm, rule, hinting) else {
+            let device_t = ctm.concat(&viewport.to_transform());
+            let Some(mut mask) = rasterize_glyph_lcd_mask(path, &device_t, rule, hinting, 0) else {
                 return false;
             };
-            mask.paint_subpixel_rgb(buf, 0, 0, color);
+            mask.apply_coverage_lut(crate::render::vector_quality::text_gamma_lut(
+                crate::render::vector_quality::contract_text_gamma(),
+            ));
+            mask.paint(buf, 0, 0, color);
             true
         } else {
             PathPainter::fill_glyph(buf, path, ctm, viewport, color, rule, hinting);
@@ -14442,7 +14473,9 @@ impl<'a> RenderState<'a> {
         // branch always paints colour samples.
         if overprint_imitation {
             self.paint_with_overprint_darken(|state| {
-                ImagePainter::paint_image_with_options_and_alpha(
+                Self::paint_image_with_smoothing_policy(
+                    state.image_smoothing_policy,
+                    false,
                     &mut state.buf,
                     &raw,
                     &paint_ctm,
@@ -14454,7 +14487,9 @@ impl<'a> RenderState<'a> {
             return;
         }
         if is_mask {
-            ImagePainter::paint_stencil_with_options_and_alpha(
+            Self::paint_image_with_smoothing_policy(
+                self.image_smoothing_policy,
+                true,
                 &mut self.buf,
                 &raw,
                 &paint_ctm,
@@ -14463,7 +14498,9 @@ impl<'a> RenderState<'a> {
                 paint_alpha,
             );
         } else {
-            ImagePainter::paint_image_with_options_and_alpha(
+            Self::paint_image_with_smoothing_policy(
+                self.image_smoothing_policy,
+                false,
                 &mut self.buf,
                 &raw,
                 &paint_ctm,
@@ -15062,7 +15099,9 @@ impl<'a> RenderState<'a> {
                 }
                 if !image_ref.is_mask && self.image_overprint_imitation_applies(dict) {
                     self.paint_with_overprint_darken(|state| {
-                        ImagePainter::paint_image_with_options_and_alpha(
+                        Self::paint_image_with_smoothing_policy(
+                            state.image_smoothing_policy,
+                            false,
                             &mut state.buf,
                             paint_raw,
                             &paint_ctm,
@@ -15078,6 +15117,7 @@ impl<'a> RenderState<'a> {
                     && !dict.contains_key("SMask")
                     && !dict.contains_key("Mask")
                     && !interpolate
+                    && self.image_smoothing_policy != SmoothingPolicy::Disabled
                 {
                     if let Some(target) =
                         ImagePainter::axis_aligned_cache_target(&paint_ctm, &self.viewport)
@@ -15099,7 +15139,9 @@ impl<'a> RenderState<'a> {
                     }
                 }
                 if image_ref.is_mask {
-                    ImagePainter::paint_stencil_with_options_and_alpha(
+                    Self::paint_image_with_smoothing_policy(
+                        self.image_smoothing_policy,
+                        true,
                         &mut self.buf,
                         paint_raw,
                         &paint_ctm,
@@ -15108,7 +15150,9 @@ impl<'a> RenderState<'a> {
                         paint_alpha,
                     );
                 } else {
-                    ImagePainter::paint_image_with_options_and_alpha(
+                    Self::paint_image_with_smoothing_policy(
+                        self.image_smoothing_policy,
+                        false,
                         &mut self.buf,
                         paint_raw,
                         &paint_ctm,
@@ -17302,7 +17346,9 @@ impl<'a> RenderState<'a> {
         let (width, height) = (self.buf.width, self.buf.height);
         let render_mode = self.buf.render_mode();
         let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
-        ImagePainter::paint_image_with_options_and_alpha(
+        Self::paint_image_with_smoothing_policy(
+            self.image_smoothing_policy,
+            false,
             &mut surface,
             stencil,
             paint_ctm,
@@ -18544,6 +18590,22 @@ impl<'a> RenderState<'a> {
         } else {
             (device_t.e, device_t.f)
         };
+        let binary_alpha = self.text_smoothing_disabled();
+        let lcd = !binary_alpha && self.text_subpixel_enabled();
+        // LCD text is positioned the way PDFium positions it: the origin is
+        // floored to a whole pixel and the remaining fraction selects one of
+        // three sub-pixel phases of the 3x mask (`DrawNormalText`).
+        let (device_x, lcd_phase) = if lcd {
+            let subpixel = device_t.e * 3.0;
+            let subpixel = if subpixel.is_finite() {
+                subpixel.floor()
+            } else {
+                0.0
+            };
+            ((subpixel / 3.0).floor(), subpixel.rem_euclid(3.0) as u8)
+        } else {
+            (device_x, 0)
+        };
         let device_t = Transform2D {
             e: device_x,
             f: device_y,
@@ -18556,18 +18618,29 @@ impl<'a> RenderState<'a> {
             f: device_t.f - origin_y,
             ..device_t
         };
-        let binary_alpha = self.text_smoothing_disabled();
-        let subpixel_rgb = self.text_subpixel_enabled();
+        let text_gamma_lut = if binary_alpha {
+            None
+        } else {
+            crate::render::vector_quality::text_gamma_lut(
+                crate::render::vector_quality::contract_text_gamma(),
+            )
+        };
         let key = GlyphMaskCacheKey {
             glyph: glyph_key.clone(),
             a: glyph_mask_linear_transform_key(normalized_t.a),
             b: glyph_mask_linear_transform_key(normalized_t.b),
             c: glyph_mask_linear_transform_key(normalized_t.c),
             d: glyph_mask_linear_transform_key(normalized_t.d),
-            frac_e: quantize_glyph_mask_fraction(normalized_t.e),
+            frac_e: if lcd {
+                i64::from(lcd_phase)
+            } else {
+                quantize_glyph_mask_fraction(normalized_t.e)
+            },
             frac_f: quantize_glyph_mask_fraction(normalized_t.f),
             hinting: glyph_hinting.should_apply(),
             binary_alpha,
+            lcd,
+            text_gamma: text_gamma_lut.is_some(),
             synthetic,
         };
         let dx = if origin_x <= i32::MIN as f64 {
@@ -18586,24 +18659,30 @@ impl<'a> RenderState<'a> {
         };
         if self
             .glyph_mask_cache
-            .paint(&key, &mut self.buf, dx, dy, fill_color, subpixel_rgb)
+            .paint(&key, &mut self.buf, dx, dy, fill_color)
         {
             return true;
         }
-        let Some(mut mask) =
+        let mask = if lcd {
+            rasterize_glyph_lcd_mask(
+                glyph_path,
+                &normalized_t,
+                FillRule::NonZero,
+                glyph_hinting,
+                lcd_phase,
+            )
+        } else {
             rasterize_glyph_alpha_mask(glyph_path, &normalized_t, FillRule::NonZero, glyph_hinting)
-        else {
+        };
+        let Some(mut mask) = mask else {
             return false;
         };
         if binary_alpha {
             mask.force_binary_alpha();
         }
+        mask.apply_coverage_lut(text_gamma_lut);
         let mask = Arc::new(mask);
-        if subpixel_rgb {
-            mask.paint_subpixel_rgb(&mut self.buf, dx, dy, fill_color);
-        } else {
-            mask.paint(&mut self.buf, dx, dy, fill_color);
-        }
+        mask.paint(&mut self.buf, dx, dy, fill_color);
         self.glyph_mask_cache.insert(key, mask);
         true
     }
@@ -37439,6 +37518,8 @@ mod tests {
                 frac_f: 0,
                 hinting: false,
                 binary_alpha: false,
+                lcd: false,
+                text_gamma: false,
                 synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
             },
             Arc::clone(&mask),
@@ -47989,6 +48070,8 @@ mod tests {
                 frac_f: 0,
                 hinting: false,
                 binary_alpha: false,
+                lcd: false,
+                text_gamma: false,
                 synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
             }
         }
@@ -48040,6 +48123,8 @@ mod tests {
             frac_f: 0,
             hinting: false,
             binary_alpha: false,
+            lcd: false,
+            text_gamma: false,
             synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
         };
         let mask = Arc::new(
@@ -48050,7 +48135,7 @@ mod tests {
 
         let mut atlas_buf = PixelBuffer::new_filled(2, 2, WHITE);
         let mut compact_buf = PixelBuffer::new_filled(2, 2, WHITE);
-        assert!(cache.paint(&key, &mut atlas_buf, 0, 0, RED, false));
+        assert!(cache.paint(&key, &mut atlas_buf, 0, 0, RED));
         compact_buf.blend_alpha_mask(0, 0, 2, 2, &[0, 255, 128, 255], RED);
 
         assert_eq!(
@@ -48081,6 +48166,8 @@ mod tests {
             frac_f: 0,
             hinting: false,
             binary_alpha: false,
+            lcd: false,
+            text_gamma: false,
             synthetic: crate::fonts::substitute_style::SyntheticStyle::NONE,
         };
         let mask =
