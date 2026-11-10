@@ -43151,12 +43151,12 @@ mod tests {
             (10..=12).contains(&red[0]) && (87..=89).contains(&red[3]),
             "unscaled at the bottom-left: {red:?}"
         );
-        assert!(red[2] - red[0] + 1 <= 11, "{red:?}");
+        assert!(red[2] - red[0] < 11, "{red:?}");
 
         let bigger = render_pdf(icon_button_pdf("/TP 1 /IF << /SW /B >>"));
         let red = matching_pixel_bounds(&bigger, is_red).expect("icon");
         assert!(
-            red[2] - red[0] + 1 <= 11,
+            red[2] - red[0] < 11,
             "small icons are not enlarged: {red:?}"
         );
     }
