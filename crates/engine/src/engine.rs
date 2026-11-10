@@ -6256,6 +6256,7 @@ mod tests {
         every_field.forced_colors = Some(crate::render::ForcedColorScheme::uniform(
             crate::render::ContractColor::default(),
         ));
+        every_field.text_gamma = crate::render::TextGamma::Pdfium;
         let contract_fields = serde_json::to_value(&every_field)
             .expect("serialize contract")
             .as_object()
