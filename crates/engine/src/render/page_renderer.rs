@@ -1940,6 +1940,18 @@ impl RenderDocumentCache {
         self.invalidate_sources_and_pages(next_revision, changed_sources, &[])
     }
 
+    /// Single-pass caches record no dependency graph, so any invalidation
+    /// drops everything they hold.
+    fn single_pass_invalidation(
+        &mut self,
+        next_revision: RevisionId,
+    ) -> Option<InvalidationResult> {
+        if self.retain_page_programs {
+            return None;
+        }
+        Some(self.reset_to_revision_with_result(next_revision))
+    }
+
     pub fn invalidate_sources_and_pages(
         &mut self,
         next_revision: RevisionId,
@@ -1956,6 +1968,9 @@ impl RenderDocumentCache {
         affected_pages: &[usize],
         affected_tiles: &[(usize, RenderTile)],
     ) -> InvalidationResult {
+        if let Some(result) = self.single_pass_invalidation(next_revision) {
+            return result;
+        }
         let mut graph = self.dependency_graph.take().unwrap_or_else(|| {
             RenderDependencyGraph::new(self.document_revision.unwrap_or(next_revision))
         });
@@ -1988,6 +2003,9 @@ impl RenderDocumentCache {
         affected_pages: &[usize],
         affected_tiles: &[(usize, RenderTile)],
     ) -> InvalidationResult {
+        if let Some(result) = self.single_pass_invalidation(next_revision) {
+            return result;
+        }
         let mut graph = self.dependency_graph.take().unwrap_or_else(|| {
             RenderDependencyGraph::new(self.document_revision.unwrap_or(next_revision))
         });
@@ -3711,6 +3729,14 @@ impl PageRenderer {
         if cache.page_dependency_complete.contains(&page_number) {
             return Ok(());
         }
+        if !cache.retain_page_programs {
+            // A single-pass cache is reset wholesale on invalidation (see
+            // `single_pass_invalidation`), so it records no per-source
+            // dependency graph. The page lookup keeps the same error
+            // behaviour for a missing page.
+            engine.get_page(page_number)?;
+            return Ok(());
+        }
         cache.remember_source_identities(engine.canonical_document().object_identities());
         let page = engine.get_page(page_number)?;
         let mut refs = HashSet::new();
@@ -3758,6 +3784,10 @@ impl PageRenderer {
         cache: &mut RenderDocumentCache,
     ) -> usize {
         cache.bind_document_revision(engine.canonical_document().revision());
+        if !cache.retain_page_programs {
+            // A single-pass cache keeps no tile rasters to invalidate.
+            return 0;
+        }
         cache.remember_source_identities(engine.canonical_document().object_identities());
         let mut state = DisplayListSpatialResourceState::default();
         let mut saved_states = Vec::new();
@@ -31129,7 +31159,8 @@ mod tests {
         let font = ActiveFontResource {
             name: "OuterFont".to_string(),
             dict: Arc::new(PdfDictionary::empty()),
-            cache_key: "outer-font".to_string(),
+            cache_key: "outer-font".into(),
+            source_ref: None,
         };
         state.active_font_resource = Some(font.clone());
         state.active_resource_stack = vec![ActiveResourceSnapshot {

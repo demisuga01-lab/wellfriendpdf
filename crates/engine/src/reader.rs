@@ -3874,7 +3874,7 @@ trailer
     fn object_stream_cache_replacement_still_enforces_aggregate_budget() {
         let object_map = |start: u32, count: u32| {
             (start..start + count)
-                .map(|number| (number, (0, PdfObject::Null)))
+                .map(|number| (number, (0, Arc::new(PdfObject::Null))))
                 .collect::<HashMap<_, _>>()
         };
         let mut cache = BoundedObjectStreamCache::new(4);
