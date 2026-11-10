@@ -1398,7 +1398,7 @@ mod tests {
 
     #[test]
     fn diagnoses_devicen_component_cap() {
-        let names = (0..20)
+        let names = (0..40)
             .map(|i| format!("/C{i}"))
             .collect::<Vec<_>>()
             .join(" ");

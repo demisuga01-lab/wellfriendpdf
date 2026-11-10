@@ -249,25 +249,53 @@ pub(crate) fn compatibility_normalization_needed(operations: &[ContentOperation]
     operations.iter().any(needs_compatibility_normalization)
 }
 
-/// A marked-content operator with stray operands before a valid tag/property
-/// pair.
+/// Operand count of operators whose arity is fixed. Variable-arity colour
+/// operators (`sc`, `scn`, `SC`, `SCN`) and inline-image operators are not
+/// listed: their count depends on the current colour space or image data.
+fn fixed_operand_count(operator: &str) -> Option<usize> {
+    Some(match operator {
+        "q" | "Q" | "h" | "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" | "W"
+        | "W*" | "BT" | "ET" | "T*" | "EMC" | "BX" | "EX" => 0,
+        "w" | "J" | "j" | "M" | "ri" | "i" | "gs" | "G" | "g" | "CS" | "cs" | "Tc" | "Tw"
+        | "Tz" | "TL" | "Tr" | "Ts" | "Tj" | "'" | "TJ" | "Do" | "sh" | "BMC" | "MP" => 1,
+        "d" | "m" | "l" | "Tf" | "Td" | "TD" | "d0" | "BDC" | "DP" => 2,
+        "RG" | "rg" | "\"" => 3,
+        "K" | "k" | "v" | "y" | "re" => 4,
+        "cm" | "c" | "Tm" | "d1" => 6,
+        _ => return None,
+    })
+}
+
+/// An operator with more operands than its fixed arity. Like Poppler
+/// (`Gfx::execOp`), only the last operands are used, so `0 0 0 1 rg` sets
+/// the colour from `0 0 1` instead of dropping the operator. This also
+/// covers a marked-content operator with stray operands before a valid
+/// tag/property pair.
 fn needs_compatibility_normalization(operation: &ContentOperation) -> bool {
-    if !matches!(operation.operator.as_str(), "BDC" | "DP") || operation.operands.len() <= 2 {
+    let Some(count) = fixed_operand_count(&operation.operator) else {
+        return false;
+    };
+    let len = operation.operands.len();
+    if len <= count {
         return false;
     }
-    let len = operation.operands.len();
-    operation.operands[len - 2].as_name().is_some()
-        && matches!(
-            operation.operands[len - 1],
-            Operand::Name(_) | Operand::Dictionary(_)
-        )
+    if matches!(operation.operator.as_str(), "BDC" | "DP") {
+        // Only a well-formed trailing tag/property pair is recovered.
+        return operation.operands[len - 2].as_name().is_some()
+            && matches!(
+                operation.operands[len - 1],
+                Operand::Name(_) | Operand::Dictionary(_)
+            );
+    }
+    true
 }
 
 pub(crate) fn normalize_compatibility_operations(operations: &mut [ContentOperation]) {
     for operation in operations {
         if needs_compatibility_normalization(operation) {
             let len = operation.operands.len();
-            let ignored = len - 2;
+            let keep = fixed_operand_count(&operation.operator).unwrap_or(len);
+            let ignored = len - keep;
             operation.operands.drain(0..ignored);
             log::warn!(
                 "content compatibility: ignored {ignored} stray prefix operand(s) before {}",
@@ -807,6 +835,19 @@ mod tests {
     }
 
     #[test]
+    fn extra_operands_use_the_last_operands_like_poppler() {
+        let mut ops = ContentParser::parse(b"0 0 0 1 rg 9 1 0 0 1 5 6 cm").unwrap();
+        normalize_compatibility_operations(&mut ops);
+        assert_eq!(ops[0].operator, "rg");
+        assert_eq!(ops[0].operands.len(), 3);
+        assert_eq!(ops[0].operands[2].as_number(), Some(1.0));
+        assert_eq!(ops[0].operands[0].as_number(), Some(0.0));
+        assert_eq!(ops[1].operands.len(), 6);
+        assert_eq!(ops[1].operands[0].as_number(), Some(1.0));
+        assert_eq!(ops[1].operands[5].as_number(), Some(6.0));
+    }
+
+    #[test]
     fn normalization_check_agrees_with_the_normalization() {
         for (content, needed) in [
             (&b"/Span <</MCID 3>> BDC (a) Tj EMC"[..], false),
@@ -814,6 +855,10 @@ mod tests {
             (&b"17 /Span /P1 BDC EMC"[..], true),
             (&b"1 2 /Tag <</MCID 0>> DP"[..], true),
             (&b"q 1 0 0 1 0 0 cm Q"[..], false),
+            (&b"0 0 0 1 rg"[..], true),
+            (&b"5 q Q"[..], true),
+            (&b"1 2 3 4 5 6 7 cm"[..], true),
+            (&b"0 0 1 sc"[..], false),
         ] {
             let original = ContentParser::parse(content).unwrap();
             let mut normalized = original.clone();

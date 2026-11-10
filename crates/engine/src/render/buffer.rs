@@ -6105,6 +6105,19 @@ impl PixelBuffer {
         self.smask = saved_smask;
     }
 
+    /// Apply per-component transfer lookup tables (ExtGState `/TR`) to the
+    /// colour channels of every painted pixel. Alpha is unchanged.
+    pub(crate) fn apply_rgba_transfer(&mut self, channels: &[[u8; 256]; 4]) {
+        for pixel in self.data.chunks_exact_mut(4) {
+            if pixel[3] == 0 {
+                continue;
+            }
+            pixel[0] = channels[0][pixel[0] as usize];
+            pixel[1] = channels[1][pixel[1] as usize];
+            pixel[2] = channels[2][pixel[2] as usize];
+        }
+    }
+
     /// Remove a backdrop's contribution from this buffer (a non-isolated
     /// transparency-group result that was seeded with `backdrop`).
     ///

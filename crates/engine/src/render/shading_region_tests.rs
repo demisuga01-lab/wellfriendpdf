@@ -162,7 +162,10 @@ fn malformed_common_entries_are_rejected_without_large_component_allocations() {
         ("BBox", PdfObject::Array(vec![PdfObject::Real(f64::NAN); 4])),
         (
             "Background",
-            PdfObject::Array(vec![PdfObject::Integer(0); 17]),
+            PdfObject::Array(vec![
+                PdfObject::Integer(0);
+                crate::render::colorspace::MAX_DEVICEN_COMPONENTS + 1
+            ]),
         ),
         ("Background", PdfObject::Name("Black".into())),
         ("AntiAlias", PdfObject::Integer(1)),

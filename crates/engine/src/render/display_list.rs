@@ -594,7 +594,9 @@ impl RenderBounds {
         rise: f64,
         padding_px: f64,
     ) -> Option<Self> {
-        if font_size <= 0.0 || !font_size.is_finite() {
+        // A negative size mirrors the glyphs; the min/max below still
+        // bounds the flipped extent.
+        if font_size == 0.0 || !font_size.is_finite() {
             return None;
         }
         let descent = -0.30 * font_size;
@@ -2072,12 +2074,8 @@ impl<'a> DisplayListBuilder<'a> {
                     .to_string(),
             });
         }
-        if self.text_object_active {
-            self.unsupported.push(UnsupportedRenderOp {
-                operator: "BT".to_string(),
-                reason: "malformed text-object sequence: BT has no closing ET".to_string(),
-            });
-        }
+        // An unclosed text object is tolerated (Poppler, PDFium); the exact
+        // render contract refuses it when the plan is replayed.
         if self.pending_clip.take().is_some() {
             self.unsupported.push(UnsupportedRenderOp {
                 operator: "W".to_string(),
@@ -2508,48 +2506,18 @@ impl<'a> DisplayListBuilder<'a> {
         }
     }
 
+    /// Track BT/ET pairing. Like Poppler and PDFium, malformed sequences
+    /// (nested BT, stray ET, text operators outside a text object) are not a
+    /// reason to refuse the page: the replayed render state draws them
+    /// under the compatibility contract and refuses them under the exact
+    /// contract.
     fn validate_text_object_sequence(&mut self, op: &ContentOperation) -> bool {
         match op.operator.as_str() {
-            "BT" => {
-                if self.text_object_active {
-                    self.unsupported.push(UnsupportedRenderOp {
-                        operator: op.operator.clone(),
-                        reason:
-                            "malformed text-object sequence: nested BT inside active text object"
-                                .to_string(),
-                    });
-                    return false;
-                }
-                self.text_object_active = true;
-                true
-            }
-            "ET" => {
-                if !self.text_object_active {
-                    self.unsupported.push(UnsupportedRenderOp {
-                        operator: op.operator.clone(),
-                        reason: "malformed text-object sequence: ET has no active text object"
-                            .to_string(),
-                    });
-                    return false;
-                }
-                self.text_object_active = false;
-                true
-            }
-            "Td" | "TD" | "Tm" | "T*" | "Tj" | "TJ" | "'" | "\"" => {
-                if !self.text_object_active {
-                    self.unsupported.push(UnsupportedRenderOp {
-                        operator: op.operator.clone(),
-                        reason: format!(
-                            "malformed text-object sequence: operator '{}' requires active text object",
-                            op.operator
-                        ),
-                    });
-                    return false;
-                }
-                true
-            }
-            _ => true,
+            "BT" => self.text_object_active = true,
+            "ET" => self.text_object_active = false,
+            _ => {}
         }
+        true
     }
 
     fn validate_marked_content_op(&mut self, op: &ContentOperation) -> bool {
@@ -3555,36 +3523,19 @@ mod tests {
             list.unsupported[0].reason
         );
 
-        for (ops, expected_operator, expected_reason) in [
-            (
-                vec![op("Tj", vec![Operand::String(b"hello".to_vec())])],
-                "Tj",
-                "requires active text object",
-            ),
-            (vec![op("ET", vec![])], "ET", "ET has no active text object"),
-            (
-                vec![op("BT", vec![]), op("BT", vec![]), op("ET", vec![])],
-                "BT",
-                "nested BT",
-            ),
-            (
-                vec![
-                    op("BT", vec![]),
-                    op("Tj", vec![Operand::String(b"hello".to_vec())]),
-                ],
-                "BT",
-                "BT has no closing ET",
-            ),
+        for ops in [
+            vec![op("Tj", vec![Operand::String(b"hello".to_vec())])],
+            vec![op("ET", vec![])],
+            vec![op("BT", vec![]), op("BT", vec![]), op("ET", vec![])],
+            vec![
+                op("BT", vec![]),
+                op("Tj", vec![Operand::String(b"hello".to_vec())]),
+            ],
         ] {
+            // Malformed BT/ET sequences are tolerated at capture time; the
+            // render state refuses them only under the exact contract.
             let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
-            assert!(!list.is_fully_supported());
-            assert_eq!(list.unsupported.len(), 1);
-            assert_eq!(list.unsupported[0].operator, expected_operator);
-            assert!(
-                list.unsupported[0].reason.contains(expected_reason),
-                "got {}",
-                list.unsupported[0].reason
-            );
+            assert!(list.is_fully_supported(), "{:?}", list.unsupported);
         }
     }
 

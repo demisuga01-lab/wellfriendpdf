@@ -2609,6 +2609,17 @@ impl PackedDisplayList {
                         ) {
                             requires_native_replay = true;
                         }
+                        // Transfer curves are applied to paint colours by the
+                        // native renderer state, which the pure vector replay
+                        // path does not consult.
+                        if let GraphicsStateDescriptor::ApplyExtGState {
+                            dict: Some(dict), ..
+                        } = state
+                        {
+                            if crate::content::state::ext_g_state_has_non_identity_transfer(dict) {
+                                requires_native_replay = true;
+                            }
+                        }
                         NativeDescriptor::State(state.clone())
                     };
                     Self::update_active_text_font_from_descriptor(

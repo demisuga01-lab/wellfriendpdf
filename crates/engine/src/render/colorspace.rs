@@ -22,7 +22,9 @@ use std::cell::{Cell, RefCell};
 use std::mem::size_of;
 use std::sync::{Arc, Weak};
 
-pub(crate) const MAX_DEVICEN_COMPONENTS: usize = 16;
+/// Maximum DeviceN colorants. Poppler (gfxColorMaxComps) and PDFium both
+/// accept 32; the PDF specification recommends no fixed limit.
+pub(crate) const MAX_DEVICEN_COMPONENTS: usize = 32;
 pub(crate) const DEFAULT_TINT_TRANSFORM_CACHE_ENTRIES: usize = 64;
 pub(crate) const DEFAULT_TINT_TRANSFORM_CACHE_BYTES: usize =
     DEFAULT_TINT_TRANSFORM_CACHE_ENTRIES * MAX_TINT_TRANSFORM_OUTPUT_COMPONENTS * size_of::<f64>();
@@ -1285,6 +1287,26 @@ mod tests {
         ]);
         assert_eq!(
             resolve_named_color(&space, &[0.5; MAX_DEVICEN_COMPONENTS + 1], 1.0, &reader()),
+            NamedColor::Unhandled
+        );
+    }
+
+    #[test]
+    fn device_n_accepts_thirty_two_colorants_like_poppler() {
+        assert_eq!(MAX_DEVICEN_COMPONENTS, 32);
+        let names = (0..32)
+            .map(|i| name(&format!("Spot{i}")))
+            .collect::<Vec<_>>();
+        let space = PdfObject::Array(vec![
+            name("DeviceN"),
+            PdfObject::Array(names),
+            name("DeviceGray"),
+            type2_fn(&[0.0], &[1.0]),
+        ]);
+        // The type 2 tint transform takes one input; the colorant count
+        // must not be refused as unhandled before the function is consulted.
+        assert_ne!(
+            resolve_named_color(&space, &[0.5; 32], 1.0, &reader()),
             NamedColor::Unhandled
         );
     }
