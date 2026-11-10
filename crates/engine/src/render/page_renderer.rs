@@ -421,8 +421,14 @@ struct PreparedTextCacheEntry {
 
 #[derive(Default)]
 struct PreparedTextCache {
-    entries: HashMap<String, HashMap<Vec<u8>, PreparedTextCacheEntry>>,
-    order: VecDeque<(String, Vec<u8>)>,
+    // Keys are internal (font cache keys and string bytes): the fast hasher
+    // replaces SipHash, and font keys are shared with the render state.
+    entries: HashMap<
+        Arc<str>,
+        HashMap<Vec<u8>, PreparedTextCacheEntry, crate::fast_hash::FastHashBuilder>,
+        crate::fast_hash::FastHashBuilder,
+    >,
+    order: VecDeque<(Arc<str>, Vec<u8>)>,
     entry_count: usize,
     bytes: usize,
     stats: RenderArtifactCacheStats,
@@ -443,7 +449,7 @@ impl PreparedTextCache {
         hit
     }
 
-    fn insert(&mut self, font_key: String, text: Vec<u8>, glyphs: Arc<Vec<DecodedGlyph>>) {
+    fn insert(&mut self, font_key: Arc<str>, text: Vec<u8>, glyphs: Arc<Vec<DecodedGlyph>>) {
         let bytes = std::mem::size_of::<PreparedTextCacheEntry>()
             .saturating_add(font_key.len())
             .saturating_add(text.len())
@@ -576,6 +582,7 @@ pub struct RenderDocumentCache {
     path_clip_node_cache: PathClipNodeCache,
     font_bytes_cache: HashMap<String, Option<Arc<Vec<u8>>>>,
     font_bytes_cache_order: VecDeque<String>,
+    font_substitution_selections: HashMap<String, FontReplacementSelection>,
     font_bytes_cache_bytes: usize,
     font_bytes_cache_stats: RenderArtifactCacheStats,
     font_resolver_cache: HashMap<String, Arc<FontResolver>>,
@@ -626,6 +633,10 @@ pub struct RenderDocumentCache {
     render_plan_cache_stats: RenderArtifactCacheStats,
     display_list_raster_cache: RenderCache,
     final_raster_cache_policy: FinalRasterCachePolicy,
+    /// Whether page display lists and compiled render plans are retained for
+    /// a later render of the same page. Off for single-pass workloads that
+    /// render every page once (see [`Self::single_pass`]).
+    retain_page_programs: bool,
     transparent_page_group_cache: HashMap<String, bool>,
     transparent_page_group_cache_order: VecDeque<String>,
     clip_dag_stats: ClipDagStats,
@@ -643,6 +654,18 @@ pub struct RenderDocumentCache {
 impl RenderDocumentCache {
     pub fn new() -> Self {
         Self::new_with_final_raster_cache_policy(FinalRasterCachePolicy::ResourcesAndFinalRasters)
+    }
+
+    /// A cache for rendering each page of a document once (for example a
+    /// command-line export of every page). Like [`Self::resources_only`] it
+    /// reuses fonts, glyphs, images and other document resources across
+    /// pages, but it does not retain per-page display lists, render plans or
+    /// final rasters, which a single pass never reads back. Output is
+    /// identical; peak memory and per-page copies are lower.
+    pub fn single_pass() -> Self {
+        let mut cache = Self::resources_only();
+        cache.retain_page_programs = false;
+        cache
     }
 
     pub fn resources_only() -> Self {
@@ -667,6 +690,7 @@ impl RenderDocumentCache {
             path_clip_node_cache: PathClipNodeCache::default(),
             font_bytes_cache: HashMap::new(),
             font_bytes_cache_order: VecDeque::new(),
+            font_substitution_selections: HashMap::new(),
             font_bytes_cache_bytes: 0,
             font_bytes_cache_stats: RenderArtifactCacheStats::default(),
             font_resolver_cache: HashMap::new(),
@@ -717,6 +741,7 @@ impl RenderDocumentCache {
             render_plan_cache_stats: RenderArtifactCacheStats::default(),
             display_list_raster_cache,
             final_raster_cache_policy: policy,
+            retain_page_programs: true,
             transparent_page_group_cache: HashMap::new(),
             transparent_page_group_cache_order: VecDeque::new(),
             clip_dag_stats: ClipDagStats::default(),
@@ -796,6 +821,7 @@ impl RenderDocumentCache {
             "font_bytes" => {
                 self.font_bytes_cache = fresh.font_bytes_cache;
                 self.font_bytes_cache_order = fresh.font_bytes_cache_order;
+                self.font_substitution_selections = fresh.font_substitution_selections;
                 self.font_bytes_cache_bytes = fresh.font_bytes_cache_bytes;
                 self.font_bytes_cache_stats = fresh.font_bytes_cache_stats;
             }
@@ -888,6 +914,62 @@ impl RenderDocumentCache {
         true
     }
 
+    /// Keep only the document-level font state (font programs and
+    /// substitutions, resolvers, decoded strings, glyph outlines and masks,
+    /// Type 1/Type 3 programs) and the revision binding; drop page programs,
+    /// images, path masks, rasters and the substitution log.
+    pub(crate) fn retain_text_resources_only(&mut self) {
+        let mut kept = Self::new_with_final_raster_cache_policy(self.final_raster_cache_policy);
+        kept.retain_page_programs = self.retain_page_programs;
+        std::mem::swap(&mut kept.glyph_cache, &mut self.glyph_cache);
+        std::mem::swap(&mut kept.glyph_mask_cache, &mut self.glyph_mask_cache);
+        std::mem::swap(&mut kept.type3_mask_cache, &mut self.type3_mask_cache);
+        std::mem::swap(
+            &mut kept.type3_rendered_cache,
+            &mut self.type3_rendered_cache,
+        );
+        std::mem::swap(&mut kept.type1_program_cache, &mut self.type1_program_cache);
+        std::mem::swap(
+            &mut kept.type3_geometry_cache,
+            &mut self.type3_geometry_cache,
+        );
+        std::mem::swap(
+            &mut kept.type3_charproc_cache,
+            &mut self.type3_charproc_cache,
+        );
+        std::mem::swap(
+            &mut kept.type3_retained_charproc_cache,
+            &mut self.type3_retained_charproc_cache,
+        );
+        std::mem::swap(&mut kept.font_bytes_cache, &mut self.font_bytes_cache);
+        std::mem::swap(
+            &mut kept.font_bytes_cache_order,
+            &mut self.font_bytes_cache_order,
+        );
+        kept.font_bytes_cache_bytes = self.font_bytes_cache_bytes;
+        kept.font_bytes_cache_stats = self.font_bytes_cache_stats;
+        std::mem::swap(
+            &mut kept.font_substitution_selections,
+            &mut self.font_substitution_selections,
+        );
+        std::mem::swap(&mut kept.font_resolver_cache, &mut self.font_resolver_cache);
+        std::mem::swap(
+            &mut kept.font_resolver_cache_order,
+            &mut self.font_resolver_cache_order,
+        );
+        kept.font_resolver_cache_bytes = self.font_resolver_cache_bytes;
+        kept.font_resolver_cache_stats = self.font_resolver_cache_stats;
+        std::mem::swap(&mut kept.prepared_text_cache, &mut self.prepared_text_cache);
+        kept.document_revision = self.document_revision;
+        std::mem::swap(&mut kept.dependency_graph, &mut self.dependency_graph);
+        std::mem::swap(&mut kept.source_identities, &mut self.source_identities);
+        std::mem::swap(
+            &mut kept.source_cache_markers,
+            &mut self.source_cache_markers,
+        );
+        *self = kept;
+    }
+
     pub fn clear(&mut self) {
         let final_raster_cache_policy = self.final_raster_cache_policy;
         self.function_cache =
@@ -901,6 +983,7 @@ impl RenderDocumentCache {
         self.path_clip_node_cache.clear();
         self.font_bytes_cache.clear();
         self.font_bytes_cache_order.clear();
+        self.font_substitution_selections.clear();
         self.font_bytes_cache_bytes = 0;
         self.font_bytes_cache_stats = RenderArtifactCacheStats::default();
         self.font_resolver_cache.clear();
@@ -1857,6 +1940,18 @@ impl RenderDocumentCache {
         self.invalidate_sources_and_pages(next_revision, changed_sources, &[])
     }
 
+    /// Single-pass caches record no dependency graph, so any invalidation
+    /// drops everything they hold.
+    fn single_pass_invalidation(
+        &mut self,
+        next_revision: RevisionId,
+    ) -> Option<InvalidationResult> {
+        if self.retain_page_programs {
+            return None;
+        }
+        Some(self.reset_to_revision_with_result(next_revision))
+    }
+
     pub fn invalidate_sources_and_pages(
         &mut self,
         next_revision: RevisionId,
@@ -1873,6 +1968,9 @@ impl RenderDocumentCache {
         affected_pages: &[usize],
         affected_tiles: &[(usize, RenderTile)],
     ) -> InvalidationResult {
+        if let Some(result) = self.single_pass_invalidation(next_revision) {
+            return result;
+        }
         let mut graph = self.dependency_graph.take().unwrap_or_else(|| {
             RenderDependencyGraph::new(self.document_revision.unwrap_or(next_revision))
         });
@@ -1905,6 +2003,9 @@ impl RenderDocumentCache {
         affected_pages: &[usize],
         affected_tiles: &[(usize, RenderTile)],
     ) -> InvalidationResult {
+        if let Some(result) = self.single_pass_invalidation(next_revision) {
+            return result;
+        }
         let mut graph = self.dependency_graph.take().unwrap_or_else(|| {
             RenderDependencyGraph::new(self.document_revision.unwrap_or(next_revision))
         });
@@ -2293,6 +2394,9 @@ impl RenderDocumentCache {
         list: DisplayList,
     ) -> Arc<DisplayList> {
         let list = Arc::new(list);
+        if !self.retain_page_programs {
+            return list;
+        }
         insert_display_list_cache_entry(
             &mut self.display_list_cache,
             &mut self.display_list_cache_order,
@@ -2327,6 +2431,9 @@ impl RenderDocumentCache {
         max_cache_bytes: u64,
     ) -> Arc<RenderPlan> {
         let plan = Arc::new(plan);
+        if !self.retain_page_programs {
+            return plan;
+        }
         insert_render_plan_cache_entry(
             &mut self.render_plan_cache,
             &mut self.render_plan_cache_order,
@@ -2381,9 +2488,21 @@ impl RenderDocumentCache {
         self.display_list_raster_cache.get_ref(key)
     }
 
+    #[cfg(test)]
     pub(crate) fn insert_display_list_raster(&mut self, key: RenderCacheKey, buffer: PixelBuffer) {
         self.record_tile_dependency(key.page_number, key.tile);
         self.display_list_raster_cache.insert(key, buffer);
+    }
+
+    /// [`Self::insert_display_list_raster`] for a raster the caller keeps:
+    /// copies it only when the final-raster cache will retain it.
+    pub(crate) fn insert_display_list_raster_copy(
+        &mut self,
+        key: RenderCacheKey,
+        buffer: &PixelBuffer,
+    ) {
+        self.record_tile_dependency(key.page_number, key.tile);
+        self.display_list_raster_cache.insert_cloned(key, buffer);
     }
 }
 
@@ -2416,6 +2535,11 @@ pub(crate) fn source_cache_markers_for_object(number: u32, generation: u16) -> V
 }
 
 fn touch_ordered_cache_key(order: &mut VecDeque<String>, key: &str) {
+    // Repeated use of the most recent entry (the common case) is already in
+    // recency order: skip the scan.
+    if order.back().is_some_and(|last| last == key) {
+        return;
+    }
     if let Some(existing) = remove_ordered_cache_key(order, key) {
         order.push_back(existing);
     }
@@ -2700,7 +2824,7 @@ fn collect_render_dependency_refs(
                 *remaining = (*remaining).saturating_sub(1);
             }
             if visited.insert(reference) {
-                if let Ok(resolved) = reader.get_object(*number, *generation) {
+                if let Ok(resolved) = reader.get_object_shared(*number, *generation) {
                     collect_render_dependency_refs(
                         &resolved,
                         reader,
@@ -3157,9 +3281,13 @@ fn image_auxiliary_stream_dict(
 ) -> Option<PdfDictionary> {
     match object {
         PdfObject::Reference { number, generation } => {
-            match reader.get_object(*number, *generation).ok()? {
-                PdfObject::Stream { dict, .. } => Some(dict),
-                PdfObject::Dictionary(dict) => Some(dict),
+            match reader
+                .get_object_shared(*number, *generation)
+                .ok()?
+                .as_ref()
+            {
+                PdfObject::Stream { dict, .. } => Some(dict.clone()),
+                PdfObject::Dictionary(dict) => Some(dict.clone()),
                 _ => None,
             }
         }
@@ -3601,6 +3729,14 @@ impl PageRenderer {
         if cache.page_dependency_complete.contains(&page_number) {
             return Ok(());
         }
+        if !cache.retain_page_programs {
+            // A single-pass cache is reset wholesale on invalidation (see
+            // `single_pass_invalidation`), so it records no per-source
+            // dependency graph. The page lookup keeps the same error
+            // behaviour for a missing page.
+            engine.get_page(page_number)?;
+            return Ok(());
+        }
         cache.remember_source_identities(engine.canonical_document().object_identities());
         let page = engine.get_page(page_number)?;
         let mut refs = HashSet::new();
@@ -3648,6 +3784,10 @@ impl PageRenderer {
         cache: &mut RenderDocumentCache,
     ) -> usize {
         cache.bind_document_revision(engine.canonical_document().revision());
+        if !cache.retain_page_programs {
+            // A single-pass cache keeps no tile rasters to invalidate.
+            return 0;
+        }
         cache.remember_source_identities(engine.canonical_document().object_identities());
         let mut state = DisplayListSpatialResourceState::default();
         let mut saved_states = Vec::new();
@@ -4257,37 +4397,59 @@ impl PageRenderer {
         render_mode: RenderMode,
     ) -> Result<PixelBuffer> {
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let resources = engine.get_page_resources(page_number)?;
+        let resources = engine.get_page_resources_shared(page_number)?;
         let transparent_page_group = plan.packed.requires_transparent_page_group();
         let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
-        let mut state = RenderState::new(buf, viewport.clone(), resources, engine, page_number);
-        state.cancel = cancel.clone();
-        {
-            let mut adapter = RenderStatePlanAdapter {
-                state: &mut state,
-                viewport_ref: &viewport,
-                vector_ctm_base: None,
-                forced_vector_color: None,
-                forced_vector_fill_pixel_color: None,
-                forced_vector_stroke_pixel_color: None,
-                ignore_bounds: false,
-            };
-            plan.execute_full(&mut adapter)?;
-        }
-        state.check_fatal_render_error()?;
-        cancel.check("packed plan replay")?;
-        let mut buf = state.into_buffer();
+        // Fonts, decoded strings and glyphs come from the engine's
+        // document-level cache, so a one-shot render of every page parses
+        // each font once.
+        let mut buf = engine.with_text_render_cache(|cache| -> Result<PixelBuffer> {
+            let mut state = RenderState::new_with_shared_document_cache(
+                buf,
+                viewport.clone(),
+                resources,
+                engine,
+                page_number,
+                cache,
+            );
+            state.cancel = cancel.clone();
+            {
+                let mut adapter = RenderStatePlanAdapter {
+                    state: &mut state,
+                    viewport_ref: &viewport,
+                    vector_ctm_base: None,
+                    forced_vector_color: None,
+                    forced_vector_fill_pixel_color: None,
+                    forced_vector_stroke_pixel_color: None,
+                    ignore_bounds: false,
+                };
+                if let Err(error) = plan.execute_full(&mut adapter) {
+                    state.return_document_cache(cache);
+                    return Err(error);
+                }
+            }
+            if let Err(error) = state.check_fatal_render_error() {
+                state.return_document_cache(cache);
+                return Err(error);
+            }
+            if let Err(error) = cancel.check("packed plan replay") {
+                state.return_document_cache(cache);
+                return Err(error);
+            }
+            Ok(state.into_buffer_and_document_cache(cache))
+        })?;
         if transparent_page_group {
             buf.flatten_onto_background(WHITE);
         }
         Ok(buf)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_packed_vector_plan_with_cache(
         engine: &ContentEngine,
         page_number: usize,
         dpi: u32,
-        list: &DisplayList,
+        list: DisplayListSource<'_>,
         resources: Arc<PageResources>,
         cancel: &CancelToken,
         render_mode: RenderMode,
@@ -4301,12 +4463,14 @@ impl PageRenderer {
             Self::revision_cache_key(engine),
             contract.cache_fingerprint(),
         );
+        let full_tile =
+            RenderTile::full(list.get().viewport.width_px, list.get().viewport.height_px);
         let plan = match cache.cached_render_plan(&plan_key) {
             Some(plan) => plan,
             None => {
                 let max_cache_bytes = contract.resource_budget.max_cache_bytes;
                 let compiled = RenderPlan::compile_with_resources_cancellable(
-                    list.clone(),
+                    list.into_owned(),
                     contract,
                     resources.as_ref(),
                     cancel,
@@ -4316,10 +4480,7 @@ impl PageRenderer {
         };
         if !plan.packed.requires_native_replay() {
             let buf = plan
-                .execute_vector_tile_cancellable(
-                    RenderTile::full(list.viewport.width_px, list.viewport.height_px),
-                    cancel,
-                )?
+                .execute_vector_tile_cancellable(full_tile, cancel)?
                 .ok_or_else(|| {
                     WellfriendError::UnsupportedFeature(
                         "packed vector plan unexpectedly retained a native payload".to_string(),
@@ -4559,9 +4720,12 @@ impl PageRenderer {
         let exactness_policy = contract.exactness;
         let background = crate::engine::contract_background_pixel(contract);
         let decode_limits = decode_limits_for_resource_budget(resource_budget);
-        let ops =
-            engine.get_page_content_with_decode_limits(page_number, &decode_limits, cancel)?;
-        let resources = engine.get_page_resources(page_number)?;
+        let ops = engine.get_page_content_shared_with_decode_limits(
+            page_number,
+            &decode_limits,
+            cancel,
+        )?;
+        let resources = engine.get_page_resources_shared(page_number)?;
         // The display list is always built against the whole surface so its
         // retained device bounds (and therefore culling and plan identity)
         // are identical for full and windowed renders.
@@ -4642,7 +4806,7 @@ impl PageRenderer {
                 render_mode,
                 background,
             );
-            let mut state = RenderState::new_with_document_cache(
+            let mut state = RenderState::new_with_shared_document_cache(
                 buf,
                 viewport.clone(),
                 resources,
@@ -4728,13 +4892,17 @@ impl PageRenderer {
             cache,
         )?;
         if list.is_fully_supported() {
-            return Self::render_display_list_cancellable_with_mode_and_cache(
+            let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
+            return Self::render_display_list_source_with_contract_policies_and_cache(
                 engine,
                 page_number,
                 dpi,
-                list.as_ref(),
+                DisplayListSource::Shared(list),
                 cancel,
                 render_mode,
+                contract.print_profile,
+                contract.annotations,
+                contract.forms,
                 cache,
             );
         }
@@ -4760,7 +4928,7 @@ impl PageRenderer {
     ) -> Result<DisplayList> {
         let ops = engine.get_page_content(page_number)?;
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let resources = engine.get_page_resources(page_number)?;
+        let resources = engine.get_page_resources_shared(page_number)?;
         Ok(build_display_list(&ops, viewport, &resources))
     }
 
@@ -4771,14 +4939,14 @@ impl PageRenderer {
         cancel: &CancelToken,
     ) -> Result<DisplayList> {
         cancel.check("display-list page build start")?;
-        let ops = engine.get_page_content_with_decode_limits(
+        let ops = engine.get_page_content_shared_with_decode_limits(
             page_number,
             &DecodeLimits::default(),
             cancel,
         )?;
         cancel.check("display-list page content parsing")?;
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let resources = engine.get_page_resources(page_number)?;
+        let resources = engine.get_page_resources_shared(page_number)?;
         build_display_list_cancellable(&ops, viewport, &resources, cancel)
     }
 
@@ -4895,6 +5063,34 @@ impl PageRenderer {
         form_policy: FormRenderPolicy,
         cache: &mut RenderDocumentCache,
     ) -> Result<PixelBuffer> {
+        Self::render_display_list_source_with_contract_policies_and_cache(
+            engine,
+            page_number,
+            dpi,
+            DisplayListSource::Borrowed(list),
+            cancel,
+            render_mode,
+            print_profile,
+            annotation_policy,
+            form_policy,
+            cache,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_display_list_source_with_contract_policies_and_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        source: DisplayListSource<'_>,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+        print_profile: PrintProfile,
+        annotation_policy: AnnotationRenderPolicy,
+        form_policy: FormRenderPolicy,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<PixelBuffer> {
+        let list = source.get();
         cancel.check("display-list render start")?;
         cache.bind_document_revision(engine.canonical_document().revision());
         let resources = engine.get_page_resources_shared(page_number)?;
@@ -4939,7 +5135,7 @@ impl PageRenderer {
                 engine,
                 page_number,
                 dpi,
-                list,
+                source,
                 Arc::clone(&resources),
                 cancel,
                 render_mode,
@@ -4965,7 +5161,7 @@ impl PageRenderer {
             ));
         };
         cancel.check("display-list annotation render")?;
-        cache.insert_display_list_raster(raster_key, buf.clone());
+        cache.insert_display_list_raster_copy(raster_key, &buf);
         Ok(buf)
     }
 
@@ -5056,7 +5252,7 @@ impl PageRenderer {
             ));
         }
 
-        let resources = engine.get_page_resources(page_number)?;
+        let resources = engine.get_page_resources_shared(page_number)?;
         let visibility_fingerprint = OptionalContentContext::from_document(engine.document())
             .visibility_fingerprint()
             .to_string();
@@ -5100,7 +5296,7 @@ impl PageRenderer {
                     raster_key.tile,
                     cache,
                 );
-                cache.insert_display_list_raster(raster_key, cropped.clone());
+                cache.insert_display_list_raster_copy(raster_key, &cropped);
                 return Ok(cropped);
             }
         }
@@ -5140,7 +5336,7 @@ impl PageRenderer {
             cache,
         );
         let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
-        let mut state = RenderState::new_with_document_cache(
+        let mut state = RenderState::new_with_shared_document_cache(
             buf,
             viewport.clone(),
             resources,
@@ -5198,7 +5394,7 @@ impl PageRenderer {
                 },
             )?
         };
-        cache.insert_display_list_raster(raster_key, cropped.clone());
+        cache.insert_display_list_raster_copy(raster_key, &cropped);
         Ok(cropped)
     }
 
@@ -5441,7 +5637,7 @@ impl PageRenderer {
             ));
         }
 
-        let resources = engine.get_page_resources(page_number)?;
+        let resources = engine.get_page_resources_shared(page_number)?;
         let visibility_fingerprint = optional_content_context
             .visibility_fingerprint()
             .to_string();
@@ -5488,7 +5684,7 @@ impl PageRenderer {
                     raster_key.tile,
                     cache,
                 );
-                cache.insert_display_list_raster(raster_key, cropped.clone());
+                cache.insert_display_list_raster_copy(raster_key, &cropped);
                 return Ok(cropped);
             }
         }
@@ -5540,7 +5736,7 @@ impl PageRenderer {
             contract.thin_line_mode,
             contract.vector_antialias_gamma,
         );
-        let mut state = RenderState::new_with_document_cache(
+        let mut state = RenderState::new_with_shared_document_cache(
             buf,
             viewport.clone(),
             resources,
@@ -5632,7 +5828,7 @@ impl PageRenderer {
                     .to_string(),
             ));
         }
-        cache.insert_display_list_raster(raster_key, cropped.clone());
+        cache.insert_display_list_raster_copy(raster_key, &cropped);
         Ok(cropped)
     }
 
@@ -5775,6 +5971,7 @@ impl PageRenderer {
         let resources = engine.get_page_resources(page_number)?;
         let buf = Self::initial_page_buffer(&viewport, false, RenderMode::Compat);
         let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
+        state.record_separations = true;
         state.dispatch_all(&ops);
         Ok(state.into_separation_framebuffer().report())
     }
@@ -5839,12 +6036,27 @@ impl PageRenderer {
             return Ok(());
         }
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let resources = engine.get_page_resources(page_number)?;
-        let mut state = RenderState::new(buf.clone(), viewport, resources, engine, page_number);
-        state.apply_annotation_replay_policy(policy);
-        state.render_page_annotations();
-        state.check_fatal_render_error()?;
-        *buf = state.into_buffer();
+        let resources = engine.get_page_resources_shared(page_number)?;
+        // The annotation pass draws onto the page raster itself: move it into
+        // the state instead of copying it (an error discards the page anyway).
+        let page = std::mem::replace(buf, PixelBuffer::new_with_mode(0, 0, buf.render_mode()));
+        *buf = engine.with_text_render_cache(|cache| -> Result<PixelBuffer> {
+            let mut state = RenderState::new_with_shared_document_cache(
+                page,
+                viewport,
+                resources,
+                engine,
+                page_number,
+                cache,
+            );
+            state.apply_annotation_replay_policy(policy);
+            state.render_page_annotations();
+            if let Err(error) = state.check_fatal_render_error() {
+                state.return_document_cache(cache);
+                return Err(error);
+            }
+            Ok(state.into_buffer_and_document_cache(cache))
+        })?;
         Ok(())
     }
 
@@ -5860,9 +6072,12 @@ impl PageRenderer {
             return Ok(());
         }
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let resources = engine.get_page_resources(page_number)?;
-        let mut state = RenderState::new_with_document_cache(
-            buf.clone(),
+        let resources = engine.get_page_resources_shared(page_number)?;
+        // The annotation pass draws onto the page raster itself: move it into
+        // the state instead of copying it (an error discards the page anyway).
+        let page = std::mem::replace(buf, PixelBuffer::new_with_mode(0, 0, buf.render_mode()));
+        let mut state = RenderState::new_with_shared_document_cache(
+            page,
             viewport,
             resources,
             engine,
@@ -5881,15 +6096,14 @@ impl PageRenderer {
 
     fn page_has_annotations(engine: &ContentEngine, page_number: usize) -> bool {
         let reader = engine.document().reader();
-        let pages = match engine.document().get_pages() {
-            Ok(pages) => pages,
-            Err(_) => return false,
-        };
-        let Some(page) = pages.get(page_number.saturating_sub(1)) else {
+        let Ok(Some((object_number, generation_number))) = engine
+            .document()
+            .page_object_id_at(page_number.saturating_sub(1))
+        else {
             return false;
         };
         let Ok(PdfObject::Dictionary(page_dict)) =
-            reader.get_and_resolve(page.object_number, page.generation_number)
+            reader.get_and_resolve(object_number, generation_number)
         else {
             return false;
         };
@@ -5904,7 +6118,51 @@ impl PageRenderer {
 struct ActiveFontResource {
     name: String,
     dict: Arc<PdfDictionary>,
-    cache_key: String,
+    /// The font's render-contract cache key. Shared so the per-string text
+    /// path never copies the (several hundred byte) key.
+    cache_key: Arc<str>,
+    /// The page-resource reference the key's source marker was built from.
+    source_ref: Option<(u32, u16)>,
+}
+
+/// A page display list a render reads, either borrowed from the caller or
+/// shared. A shared list held nowhere else is moved into plan compilation
+/// instead of being copied.
+#[derive(Clone)]
+enum DisplayListSource<'l> {
+    Borrowed(&'l DisplayList),
+    Shared(Arc<DisplayList>),
+}
+
+impl DisplayListSource<'_> {
+    fn get(&self) -> &DisplayList {
+        match self {
+            Self::Borrowed(list) => list,
+            Self::Shared(list) => list.as_ref(),
+        }
+    }
+
+    fn into_owned(self) -> DisplayList {
+        match self {
+            Self::Borrowed(list) => list.clone(),
+            Self::Shared(list) => {
+                Arc::try_unwrap(list).unwrap_or_else(|list| list.as_ref().clone())
+            }
+        }
+    }
+}
+
+/// Font-wide state the text path needs for every string drawn with one font
+/// resource: resolved once per render state instead of per `Tj`/`TJ` string.
+/// Everything here is a pure function of the font cache key (which already
+/// encodes the font dictionary, render contract, font provider and budget).
+struct TextFontContext {
+    font_subtype: FontSubtype,
+    type3_width_scale: f64,
+    font_bytes: Option<Arc<Vec<u8>>>,
+    exact_font_refusal: Option<String>,
+    variation: VariationRequest,
+    prepared_font: Option<PreparedFontMetadata>,
 }
 
 #[derive(Clone, Debug)]
@@ -6075,6 +6333,7 @@ struct RenderState<'a> {
     path_clip_node_cache: PathClipNodeCache,
     font_bytes_cache: HashMap<String, Option<Arc<Vec<u8>>>>,
     font_bytes_cache_order: VecDeque<String>,
+    font_substitution_selections: HashMap<String, FontReplacementSelection>,
     font_bytes_cache_bytes: usize,
     font_bytes_cache_stats: RenderArtifactCacheStats,
     font_resolver_cache: HashMap<String, Arc<FontResolver>>,
@@ -6086,10 +6345,12 @@ struct RenderState<'a> {
     /// contain hundreds of `Tj`/`TJ` operators that reference the same font;
     /// reparsing sfnt tables for every operator dominated retained text pages.
     prepared_font_metadata: HashMap<String, PreparedFontMetadata>,
+    /// Per-font text context keyed by font cache key; see [`TextFontContext`].
+    text_font_contexts: HashMap<Arc<str>, Arc<TextFontContext>, crate::fast_hash::FastHashBuilder>,
     type1_program_cache: Type3ProgramCache<crate::fonts::type1::Type1Font>,
     // Dictionaries can be replaced in-place when scopes change; allocation
     // addresses are not identities. Confirm the complete dictionary on reuse.
-    font_resource_key_cache: HashMap<String, (Arc<PdfDictionary>, String)>,
+    font_resource_key_cache: HashMap<String, (Arc<PdfDictionary>, Arc<str>)>,
     active_font_resource: Option<ActiveFontResource>,
     active_fill_color_space_resource: Option<ActiveColorSpaceResource>,
     active_stroke_color_space_resource: Option<ActiveColorSpaceResource>,
@@ -6194,6 +6455,12 @@ struct RenderState<'a> {
     /// carry the schema-v1 fingerprint; legacy paths use an equivalent
     /// deterministic identity derived from the active viewport and revision.
     render_contract_fingerprint: String,
+    /// Identity scope for font-derived caches (font programs, resolvers,
+    /// decoded strings, glyph outlines and masks). Contract renders use the
+    /// full contract fingerprint; legacy renders use only what can change a
+    /// font result (revision, render mode, optional content), not the page,
+    /// so a document cache reuses fonts and glyphs across pages.
+    font_scope_fingerprint: String,
     /// Document optional-content state for the active view configuration.
     optional_content: OptionalContentContext,
     /// Visibility stack for nested BMC/BDC/EMC marked-content sections.
@@ -6203,6 +6470,10 @@ struct RenderState<'a> {
     /// and DeviceN tint identity for report/proofing without changing RGB
     /// preview compositing semantics.
     separation_framebuffer: SeparationFramebuffer,
+    /// Whether paint operations record plate contributions into
+    /// `separation_framebuffer`. Only the separation report reads them, so
+    /// ordinary renders skip the per-paint (and per-glyph) bookkeeping.
+    record_separations: bool,
     /// Font substitution events recorded during this render pass.
     font_substitution_log: FontSubstitutionLog,
     /// Active print profile controlling annotation visibility and proof CMM routing.
@@ -7965,6 +8236,11 @@ impl<'a> RenderState<'a> {
             buf.render_mode(),
             optional_content.visibility_fingerprint(),
         );
+        let font_scope_fingerprint = legacy_font_scope_fingerprint(
+            engine,
+            buf.render_mode(),
+            optional_content.visibility_fingerprint(),
+        );
         let clip_identity_scope = clip_identity_scope_for_render_state(
             engine.canonical_document().revision().0,
             &render_contract_fingerprint,
@@ -8004,6 +8280,7 @@ impl<'a> RenderState<'a> {
             path_clip_node_cache: std::mem::take(&mut cache.path_clip_node_cache),
             font_bytes_cache: std::mem::take(&mut cache.font_bytes_cache),
             font_bytes_cache_order: std::mem::take(&mut cache.font_bytes_cache_order),
+            font_substitution_selections: std::mem::take(&mut cache.font_substitution_selections),
             font_bytes_cache_bytes,
             font_bytes_cache_stats,
             font_resolver_cache: std::mem::take(&mut cache.font_resolver_cache),
@@ -8012,6 +8289,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_stats,
             prepared_text_cache: Arc::clone(&cache.prepared_text_cache),
             prepared_font_metadata: HashMap::new(),
+            text_font_contexts: HashMap::default(),
             type1_program_cache: std::mem::take(&mut cache.type1_program_cache),
             font_resource_key_cache: HashMap::new(),
             active_font_resource: None,
@@ -8084,6 +8362,7 @@ impl<'a> RenderState<'a> {
             exactness_policy: exactness_policy_for_render_mode(render_mode),
             backend_policy: BackendSelection::StandardCpu,
             render_contract_fingerprint,
+            font_scope_fingerprint,
             optional_content,
             oc_visibility_stack: Vec::new(),
             oc_current_visible: true,
@@ -8092,6 +8371,7 @@ impl<'a> RenderState<'a> {
                 viewport_width,
                 viewport_height,
             ),
+            record_separations: false,
             font_substitution_log: FontSubstitutionLog::new(),
             print_profile: PrintProfile::Display,
             color_management_policy: ColorManagementPolicy::PortableQcms,
@@ -8137,6 +8417,7 @@ impl<'a> RenderState<'a> {
         budget: RenderResourceBudget,
     ) {
         self.render_contract_fingerprint = fingerprint.into();
+        self.font_scope_fingerprint = self.render_contract_fingerprint.clone();
         let current_clip = self.buf.clip_mask().cloned();
         self.clip_dag = ClipDag::with_identity_scope(self.clip_identity_scope());
         self.current_clip = self.clip_dag.intern_option(current_clip.as_ref());
@@ -8546,6 +8827,7 @@ impl<'a> RenderState<'a> {
     fn return_document_cache(self, cache: &mut RenderDocumentCache) {
         let resource_budget = self.resource_budget;
         let final_raster_cache_policy = cache.final_raster_cache_policy;
+        let retain_page_programs = cache.retain_page_programs;
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
         let display_list_cache_order = std::mem::take(&mut cache.display_list_cache_order);
         let display_list_cache_bytes = cache.display_list_cache_bytes;
@@ -8589,6 +8871,7 @@ impl<'a> RenderState<'a> {
             path_clip_node_cache: self.path_clip_node_cache,
             font_bytes_cache: self.font_bytes_cache,
             font_bytes_cache_order: self.font_bytes_cache_order,
+            font_substitution_selections: self.font_substitution_selections,
             font_bytes_cache_bytes: self.font_bytes_cache_bytes,
             font_bytes_cache_stats: self.font_bytes_cache_stats,
             font_resolver_cache: self.font_resolver_cache,
@@ -8642,6 +8925,7 @@ impl<'a> RenderState<'a> {
             render_plan_cache_stats,
             display_list_raster_cache,
             final_raster_cache_policy,
+            retain_page_programs,
             transparent_page_group_cache,
             transparent_page_group_cache_order,
             clip_dag_stats,
@@ -8668,6 +8952,7 @@ impl<'a> RenderState<'a> {
             path_clip_node_cache,
             font_bytes_cache,
             font_bytes_cache_order,
+            font_substitution_selections,
             font_bytes_cache_bytes,
             font_bytes_cache_stats,
             font_resolver_cache,
@@ -8715,6 +9000,7 @@ impl<'a> RenderState<'a> {
         } = self;
         let clip_dag_stats = clip_dag.stats();
         let final_raster_cache_policy = cache.final_raster_cache_policy;
+        let retain_page_programs = cache.retain_page_programs;
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
         let display_list_cache_order = std::mem::take(&mut cache.display_list_cache_order);
         let display_list_cache_bytes = cache.display_list_cache_bytes;
@@ -8759,6 +9045,7 @@ impl<'a> RenderState<'a> {
             path_clip_node_cache,
             font_bytes_cache,
             font_bytes_cache_order,
+            font_substitution_selections,
             font_bytes_cache_bytes,
             font_bytes_cache_stats,
             font_resolver_cache,
@@ -8809,6 +9096,7 @@ impl<'a> RenderState<'a> {
             render_plan_cache_stats,
             display_list_raster_cache,
             final_raster_cache_policy,
+            retain_page_programs,
             transparent_page_group_cache,
             transparent_page_group_cache_order,
             clip_dag_stats,
@@ -9708,8 +9996,9 @@ impl<'a> RenderState<'a> {
             ranges.push((lo, hi));
         }
         let reader = self.engine.document().reader();
-        let stream = reader.get_object(image_ref.object_number, image_ref.generation_number)?;
-        if !matches!(stream, PdfObject::Stream { .. }) {
+        let stream =
+            reader.get_object_shared(image_ref.object_number, image_ref.generation_number)?;
+        if !matches!(*stream, PdfObject::Stream { .. }) {
             return Err(malformed("image is not a stream"));
         }
         let decoded = crate::filters::decode_stream_lossless_with_limits(
@@ -9843,10 +10132,10 @@ impl<'a> RenderState<'a> {
             }
             PdfObject::Reference { number, generation } => {
                 let reader = self.engine.document().reader();
-                let mask_obj = reader.get_object(*number, *generation)?;
+                let mask_obj = reader.get_object_shared(*number, *generation)?;
                 let PdfObject::Stream {
                     dict: mask_dict, ..
-                } = mask_obj
+                } = mask_obj.as_ref()
                 else {
                     return Err(WellfriendError::MalformedPdf(format!(
                         "image Mask reference resolved to {}, expected Stream",
@@ -9854,7 +10143,7 @@ impl<'a> RenderState<'a> {
                     )));
                 };
                 let mask_ref =
-                    explicit_image_mask_reference(image_ref, *number, *generation, &mask_dict)?;
+                    explicit_image_mask_reference(image_ref, *number, *generation, mask_dict)?;
                 let mask_raw = if explicit_image_mask_supports_shared_raw_window(
                     image_ref, &mask_ref, image_dict,
                 ) {
@@ -9881,7 +10170,7 @@ impl<'a> RenderState<'a> {
                     self.scheduled_decode_image(&mask_ref, "renderer explicit image mask decode")?
                 };
                 let mask_paints_ones = if mask_ref.is_mask {
-                    image_mask_paints_ones(&mask_dict)?
+                    image_mask_paints_ones(mask_dict)?
                 } else {
                     true
                 };
@@ -10022,6 +10311,7 @@ impl<'a> RenderState<'a> {
         self.path_clip_node_cache = std::mem::take(&mut child.path_clip_node_cache);
         self.font_bytes_cache = std::mem::take(&mut child.font_bytes_cache);
         self.font_bytes_cache_order = std::mem::take(&mut child.font_bytes_cache_order);
+        self.font_substitution_selections = std::mem::take(&mut child.font_substitution_selections);
         self.font_bytes_cache_bytes = std::mem::take(&mut child.font_bytes_cache_bytes);
         self.font_bytes_cache_stats = std::mem::take(&mut child.font_bytes_cache_stats);
         self.font_resolver_cache = std::mem::take(&mut child.font_resolver_cache);
@@ -10029,6 +10319,7 @@ impl<'a> RenderState<'a> {
         self.font_resolver_cache_bytes = std::mem::take(&mut child.font_resolver_cache_bytes);
         self.font_resolver_cache_stats = std::mem::take(&mut child.font_resolver_cache_stats);
         self.prepared_font_metadata = std::mem::take(&mut child.prepared_font_metadata);
+        self.text_font_contexts = std::mem::take(&mut child.text_font_contexts);
         self.font_resource_key_cache = std::mem::take(&mut child.font_resource_key_cache);
         self.type1_program_cache = std::mem::take(&mut child.type1_program_cache);
         self.type3_geometry_cache = std::mem::take(&mut child.type3_geometry_cache);
@@ -12100,12 +12391,22 @@ impl<'a> RenderState<'a> {
         pixel
     }
 
+    /// Whether painting with `color` records a plate contribution: only
+    /// resource-named colour spaces do, and only while separations are
+    /// collected. Lets hot paths skip cloning the colour.
+    fn plate_contribution_recorded(&self, color: &crate::content::state::Color) -> bool {
+        self.record_separations && matches!(color.space, ColorSpace::Named(_))
+    }
+
     fn record_plate_contribution(
         &mut self,
         color: &crate::content::state::Color,
         alpha: f32,
         operation: &str,
     ) {
+        if !self.record_separations {
+            return;
+        }
         let ColorSpace::Named(name) = &color.space else {
             return;
         };
@@ -12202,6 +12503,9 @@ impl<'a> RenderState<'a> {
         object: Option<String>,
         operation: &str,
     ) {
+        if !self.record_separations {
+            return;
+        }
         let reader = self.engine.document().reader();
         let overprint = prepress::OverprintStateModel::for_paint(
             self.fill_overprint_model_enabled(),
@@ -13405,6 +13709,7 @@ impl<'a> RenderState<'a> {
             path_clip_node_cache: child_path_clip_node_cache,
             font_bytes_cache: std::mem::take(&mut self.font_bytes_cache),
             font_bytes_cache_order: std::mem::take(&mut self.font_bytes_cache_order),
+            font_substitution_selections: std::mem::take(&mut self.font_substitution_selections),
             font_bytes_cache_bytes: std::mem::take(&mut self.font_bytes_cache_bytes),
             font_bytes_cache_stats: std::mem::take(&mut self.font_bytes_cache_stats),
             font_resolver_cache: std::mem::take(&mut self.font_resolver_cache),
@@ -13413,6 +13718,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_stats: std::mem::take(&mut self.font_resolver_cache_stats),
             prepared_text_cache: Arc::clone(&self.prepared_text_cache),
             prepared_font_metadata: std::mem::take(&mut self.prepared_font_metadata),
+            text_font_contexts: std::mem::take(&mut self.text_font_contexts),
             type1_program_cache: std::mem::take(&mut self.type1_program_cache),
             font_resource_key_cache: std::mem::take(&mut self.font_resource_key_cache),
             active_font_resource: self.active_font_resource.clone(),
@@ -13497,6 +13803,7 @@ impl<'a> RenderState<'a> {
             exactness_policy: self.exactness_policy,
             backend_policy: self.backend_policy,
             render_contract_fingerprint: self.render_contract_fingerprint.clone(),
+            font_scope_fingerprint: self.font_scope_fingerprint.clone(),
             optional_content: self.optional_content.clone(),
             oc_visibility_stack: self.oc_visibility_stack.clone(),
             oc_current_visible: self.oc_current_visible,
@@ -13505,6 +13812,7 @@ impl<'a> RenderState<'a> {
                 mask_viewport.width_px,
                 mask_viewport.height_px,
             ),
+            record_separations: self.record_separations,
             font_substitution_log: FontSubstitutionLog::new(),
             print_profile: self.print_profile,
             color_management_policy: self.color_management_policy,
@@ -14104,7 +14412,7 @@ impl<'a> RenderState<'a> {
                     return;
                 }
             };
-            match image_mask_to_stencil_rgba(raw, color, paints_ones) {
+            match image_mask_to_stencil_rgba(&raw, color, paints_ones) {
                 Ok(masked) => masked,
                 Err(err) => {
                     self.record_fatal_render_error(format!(
@@ -14277,7 +14585,7 @@ impl<'a> RenderState<'a> {
         let dict = match metadata.stream_dict {
             Some(dict) => dict,
             None => {
-                let obj = match reader.get_object(obj_num, gen_num) {
+                let obj = match reader.get_object_shared(obj_num, gen_num) {
                     Ok(obj) => obj,
                     Err(err) => {
                         self.record_fatal_render_error(format!(
@@ -14286,13 +14594,13 @@ impl<'a> RenderState<'a> {
                         return;
                     }
                 };
-                let PdfObject::Stream { dict, .. } = obj else {
+                let PdfObject::Stream { dict, .. } = obj.as_ref() else {
                     self.record_fatal_render_error(format!(
                         "XObject resource /{name} did not resolve to a stream"
                     ));
                     return;
                 };
-                owned_dict = dict;
+                owned_dict = dict.clone();
                 &owned_dict
             }
         };
@@ -14680,7 +14988,7 @@ impl<'a> RenderState<'a> {
                             return;
                         }
                     };
-                    match image_mask_to_stencil_rgba((*raw).clone(), color, paints_ones) {
+                    match image_mask_to_stencil_rgba(raw.as_ref(), color, paints_ones) {
                         Ok(masked) => {
                             owned_raw = Some(masked);
                             owned_raw.as_ref().expect("image mask owned raw")
@@ -14828,8 +15136,8 @@ impl<'a> RenderState<'a> {
 
     fn image_source_color_space(&self, image: &ImageReference) -> Result<Option<PdfObject>> {
         let reader = self.engine.document().reader();
-        let object = reader.get_object(image.object_number, image.generation_number)?;
-        let PdfObject::Stream { dict, .. } = object else {
+        let object = reader.get_object_shared(image.object_number, image.generation_number)?;
+        let PdfObject::Stream { dict, .. } = object.as_ref() else {
             return Err(WellfriendError::MalformedPdf(
                 "image source is not a stream".into(),
             ));
@@ -15225,6 +15533,7 @@ impl<'a> RenderState<'a> {
             path_clip_node_cache: child_path_clip_node_cache,
             font_bytes_cache: std::mem::take(&mut self.font_bytes_cache),
             font_bytes_cache_order: std::mem::take(&mut self.font_bytes_cache_order),
+            font_substitution_selections: std::mem::take(&mut self.font_substitution_selections),
             font_bytes_cache_bytes: std::mem::take(&mut self.font_bytes_cache_bytes),
             font_bytes_cache_stats: std::mem::take(&mut self.font_bytes_cache_stats),
             font_resolver_cache: std::mem::take(&mut self.font_resolver_cache),
@@ -15233,6 +15542,7 @@ impl<'a> RenderState<'a> {
             font_resolver_cache_stats: std::mem::take(&mut self.font_resolver_cache_stats),
             prepared_text_cache: Arc::clone(&self.prepared_text_cache),
             prepared_font_metadata: std::mem::take(&mut self.prepared_font_metadata),
+            text_font_contexts: std::mem::take(&mut self.text_font_contexts),
             type1_program_cache: std::mem::take(&mut self.type1_program_cache),
             font_resource_key_cache: std::mem::take(&mut self.font_resource_key_cache),
             active_font_resource: self.active_font_resource.clone(),
@@ -15317,6 +15627,7 @@ impl<'a> RenderState<'a> {
             exactness_policy: self.exactness_policy,
             backend_policy: self.backend_policy,
             render_contract_fingerprint: self.render_contract_fingerprint.clone(),
+            font_scope_fingerprint: self.font_scope_fingerprint.clone(),
             optional_content: self.optional_content.clone(),
             oc_visibility_stack: self.oc_visibility_stack.clone(),
             oc_current_visible: self.oc_current_visible,
@@ -15325,6 +15636,7 @@ impl<'a> RenderState<'a> {
                 group_viewport.width_px,
                 group_viewport.height_px,
             ),
+            record_separations: self.record_separations,
             font_substitution_log: FontSubstitutionLog::new(),
             print_profile: self.print_profile,
             color_management_policy: self.color_management_policy,
@@ -15496,17 +15808,19 @@ impl<'a> RenderState<'a> {
             return;
         }
         let reader = self.engine.document().reader();
-        let pages = match self.engine.document().get_pages() {
-            Ok(pages) => pages,
+        let page = match self
+            .engine
+            .document()
+            .page_object_id_at(self.page_number.saturating_sub(1))
+        {
+            Ok(Some(page)) => page,
+            Ok(None) => return,
             Err(err) => {
                 log::debug!("PageRenderer: could not load pages for annotations: {err}");
                 return;
             }
         };
-        let Some(page) = pages.get(self.page_number.saturating_sub(1)) else {
-            return;
-        };
-        let page_dict = match reader.get_and_resolve(page.object_number, page.generation_number) {
+        let page_dict = match reader.get_and_resolve(page.0, page.1) {
             Ok(PdfObject::Dictionary(dict)) => dict,
             Ok(_) => return,
             Err(err) => {
@@ -17065,106 +17379,23 @@ impl<'a> RenderState<'a> {
             };
             let decoded = Arc::new(decoded);
             if let Ok(mut cache) = self.prepared_text_cache.lock() {
-                cache.insert(font_cache_key.clone(), bytes.to_vec(), Arc::clone(&decoded));
+                cache.insert(
+                    Arc::clone(&font_cache_key),
+                    bytes.to_vec(),
+                    Arc::clone(&decoded),
+                );
             }
             decoded
         };
-        let font_subtype = font_dict
-            .as_ref()
-            .map(|dict| detect_font_subtype(dict.as_ref()))
-            .unwrap_or(FontSubtype::Unknown);
+        let (text_font, substitution_event_index) =
+            self.text_font_context(&font_name, &font_cache_key, font_dict.as_ref());
+        let font_subtype = text_font.font_subtype.clone();
         let is_type3 = font_subtype == FontSubtype::Type3;
-        // Type 3 /Widths and d0/d1 advances are in glyph space, not thousandths
-        // of an em; the FontMatrix maps them to text space (PDF 32000 9.6.5).
-        // Express them in the 1000-unit convention `advance_text` expects.
-        let type3_width_scale = if is_type3 {
-            font_dict
-                .as_deref()
-                .and_then(|dict| type3_font_matrix(dict).ok())
-                .map(|matrix| matrix.a * 1000.0)
-                .filter(|scale| scale.is_finite() && *scale != 0.0)
-                .unwrap_or(1.0)
-        } else {
-            1.0
-        };
-        let (font_bytes, substitution_event_index, exact_font_refusal) = if is_type3 {
-            (None, None, None)
-        } else {
-            self.get_font_bytes(&font_name, &font_cache_key, font_dict.as_deref())
-        };
-        let variation = font_dict
-            .as_ref()
-            .map(|font_dict| self.font_variation_request_from_dict(font_dict.as_ref()))
-            .unwrap_or_else(VariationRequest::none);
-        let prepared_font = font_bytes
-            .as_ref()
-            .filter(|bytes| !bytes.is_empty())
-            .map(|bytes| {
-                if let Some(metadata) = self.prepared_font_metadata.get(&font_cache_key).copied() {
-                    metadata
-                } else {
-                    let reader = self.engine.document().reader();
-                    let is_substitute = substitution_event_index.is_some()
-                        || font_dict
-                            .as_deref()
-                            .is_none_or(|font_dict| !font_dict_declares_program(font_dict, reader));
-                    let fallback_language = font_dict
-                        .as_deref()
-                        .and_then(|font_dict| font_cjk_language(font_dict, reader));
-                    let substitute_style = is_substitute.then(|| {
-                        let lookup_name = font_dict
-                            .as_deref()
-                            .map(|font_dict| {
-                                fallback_font_lookup_name(&font_name, font_dict, reader)
-                            })
-                            .unwrap_or_else(|| font_name.clone());
-                        crate::fonts::substitute_style::RequestedFontStyle::from_font(
-                            &lookup_name,
-                            font_dict.as_deref(),
-                            Some(reader),
-                            fallback_language.is_some(),
-                        )
-                    });
-                    let synthetic = substitute_style
-                        .map(|requested| {
-                            crate::fonts::substitute_style::SyntheticStyle::for_substitute(
-                                &requested,
-                                crate::fonts::substitute_style::FaceStyle::of_program(
-                                    bytes.as_slice(),
-                                ),
-                                fallback_language,
-                            )
-                        })
-                        .unwrap_or_default();
-                    let mut glyph_cache_hash =
-                        font_resource_glyph_cache_hash(bytes.as_slice(), &font_cache_key);
-                    if !synthetic.is_none() {
-                        fnv1a_update(&mut glyph_cache_hash, &synthetic.cache_bytes());
-                    }
-                    let metadata = PreparedFontMetadata {
-                        glyph_cache_hash,
-                        upem: Self::get_upem(bytes.as_slice())
-                            .map(f64::from)
-                            .filter(|value| *value > 0.0)
-                            .unwrap_or(1000.0),
-                        light_hinting_supported: ttf_parser::Face::parse(bytes.as_slice(), 0)
-                            .is_ok()
-                            || crate::fonts::type1::Type1Font::is_type1(bytes.as_slice()),
-                        is_substitute,
-                        fallback_language,
-                        synthetic,
-                        all_cap: substitute_style.is_some_and(|style| style.all_cap),
-                        glyph_lookup: font_dict
-                            .as_deref()
-                            .map(|font_dict| simple_glyph_lookup(font_dict, reader))
-                            .unwrap_or_default(),
-                        tricky: crate::render::tricky_hinting::is_tricky_font(bytes.as_slice()),
-                    };
-                    self.prepared_font_metadata
-                        .insert(font_cache_key.clone(), metadata);
-                    metadata
-                }
-            });
+        let type3_width_scale = text_font.type3_width_scale;
+        let font_bytes = text_font.font_bytes.clone();
+        let exact_font_refusal = text_font.exact_font_refusal.clone();
+        let variation = &text_font.variation;
+        let prepared_font = text_font.prepared_font;
         let font_hash = prepared_font.map(|metadata| metadata.glyph_cache_hash);
         let prepared_font = prepared_font.unwrap_or(PreparedFontMetadata {
             glyph_cache_hash: 0,
@@ -17204,7 +17435,7 @@ impl<'a> RenderState<'a> {
         {
             let glyph_coverage = font_substitution_glyph_coverage(
                 font_bytes.as_slice(),
-                &variation,
+                variation,
                 decoded.as_slice(),
             );
             if let Some(event) = self.font_substitution_log.event_mut(event_index) {
@@ -17213,6 +17444,8 @@ impl<'a> RenderState<'a> {
         }
 
         let mut prepared_text_paint = None;
+        // One resolver lookup per string, not per glyph.
+        let mut string_font_resolver: Option<Arc<FontResolver>> = None;
         for (glyph_index, glyph) in decoded.iter().enumerate() {
             if glyph_index % 32 == 0 && self.cancel.is_cancelled() {
                 return;
@@ -17245,7 +17478,7 @@ impl<'a> RenderState<'a> {
                         };
                         let fill_mode = matches!(text_mode, 0 | 2 | 4 | 6);
                         let stroke_mode = matches!(text_mode, 1 | 2 | 5 | 6);
-                        if fill_mode {
+                        if fill_mode && self.plate_contribution_recorded(&self.gs.fill_color) {
                             let fill_color_state = self.gs.fill_color.clone();
                             self.record_plate_contribution(
                                 &fill_color_state,
@@ -17253,7 +17486,7 @@ impl<'a> RenderState<'a> {
                                 "text_fill",
                             );
                         }
-                        if stroke_mode {
+                        if stroke_mode && self.plate_contribution_recorded(&self.gs.stroke_color) {
                             let stroke_color_state = self.gs.stroke_color.clone();
                             self.record_plate_contribution(
                                 &stroke_color_state,
@@ -17267,7 +17500,11 @@ impl<'a> RenderState<'a> {
                         let all_cap = if prepared_font.all_cap && !glyph.is_gid {
                             all_cap_uppercase_code(glyph.code).and_then(|upper| {
                                 let font_dict = font_dict.as_ref()?;
-                                let resolver = self.get_font_resolver(&font_cache_key, font_dict);
+                                let resolver = string_font_resolver
+                                    .get_or_insert_with(|| {
+                                        self.get_font_resolver(&font_cache_key, font_dict)
+                                    })
+                                    .clone();
                                 let mut uppercase = glyph.unicode.to_uppercase();
                                 let ch = match (uppercase.next(), uppercase.next()) {
                                     (Some(ch), None) => ch,
@@ -17288,7 +17525,10 @@ impl<'a> RenderState<'a> {
                             && !glyph.is_gid
                             && prepared_font.glyph_lookup.truetype
                             && font_dict.as_ref().is_some_and(|font_dict| {
-                                self.get_font_resolver(&font_cache_key, font_dict)
+                                string_font_resolver
+                                    .get_or_insert_with(|| {
+                                        self.get_font_resolver(&font_cache_key, font_dict)
+                                    })
                                     .is_explicit_notdef(code)
                             }) {
                             Some(".notdef")
@@ -17305,7 +17545,7 @@ impl<'a> RenderState<'a> {
                             is_gid: glyph.is_gid,
                             font_bytes: font_bytes.as_slice(),
                             font_hash,
-                            variation: &variation,
+                            variation,
                             upem: prepared_font.upem,
                             light_hinting_supported: prepared_font.light_hinting_supported,
                             offset_x: glyph.vertical_origin.map(|(vx, _)| -vx).unwrap_or(0.0),
@@ -17332,7 +17572,7 @@ impl<'a> RenderState<'a> {
                     }
                 } else {
                     ttf_advance = font_bytes.as_deref().and_then(|bytes| {
-                        strict_glyph_horizontal_advance(glyph, bytes.as_slice(), &variation)
+                        strict_glyph_horizontal_advance(glyph, bytes.as_slice(), variation)
                     });
                 }
             }
@@ -17342,7 +17582,7 @@ impl<'a> RenderState<'a> {
                 glyph,
                 ttf_advance,
                 font_bytes.as_deref().map(Vec::as_slice),
-                &variation,
+                variation,
                 is_type3,
             ) {
                 Ok(advance) => advance * type3_width_scale,
@@ -17889,42 +18129,204 @@ impl<'a> RenderState<'a> {
     }
 
     fn set_active_text_font(&mut self, name: &str, size: f64, dict: Option<PdfDictionary>) {
-        self.gs.text.font_name = name.to_string();
+        self.set_active_text_font_from(name, size, dict.map(std::borrow::Cow::Owned));
+    }
+
+    /// `Tf` with a borrowed dictionary: the dictionary is copied only when it
+    /// differs from the active font's.
+    fn set_active_text_font_ref(&mut self, name: &str, size: f64, dict: Option<&PdfDictionary>) {
+        self.set_active_text_font_from(name, size, dict.map(std::borrow::Cow::Borrowed));
+    }
+
+    fn set_active_text_font_from(
+        &mut self,
+        name: &str,
+        size: f64,
+        dict: Option<std::borrow::Cow<'_, PdfDictionary>>,
+    ) {
+        if self.gs.text.font_name != name {
+            self.gs.text.font_name = name.to_string();
+        }
         self.gs.text.font_size = size;
-        self.active_font_resource = dict.map(|dict| {
-            let cache_key = self.font_resource_cache_key_for_contract(name, &dict);
+        let active = dict.map(|dict| {
+            let source_ref = self.resources.font_references.get(name).copied();
+            // Re-selecting the active font (the common `Tf` per text line)
+            // reuses its shared dictionary and key: the key is a function of
+            // exactly the name, dictionary and source reference compared here.
+            if let Some(active) = self.active_font_resource.as_ref() {
+                if active.name == name
+                    && active.source_ref == source_ref
+                    && active.dict.as_ref() == dict.as_ref()
+                {
+                    return active.clone();
+                }
+            }
+            let cache_key: Arc<str> = self
+                .font_resource_cache_key_for_contract(name, &dict)
+                .into();
             ActiveFontResource {
                 name: name.to_string(),
-                dict: Arc::new(dict),
+                dict: Arc::new(dict.into_owned()),
                 cache_key,
+                source_ref,
             }
         });
+        self.active_font_resource = active;
     }
 
     fn current_text_font_resource(
         &mut self,
         font_name: &str,
-    ) -> (Option<Arc<PdfDictionary>>, String) {
+    ) -> (Option<Arc<PdfDictionary>>, Arc<str>) {
         if let Some(active) = self.active_font_resource.as_ref() {
             if active.name == font_name {
-                return (Some(Arc::clone(&active.dict)), active.cache_key.clone());
+                return (
+                    Some(Arc::clone(&active.dict)),
+                    Arc::clone(&active.cache_key),
+                );
             }
         }
         if let Some(font_dict) = self.resources.fonts.get(font_name) {
             if let Some((cached_dict, cached_key)) = self.font_resource_key_cache.get(font_name) {
                 if cached_dict.as_ref() == font_dict {
-                    return (Some(Arc::clone(cached_dict)), cached_key.clone());
+                    return (Some(Arc::clone(cached_dict)), Arc::clone(cached_key));
                 }
             }
-            let computed = self.font_resource_cache_key_for_contract(font_name, font_dict);
+            let computed: Arc<str> = self
+                .font_resource_cache_key_for_contract(font_name, font_dict)
+                .into();
             let shared = Arc::new(font_dict.clone());
             self.font_resource_key_cache.insert(
                 font_name.to_string(),
-                (Arc::clone(&shared), computed.clone()),
+                (Arc::clone(&shared), Arc::clone(&computed)),
             );
             return (Some(shared), computed);
         }
-        (None, format!("{font_name}:missing"))
+        (None, format!("{font_name}:missing").into())
+    }
+
+    /// The font-wide text context for `font_cache_key`, built on first use in
+    /// this render state. Returns the substitution event index recorded when
+    /// the font program was resolved by this call (first use only), exactly as
+    /// the per-string font byte lookup did.
+    fn text_font_context(
+        &mut self,
+        font_name: &str,
+        font_cache_key: &Arc<str>,
+        font_dict: Option<&Arc<PdfDictionary>>,
+    ) -> (Arc<TextFontContext>, Option<usize>) {
+        if let Some(context) = self.text_font_contexts.get(font_cache_key) {
+            return (Arc::clone(context), None);
+        }
+        let font_subtype = font_dict
+            .map(|dict| detect_font_subtype(dict.as_ref()))
+            .unwrap_or(FontSubtype::Unknown);
+        let is_type3 = font_subtype == FontSubtype::Type3;
+        // Type 3 /Widths and d0/d1 advances are in glyph space, not thousandths
+        // of an em; the FontMatrix maps them to text space (PDF 32000 9.6.5).
+        // Express them in the 1000-unit convention `advance_text` expects.
+        let type3_width_scale = if is_type3 {
+            font_dict
+                .and_then(|dict| type3_font_matrix(dict).ok())
+                .map(|matrix| matrix.a * 1000.0)
+                .filter(|scale| scale.is_finite() && *scale != 0.0)
+                .unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let (font_bytes, substitution_event_index, exact_font_refusal) = if is_type3 {
+            (None, None, None)
+        } else {
+            self.get_font_bytes(font_name, font_cache_key, font_dict.map(Arc::as_ref))
+        };
+        let variation = font_dict
+            .map(|font_dict| self.font_variation_request_from_dict(font_dict.as_ref()))
+            .unwrap_or_else(VariationRequest::none);
+        let prepared_font = font_bytes
+            .as_ref()
+            .filter(|bytes| !bytes.is_empty())
+            .map(|bytes| {
+                self.prepared_font_metadata_for(
+                    font_name,
+                    font_cache_key,
+                    font_dict.map(Arc::as_ref),
+                    bytes.as_slice(),
+                    substitution_event_index.is_some(),
+                )
+            });
+        let context = Arc::new(TextFontContext {
+            font_subtype,
+            type3_width_scale,
+            font_bytes,
+            exact_font_refusal,
+            variation,
+            prepared_font,
+        });
+        self.text_font_contexts
+            .insert(Arc::clone(font_cache_key), Arc::clone(&context));
+        (context, substitution_event_index)
+    }
+
+    fn prepared_font_metadata_for(
+        &mut self,
+        font_name: &str,
+        font_cache_key: &str,
+        font_dict: Option<&PdfDictionary>,
+        bytes: &[u8],
+        substituted: bool,
+    ) -> PreparedFontMetadata {
+        if let Some(metadata) = self.prepared_font_metadata.get(font_cache_key).copied() {
+            return metadata;
+        }
+        let reader = self.engine.document().reader();
+        let is_substitute = substituted
+            || font_dict.is_none_or(|font_dict| !font_dict_declares_program(font_dict, reader));
+        let fallback_language =
+            font_dict.and_then(|font_dict| font_cjk_language(font_dict, reader));
+        let substitute_style = is_substitute.then(|| {
+            let lookup_name = font_dict
+                .map(|font_dict| fallback_font_lookup_name(font_name, font_dict, reader))
+                .unwrap_or_else(|| font_name.to_string());
+            crate::fonts::substitute_style::RequestedFontStyle::from_font(
+                &lookup_name,
+                font_dict,
+                Some(reader),
+                fallback_language.is_some(),
+            )
+        });
+        let synthetic = substitute_style
+            .map(|requested| {
+                crate::fonts::substitute_style::SyntheticStyle::for_substitute(
+                    &requested,
+                    crate::fonts::substitute_style::FaceStyle::of_program(bytes),
+                    fallback_language,
+                )
+            })
+            .unwrap_or_default();
+        let mut glyph_cache_hash = font_resource_glyph_cache_hash(bytes, font_cache_key);
+        if !synthetic.is_none() {
+            fnv1a_update(&mut glyph_cache_hash, &synthetic.cache_bytes());
+        }
+        let metadata = PreparedFontMetadata {
+            glyph_cache_hash,
+            upem: Self::get_upem(bytes)
+                .map(f64::from)
+                .filter(|value| *value > 0.0)
+                .unwrap_or(1000.0),
+            light_hinting_supported: ttf_parser::Face::parse(bytes, 0).is_ok()
+                || crate::fonts::type1::Type1Font::is_type1(bytes),
+            is_substitute,
+            fallback_language,
+            synthetic,
+            all_cap: substitute_style.is_some_and(|style| style.all_cap),
+            glyph_lookup: font_dict
+                .map(|font_dict| simple_glyph_lookup(font_dict, reader))
+                .unwrap_or_default(),
+            tricky: crate::render::tricky_hinting::is_tricky_font(bytes),
+        };
+        self.prepared_font_metadata
+            .insert(font_cache_key.to_string(), metadata);
+        metadata
     }
 
     fn packed_ext_g_state_font_name(dict: &PdfDictionary) -> Option<String> {
@@ -20049,7 +20451,18 @@ impl<'a> RenderState<'a> {
         if let Some(cached) = self.font_bytes_cache.get(cache_key) {
             self.font_bytes_cache_stats.hits = self.font_bytes_cache_stats.hits.saturating_add(1);
             touch_ordered_cache_key(&mut self.font_bytes_cache_order, cache_key);
-            return (cached.clone(), None, None);
+            let cached = cached.clone();
+            // A substitute reused from an earlier page is still reported for
+            // this render pass, exactly as when it was first resolved (the
+            // log keeps one event per selection and pass).
+            let event_index = self
+                .font_substitution_selections
+                .get(cache_key)
+                .cloned()
+                .and_then(|selection| {
+                    self.record_font_substitution_event(font_name, font_dict, selection)
+                });
+            return (cached, event_index, None);
         }
         self.font_bytes_cache_stats.misses = self.font_bytes_cache_stats.misses.saturating_add(1);
         let (resolved, substitution_kind, exact_refusal) =
@@ -20066,10 +20479,31 @@ impl<'a> RenderState<'a> {
             cache_key.to_string(),
             resolved.clone(),
         );
+        match substitution_kind.as_ref() {
+            Some(selection) => {
+                self.font_substitution_selections
+                    .insert(cache_key.to_string(), selection.clone());
+            }
+            None => {
+                self.font_substitution_selections.remove(cache_key);
+            }
+        }
 
         // Record font substitution event when a bundled fallback was used.
-        let mut event_index = None;
-        if let Some(selection) = substitution_kind {
+        let event_index = substitution_kind.and_then(|selection| {
+            self.record_font_substitution_event(font_name, font_dict, selection)
+        });
+
+        (resolved, event_index, exact_refusal)
+    }
+
+    fn record_font_substitution_event(
+        &mut self,
+        font_name: &str,
+        font_dict: Option<&PdfDictionary>,
+        selection: FontReplacementSelection,
+    ) -> Option<usize> {
+        {
             let reader = self.engine.document().reader();
             let fallback_lookup_name = font_dict
                 .map(|font_dict| fallback_font_lookup_name(font_name, font_dict, reader))
@@ -20092,7 +20526,7 @@ impl<'a> RenderState<'a> {
                 self.resource_budget.max_temporary_bytes,
                 self.resource_budget.max_cache_bytes,
             );
-            event_index = self.font_substitution_log.record_single_flight_indexed(
+            self.font_substitution_log.record_single_flight_indexed(
                 FontSubstitutionEvent::bundled_fallback(
                     font_name.to_string(),
                     fallback_lookup_name,
@@ -20106,10 +20540,8 @@ impl<'a> RenderState<'a> {
                 )
                 .with_resolution_source(selection.resolution_source)
                 .with_selection_reason(selection.selection_reason),
-            );
+            )
         }
-
-        (resolved, event_index, exact_refusal)
     }
 
     fn font_resource_cache_key_for_contract(
@@ -20120,7 +20552,7 @@ impl<'a> RenderState<'a> {
         let mut key = font_resource_cache_key_for_contract(
             font_name,
             font_dict,
-            &self.render_contract_fingerprint,
+            &self.font_scope_fingerprint,
             self.engine.font_provider_cache_fingerprint(),
             self.resource_budget,
         );
@@ -22240,10 +22672,10 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                     }
                     self.state.install_ext_g_state_transfer(&dict, &label);
                     if let Some(font) = font {
-                        self.state.set_active_text_font(
+                        self.state.set_active_text_font_ref(
                             &font.name,
                             font.size,
-                            Some(font.dict.clone()),
+                            Some(&font.dict),
                         );
                     }
                     self.state.sync_blend_mode();
@@ -22271,8 +22703,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 // ET is a no-op on GraphicsState (same as gs.process for "ET")
             }
             SetFont { name, size, dict } => {
-                if let Some(dict) = dict.clone() {
-                    self.state.set_active_text_font(name, *size, Some(dict));
+                if let Some(dict) = dict.as_ref() {
+                    self.state.set_active_text_font_ref(name, *size, Some(dict));
                 } else {
                     self.record_missing_packed_resource(format!(
                         "packed font /{name} missing pre-resolved dictionary"
@@ -24552,13 +24984,16 @@ fn explicit_image_mask_allows_shared_raw_window(
     match image_dict.get("Mask") {
         Some(PdfObject::Array(_)) => true,
         Some(PdfObject::Reference { number, generation }) => {
-            let Ok(PdfObject::Stream {
+            let Ok(mask_obj) = reader.get_object_shared(*number, *generation) else {
+                return false;
+            };
+            let PdfObject::Stream {
                 dict: mask_dict, ..
-            }) = reader.get_object(*number, *generation)
+            } = mask_obj.as_ref()
             else {
                 return false;
             };
-            explicit_image_mask_reference(image_ref, *number, *generation, &mask_dict).is_ok_and(
+            explicit_image_mask_reference(image_ref, *number, *generation, mask_dict).is_ok_and(
                 |mask_ref| {
                     explicit_image_mask_supports_shared_raw_window(image_ref, &mask_ref, image_dict)
                 },
@@ -24581,13 +25016,16 @@ fn image_smask_allows_shared_source_window(
     match image_dict.get("SMask") {
         Some(PdfObject::Name(name)) if name == "None" => true,
         Some(PdfObject::Reference { number, generation }) => {
-            let Ok(PdfObject::Stream {
+            let Ok(smask_obj) = reader.get_object_shared(*number, *generation) else {
+                return false;
+            };
+            let PdfObject::Stream {
                 dict: smask_dict, ..
-            }) = reader.get_object(*number, *generation)
+            } = smask_obj.as_ref()
             else {
                 return false;
             };
-            image_smask_reference(image_ref, *number, *generation, &smask_dict).is_ok_and(
+            image_smask_reference(image_ref, *number, *generation, smask_dict).is_ok_and(
                 |smask_ref| {
                     smask_ref.filter.is_empty()
                         && matches!(smask_ref.color_space.as_str(), "DeviceGray" | "G")
@@ -24612,13 +25050,16 @@ fn image_smask_allows_shared_reduction(
     let Some(PdfObject::Reference { number, generation }) = image_dict.get("SMask") else {
         return false;
     };
-    let Ok(PdfObject::Stream {
+    let Ok(smask_obj) = reader.get_object_shared(*number, *generation) else {
+        return false;
+    };
+    let PdfObject::Stream {
         dict: smask_dict, ..
-    }) = reader.get_object(*number, *generation)
+    } = smask_obj.as_ref()
     else {
         return false;
     };
-    let Ok(smask_ref) = image_smask_reference(image_ref, *number, *generation, &smask_dict) else {
+    let Ok(smask_ref) = image_smask_reference(image_ref, *number, *generation, smask_dict) else {
         return false;
     };
     let streamed_gray = smask_ref.width == image_ref.width
@@ -24640,7 +25081,7 @@ fn image_smask_allows_shared_reduction(
                     | "A85"
             )
         })
-        && smask_decode_array_is_default(&smask_dict);
+        && smask_decode_array_is_default(smask_dict);
     // A JPEG/JPEG 2000 image is only ever reduced, never windowed, so any
     // other mask (the JBIG2 text masks of scanned MRC pages, 1-bit, a
     // /Decode inversion) can be decoded whole by the unreduced path's decoder
@@ -24778,7 +25219,7 @@ fn image_smask_reference(
 }
 
 fn image_mask_to_stencil_rgba(
-    raw: crate::images::decoder::RawImage,
+    raw: &crate::images::decoder::RawImage,
     color: PixelColor,
     paint_ones: bool,
 ) -> Result<crate::images::decoder::RawImage> {
@@ -24796,18 +25237,19 @@ fn image_mask_to_stencil_rgba(
     }
     let channels = raw.channels as usize;
     ensure_image_mask_buffer_len(raw.pixels.len(), pixel_count * channels)?;
-    let mut pixels = Vec::with_capacity(pixel_count * 4);
-    for i in 0..pixel_count {
-        let sample = raw.pixels[i * channels];
+    let mut pixels = vec![0u8; pixel_count * 4];
+    let painted = [color[0], color[1], color[2], color[3]];
+    let unpainted = [color[0], color[1], color[2], 0];
+    for (out, &sample) in pixels
+        .chunks_exact_mut(4)
+        .zip(raw.pixels.iter().step_by(channels))
+    {
         let paint = if paint_ones {
             sample >= 128
         } else {
             sample < 128
         };
-        pixels.push(color[0]);
-        pixels.push(color[1]);
-        pixels.push(color[2]);
-        pixels.push(if paint { color[3] } else { 0 });
+        out.copy_from_slice(if paint { &painted } else { &unpainted });
     }
     Ok(crate::images::decoder::RawImage {
         width: raw.width,
@@ -25835,6 +26277,24 @@ fn plate_sample_components(obj: &PdfObject, reader: &crate::reader::PdfReader) -
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// Font cache scope for legacy (non-contract) renders: the document revision,
+/// render mode (which selects the exactness policy) and optional-content
+/// state. Font programs, encodings, decoded strings and glyph outlines do not
+/// depend on the page, viewport or device transform, so they are shared by
+/// every page rendered through one document cache.
+fn legacy_font_scope_fingerprint(
+    engine: &ContentEngine,
+    render_mode: RenderMode,
+    visibility_fingerprint: impl AsRef<str>,
+) -> String {
+    format!(
+        "legacy-fonts:rev:{:016x}:mode:{:?}:ocg:{}",
+        engine.canonical_document().revision().0,
+        render_mode,
+        visibility_fingerprint.as_ref(),
+    )
 }
 
 fn legacy_render_contract_fingerprint(
@@ -30016,8 +30476,10 @@ fn tiling_pattern_program_is_bbox_bounded(
                 let Some(&(number, generation)) = resources.xobjects.get(name) else {
                     return false;
                 };
-                let Ok(PdfObject::Stream { dict, .. }) = reader.get_object(number, generation)
-                else {
+                let Ok(object) = reader.get_object_shared(number, generation) else {
+                    return false;
+                };
+                let PdfObject::Stream { dict, .. } = object.as_ref() else {
                     return false;
                 };
                 if dict.get_name("Subtype") != Some("Image") {
@@ -30719,7 +31181,8 @@ mod tests {
         let font = ActiveFontResource {
             name: "OuterFont".to_string(),
             dict: Arc::new(PdfDictionary::empty()),
-            cache_key: "outer-font".to_string(),
+            cache_key: "outer-font".into(),
+            source_ref: None,
         };
         state.active_font_resource = Some(font.clone());
         state.active_resource_stack = vec![ActiveResourceSnapshot {
@@ -47951,7 +48414,7 @@ mod tests {
             pixels: vec![255],
         };
 
-        let error = image_mask_to_stencil_rgba(raw, [10, 20, 30, 255], true)
+        let error = image_mask_to_stencil_rgba(&raw, [10, 20, 30, 255], true)
             .expect_err("short image mask must not be padded");
         assert!(
             format!("{error}").contains("image mask decoded 1 bytes, expected 2"),

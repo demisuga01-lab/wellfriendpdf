@@ -893,10 +893,28 @@ fn find_token(data: &[u8], token: &[u8]) -> Option<usize> {
 }
 
 fn find_token_from(data: &[u8], token: &[u8], start: usize) -> Option<usize> {
-    data.get(start..)?
-        .windows(token.len())
-        .position(|window| window == token)
-        .map(|pos| start + pos)
+    let haystack = data.get(start..)?;
+    let Some((&first, rest)) = token.split_first() else {
+        return haystack
+            .windows(token.len())
+            .position(|window| window == token)
+            .map(|pos| start + pos);
+    };
+    // Scan for the first byte, then compare the rest: `is_type1` probes whole
+    // TrueType/CFF programs that never contain the token.
+    let mut from = 0;
+    while let Some(offset) = haystack[from..].iter().position(|&byte| byte == first) {
+        let at = from + offset;
+        let end = at + token.len();
+        if end > haystack.len() {
+            return None;
+        }
+        if &haystack[at + 1..end] == rest {
+            return Some(start + at);
+        }
+        from = at + 1;
+    }
+    None
 }
 
 fn starts_word(data: &[u8], pos: usize, word: &[u8]) -> bool {

@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Read;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::content::{ContentOperation, ContentParser, StreamingContentTokenizer};
 use crate::document::{PdfDocument, PdfPage};
@@ -1282,6 +1282,12 @@ impl PageArtifactCache {
             .map(|(value, _)| value.as_ref().clone())
     }
 
+    fn operations_shared(&self, page: usize) -> Option<Arc<Vec<ContentOperation>>> {
+        self.operations
+            .get(&page)
+            .map(|(value, _)| Arc::clone(value))
+    }
+
     fn strict_operations(&self, page: usize) -> Option<Vec<ContentOperation>> {
         self.strict_operations
             .get(&page)
@@ -1301,12 +1307,16 @@ impl PageArtifactCache {
     }
 
     fn insert_operations(&mut self, page: usize, value: Vec<ContentOperation>) {
+        self.insert_operations_shared(page, Arc::new(value));
+    }
+
+    fn insert_operations_shared(&mut self, page: usize, value: Arc<Vec<ContentOperation>>) {
         let bytes = estimate_operations_bytes(&value);
         self.remove(PageArtifactKey::Operations(page));
         if !self.reserve(PageArtifactKey::Operations(page), bytes) {
             return;
         }
-        self.operations.insert(page, (Arc::new(value), bytes));
+        self.operations.insert(page, (value, bytes));
     }
 
     fn insert_strict_operations(&mut self, page: usize, value: Vec<ContentOperation>) {
@@ -1488,9 +1498,38 @@ pub struct ContentEngine {
             >,
         >,
     >,
+    /// Document-level font, glyph and decoded-text caches reused by the
+    /// one-shot `render_page*` entry points, so fonts are parsed and glyphs
+    /// rasterized once per document instead of once per page. Bounded by the
+    /// cache byte budgets; page programs, images and rasters are not kept.
+    text_render_cache: Arc<Mutex<Option<RenderDocumentCache>>>,
 }
 
 impl ContentEngine {
+    /// Run `render` with the engine's document-level text render cache (see
+    /// `text_render_cache`). Concurrent renders that find the cache in use
+    /// get a fresh one, exactly as before the cache existed.
+    pub(crate) fn with_text_render_cache<R>(
+        &self,
+        render: impl FnOnce(&mut RenderDocumentCache) -> R,
+    ) -> R {
+        let retained = self
+            .text_render_cache
+            .try_lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        let mut cache = retained.unwrap_or_else(RenderDocumentCache::resources_only);
+        cache.bind_document_revision(self.canonical_document().revision());
+        let result = render(&mut cache);
+        cache.retain_text_resources_only();
+        if let Ok(mut slot) = self.text_render_cache.try_lock() {
+            if slot.is_none() {
+                *slot = Some(cache);
+            }
+        }
+        result
+    }
+
     fn from_document(doc: PdfDocument) -> Self {
         let doc = Arc::new(doc);
         let canonical = CanonicalDocument::from_document(&doc);
@@ -1502,6 +1541,7 @@ impl ContentEngine {
             image_placements: Arc::new(RwLock::new(HashMap::new())),
             retain_image_placements: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             edit_policy_cache: Arc::new(RwLock::new(HashMap::new())),
+            text_render_cache: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -2441,6 +2481,18 @@ impl ContentEngine {
         limits: &DecodeLimits,
         cancel: &CancelToken,
     ) -> Result<Vec<ContentOperation>> {
+        self.get_page_content_shared_with_decode_limits(page_number, limits, cancel)
+            .map(Arc::unwrap_or_clone)
+    }
+
+    /// [`Self::get_page_content_with_decode_limits`] sharing the cached page
+    /// program instead of copying it.
+    pub(crate) fn get_page_content_shared_with_decode_limits(
+        &self,
+        page_number: usize,
+        limits: &DecodeLimits,
+        cancel: &CancelToken,
+    ) -> Result<Arc<Vec<ContentOperation>>> {
         // Preserve the established cancellation-stage contract even when the
         // immutable page program can be served from RAPTOR's cache.
         cancel.check("content stream decode")?;
@@ -2449,23 +2501,28 @@ impl ContentEngine {
                 .page_artifacts
                 .read()
                 .expect("page artifact cache lock poisoned")
-                .operations(page_number)
+                .operations_shared(page_number)
             {
                 return Ok(operations);
             }
-            let operations =
-                self.get_page_content_with_limits_inner(page_number, limits, cancel, true, false)?;
-            // Clone into the cache only what it would keep: a page too large
-            // to cache would otherwise be copied just to be dropped.
+            let operations = Arc::new(self.get_page_content_with_limits_inner(
+                page_number,
+                limits,
+                cancel,
+                true,
+                false,
+            )?);
+            // Share with the cache only what it would keep.
             if operations_cacheable(&operations) {
                 self.page_artifacts
                     .write()
                     .expect("page artifact cache lock poisoned")
-                    .insert_operations(page_number, operations.clone());
+                    .insert_operations_shared(page_number, Arc::clone(&operations));
             }
             return Ok(operations);
         }
         self.get_page_content_with_limits_inner(page_number, limits, cancel, true, false)
+            .map(Arc::new)
     }
 
     fn get_page_content_with_limits_inner(

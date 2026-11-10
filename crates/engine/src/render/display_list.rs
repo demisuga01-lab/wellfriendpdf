@@ -846,6 +846,21 @@ impl RenderCache {
         }
     }
 
+    /// Insert a copy of `buffer`, copying it only when the cache will keep it
+    /// (a disabled or too-small cache records the skip without the copy).
+    pub fn insert_cloned(&mut self, key: RenderCacheKey, buffer: &PixelBuffer) {
+        let bytes = buffer.width as usize * buffer.height as usize * 4;
+        if self.budget_bytes == 0
+            || self.max_entry_bytes == 0
+            || bytes > self.max_entry_bytes
+            || bytes > self.budget_bytes
+        {
+            self.metrics.skipped_oversized += 1;
+            return;
+        }
+        self.insert(key, buffer.clone());
+    }
+
     pub fn insert(&mut self, key: RenderCacheKey, buffer: PixelBuffer) {
         if self.budget_bytes == 0 || self.max_entry_bytes == 0 {
             self.metrics.skipped_oversized += 1;

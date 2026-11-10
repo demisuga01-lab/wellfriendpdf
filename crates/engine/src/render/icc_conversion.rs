@@ -9,7 +9,8 @@ use crate::engine::PageResources;
 use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_lossless_strict_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::{PdfDictionary, PdfObject, PdfReader};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AlternateMetrics {
@@ -52,6 +53,74 @@ impl Drop for ConversionGuard {
         ACTIVE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
     }
 }
+/// A prepared ICC route reused for repeated paint conversions (a shading
+/// evaluates its colour space for every sample). Entries are keyed by the
+/// complete, reference-free colour-space objects, so a hit is a value-equal
+/// input whose preparation cannot depend on the document's reader.
+struct PreparedIccMemo {
+    space: PdfObject,
+    source_space: Option<PdfObject>,
+    options: cmm::ColorTransformOptions,
+    prepared: Arc<PreparedIcc>,
+}
+const PREPARED_ICC_MEMO_ENTRIES: usize = 8;
+thread_local! {
+    static PREPARED_ICC_MEMO: RefCell<Vec<PreparedIccMemo>> = const { RefCell::new(Vec::new()) };
+}
+fn object_has_reference(object: &PdfObject) -> bool {
+    match object {
+        PdfObject::Reference { .. } => true,
+        PdfObject::Array(items) => items.iter().any(object_has_reference),
+        PdfObject::Dictionary(dict) | PdfObject::Stream { dict, .. } => {
+            dict.iter().any(|(_, value)| object_has_reference(value))
+        }
+        _ => false,
+    }
+}
+fn prepared_icc_shared(
+    space: &PdfObject,
+    reader: &PdfReader,
+    options: cmm::ColorTransformOptions,
+    source_space: Option<&PdfObject>,
+) -> Result<Arc<PreparedIcc>> {
+    let memoizable =
+        !object_has_reference(space) && !source_space.is_some_and(object_has_reference);
+    if memoizable {
+        let hit = PREPARED_ICC_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            let index = memo.iter().position(|entry| {
+                entry.options == options
+                    && entry.source_space.as_ref() == source_space
+                    && entry.space == *space
+            })?;
+            let entry = memo.remove(index);
+            let prepared = Arc::clone(&entry.prepared);
+            memo.insert(0, entry);
+            Some(prepared)
+        });
+        if let Some(prepared) = hit {
+            return Ok(prepared);
+        }
+    }
+    let prepared = Arc::new(PreparedIcc::new(space, reader, options, source_space)?);
+    if memoizable {
+        PREPARED_ICC_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            memo.truncate(PREPARED_ICC_MEMO_ENTRIES - 1);
+            memo.insert(
+                0,
+                PreparedIccMemo {
+                    space: space.clone(),
+                    source_space: source_space.cloned(),
+                    options,
+                    prepared: Arc::clone(&prepared),
+                },
+            );
+        });
+    }
+    Ok(prepared)
+}
+
 fn invalid(reason: impl Into<String>) -> WellfriendError {
     WellfriendError::MalformedPdf(reason.into())
 }
@@ -277,7 +346,7 @@ pub(crate) fn resolve_color_with_resources(
         if !alpha.is_finite() {
             return Err(invalid("ICC paint alpha is not finite"));
         }
-        let prepared = PreparedIcc::new(space, reader, options, source_space)?;
+        let prepared = prepared_icc_shared(space, reader, options, source_space)?;
         let values = prepared.clipped(components)?;
         let bytes = values.iter().copied().map(byte).collect::<Vec<_>>();
         if let Some((pixels, channels)) = prepared.native(&bytes)? {
