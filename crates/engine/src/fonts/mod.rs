@@ -28,6 +28,7 @@ pub mod hard_break;
 pub mod installed;
 mod instance_coordinates;
 pub(crate) mod jstf_instance;
+pub(crate) mod known_glyph_order;
 pub(crate) mod layout_instance;
 pub mod line_break_policy;
 pub mod line_layout;

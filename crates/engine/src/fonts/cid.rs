@@ -175,17 +175,46 @@ pub(crate) fn embedded_cid_unicode_map(
             best = Some((rank, sub));
         }
     }
-    let sub = best?.1;
     let mut gid_to_unicode: BTreeMap<u16, String> = BTreeMap::new();
-    sub.codepoints(|cp| {
-        if let Some(gid) = sub.glyph_index(cp) {
-            if let Some(ch) = char::from_u32(cp) {
-                if !ch.is_control() {
-                    gid_to_unicode.entry(gid.0).or_insert_with(|| ch.to_string());
+    match best {
+        Some((_, sub)) => sub.codepoints(|cp| {
+            if let Some(gid) = sub.glyph_index(cp) {
+                if let Some(ch) = char::from_u32(cp) {
+                    if !ch.is_control() {
+                        gid_to_unicode
+                            .entry(gid.0)
+                            .or_insert_with(|| ch.to_string());
+                    }
                 }
             }
+        }),
+        // No Unicode subtable: older Arabic and Latin fonts carry only a
+        // Macintosh one (Arabic, platform 1 encoding 4, or Roman, encoding 0),
+        // whose byte codes convert to Unicode through the Mac encoding.
+        None => {
+            let mac = |encoding: u16| {
+                cmap.subtables.into_iter().find(|sub| {
+                    sub.platform_id == ttf_parser::PlatformId::Macintosh
+                        && sub.encoding_id == encoding
+                })
+            };
+            let (sub, to_unicode): (_, fn(u8) -> Option<char>) = if let Some(sub) = mac(4) {
+                (sub, super::known_glyph_order::mac_arabic_to_unicode)
+            } else {
+                (mac(0)?, mac_roman_to_unicode)
+            };
+            sub.codepoints(|cp| {
+                let (Some(gid), Ok(byte)) = (sub.glyph_index(cp), u8::try_from(cp)) else {
+                    return;
+                };
+                if let Some(ch) = to_unicode(byte).filter(|ch| !ch.is_control()) {
+                    gid_to_unicode
+                        .entry(gid.0)
+                        .or_insert_with(|| ch.to_string());
+                }
+            });
         }
-    });
+    }
     if gid_to_unicode.is_empty() {
         return None;
     }
@@ -226,6 +255,15 @@ pub(crate) fn embedded_cid_unicode_map(
     } else {
         Some(out)
     }
+}
+
+/// Unicode for a byte of a Macintosh Roman `cmap` subtable.
+fn mac_roman_to_unicode(byte: u8) -> Option<char> {
+    if byte < 0x80 {
+        return Some(char::from(byte));
+    }
+    super::encoding::MAC_ROMAN_ENCODING[usize::from(byte)]
+        .and_then(super::glyph_list::glyph_name_to_unicode)
 }
 
 #[cfg(test)]
