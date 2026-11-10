@@ -1,16 +1,17 @@
 use crate::cancel::CancelToken;
 use crate::content::state::{LineCap, LineJoin};
 use crate::render::buffer::{ClipMask, PixelBuffer, PixelColor};
+use crate::render::contract::ThinLineMode;
 use crate::render::line::DashState;
 use crate::render::transform::{Transform2D, Viewport};
+use crate::render::vector_quality::{
+    stroke_adjust_outline, stroke_adjusted_fill_rect, StrokePen, VectorRasterOptions,
+};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const ACCUMULATOR_MAX_CELLS: usize = 8 * 1024 * 1024;
 const GLYPH_SCANLINE_ALPHA_VERTICAL_SAMPLES: usize = 4;
-const PATH_SCANLINE_COMPLEX_POINT_THRESHOLD: usize = 1536;
-const PATH_GENERAL_SCANLINE_POINT_THRESHOLD: usize = 4096;
-const PATH_GENERAL_SCANLINE_CELL_THRESHOLD: usize = 384 * 1024;
 const PATH_SCANLINE_COLOR_VERTICAL_SAMPLES: usize = 4;
 const SCANLINE_CROSSING_POOL_MAX_ENTRIES: usize = 16_384;
 const SCANLINE_CROSSING_POOL_MAX_BUFFERS: usize = 16;
@@ -362,10 +363,28 @@ pub(crate) fn flatten_path_device_transform(
     })
 }
 
+/// Coarsest curve-flattening tolerance, in device pixels, the rasterizer
+/// accepts. Poppler/Splash fixes flatness at one pixel (Acrobat ignores the
+/// PDF `i` operator too); a file asking for a coarser tolerance must not get
+/// visibly faceted curves. Finer tolerances are kept.
+pub(crate) const MAX_DEVICE_FLATNESS: f64 = 1.0;
+
+/// Clamp a requested device-space flattening tolerance to at most
+/// [`MAX_DEVICE_FLATNESS`]; non-finite values fall back to the half-pixel
+/// default (the flattener separately enforces a 0.01 px floor).
+pub(crate) fn effective_device_flatness(bezier_threshold: f64) -> f64 {
+    if bezier_threshold.is_finite() {
+        bezier_threshold.min(MAX_DEVICE_FLATNESS)
+    } else {
+        0.5
+    }
+}
+
 fn flatten_path_with_point_mapper<F>(path: &Path, bezier_threshold: f64, mut to_px: F) -> FlatPath
 where
     F: FnMut(f64, f64) -> Option<(f64, f64)>,
 {
+    let bezier_threshold = effective_device_flatness(bezier_threshold);
     let mut flat = FlatPath::default();
     let mut current_subpath = Vec::new();
     let mut current_start: Option<(f64, f64)> = None;
@@ -525,6 +544,11 @@ impl RasterizedGlyphMask {
 
     pub(crate) fn alpha_slice(&self) -> &[u8] {
         &self.alpha
+    }
+
+    /// Remap coverage through a vector coverage curve (`None` = linear).
+    pub(crate) fn apply_coverage_lut(&mut self, lut: Option<&[u8; 256]>) {
+        crate::render::vector_quality::apply_coverage_lut(&mut self.alpha, lut);
     }
 
     pub(crate) fn force_binary_alpha(&mut self) {
@@ -692,59 +716,24 @@ impl PathPainter {
         bezier_threshold: f64,
         cancel: &CancelToken,
     ) -> bool {
-        if cancel.is_cancelled() {
-            return false;
-        }
-        if color[3] == 255 {
-            if let Some(regions) = axis_aligned_solid_rect_stroke_regions(
+        stroke_impl(
+            buf,
+            StrokeRequest {
                 path,
                 ctm,
                 viewport,
+                color,
                 stroke_width,
                 dash,
+                cap,
                 join,
                 miter_limit,
-            ) {
-                for (x, y, w, h) in regions {
-                    buf.fill_rect(x, y, w, h, color);
-                }
-                return true;
-            }
-        }
-        if paint_axis_aligned_solid_hairline(
-            buf,
-            path,
-            ctm,
-            viewport,
-            color,
-            stroke_width,
-            dash,
-            cap,
-        ) {
-            return true;
-        }
-        if let Some((x, y, w, h)) =
-            axis_aligned_solid_stroke_rect(path, ctm, viewport, stroke_width, dash, cap)
-        {
-            buf.fill_rect(x, y, w, h, color);
-            return true;
-        }
-        let flat = flatten_path(path, ctm, viewport, bezier_threshold);
-        if cancel.is_cancelled() {
-            return false;
-        }
-        let device_scale = ctm.scale_factor() * viewport.scale;
-        let width_px = (stroke_width * device_scale).max(1.0);
-        let device_dash = dash.scaled(device_scale);
-        let outline = stroke_flat_path(
-            &flat,
-            width_px,
-            &device_dash,
-            cap.clone(),
-            join.clone(),
-            miter_limit,
-        );
-        fill_flat_aa_cancellable(buf, &outline, color, FillRule::NonZero, cancel)
+                bezier_threshold,
+            },
+            StrokeScan::Antialiased,
+            VectorRasterOptions::for_glyph_stroke(),
+            cancel,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -777,6 +766,9 @@ impl PathPainter {
         )
     }
 
+    /// Stroke with binary (aliased) scan conversion. Callers that want
+    /// anti-aliasing use [`Self::stroke_with_style_cancellable_with_flatness`]
+    /// or the crate-internal option-aware entry point.
     #[allow(clippy::too_many_arguments)]
     pub fn stroke_with_style_fast_cancellable_with_flatness(
         buf: &mut PixelBuffer,
@@ -792,40 +784,105 @@ impl PathPainter {
         bezier_threshold: f64,
         cancel: &CancelToken,
     ) -> bool {
-        if cancel.is_cancelled() {
-            return false;
-        }
-        if color[3] == 255 {
-            if let Some(regions) = axis_aligned_solid_rect_stroke_regions(
+        stroke_impl(
+            buf,
+            StrokeRequest {
                 path,
                 ctm,
                 viewport,
+                color,
                 stroke_width,
                 dash,
+                cap,
                 join,
                 miter_limit,
-            ) {
-                for (x, y, w, h) in regions {
-                    buf.fill_rect(x, y, w, h, color);
-                }
+                bezier_threshold,
+            },
+            StrokeScan::Binary,
+            VectorRasterOptions::for_glyph_stroke(),
+            cancel,
+        )
+    }
+
+    /// Stroke an ordinary (non-glyph) path with the renderer's vector
+    /// raster policies: stroke adjustment, thin-line mode and coverage gamma
+    /// from `options`, a transformed (user-space) pen, and anti-aliasing for
+    /// every stroke shape (dashed, very large or very complex strokes
+    /// included) unless `binary_alpha` asks for aliased output.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stroke_path_with_options(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        stroke_width: f64,
+        dash: &DashState,
+        cap: &LineCap,
+        join: &LineJoin,
+        miter_limit: f64,
+        bezier_threshold: f64,
+        binary_alpha: bool,
+        options: VectorRasterOptions,
+        cancel: &CancelToken,
+    ) -> bool {
+        stroke_impl(
+            buf,
+            StrokeRequest {
+                path,
+                ctm,
+                viewport,
+                color,
+                stroke_width,
+                dash,
+                cap,
+                join,
+                miter_limit,
+                bezier_threshold,
+            },
+            if binary_alpha {
+                StrokeScan::Binary
+            } else {
+                StrokeScan::Antialiased
+            },
+            options,
+            cancel,
+        )
+    }
+
+    /// Fill an ordinary (non-glyph) path with the renderer's vector raster
+    /// policies: stroke-adjusted rectangles and coverage gamma from
+    /// `options`, and anti-aliasing for every path size and complexity unless
+    /// `binary_alpha` asks for aliased output. Memory stays bounded: the
+    /// anti-aliased scan converter works one device row at a time over the
+    /// path's bounds clipped to the buffer and the active clip.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fill_path_with_options(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        rule: FillRule,
+        bezier_threshold: f64,
+        binary_alpha: bool,
+        options: VectorRasterOptions,
+        cancel: &CancelToken,
+    ) -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        if path.is_empty() || buf.width == 0 || buf.height == 0 {
+            return true;
+        }
+        if options.stroke_adjust {
+            let device_t = ctm.concat(&viewport.to_transform());
+            if let Some((x, y, w, h)) = stroke_adjusted_fill_rect(path, &device_t) {
+                buf.fill_rect(x, y, w, h, color);
                 return true;
             }
         }
-        if paint_axis_aligned_solid_hairline(
-            buf,
-            path,
-            ctm,
-            viewport,
-            color,
-            stroke_width,
-            dash,
-            cap,
-        ) {
-            return true;
-        }
-        if let Some((x, y, w, h)) =
-            axis_aligned_solid_stroke_rect(path, ctm, viewport, stroke_width, dash, cap)
-        {
+        if let Some((x, y, w, h)) = axis_aligned_integer_rect(path, ctm, viewport) {
             buf.fill_rect(x, y, w, h, color);
             return true;
         }
@@ -833,18 +890,17 @@ impl PathPainter {
         if cancel.is_cancelled() {
             return false;
         }
-        let device_scale = ctm.scale_factor() * viewport.scale;
-        let width_px = (stroke_width * device_scale).max(1.0);
-        let device_dash = dash.scaled(device_scale);
-        let outline = stroke_flat_path(
+        if binary_alpha {
+            return fill_flat_scanline_fast(buf, &flat, color, rule, cancel);
+        }
+        fill_flat_with_color_compositor(
+            buf,
             &flat,
-            width_px,
-            &device_dash,
-            cap.clone(),
-            join.clone(),
-            miter_limit,
-        );
-        fill_flat_scanline_fast(buf, &outline, color, FillRule::NonZero, cancel)
+            color,
+            rule,
+            Some(cancel),
+            options.coverage_lut(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -860,60 +916,25 @@ impl PathPainter {
         join: LineJoin,
         miter_limit: f64,
     ) {
-        if path.is_empty() || buf.width == 0 || buf.height == 0 {
-            return;
-        }
-
-        if color[3] == 255 {
-            if let Some(regions) = axis_aligned_solid_rect_stroke_regions(
+        let cancel = CancelToken::new();
+        let _ = stroke_impl(
+            buf,
+            StrokeRequest {
                 path,
                 ctm,
                 viewport,
+                color,
                 stroke_width,
                 dash,
-                &join,
+                cap: &cap,
+                join: &join,
                 miter_limit,
-            ) {
-                for (x, y, w, h) in regions {
-                    buf.fill_rect(x, y, w, h, color);
-                }
-                return;
-            }
-        }
-
-        if paint_axis_aligned_solid_hairline(
-            buf,
-            path,
-            ctm,
-            viewport,
-            color,
-            stroke_width,
-            dash,
-            &cap,
-        ) {
-            return;
-        }
-
-        if let Some((x, y, w, h)) =
-            axis_aligned_solid_stroke_rect(path, ctm, viewport, stroke_width, dash, &cap)
-        {
-            buf.fill_rect(x, y, w, h, color);
-            return;
-        }
-
-        let flat = flatten_path(path, ctm, viewport, 0.2);
-        let device_scale = ctm.scale_factor() * viewport.scale;
-        let width_px = (stroke_width * device_scale).max(1.0);
-        let device_dash = dash.scaled(device_scale);
-        let outline = stroke_flat_path(&flat, width_px, &device_dash, cap, join, miter_limit);
-        if !outline.subpaths.is_empty() {
-            if should_route_general_path_to_scanline(&outline) {
-                let cancel = CancelToken::new();
-                let _ = fill_flat_scanline_fast(buf, &outline, color, FillRule::NonZero, &cancel);
-                return;
-            }
-            fill_flat_aa(buf, &outline, color, FillRule::NonZero);
-        }
+                bezier_threshold: 0.2,
+            },
+            StrokeScan::Antialiased,
+            VectorRasterOptions::for_glyph_stroke(),
+            &cancel,
+        );
     }
 
     /// Fill a path with **analytic, coverage-based antialiasing**.
@@ -953,12 +974,9 @@ impl PathPainter {
             buf.fill_rect(x, y, w, h, color);
             return;
         }
+        // Every path size and complexity is anti-aliased; the row-streaming
+        // scan converter keeps memory bounded by the clipped path width.
         let flat = flatten_path(path, ctm, viewport, bezier_threshold);
-        if should_route_general_path_to_scanline(&flat) {
-            let cancel = CancelToken::new();
-            let _ = fill_flat_scanline_fast(buf, &flat, color, rule, &cancel);
-            return;
-        }
         fill_flat_aa(buf, &flat, color, rule);
     }
 
@@ -993,9 +1011,6 @@ impl PathPainter {
             return true;
         }
         let flat = flatten_path(path, ctm, viewport, bezier_threshold);
-        if should_route_general_path_to_scanline(&flat) {
-            return fill_flat_scanline_fast(buf, &flat, color, rule, cancel);
-        }
         fill_flat_aa_cancellable(buf, &flat, color, rule, cancel)
     }
 
@@ -1082,22 +1097,26 @@ impl PathPainter {
         miter_limit: f64,
         bezier_threshold: f64,
         binary_alpha: bool,
+        options: VectorRasterOptions,
     ) {
         if path.is_empty() || buf.width == 0 || buf.height == 0 {
             return;
         }
         let flat = flatten_path(path, ctm, viewport, bezier_threshold);
-        let device_scale = ctm.scale_factor() * viewport.scale;
-        let width_px = (stroke_width * device_scale).max(1.0);
-        let device_dash = dash.scaled(device_scale);
-        let outline = stroke_flat_path(
+        let device_t = ctm.concat(&viewport.to_transform());
+        let stroke = device_stroke_outline(
             &flat,
-            width_px,
-            &device_dash,
-            cap.clone(),
-            join.clone(),
+            &device_t,
+            stroke_width,
+            dash,
+            cap,
+            join,
             miter_limit,
+            options,
         );
+        let alpha = (f64::from(alpha) * stroke.paint.alpha_scale.min(1.0)) as f32;
+        let binary_alpha = binary_alpha || stroke.paint.binary;
+        let outline = stroke.outline;
         if !outline.subpaths.is_empty() {
             if binary_alpha {
                 let _ = fill_flat_cmyk_overprint_preview_scanline(
@@ -1229,6 +1248,472 @@ impl PathPainter {
             stroke_width,
             &DashState::solid(),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared stroke pipeline
+// ---------------------------------------------------------------------------
+
+struct StrokeRequest<'a> {
+    path: &'a Path,
+    ctm: &'a Transform2D,
+    viewport: &'a Viewport,
+    color: PixelColor,
+    stroke_width: f64,
+    dash: &'a DashState,
+    cap: &'a LineCap,
+    join: &'a LineJoin,
+    miter_limit: f64,
+    bezier_threshold: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrokeScan {
+    Antialiased,
+    Binary,
+}
+
+/// Paint modifiers a thin-line policy applies to one stroke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StrokePaintPolicy {
+    /// Multiplier for the paint opacity (`ThinLineMode::Shape`).
+    pub(crate) alpha_scale: f64,
+    /// Threshold coverage to fully opaque / transparent (`ThinLineMode::Solid`).
+    pub(crate) binary: bool,
+}
+
+impl StrokePaintPolicy {
+    const NORMAL: Self = Self {
+        alpha_scale: 1.0,
+        binary: false,
+    };
+
+    pub(crate) fn apply_to_color(self, color: PixelColor) -> PixelColor {
+        if self.alpha_scale >= 1.0 {
+            return color;
+        }
+        let alpha = (f64::from(color[3]) * self.alpha_scale.max(0.0))
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        [color[0], color[1], color[2], alpha]
+    }
+}
+
+/// A device-space stroke outline plus the paint policy for it.
+pub(crate) struct DeviceStrokeOutline {
+    pub(crate) outline: FlatPath,
+    pub(crate) paint: StrokePaintPolicy,
+}
+
+fn thin_line_paint_policy(
+    mode: ThinLineMode,
+    line_width: f64,
+    true_device_width: f64,
+) -> StrokePaintPolicy {
+    let thin = !(true_device_width >= 1.0);
+    match mode {
+        ThinLineMode::None => StrokePaintPolicy::NORMAL,
+        ThinLineMode::Solid if thin => StrokePaintPolicy {
+            alpha_scale: 1.0,
+            binary: true,
+        },
+        ThinLineMode::Shape if thin && line_width > 0.0 && true_device_width.is_finite() => {
+            StrokePaintPolicy {
+                alpha_scale: true_device_width.max(1.0 / 255.0),
+                binary: false,
+            }
+        }
+        _ => StrokePaintPolicy::NORMAL,
+    }
+}
+
+/// Build the device-space outline of a stroke.
+///
+/// `flat` is the stroke's centreline flattened in device space through
+/// `device_t`; `line_width` and `dash` are in user space. Conformal device
+/// transforms stroke directly in device space (exact for a round pen). Other
+/// transforms stroke in pen space, so the pen is the transformed ellipse a
+/// user-space line width describes rather than a circle of the average scale
+/// (see [`StrokePen`]). Every stroke stays at least one device pixel thick.
+/// With `options.stroke_adjust`, axis-aligned strokes are snapped to whole
+/// device pixels afterwards.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn device_stroke_outline(
+    flat: &FlatPath,
+    device_t: &Transform2D,
+    line_width: f64,
+    dash: &DashState,
+    cap: &LineCap,
+    join: &LineJoin,
+    miter_limit: f64,
+    options: VectorRasterOptions,
+) -> DeviceStrokeOutline {
+    let pen = StrokePen::new(device_t, line_width);
+    let mut outline = match pen {
+        StrokePen::Device {
+            width_px,
+            dash_scale,
+        } => stroke_flat_path(
+            flat,
+            width_px,
+            &dash.scaled(dash_scale),
+            cap.clone(),
+            join.clone(),
+            miter_limit,
+        ),
+        StrokePen::Transformed {
+            width,
+            pen_from_device,
+            device_from_pen,
+            ..
+        } => {
+            let pen_flat = transform_flat_path(flat, &pen_from_device);
+            let mut outline = stroke_flat_path(
+                &pen_flat,
+                width,
+                dash,
+                cap.clone(),
+                join.clone(),
+                miter_limit,
+            );
+            transform_flat_path_in_place(&mut outline, &device_from_pen);
+            outline
+        }
+    };
+    if options.stroke_adjust && !outline.subpaths.is_empty() {
+        let (half_x, half_y) = pen.half_extents();
+        stroke_adjust_outline(flat, &mut outline, half_x, half_y, cap);
+    }
+    let paint = stroke_paint_policy(options.thin_line_mode, device_t, line_width);
+    DeviceStrokeOutline { outline, paint }
+}
+
+/// Thin-line paint policy for a stroke of user-space `line_width` under
+/// `device_t`.
+pub(crate) fn stroke_paint_policy(
+    mode: ThinLineMode,
+    device_t: &Transform2D,
+    line_width: f64,
+) -> StrokePaintPolicy {
+    thin_line_paint_policy(
+        mode,
+        line_width,
+        StrokePen::true_device_width(device_t, line_width),
+    )
+}
+
+fn transform_flat_path(flat: &FlatPath, t: &Transform2D) -> FlatPath {
+    let mut mapped = flat.clone();
+    transform_flat_path_in_place(&mut mapped, t);
+    mapped
+}
+
+fn transform_flat_path_in_place(flat: &mut FlatPath, t: &Transform2D) {
+    for subpath in &mut flat.subpaths {
+        for point in subpath.iter_mut() {
+            *point = t.transform_point(point.0, point.1);
+        }
+    }
+}
+
+/// True when the device transform scales both axes equally (rotation and
+/// reflection allowed), i.e. a round user-space pen stays round.
+fn device_pen_is_conformal(ctm: &Transform2D, viewport: &Viewport) -> bool {
+    let t = ctm.concat(&viewport.to_transform());
+    let (sx, sy) = (t.scale_x(), t.scale_y());
+    let scale = sx.max(sy);
+    scale.is_finite()
+        && scale > 0.0
+        && (sx - sy).abs() <= 1e-9 * scale
+        && (t.a * t.c + t.b * t.d).abs() <= 1e-9 * scale * scale
+}
+
+/// Binary coverage curve used by `ThinLineMode::Solid`: a pixel is painted
+/// fully when at least half covered.
+fn binary_coverage_lut() -> &'static [u8; 256] {
+    static LUT: std::sync::OnceLock<[u8; 256]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0u8; 256];
+        for (index, slot) in lut.iter_mut().enumerate() {
+            *slot = if index >= 128 { 255 } else { 0 };
+        }
+        lut
+    })
+}
+
+fn stroke_impl(
+    buf: &mut PixelBuffer,
+    request: StrokeRequest<'_>,
+    scan: StrokeScan,
+    options: VectorRasterOptions,
+    cancel: &CancelToken,
+) -> bool {
+    let StrokeRequest {
+        path,
+        ctm,
+        viewport,
+        color,
+        stroke_width,
+        dash,
+        cap,
+        join,
+        miter_limit,
+        bezier_threshold,
+    } = request;
+    if cancel.is_cancelled() {
+        return false;
+    }
+    if path.is_empty() || buf.width == 0 || buf.height == 0 {
+        return true;
+    }
+    // Exact integer-pixel fast paths. They compute the device width from the
+    // average scale, so they only apply to conformal transforms, and they are
+    // unaffected by stroke adjustment (their edges already sit on pixel
+    // boundaries) but not by thin-line policies.
+    if options.thin_line_mode == ThinLineMode::None && device_pen_is_conformal(ctm, viewport) {
+        if color[3] == 255 {
+            if let Some(regions) = axis_aligned_solid_rect_stroke_regions(
+                path,
+                ctm,
+                viewport,
+                stroke_width,
+                dash,
+                join,
+                miter_limit,
+            ) {
+                for (x, y, w, h) in regions {
+                    buf.fill_rect(x, y, w, h, color);
+                }
+                return true;
+            }
+        }
+        // The hairline fast path centres a one-pixel line on a fractional
+        // coordinate; stroke adjustment snaps it to a whole pixel instead.
+        if !options.stroke_adjust
+            && paint_axis_aligned_solid_hairline(
+                buf,
+                path,
+                ctm,
+                viewport,
+                color,
+                stroke_width,
+                dash,
+                cap,
+            )
+        {
+            return true;
+        }
+        if let Some((x, y, w, h)) =
+            axis_aligned_solid_stroke_rect(path, ctm, viewport, stroke_width, dash, cap)
+        {
+            buf.fill_rect(x, y, w, h, color);
+            return true;
+        }
+    }
+    let flat = flatten_path(path, ctm, viewport, bezier_threshold);
+    if cancel.is_cancelled() {
+        return false;
+    }
+    let device_t = ctm.concat(&viewport.to_transform());
+    let stroke = device_stroke_outline(
+        &flat,
+        &device_t,
+        stroke_width,
+        dash,
+        cap,
+        join,
+        miter_limit,
+        options,
+    );
+    if stroke.outline.subpaths.is_empty() {
+        return true;
+    }
+    let color = stroke.paint.apply_to_color(color);
+    match scan {
+        StrokeScan::Binary => {
+            fill_flat_scanline_fast(buf, &stroke.outline, color, FillRule::NonZero, cancel)
+        }
+        StrokeScan::Antialiased => {
+            let lut = if stroke.paint.binary {
+                Some(binary_coverage_lut())
+            } else {
+                options.coverage_lut()
+            };
+            fill_flat_with_color_compositor(
+                buf,
+                &stroke.outline,
+                color,
+                FillRule::NonZero,
+                Some(cancel),
+                lut,
+            )
+        }
+    }
+}
+
+/// Coverage curve for a stroke mask under `paint` and `options`.
+pub(crate) fn stroke_coverage_lut(
+    paint: StrokePaintPolicy,
+    options: VectorRasterOptions,
+) -> Option<&'static [u8; 256]> {
+    if paint.binary {
+        Some(binary_coverage_lut())
+    } else {
+        options.coverage_lut()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Thin-geometry rescue for the sampled scan converter
+// ---------------------------------------------------------------------------
+
+/// A subpath whose entire vertical extent lies between two adjacent
+/// anti-aliasing sample lines. Point sampling would give it zero coverage, so
+/// it would vanish; Splash instead includes every pixel a shape touches. The
+/// rescue paints such a subpath into the row containing its vertical centre
+/// with its exact horizontal coverage weighted by its height (at least 1/16
+/// of a pixel, Splash's single-subsample coverage), so hairline slivers stay
+/// visible with an area-proportional density.
+#[derive(Clone, Copy, Debug)]
+struct ThinSubpathRescue {
+    index: usize,
+    row: i32,
+    center_y: f64,
+    weight: f64,
+}
+
+const THIN_RESCUE_MIN_WEIGHT: f64 = 1.0 / 16.0;
+
+fn thin_subpath_rescues(flat: &FlatPath, vertical_samples: usize) -> Vec<ThinSubpathRescue> {
+    let samples = vertical_samples.max(1) as f64;
+    let mut rescues = Vec::new();
+    for (index, subpath) in flat.subpaths.iter().enumerate() {
+        if subpath.len() < 2 {
+            continue;
+        }
+        let mut y_min = f64::INFINITY;
+        let mut y_max = f64::NEG_INFINITY;
+        for &(x, y) in subpath {
+            if x.is_finite() && y.is_finite() {
+                y_min = y_min.min(y);
+                y_max = y_max.max(y);
+            }
+        }
+        if !(y_max > y_min) || !y_min.is_finite() || !y_max.is_finite() {
+            continue;
+        }
+        // The first sample line at or below y_min; the subpath is sampled
+        // normally when that line falls inside [y_min, y_max).
+        let first_sample = ((y_min * samples - 0.5).ceil() + 0.5) / samples;
+        if first_sample < y_max {
+            continue;
+        }
+        let center_y = 0.5 * (y_min + y_max);
+        rescues.push(ThinSubpathRescue {
+            index,
+            row: safe_floor_i32(center_y),
+            center_y,
+            weight: (y_max - y_min).clamp(THIN_RESCUE_MIN_WEIGHT, 1.0),
+        });
+    }
+    rescues.sort_by_key(|rescue| rescue.row);
+    rescues
+}
+
+/// Add the rescue coverage of every thin subpath centred in `row` to
+/// `row_accum` (a buffer for columns `x0..x0 + w`). `cursor` walks the
+/// row-sorted rescue list across sequential rows.
+#[allow(clippy::too_many_arguments)]
+fn add_thin_subpath_rescues_for_row(
+    flat: &FlatPath,
+    rescues: &[ThinSubpathRescue],
+    cursor: &mut usize,
+    row: i32,
+    rule: FillRule,
+    x0: i32,
+    w: usize,
+    row_accum: &mut [u16],
+    row_base: usize,
+    crossings: &mut Vec<(f64, i32)>,
+) {
+    while *cursor < rescues.len() && rescues[*cursor].row < row {
+        *cursor += 1;
+    }
+    let mut index = *cursor;
+    while index < rescues.len() && rescues[index].row == row {
+        let rescue = rescues[index];
+        index += 1;
+        let (Some(subpath), Some(&closed)) = (
+            flat.subpaths.get(rescue.index),
+            flat.closed.get(rescue.index),
+        ) else {
+            continue;
+        };
+        crossings.clear();
+        collect_scanline_crossings(subpath, closed, rescue.center_y, crossings);
+        if !prepare_scanline_crossings(crossings) {
+            continue;
+        }
+        accumulate_crossing_spans(
+            crossings,
+            rule,
+            row_accum,
+            row_base,
+            w,
+            x0,
+            255.0 * rescue.weight,
+        );
+    }
+}
+
+/// Add the coverage spans of one sorted crossing list to an accumulation row.
+fn accumulate_crossing_spans(
+    crossings: &[(f64, i32)],
+    rule: FillRule,
+    accum: &mut [u16],
+    row_base: usize,
+    w: usize,
+    x0: i32,
+    sample_weight: f64,
+) {
+    match rule {
+        FillRule::EvenOdd => {
+            let mut i = 0usize;
+            while i + 1 < crossings.len() {
+                add_alpha_span(
+                    accum,
+                    row_base,
+                    w,
+                    crossings[i].0 - x0 as f64,
+                    crossings[i + 1].0 - x0 as f64,
+                    sample_weight,
+                );
+                i += 2;
+            }
+        }
+        FillRule::NonZero => {
+            let mut winding = 0i32;
+            let mut start_x: Option<f64> = None;
+            for (x, dir) in crossings.iter().copied() {
+                if winding != 0 {
+                    if let Some(sx) = start_x.take() {
+                        add_alpha_span(
+                            accum,
+                            row_base,
+                            w,
+                            sx - x0 as f64,
+                            x - x0 as f64,
+                            sample_weight,
+                        );
+                    }
+                }
+                winding += dir;
+                if winding != 0 {
+                    start_x = Some(x);
+                }
+            }
+        }
     }
 }
 
@@ -1372,7 +1857,7 @@ fn fill_flat_color(
     rule: FillRule,
     cancel: Option<&CancelToken>,
 ) -> bool {
-    fill_flat_with_color_compositor(buf, flat, color, rule, cancel)
+    fill_flat_with_color_compositor(buf, flat, color, rule, cancel, None)
 }
 
 fn fill_flat_scanline_fast(
@@ -2144,6 +2629,12 @@ impl ScanlineEdge {
 
 struct ScanlineEdgeBuckets {
     edges: Vec<ScanlineEdge>,
+    /// Exclusive end row of every edge (parallel to `edges`).
+    end_rows: Vec<usize>,
+    /// Per-row edge links for random row access. Only built while the total
+    /// stays under [`SCANLINE_EDGE_BUCKET_MAX_LINKS`]; sequential scans use the
+    /// start/end events, which are always present and O(edges + rows).
+    has_row_links: bool,
     row_offsets: Vec<usize>,
     links: Vec<usize>,
     start_offsets: Vec<usize>,
@@ -2158,47 +2649,39 @@ fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<Sca
     }
     let mut edges = Vec::new();
     let mut spans = Vec::<(usize, usize)>::new();
-    let mut row_counts = vec![0usize; h];
     let mut links = 0usize;
     for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
         if sp.len() < 2 {
             continue;
         }
         for win in sp.windows(2) {
-            if !push_scanline_edge_bucket(
-                win[0],
-                win[1],
-                y0,
-                h,
-                &mut edges,
-                &mut spans,
-                &mut row_counts,
-                &mut links,
-            ) {
-                return None;
-            }
+            push_scanline_edge_bucket(win[0], win[1], y0, h, &mut edges, &mut spans, &mut links);
         }
         if !closed {
             if let (Some(&first), Some(&last)) = (sp.first(), sp.last()) {
-                if first != last
-                    && !push_scanline_edge_bucket(
-                        last,
-                        first,
-                        y0,
-                        h,
-                        &mut edges,
-                        &mut spans,
-                        &mut row_counts,
-                        &mut links,
-                    )
-                {
-                    return None;
+                if first != last {
+                    push_scanline_edge_bucket(
+                        last, first, y0, h, &mut edges, &mut spans, &mut links,
+                    );
                 }
             }
         }
     }
     if edges.is_empty() {
         return None;
+    }
+    // Large or tall paths (maps, CAD drawings) would need an unbounded number
+    // of per-row links. Sequential scans only need the start/end events, so
+    // skip the random-access links instead of abandoning the edge buckets
+    // (which used to force an O(rows x edges) brute-force scan).
+    let has_row_links = links <= SCANLINE_EDGE_BUCKET_MAX_LINKS;
+    let mut row_counts = vec![0usize; if has_row_links { h } else { 0 }];
+    if has_row_links {
+        for &(row_start, row_end) in &spans {
+            for row in &mut row_counts[row_start..row_end] {
+                *row = row.saturating_add(1);
+            }
+        }
     }
     PATH_RASTER_EDGE_BUCKET_BUILDS.fetch_add(1, Ordering::Relaxed);
     PATH_RASTER_EDGE_BUCKET_LINKS.fetch_add(links as u64, Ordering::Relaxed);
@@ -2207,23 +2690,29 @@ fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<Sca
         Ordering::Relaxed,
     );
 
-    let mut row_offsets = vec![0usize; h + 1];
-    for (idx, count) in row_counts.iter().copied().enumerate() {
-        row_offsets[idx + 1] = row_offsets[idx].saturating_add(count);
-    }
-    let mut flat_links = vec![0usize; links];
-    let mut cursor = row_offsets[..h].to_vec();
-    for (edge_index, (row_start, row_end)) in spans.iter().copied().enumerate() {
-        for row in row_start..row_end {
-            let Some(slot) = cursor.get_mut(row) else {
-                continue;
-            };
-            if let Some(dst) = flat_links.get_mut(*slot) {
-                *dst = edge_index;
-            }
-            *slot = slot.saturating_add(1);
+    let (row_offsets, flat_links) = if has_row_links {
+        let mut row_offsets = vec![0usize; h + 1];
+        for (idx, count) in row_counts.iter().copied().enumerate() {
+            row_offsets[idx + 1] = row_offsets[idx].saturating_add(count);
         }
-    }
+        let mut flat_links = vec![0usize; links];
+        let mut cursor = row_offsets[..h].to_vec();
+        for (edge_index, (row_start, row_end)) in spans.iter().copied().enumerate() {
+            for row in row_start..row_end {
+                let Some(slot) = cursor.get_mut(row) else {
+                    continue;
+                };
+                if let Some(dst) = flat_links.get_mut(*slot) {
+                    *dst = edge_index;
+                }
+                *slot = slot.saturating_add(1);
+            }
+        }
+        (row_offsets, flat_links)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let end_rows = spans.iter().map(|(_, row_end)| *row_end).collect();
     let (start_offsets, start_links) = build_scanline_edge_events(
         h,
         spans
@@ -2243,6 +2732,8 @@ fn build_scanline_edge_buckets(flat: &FlatPath, y0: i32, h: usize) -> Option<Sca
 
     Some(ScanlineEdgeBuckets {
         edges,
+        end_rows,
+        has_row_links,
         row_offsets,
         links: flat_links,
         start_offsets,
@@ -2280,7 +2771,6 @@ fn build_scanline_edge_events(
     (offsets, links)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn push_scanline_edge_bucket(
     p0: (f64, f64),
     p1: (f64, f64),
@@ -2288,29 +2778,21 @@ fn push_scanline_edge_bucket(
     h: usize,
     edges: &mut Vec<ScanlineEdge>,
     spans: &mut Vec<(usize, usize)>,
-    row_counts: &mut [usize],
     links: &mut usize,
-) -> bool {
+) {
     let Some(edge) = ScanlineEdge::new(p0, p1) else {
-        return true;
+        return;
     };
     let row_start = safe_floor_i32(edge.ymin - y0 as f64).max(0) as usize;
     let row_end = safe_ceil_i32(edge.ymax - y0 as f64).max(0).min(h as i32) as usize;
     if row_start >= row_end || row_start >= h {
-        return true;
+        return;
     }
     let end = row_end.min(h);
     let span_len = end.saturating_sub(row_start);
-    if links.saturating_add(span_len) > SCANLINE_EDGE_BUCKET_MAX_LINKS {
-        return false;
-    }
     edges.push(edge);
     spans.push((row_start, end));
     *links = links.saturating_add(span_len);
-    for row in &mut row_counts[row_start..end] {
-        *row = row.saturating_add(1);
-    }
-    true
 }
 
 fn collect_scanline_crossings_from_bucket(
@@ -2319,6 +2801,17 @@ fn collect_scanline_crossings_from_bucket(
     scan_y: f64,
     crossings: &mut Vec<(f64, i32)>,
 ) {
+    if !bucket.has_row_links {
+        // Random-access fallback for buckets built without per-row links.
+        for (edge, &end_row) in bucket.edges.iter().zip(&bucket.end_rows) {
+            if end_row > row {
+                if let Some(crossing) = edge.crossing_at(scan_y) {
+                    crossings.push(crossing);
+                }
+            }
+        }
+        return;
+    }
     let Some(start) = bucket.row_offsets.get(row).copied() else {
         return;
     };
@@ -2390,7 +2883,13 @@ impl ScanlineActiveEdges {
         if ended.is_empty() {
             return;
         }
-        self.active.retain(|edge_index| !ended.contains(edge_index));
+        // O(active) per row instead of O(active x ended).
+        self.active.retain(|edge_index| {
+            buckets
+                .end_rows
+                .get(*edge_index)
+                .is_some_and(|end| *end > row)
+        });
     }
 
     fn add_starting_edges(&mut self, buckets: &ScanlineEdgeBuckets, row: usize) {
@@ -2637,6 +3136,7 @@ fn fill_flat_with_compositor(
     // General page paths use the same edge-bucket scan conversion route by
     // default, avoiding bounding-box-sized f32 grids on ordinary vector
     // content and retained display-list replay.
+    let rescues = thin_subpath_rescues(flat, PATH_SCANLINE_COLOR_VERTICAL_SAMPLES);
     fill_flat_with_compositor_scanline(
         buf,
         flat,
@@ -2644,6 +3144,7 @@ fn fill_flat_with_compositor(
         cancel,
         (x0, y0, x1, y1),
         PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+        &rescues,
         &mut composite_pixel,
     )
 }
@@ -2654,6 +3155,7 @@ fn fill_flat_with_color_compositor(
     color: PixelColor,
     rule: FillRule,
     cancel: Option<&CancelToken>,
+    lut: Option<&[u8; 256]>,
 ) -> bool {
     let bw = buf.width as i32;
     let bh = buf.height as i32;
@@ -2695,16 +3197,20 @@ fn fill_flat_with_color_compositor(
     if w == 0 || h == 0 {
         return true;
     }
-    if let Some(handled) = fill_convex_flat_with_color_compositor_scanline(
-        buf,
-        flat,
-        color,
-        rule,
-        cancel,
-        (x0, y0, x1, y1),
-        PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
-    ) {
-        return handled;
+    let rescues = thin_subpath_rescues(flat, PATH_SCANLINE_COLOR_VERTICAL_SAMPLES);
+    if rescues.is_empty() {
+        if let Some(handled) = fill_convex_flat_with_color_compositor_scanline(
+            buf,
+            flat,
+            color,
+            rule,
+            cancel,
+            (x0, y0, x1, y1),
+            PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+            lut,
+        ) {
+            return handled;
+        }
     }
     // General page paths now use the edge-bucket scanline route by default.
     // This avoids falling back to accumulator grids on the pathological vector
@@ -2718,9 +3224,12 @@ fn fill_flat_with_color_compositor(
         cancel,
         (x0, y0, x1, y1),
         PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+        &rescues,
+        lut,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_convex_flat_with_color_compositor_scanline(
     buf: &mut PixelBuffer,
     flat: &FlatPath,
@@ -2729,6 +3238,7 @@ fn fill_convex_flat_with_color_compositor_scanline(
     cancel: Option<&CancelToken>,
     bounds: (i32, i32, i32, i32),
     vertical_samples: usize,
+    lut: Option<&[u8; 256]>,
 ) -> Option<bool> {
     let edges = convex_flat_edges(flat)?;
     let (x0, y0, x1, y1) = bounds;
@@ -2758,7 +3268,7 @@ fn fill_convex_flat_with_color_compositor_scanline(
                 );
             }
         }
-        paint_alpha_row_runs(buf, &row_accum, x0, y, color, |pixels| {
+        paint_alpha_row_runs(buf, &row_accum, x0, y, color, lut, |pixels| {
             PATH_RASTER_CONVEX_FAST_PIXELS.fetch_add(pixels, Ordering::Relaxed);
         });
     }
@@ -2914,7 +3424,23 @@ fn rasterize_flat_alpha_mask_scanline(
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
     let sample_weight = 255.0 / vertical_samples as f64;
+    let rescues = thin_subpath_rescues(flat, vertical_samples);
+    let mut rescue_cursor = 0usize;
     for row in 0..h {
+        if !rescues.is_empty() {
+            add_thin_subpath_rescues_for_row(
+                flat,
+                &rescues,
+                &mut rescue_cursor,
+                y0.saturating_add(row as i32),
+                rule,
+                x0,
+                w,
+                &mut accum,
+                row * w,
+                &mut crossings,
+            );
+        }
         let mut active_ready = false;
         if let Some(buckets) = edge_buckets.as_ref() {
             active_ready = active_edges.advance_to_row(buckets, row);
@@ -3024,10 +3550,7 @@ fn add_alpha_span(
     }
 }
 
-fn flat_point_count(flat: &FlatPath) -> usize {
-    flat.subpaths.iter().map(Vec::len).sum()
-}
-
+#[cfg(test)]
 fn flat_bounds(flat: &FlatPath) -> Option<(f64, f64, f64, f64)> {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
@@ -3047,30 +3570,6 @@ fn flat_bounds(flat: &FlatPath) -> Option<(f64, f64, f64, f64)> {
     } else {
         None
     }
-}
-
-fn should_route_general_path_to_scanline(flat: &FlatPath) -> bool {
-    let points = flat_point_count(flat);
-    if points >= PATH_GENERAL_SCANLINE_POINT_THRESHOLD {
-        return true;
-    }
-    let Some((min_x, min_y, max_x, max_y)) = flat_bounds(flat) else {
-        return false;
-    };
-    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
-        return false;
-    }
-    let x0 = safe_floor_i32(min_x);
-    let y0 = safe_floor_i32(min_y);
-    let x1 = safe_ceil_i32(max_x).saturating_add(1);
-    let y1 = safe_ceil_i32(max_y).saturating_add(1);
-    if x1 <= x0 || y1 <= y0 {
-        return false;
-    }
-    let w = x1.saturating_sub(x0) as usize;
-    let h = y1.saturating_sub(y0) as usize;
-    w.saturating_mul(h) >= PATH_GENERAL_SCANLINE_CELL_THRESHOLD
-        && points >= PATH_SCANLINE_COMPLEX_POINT_THRESHOLD
 }
 
 type ScanlineEdgeRowSource<'a> = (
@@ -3223,6 +3722,7 @@ fn accumulate_scanline_row_subsampled(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_flat_with_compositor_scanline<F>(
     buf: &mut PixelBuffer,
     flat: &FlatPath,
@@ -3230,6 +3730,7 @@ fn fill_flat_with_compositor_scanline<F>(
     cancel: Option<&CancelToken>,
     bounds: (i32, i32, i32, i32),
     vertical_samples: usize,
+    rescues: &[ThinSubpathRescue],
     composite_pixel: &mut F,
 ) -> bool
 where
@@ -3245,6 +3746,7 @@ where
     let h = (y1 - y0) as usize;
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
+    let mut rescue_cursor = 0usize;
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
             return_scanline_u16_vec(row_accum);
@@ -3268,6 +3770,20 @@ where
             &mut crossings,
             &mut row_accum,
         );
+        if !rescues.is_empty() {
+            add_thin_subpath_rescues_for_row(
+                flat,
+                rescues,
+                &mut rescue_cursor,
+                y,
+                rule,
+                x0,
+                w,
+                &mut row_accum,
+                0,
+                &mut crossings,
+            );
+        }
         for (offset, value) in row_accum.iter().copied().enumerate() {
             if value == 0 {
                 continue;
@@ -3281,6 +3797,7 @@ where
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_flat_with_color_compositor_scanline(
     buf: &mut PixelBuffer,
     flat: &FlatPath,
@@ -3289,6 +3806,8 @@ fn fill_flat_with_color_compositor_scanline(
     cancel: Option<&CancelToken>,
     bounds: (i32, i32, i32, i32),
     vertical_samples: usize,
+    rescues: &[ThinSubpathRescue],
+    lut: Option<&[u8; 256]>,
 ) -> bool {
     let (x0, y0, x1, y1) = bounds;
     let w = (x1 - x0) as usize;
@@ -3300,6 +3819,7 @@ fn fill_flat_with_color_compositor_scanline(
     let h = (y1 - y0) as usize;
     let edge_buckets = build_scanline_edge_buckets(flat, y0, h);
     let mut active_edges = ScanlineActiveEdges::default();
+    let mut rescue_cursor = 0usize;
     for y in y0..y1 {
         if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
             return_scanline_u16_vec(row_accum);
@@ -3323,8 +3843,22 @@ fn fill_flat_with_color_compositor_scanline(
             &mut crossings,
             &mut row_accum,
         );
+        if !rescues.is_empty() {
+            add_thin_subpath_rescues_for_row(
+                flat,
+                rescues,
+                &mut rescue_cursor,
+                y,
+                rule,
+                x0,
+                w,
+                &mut row_accum,
+                0,
+                &mut crossings,
+            );
+        }
 
-        paint_alpha_row_runs(buf, &row_accum, x0, y, color, |_| {});
+        paint_alpha_row_runs(buf, &row_accum, x0, y, color, lut, |_| {});
     }
     return_scanline_u16_vec(row_accum);
     return_scanline_crossing_vec(crossings);
@@ -3337,19 +3871,25 @@ fn paint_alpha_row_runs(
     x0: i32,
     y: i32,
     color: PixelColor,
+    lut: Option<&[u8; 256]>,
     mut on_run: impl FnMut(u64),
 ) {
     let mut col = 0usize;
     while col < row_accum.len() {
-        let alpha = row_accum[col].min(255) as u8;
-        if alpha == 0 {
+        let raw = row_accum[col].min(255) as u8;
+        if raw == 0 {
             col += 1;
             continue;
         }
         let run_start = col;
         let mut run_end = col + 1;
-        while run_end < row_accum.len() && row_accum[run_end].min(255) as u8 == alpha {
+        while run_end < row_accum.len() && row_accum[run_end].min(255) as u8 == raw {
             run_end += 1;
+        }
+        let alpha = lut.map_or(raw, |lut| lut[usize::from(raw)]);
+        if alpha == 0 {
+            col = run_end;
+            continue;
         }
         let px0 = x0 + run_start as i32;
         let px1 = x0 + run_end as i32;
@@ -5042,6 +5582,8 @@ mod tests {
             None,
             bounds,
             PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+            &[],
+            None,
         ));
 
         let before = path_raster_stats().convex_fast_pixels;
@@ -5051,6 +5593,82 @@ mod tests {
 
         assert_pixel_buffers_eq(&fast, &reference);
         assert!(after > before);
+    }
+
+    #[test]
+    fn thin_subpath_between_sample_rows_is_rescued_in_streaming_and_mask_fills() {
+        // Device-space sliver between y = 10.40 and 10.50: no 4x sample row
+        // (.375 / .625) falls inside it.
+        let flat = FlatPath {
+            subpaths: vec![vec![
+                (2.0, 10.4),
+                (8.0, 10.4),
+                (14.0, 10.4),
+                (14.0, 10.5),
+                (8.0, 10.5),
+                (2.0, 10.5),
+            ]],
+            closed: vec![false],
+        };
+        let mut buf = PixelBuffer::new_filled(16, 16, WHITE);
+        assert!(fill_flat_color(
+            &mut buf,
+            &flat,
+            BLACK,
+            FillRule::NonZero,
+            None
+        ));
+        let value = buf.get_pixel(8, 10)[0];
+        assert!(value < 255 && value > 200, "streaming rescue: {value}");
+        assert_eq!(buf.get_pixel(8, 9), WHITE);
+
+        let mask = rasterize_flat_alpha_mask(&flat, FillRule::NonZero).expect("mask");
+        let row = (10 - mask.y) as usize;
+        let col = (8 - mask.x) as usize;
+        let alpha = mask.alpha_slice()[row * mask.width as usize + col];
+        assert!(alpha > 0 && alpha < 64, "mask rescue: {alpha}");
+    }
+
+    #[test]
+    fn thick_geometry_is_unaffected_by_thin_rescue() {
+        assert!(thin_subpath_rescues(
+            &FlatPath {
+                subpaths: vec![vec![(0.0, 10.1), (4.0, 10.1), (4.0, 10.3), (0.0, 10.3)]],
+                closed: vec![true],
+            },
+            4,
+        )
+        .is_empty());
+        let rescues = thin_subpath_rescues(
+            &FlatPath {
+                subpaths: vec![vec![(0.0, 10.4), (4.0, 10.4), (4.0, 10.45), (0.0, 10.45)]],
+                closed: vec![true],
+            },
+            4,
+        );
+        assert_eq!(rescues.len(), 1);
+        assert_eq!(rescues[0].row, 10);
+        assert!((rescues[0].weight - 1.0 / 16.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn flattening_tolerance_is_clamped_to_one_device_pixel() {
+        assert_eq!(effective_device_flatness(100.0), 1.0);
+        assert_eq!(effective_device_flatness(0.2), 0.2);
+        assert_eq!(effective_device_flatness(f64::NAN), 0.5);
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.curve_to(0.0, 55.0, 45.0, 100.0, 100.0, 100.0);
+        let flat = flatten_path(
+            &path,
+            &Transform2D::identity(),
+            &Viewport::new([0.0, 0.0, 200.0, 200.0], 72),
+            100.0,
+        );
+        assert!(
+            flat.subpaths[0].len() > 8,
+            "coarse flatness must not facet curves"
+        );
     }
 
     #[test]

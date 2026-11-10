@@ -31,6 +31,7 @@ pub mod svg;
 pub mod text_decode;
 pub mod transaction_invalidation;
 pub mod transform;
+pub(crate) mod vector_quality;
 pub mod vector_fallback;
 pub(crate) mod vector_resource_scope;
 
@@ -49,8 +50,8 @@ pub use contract::{
     DeviceClip, DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, FormRenderPolicy,
     HalftonePolicy, ObjectIdentityId, OptionalContentStateId, OverprintPolicy, PageBox,
     PixelFormat, PrintProfile, RenderContract, RenderContractFieldEffect, RenderResourceBudget,
-    RenderingIntent, ResourceId, RevisionId, SmoothingPolicy, SourceLinkId,
-    RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
+    RenderingIntent, ResourceId, RevisionId, SmoothingPolicy, SourceLinkId, ThinLineMode,
+    VectorAntialiasGamma, RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
 };
 pub use display_list::{
     build_display_list, build_display_list_cancellable, render_display_list, replay_display_list,

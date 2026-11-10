@@ -5,10 +5,24 @@ use crate::render::RoundByte;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SmoothMode {
+    /// No `/Interpolate`: Splash's default policy (smooth moderate
+    /// magnification, nearest at 4x and above). After
+    /// [`ImagePainter::effective_smooth_mode`] it means nearest-neighbour.
     None,
     Interpolate,
     LegacyBilinear,
+    /// Pixel-centre bilinear magnification (default magnification below
+    /// 4x): symmetric, exact at the image corners.
+    CenterBilinear,
+    /// Always nearest-neighbour when magnifying (stencil masks).
+    Nearest,
 }
+
+/// Magnification factor (per axis, truncated as Splash's integer
+/// `scaledSize / srcSize`) at and above which a default image is magnified
+/// with nearest-neighbour instead of bilinear smoothing. Large magnifications
+/// of small images (barcodes, QR codes, pixel art) stay crisp.
+const NEAREST_MAGNIFICATION_FACTOR: f64 = 4.0;
 
 #[derive(Clone, Copy)]
 struct BilinearAxisSample {
@@ -98,6 +112,26 @@ impl ImagePainter {
         interpolate: bool,
     ) {
         Self::paint_image_with_options_and_alpha(buf, image, ctm, viewport, interpolate, 1.0);
+    }
+
+    /// Paint an image-mask stencil (already expanded to RGBA). Splash scales
+    /// stencils with box averaging when shrinking but never smooths them when
+    /// enlarging (`scaleMaskYupXup` repeats pixels), so magnified stencils stay
+    /// nearest-neighbour at every factor unless `/Interpolate` asks otherwise.
+    pub(crate) fn paint_stencil_with_options_and_alpha(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        interpolate: bool,
+        paint_alpha: f32,
+    ) {
+        let mode = if interpolate {
+            SmoothMode::Interpolate
+        } else {
+            SmoothMode::Nearest
+        };
+        Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha);
     }
 
     /// Paint with optional `/Interpolate` smoothing and an additional
@@ -356,11 +390,12 @@ impl ImagePainter {
         {
             return None;
         }
-        let smooth = if Self::magnifying(image, target.device_width, target.device_height) {
-            SmoothMode::None
-        } else {
-            SmoothMode::LegacyBilinear
-        };
+        let smooth = Self::effective_smooth_mode(
+            image,
+            target.device_width,
+            target.device_height,
+            SmoothMode::None,
+        );
         let columns: Vec<f64> = (0..target_width)
             .map(|x| {
                 (f64::from(target.paint.x_origin) + f64::from(x) + 0.5 - target.device_x_min)
@@ -747,9 +782,55 @@ impl ImagePainter {
         }
     }
 
-    /// Decide whether a paint is magnifying the source. The PDF default
-    /// (`/Interpolate false`) keeps magnification nearest-neighbour so small
-    /// pixel art and masks remain crisp.
+    /// Resolve the requested smoothing for one paint into the sampler used.
+    ///
+    /// * Shrinking (either axis): area averaging with bilinear taps, as
+    ///   before, for every request.
+    /// * Enlarging with `/Interpolate true`: bilinear.
+    /// * Enlarging without `/Interpolate` (Splash's rule,
+    ///   `isImageInterpolationRequired`): bilinear while the magnification is
+    ///   below 4x on both axes, nearest-neighbour at 4x or more on either
+    ///   axis. An exact 1:1 placement stays an identity copy.
+    /// * Enlarging a stencil mask: nearest-neighbour (Splash never smooths
+    ///   enlarged masks).
+    fn effective_smooth_mode(
+        image: &RawImage,
+        dst_w: f64,
+        dst_h: f64,
+        requested: SmoothMode,
+    ) -> SmoothMode {
+        if !Self::magnifying(image, dst_w, dst_h) {
+            return match requested {
+                SmoothMode::None | SmoothMode::Nearest => SmoothMode::LegacyBilinear,
+                other => other,
+            };
+        }
+        match requested {
+            SmoothMode::Nearest => SmoothMode::None,
+            SmoothMode::None => {
+                if image.width == 0 || image.height == 0 {
+                    return SmoothMode::None;
+                }
+                let scale_x = dst_w / f64::from(image.width);
+                let scale_y = dst_h / f64::from(image.height);
+                let identity = scale_x <= 1.0 + 1e-6 && scale_y <= 1.0 + 1e-6;
+                if identity
+                    || scale_x.floor() >= NEAREST_MAGNIFICATION_FACTOR
+                    || scale_y.floor() >= NEAREST_MAGNIFICATION_FACTOR
+                {
+                    SmoothMode::None
+                } else {
+                    // Pixel-centre bilinear: symmetric, keeps the corner
+                    // samples exact and uses the precomputed fast path.
+                    SmoothMode::CenterBilinear
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Decide whether a paint is magnifying the source (the destination
+    /// extent is at least the source extent on both axes).
     fn magnifying(image: &RawImage, dst_w: f64, dst_h: f64) -> bool {
         // Magnifying when each source pixel covers more than one destination
         // pixel on either axis (dst extent exceeds source extent).
@@ -769,9 +850,10 @@ impl ImagePainter {
             Self::area_average_sample(image, u, v, footprint_x.max(1.0), footprint_y.max(1.0))
         } else {
             match smooth_mode {
-                SmoothMode::None => Self::nearest_sample(image, u, v),
+                SmoothMode::None | SmoothMode::Nearest => Self::nearest_sample(image, u, v),
                 SmoothMode::Interpolate => Self::interpolated_sample(image, u, v),
                 SmoothMode::LegacyBilinear => Self::bilinear_sample(image, u, v),
+                SmoothMode::CenterBilinear => Self::center_bilinear_sample(image, u, v),
             }
         }
     }
@@ -799,13 +881,7 @@ impl ImagePainter {
         let dst_h = (py_max - py_min).max(1.0);
         let footprint_x = image.width as f64 / dst_w;
         let footprint_y = image.height as f64 / dst_h;
-        let smooth = if Self::magnifying(image, dst_w, dst_h) {
-            smooth_mode
-        } else if matches!(smooth_mode, SmoothMode::None) {
-            SmoothMode::LegacyBilinear
-        } else {
-            smooth_mode
-        };
+        let smooth = Self::effective_smooth_mode(image, dst_w, dst_h, smooth_mode);
         let use_area_average = footprint_x > 1.0 || footprint_y > 1.0;
         let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
         if x0 > x1 || y0 > y1 {
@@ -837,7 +913,11 @@ impl ImagePainter {
             return;
         }
 
-        if matches!(smooth, SmoothMode::LegacyBilinear) && !use_area_average {
+        if matches!(
+            smooth,
+            SmoothMode::LegacyBilinear | SmoothMode::CenterBilinear
+        ) && !use_area_average
+        {
             Self::paint_axis_aligned_bilinear_precomputed(
                 buf,
                 image,
@@ -850,6 +930,7 @@ impl ImagePainter {
                 y0,
                 y1,
                 paint_alpha,
+                matches!(smooth, SmoothMode::CenterBilinear),
             );
             return;
         }
@@ -1338,11 +1419,19 @@ impl ImagePainter {
         y0: i32,
         y1: i32,
         paint_alpha: f32,
+        pixel_centre: bool,
     ) {
+        let axis_sample = |normalized: f64, extent: u32| {
+            if pixel_centre {
+                Self::center_bilinear_axis_sample(normalized, extent)
+            } else {
+                Self::bilinear_axis_sample(normalized, extent)
+            }
+        };
         let x_samples = (x0..=x1)
             .map(|px| {
                 let u = (px as f64 + 0.5 - px_min) / dst_w;
-                Self::bilinear_axis_sample(u, image.width)
+                axis_sample(u, image.width)
             })
             .collect::<Vec<_>>();
         let direct_binary_clip =
@@ -1351,7 +1440,7 @@ impl ImagePainter {
 
         for py in y0..=y1 {
             let v = (py as f64 + 0.5 - py_min) / dst_h;
-            let Some(y_sample) = Self::bilinear_axis_sample(v, image.height) else {
+            let Some(y_sample) = axis_sample(v, image.height) else {
                 continue;
             };
             if let Some(rgb_run) = rgb_run.as_mut() {
@@ -1390,6 +1479,37 @@ impl ImagePainter {
                 } * paint_alpha;
                 buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
             }
+        }
+    }
+
+    /// Pixel-centre bilinear axis sample: source sample `i` sits at
+    /// normalized coordinate `(i + 0.5) / extent`; outside the first/last
+    /// centres the edge sample is repeated.
+    #[inline]
+    fn center_bilinear_axis_sample(normalized: f64, extent: u32) -> Option<BilinearAxisSample> {
+        if extent == 0 || !inside_unit_image_sample(normalized) {
+            return None;
+        }
+        let max = extent.saturating_sub(1) as usize;
+        let source = (normalized * f64::from(extent) - 0.5).clamp(0.0, max as f64);
+        let low = source.floor() as usize;
+        Some(BilinearAxisSample {
+            low,
+            high: (low + 1).min(max),
+            fraction: (source - low as f64) as f32,
+        })
+    }
+
+    /// Pixel-centre bilinear sample at normalized coordinates.
+    fn center_bilinear_sample(image: &RawImage, u: f64, v: f64) -> [u8; 4] {
+        match (
+            Self::center_bilinear_axis_sample(u, image.width),
+            Self::center_bilinear_axis_sample(v, image.height),
+        ) {
+            (Some(x), Some(y)) if image.is_valid() => {
+                Self::bilinear_sample_precomputed(image, x, y)
+            }
+            _ => Self::nearest_sample(image, u, v),
         }
     }
 
@@ -1568,16 +1688,12 @@ impl ImagePainter {
             return;
         }
 
-        let dst_w = (px_max - px_min).max(1.0);
-        let dst_h = (py_max - py_min).max(1.0);
         let (footprint_x, footprint_y) = source_footprint_from_inverse(&inv, image);
-        let smooth = if Self::magnifying(image, dst_w, dst_h) {
-            smooth_mode
-        } else if matches!(smooth_mode, SmoothMode::None) {
-            SmoothMode::LegacyBilinear
-        } else {
-            smooth_mode
-        };
+        // The image's own device extents (lengths of its transformed unit
+        // vectors) decide magnification, not its rotated bounding box.
+        let image_w_px = combined.a.hypot(combined.b).max(1.0);
+        let image_h_px = combined.c.hypot(combined.d).max(1.0);
+        let smooth = Self::effective_smooth_mode(image, image_w_px, image_h_px, smooth_mode);
         let use_area_average = footprint_x > 1.0 || footprint_y > 1.0;
         let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
         if x0 > x1 || y0 > y1 {
@@ -2712,6 +2828,96 @@ mod tests {
     // /Interpolate is absent), NOT a bilinearly-smoothed gradient. A 2x2
     // image scaled to fill a 100x100 page must have a sharp seam between cells,
     // with interior pixels exactly equal to a source pixel (no blend).
+    fn black_white_2x1() -> RawImage {
+        RawImage {
+            width: 2,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![0, 0, 0, 255, 255, 255],
+        }
+    }
+
+    fn has_intermediate_red(buf: &PixelBuffer, y: i32, width: i32) -> bool {
+        (0..width).any(|x| {
+            let value = buf.get_pixel(x, y)[0];
+            value > 0 && value < 255
+        })
+    }
+
+    #[test]
+    fn default_magnification_below_4x_is_smoothed() {
+        // 2x1 image drawn 6 px wide (3x): Splash smooths magnification below
+        // 4x even without /Interpolate.
+        let vp = Viewport::new([0.0, 0.0, 6.0, 1.0], 72);
+        let mut buf = PixelBuffer::new_filled(6, 1, WHITE);
+        let ctm = Transform2D::new(6.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        ImagePainter::paint_image(&mut buf, &black_white_2x1(), &ctm, &vp);
+        assert!(
+            has_intermediate_red(&buf, 0, 6),
+            "3x magnification must be bilinear"
+        );
+    }
+
+    #[test]
+    fn default_magnification_at_4x_or_more_stays_nearest() {
+        let vp = Viewport::new([0.0, 0.0, 8.0, 1.0], 72);
+        let mut buf = PixelBuffer::new_filled(8, 1, WHITE);
+        let ctm = Transform2D::new(8.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        ImagePainter::paint_image(&mut buf, &black_white_2x1(), &ctm, &vp);
+        assert!(
+            !has_intermediate_red(&buf, 0, 8),
+            "4x magnification must stay nearest"
+        );
+        assert_eq!(buf.get_pixel(0, 0)[0], 0);
+        assert_eq!(buf.get_pixel(7, 0)[0], 255);
+    }
+
+    #[test]
+    fn identity_scale_image_is_not_blurred() {
+        let vp = Viewport::new([0.0, 0.0, 2.0, 1.0], 72);
+        let mut buf = PixelBuffer::new_filled(2, 1, WHITE);
+        let ctm = Transform2D::new(2.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        ImagePainter::paint_image(&mut buf, &black_white_2x1(), &ctm, &vp);
+        assert_eq!(buf.get_pixel(0, 0)[0], 0);
+        assert_eq!(buf.get_pixel(1, 0)[0], 255);
+    }
+
+    #[test]
+    fn magnified_stencil_masks_stay_nearest_below_4x() {
+        let stencil = RawImage {
+            width: 2,
+            height: 1,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels: vec![0, 0, 0, 255, 0, 0, 0, 0],
+        };
+        let vp = Viewport::new([0.0, 0.0, 6.0, 1.0], 72);
+        let mut buf = PixelBuffer::new_filled(6, 1, WHITE);
+        let ctm = Transform2D::new(6.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        ImagePainter::paint_stencil_with_options_and_alpha(
+            &mut buf, &stencil, &ctm, &vp, false, 1.0,
+        );
+        assert!(
+            !has_intermediate_red(&buf, 0, 6),
+            "stencils are never smoothed when enlarged"
+        );
+        let mut smooth = PixelBuffer::new_filled(6, 1, WHITE);
+        ImagePainter::paint_image(&mut smooth, &stencil, &ctm, &vp);
+        assert!(has_intermediate_red(&smooth, 0, 6));
+    }
+
+    #[test]
+    fn cached_default_rgb_scaling_follows_magnification_rule() {
+        let image = black_white_2x1();
+        let smooth = ImagePainter::scale_axis_aligned_default_rgb(&image, 6, 1, false)
+            .expect("3x scaled image");
+        assert!(smooth.pixels.iter().any(|v| *v > 0 && *v < 255));
+        let crisp = ImagePainter::scale_axis_aligned_default_rgb(&image, 8, 1, false)
+            .expect("4x scaled image");
+        assert!(crisp.pixels.iter().all(|v| *v == 0 || *v == 255));
+    }
+
     #[test]
     fn magnified_image_uses_nearest_neighbour_blocks() {
         let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
@@ -2843,7 +3049,7 @@ mod tests {
         };
 
         ImagePainter::paint_axis_aligned_bilinear_precomputed(
-            &mut buf, &image, 0.0, 0.0, 3.0, 1.0, 0, 2, 0, 0, 1.0,
+            &mut buf, &image, 0.0, 0.0, 3.0, 1.0, 0, 2, 0, 0, 1.0, false,
         );
 
         let y_sample = ImagePainter::bilinear_axis_sample(0.5, 1).expect("y sample");

@@ -60,10 +60,10 @@ use crate::render::image_painter::{AxisAlignedImageCacheTarget, ImagePainter};
 use crate::render::invalidation::{InvalidationResult, RenderDependencyGraph};
 use crate::render::line::DashState;
 use crate::render::path::{
-    axis_aligned_integer_rect, flatten_path, rasterize_flat_alpha_mask,
+    axis_aligned_integer_rect, device_stroke_outline, flatten_path, rasterize_flat_alpha_mask,
     rasterize_flat_binary_clip_mask, rasterize_glyph_alpha_mask, rasterize_path_alpha_mask,
-    stroke_flat_path, FillRule, FlatPath, GlyphHinting, Path, PathPainter, PathSegment,
-    RasterizedGlyphMask,
+    stroke_coverage_lut, stroke_paint_policy, FillRule, FlatPath, GlyphHinting, Path, PathPainter,
+    PathSegment, RasterizedGlyphMask,
 };
 use crate::render::plan::{
     graphics_state_color_component_arity_refusal, graphics_state_operand_refusal,
@@ -80,6 +80,7 @@ use crate::render::transform::{Transform2D, Viewport};
 use crate::render::vector_fallback::{
     form_program_is_opaque_normal_group_subset, transparency_group_color_space_is_vector_inert,
 };
+use crate::render::vector_quality::{stroke_adjusted_fill_rect, VectorRasterOptions};
 use crate::render::RoundByte;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -5291,6 +5292,8 @@ impl PageRenderer {
         accepted_expected.image_smoothing = contract.image_smoothing;
         accepted_expected.path_smoothing = contract.path_smoothing;
         accepted_expected.subpixel_text = contract.subpixel_text;
+        accepted_expected.thin_line_mode = contract.thin_line_mode;
+        accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -5428,6 +5431,10 @@ impl PageRenderer {
         );
         let _scalar_compositor_guard = crate::render::buffer::ScalarCompositorGuard::enter(
             contract.backend == BackendSelection::ScalarReference,
+        );
+        let _vector_raster_guard = crate::render::vector_quality::VectorRasterContractGuard::enter(
+            contract.thin_line_mode,
+            contract.vector_antialias_gamma,
         );
         let mut state = RenderState::new_with_document_cache(
             buf,
@@ -6996,6 +7003,7 @@ struct PathFillMaskCacheKey {
     frac_e: i64,
     frac_f: i64,
     binary_alpha: bool,
+    raster_options: u8,
 }
 
 #[derive(Default)]
@@ -7116,6 +7124,7 @@ struct PathStrokeMaskCacheKey {
     frac_e: i64,
     frac_f: i64,
     binary_alpha: bool,
+    raster_options: u8,
 }
 
 #[derive(Default)]
@@ -7924,6 +7933,12 @@ impl<'a> RenderState<'a> {
 
     fn path_smoothing_disabled(&self) -> bool {
         self.path_smoothing_policy == SmoothingPolicy::Disabled
+    }
+
+    /// Vector raster options for a non-glyph path paint under the current
+    /// graphics state (stroke adjustment follows the render mode and `/SA`).
+    fn path_raster_options(&self) -> VectorRasterOptions {
+        VectorRasterOptions::for_path_paint(self.buf.render_mode(), self.gs.stroke_adjustment)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -10338,6 +10353,10 @@ impl<'a> RenderState<'a> {
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 let path_binary_alpha = self.path_smoothing_disabled();
+                let raster_options = VectorRasterOptions::for_path_paint(
+                    self.buf.render_mode(),
+                    state.stroke_adjustment,
+                );
                 if !paint_cached_path_fill(
                     &mut self.path_fill_mask_cache,
                     &mut self.buf,
@@ -10349,6 +10368,7 @@ impl<'a> RenderState<'a> {
                         color: state.fill_color,
                         flatness: state.flatness,
                         binary_alpha: path_binary_alpha,
+                        options: raster_options,
                     },
                 ) {
                     // Cache miss/general-path fallback only: normalized
@@ -10357,7 +10377,7 @@ impl<'a> RenderState<'a> {
                     // bounded fast path so retained replay does not fall back
                     // to accumulator-heavy rasterization on complex vector
                     // pages.
-                    let _ = PathPainter::fill_fast_cancellable_with_flatness(
+                    let _ = PathPainter::fill_path_with_options(
                         &mut self.buf,
                         path,
                         &state.ctm,
@@ -10365,6 +10385,8 @@ impl<'a> RenderState<'a> {
                         state.fill_color,
                         *rule,
                         state.flatness,
+                        path_binary_alpha,
+                        raster_options,
                         &self.cancel,
                     );
                 }
@@ -10393,6 +10415,10 @@ impl<'a> RenderState<'a> {
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 let path_binary_alpha = self.path_smoothing_disabled();
+                let raster_options = VectorRasterOptions::for_path_paint(
+                    self.buf.render_mode(),
+                    state.stroke_adjustment,
+                );
                 if !paint_cached_path_stroke(
                     &mut self.path_stroke_mask_cache,
                     &mut self.buf,
@@ -10407,13 +10433,14 @@ impl<'a> RenderState<'a> {
                     state.miter_limit,
                     state.flatness,
                     path_binary_alpha,
+                    raster_options,
                 ) {
                     // Cache miss/general-path fallback only: normalized
                     // display-list replay attempts bounded stroke-mask reuse
                     // before direct path painting. Use the scanline-capable
                     // bounded fast path so retained replay does not fall back
                     // to accumulator-heavy stroke rasterization.
-                    let _ = PathPainter::stroke_with_style_fast_cancellable_with_flatness(
+                    let _ = PathPainter::stroke_path_with_options(
                         &mut self.buf,
                         path,
                         &state.ctm,
@@ -10425,6 +10452,8 @@ impl<'a> RenderState<'a> {
                         &state.line_join,
                         state.miter_limit,
                         state.flatness,
+                        path_binary_alpha,
+                        raster_options,
                         &self.cancel,
                     );
                 }
@@ -11776,6 +11805,7 @@ impl<'a> RenderState<'a> {
         let width = self.gs.line_width;
         let dash = self.dash_state();
         let path_binary_alpha = self.path_smoothing_disabled();
+        let raster_options = self.path_raster_options();
         if self.stroke_overprint_preview_enabled() {
             if let Some(cmyk) = device_cmyk_components(&self.gs.stroke_color) {
                 let overprint_mode = self.active_overprint_mode();
@@ -11794,6 +11824,7 @@ impl<'a> RenderState<'a> {
                     self.gs.miter_limit,
                     self.gs.path_flatness_tolerance(),
                     path_binary_alpha,
+                    raster_options,
                 );
                 self.path.clear();
                 return;
@@ -11813,8 +11844,9 @@ impl<'a> RenderState<'a> {
             self.gs.miter_limit,
             self.gs.path_flatness_tolerance(),
             path_binary_alpha,
+            raster_options,
         ) {
-            PathPainter::stroke_with_style_fast_cancellable_with_flatness(
+            PathPainter::stroke_path_with_options(
                 &mut self.buf,
                 &self.path,
                 &ctm,
@@ -11826,6 +11858,8 @@ impl<'a> RenderState<'a> {
                 &self.gs.line_join,
                 self.gs.miter_limit,
                 self.gs.path_flatness_tolerance(),
+                path_binary_alpha,
+                raster_options,
                 &self.cancel,
             );
         }
@@ -11854,6 +11888,7 @@ impl<'a> RenderState<'a> {
         let fill_color_state = self.gs.fill_color.clone();
         self.record_plate_contribution(&fill_color_state, self.gs.fill_alpha as f32, "fill");
         let path_binary_alpha = self.path_smoothing_disabled();
+        let raster_options = self.path_raster_options();
         if self.fill_overprint_preview_enabled() {
             if let Some(cmyk) = device_cmyk_components(&self.gs.fill_color) {
                 let overprint_mode = self.active_overprint_mode();
@@ -11885,9 +11920,10 @@ impl<'a> RenderState<'a> {
                 color,
                 flatness: self.gs.path_flatness_tolerance(),
                 binary_alpha: path_binary_alpha,
+                options: raster_options,
             },
         ) {
-            let _ = PathPainter::fill_fast_cancellable_with_flatness(
+            let _ = PathPainter::fill_path_with_options(
                 &mut self.buf,
                 &self.path,
                 &ctm,
@@ -11895,6 +11931,8 @@ impl<'a> RenderState<'a> {
                 color,
                 rule,
                 self.gs.path_flatness_tolerance(),
+                path_binary_alpha,
+                raster_options,
                 &self.cancel,
             );
         }
@@ -11916,6 +11954,7 @@ impl<'a> RenderState<'a> {
         }
         let ctm = self.ctm();
         let path_binary_alpha = self.path_smoothing_disabled();
+        let raster_options = self.path_raster_options();
         let fill_color_state = self.gs.fill_color.clone();
         let stroke_color_state = self.gs.stroke_color.clone();
         self.record_plate_contribution(&fill_color_state, self.gs.fill_alpha as f32, "fill");
@@ -11953,9 +11992,10 @@ impl<'a> RenderState<'a> {
                             color: fill,
                             flatness: self.gs.path_flatness_tolerance(),
                             binary_alpha: path_binary_alpha,
+                            options: raster_options,
                         },
                     ) {
-                        let _ = PathPainter::fill_fast_cancellable_with_flatness(
+                        let _ = PathPainter::fill_path_with_options(
                             &mut self.buf,
                             &self.path,
                             &ctm,
@@ -11963,6 +12003,8 @@ impl<'a> RenderState<'a> {
                             fill,
                             rule,
                             self.gs.path_flatness_tolerance(),
+                            path_binary_alpha,
+                            raster_options,
                             &self.cancel,
                         );
                     }
@@ -11980,9 +12022,10 @@ impl<'a> RenderState<'a> {
                         color: fill,
                         flatness: self.gs.path_flatness_tolerance(),
                         binary_alpha: path_binary_alpha,
+                        options: raster_options,
                     },
                 ) {
-                    let _ = PathPainter::fill_fast_cancellable_with_flatness(
+                    let _ = PathPainter::fill_path_with_options(
                         &mut self.buf,
                         &self.path,
                         &ctm,
@@ -11990,6 +12033,8 @@ impl<'a> RenderState<'a> {
                         fill,
                         rule,
                         self.gs.path_flatness_tolerance(),
+                        path_binary_alpha,
+                        raster_options,
                         &self.cancel,
                     );
                 }
@@ -12024,6 +12069,7 @@ impl<'a> RenderState<'a> {
                     self.gs.miter_limit,
                     self.gs.path_flatness_tolerance(),
                     path_binary_alpha,
+                    raster_options,
                 );
                 self.path.clear();
                 return;
@@ -12043,8 +12089,9 @@ impl<'a> RenderState<'a> {
             self.gs.miter_limit,
             self.gs.path_flatness_tolerance(),
             path_binary_alpha,
+            raster_options,
         ) {
-            PathPainter::stroke_with_style_fast_cancellable_with_flatness(
+            PathPainter::stroke_path_with_options(
                 &mut self.buf,
                 &self.path,
                 &ctm,
@@ -12056,6 +12103,8 @@ impl<'a> RenderState<'a> {
                 &self.gs.line_join,
                 self.gs.miter_limit,
                 self.gs.path_flatness_tolerance(),
+                path_binary_alpha,
+                raster_options,
                 &self.cancel,
             );
         }
@@ -13168,14 +13217,25 @@ impl<'a> RenderState<'a> {
             self.gs.fill_alpha as f32
         };
         let paint_ctm = image_ctm_for_source_region(&ctm, source_region, width, height);
-        ImagePainter::paint_image_with_options_and_alpha(
-            &mut self.buf,
-            &raw,
-            &paint_ctm,
-            &self.viewport,
-            interpolate,
-            paint_alpha,
-        );
+        if is_mask {
+            ImagePainter::paint_stencil_with_options_and_alpha(
+                &mut self.buf,
+                &raw,
+                &paint_ctm,
+                &self.viewport,
+                interpolate,
+                paint_alpha,
+            );
+        } else {
+            ImagePainter::paint_image_with_options_and_alpha(
+                &mut self.buf,
+                &raw,
+                &paint_ctm,
+                &self.viewport,
+                interpolate,
+                paint_alpha,
+            );
+        }
     }
 
     fn inline_image_decode_cache_base_key(&self, input: InlineImageCacheKeyInput<'_>) -> String {
@@ -13753,14 +13813,25 @@ impl<'a> RenderState<'a> {
                         }
                     }
                 }
-                ImagePainter::paint_image_with_options_and_alpha(
-                    &mut self.buf,
-                    paint_raw,
-                    &paint_ctm,
-                    &self.viewport,
-                    interpolate,
-                    paint_alpha,
-                );
+                if image_ref.is_mask {
+                    ImagePainter::paint_stencil_with_options_and_alpha(
+                        &mut self.buf,
+                        paint_raw,
+                        &paint_ctm,
+                        &self.viewport,
+                        interpolate,
+                        paint_alpha,
+                    );
+                } else {
+                    ImagePainter::paint_image_with_options_and_alpha(
+                        &mut self.buf,
+                        paint_raw,
+                        &paint_ctm,
+                        &self.viewport,
+                        interpolate,
+                        paint_alpha,
+                    );
+                }
             }
             Err(err) => {
                 self.record_fatal_render_error(format!(
@@ -15447,16 +15518,21 @@ impl<'a> RenderState<'a> {
         }
         let ctm = self.ctm();
         let flat = flatten_path(&self.path, &ctm, &self.viewport, 0.2);
-        let device_scale = ctm.scale_factor() * self.viewport.scale;
-        let width_px = (self.gs.line_width * device_scale).max(1.0);
-        let outline = stroke_flat_path(
+        let device_t = ctm.concat(&self.viewport.to_transform());
+        let mut options = self.path_raster_options();
+        // The pattern clip is binary; thin-line paint policies do not apply.
+        options.thin_line_mode = crate::render::ThinLineMode::None;
+        let outline = device_stroke_outline(
             &flat,
-            width_px,
-            &self.dash_state().scaled(device_scale),
-            self.gs.line_cap.clone(),
-            self.gs.line_join.clone(),
+            &device_t,
+            self.gs.line_width,
+            &self.dash_state(),
+            &self.gs.line_cap,
+            &self.gs.line_join,
             self.gs.miter_limit,
-        );
+            options,
+        )
+        .outline;
         if outline.subpaths.is_empty() {
             return None;
         }
@@ -16004,7 +16080,7 @@ impl<'a> RenderState<'a> {
                 }
             }
             1 | 5 => {
-                PathPainter::stroke_with_style_fast_cancellable(
+                PathPainter::stroke_path_with_options(
                     &mut self.buf,
                     glyph_path,
                     &glyph_ctm,
@@ -16015,6 +16091,9 @@ impl<'a> RenderState<'a> {
                     &LineCap::Butt,
                     &LineJoin::Miter,
                     10.0,
+                    0.5,
+                    self.text_smoothing_policy == SmoothingPolicy::Disabled,
+                    VectorRasterOptions::for_glyph_stroke(),
                     &self.cancel,
                 );
             }
@@ -16051,7 +16130,7 @@ impl<'a> RenderState<'a> {
                         );
                     }
                 }
-                PathPainter::stroke_with_style_fast_cancellable(
+                PathPainter::stroke_path_with_options(
                     &mut self.buf,
                     glyph_path,
                     &glyph_ctm,
@@ -16062,6 +16141,9 @@ impl<'a> RenderState<'a> {
                     &LineCap::Butt,
                     &LineJoin::Miter,
                     10.0,
+                    0.5,
+                    self.text_smoothing_policy == SmoothingPolicy::Disabled,
+                    VectorRasterOptions::for_glyph_stroke(),
                     &self.cancel,
                 );
             }
@@ -16167,7 +16249,7 @@ impl<'a> RenderState<'a> {
         glyph_ctm: &Transform2D,
         stroke_color: PixelColor,
     ) {
-        PathPainter::stroke_with_style_fast_cancellable(
+        PathPainter::stroke_path_with_options(
             &mut self.buf,
             path,
             glyph_ctm,
@@ -16178,6 +16260,9 @@ impl<'a> RenderState<'a> {
             &LineCap::Butt,
             &LineJoin::Miter,
             10.0,
+            0.5,
+            self.text_smoothing_policy == SmoothingPolicy::Disabled,
+            VectorRasterOptions::for_glyph_stroke(),
             &self.cancel,
         );
     }
@@ -17749,16 +17834,18 @@ impl<'a> RenderState<'a> {
         }
         for stroke in &geometry.strokes {
             let flat = flatten_path(&stroke.path, glyph_ctm, &self.viewport, 0.25);
-            let device_scale = glyph_ctm.scale_factor() * self.viewport.scale;
-            let width_px = (stroke.width * device_scale).max(1.0);
-            let outline = stroke_flat_path(
+            let device_t = glyph_ctm.concat(&self.viewport.to_transform());
+            let outline = device_stroke_outline(
                 &flat,
-                width_px,
-                &stroke.dash.scaled(device_scale),
-                stroke.cap.clone(),
-                stroke.join.clone(),
+                &device_t,
+                stroke.width,
+                &stroke.dash,
+                &stroke.cap,
+                &stroke.join,
                 stroke.miter_limit,
-            );
+                VectorRasterOptions::default(),
+            )
+            .outline;
             if !outline.subpaths.is_empty() {
                 let clip = ClipMask::from_path(
                     &outline,
@@ -20587,6 +20674,10 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             return;
         }
         let path_binary_alpha = self.state.path_smoothing_disabled();
+        let raster_options = VectorRasterOptions::for_path_paint(
+            self.state.buf.render_mode(),
+            draw_state.stroke_adjustment,
+        );
         if !paint_cached_path_fill(
             &mut self.state.path_fill_mask_cache,
             &mut self.state.buf,
@@ -20598,9 +20689,10 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 color: fill_color,
                 flatness: draw_state.flatness,
                 binary_alpha: path_binary_alpha,
+                options: raster_options,
             },
         ) {
-            let _ = PathPainter::fill_fast_cancellable_with_flatness(
+            let _ = PathPainter::fill_path_with_options(
                 &mut self.state.buf,
                 path,
                 &ctm,
@@ -20608,6 +20700,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 fill_color,
                 rule,
                 draw_state.flatness,
+                path_binary_alpha,
+                raster_options,
                 &self.state.cancel,
             );
         }
@@ -20636,6 +20730,10 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             return;
         }
         let path_binary_alpha = self.state.path_smoothing_disabled();
+        let raster_options = VectorRasterOptions::for_path_paint(
+            self.state.buf.render_mode(),
+            draw_state.stroke_adjustment,
+        );
         if !paint_cached_path_stroke(
             &mut self.state.path_stroke_mask_cache,
             &mut self.state.buf,
@@ -20650,8 +20748,9 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             draw_state.miter_limit,
             draw_state.flatness,
             path_binary_alpha,
+            raster_options,
         ) {
-            let _ = PathPainter::stroke_with_style_fast_cancellable_with_flatness(
+            let _ = PathPainter::stroke_path_with_options(
                 &mut self.state.buf,
                 path,
                 &ctm,
@@ -20663,6 +20762,8 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 &draw_state.line_join,
                 draw_state.miter_limit,
                 draw_state.flatness,
+                path_binary_alpha,
+                raster_options,
                 &self.state.cancel,
             );
         }
@@ -21611,8 +21712,13 @@ struct PathFillMaskRequest<'a> {
     color: PixelColor,
     flatness: f64,
     binary_alpha: bool,
+    options: VectorRasterOptions,
 }
 
+/// Paint a path fill through the bounded path-mask cache, falling back to the
+/// row-streaming anti-aliased rasterizer for paths outside the cache contract
+/// (very long paths, paths whose bounds exceed the mask budget, degenerate
+/// transforms). Returns `false` only when the fill could not be painted.
 fn paint_cached_path_fill(
     cache: &mut PathFillMaskCache,
     buf: &mut PixelBuffer,
@@ -21626,11 +21732,18 @@ fn paint_cached_path_fill(
         color,
         flatness,
         binary_alpha,
+        options,
     } = request;
     if path.segments.is_empty() || path.segments.len() > 16_384 {
         return false;
     }
     let device_t = ctm.concat(&viewport.to_transform());
+    if options.stroke_adjust {
+        if let Some((x, y, width, height)) = stroke_adjusted_fill_rect(path, &device_t) {
+            buf.fill_rect(x, y, width, height, color);
+            return true;
+        }
+    }
     if [
         device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,
     ]
@@ -21663,6 +21776,7 @@ fn paint_cached_path_fill(
         frac_e: exact_mask_key(normalized_t.e),
         frac_f: exact_mask_key(normalized_t.f),
         binary_alpha,
+        raster_options: options.cache_bits(),
     };
     let dx = if origin_x <= i32::MIN as f64 {
         i32::MIN
@@ -21691,6 +21805,8 @@ fn paint_cached_path_fill(
     };
     if binary_alpha {
         mask.force_binary_alpha();
+    } else {
+        mask.apply_coverage_lut(options.coverage_lut());
     }
     let mask = Arc::new(mask);
     mask.paint(buf, dx, dy, color);
@@ -21713,7 +21829,11 @@ fn paint_cached_path_stroke(
     miter_limit: f64,
     flatness: f64,
     binary_alpha: bool,
+    options: VectorRasterOptions,
 ) -> bool {
+    // Dashed strokes and zero-width hairlines are painted by the
+    // anti-aliased streaming rasterizer (the caller's fallback); the mask
+    // cache is keyed by solid geometry only.
     if path.segments.is_empty()
         || path.segments.len() > 16_384
         || !dash.is_solid()
@@ -21755,6 +21875,7 @@ fn paint_cached_path_stroke(
         frac_e: exact_mask_key(normalized_t.e),
         frac_f: exact_mask_key(normalized_t.f),
         binary_alpha,
+        raster_options: options.cache_bits(),
     };
     let dx = if origin_x <= i32::MIN as f64 {
         i32::MIN
@@ -21770,20 +21891,26 @@ fn paint_cached_path_stroke(
     } else {
         origin_y as i32
     };
+    // The thin-line paint policy is a pure function of the keyed inputs, so
+    // cached masks are painted with the same policy they were built with.
+    let paint = stroke_paint_policy(options.thin_line_mode, &normalized_t, stroke_width);
+    let color = paint.apply_to_color(color);
     if let Some(mask) = cache.get(&key) {
         mask.paint(buf, dx, dy, color);
         return true;
     }
     let flat = crate::render::path::flatten_path_device_transform(path, &normalized_t, flatness);
-    let width_px = (stroke_width * normalized_t.scale_factor()).max(1.0);
-    let outline = stroke_flat_path(
+    let stroke = device_stroke_outline(
         &flat,
-        width_px,
-        &dash.scaled(normalized_t.scale_factor()),
-        cap.clone(),
-        join.clone(),
+        &normalized_t,
+        stroke_width,
+        dash,
+        cap,
+        join,
         miter_limit,
+        options,
     );
+    let outline = stroke.outline;
     if outline.subpaths.is_empty() {
         return true;
     }
@@ -21792,6 +21919,8 @@ fn paint_cached_path_stroke(
     };
     if binary_alpha {
         mask.force_binary_alpha();
+    } else {
+        mask.apply_coverage_lut(stroke_coverage_lut(stroke.paint, options));
     }
     let mask = Arc::new(mask);
     mask.paint(buf, dx, dy, color);
@@ -34748,6 +34877,7 @@ mod tests {
                 frac_e: 0,
                 frac_f: 0,
                 binary_alpha: false,
+                raster_options: 0,
             },
             Arc::clone(&mask),
         );
@@ -34766,6 +34896,7 @@ mod tests {
                 frac_e: 0,
                 frac_f: 0,
                 binary_alpha: false,
+                raster_options: 0,
             },
             mask,
         );
@@ -37761,6 +37892,306 @@ mod tests {
             .expect(
             "retained renderer supports SA stroke adjustment through device-space rasterization",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // WP5 raster parity: stroke adjustment, thin geometry, AA coverage,
+    // flatness, transformed pens, thin-line modes and coverage gamma.
+    // -----------------------------------------------------------------
+
+    fn wp5_render(content: &str, mode: RenderMode) -> PixelBuffer {
+        let engine = ContentEngine::open_bytes(simple_vector_pdf(content)).expect("open WP5 PDF");
+        engine
+            .render_page_with_mode(1, 72, mode)
+            .expect("render WP5 PDF")
+    }
+
+    fn wp5_render_contract(
+        content: &str,
+        configure: impl FnOnce(&mut crate::render::RenderContract),
+    ) -> PixelBuffer {
+        let engine = ContentEngine::open_bytes(simple_vector_pdf(content)).expect("open WP5 PDF");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        configure(&mut contract);
+        engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("contract render")
+    }
+
+    fn wp5_has_partial_coverage(buf: &PixelBuffer) -> bool {
+        (0..buf.height as i32).any(|y| {
+            (0..buf.width as i32).any(|x| {
+                let value = buf.get_pixel(x, y)[0];
+                value > 0 && value < 255
+            })
+        })
+    }
+
+    #[test]
+    fn stroke_adjustment_snaps_fractional_table_rules_to_one_crisp_pixel() {
+        // A 0.6 pt rule centred at device y = 49.7 and a 1 pt rule centred at
+        // device x = 10.4: without stroke adjustment both smear over two
+        // grey pixel rows/columns.
+        let content = "0 0 0 RG 0.6 w 20 50.3 m 90 50.3 l S 1 w 10.4 10 m 10.4 40 l S\n";
+        let buf = wp5_render(content, RenderMode::Compat);
+        assert_eq!(buf.get_pixel(50, 49), BLACK);
+        assert_eq!(buf.get_pixel(50, 48), WHITE);
+        assert_eq!(buf.get_pixel(50, 50), WHITE);
+        assert_eq!(buf.get_pixel(10, 75), BLACK);
+        assert_eq!(buf.get_pixel(9, 75), WHITE);
+        assert_eq!(buf.get_pixel(11, 75), WHITE);
+        // The butt-capped rule ends are snapped too.
+        assert_eq!(buf.get_pixel(20, 49), BLACK);
+        assert_eq!(buf.get_pixel(19, 49), WHITE);
+        assert_eq!(buf.get_pixel(89, 49), BLACK);
+        assert_eq!(buf.get_pixel(90, 49), WHITE);
+
+        // The retained display-list route snaps identically.
+        let engine = ContentEngine::open_bytes(simple_vector_pdf(content)).expect("open PDF");
+        let replay = engine
+            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .expect("display-list render");
+        assert_same_pixels(&buf, &replay);
+    }
+
+    #[test]
+    fn stroke_adjustment_keeps_rectangle_borders_crisp_and_gap_free() {
+        let buf = wp5_render(
+            "0 0 0 RG 0.5 w 20.3 20.3 50.2 40.4 re S\n",
+            RenderMode::Compat,
+        );
+        // Device edges: x 20.3 / 70.5, y 39.3 / 79.7 (snapped to whole pixels).
+        for (x, y) in [(20, 60), (70, 60), (45, 39), (45, 79), (20, 39), (70, 79)] {
+            assert_eq!(buf.get_pixel(x, y), BLACK, "border pixel ({x}, {y})");
+        }
+        for (x, y) in [(19, 60), (21, 60), (69, 60), (71, 60), (45, 38), (45, 40)] {
+            assert_eq!(buf.get_pixel(x, y), WHITE, "outside pixel ({x}, {y})");
+        }
+        assert!(
+            !wp5_has_partial_coverage(&buf),
+            "stroke-adjusted box must be crisp"
+        );
+    }
+
+    #[test]
+    fn stroke_adjustment_is_mode_and_sa_dependent_in_high_quality() {
+        let content = "0 0 0 RG 1 w 20 50 m 90 50 l S\n";
+        // HighQuality is geometry-exact: without /SA the rule straddles rows.
+        let exact = wp5_render(content, RenderMode::HighQuality);
+        assert_ne!(exact.get_pixel(50, 49), BLACK);
+        assert_ne!(exact.get_pixel(50, 50), WHITE);
+
+        let engine = ContentEngine::open_bytes(simple_vector_pdf_with_extgstate(
+            &format!("/GS1 gs {content}"),
+            "<< /Type /ExtGState /SA true >>",
+        ))
+        .expect("open SA PDF");
+        let adjusted = engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect("render SA PDF");
+        assert_eq!(adjusted.get_pixel(50, 50), BLACK);
+        assert_eq!(adjusted.get_pixel(50, 49), WHITE);
+        assert_eq!(adjusted.get_pixel(50, 51), WHITE);
+    }
+
+    #[test]
+    fn stroke_adjustment_does_not_snap_diagonal_strokes() {
+        let buf = wp5_render("0 0 0 RG 1 w 10 10 m 90 60 l S\n", RenderMode::Compat);
+        assert!(
+            wp5_has_partial_coverage(&buf),
+            "diagonal strokes stay anti-aliased"
+        );
+    }
+
+    #[test]
+    fn filled_hairline_rectangle_snaps_to_one_pixel_instead_of_vanishing() {
+        // 0.3 pt tall filled rule between device y 49.5 and 49.8.
+        let buf = wp5_render("0 0 0 rg 10 50.2 80 0.3 re f\n", RenderMode::Compat);
+        assert_eq!(buf.get_pixel(50, 50), BLACK);
+        assert_eq!(buf.get_pixel(50, 49), WHITE);
+        assert_eq!(buf.get_pixel(50, 51), WHITE);
+        assert_eq!(buf.get_pixel(10, 50), BLACK);
+        assert_eq!(buf.get_pixel(9, 50), WHITE);
+    }
+
+    #[test]
+    fn thin_filled_sliver_between_sample_rows_keeps_coverage() {
+        // A six-point sliver 0.1 px tall between device y 50.4 and 50.5: it
+        // lies between the 4x vertical sample rows (.375 and .625) and used
+        // to vanish. It is not a rectangle, so stroke adjustment does not
+        // apply; the thin-geometry rescue keeps it visible.
+        let content = "0 0 0 rg 10 49.5 m 50 49.5 l 90 49.5 l 90 49.6 l 50 49.6 l 10 49.6 l h f\n";
+        for mode in [RenderMode::Compat, RenderMode::HighQuality] {
+            let buf = wp5_render(content, mode);
+            let pixel = buf.get_pixel(50, 50);
+            assert!(
+                pixel[0] < 255 && pixel[0] > 128,
+                "{mode:?}: thin sliver must get light, non-zero coverage: {pixel:?}"
+            );
+            assert_eq!(buf.get_pixel(50, 49), WHITE);
+            assert_eq!(buf.get_pixel(50, 51), WHITE);
+        }
+    }
+
+    #[test]
+    fn dashed_strokes_are_antialiased() {
+        let buf = wp5_render(
+            "0 0 0 RG 1.5 w [6 3] 0 d 10 10 m 90 60 l S\n",
+            RenderMode::Compat,
+        );
+        assert!(
+            wp5_has_partial_coverage(&buf),
+            "dashed diagonal strokes must not fall back to aliased spans"
+        );
+    }
+
+    #[test]
+    fn paths_with_more_than_16k_segments_are_antialiased() {
+        let mut content = String::from("0 0 0 rg 50 90 m\n");
+        let segments = 20_000;
+        for i in 1..segments {
+            let angle = std::f64::consts::TAU * f64::from(i) / f64::from(segments);
+            content.push_str(&format!(
+                "{:.4} {:.4} l\n",
+                50.0 + 40.0 * angle.sin(),
+                50.0 + 40.0 * angle.cos()
+            ));
+        }
+        content.push_str("h f\n");
+        let buf = wp5_render(&content, RenderMode::Compat);
+        assert_eq!(buf.get_pixel(50, 50), BLACK);
+        assert_eq!(buf.get_pixel(3, 3), WHITE);
+        assert!(
+            wp5_has_partial_coverage(&buf),
+            "a 20k-segment circle must keep anti-aliased edges"
+        );
+    }
+
+    #[test]
+    fn page_sized_curved_fill_beyond_mask_budget_is_antialiased() {
+        // 3000 x 3000 pt page at 72 dpi: a page-filling ellipse has a 9 MP
+        // bounding box, above the 8.4 MP path-mask budget.
+        let content = "0 0 0 rg 1500 10 m 2328 10 2990 672 2990 1500 c \
+                       2990 2328 2328 2990 1500 2990 c 672 2990 10 2328 10 1500 c \
+                       10 672 672 10 1500 10 c f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 3000 3000] /Resources << >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content).into_bytes(),
+        ];
+        let engine = ContentEngine::open_bytes(build_test_pdf_from_objects(&objects))
+            .expect("open large page");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("render large page");
+        assert_eq!(buf.get_pixel(1500, 1500), BLACK);
+        assert_eq!(buf.get_pixel(5, 5), WHITE);
+        let row = 1500 - 1000;
+        let edge_values: Vec<u8> = (0..400).map(|x| buf.get_pixel(x, row)[0]).collect();
+        assert!(
+            edge_values.iter().any(|value| *value > 0 && *value < 255),
+            "large curved fill edge must be anti-aliased"
+        );
+    }
+
+    #[test]
+    fn coarse_flatness_is_clamped_to_one_device_pixel() {
+        // `100 i` would let each quarter circle collapse to a chord, turning
+        // the disc into a diamond.
+        let circle = "50 90 m 72.09 90 90 72.09 90 50 c 90 27.91 72.09 10 50 10 c \
+                      27.91 10 10 27.91 10 50 c 10 72.09 27.91 90 50 90 c f\n";
+        let buf = wp5_render(&format!("100 i 0 0 0 rg {circle}"), RenderMode::Compat);
+        // 38 px from the centre at 45 degrees: inside the disc, outside the
+        // diamond |dx| + |dy| <= 40.
+        let offset = (38.0 / std::f64::consts::SQRT_2).round() as i32;
+        assert_eq!(buf.get_pixel(50 + offset, 50 + offset), BLACK);
+        assert_eq!(buf.get_pixel(50 - offset, 50 - offset), BLACK);
+    }
+
+    #[test]
+    fn non_uniform_scale_uses_transformed_pen_width() {
+        // x scaled 4x: a 2-unit pen is 8 px wide across vertical lines and
+        // 2 px tall across horizontal lines (the average-scale pen was 4 px
+        // in both directions).
+        let buf = wp5_render(
+            "4 0 0 1 0 0 cm 0 0 0 RG 2 w 12.5 10 m 12.5 40 l S 2.5 70 m 22.5 70 l S\n",
+            RenderMode::Compat,
+        );
+        assert_eq!(buf.get_pixel(46, 75), BLACK);
+        assert_eq!(buf.get_pixel(53, 75), BLACK);
+        assert_eq!(buf.get_pixel(45, 75), WHITE);
+        assert_eq!(buf.get_pixel(54, 75), WHITE);
+        assert_eq!(buf.get_pixel(50, 29), BLACK);
+        assert_eq!(buf.get_pixel(50, 30), BLACK);
+        assert_eq!(buf.get_pixel(50, 28), WHITE);
+        assert_eq!(buf.get_pixel(50, 31), WHITE);
+    }
+
+    #[test]
+    fn non_uniform_scale_keeps_hairline_minimum_of_one_device_pixel() {
+        // y scaled 0.1: a 1-unit pen would be 0.1 px tall on horizontal lines.
+        let buf = wp5_render(
+            "1 0 0 0.1 0 0 cm 0 0 0 RG 1 w 10 505 m 90 505 l S\n",
+            RenderMode::HighQuality,
+        );
+        let column: Vec<u8> = (45..55).map(|y| buf.get_pixel(50, y)[0]).collect();
+        let darkness: u32 = column.iter().map(|value| 255 - u32::from(*value)).sum();
+        assert!(
+            darkness >= 250,
+            "hairline must keep >= 1 px of ink: {column:?}"
+        );
+    }
+
+    #[test]
+    fn thin_line_modes_follow_render_contract() {
+        let content = "0 0 0 RG 0.25 w 10 50.5 m 90 50.5 l S 0.25 w 10 10 m 90 40 l S\n";
+        let none = wp5_render_contract(content, |_| {});
+        assert_eq!(none.get_pixel(50, 49), BLACK);
+
+        let shape = wp5_render_contract(content, |contract| {
+            contract.thin_line_mode = crate::render::ThinLineMode::Shape;
+        });
+        let value = shape.get_pixel(50, 49)[0];
+        assert!(
+            (186..=196).contains(&value),
+            "shape mode paints a 0.25 px rule at 25% opacity, got {value}"
+        );
+
+        let solid = wp5_render_contract(content, |contract| {
+            contract.thin_line_mode = crate::render::ThinLineMode::Solid;
+        });
+        assert_eq!(solid.get_pixel(50, 49), BLACK);
+        assert!(
+            !wp5_has_partial_coverage(&solid),
+            "solid mode draws thin lines without partial coverage"
+        );
+        assert!(wp5_has_partial_coverage(&none));
+    }
+
+    #[test]
+    fn vector_antialias_gamma_follows_render_contract() {
+        // Five-point outline (not a stroke-adjusted rectangle) whose left
+        // edge half-covers device column 50.
+        let content = "0 0 0 rg 50.5 10 m 90 10 l 90 90 l 50.5 90 l 50.5 50 l h f\n";
+        let linear = wp5_render_contract(content, |_| {});
+        let gamma = wp5_render_contract(content, |contract| {
+            contract.vector_antialias_gamma = crate::render::VectorAntialiasGamma::Gamma15;
+        });
+        let linear_value = linear.get_pixel(50, 30)[0];
+        let gamma_value = gamma.get_pixel(50, 30)[0];
+        assert!(
+            (126..=129).contains(&linear_value),
+            "linear: {linear_value}"
+        );
+        assert!(
+            (163..=167).contains(&gamma_value),
+            "gamma 1.5: {gamma_value}"
+        );
+        assert_eq!(linear.get_pixel(70, 30), BLACK);
+        assert_eq!(gamma.get_pixel(70, 30), BLACK);
     }
 
     #[test]
@@ -43393,6 +43824,7 @@ mod tests {
                 frac_e: 0,
                 frac_f: 0,
                 binary_alpha: false,
+                raster_options: 0,
             }
         }
 
@@ -43411,6 +43843,7 @@ mod tests {
                 frac_e: 0,
                 frac_f: 0,
                 binary_alpha: false,
+                raster_options: 0,
             }
         }
 

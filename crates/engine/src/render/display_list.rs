@@ -16,9 +16,9 @@ use crate::render::clip_dag::{ClipDag, ClipNode, ClipState};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::line::DashState;
 use crate::render::path::{
-    axis_aligned_integer_rect, flatten_path, flatten_path_device_transform,
-    rasterize_flat_alpha_mask, rasterize_path_alpha_mask, stroke_flat_path, FillRule, Path,
-    PathPainter, RasterizedGlyphMask,
+    axis_aligned_integer_rect, device_stroke_outline, flatten_path, flatten_path_device_transform,
+    rasterize_flat_alpha_mask, rasterize_path_alpha_mask, stroke_coverage_lut, stroke_paint_policy,
+    FillRule, Path, PathPainter, RasterizedGlyphMask,
 };
 use crate::render::plan::{
     graphics_state_color_component_arity_refusal, graphics_state_operand_refusal,
@@ -27,6 +27,7 @@ use crate::render::plan::{
     PatternPaintPhase, PatternPathDescriptor,
 };
 use crate::render::transform::{Transform2D, Viewport};
+use crate::render::vector_quality::{stroke_adjusted_fill_rect, VectorRasterOptions};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
@@ -1025,6 +1026,7 @@ struct CpuPathFillMaskCacheKey {
     d: i64,
     frac_e: i64,
     frac_f: i64,
+    raster_options: u8,
 }
 
 struct CpuPathMaskCache<K> {
@@ -1122,6 +1124,7 @@ struct CpuPathStrokeMaskCacheKey {
     d: i64,
     frac_e: i64,
     frac_f: i64,
+    raster_options: u8,
 }
 
 type CpuPathStrokeMaskCache = CpuPathMaskCache<CpuPathStrokeMaskCacheKey>;
@@ -1133,6 +1136,7 @@ struct CpuPathFillMaskRequest<'a> {
     rule: FillRule,
     color: PixelColor,
     flatness: f64,
+    options: VectorRasterOptions,
 }
 
 fn cpu_paint_cached_path_fill(
@@ -1147,15 +1151,22 @@ fn cpu_paint_cached_path_fill(
         rule,
         color,
         flatness,
+        options,
     } = request;
     if path.segments.is_empty() || path.segments.len() > 16_384 {
         return false;
+    }
+    let device_t = ctm.concat(&viewport.to_transform());
+    if options.stroke_adjust {
+        if let Some((x, y, width, height)) = stroke_adjusted_fill_rect(path, &device_t) {
+            buf.fill_rect(x, y, width, height, color);
+            return true;
+        }
     }
     if let Some((x, y, width, height)) = axis_aligned_integer_rect(path, ctm, viewport) {
         buf.fill_rect(x, y, width, height, color);
         return true;
     }
-    let device_t = ctm.concat(&viewport.to_transform());
     if !cpu_path_cache_transform_allowed(&device_t) {
         return false;
     }
@@ -1179,6 +1190,7 @@ fn cpu_paint_cached_path_fill(
         d: cpu_exact_mask_key(normalized_t.d),
         frac_e: cpu_exact_mask_key(normalized_t.e),
         frac_f: cpu_exact_mask_key(normalized_t.f),
+        raster_options: options.cache_bits(),
     };
     let dx = cpu_floor_to_i32(origin_x);
     let dy = cpu_floor_to_i32(origin_y);
@@ -1186,9 +1198,10 @@ fn cpu_paint_cached_path_fill(
         mask.paint(buf, dx, dy, color);
         return true;
     }
-    let Some(mask) = rasterize_path_alpha_mask(path, &normalized_t, rule, flatness) else {
+    let Some(mut mask) = rasterize_path_alpha_mask(path, &normalized_t, rule, flatness) else {
         return false;
     };
+    mask.apply_coverage_lut(options.coverage_lut());
     let mask = Arc::new(mask);
     mask.paint(buf, dx, dy, color);
     cache.insert(key, mask);
@@ -1209,6 +1222,7 @@ fn cpu_paint_cached_path_stroke(
     join: &LineJoin,
     miter_limit: f64,
     flatness: f64,
+    options: VectorRasterOptions,
 ) -> bool {
     if path.segments.is_empty()
         || path.segments.len() > 16_384
@@ -1242,28 +1256,35 @@ fn cpu_paint_cached_path_stroke(
         d: cpu_exact_mask_key(normalized_t.d),
         frac_e: cpu_exact_mask_key(normalized_t.e),
         frac_f: cpu_exact_mask_key(normalized_t.f),
+        raster_options: options.cache_bits(),
     };
     let dx = cpu_floor_to_i32(origin_x);
     let dy = cpu_floor_to_i32(origin_y);
+    let paint = stroke_paint_policy(options.thin_line_mode, &normalized_t, stroke_width);
+    let color = paint.apply_to_color(color);
     if let Some(mask) = cache.get(&key) {
         mask.paint(buf, dx, dy, color);
         return true;
     }
     let flat = flatten_path_device_transform(path, &normalized_t, flatness);
-    let outline = stroke_flat_path(
+    let stroke = device_stroke_outline(
         &flat,
-        (stroke_width * normalized_t.scale_factor()).max(1.0),
+        &normalized_t,
+        stroke_width,
         dash,
-        cap.clone(),
-        join.clone(),
+        cap,
+        join,
         miter_limit,
+        options,
     );
+    let outline = stroke.outline;
     if outline.subpaths.is_empty() {
         return true;
     }
-    let Some(mask) = rasterize_flat_alpha_mask(&outline, FillRule::NonZero) else {
+    let Some(mut mask) = rasterize_flat_alpha_mask(&outline, FillRule::NonZero) else {
         return false;
     };
+    mask.apply_coverage_lut(stroke_coverage_lut(stroke.paint, options));
     let mask = Arc::new(mask);
     mask.paint(buf, dx, dy, color);
     cache.insert(key, mask);
@@ -1407,6 +1428,8 @@ impl RenderDevice for CpuRenderDevice {
                 return;
             }
         }
+        let options =
+            VectorRasterOptions::for_path_paint(self.buf.render_mode(), state.stroke_adjustment);
         if !cpu_paint_cached_path_fill(
             &mut self.path_fill_mask_cache,
             &mut self.buf,
@@ -1417,15 +1440,15 @@ impl RenderDevice for CpuRenderDevice {
                 rule,
                 color: state.fill_color,
                 flatness: state.flatness,
+                options,
             },
         ) {
-            // General-path fallback is retained only for transforms/path
-            // shapes outside the bounded replay-mask cache contract. Route it
-            // through the same scanline-capable fast path used by the canonical
-            // page renderer so CpuRenderDevice does not regress to the old
-            // accumulator-heavy paint for large retained-list paths.
+            // General-path fallback for transforms/path shapes outside the
+            // bounded replay-mask cache contract. The row-streaming
+            // anti-aliased rasterizer keeps memory bounded without falling
+            // back to aliased output.
             let cancel = CancelToken::new();
-            let _ = PathPainter::fill_fast_cancellable_with_flatness(
+            let _ = PathPainter::fill_path_with_options(
                 &mut self.buf,
                 path,
                 &state.ctm,
@@ -1433,6 +1456,8 @@ impl RenderDevice for CpuRenderDevice {
                 state.fill_color,
                 rule,
                 state.flatness,
+                false,
+                options,
                 &cancel,
             );
         }
@@ -1442,6 +1467,8 @@ impl RenderDevice for CpuRenderDevice {
     fn stroke_path(&mut self, path: &Path, state: &DrawState) {
         let saved_blend = self.buf.blend_mode;
         self.buf.blend_mode = state.blend_mode;
+        let options =
+            VectorRasterOptions::for_path_paint(self.buf.render_mode(), state.stroke_adjustment);
         if !cpu_paint_cached_path_stroke(
             &mut self.path_stroke_mask_cache,
             &mut self.buf,
@@ -1455,13 +1482,13 @@ impl RenderDevice for CpuRenderDevice {
             &state.line_join,
             state.miter_limit,
             state.flatness,
+            options,
         ) {
-            // General-path fallback is retained only for dash/transform/path
-            // shapes outside the bounded replay-mask cache contract. Use the
-            // bounded scanline-capable fast path instead of the legacy
-            // accumulator-heavy stroke replay.
+            // General-path fallback for dashed strokes and transform/path
+            // shapes outside the bounded replay-mask cache contract, painted
+            // by the anti-aliased row-streaming rasterizer.
             let cancel = CancelToken::new();
-            let _ = PathPainter::stroke_with_style_fast_cancellable_with_flatness(
+            let _ = PathPainter::stroke_path_with_options(
                 &mut self.buf,
                 path,
                 &state.ctm,
@@ -1473,6 +1500,8 @@ impl RenderDevice for CpuRenderDevice {
                 &state.line_join,
                 state.miter_limit,
                 state.flatness,
+                false,
+                options,
                 &cancel,
             );
         }
@@ -3236,6 +3265,7 @@ mod tests {
             d: 1000,
             frac_e: 0,
             frac_f: 0,
+            raster_options: 0,
         }
     }
 
@@ -3253,6 +3283,7 @@ mod tests {
             d: 1000,
             frac_e: 0,
             frac_f: 0,
+            raster_options: 0,
         }
     }
 

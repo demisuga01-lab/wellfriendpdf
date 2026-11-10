@@ -518,6 +518,8 @@ fn prepare_progressive_render_contract(
     accepted_expected.image_smoothing = base_contract.image_smoothing;
     accepted_expected.path_smoothing = base_contract.path_smoothing;
     accepted_expected.subpixel_text = base_contract.subpixel_text;
+    accepted_expected.thin_line_mode = base_contract.thin_line_mode;
+    accepted_expected.vector_antialias_gamma = base_contract.vector_antialias_gamma;
     if base_contract.overprint != crate::render::OverprintPolicy::PreserveSeparations {
         accepted_expected.overprint = base_contract.overprint;
     }

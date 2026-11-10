@@ -112,6 +112,41 @@ pub enum SmoothingPolicy {
     Subpixel,
 }
 
+/// Treatment of strokes thinner than one device pixel, mirroring
+/// `pdftoppm -thinlinemode`.
+///
+/// * `None` (default): the regular rasterizer behaviour. Strokes keep a
+///   minimum device width of one pixel and are anti-aliased (and, where stroke
+///   adjustment applies, snapped to whole device pixels).
+/// * `Solid`: strokes thinner than one device pixel (including zero-width
+///   hairlines) are drawn as fully opaque one-pixel lines; their coverage is
+///   thresholded instead of anti-aliased.
+/// * `Shape`: strokes thinner than one device pixel keep the one-pixel
+///   footprint but their opacity is scaled by their true device width, so a
+///   0.25 px rule renders at 25% opacity instead of as a full pixel. Zero-width
+///   hairlines are unaffected (they have no width to scale by).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ThinLineMode {
+    #[default]
+    None,
+    Solid,
+    Shape,
+}
+
+/// Mapping from geometric anti-aliasing coverage to paint opacity for vector
+/// fills and strokes (glyphs, images and clips are unaffected).
+///
+/// * `Linear` (default, PDFium/Skia convention): opacity equals coverage.
+/// * `Gamma15` (Poppler/Splash convention): opacity is coverage raised to the
+///   power 1.5, so partially covered edge pixels are lighter (a half-covered
+///   pixel paints about 35% instead of 50%) and vector edges look crisper.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum VectorAntialiasGamma {
+    #[default]
+    Linear,
+    Gamma15,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AnnotationRenderPolicy {
     #[default]
@@ -524,6 +559,22 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         effect: "subpixel-text-policy",
     },
     RenderContractFieldEffect {
+        field: "thin_line_mode",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: false,
+        effect: "thin-stroke-solid-or-shape-policy",
+    },
+    RenderContractFieldEffect {
+        field: "vector_antialias_gamma",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: false,
+        effect: "vector-coverage-to-opacity-curve",
+    },
+    RenderContractFieldEffect {
         field: "grayscale",
         cache_identity: true,
         validation: false,
@@ -646,6 +697,14 @@ pub struct RenderContract {
     pub image_smoothing: SmoothingPolicy,
     pub path_smoothing: SmoothingPolicy,
     pub subpixel_text: SmoothingPolicy,
+    /// Thin-stroke policy (`pdftoppm -thinlinemode`). Older serialized
+    /// contracts without this field deserialize to [`ThinLineMode::None`].
+    #[serde(default)]
+    pub thin_line_mode: ThinLineMode,
+    /// Vector anti-aliasing coverage curve. Older serialized contracts
+    /// without this field deserialize to [`VectorAntialiasGamma::Linear`].
+    #[serde(default)]
+    pub vector_antialias_gamma: VectorAntialiasGamma,
     pub grayscale: bool,
     pub color_scheme: ColorScheme,
     pub reverse_byte_order: bool,
@@ -700,6 +759,8 @@ impl RenderContract {
             image_smoothing: SmoothingPolicy::Antialiased,
             path_smoothing: SmoothingPolicy::Antialiased,
             subpixel_text: SmoothingPolicy::Disabled,
+            thin_line_mode: ThinLineMode::None,
+            vector_antialias_gamma: VectorAntialiasGamma::Linear,
             grayscale: false,
             color_scheme: ColorScheme::Light,
             reverse_byte_order: false,
@@ -978,6 +1039,27 @@ mod tests {
             assert!(message.contains("NativeLittleCms"));
             assert!(message.contains("native lcms2 backend"));
         }
+    }
+
+    #[test]
+    fn raster_quality_options_default_and_change_cache_identity() {
+        let base = contract(1);
+        assert_eq!(base.thin_line_mode, ThinLineMode::None);
+        assert_eq!(base.vector_antialias_gamma, VectorAntialiasGamma::Linear);
+        let mut thin = base.clone();
+        thin.thin_line_mode = ThinLineMode::Shape;
+        assert_ne!(base.cache_fingerprint(), thin.cache_fingerprint());
+        let mut gamma = base.clone();
+        gamma.vector_antialias_gamma = VectorAntialiasGamma::Gamma15;
+        assert_ne!(base.cache_fingerprint(), gamma.cache_fingerprint());
+
+        // Contracts serialized before these options existed stay readable.
+        let mut legacy = serde_json::to_value(&base).expect("serialize contract");
+        let object = legacy.as_object_mut().expect("contract object");
+        object.remove("thin_line_mode");
+        object.remove("vector_antialias_gamma");
+        let parsed: RenderContract = serde_json::from_value(legacy).expect("legacy contract");
+        assert_eq!(parsed, base);
     }
 
     #[test]
