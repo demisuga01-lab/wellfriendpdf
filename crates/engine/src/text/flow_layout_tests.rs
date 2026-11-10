@@ -457,3 +457,14 @@ fn vertical_columns_read_top_down_right_to_left() {
     assert_eq!(page.text(), "\u{4E00}\u{4E8C}\n\u{4E09}\u{56DB}");
     assert_eq!(page.primary_rotation, 90);
 }
+
+#[test]
+fn right_to_left_actual_text_stays_in_logical_order() {
+    // ActualText replacement (no glyph geometry) is already logical.
+    let mut chunk = line("xxxx", 72.0, 700.0, 0);
+    chunk.text = "\u{0633}\u{0644}\u{0627}\u{0645}".to_string();
+    chunk.is_actual_text = true;
+    chunk.is_rtl = true;
+    chunk.glyph_run = None;
+    assert_eq!(text_of(&[chunk]), "\u{0633}\u{0644}\u{0627}\u{0645}");
+}

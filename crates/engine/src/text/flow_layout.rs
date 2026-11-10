@@ -48,7 +48,7 @@ use std::collections::HashMap;
 
 use unicode_normalization::UnicodeNormalization;
 
-use super::collector::{is_rtl_char, TextChunk};
+use super::collector::{is_rtl_char, is_rtl_dominant, TextChunk};
 
 const POOL_STEP: f64 = 4.0;
 const MIN_WORD_BREAK_SPACE: f64 = 0.1;
@@ -855,7 +855,9 @@ impl<'o> WordBuilder<'o> {
         }
     }
 
-    /// Equal-width glyphs for a chunk without recorded geometry.
+    /// Equal-width glyphs for a chunk without recorded geometry. `/ActualText`
+    /// is in logical order, so right-to-left replacement text is laid out
+    /// from the right; the line's bidi pass then restores logical order.
     fn synthesize_glyphs(&mut self, chunk: &TextChunk) -> Vec<super::collector::TextGlyph> {
         let count = chunk.text.chars().count().max(1) as f64;
         let width = if chunk.width.is_finite() {
@@ -869,9 +871,15 @@ impl<'o> WordBuilder<'o> {
             (1.0, 0.0)
         };
         let step = width / count;
+        let reversed = chunk.is_actual_text && !chunk.is_vertical && is_rtl_dominant(&chunk.text);
         let mut out = Vec::with_capacity(count as usize);
         for (index, (offset, ch)) in chunk.text.char_indices().enumerate() {
-            let along = step * index as f64;
+            let slot = if reversed {
+                count - 1.0 - index as f64
+            } else {
+                index as f64
+            };
+            let along = step * slot;
             out.push(super::collector::TextGlyph {
                 x: chunk.x + ux * along,
                 y: chunk.y + uy * along,
