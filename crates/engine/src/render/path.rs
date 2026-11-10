@@ -593,19 +593,6 @@ pub(crate) fn rasterize_glyph_alpha_mask(
     rasterize_flat_alpha_mask(&flat, rule)
 }
 
-pub(crate) fn rasterize_path_alpha_mask(
-    path: &Path,
-    device_t: &Transform2D,
-    rule: FillRule,
-    bezier_threshold: f64,
-) -> Option<RasterizedGlyphMask> {
-    if path.is_empty() {
-        return None;
-    }
-    let flat = flatten_path_device_transform(path, device_t, bezier_threshold);
-    rasterize_flat_alpha_mask(&flat, rule)
-}
-
 pub struct PathPainter;
 
 impl PathPainter {

@@ -16,9 +16,10 @@ use crate::render::clip_dag::{ClipDag, ClipNode, ClipState};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::line::DashState;
 use crate::render::path::{
-    axis_aligned_integer_rect, device_stroke_outline, flatten_path, flatten_path_device_transform,
-    rasterize_flat_alpha_mask, rasterize_path_alpha_mask, stroke_coverage_lut, stroke_paint_policy,
-    FillRule, Path, PathPainter, RasterizedGlyphMask,
+    axis_aligned_integer_rect, device_stroke_outline, flat_alpha_mask_bounds, flatten_path,
+    flatten_path_device_transform, paint_flat_alpha_mask_rows, rasterize_flat_alpha_mask,
+    stroke_coverage_lut, stroke_paint_policy, FillRule, FlatPath, Path, PathPainter,
+    RasterizedGlyphMask,
 };
 use crate::render::plan::{
     graphics_state_color_component_arity_refusal, graphics_state_operand_refusal,
@@ -29,7 +30,7 @@ use crate::render::plan::{
 use crate::render::transform::{Transform2D, Viewport};
 use crate::render::vector_quality::{stroke_adjusted_fill_rect, VectorRasterOptions};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -1036,6 +1037,9 @@ struct CpuPathMaskCache<K> {
     order: BTreeMap<u64, K>,
     bytes: usize,
     next_seq: u64,
+    // Hashes of keys painted once without being kept (second-sighting
+    // admission, as in the page renderer's path mask caches).
+    sightings: HashSet<u64>,
 }
 
 impl<K> Default for CpuPathMaskCache<K> {
@@ -1045,6 +1049,7 @@ impl<K> Default for CpuPathMaskCache<K> {
             order: BTreeMap::new(),
             bytes: 0,
             next_seq: 0,
+            sightings: HashSet::new(),
         }
     }
 }
@@ -1055,6 +1060,28 @@ where
 {
     const MAX_ENTRIES: usize = 4096;
     const MAX_BYTES: usize = 64 * 1024 * 1024;
+    /// Masks up to this many bytes are cached on first sight.
+    const SMALL_MASK_BYTES: usize = 64 * 64;
+    const MAX_SIGHTINGS: usize = 65_536;
+
+    /// Whether a freshly rasterized mask for `key` should be kept: small masks
+    /// always, larger ones from their second sighting on.
+    fn admits(&mut self, key: &K, mask_bytes: usize) -> bool {
+        if mask_bytes <= Self::SMALL_MASK_BYTES {
+            return true;
+        }
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let key_hash = hasher.finish();
+        if self.sightings.remove(&key_hash) {
+            return true;
+        }
+        if self.sightings.len() >= Self::MAX_SIGHTINGS {
+            self.sightings.clear();
+        }
+        self.sightings.insert(key_hash);
+        false
+    }
 
     fn get(&mut self, key: &K) -> Option<Arc<RasterizedGlyphMask>> {
         let (mask, old_seq, _) = self.entries.get(key)?;
@@ -1200,10 +1227,50 @@ fn cpu_paint_cached_path_fill(
         mask.paint(buf, dx, dy, color);
         return true;
     }
-    let Some(mut mask) = rasterize_path_alpha_mask(path, &normalized_t, rule, flatness) else {
+    if path.is_empty() {
+        return false;
+    }
+    let flat = flatten_path_device_transform(path, &normalized_t, flatness);
+    cpu_paint_admitted_path_mask(
+        cache,
+        key,
+        buf,
+        &flat,
+        rule,
+        (dx, dy),
+        color,
+        options.coverage_lut(),
+    )
+}
+
+/// Paint a normalized device outline's anti-aliased mask at `(dx, dy)`: an
+/// admitted mask (repeat sighting or small) is built, painted and kept; any
+/// other is streamed into the buffer row by row without allocating it, with
+/// the same pixels. Returns `false` when no mask would be built.
+#[allow(clippy::too_many_arguments)]
+fn cpu_paint_admitted_path_mask<K: Clone + Eq + Hash>(
+    cache: &mut CpuPathMaskCache<K>,
+    key: K,
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    rule: FillRule,
+    (dx, dy): (i32, i32),
+    color: PixelColor,
+    lut: Option<&[u8; 256]>,
+) -> bool {
+    let Some((_, _, width, height)) = flat_alpha_mask_bounds(flat) else {
         return false;
     };
-    mask.apply_coverage_lut(options.coverage_lut());
+    let mask_bytes = std::mem::size_of::<RasterizedGlyphMask>() + width.saturating_mul(height);
+    if !cache.admits(&key, mask_bytes) {
+        return paint_flat_alpha_mask_rows(buf, flat, rule, dx, dy, color, |row| {
+            crate::render::vector_quality::apply_coverage_lut(row, lut);
+        });
+    }
+    let Some(mut mask) = rasterize_flat_alpha_mask(flat, rule) else {
+        return false;
+    };
+    mask.apply_coverage_lut(lut);
     let mask = Arc::new(mask);
     mask.paint(buf, dx, dy, color);
     cache.insert(key, mask);
@@ -1283,14 +1350,16 @@ fn cpu_paint_cached_path_stroke(
     if outline.subpaths.is_empty() {
         return true;
     }
-    let Some(mut mask) = rasterize_flat_alpha_mask(&outline, FillRule::NonZero) else {
-        return false;
-    };
-    mask.apply_coverage_lut(stroke_coverage_lut(stroke.paint, options));
-    let mask = Arc::new(mask);
-    mask.paint(buf, dx, dy, color);
-    cache.insert(key, mask);
-    true
+    cpu_paint_admitted_path_mask(
+        cache,
+        key,
+        buf,
+        &outline,
+        FillRule::NonZero,
+        (dx, dy),
+        color,
+        stroke_coverage_lut(stroke.paint, options),
+    )
 }
 
 fn cpu_path_cache_transform_allowed(device_t: &Transform2D) -> bool {
