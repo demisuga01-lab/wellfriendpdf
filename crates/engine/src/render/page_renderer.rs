@@ -42217,7 +42217,7 @@ mod tests {
     #[test]
     fn pushbutton_without_appearance_synthesizes_caption() {
         let widget = b"<< /Type /Annot /Subtype /Widget /Rect [20 35 85 60] \
-                       /FT /Btn /Ff 65536 /MK << /CA (Go) /BG [0.8 0.8 0.8] >> >>";
+                       /FT /Btn /Ff 65536 /MK << /CA (Go) /BG [0.8 0.8 0.8] /BC [0 0 0] >> >>";
         let pdf = pdf_with_form_objects(vec![widget.to_vec()], "5 0 R", "5 0 R", "");
         let engine = ContentEngine::open_bytes(pdf).expect("open missing-AP pushbutton PDF");
         let buf = PageRenderer::render_page(&engine, 1, 72).expect("render pushbutton PDF");
@@ -43209,7 +43209,10 @@ mod tests {
             "",
         );
         assert!(content.contains("/F1 9 Tf"), "{content}");
-        assert!(content.contains("0.375 g"), "background halved: {content}");
+        assert!(
+            content.contains("0.375 0.375 0.375 rg"),
+            "background halved: {content}"
+        );
         assert!(dict.get("Matrix").is_none());
     }
 
