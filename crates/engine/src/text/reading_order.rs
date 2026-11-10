@@ -676,7 +676,7 @@ impl ReadingOrderReconstructor {
 /// Lines with no RTL characters at all (the overwhelming majority of any corpus)
 /// skip the BiDi machinery entirely and are returned unchanged. This guarantees
 /// zero behavioural change and zero added cost for LTR-only documents.
-fn visual_to_logical(visual: String) -> String {
+pub(crate) fn visual_to_logical(visual: String) -> String {
     // Fast path: no RTL character anywhere → already in logical order.
     if !visual.chars().any(is_rtl_char) {
         return visual;
@@ -720,6 +720,7 @@ mod tests {
             is_invisible: false,
             is_actual_text: false,
             mapping_sources: Vec::new(),
+            glyph_run: None,
         }
     }
 
@@ -737,6 +738,7 @@ mod tests {
             is_invisible: false,
             is_actual_text: false,
             mapping_sources: Vec::new(),
+            glyph_run: None,
         }
     }
 
@@ -1195,6 +1197,7 @@ mod tests {
                 is_invisible: false,
                 is_actual_text: false,
                 mapping_sources: Vec::new(),
+                glyph_run: None,
             },
             TextChunk {
                 text: "\u{05DC}".to_string(), // lamed, middle
@@ -1208,6 +1211,7 @@ mod tests {
                 is_invisible: false,
                 is_actual_text: false,
                 mapping_sources: Vec::new(),
+                glyph_run: None,
             },
             TextChunk {
                 text: "\u{05D4}".to_string(), // he, rightmost on page
@@ -1221,6 +1225,7 @@ mod tests {
                 is_invisible: false,
                 is_actual_text: false,
                 mapping_sources: Vec::new(),
+                glyph_run: None,
             },
         ];
         let lines = r.reconstruct(chunks);

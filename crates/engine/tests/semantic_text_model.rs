@@ -234,6 +234,7 @@ fn semantic_model_records_char_mapping_source_provenance() {
         is_invisible: false,
         is_actual_text: false,
         mapping_sources: vec![FontDecodeSource::ToUnicode, FontDecodeSource::GlyphName],
+        glyph_run: None,
     };
     let model = build_text_semantic_page(
         1,
@@ -268,6 +269,7 @@ fn cjk_simple_segmentation_groups_bounded_runs_and_preserves_search_quads() {
             FontDecodeSource::ToUnicode;
             "東京大学ABC、京都".chars().count()
         ],
+        glyph_run: None,
     };
     let page = build_text_semantic_page(
         1,
@@ -305,6 +307,7 @@ fn cjk_simple_segmentation_respects_max_run_cap() {
         is_invisible: false,
         is_actual_text: false,
         mapping_sources: vec![FontDecodeSource::ToUnicode; text.chars().count()],
+        glyph_run: None,
     };
     let page = build_text_semantic_page(
         1,

@@ -149,6 +149,11 @@ pub struct FontResolver {
     /// `.notdef` (sorted). A TrueType font draws its space glyph for them,
     /// as PDFium does.
     explicit_notdef: Vec<u8>,
+    /// Ascent and descent as fractions of the font size, from the font
+    /// descriptor (the descendant's for a Type0 font), defaulting to 0.95 and
+    /// -0.35 as Poppler does. Text layout uses them for glyph boxes.
+    ascent: f64,
+    descent: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,6 +594,17 @@ impl FontResolver {
         } else {
             0
         };
+        let metrics_dict = descendant_font.as_ref().unwrap_or(font_dict);
+        // Broken descriptors give a negative ascent, a positive descent, zero,
+        // or absurd values; Poppler keeps its defaults for those.
+        let ascent = font_descriptor_number(metrics_dict, reader, "Ascent")
+            .map(|value| (value / 1000.0).abs())
+            .filter(|value| *value != 0.0 && *value < 3.0)
+            .unwrap_or(0.95);
+        let descent = font_descriptor_number(metrics_dict, reader, "Descent")
+            .map(|value| -(value / 1000.0).abs())
+            .filter(|value| *value != 0.0 && *value > -3.0)
+            .unwrap_or(-0.35);
 
         Self {
             font_type,
@@ -610,7 +626,19 @@ impl FontResolver {
             cid_to_unicode,
             numeric_glyph_names,
             explicit_notdef,
+            ascent,
+            descent,
         }
+    }
+
+    /// Font ascent as a fraction of the font size (positive).
+    pub fn ascent(&self) -> f64 {
+        self.ascent
+    }
+
+    /// Font descent as a fraction of the font size (negative).
+    pub fn descent(&self) -> f64 {
+        self.descent
     }
 
     fn standard14_width(&self, char_code: u16) -> Option<f64> {

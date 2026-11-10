@@ -204,6 +204,7 @@ impl<'a> TextCollector<'a> {
         self.selected_font = None;
         self.selected_font_stack.clear();
         self.font_resolvers.clear();
+        self.stream_pos = 0;
         let mut walk = Walk {
             reader,
             page_resources: self.resources.clone(),
@@ -560,6 +561,7 @@ impl Walk<'_> {
                         first.chunk.is_rtl = super::is_rtl_dominant(text);
                         first.chunk.mapping_sources =
                             vec![FontDecodeSource::ActualText; text.chars().count()];
+                        first.chunk.glyph_run = None;
                         first.mcid = active_mcid;
                         first.mcid_owner = owner;
                         first.mcid_stream_owner = stream_owner;

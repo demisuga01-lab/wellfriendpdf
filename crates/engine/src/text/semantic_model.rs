@@ -1871,6 +1871,7 @@ fn build_line_from_text(
         is_invisible: false,
         is_actual_text: false,
         mapping_sources: Vec::new(),
+        glyph_run: None,
     };
     build_line_from_chunks(
         &[ChunkRef {
@@ -2103,6 +2104,50 @@ fn build_line_from_chunks(
     }
 }
 
+/// Character boxes from the chunk's recorded glyph geometry: each glyph's
+/// own advance, split equally among the characters it maps to (ligatures).
+/// `None` for vertical or rotated runs, runs without geometry, or when the
+/// glyphs do not cover the text exactly; callers then estimate.
+fn glyph_char_quads(chunk: &TextChunk, char_count: usize) -> Option<Vec<TextQuad>> {
+    let run = chunk.glyph_run.as_deref()?;
+    if chunk.is_vertical || run.glyphs.is_empty() {
+        return None;
+    }
+    let [a, b, _, d] = run.font_matrix;
+    // Upright, unrotated text only: the box is then x-aligned.
+    if a <= 0.0 || d <= 0.0 || b.abs() > a * 1e-3 {
+        return None;
+    }
+    let height = chunk.font_size.max(1.0);
+    let mut quads = Vec::with_capacity(char_count);
+    let mut covered = 0usize;
+    for glyph in &run.glyphs {
+        if glyph.text_start as usize != covered {
+            return None;
+        }
+        let text = chunk
+            .text
+            .get(glyph.text_start as usize..glyph.text_end as usize)?;
+        covered = glyph.text_end as usize;
+        let n = text.chars().count();
+        if n == 0 {
+            continue;
+        }
+        let step = glyph.dx / n as f64;
+        for i in 0..n {
+            let x0 = glyph.x + step * i as f64;
+            let x1 = x0 + step;
+            quads.push(TextQuad {
+                x0: x0.min(x1),
+                y0: chunk.y,
+                x1: x0.max(x1),
+                y1: chunk.y + height,
+            });
+        }
+    }
+    (covered == chunk.text.len() && quads.len() == char_count).then_some(quads)
+}
+
 fn char_quads_for_chunk(
     chunk: &TextChunk,
     chunk_index: usize,
@@ -2111,6 +2156,18 @@ fn char_quads_for_chunk(
     let chars: Vec<char> = chunk.text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
+    }
+    if let Some(quads) = glyph_char_quads(chunk, chars.len()) {
+        return chars
+            .into_iter()
+            .zip(quads)
+            .enumerate()
+            .map(|(idx, (ch, quad))| {
+                let global = *global_char_index;
+                *global_char_index += 1;
+                (idx, ch, quad, global)
+            })
+            .collect();
     }
     let mut out = Vec::with_capacity(chars.len());
     let count = chars.len().max(1) as f64;
@@ -3320,6 +3377,7 @@ mod tests {
             is_invisible: false,
             is_actual_text: false,
             mapping_sources: Vec::new(),
+            glyph_run: None,
         }
     }
 
@@ -3339,6 +3397,46 @@ mod tests {
         assert_eq!(page.blocks[0].lines[0].words[0].text, "Hello");
         assert_eq!(page.blocks[0].lines[0].words[1].text, "world");
         assert!(page.blocks[0].lines[0].words[0].quad.x1 <= 45.0);
+    }
+
+    #[test]
+    fn character_quads_follow_recorded_glyph_advances() {
+        // "Wil": a wide W, a narrow i and l, the l a ligature-like glyph
+        // covering "ll" (two characters sharing its advance).
+        use crate::text::collector::{TextGlyph, TextGlyphRun};
+        let glyph = |x: f64, dx: f64, start: u32, end: u32| TextGlyph {
+            x,
+            y: 150.0,
+            dx,
+            dy: 0.0,
+            text_start: start,
+            text_end: end,
+            stream_pos: start,
+            code_len: 1,
+        };
+        let mut wide = chunk("Will", 10.0, 150.0, 24.0);
+        wide.glyph_run = Some(std::sync::Arc::new(TextGlyphRun {
+            font_matrix: [10.0, 0.0, 0.0, 10.0],
+            ascent: 0.95,
+            descent: -0.35,
+            glyphs: vec![
+                glyph(10.0, 12.0, 0, 1),
+                glyph(22.0, 4.0, 1, 2),
+                glyph(26.0, 8.0, 2, 4),
+            ],
+        }));
+        let page = build_text_semantic_page(
+            1,
+            [0.0, 0.0, 200.0, 200.0],
+            vec![wide],
+            &TextSemanticOptions::default(),
+        );
+        let chars = &page.blocks[0].lines[0].chars;
+        let edges: Vec<(f64, f64)> = chars.iter().map(|c| (c.quad.x0, c.quad.x1)).collect();
+        assert_eq!(
+            edges,
+            vec![(10.0, 22.0), (22.0, 26.0), (26.0, 30.0), (30.0, 34.0)]
+        );
     }
 
     #[test]

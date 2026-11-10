@@ -1055,6 +1055,14 @@ struct ExtractTextArgs {
     /// (pdftotext -nopgbrk). The default reading-order output has none.
     #[arg(long)]
     nopgbrk: bool,
+    /// Discard diagonal text (pdftotext -nodiag): glyphs whose baseline is
+    /// noticeably off the horizontal and vertical axes.
+    #[arg(long, conflicts_with_all = ["raw", "layout", "tsv", "xycut"])]
+    nodiag: bool,
+    /// Use the previous XY-cut reading order instead of the default
+    /// Poppler-style block and flow order.
+    #[arg(long, conflicts_with_all = ["raw", "layout", "tsv"])]
+    xycut: bool,
     /// End-of-line convention for text and TSV output: unix, dos, or mac
     /// (pdftotext -eol).
     #[arg(long, default_value = "unix", value_parser = ["unix", "dos", "mac"])]
@@ -4950,13 +4958,18 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     // content-stream order (honoring --profile). Region extraction is
     // layout-based in both modes.
     let true_raw = args.raw && matches!(profile, wellfriendpdf_engine::ExtractionProfile::FastText);
+    let flow_options = wellfriendpdf_engine::text::FlowLayoutOptions {
+        discard_diagonal: args.nodiag,
+        ..Default::default()
+    };
     let extract_page = |page_num: usize| -> wellfriendpdf_engine::Result<String> {
         match region {
             Some(region) => engine.extract_text_in_region(page_num, region),
             None if args.layout => engine.get_page_text_physical_layout(page_num),
             None if true_raw => engine.get_page_text_raw_order(page_num),
             None if args.raw => engine.get_page_text_with_profile(page_num, profile),
-            None => engine.get_page_text_reading_order(page_num),
+            None if args.xycut => engine.get_page_text_xycut_order(page_num),
+            None => engine.get_page_text_reading_order_with(page_num, &flow_options),
         }
     };
     // pdftotext's own modes end every page with a form feed.

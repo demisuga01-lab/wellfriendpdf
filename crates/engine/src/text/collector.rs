@@ -26,6 +26,47 @@ pub struct TextChunk {
     pub is_invisible: bool,
     pub is_actual_text: bool,
     pub mapping_sources: Vec<FontDecodeSource>,
+    /// Per-glyph geometry of the run, as measured while the string was shown:
+    /// each glyph's own origin and advance (not an equal split of `width`).
+    /// `None` when unknown: chunks built by hand, or text replaced by an
+    /// `/ActualText` span.
+    pub glyph_run: Option<Arc<TextGlyphRun>>,
+}
+
+/// One shown glyph (one character code) of a [`TextChunk`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextGlyph {
+    /// Glyph origin in page space, text rise applied.
+    pub x: f64,
+    pub y: f64,
+    /// The glyph's own advance in page space. Character and word spacing
+    /// (Tc, Tw) are not part of it, so a letter-spaced word keeps tight
+    /// glyph boxes and the spacing shows up as gaps.
+    pub dx: f64,
+    pub dy: f64,
+    /// Byte range of the glyph's decoded text within [`TextChunk::text`]; a
+    /// ligature or multi-character mapping covers several characters.
+    pub text_start: u32,
+    pub text_end: u32,
+    /// Offset of the glyph's first code byte in the stream of all bytes shown
+    /// on the page so far, and the code's length. Consecutive glyphs of the
+    /// content stream have `stream_pos + code_len == next.stream_pos`.
+    pub stream_pos: u32,
+    pub code_len: u8,
+}
+
+/// Glyph geometry shared by every glyph of one [`TextChunk`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextGlyphRun {
+    /// Linear part of `Tfs × Tm × CTM` (page space, y up): the image of the
+    /// text-space x and y axes at the font size. Its orientation gives the
+    /// run's rotation; a skewed one marks diagonal text.
+    pub font_matrix: [f64; 4],
+    /// Font ascent (positive) and descent (negative) as fractions of the
+    /// font size.
+    pub ascent: f64,
+    pub descent: f64,
+    pub glyphs: Vec<TextGlyph>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +161,8 @@ pub struct TextCollector<'a> {
     selected_font_stack: Vec<Option<Arc<FontResolver>>>,
     resources: Arc<PageResources>,
     reader: Option<&'a PdfReader>,
+    /// Bytes of shown strings so far ([`TextGlyph::stream_pos`]).
+    stream_pos: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +186,7 @@ impl<'a> TextCollector<'a> {
             selected_font_stack: Vec::new(),
             resources: Arc::new(resources),
             reader: Some(reader),
+            stream_pos: 0,
         }
     }
 
@@ -160,6 +204,7 @@ impl<'a> TextCollector<'a> {
             selected_font_stack: Vec::new(),
             resources: Arc::new(resources),
             reader: None,
+            stream_pos: 0,
         }
     }
 
@@ -167,6 +212,7 @@ impl<'a> TextCollector<'a> {
         self.gs = GraphicsState::new();
         self.selected_font = None;
         self.selected_font_stack.clear();
+        self.stream_pos = 0;
         if self.reader.is_some() {
             self.font_resolvers.clear();
         }
@@ -212,6 +258,7 @@ impl<'a> TextCollector<'a> {
         self.gs = GraphicsState::new();
         self.selected_font = None;
         self.selected_font_stack.clear();
+        self.stream_pos = 0;
         if self.reader.is_some() {
             self.font_resolvers.clear();
         }
@@ -396,10 +443,12 @@ impl<'a> TextCollector<'a> {
         let mut decoded_text = String::new();
         let mut mapping_sources = Vec::new();
         let mut total_advance = 0.0_f64;
+        let mut glyphs: Vec<TextGlyph> = Vec::new();
 
         let mut index = 0;
         let mut offset = 0;
         while offset < bytes.len() {
+            let code_start = offset;
             if index % 64 == 0 {
                 if let Some(budget) = budget.as_ref() {
                     budget.cancel.check("text glyph decoding")?;
@@ -434,10 +483,28 @@ impl<'a> TextCollector<'a> {
                     })?;
             }
             let source_count = ch_text.chars().count().max(1);
+            let text_start = decoded_text.len();
             decoded_text.push_str(&ch_text);
             mapping_sources.extend(std::iter::repeat_n(source, source_count));
 
             let is_space = code.is_word_space();
+            // The glyph's origin before this code advances the text matrix.
+            let glyph_to_page =
+                crate::content::state::concat_matrix(&self.gs.text.tm, &self.gs.ctm);
+            let (glyph_x, glyph_y) =
+                crate::content::state::transform_point(&glyph_to_page, 0.0, rise);
+            let code_len = (offset - code_start).min(usize::from(u8::MAX)) as u8;
+            let mut glyph = TextGlyph {
+                x: glyph_x,
+                y: glyph_y,
+                dx: 0.0,
+                dy: 0.0,
+                text_start: u32::try_from(text_start).unwrap_or(u32::MAX),
+                text_end: u32::try_from(decoded_text.len()).unwrap_or(u32::MAX),
+                stream_pos: self.stream_pos,
+                code_len,
+            };
+            self.stream_pos = self.stream_pos.saturating_add(u32::from(code_len.max(1)));
 
             if is_vertical {
                 // Vertical writing mode: glyphs advance downward by the font's
@@ -453,6 +520,9 @@ impl<'a> TextCollector<'a> {
                     word_spacing,
                     is_space,
                 );
+                let own = w1y / 1000.0 * font_size;
+                glyph.dx = glyph_to_page[2] * own;
+                glyph.dy = glyph_to_page[3] * own;
                 self.gs.text.tm[4] += self.gs.text.tm[2] * ty;
                 self.gs.text.tm[5] += self.gs.text.tm[3] * ty;
                 total_advance += ty;
@@ -460,6 +530,9 @@ impl<'a> TextCollector<'a> {
                 let glyph_units = resolver
                     .map(|resolver| resolver.width_for_code(code))
                     .unwrap_or(500.0);
+                let own = glyph_units / 1000.0 * font_size * h_scale;
+                glyph.dx = glyph_to_page[0] * own;
+                glyph.dy = glyph_to_page[1] * own;
                 let tx = (glyph_units / 1000.0 * font_size
                     + char_spacing
                     + if is_space { word_spacing } else { 0.0 })
@@ -468,6 +541,7 @@ impl<'a> TextCollector<'a> {
                 self.gs.text.tm[5] += self.gs.text.tm[1] * tx;
                 total_advance += tx;
             }
+            glyphs.push(glyph);
         }
 
         if !decoded_text.is_empty() {
@@ -489,6 +563,20 @@ impl<'a> TextCollector<'a> {
             // invisible text, they can inspect TextChunk::is_ocr_layer() after
             // extraction. We never skip based on rendering mode here.
             let is_invisible = self.gs.text.rendering_mode == 3;
+            let (ascent, descent) = resolver
+                .map(|resolver| (resolver.ascent(), resolver.descent()))
+                .unwrap_or((0.95, -0.35));
+            let glyph_run = TextGlyphRun {
+                font_matrix: [
+                    text_to_page[0] * font_size,
+                    text_to_page[1] * font_size,
+                    text_to_page[2] * font_size,
+                    text_to_page[3] * font_size,
+                ],
+                ascent,
+                descent,
+                glyphs,
+            };
             chunks.push(TextChunk {
                 text: decoded_text,
                 x: x_start,
@@ -501,6 +589,7 @@ impl<'a> TextCollector<'a> {
                 is_invisible,
                 is_actual_text: false,
                 mapping_sources,
+                glyph_run: Some(Arc::new(glyph_run)),
             });
             if let Some(budget) = budget.as_mut() {
                 budget.remaining_chunks -= 1;
@@ -591,6 +680,7 @@ fn apply_actual_text_override(
         chunks[before].is_actual_text = true;
         chunks[before].mapping_sources =
             vec![FontDecodeSource::ActualText; chunks[before].text.chars().count()];
+        chunks[before].glyph_run = None;
         chunks.truncate(before + 1);
     }
     frame.emitted = true;
@@ -1000,6 +1090,7 @@ mod tests {
             is_invisible: true,
             is_actual_text: false,
             mapping_sources: Vec::new(),
+            glyph_run: None,
         };
         assert_eq!(chunk.right(), 15.0);
         assert!(chunk.is_whitespace());

@@ -57,10 +57,13 @@ memory between the two.
 
 ### Text extraction
 
-Extraction is **layout-aware by default**: reading order is recovered across
-columns and blocks with geometric (XY-cut) segmentation, so multi-column
-newspapers and journals come out in the right order instead of interleaved. Pass
-`--raw` for plain content-stream order.
+Extraction is **layout-aware by default**, following `pdftotext`'s reading
+order: words are built from each glyph's real position and advance, accents are
+merged, fake-bold over-prints dropped, rotated text grouped per rotation, blocks
+ordered by T. Breuel's topological sort (table-aware) and joined into flows, and
+words hyphenated at line ends rejoined. `--xycut` selects the earlier XY-cut
+order, `--nodiag` drops diagonal text, and `--raw` gives plain content-stream
+order.
 
 Extracted text compared to MuPDF over the full corpus — the 221 of 500 documents
 that carry a text layer (the rest are image-only scans):
