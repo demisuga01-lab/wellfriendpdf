@@ -25,6 +25,9 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::optional_content::OptionalContentContext;
 use crate::prepress::{self, SeparationFramebuffer, SeparationFramebufferReport};
 use crate::reader::PdfReader;
+use crate::render::annotation_synthesis::{
+    self, SynthesizedAppearance, TextFonts, WidgetTextLayout,
+};
 use crate::render::buffer::{
     AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, BLACK, WHITE,
 };
@@ -14456,6 +14459,9 @@ impl<'a> RenderState<'a> {
             Ok(PdfObject::Array(items)) => items,
             _ => return,
         };
+        let need_appearances = resolve_acroform_dict(self.engine, reader)
+            .and_then(|dict| dict.get_bool("NeedAppearances"))
+            .unwrap_or(false);
 
         for (index, annot_obj) in annots.into_iter().enumerate() {
             if self.cancel.is_cancelled() {
@@ -14466,14 +14472,6 @@ impl<'a> RenderState<'a> {
                 _ => continue,
             };
             let annot_label = format!("annotation 'Annot{}'", index + 1);
-            match annotation_excluded_for_profile(&annot, self.print_profile, &annot_label) {
-                Ok(true) => continue,
-                Ok(false) => {}
-                Err(err) => {
-                    self.record_fatal_render_error(err);
-                    continue;
-                }
-            }
             let annot_subtype = match annotation_subtype_name(&annot, &annot_label) {
                 Ok(subtype) => subtype.to_string(),
                 Err(err) => {
@@ -14481,6 +14479,19 @@ impl<'a> RenderState<'a> {
                     continue;
                 }
             };
+            match annotation_excluded_for_profile(
+                &annot,
+                &annot_subtype,
+                self.print_profile,
+                &annot_label,
+            ) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(err) => {
+                    self.record_fatal_render_error(err);
+                    continue;
+                }
+            }
             // Respect FormRenderPolicy: exclude Widget annotations when forms
             // are excluded from the render contract.
             if self.form_policy == FormRenderPolicy::Exclude && annot_subtype == "Widget" {
@@ -14496,28 +14507,52 @@ impl<'a> RenderState<'a> {
                     continue;
                 }
             };
-            let appearance = match select_annotation_appearance(&annot, reader, &annot_label) {
-                Ok(Some(appearance)) => Some(appearance),
-                Ok(None) => {
-                    if let Some(err) = synthetic_annotation_metadata_refusal(
-                        &annot,
-                        &annot_label,
-                        reader,
-                        self.engine,
-                    ) {
+            // With /NeedAppearances, text and choice widgets are regenerated
+            // from their values instead of replaying a stale stored
+            // appearance (signatures and buttons keep theirs), like Poppler.
+            let regenerated = if need_appearances
+                && annot_subtype == "Widget"
+                && widget_regenerates_for_need_appearances(&annot, reader)
+            {
+                synthesize_annotation_appearance_placed(&annot, reader, self.engine, rect)
+            } else {
+                None
+            };
+            let mut placement_rect = rect;
+            let appearance = if let Some(synthesized) = regenerated {
+                placement_rect = synthesized.rect;
+                Some((synthesized.dict, synthesized.raw))
+            } else {
+                match select_annotation_appearance(&annot, reader, &annot_label) {
+                    Ok(Some(appearance)) => Some(appearance),
+                    Ok(None) => {
+                        if let Some(err) = synthetic_annotation_metadata_refusal(
+                            &annot,
+                            &annot_label,
+                            reader,
+                            self.engine,
+                        ) {
+                            self.record_fatal_render_error(err);
+                            continue;
+                        }
+                        synthesize_annotation_appearance_placed(&annot, reader, self.engine, rect)
+                            .map(|synthesized| {
+                                placement_rect = synthesized.rect;
+                                (synthesized.dict, synthesized.raw)
+                            })
+                    }
+                    Err(err) => {
                         self.record_fatal_render_error(err);
                         continue;
                     }
-                    synthesize_annotation_appearance(&annot, reader, self.engine, rect)
-                }
-                Err(err) => {
-                    self.record_fatal_render_error(err);
-                    continue;
                 }
             };
             let Some((appearance_dict, appearance_raw)) = appearance else {
                 continue;
             };
+            let no_rotate = annot.get_integer("F").unwrap_or(0)
+                & crate::render::annotation_synthesis::ANNOT_FLAG_NO_ROTATE
+                != 0;
             if appearance_dict.get_name("Subtype") != Some("Form") {
                 continue;
             }
@@ -14528,11 +14563,11 @@ impl<'a> RenderState<'a> {
                 index,
                 &appearance_dict,
                 appearance_raw,
-                rect,
+                placement_rect,
             ) else {
                 continue;
             };
-            self.render_annotation_appearance_program(&name, &program, rect);
+            self.render_annotation_appearance_program(&name, &program, placement_rect, no_rotate);
         }
     }
 
@@ -14541,6 +14576,7 @@ impl<'a> RenderState<'a> {
         name: &str,
         program: &FormXObjectProgram,
         rect: [f64; 4],
+        no_rotate: bool,
     ) {
         if self.form_depth >= 8 {
             self.record_guard_render_error(format!(
@@ -14557,6 +14593,17 @@ impl<'a> RenderState<'a> {
             crate::annotation_appearance::placement(rect, bbox, program.form_matrix)
         else {
             return;
+        };
+        // NoRotate: counter-rotate about the top-left corner of the
+        // annotation so it stays upright on rotated pages.
+        let placement = match no_rotate
+            .then(|| {
+                crate::render::annotation_synthesis::no_rotate_matrix(rect, self.viewport.rotation)
+            })
+            .flatten()
+        {
+            Some(unrotate) => placement.concat(&Transform2D::from(unrotate)),
+            None => placement,
         };
 
         let saved_gs = self.gs.clone();
@@ -26034,6 +26081,7 @@ fn mesh_shading_decode_component_count(
 /// annotation should be excluded from rendering for the given profile.
 fn annotation_excluded_for_profile(
     dict: &PdfDictionary,
+    subtype: &str,
     profile: PrintProfile,
     label: &str,
 ) -> std::result::Result<bool, String> {
@@ -26043,7 +26091,26 @@ fn annotation_excluded_for_profile(
             .as_integer()
             .ok_or_else(|| format!("{label} malformed /F"))?,
     };
-    Ok(!crate::render::print_profile::annotation_visible_for_profile(flags, profile))
+    Ok(
+        !crate::render::print_profile::annotation_visible_for_profile_and_subtype(
+            flags, subtype, profile,
+        ),
+    )
+}
+
+/// Text and choice widgets are regenerated when the form sets
+/// `/NeedAppearances` (signatures and buttons keep their stored appearance).
+fn widget_regenerates_for_need_appearances(
+    annot: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+) -> bool {
+    let chain = collect_field_chain(annot, reader);
+    matches!(
+        inherited_field_object(&chain, "FT")
+            .as_ref()
+            .and_then(PdfObject::as_name),
+        Some("Tx") | Some("Ch")
+    )
 }
 
 fn select_annotation_appearance(
@@ -26051,6 +26118,38 @@ fn select_annotation_appearance(
     reader: &crate::reader::PdfReader,
     label: &str,
 ) -> std::result::Result<Option<(PdfDictionary, Vec<u8>)>, String> {
+    // Viewers generate an appearance when /AP is unusable instead of
+    // dropping the annotation: an /AP that is not a dictionary, has no /N,
+    // or whose /N is neither a stream nor a state dictionary.
+    if let Some(ap) = annot.get("AP").filter(|value| !value.is_null()) {
+        let usable = match reader.resolve(ap.clone()) {
+            Ok(PdfObject::Dictionary(ap)) => match ap.get("N") {
+                Some(normal) => matches!(
+                    reader.resolve(normal.clone()),
+                    Ok(PdfObject::Stream { .. } | PdfObject::Dictionary(_))
+                ),
+                None => false,
+            },
+            _ => false,
+        };
+        if !usable {
+            return Ok(None);
+        }
+    }
+    // A malformed (non-name) /AS is treated as absent: the state is chosen
+    // by the missing-/AS rule rather than dropping the annotation.
+    let lenient;
+    let annot = if annot
+        .get("AS")
+        .is_some_and(|state| !matches!(state, PdfObject::Name(_)))
+    {
+        let mut copy = annot.clone();
+        copy.remove("AS");
+        lenient = copy;
+        &lenient
+    } else {
+        annot
+    };
     crate::annotation_appearance::select_normal(annot, reader)
         .map(|selected| selected.map(|appearance| (appearance.dict, appearance.raw)))
         .map_err(|error| match error {
@@ -26099,13 +26198,6 @@ struct WidgetAppearanceBox<'a> {
     mk: Option<&'a PdfDictionary>,
 }
 
-#[derive(Clone, Copy)]
-struct TextFieldAppearance {
-    default_appearance: DefaultAppearance,
-    alignment: i64,
-    multiline: bool,
-}
-
 struct ButtonAppearance<'a> {
     kind: ButtonAppearanceKind,
     selected: bool,
@@ -26120,12 +26212,27 @@ impl<'a> WidgetAppearanceBox<'a> {
     }
 }
 
+#[cfg(test)]
 fn synthesize_annotation_appearance(
     annot: &PdfDictionary,
     reader: &crate::reader::PdfReader,
     engine: &ContentEngine,
     rect: [f64; 4],
 ) -> Option<(PdfDictionary, Vec<u8>)> {
+    synthesize_annotation_appearance_placed(annot, reader, engine, rect)
+        .map(|synthesized| (synthesized.dict, synthesized.raw))
+}
+
+/// Generates an appearance for an annotation without a usable `/AP /N`.
+/// The returned rectangle is where the appearance BBox is placed on the
+/// page (fixed-size icons and geometry with line endings may differ from
+/// `/Rect`).
+fn synthesize_annotation_appearance_placed(
+    annot: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+    engine: &ContentEngine,
+    rect: [f64; 4],
+) -> Option<SynthesizedAppearance> {
     let width = (rect[2] - rect[0]).abs();
     let height = (rect[3] - rect[1]).abs();
     if width <= 0.0 || height <= 0.0 {
@@ -26133,12 +26240,9 @@ fn synthesize_annotation_appearance(
     }
 
     if annot.get_name("Subtype") != Some("Widget") {
-        if let Some(appearance) =
-            synthesize_markup_annotation_appearance(annot, rect, width, height)
-        {
-            return Some(appearance);
-        }
-    } else if synthetic_annotation_metadata_refusal(annot, "annotation", reader, engine).is_some() {
+        return synthesize_markup_annotation_appearance(annot, reader, engine, rect);
+    }
+    if synthetic_annotation_metadata_refusal(annot, "annotation", reader, engine).is_some() {
         return None;
     }
 
@@ -26146,10 +26250,6 @@ fn synthesize_annotation_appearance(
     let field_type_obj = inherited_field_object(&field_chain, "FT")?;
     let field_type = field_type_obj.as_name()?.to_string();
     let acroform = resolve_acroform_dict(engine, reader);
-    let need_appearances = acroform
-        .as_ref()
-        .and_then(|dict| dict.get_bool("NeedAppearances"))
-        .unwrap_or(false);
     let field_flags = inherited_field_integer(&field_chain, "Ff").unwrap_or(0);
     let alignment = inherited_field_integer(&field_chain, "Q")
         .or_else(|| acroform.as_ref().and_then(|dict| dict.get_integer("Q")))
@@ -26166,6 +26266,10 @@ fn synthesize_annotation_appearance(
         Some(bytes) => parse_default_appearance(bytes)?,
         None => DefaultAppearance::default(),
     };
+    let da = default_appearance_bytes
+        .as_deref()
+        .map(annotation_synthesis::parse_da)
+        .unwrap_or_default();
     let value = inherited_field_object(&field_chain, "V");
     let options = inherited_field_object(&field_chain, "Opt");
     let mk = annot
@@ -26174,32 +26278,66 @@ fn synthesize_annotation_appearance(
             PdfObject::Dictionary(dict) => Some(dict),
             _ => None,
         });
+    let border = annotation_synthesis::border_style(annot, reader, 1.0);
+    // Field fonts come from the field's /DR (Poppler merges field and form
+    // resources), then the AcroForm /DR.
+    let mut dr_dicts: Vec<PdfDictionary> = field_chain
+        .iter()
+        .filter_map(|dict| match reader.resolve(dict.get("DR")?.clone()).ok()? {
+            PdfObject::Dictionary(dr) => Some(dr),
+            _ => None,
+        })
+        .collect();
+    if let Some(dr) = acroform
+        .as_ref()
+        .and_then(|dict| dict.get("DR"))
+        .and_then(|obj| match reader.resolve(obj.clone()).ok()? {
+            PdfObject::Dictionary(dr) => Some(dr),
+            _ => None,
+        })
+    {
+        dr_dicts.push(dr);
+    }
+    let text_layout = |multiline: bool, comb: Option<usize>| WidgetTextLayout {
+        width,
+        height,
+        mk: mk.as_ref(),
+        border: border.clone(),
+        da: da.clone(),
+        alignment,
+        multiline,
+        comb,
+    };
+    let widget = |content: String, resources: annotation_synthesis::Resources| {
+        let (dict, raw) = annotation_synthesis::widget_form(content, width, height, resources);
+        Some(SynthesizedAppearance { dict, raw, rect })
+    };
 
     let mut content = String::new();
     match field_type.as_str() {
         "Tx" => {
-            let (mut text, mut text_bytes) = value.as_ref().and_then(display_text_from_object)?;
-            if text.is_empty() {
-                return None;
-            }
+            let mut text = value
+                .as_ref()
+                .and_then(display_text_from_object)
+                .map(|(text, _)| text)
+                .unwrap_or_default();
             if field_flags & FIELD_FLAG_PASSWORD != 0 {
                 // Password fields never show their value: one asterisk per
                 // character, as viewers do (PDF 12.7.5.3, Ff bit 14).
-                let masked_len = text.chars().count();
-                text = "*".repeat(masked_len);
-                text_bytes = vec![b'*'; masked_len];
+                text = "*".repeat(text.chars().count());
             }
-            append_text_field_appearance(
-                &mut content,
-                WidgetAppearanceBox::new(width, height, mk.as_ref()),
-                &text,
-                &text_bytes,
-                TextFieldAppearance {
-                    default_appearance,
-                    alignment,
-                    multiline: field_flags & FIELD_FLAG_MULTILINE != 0,
-                },
+            let multiline = field_flags & FIELD_FLAG_MULTILINE != 0;
+            let comb = annotation_synthesis::comb_cells(
+                field_flags,
+                inherited_field_integer(&field_chain, "MaxLen"),
             );
+            let fonts = TextFonts::resolve(da.font_name.as_deref(), &dr_dicts, reader);
+            let (content, resources) = annotation_synthesis::text_field_appearance(
+                text_layout(multiline, comb),
+                &text,
+                fonts,
+            )?;
+            return widget(content, resources);
         }
         "Btn" => {
             let kind = if field_flags & FIELD_FLAG_PUSHBUTTON != 0 {
@@ -26221,77 +26359,98 @@ fn synthesize_annotation_appearance(
             if kind != ButtonAppearanceKind::PushButton && caption.0.chars().count() > 1 {
                 return None;
             }
-            if kind != ButtonAppearanceKind::PushButton && !selected {
-                return None;
-            }
-            let has_explicit_button_chrome = mk
-                .as_ref()
-                .map(|dict| {
-                    dict.contains_key("CA") || dict.contains_key("BG") || dict.contains_key("BC")
-                })
-                .unwrap_or(false);
-            if kind != ButtonAppearanceKind::PushButton
-                && !need_appearances
-                && !has_explicit_button_chrome
-            {
-                return None;
-            }
-            if kind == ButtonAppearanceKind::Checkbox && selected {
-                if let Some(label) = checkbox_label_state(annot, value.as_ref()) {
-                    append_text_field_appearance(
-                        &mut content,
-                        WidgetAppearanceBox::new(width, height, mk.as_ref()),
-                        &label,
-                        label.as_bytes(),
-                        TextFieldAppearance {
-                            default_appearance,
-                            alignment,
-                            multiline: false,
-                        },
-                    );
-                } else {
-                    append_button_appearance(
-                        &mut content,
-                        WidgetAppearanceBox::new(width, height, mk.as_ref()),
-                        ButtonAppearance {
-                            kind,
-                            selected,
-                            caption: &caption.0,
-                            caption_bytes: &caption.1,
-                            default_appearance,
-                        },
-                    );
-                }
-            } else {
-                append_button_appearance(
+            if kind == ButtonAppearanceKind::Checkbox {
+                // Checkboxes: MK background/border always, the /MK /CA
+                // ZapfDingbats caption (default check) when checked,
+                // regardless of /NeedAppearances.
+                let mut resources = annotation_synthesis::Resources::default();
+                annotation_synthesis::append_widget_chrome(
                     &mut content,
-                    WidgetAppearanceBox::new(width, height, mk.as_ref()),
-                    ButtonAppearance {
-                        kind,
-                        selected,
-                        caption: &caption.0,
-                        caption_bytes: &caption.1,
-                        default_appearance,
-                    },
+                    width,
+                    height,
+                    mk.as_ref(),
+                    &border,
+                    false,
                 );
+                if selected {
+                    if let Some(label) = checkbox_label_state(annot, value.as_ref()) {
+                        let fonts = TextFonts::resolve(da.font_name.as_deref(), &dr_dicts, reader);
+                        let (label_content, label_resources) =
+                            annotation_synthesis::text_field_appearance(
+                                WidgetTextLayout {
+                                    mk: None,
+                                    ..text_layout(false, None)
+                                },
+                                &label,
+                                fonts,
+                            )?;
+                        content.push_str(&label_content);
+                        resources = label_resources;
+                    } else {
+                        let caption = if caption.0.is_empty() {
+                            "4"
+                        } else {
+                            caption.0.as_str()
+                        };
+                        append_checkbox_caption(
+                            &mut content,
+                            &mut resources,
+                            caption,
+                            width,
+                            height,
+                            &da,
+                            &border,
+                        );
+                    }
+                }
+                if content.is_empty() {
+                    return None;
+                }
+                return widget(content, resources);
             }
-        }
-        "Ch" => {
-            let selected = choice_display_text(value.as_ref(), options.as_ref())?;
-            if selected.0.is_empty() {
+            if kind == ButtonAppearanceKind::Radio && !selected {
                 return None;
             }
-            append_text_field_appearance(
+            append_button_appearance(
                 &mut content,
                 WidgetAppearanceBox::new(width, height, mk.as_ref()),
-                &selected.0,
-                &selected.1,
-                TextFieldAppearance {
+                ButtonAppearance {
+                    kind,
+                    selected,
+                    caption: &caption.0,
+                    caption_bytes: &caption.1,
                     default_appearance,
-                    alignment,
-                    multiline: field_flags & FIELD_FLAG_COMBO == 0,
                 },
             );
+        }
+        "Ch" => {
+            let fonts = TextFonts::resolve(da.font_name.as_deref(), &dr_dicts, reader);
+            if field_flags & FIELD_FLAG_COMBO != 0 {
+                let text = choice_display_text(value.as_ref(), options.as_ref())
+                    .map(|(text, _)| text)
+                    .unwrap_or_default();
+                let (content, resources) = annotation_synthesis::text_field_appearance(
+                    text_layout(false, None),
+                    &text,
+                    fonts,
+                )?;
+                return widget(content, resources);
+            }
+            let list = list_box_options(
+                value.as_ref(),
+                options.as_ref(),
+                inherited_field_object(&field_chain, "I").as_ref(),
+            );
+            let top_index = inherited_field_integer(&field_chain, "TI")
+                .filter(|index| *index >= 0)
+                .unwrap_or(0) as usize;
+            let (content, resources) = annotation_synthesis::list_box_appearance(
+                text_layout(false, None),
+                &list,
+                top_index,
+                fonts,
+            )?;
+            return widget(content, resources);
         }
         _ => return None,
     }
@@ -26302,16 +26461,137 @@ fn synthesize_annotation_appearance(
 
     let mut form = synthesized_appearance_form_dict(width, height);
     form.insert("Length", PdfObject::Integer(content.len() as i64));
-    Some((form, content.into_bytes()))
+    Some(SynthesizedAppearance {
+        dict: form,
+        raw: content.into_bytes(),
+        rect,
+    })
+}
+
+/// Draws a checked box's `/MK /CA` caption: the common ZapfDingbats marks
+/// (4 check, l circle, 8 cross, u diamond, n square, H star) as vector
+/// shapes, anything else as ZapfDingbats text.
+fn append_checkbox_caption(
+    content: &mut String,
+    resources: &mut annotation_synthesis::Resources,
+    caption: &str,
+    width: f64,
+    height: f64,
+    da: &annotation_synthesis::DaSpec,
+    border: &annotation_synthesis::BorderStyle,
+) {
+    let inner = (width.min(height) - 2.0 * border.width).max(1.0);
+    let side = if da.font_size > 0.0 {
+        (da.font_size * 0.75).min(inner)
+    } else {
+        inner * 0.75
+    };
+    if let Some(glyph) = annotation_synthesis::CheckGlyph::from_caption(caption) {
+        annotation_synthesis::append_check_glyph(content, glyph, width, height, side, da.color);
+        return;
+    }
+    let size = side / 0.75;
+    let mut font = PdfDictionary::empty();
+    font.insert("Type", PdfObject::Name("Font".to_string()));
+    font.insert("Subtype", PdfObject::Name("Type1".to_string()));
+    font.insert("BaseFont", PdfObject::Name("ZapfDingbats".to_string()));
+    resources.add_font("ZaDb", PdfObject::Dictionary(font));
+    let _ = writeln!(
+        content,
+        "q BT {} /ZaDb {} Tf {} {} Td {} Tj ET Q",
+        da.color.fill_op(),
+        pdf_num(size),
+        pdf_num((width - size * 0.75) * 0.5),
+        pdf_num((height - size * 0.7) * 0.5),
+        pdf_literal_bytes(caption.as_bytes())
+    );
+}
+
+/// List-box rows from `/Opt` with selection from `/V` (export or display
+/// values) or `/I` indices.
+fn list_box_options(
+    value: Option<&PdfObject>,
+    options: Option<&PdfObject>,
+    indices: Option<&PdfObject>,
+) -> Vec<annotation_synthesis::ListOption> {
+    let selected_values: Vec<String> = match value {
+        Some(PdfObject::Array(items)) => items
+            .iter()
+            .filter_map(display_text_from_object)
+            .map(|(text, _)| text)
+            .collect(),
+        Some(other) => display_text_from_object(other)
+            .map(|(text, _)| vec![text])
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let selected_indices: Vec<i64> = match indices {
+        Some(PdfObject::Array(items)) => items.iter().filter_map(PdfObject::as_integer).collect(),
+        _ => Vec::new(),
+    };
+    let Some(PdfObject::Array(items)) = options else {
+        return selected_values
+            .into_iter()
+            .map(|text| annotation_synthesis::ListOption {
+                text,
+                selected: true,
+            })
+            .collect();
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            let (export, display) = match option {
+                PdfObject::Array(pair) => (
+                    pair.first()
+                        .and_then(display_text_from_object)
+                        .map(|(text, _)| text),
+                    option_display_text(option).map(|(text, _)| text),
+                ),
+                other => {
+                    let text = display_text_from_object(other).map(|(text, _)| text);
+                    (text.clone(), text)
+                }
+            };
+            let display = display.unwrap_or_default();
+            let selected = selected_indices.contains(&(index as i64))
+                || selected_values
+                    .iter()
+                    .any(|value| Some(value.as_str()) == export.as_deref() || *value == display);
+            annotation_synthesis::ListOption {
+                text: display,
+                selected,
+            }
+        })
+        .collect()
 }
 
 fn synthesize_markup_annotation_appearance(
     annot: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+    engine: &ContentEngine,
     rect: [f64; 4],
-    width: f64,
-    height: f64,
-) -> Option<(PdfDictionary, Vec<u8>)> {
+) -> Option<SynthesizedAppearance> {
     let subtype = annot.get_name("Subtype")?;
+    if !matches!(
+        subtype,
+        "Highlight" | "Underline" | "StrikeOut" | "Squiggly"
+    ) {
+        let acroform_dr = resolve_acroform_dict(engine, reader).and_then(|acroform| {
+            match reader.resolve(acroform.get("DR")?.clone()).ok()? {
+                PdfObject::Dictionary(dr) => Some(dr),
+                _ => None,
+            }
+        });
+        let ctx = annotation_synthesis::SynthesisContext {
+            reader,
+            acroform_dr,
+        };
+        return annotation_synthesis::synthesize_markup(annot, &ctx, rect);
+    }
+    let width = (rect[2] - rect[0]).abs();
+    let height = (rect[3] - rect[1]).abs();
     let color = match annotation_rgb(annot) {
         Some(color) => color,
         None if annot.get("C").is_none() => match subtype {
@@ -26329,73 +26609,11 @@ fn synthesize_markup_annotation_appearance(
                 append_annotation_rect_fill(&mut content, bounds, color);
             }
         }
-        "Underline" | "StrikeOut" | "Squiggly" => {
+        _ => {
             for bounds in annotation_local_quad_bounds(annot, rect, width, height)? {
                 append_text_markup_line(&mut content, subtype, bounds, color);
             }
         }
-        "Square" => {
-            let _ = writeln!(
-                content,
-                "q /GS1 gs {} {} {} RG 1 w 0.5 0.5 {} {} re S Q",
-                pdf_num(color.0),
-                pdf_num(color.1),
-                pdf_num(color.2),
-                pdf_num((width - 1.0).max(0.0)),
-                pdf_num((height - 1.0).max(0.0))
-            );
-        }
-        "Circle" => {
-            append_circle(
-                &mut content,
-                width * 0.5,
-                height * 0.5,
-                ((width.min(height) - 1.0) * 0.5).max(0.0),
-                color,
-                false,
-            );
-        }
-        "Line" => {
-            let line = strict_annotation_number_array(annot, "L", "annotation", 4, true).ok()?;
-            let x0 = line[0] - rect[0].min(rect[2]);
-            let y0 = line[1] - rect[1].min(rect[3]);
-            let x1 = line[2] - rect[0].min(rect[2]);
-            let y1 = line[3] - rect[1].min(rect[3]);
-            let _ = writeln!(
-                content,
-                "q /GS1 gs {} {} {} RG 1.5 w {} {} m {} {} l S Q",
-                pdf_num(color.0),
-                pdf_num(color.1),
-                pdf_num(color.2),
-                pdf_num(x0),
-                pdf_num(y0),
-                pdf_num(x1),
-                pdf_num(y1)
-            );
-        }
-        "Ink" => append_ink_annotation_paths(&mut content, annot, rect, color)?,
-        "FreeText" => {
-            let (text, text_bytes) = annot.get("Contents").and_then(display_text_from_object)?;
-            let alignment = match annot.get("Q") {
-                Some(obj) => obj.as_integer()?,
-                None => 0,
-            };
-            append_text_field_appearance(
-                &mut content,
-                WidgetAppearanceBox::new(width, height, None),
-                &text,
-                &text_bytes,
-                TextFieldAppearance {
-                    default_appearance: DefaultAppearance {
-                        font_size: 10.0,
-                        color,
-                    },
-                    alignment,
-                    multiline: true,
-                },
-            );
-        }
-        _ => return None,
     }
 
     if content.is_empty() {
@@ -26412,7 +26630,11 @@ fn synthesize_markup_annotation_appearance(
         },
     );
     form.insert("Length", PdfObject::Integer(content.len() as i64));
-    Some((form, content.into_bytes()))
+    Some(SynthesizedAppearance {
+        dict: form,
+        raw: content.into_bytes(),
+        rect,
+    })
 }
 
 fn add_synthesized_ext_g_state(form: &mut PdfDictionary, alpha: f64, blend_mode: Option<&str>) {
@@ -26481,9 +26703,6 @@ fn synthetic_annotation_metadata_refusal(
             return Some(err);
         }
         if let Err(err) = strict_optional_widget_acroform_booleans(label, reader, engine) {
-            return Some(err);
-        }
-        if let Err(err) = strict_optional_widget_appearance_state(annot, label) {
             return Some(err);
         }
         if let Err(err) = strict_optional_widget_mk_colors(annot, label, reader) {
@@ -26630,20 +26849,6 @@ fn strict_optional_widget_mk_colors(
     strict_optional_widget_mk_color(&mk, "BG", label)?;
     strict_optional_widget_mk_color(&mk, "BC", label)?;
     Ok(())
-}
-
-fn strict_optional_widget_appearance_state(
-    annot: &PdfDictionary,
-    label: &str,
-) -> std::result::Result<(), String> {
-    let Some(obj) = annot.get("AS") else {
-        return Ok(());
-    };
-    if matches!(obj, PdfObject::Name(_)) {
-        Ok(())
-    } else {
-        Err(format!("{label} malformed /AS"))
-    }
 }
 
 fn strict_optional_widget_field_integers(
@@ -27119,74 +27324,6 @@ fn append_text_markup_line(
     }
 }
 
-fn append_ink_annotation_paths(
-    content: &mut String,
-    annot: &PdfDictionary,
-    rect: [f64; 4],
-    color: (f64, f64, f64),
-) -> Option<()> {
-    let rect_x0 = rect[0].min(rect[2]);
-    let rect_y0 = rect[1].min(rect[3]);
-    let paths = annotation_ink_paths(annot)?;
-    let _ = write!(
-        content,
-        "q /GS1 gs {} {} {} RG 1.5 w",
-        pdf_num(color.0),
-        pdf_num(color.1),
-        pdf_num(color.2)
-    );
-    let mut wrote = false;
-    for coords in paths {
-        let _ = write!(
-            content,
-            " {} {} m",
-            pdf_num(coords[0] - rect_x0),
-            pdf_num(coords[1] - rect_y0)
-        );
-        for pair in coords[2..].chunks(2) {
-            if pair.len() == 2 {
-                let _ = write!(
-                    content,
-                    " {} {} l",
-                    pdf_num(pair[0] - rect_x0),
-                    pdf_num(pair[1] - rect_y0)
-                );
-            }
-        }
-        wrote = true;
-    }
-    if wrote {
-        let _ = writeln!(content, " S Q");
-        Some(())
-    } else {
-        None
-    }
-}
-
-fn annotation_ink_paths(annot: &PdfDictionary) -> Option<Vec<Vec<f64>>> {
-    let lists = annot.get_array("InkList")?;
-    if lists.is_empty() {
-        return None;
-    }
-    let mut paths = Vec::with_capacity(lists.len());
-    for list in lists {
-        let points = list.as_array()?;
-        if points.len() < 4 || !points.len().is_multiple_of(2) {
-            return None;
-        }
-        let mut coords = Vec::with_capacity(points.len());
-        for point in points {
-            let value = point.as_number()?;
-            if !value.is_finite() {
-                return None;
-            }
-            coords.push(value);
-        }
-        paths.push(coords);
-    }
-    Some(paths)
-}
-
 fn collect_field_chain(
     annot: &PdfDictionary,
     reader: &crate::reader::PdfReader,
@@ -27310,63 +27447,6 @@ fn synthesized_appearance_form_dict(width: f64, height: f64) -> PdfDictionary {
     form
 }
 
-fn append_text_field_appearance(
-    content: &mut String,
-    geometry: WidgetAppearanceBox<'_>,
-    text: &str,
-    text_bytes: &[u8],
-    appearance: TextFieldAppearance,
-) {
-    append_explicit_widget_chrome(content, geometry.width, geometry.height, geometry.mk);
-    if text.is_empty() {
-        return;
-    }
-
-    let font_size = effective_font_size(
-        appearance.default_appearance.font_size,
-        text,
-        geometry.width,
-        geometry.height,
-        appearance.multiline,
-    );
-    if appearance.multiline {
-        let line_height = font_size * 1.2;
-        let max_lines = ((geometry.height - 6.0).max(font_size) / line_height)
-            .floor()
-            .max(1.0) as usize;
-        let mut y = (geometry.height - font_size - 3.0).max(2.0);
-        for line in text.lines().take(max_lines) {
-            append_text_run(
-                content,
-                line.as_bytes(),
-                font_size,
-                appearance.default_appearance.color,
-                text_x_for_alignment(line, font_size, geometry.width, appearance.alignment),
-                y,
-            );
-            y -= line_height;
-            if y < 2.0 {
-                break;
-            }
-        }
-    } else {
-        let literal_bytes = if text_bytes.is_empty() {
-            text.as_bytes()
-        } else {
-            text_bytes
-        };
-        let y = ((geometry.height - font_size) * 0.5).max(2.0);
-        append_text_run(
-            content,
-            literal_bytes,
-            font_size,
-            appearance.default_appearance.color,
-            text_x_for_alignment(text, font_size, geometry.width, appearance.alignment),
-            y,
-        );
-    }
-}
-
 fn append_button_appearance(
     content: &mut String,
     geometry: WidgetAppearanceBox<'_>,
@@ -27482,36 +27562,6 @@ fn append_widget_background_and_border(
         pdf_num((width - 1.0).max(0.0)),
         pdf_num((height - 1.0).max(0.0))
     );
-}
-
-fn append_explicit_widget_chrome(
-    content: &mut String,
-    width: f64,
-    height: f64,
-    mk: Option<&PdfDictionary>,
-) {
-    if let Some(bg) = mk_rgb(mk, "BG") {
-        let _ = writeln!(
-            content,
-            "q {} {} {} rg 0 0 {} {} re f Q",
-            pdf_num(bg.0),
-            pdf_num(bg.1),
-            pdf_num(bg.2),
-            pdf_num(width),
-            pdf_num(height)
-        );
-    }
-    if let Some(border) = mk_rgb(mk, "BC") {
-        let _ = writeln!(
-            content,
-            "q {} {} {} RG 1 w 0.5 0.5 {} {} re S Q",
-            pdf_num(border.0),
-            pdf_num(border.1),
-            pdf_num(border.2),
-            pdf_num((width - 1.0).max(0.0)),
-            pdf_num((height - 1.0).max(0.0))
-        );
-    }
 }
 
 fn append_widget_background(
@@ -37020,7 +37070,7 @@ mod tests {
     }
 
     #[test]
-    fn annotation_malformed_appearance_state_returns_typed_refusal() {
+    fn annotation_malformed_appearance_state_falls_back_to_default_state() {
         let yes = annotation_appearance_stream(
             "1 0 0 rg 0 0 50 50 re f\n",
             "/BBox [0 0 50 50] /Resources << >>",
@@ -37031,13 +37081,13 @@ mod tests {
         );
         let pdf = pdf_with_annotation_appearance_state("/AS [ /Yes ]", &yes, &off);
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed annotation state PDF");
-        let error = engine
+        // Like Poppler and PDFium, a non-name /AS is treated as absent: the
+        // annotation is drawn with the default (/Off) state, not dropped.
+        let buf = engine
             .render_page_with_mode(1, 72, RenderMode::HighQuality)
-            .expect_err("malformed annotation /AS must not select /Off or a fallback state");
-        assert!(
-            format!("{error}").contains("annotation 'Annot1' /AS resolved to Array, expected Name"),
-            "got {error}"
-        );
+            .expect("malformed annotation /AS must not abort rendering");
+        assert!(count_blue_pixels(&buf) > 100, "default /Off state is drawn");
+        assert_eq!(count_red_pixels(&buf), 0);
     }
 
     #[test]
@@ -37248,12 +37298,14 @@ mod tests {
                 PdfObject::Integer(80),
             ])]),
         );
-        let mut content = String::new();
+        malformed_ink.insert("Subtype", PdfObject::Name("Ink".to_string()));
+        let engine = ContentEngine::open_bytes(pdf_with_form_objects(vec![], "", "", ""))
+            .expect("open annotation helper context PDF");
+        let reader = engine.document().reader();
         assert!(
-            append_ink_annotation_paths(&mut content, &malformed_ink, rect, (0.0, 0.0, 0.0))
+            synthesize_markup_annotation_appearance(&malformed_ink, reader, &engine, rect)
                 .is_none()
         );
-        assert!(content.is_empty());
 
         let mut malformed_color = PdfDictionary::empty();
         malformed_color.insert(
@@ -37283,17 +37335,21 @@ mod tests {
             ]),
         );
         assert!(
-            synthesize_markup_annotation_appearance(&malformed_line, rect, 60.0, 20.0).is_none()
+            synthesize_markup_annotation_appearance(&malformed_line, reader, &engine, rect)
+                .is_none()
         );
 
         let mut malformed_freetext = PdfDictionary::empty();
         malformed_freetext.insert("Subtype", PdfObject::Name("FreeText".to_string()));
         malformed_freetext.insert("Contents", PdfObject::String(b"Hello".to_vec()));
         malformed_freetext.insert("Q", PdfObject::Name("Bad".to_string()));
-        assert!(
-            synthesize_markup_annotation_appearance(&malformed_freetext, rect, 60.0, 20.0)
-                .is_none()
-        );
+        assert!(synthesize_markup_annotation_appearance(
+            &malformed_freetext,
+            reader,
+            &engine,
+            rect
+        )
+        .is_none());
     }
 
     #[test]
@@ -42112,7 +42168,7 @@ mod tests {
     }
 
     #[test]
-    fn widget_malformed_synthesized_appearance_state_returns_typed_refusal() {
+    fn widget_malformed_appearance_state_falls_back_to_value() {
         let widget = b"<< /Type /Annot /Subtype /Widget /Rect [25 25 55 55] \
                        /FT /Btn /T (agree) /V /Yes /AS [ /Yes ] >>";
         let pdf = pdf_with_form_objects(
@@ -42123,13 +42179,12 @@ mod tests {
         );
         let engine =
             ContentEngine::open_bytes(pdf).expect("open malformed widget appearance-state PDF");
-        let error = engine
+        // A non-name /AS is ignored; the checked state comes from /V.
+        let buf = engine
             .render_page_with_mode(1, 72, RenderMode::HighQuality)
-            .expect_err("malformed widget /AS must not synthesize from /V fallback");
-        assert!(
-            format!("{error}").contains("annotation 'Annot1' malformed /AS"),
-            "got {error}"
-        );
+            .expect("malformed widget /AS must not abort rendering");
+        // DA 12pt => a ~9pt check mark.
+        assert!(count_dark_pixels(&buf) > 10, "checked from /V");
     }
 
     #[test]
@@ -42449,6 +42504,686 @@ mod tests {
             count_dark_pixels(&buf) > 20,
             "choice synthesis should render the selected option text"
         );
+    }
+
+    // --- WP4: generated annotation and widget appearances -----------------
+
+    /// Builds a one-page 100x100 PDF: object 1 catalog, 2 pages, 3 page,
+    /// 4 empty content, 5.. the given objects.
+    fn annotation_pdf(
+        objects: Vec<Vec<u8>>,
+        page_annots: &str,
+        page_extra: &str,
+        catalog_extra: &str,
+    ) -> Vec<u8> {
+        let mut all: Vec<Vec<u8>> = vec![
+            format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>").into_bytes(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] {page_extra} \
+                 /Resources << >> /Contents 4 0 R /Annots [{page_annots}] >>"
+            )
+            .into_bytes(),
+            b"<< /Length 0 >>\nstream\n\nendstream".to_vec(),
+        ];
+        all.extend(objects);
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in all.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", all.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                all.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn render_single_annotation(annot: &str) -> PixelBuffer {
+        let pdf = annotation_pdf(vec![annot.as_bytes().to_vec()], "5 0 R", "", "");
+        let engine = ContentEngine::open_bytes(pdf).expect("open annotation PDF");
+        PageRenderer::render_page(&engine, 1, 72).expect("render annotation PDF")
+    }
+
+    /// Device-space bounding box `[x0, y0, x1, y1]` of matching pixels.
+    fn matching_pixel_bounds(
+        buf: &PixelBuffer,
+        pred: impl Fn(PixelColor) -> bool,
+    ) -> Option<[u32; 4]> {
+        let mut bounds: Option<[u32; 4]> = None;
+        for y in 0..buf.height {
+            for x in 0..buf.width {
+                if pred(buf.get_pixel(x as i32, y as i32)) {
+                    let b = bounds.get_or_insert([x, y, x, y]);
+                    b[0] = b[0].min(x);
+                    b[1] = b[1].min(y);
+                    b[2] = b[2].max(x);
+                    b[3] = b[3].max(y);
+                }
+            }
+        }
+        bounds
+    }
+
+    fn is_red(pixel: PixelColor) -> bool {
+        pixel[0] > 200 && pixel[1] < 80 && pixel[2] < 80
+    }
+
+    /// Red, including anti-aliased 1pt strokes.
+    fn is_reddish(pixel: PixelColor) -> bool {
+        pixel[0] > 150
+            && u16::from(pixel[1]) + 40 < u16::from(pixel[0])
+            && u16::from(pixel[2]) + 40 < u16::from(pixel[0])
+    }
+
+    fn is_blue(pixel: PixelColor) -> bool {
+        pixel[2] > 200 && pixel[0] < 80 && pixel[1] < 80
+    }
+
+    fn is_non_white(pixel: PixelColor) -> bool {
+        pixel[0] < 235 || pixel[1] < 235 || pixel[2] < 235
+    }
+
+    #[test]
+    fn text_annotation_icons_render_at_fixed_size_top_left() {
+        let mut counts = Vec::new();
+        for name in [
+            "Note",
+            "Comment",
+            "Key",
+            "Help",
+            "NewParagraph",
+            "Paragraph",
+            "Insert",
+        ] {
+            let buf = render_single_annotation(&format!(
+                "<< /Type /Annot /Subtype /Text /Rect [10 10 90 90] /Name /{name} /C [1 0 0] >>"
+            ));
+            let red = count_pixels_matching(&buf, is_red);
+            assert!(red > 25, "{name} icon should be painted in /C, got {red}");
+            // Rect top-left is (10, 90) in PDF space => device (10, 10); the
+            // icon is a fixed 20 x 20 there, not stretched to the 80 x 80 Rect.
+            let bounds = matching_pixel_bounds(&buf, is_non_white).expect("icon pixels");
+            assert!(
+                bounds[0] >= 9 && bounds[1] >= 9 && bounds[2] <= 31 && bounds[3] <= 31,
+                "{name} icon must stay within the 20pt box at the top-left: {bounds:?}"
+            );
+            counts.push(count_pixels_matching(&buf, is_non_white));
+        }
+        counts.sort_unstable();
+        counts.dedup();
+        assert!(
+            counts.len() >= 6,
+            "icons should be distinct drawings: {counts:?}"
+        );
+    }
+
+    #[test]
+    fn text_annotation_without_color_uses_yellow_note() {
+        let buf = render_single_annotation("<< /Type /Annot /Subtype /Text /Rect [10 70 30 90] >>");
+        let yellow = count_pixels_matching(&buf, |p| p[0] > 200 && p[1] > 200 && p[2] < 80);
+        assert!(yellow > 100, "default note should be yellow, got {yellow}");
+    }
+
+    #[test]
+    fn stamp_annotations_draw_border_and_label_in_stamp_color() {
+        let approved = render_single_annotation(
+            "<< /Type /Annot /Subtype /Stamp /Rect [5 30 95 70] /Name /Approved >>",
+        );
+        let green = count_pixels_matching(&approved, |p| p[1] > 100 && p[0] < 90 && p[2] < 90);
+        assert!(green > 200, "Approved stamp should be green, got {green}");
+        let bounds = matching_pixel_bounds(&approved, is_non_white).expect("stamp pixels");
+        assert!(
+            bounds[0] <= 7 && bounds[2] >= 93,
+            "border spans the Rect: {bounds:?}"
+        );
+
+        for name in [
+            "NotApproved",
+            "Confidential",
+            "TopSecret",
+            "Draft",
+            "Expired",
+        ] {
+            let buf = render_single_annotation(&format!(
+                "<< /Type /Annot /Subtype /Stamp /Rect [5 30 95 70] /Name /{name} >>"
+            ));
+            let red = count_pixels_matching(&buf, |p| p[0] > 150 && p[1] < 80 && p[2] < 80);
+            assert!(red > 150, "{name} stamp should be red, got {red}");
+        }
+        for name in [
+            "Experimental",
+            "AsIs",
+            "NotForPublicRelease",
+            "Final",
+            "Sold",
+            "Departmental",
+            "ForComment",
+            "ForPublicRelease",
+        ] {
+            let buf = render_single_annotation(&format!(
+                "<< /Type /Annot /Subtype /Stamp /Rect [5 30 95 70] /Name /{name} >>"
+            ));
+            assert!(
+                count_pixels_matching(&buf, is_non_white) > 150,
+                "{name} stamp should render"
+            );
+        }
+    }
+
+    #[test]
+    fn file_attachment_and_sound_icons_render() {
+        for (subtype, name) in [
+            ("FileAttachment", "PushPin"),
+            ("FileAttachment", "Paperclip"),
+            ("FileAttachment", "Graph"),
+            ("FileAttachment", "Tag"),
+            ("Sound", "Speaker"),
+            ("Sound", "Mic"),
+        ] {
+            let buf = render_single_annotation(&format!(
+                "<< /Type /Annot /Subtype /{subtype} /Rect [10 10 50 50] /Name /{name} /C [0 0 1] >>"
+            ));
+            assert!(
+                count_pixels_matching(&buf, is_non_white) > 80,
+                "{subtype} /{name} icon should render"
+            );
+        }
+        // NoZoom keeps the icon at its nominal 20pt size at the top-left.
+        let buf = render_single_annotation(
+            "<< /Type /Annot /Subtype /FileAttachment /Rect [10 10 90 90] /F 8 /Name /Graph /C [0 0 1] >>",
+        );
+        let bounds = matching_pixel_bounds(&buf, is_non_white).expect("icon pixels");
+        assert!(
+            bounds[2] <= 31 && bounds[3] <= 31,
+            "NoZoom icon size: {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn polygon_fills_interior_and_polyline_draws_endings() {
+        let polygon = render_single_annotation(
+            "<< /Type /Annot /Subtype /Polygon /Rect [10 10 90 90] \
+             /Vertices [20 20 80 20 50 80] /C [1 0 0] /IC [0 0 1] /BS << /W 2 >> >>",
+        );
+        assert!(
+            count_pixels_matching(&polygon, is_blue) > 800,
+            "interior fill"
+        );
+        assert!(count_pixels_matching(&polygon, is_red) > 100, "outline");
+
+        let plain = render_single_annotation(
+            "<< /Type /Annot /Subtype /PolyLine /Rect [10 10 90 90] \
+             /Vertices [20 50 50 50 80 50] /C [1 0 0] /BS << /W 2 >> >>",
+        );
+        let arrowed = render_single_annotation(
+            "<< /Type /Annot /Subtype /PolyLine /Rect [10 10 90 90] \
+             /Vertices [20 50 50 50 80 50] /C [1 0 0] /IC [0 0 1] /BS << /W 2 >> \
+             /LE [/Circle /ClosedArrow] >>",
+        );
+        assert_eq!(count_pixels_matching(&plain, is_blue), 0);
+        assert!(
+            count_pixels_matching(&arrowed, is_blue) > 20,
+            "closed endings are filled with /IC"
+        );
+        assert!(
+            count_pixels_matching(&arrowed, is_non_white)
+                > count_pixels_matching(&plain, is_non_white) + 40
+        );
+    }
+
+    #[test]
+    fn line_honours_width_dash_endings_and_leader_lines() {
+        let thin = render_single_annotation(
+            "<< /Type /Annot /Subtype /Line /Rect [10 40 90 60] /L [20 50 80 50] /C [1 0 0] >>",
+        );
+        let thick = render_single_annotation(
+            "<< /Type /Annot /Subtype /Line /Rect [10 40 90 60] /L [20 50 80 50] /C [1 0 0] \
+             /BS << /W 6 >> >>",
+        );
+        let dashed = render_single_annotation(
+            "<< /Type /Annot /Subtype /Line /Rect [10 40 90 60] /L [20 50 80 50] /C [1 0 0] \
+             /BS << /W 6 /S /D /D [4 4] >> >>",
+        );
+        let thin_red = count_pixels_matching(&thin, is_red);
+        let thick_red = count_pixels_matching(&thick, is_red);
+        let dashed_red = count_pixels_matching(&dashed, is_red);
+        assert!(thick_red > thin_red * 3, "{thin_red} vs {thick_red}");
+        assert!(
+            dashed_red < thick_red * 3 / 4 && dashed_red > thick_red / 4,
+            "dash should remove roughly half: {dashed_red} vs {thick_red}"
+        );
+
+        for ending in [
+            "Square",
+            "Circle",
+            "Diamond",
+            "OpenArrow",
+            "ClosedArrow",
+            "Butt",
+            "ROpenArrow",
+            "RClosedArrow",
+            "Slash",
+        ] {
+            let buf = render_single_annotation(&format!(
+                "<< /Type /Annot /Subtype /Line /Rect [10 40 90 60] /L [20 50 80 50] \
+                 /C [1 0 0] /IC [0 0 1] /BS << /W 1.5 >> /LE [/{ending} /{ending}] >>"
+            ));
+            let bounds = matching_pixel_bounds(&buf, is_non_white).expect("line pixels");
+            assert!(
+                bounds[3] - bounds[1] >= 4,
+                "{ending} ending should extend across the line: {bounds:?}"
+            );
+            if matches!(
+                ending,
+                "Square" | "Circle" | "Diamond" | "ClosedArrow" | "RClosedArrow"
+            ) {
+                assert!(
+                    count_pixels_matching(&buf, is_blue) > 4,
+                    "{ending} should be filled with /IC"
+                );
+            }
+        }
+
+        let leader = render_single_annotation(
+            "<< /Type /Annot /Subtype /Line /Rect [10 30 90 80] /L [20 40 80 40] /C [1 0 0] \
+             /LL 20 /LLE 5 >>",
+        );
+        let bounds = matching_pixel_bounds(&leader, is_reddish).expect("leader pixels");
+        // Main line is offset up by LL (PDF y 60 => device y 40) with
+        // leader lines down to the endpoints (device y 60).
+        assert!(
+            bounds[1] <= 37 && bounds[3] >= 59,
+            "leader line extent {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn square_and_circle_honour_interior_width_rd_and_cloudy() {
+        let square = render_single_annotation(
+            "<< /Type /Annot /Subtype /Square /Rect [10 10 90 90] /C [1 0 0] /IC [0 0 1] \
+             /BS << /W 4 >> /RD [10 10 10 10] >>",
+        );
+        let blue = matching_pixel_bounds(&square, is_blue).expect("interior");
+        let red = matching_pixel_bounds(&square, is_red).expect("border");
+        assert!(
+            red[0] >= 19 && red[2] <= 80,
+            "RD insets the border: {red:?}"
+        );
+        assert!(
+            blue[0] >= 23 && blue[2] <= 77,
+            "interior inside the border: {blue:?}"
+        );
+
+        let circle = render_single_annotation(
+            "<< /Type /Annot /Subtype /Circle /Rect [10 10 90 90] /C [1 0 0] /IC [0 0 1] >>",
+        );
+        let circle_blue = count_pixels_matching(&circle, is_blue);
+        // Ellipse area ~ pi * 39^2 ~ 4778 px, well short of the 6400 px Rect.
+        assert!(circle_blue > 4000 && circle_blue < 5600, "{circle_blue}");
+
+        let dashed = render_single_annotation(
+            "<< /Type /Annot /Subtype /Square /Rect [10 10 90 90] /C [1 0 0] \
+             /BS << /W 3 /S /D /D [6 6] >> >>",
+        );
+        let solid = render_single_annotation(
+            "<< /Type /Annot /Subtype /Square /Rect [10 10 90 90] /C [1 0 0] /BS << /W 3 >> >>",
+        );
+        assert!(
+            count_pixels_matching(&dashed, is_red) < count_pixels_matching(&solid, is_red) * 3 / 4
+        );
+
+        let cloudy = render_single_annotation(
+            "<< /Type /Annot /Subtype /Square /Rect [10 10 90 90] /C [1 0 0] \
+             /BE << /S /C /I 1 >> >>",
+        );
+        let plain = render_single_annotation(
+            "<< /Type /Annot /Subtype /Square /Rect [10 10 90 90] /C [1 0 0] >>",
+        );
+        // Scalloped bumps are longer than the plain 1pt border.
+        assert!(
+            count_pixels_matching(&cloudy, is_reddish)
+                > count_pixels_matching(&plain, is_reddish) * 5 / 4,
+            "cloudy border should render bumps"
+        );
+    }
+
+    #[test]
+    fn ink_and_caret_render_with_border_width() {
+        let thin = render_single_annotation(
+            "<< /Type /Annot /Subtype /Ink /Rect [10 10 90 90] /C [1 0 0] \
+             /InkList [[20 20 40 60 60 30 80 80]] >>",
+        );
+        let thick = render_single_annotation(
+            "<< /Type /Annot /Subtype /Ink /Rect [10 10 90 90] /C [1 0 0] /BS << /W 5 >> \
+             /InkList [[20 20 40 60 60 30 80 80]] >>",
+        );
+        assert!(count_pixels_matching(&thick, is_red) > count_pixels_matching(&thin, is_red) * 2);
+
+        let caret = render_single_annotation(
+            "<< /Type /Annot /Subtype /Caret /Rect [40 40 60 60] /C [0 0 1] >>",
+        );
+        assert!(count_pixels_matching(&caret, is_blue) > 40, "caret symbol");
+    }
+
+    #[test]
+    fn free_text_uses_da_wraps_words_and_fills_background() {
+        let pdf = annotation_pdf(
+            vec![b"<< /Type /Annot /Subtype /FreeText /Rect [10 10 90 90] \
+                   /Contents (The quick brown fox jumps over the lazy dog again and again) \
+                   /DA (/Helv 9 Tf 1 0 0 rg) /C [0.8 0.9 1] /BS << /W 1 >> >>"
+                .to_vec()],
+            "5 0 R",
+            "",
+            "",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open FreeText PDF");
+        let buf = PageRenderer::render_page(&engine, 1, 72).expect("render FreeText");
+        let text = matching_pixel_bounds(&buf, |p| p[0] > 150 && p[1] < 100 && p[2] < 100)
+            .expect("red text and border");
+        assert!(
+            text[3] - text[1] > 30,
+            "text wraps onto several lines: {text:?}"
+        );
+        let background = count_pixels_matching(&buf, |p| {
+            (p[0] as i16 - 204).abs() < 8 && (p[1] as i16 - 230).abs() < 8 && p[2] > 245
+        });
+        assert!(background > 3000, "/C fills the box, got {background}");
+
+        // All glyphs stay inside the Rect (word wrap, no overflow).
+        let ink = matching_pixel_bounds(&buf, is_non_white).expect("pixels");
+        assert!(ink[0] >= 9 && ink[2] <= 91, "{ink:?}");
+    }
+
+    #[test]
+    fn checkbox_draws_mk_caption_when_checked_without_need_appearances() {
+        let checked = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /T (c) \
+             /V /Yes /AS /Yes /DA (/ZaDb 0 Tf 0 0 1 rg) /MK << /CA (8) >> >>",
+        );
+        assert!(
+            count_pixels_matching(&checked, is_blue) > 100,
+            "checked box draws the cross caption in the DA colour"
+        );
+        let unchecked = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /T (c) \
+             /V /Off /AS /Off /DA (/ZaDb 0 Tf 0 0 1 rg) /MK << /CA (8) /BG [1 0 0] >> >>",
+        );
+        assert_eq!(count_pixels_matching(&unchecked, is_blue), 0);
+        assert!(
+            count_pixels_matching(&unchecked, is_red) > 800,
+            "unchecked box keeps its MK background"
+        );
+        let mut counts = Vec::new();
+        for caption in ["4", "l", "8", "u", "n", "H"] {
+            let buf = render_single_annotation(&format!(
+                "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /T (c) \
+                 /V /Yes /AS /Yes /DA (/ZaDb 0 Tf 0 g) /MK << /CA ({caption}) >> >>"
+            ));
+            let dark = count_dark_pixels(&buf);
+            assert!(dark > 40, "caption {caption} should draw, got {dark}");
+            counts.push(dark);
+        }
+        counts.sort_unstable();
+        counts.dedup();
+        assert!(
+            counts.len() >= 5,
+            "captions are distinct shapes: {counts:?}"
+        );
+    }
+
+    fn synthesize_widget_for_test(widget: &str, acroform_extra: &str) -> (PdfDictionary, String) {
+        let pdf = pdf_with_form_objects(
+            vec![widget.as_bytes().to_vec()],
+            "5 0 R",
+            "5 0 R",
+            acroform_extra,
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open widget PDF");
+        let reader = engine.document().reader();
+        let annot = match reader.get_object(5, 0).expect("widget object") {
+            PdfObject::Dictionary(dict) => dict,
+            other => panic!("widget is {other:?}"),
+        };
+        let rect = required_rect(&annot, "widget").expect("rect");
+        let (dict, raw) =
+            synthesize_annotation_appearance(&annot, reader, &engine, rect).expect("synthesized");
+        (dict, String::from_utf8_lossy(&raw).into_owned())
+    }
+
+    #[test]
+    fn text_field_uses_da_font_from_dr_and_unicode_fallback() {
+        let (dict, content) = synthesize_widget_for_test(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Tx /T (n) \
+             /V (Hello) /DA (/F1 10 Tf 0 g) >>",
+            "",
+        );
+        let resources = dict.get_dict("Resources").expect("resources");
+        let fonts = resources.get_dict("Font").expect("fonts");
+        assert!(
+            matches!(fonts.get("F1"), Some(PdfObject::Reference { .. })),
+            "the AcroForm /DR font is used: {fonts:?}"
+        );
+        assert!(content.contains("/F1 10 Tf"), "{content}");
+
+        // UTF-16BE "Привет" (Cyrillic) is drawn with the Unicode fallback.
+        let widget = "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Tx /T (n) \
+                      /V <FEFF041F04400438043204350442> /DA (/F1 12 Tf 0 0 1 rg) >>";
+        let (dict, content) = synthesize_widget_for_test(widget, "");
+        assert!(content.contains("/WFUni 12 Tf"), "{content}");
+        let fonts = dict
+            .get_dict("Resources")
+            .and_then(|r| r.get_dict("Font"))
+            .expect("fonts");
+        assert!(fonts.get("WFUni").is_some());
+        let pdf = pdf_with_form_objects(vec![widget.as_bytes().to_vec()], "5 0 R", "5 0 R", "");
+        let engine = ContentEngine::open_bytes(pdf).expect("open unicode widget");
+        let buf = PageRenderer::render_page(&engine, 1, 72).expect("render unicode widget");
+        assert!(
+            count_pixels_matching(&buf, is_blue) > 30,
+            "Cyrillic value renders through the embedded fallback font"
+        );
+    }
+
+    #[test]
+    fn multiline_text_field_word_wraps() {
+        let widget = "<< /Type /Annot /Subtype /Widget /Rect [10 10 60 90] /FT /Tx /T (m) \
+                      /Ff 4096 /V (one two three four five six seven) /DA (/F1 10 Tf 0 0 1 rg) >>";
+        let pdf = pdf_with_form_objects(vec![widget.as_bytes().to_vec()], "5 0 R", "5 0 R", "");
+        let engine = ContentEngine::open_bytes(pdf).expect("open multiline widget");
+        let buf = PageRenderer::render_page(&engine, 1, 72).expect("render multiline widget");
+        let bounds = matching_pixel_bounds(&buf, is_blue).expect("text pixels");
+        assert!(
+            bounds[3] - bounds[1] > 30,
+            "several wrapped lines: {bounds:?}"
+        );
+        assert!(bounds[2] <= 61, "text stays inside the field: {bounds:?}");
+    }
+
+    #[test]
+    fn comb_field_places_one_character_per_cell() {
+        let (_, content) = synthesize_widget_for_test(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Tx /T (z) \
+             /Ff 16777216 /MaxLen 5 /V (12345) /DA (/F1 10 Tf 0 g) >>",
+            "",
+        );
+        assert_eq!(content.matches(" Tj").count(), 5, "{content}");
+        assert_eq!(content.matches(" Td").count(), 5, "{content}");
+    }
+
+    #[test]
+    fn auto_size_text_field_shrinks_to_real_text_width() {
+        let tf_size = |content: &str| -> f64 {
+            let index = content.find(" Tf").expect("Tf");
+            let before = &content[..index];
+            before
+                .rsplit(' ')
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+                .expect("size")
+        };
+        let (_, short) = synthesize_widget_for_test(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Tx /T (a) \
+             /V (Hi) /DA (/F1 0 Tf 0 g) >>",
+            "",
+        );
+        let (_, long) = synthesize_widget_for_test(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Tx /T (a) \
+             /V (A much longer value that must shrink) /DA (/F1 0 Tf 0 g) >>",
+            "",
+        );
+        let short_size = tf_size(&short);
+        let long_size = tf_size(&long);
+        assert!(short_size > 10.0, "{short_size}");
+        assert!(long_size < short_size * 0.6, "{long_size} vs {short_size}");
+        // Helvetica metrics: the long value fits the 76pt inner width.
+        let fonts = &mut TextFonts::helvetica();
+        let width = fonts.measure("A much longer value that must shrink", long_size);
+        assert!(width <= 76.5, "{width}");
+    }
+
+    #[test]
+    fn list_box_draws_visible_options_with_selection_highlight() {
+        let widget = "<< /Type /Annot /Subtype /Widget /Rect [10 10 90 90] /FT /Ch /T (l) \
+                      /Opt [(Apple) [(b) (Banana)] (Cherry)] /V (b) /DA (/F1 10 Tf 0 g) >>";
+        let (_, content) = synthesize_widget_for_test(widget, "");
+        assert_eq!(content.matches(" Tj").count(), 3, "{content}");
+        assert_eq!(content.matches("0.6 0.75 0.85 rg").count(), 1, "{content}");
+        let pdf = pdf_with_form_objects(vec![widget.as_bytes().to_vec()], "5 0 R", "5 0 R", "");
+        let engine = ContentEngine::open_bytes(pdf).expect("open list box");
+        let buf = PageRenderer::render_page(&engine, 1, 72).expect("render list box");
+        let highlight = count_pixels_matching(&buf, |p| {
+            (p[0] as i16 - 153).abs() < 6
+                && (p[1] as i16 - 191).abs() < 6
+                && (p[2] as i16 - 217).abs() < 6
+        });
+        assert!(highlight > 300, "selected row highlight, got {highlight}");
+    }
+
+    #[test]
+    fn need_appearances_regenerates_stale_text_widget_appearance() {
+        let stale = annotation_appearance_stream(
+            "1 0 0 rg 0 0 80 20 re f\n",
+            "/BBox [0 0 80 20] /Resources << >>",
+        );
+        let widget = b"<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Tx /T (n) \
+                       /V (Fresh) /DA (/F1 12 Tf 0 0 1 rg) /AP << /N 6 0 R >> >>"
+            .to_vec();
+        let regenerate = pdf_with_form_objects(
+            vec![widget.clone(), stale.as_bytes().to_vec()],
+            "5 0 R",
+            "5 0 R",
+            "/NeedAppearances true",
+        );
+        let keep = pdf_with_form_objects(
+            vec![widget, stale.as_bytes().to_vec()],
+            "5 0 R",
+            "5 0 R",
+            "",
+        );
+        let regenerated =
+            PageRenderer::render_page(&ContentEngine::open_bytes(regenerate).expect("open"), 1, 72)
+                .expect("render");
+        let kept =
+            PageRenderer::render_page(&ContentEngine::open_bytes(keep).expect("open"), 1, 72)
+                .expect("render");
+        assert_eq!(count_red_pixels(&regenerated), 0, "stale AP is replaced");
+        assert!(count_blue_pixels(&regenerated) > 20, "value drawn from /V");
+        assert!(
+            count_red_pixels(&kept) > 1000,
+            "without NeedAppearances the AP is used"
+        );
+    }
+
+    #[test]
+    fn no_rotate_annotation_stays_upright_on_rotated_page() {
+        let appearance = annotation_appearance_stream(
+            "1 0 0 rg 0 0 40 20 re f\n",
+            "/BBox [0 0 40 20] /Resources << >>",
+        );
+        let render = |flags: i64| {
+            let annot = format!(
+                "<< /Type /Annot /Subtype /Square /Rect [20 50 60 70] /F {flags} /AP << /N 6 0 R >> >>"
+            );
+            let pdf = annotation_pdf(
+                vec![annot.into_bytes(), appearance.as_bytes().to_vec()],
+                "5 0 R",
+                "/Rotate 90",
+                "",
+            );
+            let engine = ContentEngine::open_bytes(pdf).expect("open rotated page");
+            let buf = PageRenderer::render_page(&engine, 1, 72).expect("render rotated page");
+            matching_pixel_bounds(&buf, is_red).expect("red annotation")
+        };
+        let rotated = render(0);
+        assert!(
+            rotated[3] - rotated[1] > rotated[2] - rotated[0],
+            "without NoRotate the 40x20 box turns with the page: {rotated:?}"
+        );
+        let upright = render(16);
+        assert!(
+            upright[2] - upright[0] > upright[3] - upright[1],
+            "NoRotate keeps the 40x20 box upright: {upright:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_invisible_flag_is_ignored_for_known_annotation_types() {
+        let appearance = annotation_appearance_stream(
+            "1 0 0 rg 0 0 50 50 re f\n",
+            "/BBox [0 0 50 50] /Resources << >>",
+        );
+        let pdf = annotation_pdf(
+            vec![
+                b"<< /Type /Annot /Subtype /Square /Rect [20 20 70 70] /F 1 /AP << /N 6 0 R >> >>"
+                    .to_vec(),
+                appearance.as_bytes().to_vec(),
+            ],
+            "5 0 R",
+            "",
+            "",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open invisible-flag PDF");
+        let buf = PageRenderer::render_page(&engine, 1, 72).expect("render");
+        assert!(count_red_pixels(&buf) > 1000);
+    }
+
+    #[test]
+    fn appearance_dictionary_without_normal_entry_is_generated() {
+        let appearance = annotation_appearance_stream(
+            "0 0 1 rg 0 0 50 50 re f\n",
+            "/BBox [0 0 50 50] /Resources << >>",
+        );
+        let pdf = annotation_pdf(
+            vec![
+                b"<< /Type /Annot /Subtype /Square /Rect [20 20 70 70] /C [1 0 0] \
+                   /AP << /D 6 0 R >> >>"
+                    .to_vec(),
+                appearance.as_bytes().to_vec(),
+            ],
+            "5 0 R",
+            "",
+            "",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open AP-without-N PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect("AP without /N must not abort rendering");
+        assert!(count_red_pixels(&buf) > 100, "generated square border");
+        assert_eq!(count_blue_pixels(&buf), 0, "the /D appearance is not used");
     }
 
     #[test]

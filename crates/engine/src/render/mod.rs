@@ -1,3 +1,4 @@
+pub(crate) mod annotation_synthesis;
 pub mod buffer;
 pub mod clip_dag;
 pub(crate) mod cmm;
