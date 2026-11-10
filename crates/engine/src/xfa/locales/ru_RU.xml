@@ -1,0 +1,88 @@
+<locale name="ru_RU">
+  <calendarSymbols name="gregorian">
+	 <monthNames>
+		<month>января</month>
+		<month>февраля</month>
+		<month>марта</month>
+		<month>апреля</month>
+		<month>мая</month>
+		<month>июня</month>
+		<month>июля</month>
+		<month>августа</month>
+		<month>сентября</month>
+		<month>октября</month>
+		<month>ноября</month>
+		<month>декабря</month>
+	 </monthNames>
+	 <monthNames abbr="1">
+		<month>янв.</month>
+		<month>февр.</month>
+		<month>марта</month>
+		<month>апр.</month>
+		<month>мая</month>
+		<month>июня</month>
+		<month>июля</month>
+		<month>авг.</month>
+		<month>сент.</month>
+		<month>окт.</month>
+		<month>нояб.</month>
+		<month>дек.</month>
+	 </monthNames>
+	 <dayNames>
+		<day>воскресенье</day>
+		<day>понедельник</day>
+		<day>вторник</day>
+		<day>среда</day>
+		<day>четверг</day>
+		<day>пятница</day>
+		<day>суббота</day>
+	 </dayNames>
+	 <dayNames abbr="1">
+		<day>Вс</day>
+		<day>Пн</day>
+		<day>Вт</day>
+		<day>Ср</day>
+		<day>Чт</day>
+		<day>Пт</day>
+		<day>Сб</day>
+	 </dayNames>
+	 <meridiemNames>
+		<meridiem>AM</meridiem>
+		<meridiem>PM</meridiem>
+	 </meridiemNames>
+	 <eraNames>
+		<era>до н.э.</era>
+		<era>н.э.</era>
+	 </eraNames>
+  </calendarSymbols>
+  <datePatterns>
+	 <datePattern name="full">D MMMM YYYY 'г.'</datePattern>
+	 <datePattern name="long">D MMMM YYYY 'г.'</datePattern>
+	 <datePattern name="med">DD.MM.YYYY</datePattern>
+	 <datePattern name="short">DD.MM.YY</datePattern>
+  </datePatterns>
+  <timePatterns>
+	 <timePattern name="full">H:MM:SS Z</timePattern>
+	 <timePattern name="long">H:MM:SS Z</timePattern>
+	 <timePattern name="med">H:MM:SS</timePattern>
+	 <timePattern name="short">H:MM</timePattern>
+  </timePatterns>
+  <dateTimeSymbols>GanjkHmsSEDFwWxhKzZ</dateTimeSymbols>
+  <numberPatterns>
+	 <numberPattern name="numeric">z,zz9.zzz</numberPattern>
+	 <numberPattern name="currency">z,zz9.zz$</numberPattern>
+	 <numberPattern name="percent">z,zz9%</numberPattern>
+  </numberPatterns>
+  <numberSymbols>
+	 <numberSymbol name="decimal">,</numberSymbol>
+	 <numberSymbol name="grouping"> </numberSymbol>
+	 <numberSymbol name="percent">%</numberSymbol>
+	 <numberSymbol name="minus">-</numberSymbol>
+	 <numberSymbol name="zero">0</numberSymbol>
+  </numberSymbols>
+  <currencySymbols>
+	 <currencySymbol name="symbol">р.</currencySymbol>
+	 <currencySymbol name="isoname">RUR</currencySymbol>
+	 <currencySymbol name="decimal">,</currencySymbol>
+  </currencySymbols>
+  </locale>

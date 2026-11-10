@@ -3,15 +3,25 @@
 //!
 //! This module deliberately implements a useful subset rather than an Adobe
 //! LiveCycle/AEM compatibility claim. XML is parsed without DTDs or external
-//! entities; scripts are disabled by default; JavaScript is always inventory
-//! only; and every recursive or generated structure is capped.
+//! entities; the runtime report's sandbox keeps scripts disabled by default
+//! and JavaScript inventory only; and every recursive or generated structure
+//! is capped. Rendering (`render`) runs the form's initialize, calculate and
+//! ready scripts in a bounded, host-less script runtime (`events`).
 
+mod barcode;
+mod barcode_pdf417;
+mod events;
 mod form;
+mod formcalc;
+#[cfg(all(feature = "xfa-js", not(target_arch = "wasm32")))]
+mod js;
 mod layout;
+mod locale;
 mod paint;
 mod picture;
 pub(crate) mod render;
 mod script;
+mod som;
 mod style;
 mod text;
 pub(crate) mod xml;

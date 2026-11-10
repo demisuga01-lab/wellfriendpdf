@@ -17,9 +17,10 @@ use crate::render::annotation_synthesis::{ellipse_path, n};
 
 use super::form::{FormNode, ImageValue, NodeKind, Template};
 use super::layout::{
-    caption_spec, field_ui, node_font, node_margin, node_para, LayoutPage, Placed, Ui,
+    caption_spec_for, field_ui, node_font_for, node_margin, node_para, LayoutPage, Placed, Ui,
 };
-use super::picture::format_value;
+use super::locale::LocaleSet;
+use super::picture::format_value_in;
 use super::style::{
     presence, BoxKind, BoxSpec, CaptionPlacement, FillKind, FillSpec, HAlign, Hand, Insets,
     LinearDir, ParaSpec, PatternKind, Presence, Rgb, Stroke, StrokeType, VAlign, BLACK,
@@ -332,6 +333,11 @@ pub(crate) struct Painter<'a, 't, 'r> {
     shading_counter: usize,
     image_cache: HashMap<String, Option<std::sync::Arc<(u32, u32, String)>>>,
     pub unsupported: Vec<String>,
+    locales: LocaleSet,
+    /// Per-page values of master-page fields set by `layout:ready`
+    /// scripts: (form node address, page index) -> value.
+    page_values: HashMap<(usize, usize), String>,
+    page_index: usize,
 }
 
 /// What a page paint includes.
@@ -381,14 +387,41 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
             shading_counter: 0,
             image_cache: HashMap::new(),
             unsupported: Vec::new(),
+            locales: LocaleSet::default(),
+            page_values: HashMap::new(),
+            page_index: 0,
         }
     }
 
-    pub(crate) fn paint_page(
+    /// The document's locales (picture clauses and default formats).
+    pub(crate) fn set_locales(&mut self, locales: LocaleSet) {
+        self.locales = locales;
+    }
+
+    /// Per-page master-page values from `layout:ready` scripts.
+    pub(crate) fn set_page_values(&mut self, values: HashMap<(usize, usize), String>) {
+        self.page_values = values;
+    }
+
+    /// The node's value, with a per-page script value on master pages.
+    fn node_value(&self, node: &FormNode<'t>) -> Option<String> {
+        if !self.page_values.is_empty() {
+            let key = (node as *const FormNode<'t> as usize, self.page_index);
+            if let Some(value) = self.page_values.get(&key) {
+                return Some(value.clone());
+            }
+        }
+        node.value.clone()
+    }
+
+    /// Paints page `index` (the index selects per-page script values).
+    pub(crate) fn paint_page_at(
         &mut self,
         page: &LayoutPage<'_, 't>,
         scope: PaintScope,
+        index: usize,
     ) -> PaintedPage {
+        self.page_index = index;
         self.out.clear();
         self.shadings.clear();
         for item in &page.items {
@@ -403,7 +436,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
     fn paint_item(&mut self, item: &Placed<'_, 't>, scope: PaintScope) {
         let node = item.node;
         let tpl = self.tpl;
-        if presence(tpl, node.tmpl) != Presence::Visible {
+        if node.presence_in(tpl) != Presence::Visible {
             return;
         }
         let wanted = match scope {
@@ -438,7 +471,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         let rect = Rect::new(0.0, 0.0, w, h);
         match node.kind {
             NodeKind::Subform | NodeKind::Area | NodeKind::ExclGroup => {
-                self.paint_widget_border(node.tmpl, rect);
+                self.paint_widget_border(node, rect);
             }
             NodeKind::Draw => self.paint_draw(node, rect),
             NodeKind::Field => self.paint_field(node, rect),
@@ -446,15 +479,36 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         self.out.push_str("Q\n");
     }
 
-    /// `CXFA_FFWidget::RenderWidget`: the node's `<border>` inside its margin.
-    fn paint_widget_border(&mut self, tmpl: &'t XmlNode, rect: Rect) {
+    /// `CXFA_FFWidget::RenderWidget`: the node's `<border>` inside its
+    /// margin, with script fill/border colour overrides.
+    fn paint_widget_border(&mut self, node: &FormNode<'t>, rect: Rect) {
         let tpl = self.tpl;
-        let Some(border) = tpl
-            .child(tmpl, "border")
+        let Some(mut border) = tpl
+            .child(node.tmpl, "border")
             .and_then(|border| BoxSpec::from_node(tpl, border))
         else {
+            if let Some(color) = node.fill_color {
+                // `fillColor` on a node without a border: a plain fill.
+                let _ = writeln!(
+                    self.out,
+                    "{} rg {} f",
+                    rgb(color),
+                    rect_op(rect.normalized())
+                );
+            }
             return;
         };
+        if let Some(color) = node.fill_color {
+            border.fill = Some(FillSpec {
+                color,
+                kind: FillKind::Solid,
+            });
+        }
+        if let Some(color) = node.border_color {
+            for stroke in &mut border.strokes {
+                stroke.color = color;
+            }
+        }
         let rect = rect.deflate(border.margin).normalized();
         self.draw_box(&border, rect, false);
     }
@@ -478,7 +532,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
                 }
             }
             Some("image") => {
-                self.paint_widget_border(node.tmpl, rect);
+                self.paint_widget_border(node, rect);
                 if let Some(image) = &node.image {
                     let aspect = content.and_then(|c| tpl.attr(c, "aspect")).unwrap_or("fit");
                     let para = node_para(tpl, node.tmpl);
@@ -486,10 +540,11 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
                 }
             }
             _ => {
-                self.paint_widget_border(node.tmpl, rect);
-                let font = node_font(tpl, node.tmpl);
+                self.paint_widget_border(node, rect);
+                let font = node_font_for(tpl, node);
                 let para = node_para(tpl, node.tmpl);
-                let paragraphs = match (node.rich, &node.value) {
+                let value = self.node_value(node);
+                let paragraphs = match (node.rich, &value) {
                     (Some(rich), _) => rich_paragraphs(rich, &font, &para),
                     (None, Some(text)) if !text.is_empty() => plain_paragraphs(text, &font, &para),
                     _ => return,
@@ -1202,7 +1257,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
     fn paint_field(&mut self, node: &FormNode<'t>, rect: Rect) {
         let tpl = self.tpl;
         let (ui, widget) = field_ui(tpl, node.tmpl);
-        self.paint_widget_border(node.tmpl, rect);
+        self.paint_widget_border(node, rect);
         if let Ui::Check {
             round,
             size,
@@ -1215,7 +1270,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         let margin = node_margin(tpl, node.tmpl);
         if ui == Ui::Button {
             // CXFA_FFPushButton: the caption fills the widget inside margins.
-            if let Some(caption) = caption_spec(tpl, node.tmpl).filter(|c| c.visible) {
+            if let Some(caption) = caption_spec_for(tpl, node).filter(|c| c.visible) {
                 let caption_rect = rect.deflate(margin).deflate(caption.margin).normalized();
                 let paragraphs = caption.paragraphs();
                 if !paragraphs.is_empty() {
@@ -1229,7 +1284,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         }
         let widget_rect = rect.deflate(margin);
         let ui_margin = self.ui_margin(widget);
-        let caption = caption_spec(tpl, node.tmpl).filter(|caption| !caption.hidden);
+        let caption = caption_spec_for(tpl, node).filter(|caption| !caption.hidden);
         let mut ui_rect = widget_rect;
         let mut caption_layout = None;
         if let Some(caption) = &caption {
@@ -1308,7 +1363,9 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         }
         match ui {
             Ui::Button | Ui::Signature => {}
-            Ui::Barcode => self.unsupported.push("xfa.render.barcode".to_string()),
+            Ui::Barcode => {
+                self.paint_barcode(node, widget, ui_rect.deflate(ui_margin).normalized())
+            }
             Ui::Image => {
                 if let Some(image) = &node.image {
                     let aspect = tpl
@@ -1327,11 +1384,147 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         }
     }
 
+    /// `CXFA_FFBarcode::RenderWidget`: the symbol for the field's value on a
+    /// white background, linear symbols with their human-readable text.
+    fn paint_barcode(&mut self, node: &FormNode<'t>, widget: Option<&'t XmlNode>, rect: Rect) {
+        use super::barcode::{self, Symbol, Symbology, TextLocation};
+        let tpl = self.tpl;
+        let Some(widget) = widget else {
+            return;
+        };
+        let spec = match barcode::parse_spec(tpl, widget) {
+            Ok(spec) => spec,
+            Err(code) => {
+                self.unsupported.push(code);
+                return;
+            }
+        };
+        let Some(value) = self.node_value(node).filter(|v| !v.is_empty()) else {
+            return;
+        };
+        if rect.w <= 0.0 || rect.h <= 0.0 {
+            return;
+        }
+        let Some(symbol) = barcode::encode_for(&spec, &value, rect.w, rect.h) else {
+            self.unsupported
+                .push("xfa.render.barcode.unencodable".to_string());
+            return;
+        };
+        let _ = writeln!(self.out, "q 1 1 1 rg {} f", rect_op(rect));
+        match symbol {
+            Symbol::Linear { runs, text } => {
+                let font = node_font_for(tpl, node);
+                let show_text = spec.text != TextLocation::None && !text.is_empty();
+                let text_h = if show_text {
+                    (font.size.abs().floor() + 1.0).min(rect.h / 2.0)
+                } else {
+                    0.0
+                };
+                let text_above =
+                    matches!(spec.text, TextLocation::Above | TextLocation::AboveEmbedded);
+                let bar_y = if text_above { rect.y + text_h } else { rect.y };
+                let bar_h = (rect.h - text_h).max(0.0);
+                let total: f64 = runs.iter().map(|(_, w)| *w).sum();
+                if total > 0.0 && bar_h > 0.0 {
+                    let scale = rect.w / total;
+                    let mut x = rect.x;
+                    self.out.push_str("0 0 0 rg\n");
+                    for (dark, width) in &runs {
+                        let w = width * scale;
+                        if *dark {
+                            let _ =
+                                writeln!(self.out, "{}", rect_op(Rect::new(x, bar_y, w, bar_h)));
+                        }
+                        x += w;
+                    }
+                    self.out.push_str("f\n");
+                }
+                if show_text {
+                    let mut para = ParaSpec::default();
+                    para.h_align = HAlign::Center;
+                    let text = match spec.kind {
+                        Symbology::Ean13 => {
+                            format!("{} {} {}", &text[..1], &text[1..7], &text[7..])
+                        }
+                        Symbology::Ean8 => format!("{} {}", &text[..4], &text[4..]),
+                        Symbology::UpcA => format!(
+                            "{} {} {} {}",
+                            &text[..1],
+                            &text[1..6],
+                            &text[6..11],
+                            &text[11..]
+                        ),
+                        _ => text,
+                    };
+                    let paragraphs = plain_paragraphs(&text, &font, &para);
+                    let block = layout_paragraphs(self.book, &paragraphs, Some(rect.w.max(1.0)));
+                    let text_y = if text_above {
+                        rect.y
+                    } else {
+                        rect.y + rect.h - text_h
+                    };
+                    let text_rect = Rect::new(rect.x, text_y, rect.w, text_h);
+                    let _ = writeln!(self.out, "1 1 1 rg {} f", rect_op(text_rect));
+                    self.emit_text(&block, text_rect, VAlign::Top, Some(rect));
+                }
+            }
+            Symbol::Matrix {
+                width,
+                height,
+                cells,
+            } => {
+                let (width, height, cells) = if spec.kind == Symbology::Pdf417 {
+                    barcode::landscape(width, height, cells)
+                } else {
+                    (width, height, cells)
+                };
+                let Some(layout) = barcode::matrix_modules(&spec, width, height, rect.w, rect.h)
+                else {
+                    self.unsupported
+                        .push("xfa.render.barcode.too_small".to_string());
+                    self.out.push_str("Q\n");
+                    return;
+                };
+                let _ = writeln!(
+                    self.out,
+                    "{} 0 0 {} {} {} cm 0 0 0 rg",
+                    n(layout.scale_x),
+                    n(layout.scale_y),
+                    n(rect.x),
+                    n(rect.y)
+                );
+                for y in 0..height {
+                    let row = &cells[y * width..(y + 1) * width];
+                    let mut x = 0;
+                    while x < width {
+                        if !row[x] {
+                            x += 1;
+                            continue;
+                        }
+                        let start = x;
+                        while x < width && row[x] {
+                            x += 1;
+                        }
+                        let module = Rect::new(
+                            layout.left + (start as f64 + 1.0) * layout.module_w,
+                            layout.top + (y as f64 + 1.0) * layout.module_h,
+                            (x - start) as f64 * layout.module_w,
+                            layout.module_h,
+                        );
+                        let _ = writeln!(self.out, "{}", rect_op(module));
+                    }
+                }
+                self.out.push_str("f\n");
+            }
+        }
+        self.out.push_str("Q\n");
+    }
+
     /// The display text of a field value: choice-list save values mapped
     /// to their display text, then the display picture applied.
     fn display_value(&self, node: &FormNode<'t>, ui: &Ui) -> Option<String> {
         let tpl = self.tpl;
-        let raw = node.value.clone()?;
+        let raw = self.node_value(node)?;
         if raw.is_empty() {
             return None;
         }
@@ -1358,7 +1551,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
             .and_then(|format| tpl.child(format, "picture"))
             .map(|picture| picture.text.trim().to_string())
             .filter(|picture| !picture.is_empty());
-        let mut text = format_value(&raw, picture.as_deref(), kind);
+        let mut text = format_value_in(&raw, picture.as_deref(), kind, &self.locales, node.locale);
         if let Ui::Password(ch) = ui {
             text = std::iter::repeat_n(*ch, text.chars().count()).collect();
         }
@@ -1398,7 +1591,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
 
     fn paint_edit(&mut self, node: &FormNode<'t>, ui: &Ui, ui_rect: Rect, ui_margin: Insets) {
         let tpl = self.tpl;
-        let font = node_font(tpl, node.tmpl);
+        let font = node_font_for(tpl, node);
         let mut para = node_para(tpl, node.tmpl);
         let multi_line = matches!(
             ui,
@@ -1522,7 +1715,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
 
     fn paint_list_box(&mut self, node: &FormNode<'t>, rect: Rect, clip: Rect) {
         let tpl = self.tpl;
-        let font = node_font(tpl, node.tmpl);
+        let font = node_font_for(tpl, node);
         let (display, save) = self.choice_items(node);
         let selected: Vec<&str> = node
             .value
@@ -1567,7 +1760,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         let tpl = self.tpl;
         let margin = node_margin(tpl, node.tmpl);
         let widget_rect = rect.deflate(margin);
-        let caption = caption_spec(tpl, node.tmpl).filter(|caption| caption.visible);
+        let caption = caption_spec_for(tpl, node).filter(|caption| caption.visible);
         let para = node_para(tpl, node.tmpl);
         let (mut h_align, v_align) = (para.h_align, para.v_align);
         let mut ui_rect = widget_rect;
@@ -1670,7 +1863,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         let key = node as *const FormNode<'t> as usize;
         let value = match self.excl_values.get(&key) {
             Some(Some(group_value)) => Some(group_value.clone()),
-            _ => node.value.clone(),
+            _ => self.node_value(node),
         };
         let checked = value.as_deref().map(str::trim) == Some(on.as_str());
         let is_neutral =

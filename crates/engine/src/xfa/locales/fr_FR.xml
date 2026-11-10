@@ -1,0 +1,75 @@
+<locale name="fr_FR"><calendarSymbols name="gregorian"><monthNames><month>janvier</month>
+<month>février</month>
+<month>mars</month>
+<month>avril</month>
+<month>mai</month>
+<month>juin</month>
+<month>juillet</month>
+<month>août</month>
+<month>septembre</month>
+<month>octobre</month>
+<month>novembre</month>
+<month>décembre</month>
+</monthNames>
+<monthNames abbr="1"><month>janv.</month>
+<month>févr.</month>
+<month>mars</month>
+<month>avr.</month>
+<month>mai</month>
+<month>juin</month>
+<month>juil.</month>
+<month>août</month>
+<month>sept.</month>
+<month>oct.</month>
+<month>nov.</month>
+<month>déc.</month>
+</monthNames>
+<dayNames><day>dimanche</day>
+<day>lundi</day>
+<day>mardi</day>
+<day>mercredi</day>
+<day>jeudi</day>
+<day>vendredi</day>
+<day>samedi</day>
+</dayNames>
+<dayNames abbr="1"><day>dim.</day>
+<day>lun.</day>
+<day>mar.</day>
+<day>mer.</day>
+<day>jeu.</day>
+<day>ven.</day>
+<day>sam.</day>
+</dayNames>
+<meridiemNames><meridiem>AM</meridiem>
+<meridiem>PM</meridiem>
+</meridiemNames>
+<eraNames><era>av. J.-C.</era>
+<era>ap. J.-C.</era>
+</eraNames>
+</calendarSymbols>
+<datePatterns><datePattern name="full">EEEE D MMMM YYYY</datePattern>
+<datePattern name="long">D MMMM YYYY</datePattern>
+<datePattern name="med">D MMM YY</datePattern>
+<datePattern name="short">DD/MM/YY</datePattern>
+</datePatterns>
+<timePatterns><timePattern name="full">HH' h 'MM Z</timePattern>
+<timePattern name="long">HH:MM:SS Z</timePattern>
+<timePattern name="med">HH:MM:SS</timePattern>
+<timePattern name="short">HH:MM</timePattern>
+</timePatterns>
+<dateTimeSymbols>GaMjkHmsSEDFwWxhKzZ</dateTimeSymbols>
+<numberPatterns><numberPattern name="numeric">z,zz9.zzz</numberPattern>
+<numberPattern name="currency">z,zz9.99 $</numberPattern>
+<numberPattern name="percent">z,zz9%</numberPattern>
+</numberPatterns>
+<numberSymbols><numberSymbol name="decimal">,</numberSymbol>
+<numberSymbol name="grouping"> </numberSymbol>
+<numberSymbol name="percent">%</numberSymbol>
+<numberSymbol name="minus">-</numberSymbol>
+<numberSymbol name="zero">0</numberSymbol>
+</numberSymbols>
+<currencySymbols><currencySymbol name="symbol">€</currencySymbol>
+<currencySymbol name="isoname">EUR</currencySymbol>
+<currencySymbol name="decimal">,</currencySymbol>
+</currencySymbols>
+</locale>

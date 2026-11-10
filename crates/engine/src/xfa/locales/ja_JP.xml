@@ -1,0 +1,88 @@
+<locale name="ja_JP">
+  <calendarSymbols name="gregorian">
+	 <monthNames>
+		<month>1月</month>
+		<month>2月</month>
+		<month>3月</month>
+		<month>4月</month>
+		<month>5月</month>
+		<month>6月</month>
+		<month>7月</month>
+		<month>8月</month>
+		<month>9月</month>
+		<month>10月</month>
+		<month>11月</month>
+		<month>12月</month>
+	 </monthNames>
+	 <monthNames abbr="1">
+		<month>1月</month>
+		<month>2月</month>
+		<month>3月</month>
+		<month>4月</month>
+		<month>5月</month>
+		<month>6月</month>
+		<month>7月</month>
+		<month>8月</month>
+		<month>9月</month>
+		<month>10月</month>
+		<month>11月</month>
+		<month>12月</month>
+	 </monthNames>
+	 <dayNames>
+		<day>日曜日</day>
+		<day>月曜日</day>
+		<day>火曜日</day>
+		<day>水曜日</day>
+		<day>木曜日</day>
+		<day>金曜日</day>
+		<day>土曜日</day>
+	 </dayNames>
+	 <dayNames abbr="1">
+		<day>日</day>
+		<day>月</day>
+		<day>火</day>
+		<day>水</day>
+		<day>木</day>
+		<day>金</day>
+		<day>土</day>
+	 </dayNames>
+	 <meridiemNames>
+		<meridiem>午前</meridiem>
+		<meridiem>午後</meridiem>
+	 </meridiemNames>
+	 <eraNames>
+		<era>紀元前</era>
+		<era>西暦</era>
+	 </eraNames>
+  </calendarSymbols>
+  <datePatterns>
+	 <datePattern name="full">YYYY'年'M'月'D'日'EEEE</datePattern>
+	 <datePattern name="long">YYYY'年'M'月'D'日'</datePattern>
+	 <datePattern name="med">YYYY/MM/DD</datePattern>
+	 <datePattern name="short">YY/MM/DD</datePattern>
+  </datePatterns>
+  <timePatterns>
+	 <timePattern name="full">H'時'MM'分'SS'秒'Z</timePattern>
+	 <timePattern name="long">H:MM:SS:Z</timePattern>
+	 <timePattern name="med">H:MM:SS</timePattern>
+	 <timePattern name="short">H:MM</timePattern>
+  </timePatterns>
+  <dateTimeSymbols>GanjkHmsSEDFwWxhKzZ</dateTimeSymbols>
+  <numberPatterns>
+	 <numberPattern name="numeric">z,zz9.zzz</numberPattern>
+	 <numberPattern name="currency">$z,zz9</numberPattern>
+	 <numberPattern name="percent">z,zz9%</numberPattern>
+  </numberPatterns>
+  <numberSymbols>
+	 <numberSymbol name="decimal">.</numberSymbol>
+	 <numberSymbol name="grouping">,</numberSymbol>
+	 <numberSymbol name="percent">%</numberSymbol>
+	 <numberSymbol name="minus">-</numberSymbol>
+	 <numberSymbol name="zero">0</numberSymbol>
+  </numberSymbols>
+  <currencySymbols>
+	 <currencySymbol name="symbol">￥</currencySymbol>
+	 <currencySymbol name="isoname">JPY</currencySymbol>
+	 <currencySymbol name="decimal">.</currencySymbol>
+  </currencySymbols>
+  </locale>

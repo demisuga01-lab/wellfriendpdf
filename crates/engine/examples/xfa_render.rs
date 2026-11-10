@@ -35,6 +35,12 @@ fn main() -> Result<()> {
         let png = engine.render_page_png_fast(page, dpi)?;
         std::fs::write(format!("{prefix}-pdf-{page}.png"), png)?;
     }
+    for error in engine.xfa_script_errors() {
+        println!("script error: {error}");
+    }
+    for message in engine.xfa_script_log() {
+        println!("script message: {message}");
+    }
     let unsupported = engine.xfa_render_unsupported();
     if !unsupported.is_empty() {
         println!("unsupported: {unsupported:?}");
