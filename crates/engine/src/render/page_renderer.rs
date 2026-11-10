@@ -36,8 +36,9 @@ use crate::render::cmm::{ColorIntent, ColorTransformBackend, ColorTransformOptio
 use crate::render::color::ColorSpaceHandler;
 use crate::render::contract::{
     AnnotationRenderPolicy, BackendSelection, ColorManagementPolicy, ExactnessPolicy,
-    FormRenderPolicy, HalftonePolicy, ObjectIdentityId, OverprintPolicy, PageBox, PrintProfile,
-    RenderContract, RenderResourceBudget, RenderingIntent, RevisionId, SmoothingPolicy,
+    FormHighlightPolicy, FormRenderPolicy, HalftonePolicy, ObjectIdentityId, OverprintPolicy,
+    PageBox, PrintProfile, RenderContract, RenderResourceBudget, RenderingIntent, RevisionId,
+    SmoothingPolicy,
 };
 #[cfg(test)]
 use crate::render::display_list::RetainedTextArrayItem;
@@ -83,6 +84,7 @@ use crate::render::transform::{Transform2D, Viewport};
 use crate::render::vector_fallback::{
     form_program_is_opaque_normal_group_subset, transparency_group_color_space_is_vector_inert,
 };
+use crate::render::widget_synthesis;
 use crate::render::RoundByte;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -4541,6 +4543,7 @@ impl PageRenderer {
         print_profile: PrintProfile,
         annotation_policy: AnnotationRenderPolicy,
         form_policy: FormRenderPolicy,
+        form_highlight: &FormHighlightPolicy,
         rendering_intent: RenderingIntent,
         color_management_policy: ColorManagementPolicy,
         overprint_policy: OverprintPolicy,
@@ -4623,6 +4626,7 @@ impl PageRenderer {
             state.print_profile = print_profile;
             state.annotation_policy = annotation_policy;
             state.form_policy = form_policy;
+            state.form_highlight = form_highlight_state(form_highlight.clone());
             state.backend_policy = backend_policy;
             state.color_management_policy = color_management_policy;
             state.overprint_policy = overprint_policy;
@@ -5278,6 +5282,7 @@ impl PageRenderer {
         accepted_expected.print_profile = contract.print_profile;
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
+        accepted_expected.form_highlight = contract.form_highlight.clone();
         accepted_expected.execution_mode = contract.execution_mode;
         accepted_expected.halftone = contract.halftone;
         accepted_expected.background = contract.background;
@@ -5450,6 +5455,7 @@ impl PageRenderer {
         state.print_profile = contract.print_profile;
         state.annotation_policy = contract.annotations;
         state.form_policy = contract.forms;
+        state.form_highlight = form_highlight_state(contract.form_highlight.clone());
         state.backend_policy = contract.backend;
         state.color_management_policy = contract.color_management;
         state.overprint_policy = contract.overprint;
@@ -6102,6 +6108,9 @@ struct RenderState<'a> {
     annotation_policy: AnnotationRenderPolicy,
     /// Active form render policy from the render contract.
     form_policy: FormRenderPolicy,
+    /// Form-field highlight / focus rectangle from the render contract
+    /// (`None` = off).
+    form_highlight: Option<Arc<FormHighlightPolicy>>,
     /// Active text smoothing policy from the render contract.
     text_smoothing_policy: SmoothingPolicy,
     /// Active LCD/subpixel text policy from the render contract.
@@ -6126,6 +6135,7 @@ struct AnnotationReplayPolicy {
     print_profile: PrintProfile,
     annotation_policy: AnnotationRenderPolicy,
     form_policy: FormRenderPolicy,
+    form_highlight: FormHighlightPolicy,
     render_contract_fingerprint: String,
     resource_budget: RenderResourceBudget,
     exactness_policy: ExactnessPolicy,
@@ -6144,6 +6154,7 @@ impl AnnotationReplayPolicy {
             print_profile: contract.print_profile,
             annotation_policy: contract.annotations,
             form_policy: contract.forms,
+            form_highlight: contract.form_highlight.clone(),
             render_contract_fingerprint: contract.cache_fingerprint(),
             resource_budget: contract.resource_budget,
             exactness_policy: contract.exactness,
@@ -7829,6 +7840,7 @@ impl<'a> RenderState<'a> {
             overprint_policy: OverprintPolicy::Preview,
             annotation_policy: AnnotationRenderPolicy::Include,
             form_policy: FormRenderPolicy::Include,
+            form_highlight: None,
             text_smoothing_policy: SmoothingPolicy::Antialiased,
             subpixel_text_policy: SmoothingPolicy::Disabled,
             path_smoothing_policy: SmoothingPolicy::Antialiased,
@@ -7988,6 +8000,7 @@ impl<'a> RenderState<'a> {
         self.print_profile = policy.print_profile;
         self.annotation_policy = policy.annotation_policy;
         self.form_policy = policy.form_policy;
+        self.form_highlight = form_highlight_state(policy.form_highlight);
         self.exactness_policy = policy.exactness_policy;
         self.backend_policy = policy.backend_policy;
         self.color_management_policy = policy.color_management_policy;
@@ -10071,6 +10084,7 @@ impl<'a> RenderState<'a> {
         contract.print_profile = self.print_profile;
         contract.annotations = self.annotation_policy;
         contract.forms = self.form_policy;
+        contract.form_highlight = self.form_highlight.as_deref().cloned().unwrap_or_default();
         Some(contract)
     }
 
@@ -12611,6 +12625,7 @@ impl<'a> RenderState<'a> {
             overprint_policy: self.overprint_policy,
             annotation_policy: self.annotation_policy,
             form_policy: self.form_policy,
+            form_highlight: self.form_highlight.clone(),
             text_smoothing_policy: self.text_smoothing_policy,
             subpixel_text_policy: self.subpixel_text_policy,
             path_smoothing_policy: self.path_smoothing_policy,
@@ -14274,6 +14289,7 @@ impl<'a> RenderState<'a> {
             overprint_policy: self.overprint_policy,
             annotation_policy: self.annotation_policy,
             form_policy: self.form_policy,
+            form_highlight: self.form_highlight.clone(),
             text_smoothing_policy: self.text_smoothing_policy,
             subpixel_text_policy: self.subpixel_text_policy,
             path_smoothing_policy: self.path_smoothing_policy,
@@ -14547,28 +14563,103 @@ impl<'a> RenderState<'a> {
                     }
                 }
             };
-            let Some((appearance_dict, appearance_raw)) = appearance else {
-                continue;
-            };
-            let no_rotate = annot.get_integer("F").unwrap_or(0)
-                & crate::render::annotation_synthesis::ANNOT_FLAG_NO_ROTATE
-                != 0;
-            if appearance_dict.get_name("Subtype") != Some("Form") {
-                continue;
-            }
+            // PDFium: a check box or radio button whose /AP /N has no
+            // appearance for its state shows a grey hairline outline when
+            // nothing else is drawn.
+            let appearance = appearance.or_else(|| {
+                missing_state_outline_appearance(&annot, reader, rect).map(|outline| {
+                    placement_rect = outline.rect;
+                    (outline.dict, outline.raw)
+                })
+            });
             let name = format!("Annot{}", index + 1);
-            let Some(program) = self.cached_annotation_appearance_program(
-                &name,
-                &annot_obj,
-                index,
-                &appearance_dict,
-                appearance_raw,
-                placement_rect,
-            ) else {
-                continue;
-            };
-            self.render_annotation_appearance_program(&name, &program, placement_rect, no_rotate);
+            'draw: {
+                let Some((appearance_dict, appearance_raw)) = appearance else {
+                    break 'draw;
+                };
+                let no_rotate = annot.get_integer("F").unwrap_or(0)
+                    & crate::render::annotation_synthesis::ANNOT_FLAG_NO_ROTATE
+                    != 0;
+                if appearance_dict.get_name("Subtype") != Some("Form") {
+                    break 'draw;
+                }
+                let Some(program) = self.cached_annotation_appearance_program(
+                    &name,
+                    &annot_obj,
+                    index,
+                    &appearance_dict,
+                    appearance_raw,
+                    placement_rect,
+                ) else {
+                    break 'draw;
+                };
+                self.render_annotation_appearance_program(
+                    &name,
+                    &program,
+                    placement_rect,
+                    no_rotate,
+                );
+            }
+            if annot_subtype == "Widget" && self.form_highlight.is_some() {
+                self.render_widget_highlight(&annot, &annot_obj, index, rect);
+            }
         }
+    }
+
+    /// Paints the render contract's form highlight over a widget after its
+    /// appearance: the field type's translucent colour on non-read-only
+    /// fields and the focus rectangle on the focused field's widgets.
+    fn render_widget_highlight(
+        &mut self,
+        annot: &PdfDictionary,
+        annot_obj: &PdfObject,
+        index: usize,
+        rect: [f64; 4],
+    ) {
+        let Some(policy) = self.form_highlight.clone() else {
+            return;
+        };
+        let reader = self.engine.document().reader();
+        let chain = collect_field_chain(annot, reader);
+        if inherited_field_object(&chain, "FT").is_none() {
+            return;
+        }
+        let color = widget_highlight_color(&policy, &chain);
+        let focused = policy
+            .focus_field
+            .as_deref()
+            .is_some_and(|focus| !focus.is_empty() && widget_field_full_name(&chain) == focus);
+        let [x0, y0, x1, y1] = [
+            rect[0].min(rect[2]),
+            rect[1].min(rect[3]),
+            rect[0].max(rect[2]),
+            rect[1].max(rect[3]),
+        ];
+        let (width, height) = (x1 - x0, y1 - y0);
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let Some((content, alpha)) = widget_highlight_content(color, focused, width, height) else {
+            return;
+        };
+        // One point of margin on every side for the focus rectangle.
+        let (mut dict, raw) = annotation_synthesis::widget_form_with(
+            content,
+            [-2.0, -2.0, width + 2.0, height + 2.0],
+            None,
+            annotation_synthesis::Resources::default(),
+        );
+        if let Some(alpha) = alpha {
+            add_synthesized_ext_g_state(&mut dict, alpha, None);
+        }
+        let placement = [x0 - 2.0, y0 - 2.0, x1 + 2.0, y1 + 2.0];
+        let name = format!("Annot{}Highlight", index + 1);
+        let Some(program) = self
+            .cached_annotation_appearance_program(&name, annot_obj, index, &dict, raw, placement)
+        else {
+            return;
+        };
+        self.render_annotation_appearance_program(&name, &program, placement, false);
     }
 
     fn render_annotation_appearance_program(
@@ -26099,18 +26190,168 @@ fn annotation_excluded_for_profile(
 }
 
 /// Text and choice widgets are regenerated when the form sets
-/// `/NeedAppearances` (signatures and buttons keep their stored appearance).
+/// `/NeedAppearances`, and so are push buttons with an `/MK` caption or
+/// icon to draw (PDFium regenerates every widget; check boxes, radio
+/// buttons and signatures keep their stored appearance here).
 fn widget_regenerates_for_need_appearances(
     annot: &PdfDictionary,
     reader: &crate::reader::PdfReader,
 ) -> bool {
     let chain = collect_field_chain(annot, reader);
-    matches!(
-        inherited_field_object(&chain, "FT")
-            .as_ref()
-            .and_then(PdfObject::as_name),
-        Some("Tx") | Some("Ch")
-    )
+    match inherited_field_object(&chain, "FT")
+        .as_ref()
+        .and_then(PdfObject::as_name)
+    {
+        Some("Tx") | Some("Ch") => true,
+        Some("Btn") => {
+            let flags = inherited_field_integer(&chain, "Ff").unwrap_or(0);
+            flags & FIELD_FLAG_PUSHBUTTON != 0
+                && annot
+                    .get("MK")
+                    .and_then(|mk| match reader.resolve(mk.clone()).ok()? {
+                        PdfObject::Dictionary(mk) => Some(mk),
+                        _ => None,
+                    })
+                    .is_some_and(|mk| {
+                        mk.get("I").is_some()
+                            || mk
+                                .get("CA")
+                                .and_then(display_text_from_object)
+                                .is_some_and(|(text, _)| !text.is_empty())
+                    })
+        }
+        _ => false,
+    }
+}
+
+/// The render state's form highlight: `None` while it is off.
+fn form_highlight_state(policy: FormHighlightPolicy) -> Option<Arc<FormHighlightPolicy>> {
+    (!policy.is_off()).then(|| Arc::new(policy))
+}
+
+/// PDFium's grey hairline outline for a check box or radio button that has
+/// an `/AP` dictionary but no appearance for its current state (PDFium
+/// `CPDFSDK_Widget::DrawAppearance`). Used only when nothing else draws.
+fn missing_state_outline_appearance(
+    annot: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+    rect: [f64; 4],
+) -> Option<SynthesizedAppearance> {
+    if annot.get_name("Subtype") != Some("Widget") {
+        return None;
+    }
+    if !matches!(
+        annot.get("AP").map(|ap| reader.resolve(ap.clone())),
+        Some(Ok(PdfObject::Dictionary(_)))
+    ) {
+        return None;
+    }
+    let chain = collect_field_chain(annot, reader);
+    if inherited_field_object(&chain, "FT")
+        .as_ref()
+        .and_then(PdfObject::as_name)
+        != Some("Btn")
+        || inherited_field_integer(&chain, "Ff").unwrap_or(0) & FIELD_FLAG_PUSHBUTTON != 0
+    {
+        return None;
+    }
+    let [x0, y0, x1, y1] = [
+        rect[0].min(rect[2]),
+        rect[1].min(rect[3]),
+        rect[0].max(rect[2]),
+        rect[1].max(rect[3]),
+    ];
+    if x1 - x0 <= 0.0 || y1 - y0 <= 0.0 {
+        return None;
+    }
+    let (content, bbox) = widget_synthesis::missing_state_outline(x1 - x0, y1 - y0);
+    let (dict, raw) = annotation_synthesis::widget_form_with(
+        content,
+        bbox,
+        None,
+        annotation_synthesis::Resources::default(),
+    );
+    Some(SynthesizedAppearance {
+        dict,
+        raw,
+        rect: [x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0],
+    })
+}
+
+/// Fully qualified field name of a widget: the `/T` entries from the root
+/// field down, joined with `.`.
+fn widget_field_full_name(chain: &[PdfDictionary]) -> String {
+    let mut parts: Vec<String> = chain
+        .iter()
+        .filter_map(|dict| match dict.get("T")? {
+            PdfObject::String(bytes) => Some(decode_pdf_text_string(bytes)),
+            _ => None,
+        })
+        .collect();
+    parts.reverse();
+    parts.join(".")
+}
+
+/// Highlight colour for a widget's field type, or `None` for read-only
+/// fields and field types that are not highlighted.
+fn widget_highlight_color(
+    policy: &FormHighlightPolicy,
+    chain: &[PdfDictionary],
+) -> Option<crate::render::contract::ContractColor> {
+    let flags = inherited_field_integer(chain, "Ff").unwrap_or(0);
+    if flags & FIELD_FLAG_READ_ONLY != 0 {
+        return None;
+    }
+    let color = match inherited_field_object(chain, "FT")
+        .as_ref()
+        .and_then(PdfObject::as_name)?
+    {
+        "Tx" => policy.text,
+        "Btn" if flags & FIELD_FLAG_PUSHBUTTON != 0 => policy.push_button,
+        "Btn" if flags & FIELD_FLAG_RADIO != 0 => policy.radio_button,
+        "Btn" => policy.check_box,
+        "Ch" if flags & FIELD_FLAG_COMBO != 0 => policy.combo_box,
+        "Ch" => policy.list_box,
+        "Sig" => policy.signature,
+        _ => None,
+    };
+    color.filter(|color| color.a > 0)
+}
+
+/// Content of a widget's highlight overlay over a `width` x `height`
+/// widget: the translucent field-type colour (PDFium `DrawShadow`) and,
+/// for the focused field, a black dotted hairline 1pt outside the widget
+/// (PDFium `CFX_DrawUtils::DrawFocusRect`). Returns the content and the
+/// highlight opacity.
+fn widget_highlight_content(
+    color: Option<crate::render::contract::ContractColor>,
+    focused: bool,
+    width: f64,
+    height: f64,
+) -> Option<(String, Option<f64>)> {
+    let mut content = String::new();
+    let mut alpha = None;
+    if let Some(color) = color {
+        let _ = writeln!(
+            content,
+            "q /GS1 gs {} {} {} rg 0 0 {} {} re f Q",
+            pdf_num(f64::from(color.r) / 255.0),
+            pdf_num(f64::from(color.g) / 255.0),
+            pdf_num(f64::from(color.b) / 255.0),
+            pdf_num(width),
+            pdf_num(height)
+        );
+        alpha = Some(f64::from(color.a) / 255.0);
+    }
+    if focused {
+        let _ = writeln!(
+            content,
+            "q 0 G 0 w [1] 0 d -1 -1 {} {} re S Q",
+            pdf_num(width + 2.0),
+            pdf_num(height + 2.0)
+        );
+    }
+    (!content.is_empty()).then_some((content, alpha))
 }
 
 fn select_annotation_appearance(
@@ -26163,6 +26404,7 @@ fn select_annotation_appearance(
         })
 }
 
+const FIELD_FLAG_READ_ONLY: i64 = 1;
 const FIELD_FLAG_MULTILINE: i64 = 1 << 12;
 const FIELD_FLAG_PASSWORD: i64 = 1 << 13;
 const FIELD_FLAG_RADIO: i64 = 1 << 15;
@@ -26191,27 +26433,6 @@ enum ButtonAppearanceKind {
     PushButton,
 }
 
-#[derive(Clone, Copy)]
-struct WidgetAppearanceBox<'a> {
-    width: f64,
-    height: f64,
-    mk: Option<&'a PdfDictionary>,
-}
-
-struct ButtonAppearance<'a> {
-    kind: ButtonAppearanceKind,
-    selected: bool,
-    caption: &'a str,
-    caption_bytes: &'a [u8],
-    default_appearance: DefaultAppearance,
-}
-
-impl<'a> WidgetAppearanceBox<'a> {
-    fn new(width: f64, height: f64, mk: Option<&'a PdfDictionary>) -> Self {
-        Self { width, height, mk }
-    }
-}
-
 #[cfg(test)]
 fn synthesize_annotation_appearance(
     annot: &PdfDictionary,
@@ -26233,9 +26454,9 @@ fn synthesize_annotation_appearance_placed(
     engine: &ContentEngine,
     rect: [f64; 4],
 ) -> Option<SynthesizedAppearance> {
-    let width = (rect[2] - rect[0]).abs();
-    let height = (rect[3] - rect[1]).abs();
-    if width <= 0.0 || height <= 0.0 {
+    let rect_width = (rect[2] - rect[0]).abs();
+    let rect_height = (rect[3] - rect[1]).abs();
+    if rect_width <= 0.0 || rect_height <= 0.0 {
         return None;
     }
 
@@ -26262,10 +26483,9 @@ fn synthesize_annotation_appearance_placed(
                 .and_then(|dict| dict.get("DA"))
                 .and_then(object_string_bytes)
         });
-    let default_appearance = match default_appearance_bytes.as_deref() {
-        Some(bytes) => parse_default_appearance(bytes)?,
-        None => DefaultAppearance::default(),
-    };
+    if let Some(bytes) = default_appearance_bytes.as_deref() {
+        parse_default_appearance(bytes)?;
+    }
     let da = default_appearance_bytes
         .as_deref()
         .map(annotation_synthesis::parse_da)
@@ -26279,6 +26499,12 @@ fn synthesize_annotation_appearance_placed(
             _ => None,
         });
     let border = annotation_synthesis::border_style(annot, reader, 1.0);
+    let chrome = widget_synthesis::WidgetChrome::from_mk(mk.as_ref(), border.clone());
+    // `/MK /R`: lay the appearance out in the rotated size and turn it back
+    // onto the widget with the form `/Matrix`, like PDFium.
+    let rotation = widget_synthesis::mk_rotation(mk.as_ref());
+    let (width, height) = widget_synthesis::rotated_size(rotation, rect_width, rect_height);
+    let matrix = widget_synthesis::rotation_matrix(rotation, rect_width, rect_height);
     // Field fonts come from the field's /DR (Poppler merges field and form
     // resources), then the AcroForm /DR.
     let mut dr_dicts: Vec<PdfDictionary> = field_chain
@@ -26307,13 +26533,18 @@ fn synthesize_annotation_appearance_placed(
         alignment,
         multiline,
         comb,
+        drop_button: false,
     };
     let widget = |content: String, resources: annotation_synthesis::Resources| {
-        let (dict, raw) = annotation_synthesis::widget_form(content, width, height, resources);
+        let (dict, raw) = annotation_synthesis::widget_form_with(
+            content,
+            [0.0, 0.0, width, height],
+            matrix,
+            resources,
+        );
         Some(SynthesizedAppearance { dict, raw, rect })
     };
 
-    let mut content = String::new();
     match field_type.as_str() {
         "Tx" => {
             let mut text = value
@@ -26337,7 +26568,7 @@ fn synthesize_annotation_appearance_placed(
                 &text,
                 fonts,
             )?;
-            return widget(content, resources);
+            widget(content, resources)
         }
         "Btn" => {
             let kind = if field_flags & FIELD_FLAG_PUSHBUTTON != 0 {
@@ -26347,81 +26578,78 @@ fn synthesize_annotation_appearance_placed(
             } else {
                 ButtonAppearanceKind::Checkbox
             };
-            let selected = button_is_selected(kind, annot, value.as_ref());
             let caption = mk
                 .as_ref()
                 .and_then(|dict| dict.get("CA"))
                 .and_then(display_text_from_object)
-                .unwrap_or_else(|| (String::new(), Vec::new()));
-            if kind == ButtonAppearanceKind::PushButton && caption.0.is_empty() {
-                return None;
-            }
-            if kind != ButtonAppearanceKind::PushButton && caption.0.chars().count() > 1 {
-                return None;
-            }
-            if kind == ButtonAppearanceKind::Checkbox {
-                // Checkboxes: MK background/border always, the /MK /CA
-                // ZapfDingbats caption (default check) when checked,
-                // regardless of /NeedAppearances.
-                let mut resources = annotation_synthesis::Resources::default();
-                annotation_synthesis::append_widget_chrome(
-                    &mut content,
-                    width,
-                    height,
-                    mk.as_ref(),
-                    &border,
-                    false,
-                );
-                if selected {
-                    if let Some(label) = checkbox_label_state(annot, value.as_ref()) {
-                        let fonts = TextFonts::resolve(da.font_name.as_deref(), &dr_dicts, reader);
-                        let (label_content, label_resources) =
-                            annotation_synthesis::text_field_appearance(
-                                WidgetTextLayout {
-                                    mk: None,
-                                    ..text_layout(false, None)
-                                },
-                                &label,
-                                fonts,
-                            )?;
-                        content.push_str(&label_content);
-                        resources = label_resources;
-                    } else {
-                        let caption = if caption.0.is_empty() {
-                            "4"
-                        } else {
-                            caption.0.as_str()
-                        };
-                        append_checkbox_caption(
-                            &mut content,
-                            &mut resources,
-                            caption,
-                            width,
-                            height,
-                            &da,
-                            &border,
-                        );
+                .map(|(text, _)| text)
+                .unwrap_or_default();
+            if kind == ButtonAppearanceKind::PushButton {
+                let icon = widget_synthesis::ButtonIcon::from_mk(mk.as_ref(), reader);
+                let fit_dict = mk.as_ref().and_then(|mk| {
+                    match reader.resolve(mk.get("IF")?.clone()).ok()? {
+                        PdfObject::Dictionary(dict) => Some(dict),
+                        _ => None,
                     }
-                }
+                });
+                let fonts = TextFonts::resolve(da.font_name.as_deref(), &dr_dicts, reader);
+                let (content, resources) = widget_synthesis::push_button_appearance(
+                    widget_synthesis::PushButton {
+                        width,
+                        height,
+                        chrome: &chrome,
+                        caption: &caption,
+                        icon: icon.as_ref(),
+                        fit: widget_synthesis::IconFit::from_dict(fit_dict.as_ref()),
+                        position: widget_synthesis::CaptionPosition::from_mk(mk.as_ref()),
+                        color: da.color,
+                        font_size: default_appearance_bytes.is_some().then_some(da.font_size),
+                    },
+                    fonts,
+                );
                 if content.is_empty() {
                     return None;
                 }
                 return widget(content, resources);
             }
-            if kind == ButtonAppearanceKind::Radio && !selected {
+            let selected = button_is_selected(kind, annot, value.as_ref());
+            let radio = kind == ButtonAppearanceKind::Radio;
+            // Checkboxes whose on-state is a label ("Approved") show it as
+            // text instead of a mark.
+            let label = (selected && !radio)
+                .then(|| checkbox_label_state(annot, value.as_ref()))
+                .flatten();
+            // PDFium reads the mark style from the caption's first character.
+            let first: String = caption.chars().take(1).collect();
+            let default_glyph = if radio {
+                annotation_synthesis::CheckGlyph::Circle
+            } else {
+                annotation_synthesis::CheckGlyph::Check
+            };
+            if let Some(label) = label {
+                let fonts = TextFonts::resolve(da.font_name.as_deref(), &dr_dicts, reader);
+                let (content, resources) = annotation_synthesis::text_field_appearance(
+                    text_layout(false, None),
+                    &label,
+                    fonts,
+                )?;
+                return widget(content, resources);
+            }
+            let (content, resources) =
+                widget_synthesis::toggle_button_appearance(widget_synthesis::ToggleButton {
+                    width,
+                    height,
+                    chrome: &chrome,
+                    radio,
+                    selected,
+                    mark: widget_synthesis::ButtonMark::from_caption(&first, default_glyph),
+                    color: da.color,
+                    font_size: da.font_size,
+                });
+            if content.is_empty() {
                 return None;
             }
-            append_button_appearance(
-                &mut content,
-                WidgetAppearanceBox::new(width, height, mk.as_ref()),
-                ButtonAppearance {
-                    kind,
-                    selected,
-                    caption: &caption.0,
-                    caption_bytes: &caption.1,
-                    default_appearance,
-                },
-            );
+            widget(content, resources)
         }
         "Ch" => {
             let fonts = TextFonts::resolve(da.font_name.as_deref(), &dr_dicts, reader);
@@ -26430,7 +26658,10 @@ fn synthesize_annotation_appearance_placed(
                     .map(|(text, _)| text)
                     .unwrap_or_default();
                 let (content, resources) = annotation_synthesis::text_field_appearance(
-                    text_layout(false, None),
+                    WidgetTextLayout {
+                        drop_button: true,
+                        ..text_layout(false, None)
+                    },
                     &text,
                     fonts,
                 )?;
@@ -26450,61 +26681,10 @@ fn synthesize_annotation_appearance_placed(
                 top_index,
                 fonts,
             )?;
-            return widget(content, resources);
+            widget(content, resources)
         }
-        _ => return None,
+        _ => None,
     }
-
-    if content.is_empty() {
-        return None;
-    }
-
-    let mut form = synthesized_appearance_form_dict(width, height);
-    form.insert("Length", PdfObject::Integer(content.len() as i64));
-    Some(SynthesizedAppearance {
-        dict: form,
-        raw: content.into_bytes(),
-        rect,
-    })
-}
-
-/// Draws a checked box's `/MK /CA` caption: the common ZapfDingbats marks
-/// (4 check, l circle, 8 cross, u diamond, n square, H star) as vector
-/// shapes, anything else as ZapfDingbats text.
-fn append_checkbox_caption(
-    content: &mut String,
-    resources: &mut annotation_synthesis::Resources,
-    caption: &str,
-    width: f64,
-    height: f64,
-    da: &annotation_synthesis::DaSpec,
-    border: &annotation_synthesis::BorderStyle,
-) {
-    let inner = (width.min(height) - 2.0 * border.width).max(1.0);
-    let side = if da.font_size > 0.0 {
-        (da.font_size * 0.75).min(inner)
-    } else {
-        inner * 0.75
-    };
-    if let Some(glyph) = annotation_synthesis::CheckGlyph::from_caption(caption) {
-        annotation_synthesis::append_check_glyph(content, glyph, width, height, side, da.color);
-        return;
-    }
-    let size = side / 0.75;
-    let mut font = PdfDictionary::empty();
-    font.insert("Type", PdfObject::Name("Font".to_string()));
-    font.insert("Subtype", PdfObject::Name("Type1".to_string()));
-    font.insert("BaseFont", PdfObject::Name("ZapfDingbats".to_string()));
-    resources.add_font("ZaDb", PdfObject::Dictionary(font));
-    let _ = writeln!(
-        content,
-        "q BT {} /ZaDb {} Tf {} {} Td {} Tj ET Q",
-        da.color.fill_op(),
-        pdf_num(size),
-        pdf_num((width - size * 0.75) * 0.5),
-        pdf_num((height - size * 0.7) * 0.5),
-        pdf_literal_bytes(caption.as_bytes())
-    );
 }
 
 /// List-box rows from `/Opt` with selection from `/V` (export or display
@@ -26590,8 +26770,6 @@ fn synthesize_markup_annotation_appearance(
         };
         return annotation_synthesis::synthesize_markup(annot, &ctx, rect);
     }
-    let width = (rect[2] - rect[0]).abs();
-    let height = (rect[3] - rect[1]).abs();
     let color = match annotation_rgb(annot) {
         Some(color) => color,
         None if annot.get("C").is_none() => match subtype {
@@ -26601,18 +26779,45 @@ fn synthesize_markup_annotation_appearance(
         None => return None,
     };
     let opacity = annotation_opacity(annot, if subtype == "Highlight" { 0.35 } else { 1.0 })?;
+    let quads = annotation_quad_bounds(annot)?;
+    // Like PDFium (CPDF_Annot::RectForDrawing), the generated appearance
+    // covers the quads' bounding box, so quads extending outside /Rect are
+    // drawn in full; one point of margin keeps edge strokes unclipped.
+    const MARGIN: f64 = 1.0;
+    let mut area = [
+        rect[0].min(rect[2]),
+        rect[1].min(rect[3]),
+        rect[0].max(rect[2]),
+        rect[1].max(rect[3]),
+    ];
+    for quad in &quads {
+        area = [
+            area[0].min(quad[0]),
+            area[1].min(quad[1]),
+            area[2].max(quad[2]),
+            area[3].max(quad[3]),
+        ];
+    }
+    let rect = [
+        area[0] - MARGIN,
+        area[1] - MARGIN,
+        area[2] + MARGIN,
+        area[3] + MARGIN,
+    ];
+    let width = rect[2] - rect[0];
+    let height = rect[3] - rect[1];
     let mut content = String::new();
-
-    match subtype {
-        "Highlight" => {
-            for bounds in annotation_local_quad_bounds(annot, rect, width, height)? {
-                append_annotation_rect_fill(&mut content, bounds, color);
-            }
-        }
-        _ => {
-            for bounds in annotation_local_quad_bounds(annot, rect, width, height)? {
-                append_text_markup_line(&mut content, subtype, bounds, color);
-            }
+    for quad in quads {
+        let bounds = [
+            quad[0] - rect[0],
+            quad[1] - rect[1],
+            quad[2] - rect[0],
+            quad[3] - rect[1],
+        ];
+        if subtype == "Highlight" {
+            append_annotation_rect_fill(&mut content, bounds, color);
+        } else {
+            append_text_markup_line(&mut content, subtype, bounds, color);
         }
     }
 
@@ -26649,6 +26854,30 @@ fn add_synthesized_ext_g_state(form: &mut PdfDictionary, alpha: f64, blend_mode:
     ext.insert("GS1", PdfObject::Dictionary(gs));
     if let Some(PdfObject::Dictionary(resources)) = form.get_mut("Resources") {
         resources.insert("ExtGState", PdfObject::Dictionary(ext));
+    }
+}
+
+/// `/MK` colour as RGB (strict: malformed entries are `None`).
+#[cfg(test)]
+fn mk_rgb(mk: Option<&PdfDictionary>, key: &str) -> Option<(f64, f64, f64)> {
+    let arr = mk?.get_array(key)?;
+    match arr.len() {
+        1 => {
+            let gray = unit_annotation_component(arr[0].as_number()?)?;
+            Some((gray, gray, gray))
+        }
+        3 => Some((
+            unit_annotation_component(arr[0].as_number()?)?,
+            unit_annotation_component(arr[1].as_number()?)?,
+            unit_annotation_component(arr[2].as_number()?)?,
+        )),
+        4 => Some(cmyk_to_rgb(
+            unit_annotation_component(arr[0].as_number()?)?,
+            unit_annotation_component(arr[1].as_number()?)?,
+            unit_annotation_component(arr[2].as_number()?)?,
+            unit_annotation_component(arr[3].as_number()?)?,
+        )),
+        _ => None,
     }
 }
 
@@ -27211,14 +27440,9 @@ fn annotation_opacity(annot: &PdfDictionary, default_alpha: f64) -> Option<f64> 
     }
 }
 
-fn annotation_local_quad_bounds(
-    annot: &PdfDictionary,
-    rect: [f64; 4],
-    width: f64,
-    height: f64,
-) -> Option<Vec<[f64; 4]>> {
-    let rect_x0 = rect[0].min(rect[2]);
-    let rect_y0 = rect[1].min(rect[3]);
+/// Page-space bounding box `[x0 y0 x1 y1]` of every non-empty quad of
+/// `/QuadPoints`; `None` when the array is missing, malformed or empty.
+fn annotation_quad_bounds(annot: &PdfDictionary) -> Option<Vec<[f64; 4]>> {
     let quads = annot.get_array("QuadPoints")?;
     if quads.is_empty() || !quads.len().is_multiple_of(8) {
         return None;
@@ -27235,17 +27459,12 @@ fn annotation_local_quad_bounds(
         }
         let xs = [coords[0], coords[2], coords[4], coords[6]];
         let ys = [coords[1], coords[3], coords[5], coords[7]];
-        let x0 = xs.iter().copied().fold(f64::INFINITY, f64::min) - rect_x0;
-        let x1 = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max) - rect_x0;
-        let y0 = ys.iter().copied().fold(f64::INFINITY, f64::min) - rect_y0;
-        let y1 = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) - rect_y0;
+        let x0 = xs.iter().copied().fold(f64::INFINITY, f64::min);
+        let x1 = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let y0 = ys.iter().copied().fold(f64::INFINITY, f64::min);
+        let y1 = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         if x1 > x0 && y1 > y0 {
-            bounds.push([
-                x0.clamp(0.0, width),
-                y0.clamp(0.0, height),
-                x1.clamp(0.0, width),
-                y1.clamp(0.0, height),
-            ]);
+            bounds.push([x0, y0, x1, y1]);
         }
     }
     if bounds.is_empty() {
@@ -27447,247 +27666,6 @@ fn synthesized_appearance_form_dict(width: f64, height: f64) -> PdfDictionary {
     form
 }
 
-fn append_button_appearance(
-    content: &mut String,
-    geometry: WidgetAppearanceBox<'_>,
-    appearance: ButtonAppearance<'_>,
-) {
-    match appearance.kind {
-        ButtonAppearanceKind::Checkbox => {
-            append_widget_background_and_border(
-                content,
-                geometry.width,
-                geometry.height,
-                geometry.mk,
-                (1.0, 1.0, 1.0),
-            );
-            if appearance.selected {
-                let stroke = (geometry.width.min(geometry.height) * 0.09).clamp(1.2, 3.0);
-                let x1 = geometry.width * 0.22;
-                let y1 = geometry.height * 0.50;
-                let x2 = geometry.width * 0.42;
-                let y2 = geometry.height * 0.28;
-                let x3 = geometry.width * 0.80;
-                let y3 = geometry.height * 0.76;
-                let _ = writeln!(
-                    content,
-                    "q 0 0 0 RG {} w {} {} m {} {} l {} {} l S Q",
-                    pdf_num(stroke),
-                    pdf_num(x1),
-                    pdf_num(y1),
-                    pdf_num(x2),
-                    pdf_num(y2),
-                    pdf_num(x3),
-                    pdf_num(y3)
-                );
-            }
-        }
-        ButtonAppearanceKind::Radio => {
-            append_widget_background(
-                content,
-                geometry.width,
-                geometry.height,
-                geometry.mk,
-                (1.0, 1.0, 1.0),
-            );
-            let border = mk_rgb(geometry.mk, "BC").unwrap_or((0.0, 0.0, 0.0));
-            append_circle(
-                content,
-                geometry.width * 0.5,
-                geometry.height * 0.5,
-                geometry.width.min(geometry.height) * 0.42,
-                border,
-                false,
-            );
-            if appearance.selected {
-                append_circle(
-                    content,
-                    geometry.width * 0.5,
-                    geometry.height * 0.5,
-                    geometry.width.min(geometry.height) * 0.20,
-                    border,
-                    true,
-                );
-            }
-        }
-        ButtonAppearanceKind::PushButton => {
-            append_widget_background_and_border(
-                content,
-                geometry.width,
-                geometry.height,
-                geometry.mk,
-                (0.92, 0.92, 0.92),
-            );
-            if !appearance.caption.is_empty() {
-                let font_size = effective_font_size(
-                    appearance.default_appearance.font_size,
-                    appearance.caption,
-                    geometry.width,
-                    geometry.height,
-                    false,
-                );
-                let literal_bytes = if appearance.caption_bytes.is_empty() {
-                    appearance.caption.as_bytes()
-                } else {
-                    appearance.caption_bytes
-                };
-                append_text_run(
-                    content,
-                    literal_bytes,
-                    font_size,
-                    appearance.default_appearance.color,
-                    text_x_for_alignment(appearance.caption, font_size, geometry.width, 1),
-                    ((geometry.height - font_size) * 0.5).max(2.0),
-                );
-            }
-        }
-    }
-}
-
-fn append_widget_background_and_border(
-    content: &mut String,
-    width: f64,
-    height: f64,
-    mk: Option<&PdfDictionary>,
-    default_bg: (f64, f64, f64),
-) {
-    append_widget_background(content, width, height, mk, default_bg);
-    let border = mk_rgb(mk, "BC").unwrap_or((0.0, 0.0, 0.0));
-    let _ = writeln!(
-        content,
-        "q {} {} {} RG 1 w 0.5 0.5 {} {} re S Q",
-        pdf_num(border.0),
-        pdf_num(border.1),
-        pdf_num(border.2),
-        pdf_num((width - 1.0).max(0.0)),
-        pdf_num((height - 1.0).max(0.0))
-    );
-}
-
-fn append_widget_background(
-    content: &mut String,
-    width: f64,
-    height: f64,
-    mk: Option<&PdfDictionary>,
-    default_bg: (f64, f64, f64),
-) {
-    let bg = mk_rgb(mk, "BG").unwrap_or(default_bg);
-    let _ = writeln!(
-        content,
-        "q {} {} {} rg 0 0 {} {} re f Q",
-        pdf_num(bg.0),
-        pdf_num(bg.1),
-        pdf_num(bg.2),
-        pdf_num(width),
-        pdf_num(height)
-    );
-}
-
-fn append_text_run(
-    content: &mut String,
-    bytes: &[u8],
-    font_size: f64,
-    color: (f64, f64, f64),
-    x: f64,
-    y: f64,
-) {
-    let _ = writeln!(
-        content,
-        "q BT /F1 {} Tf {} {} {} rg 1 0 0 1 {} {} Tm {} Tj ET Q",
-        pdf_num(font_size),
-        pdf_num(color.0),
-        pdf_num(color.1),
-        pdf_num(color.2),
-        pdf_num(x),
-        pdf_num(y),
-        pdf_literal_bytes(bytes)
-    );
-}
-
-fn append_circle(
-    content: &mut String,
-    cx: f64,
-    cy: f64,
-    radius: f64,
-    color: (f64, f64, f64),
-    fill: bool,
-) {
-    let k = radius * 0.552_284_749_830_793_6;
-    let op = if fill { "f" } else { "S" };
-    let color_op = if fill { "rg" } else { "RG" };
-    let _ = writeln!(
-        content,
-        "q {} {} {} {} 1 w {} {} m {} {} {} {} {} {} c {} {} {} {} {} {} c {} {} {} {} {} {} c {} {} {} {} {} {} c h {} Q",
-        pdf_num(color.0),
-        pdf_num(color.1),
-        pdf_num(color.2),
-        color_op,
-        pdf_num(cx + radius),
-        pdf_num(cy),
-        pdf_num(cx + radius),
-        pdf_num(cy + k),
-        pdf_num(cx + k),
-        pdf_num(cy + radius),
-        pdf_num(cx),
-        pdf_num(cy + radius),
-        pdf_num(cx - k),
-        pdf_num(cy + radius),
-        pdf_num(cx - radius),
-        pdf_num(cy + k),
-        pdf_num(cx - radius),
-        pdf_num(cy),
-        pdf_num(cx - radius),
-        pdf_num(cy - k),
-        pdf_num(cx - k),
-        pdf_num(cy - radius),
-        pdf_num(cx),
-        pdf_num(cy - radius),
-        pdf_num(cx + k),
-        pdf_num(cy - radius),
-        pdf_num(cx + radius),
-        pdf_num(cy - k),
-        pdf_num(cx + radius),
-        pdf_num(cy),
-        op
-    );
-}
-
-fn effective_font_size(
-    requested: f64,
-    text: &str,
-    width: f64,
-    height: f64,
-    multiline: bool,
-) -> f64 {
-    let mut size = if requested > 0.0 {
-        requested
-    } else {
-        (height * 0.55).clamp(4.0, 12.0)
-    };
-    size = size.min((height - 4.0).max(4.0));
-    if !multiline {
-        let available = (width - 6.0).max(1.0);
-        while approximate_text_width(text, size) > available && size > 4.0 {
-            size -= 0.5;
-        }
-    }
-    size.max(4.0)
-}
-
-fn text_x_for_alignment(text: &str, font_size: f64, width: f64, alignment: i64) -> f64 {
-    let padding = 3.0;
-    let text_width = approximate_text_width(text, font_size);
-    match alignment {
-        1 => ((width - text_width) * 0.5).max(padding),
-        2 => (width - text_width - padding).max(padding),
-        _ => padding,
-    }
-}
-
-fn approximate_text_width(text: &str, font_size: f64) -> f64 {
-    text.chars().count() as f64 * font_size * 0.52
-}
-
 fn button_is_selected(
     kind: ButtonAppearanceKind,
     annot: &PdfDictionary,
@@ -27822,28 +27800,6 @@ fn option_display_text(option: &PdfObject) -> Option<(String, Vec<u8>)> {
     }
 }
 
-fn mk_rgb(mk: Option<&PdfDictionary>, key: &str) -> Option<(f64, f64, f64)> {
-    let arr = mk?.get_array(key)?;
-    match arr.len() {
-        1 => {
-            let gray = unit_annotation_component(arr[0].as_number()?)?;
-            Some((gray, gray, gray))
-        }
-        3 => Some((
-            unit_annotation_component(arr[0].as_number()?)?,
-            unit_annotation_component(arr[1].as_number()?)?,
-            unit_annotation_component(arr[2].as_number()?)?,
-        )),
-        4 => Some(cmyk_to_rgb(
-            unit_annotation_component(arr[0].as_number()?)?,
-            unit_annotation_component(arr[1].as_number()?)?,
-            unit_annotation_component(arr[2].as_number()?)?,
-            unit_annotation_component(arr[3].as_number()?)?,
-        )),
-        _ => None,
-    }
-}
-
 fn cmyk_to_rgb(c: f64, m: f64, y: f64, k: f64) -> (f64, f64, f64) {
     let [r, g, b] = crate::render::cmm::device_cmyk_to_srgb(
         finite_unit_f32(c),
@@ -27893,27 +27849,6 @@ fn pdf_num(value: f64) -> String {
     } else {
         s
     }
-}
-
-fn pdf_literal_bytes(bytes: &[u8]) -> String {
-    let mut out = String::from("(");
-    for &byte in bytes {
-        match byte {
-            b'(' | b')' | b'\\' => {
-                out.push('\\');
-                out.push(byte as char);
-            }
-            b'\n' => out.push_str("\\n"),
-            b'\r' => out.push_str("\\r"),
-            b'\t' => out.push_str("\\t"),
-            0x20..=0x7e => out.push(byte as char),
-            _ => {
-                let _ = write!(out, "\\{byte:03o}");
-            }
-        }
-    }
-    out.push(')');
-    out
 }
 
 fn required_rect(dict: &PdfDictionary, label: &str) -> std::result::Result<[f64; 4], String> {
@@ -37286,7 +37221,7 @@ mod tests {
                 PdfObject::Integer(30),
             ]),
         );
-        assert!(annotation_local_quad_bounds(&malformed_quad, rect, 60.0, 20.0).is_none());
+        assert!(annotation_quad_bounds(&malformed_quad).is_none());
 
         let mut malformed_ink = PdfDictionary::empty();
         malformed_ink.insert(
@@ -42942,6 +42877,560 @@ mod tests {
         assert!(
             counts.len() >= 5,
             "captions are distinct shapes: {counts:?}"
+        );
+    }
+
+    // --- WP9: PDFium widget appearance parity -------------------------------
+
+    fn rgb_near(pixel: PixelColor, rgb: [u8; 3], tolerance: i16) -> bool {
+        (0..3).all(|i| (i16::from(pixel[i]) - i16::from(rgb[i])).abs() <= tolerance)
+    }
+
+    fn assert_pixel(buf: &PixelBuffer, x: i32, y: i32, rgb: [u8; 3], what: &str) {
+        let pixel = buf.get_pixel(x, y);
+        assert!(
+            rgb_near(pixel, rgb, 12),
+            "{what}: pixel ({x}, {y}) is {pixel:?}, expected {rgb:?}"
+        );
+    }
+
+    /// Renders a one-page PDF whose objects 5.. are `objects` and whose
+    /// page annotations are `annots`, with an AcroForm built from
+    /// `acroform` (inside `<< >>`).
+    fn render_widget_pdf(objects: Vec<Vec<u8>>, annots: &str, acroform: &str) -> PixelBuffer {
+        let pdf = annotation_pdf(objects, annots, "", &format!("/AcroForm << {acroform} >>"));
+        let engine = ContentEngine::open_bytes(pdf).expect("open widget PDF");
+        PageRenderer::render_page(&engine, 1, 72).expect("render widget PDF")
+    }
+
+    fn synthesize_object_for_test(pdf: Vec<u8>, object: u32) -> (PdfDictionary, String) {
+        let engine = ContentEngine::open_bytes(pdf).expect("open widget PDF");
+        let reader = engine.document().reader();
+        let annot = match reader.get_object(object, 0).expect("widget object") {
+            PdfObject::Dictionary(dict) => dict,
+            other => panic!("widget is {other:?}"),
+        };
+        let rect = required_rect(&annot, "widget").expect("rect");
+        let (dict, raw) =
+            synthesize_annotation_appearance(&annot, reader, &engine, rect).expect("synthesized");
+        (dict, String::from_utf8_lossy(&raw).into_owned())
+    }
+
+    #[test]
+    fn widget_beveled_border_paints_pdfium_bands() {
+        // Rect [10 10 90 50] covers device x 10..90, y 50..90 at 72 dpi.
+        let buf = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 10 90 50] /FT /Tx /T (b) /V () \
+             /BS << /W 2 /S /B >> /MK << /BG [0 0 1] /BC [1 0 0] >> >>",
+        );
+        // Painted width 4: a 2pt red frame, then 2pt bevel bands.
+        assert_pixel(&buf, 11, 70, [255, 0, 0], "outer frame");
+        assert_pixel(&buf, 13, 70, [255, 255, 255], "white left band");
+        assert_pixel(&buf, 50, 53, [255, 255, 255], "white top band");
+        assert_pixel(&buf, 87, 70, [0, 0, 128], "right band = background / 2");
+        assert_pixel(&buf, 50, 87, [0, 0, 128], "bottom band = background / 2");
+        assert_pixel(&buf, 50, 70, [0, 0, 255], "background");
+    }
+
+    #[test]
+    fn widget_inset_border_paints_grey_bands() {
+        let buf = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 10 90 50] /FT /Tx /T (i) /V () \
+             /BS << /W 2 /S /I >> /MK << /BG [0 0 1] /BC [1 0 0] >> >>",
+        );
+        assert_pixel(&buf, 11, 70, [255, 0, 0], "outer frame");
+        assert_pixel(&buf, 13, 70, [128, 128, 128], "50% grey top-left band");
+        assert_pixel(&buf, 87, 70, [191, 191, 191], "75% grey bottom-right band");
+        assert_pixel(&buf, 50, 70, [0, 0, 255], "background");
+    }
+
+    #[test]
+    fn widget_dashed_and_underline_borders_follow_bs_style() {
+        let red_in_row = |buf: &PixelBuffer, y: i32| {
+            (14..86)
+                .filter(|x| is_reddish(buf.get_pixel(*x, y)))
+                .count()
+        };
+        let solid = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 10 90 50] /FT /Tx /T (s) /V () \
+             /BS << /W 2 >> /MK << /BC [1 0 0] >> >>",
+        );
+        let dashed = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 10 90 50] /FT /Tx /T (d) /V () \
+             /BS << /W 2 /S /D /D [4 4] >> /MK << /BC [1 0 0] >> >>",
+        );
+        let underline = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 10 90 50] /FT /Tx /T (u) /V () \
+             /BS << /W 2 /S /U >> /MK << /BC [1 0 0] >> >>",
+        );
+        // Top edge: device row 51 (page y 48..50).
+        assert_eq!(red_in_row(&solid, 51), 72, "solid top edge");
+        let dashed_top = red_in_row(&dashed, 51);
+        assert!(
+            (20..=52).contains(&dashed_top),
+            "dashed top edge is about half painted: {dashed_top}"
+        );
+        assert_eq!(red_in_row(&underline, 51), 0, "underline has no top edge");
+        assert_eq!(red_in_row(&underline, 89), 72, "underline bottom edge");
+        assert!(!is_reddish(underline.get_pixel(11, 70)), "no left edge");
+    }
+
+    #[test]
+    fn check_box_border_width_comes_from_border_array() {
+        let buf = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /T (c) \
+             /V /Off /AS /Off /Border [0 0 3] /MK << /BC [1 0 0] >> >>",
+        );
+        // 3pt frame: device columns 30..33 red, 34 not.
+        assert_pixel(&buf, 31, 55, [255, 0, 0], "frame");
+        assert_pixel(&buf, 32, 55, [255, 0, 0], "frame");
+        assert_pixel(&buf, 34, 55, [255, 255, 255], "inside the frame");
+    }
+
+    #[test]
+    fn radio_buttons_draw_mk_caption_styles() {
+        let mut counts = Vec::new();
+        for caption in ["", "4", "8", "u", "n", "H"] {
+            let mk = if caption.is_empty() {
+                String::new()
+            } else {
+                format!("/MK << /CA ({caption}) >>")
+            };
+            let buf = render_single_annotation(&format!(
+                "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /Ff 32768 \
+                 /T (r) /V /A /AS /A /DA (/ZaDb 0 Tf 0 g) {mk} >>"
+            ));
+            let dark = count_dark_pixels(&buf);
+            assert!(dark > 30, "radio style {caption:?} should draw, got {dark}");
+            counts.push(dark);
+        }
+        counts.sort_unstable();
+        counts.dedup();
+        assert!(counts.len() >= 5, "styles are distinct: {counts:?}");
+
+        // Default circle style: round background and border, dot in the
+        // middle, rectangle corners untouched.
+        let buf = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /Ff 32768 \
+             /T (r) /V /A /AS /A /MK << /BG [0 1 0] /BC [1 0 0] >> >>",
+        );
+        assert_pixel(&buf, 30, 40, [255, 255, 255], "corner outside the circle");
+        assert_pixel(&buf, 45, 55, [0, 0, 0], "dot");
+        assert!(count_green_pixels(&buf) > 200, "round background");
+        assert!(count_red_pixels(&buf) > 40, "round border");
+        // Unselected: chrome only.
+        let off = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /Ff 32768 \
+             /T (r) /V /Off /AS /Off /MK << /BG [0 1 0] /BC [1 0 0] >> >>",
+        );
+        assert!(count_green_pixels(&off) > 200);
+        assert_eq!(count_dark_pixels(&off), 0);
+    }
+
+    #[test]
+    fn check_box_without_state_appearance_draws_grey_hairline() {
+        let on = annotation_appearance_stream(
+            "0 0 1 rg 0 0 30 30 re f\n",
+            "/BBox [0 0 30 30] /Resources << >>",
+        );
+        let grey = |p: PixelColor| {
+            p[0] > 120
+                && p[0] < 225
+                && (i16::from(p[0]) - i16::from(p[1])).abs() < 4
+                && (i16::from(p[1]) - i16::from(p[2])).abs() < 4
+        };
+        let render = |widget: &str| {
+            render_widget_pdf(
+                vec![widget.as_bytes().to_vec(), on.as_bytes().to_vec()],
+                "5 0 R",
+                "/Fields [5 0 R]",
+            )
+        };
+        // /AP /N has no /Off appearance and nothing else would draw.
+        let missing = render(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /T (c) \
+             /V /Off /AS /Off /AP << /N << /Yes 6 0 R >> >> >>",
+        );
+        assert!(
+            count_pixels_matching(&missing, grey) > 60,
+            "grey outline, got {}",
+            count_pixels_matching(&missing, grey)
+        );
+        assert_eq!(count_blue_pixels(&missing), 0);
+        // The checked state has an appearance: no outline.
+        let checked = render(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /T (c) \
+             /V /Yes /AS /Yes /AP << /N << /Yes 6 0 R >> >> >>",
+        );
+        assert!(count_blue_pixels(&checked) > 500);
+        assert_eq!(count_pixels_matching(&checked, grey), 0);
+        // An unchecked box with chrome draws its chrome instead.
+        let chrome = render(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /T (c) \
+             /V /Off /AS /Off /MK << /BG [1 0 0] >> /AP << /N << /Yes 6 0 R >> >> >>",
+        );
+        assert_eq!(count_pixels_matching(&chrome, grey), 0);
+        assert!(count_red_pixels(&chrome) > 800);
+        // Without any /AP nothing is drawn, as PDFium generates an empty
+        // off appearance.
+        let no_ap = render(
+            "<< /Type /Annot /Subtype /Widget /Rect [30 30 60 60] /FT /Btn /T (c) \
+             /V /Off /AS /Off >>",
+        );
+        assert_eq!(count_pixels_matching(&no_ap, grey), 0);
+    }
+
+    #[test]
+    fn combo_box_draws_drop_button_beside_the_value() {
+        let buf = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Ch /Ff 131072 /T (c) \
+             /V (Banana) /Opt [(Apple) (Banana)] /DA (/Helv 10 Tf 0 g) /MK << /BC [0 0 0] >> >>",
+        );
+        let button_grey = count_pixels_matching(&buf, |p| rgb_near(p, [220, 220, 220], 6));
+        assert!(button_grey > 60, "drop button face, got {button_grey}");
+        // Button: page x 76..89, y 41..59; triangle around (82.5, 50).
+        assert_pixel(&buf, 82, 50, [0, 0, 0], "drop triangle");
+        let text = matching_pixel_bounds(&buf, |p| p[0] < 80 && p[1] < 80 && p[2] < 80)
+            .expect("value text");
+        assert!(text[0] < 30, "value starts at the left: {text:?}");
+        let value_right = (12..76)
+            .rev()
+            .find(|x| (43..58).any(|y| count_dark(buf.get_pixel(*x, y))))
+            .expect("value pixels");
+        assert!(
+            (35..70).contains(&value_right),
+            "value ends well left of the button: {value_right}"
+        );
+    }
+
+    fn count_dark(pixel: PixelColor) -> bool {
+        pixel[0] < 80 && pixel[1] < 80 && pixel[2] < 80
+    }
+
+    fn icon_button_pdf(mk: &str) -> Vec<u8> {
+        let icon = annotation_appearance_stream(
+            "1 0 0 rg 0 0 10 10 re f\n",
+            "/BBox [0 0 10 10] /Resources << >>",
+        );
+        annotation_pdf(
+            vec![
+                format!(
+                    "<< /Type /Annot /Subtype /Widget /Rect [10 10 90 50] /FT /Btn /Ff 65536 \
+                     /T (p) /DA (/Helv 0 Tf 0 0 1 rg) /MK << /I 6 0 R {mk} >> >>"
+                )
+                .into_bytes(),
+                icon.into_bytes(),
+            ],
+            "5 0 R",
+            "",
+            "",
+        )
+    }
+
+    fn render_pdf(pdf: Vec<u8>) -> PixelBuffer {
+        let engine = ContentEngine::open_bytes(pdf).expect("open PDF");
+        PageRenderer::render_page(&engine, 1, 72).expect("render PDF")
+    }
+
+    #[test]
+    fn push_button_icon_follows_icon_fit() {
+        // Client area: the 80x40 widget inset by the 1pt border width.
+        let fitted = render_pdf(icon_button_pdf("/TP 1"));
+        let red = matching_pixel_bounds(&fitted, is_red).expect("icon");
+        let (w, h) = (red[2] - red[0] + 1, red[3] - red[1] + 1);
+        assert!((36..=39).contains(&w) && (36..=39).contains(&h), "{red:?}");
+        assert!((29..=32).contains(&red[0]), "centred horizontally: {red:?}");
+
+        let anamorphic = render_pdf(icon_button_pdf("/TP 1 /IF << /S /A >>"));
+        let red = matching_pixel_bounds(&anamorphic, is_red).expect("icon");
+        assert!(red[2] - red[0] + 1 >= 76, "stretched to the width: {red:?}");
+
+        let never = render_pdf(icon_button_pdf("/TP 1 /IF << /SW /N /A [0 0] >>"));
+        let red = matching_pixel_bounds(&never, is_red).expect("icon");
+        assert!(
+            (10..=12).contains(&red[0]) && (87..=89).contains(&red[3]),
+            "unscaled at the bottom-left: {red:?}"
+        );
+        assert!(red[2] - red[0] + 1 <= 11, "{red:?}");
+
+        let bigger = render_pdf(icon_button_pdf("/TP 1 /IF << /SW /B >>"));
+        let red = matching_pixel_bounds(&bigger, is_red).expect("icon");
+        assert!(
+            red[2] - red[0] + 1 <= 11,
+            "small icons are not enlarged: {red:?}"
+        );
+    }
+
+    #[test]
+    fn push_button_caption_position_lays_out_icon_and_caption() {
+        let below = render_pdf(icon_button_pdf("/CA (Go) /TP 2"));
+        let icon = matching_pixel_bounds(&below, is_red).expect("icon");
+        let caption = matching_pixel_bounds(&below, is_blue).expect("caption");
+        assert!(caption[1] > icon[3], "caption below: {icon:?} {caption:?}");
+
+        let above = render_pdf(icon_button_pdf("/CA (Go) /TP 3"));
+        let icon = matching_pixel_bounds(&above, is_red).expect("icon");
+        let caption = matching_pixel_bounds(&above, is_blue).expect("caption");
+        assert!(caption[3] < icon[1], "caption above: {icon:?} {caption:?}");
+
+        let right = render_pdf(icon_button_pdf("/CA (Go) /TP 4"));
+        let icon = matching_pixel_bounds(&right, is_red).expect("icon");
+        let caption = matching_pixel_bounds(&right, is_blue).expect("caption");
+        assert!(caption[0] > icon[2], "caption right: {icon:?} {caption:?}");
+
+        let left = render_pdf(icon_button_pdf("/CA (Go) /TP 5"));
+        let icon = matching_pixel_bounds(&left, is_red).expect("icon");
+        let caption = matching_pixel_bounds(&left, is_blue).expect("caption");
+        assert!(caption[2] < icon[0], "caption left: {icon:?} {caption:?}");
+
+        let caption_only = render_pdf(icon_button_pdf("/CA (Go) /TP 0"));
+        assert!(matching_pixel_bounds(&caption_only, is_red).is_none());
+        assert!(count_pixels_matching(&caption_only, is_blue) > 50);
+
+        let icon_only = render_pdf(icon_button_pdf("/CA (Go) /TP 1"));
+        assert_eq!(count_pixels_matching(&icon_only, is_blue), 0);
+
+        let overlaid = render_pdf(icon_button_pdf("/CA (Go) /TP 6"));
+        let icon = matching_pixel_bounds(&overlaid, is_red).expect("icon");
+        let caption = matching_pixel_bounds(&overlaid, is_blue).expect("caption");
+        let center = |b: [u32; 4]| (b[0] + b[2]) as i64 / 2;
+        assert!(
+            (center(caption) - center(icon)).abs() <= 3,
+            "caption centred over the icon: {icon:?} {caption:?}"
+        );
+    }
+
+    #[test]
+    fn push_button_beveled_border_and_fixed_caption_size() {
+        let (dict, content) = synthesize_widget_for_test(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Btn /Ff 65536 /T (p) \
+             /DA (/F1 9 Tf 0 g) /BS << /W 1 /S /B >> /MK << /CA (OK) /BG [0.75 0.75 0.75] \
+             /BC [0 0 0] >> >>",
+            "",
+        );
+        assert!(content.contains("/F1 9 Tf"), "{content}");
+        assert!(content.contains("0.375 g"), "background halved: {content}");
+        assert!(dict.get("Matrix").is_none());
+    }
+
+    #[test]
+    fn text_markup_quads_outside_rect_are_drawn_in_full() {
+        let highlight = render_single_annotation(
+            "<< /Type /Annot /Subtype /Highlight /Rect [20 30 50 50] \
+             /QuadPoints [20 50 80 50 20 30 80 30] /C [1 1 0] /CA 1 >>",
+        );
+        let yellow = matching_pixel_bounds(&highlight, |p| p[0] > 180 && p[1] > 180 && p[2] < 160)
+            .expect("highlight");
+        assert!(yellow[2] >= 78, "quad drawn past /Rect: {yellow:?}");
+        assert!(yellow[0] <= 21, "{yellow:?}");
+
+        let underline = render_single_annotation(
+            "<< /Type /Annot /Subtype /Underline /Rect [20 30 50 50] \
+             /QuadPoints [20 50 80 50 20 30 80 30] /C [1 0 0] >>",
+        );
+        let red = matching_pixel_bounds(&underline, is_reddish).expect("underline");
+        assert!(red[2] >= 78, "underline past /Rect: {red:?}");
+    }
+
+    #[test]
+    fn widget_mk_rotation_turns_the_generated_appearance() {
+        let render = |mk: &str| {
+            render_single_annotation(&format!(
+                "<< /Type /Annot /Subtype /Widget /Rect [40 10 60 90] /FT /Tx /T (t) \
+                 /V (Hello) /DA (/Helv 10 Tf 0 0 1 rg) {mk} >>"
+            ))
+        };
+        let rotated = render("/MK << /R 90 >>");
+        let text = matching_pixel_bounds(&rotated, is_blue).expect("rotated text");
+        let (w, h) = (text[2] - text[0] + 1, text[3] - text[1] + 1);
+        assert!(h > 2 * w, "text runs vertically: {text:?}");
+        let (dict, _) = synthesize_widget_for_test(
+            "<< /Type /Annot /Subtype /Widget /Rect [40 10 60 90] /FT /Tx /T (t) \
+             /V (Hello) /DA (/F1 10 Tf 0 g) /MK << /R 270 >> >>",
+            "",
+        );
+        assert_eq!(
+            dict.get_array("BBox").map(|items| items
+                .iter()
+                .filter_map(PdfObject::as_number)
+                .collect::<Vec<_>>()),
+            Some(vec![0.0, 0.0, 80.0, 20.0]),
+            "laid out in the rotated size"
+        );
+        assert!(dict.get("Matrix").is_some());
+
+        // Rotated push-button caption.
+        let button = render_single_annotation(
+            "<< /Type /Annot /Subtype /Widget /Rect [40 10 60 90] /FT /Btn /Ff 65536 /T (b) \
+             /DA (/Helv 10 Tf 0 0 1 rg) /MK << /R 90 /CA (Press) >> >>",
+        );
+        let text = matching_pixel_bounds(&button, is_blue).expect("rotated caption");
+        assert!(text[3] - text[1] > 2 * (text[2] - text[0]), "{text:?}");
+    }
+
+    fn highlight_contract(engine: &ContentEngine) -> RenderContract {
+        engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract")
+    }
+
+    #[test]
+    fn form_highlight_is_painted_over_editable_widgets_only_when_requested() {
+        let pdf = annotation_pdf(
+            vec![
+                b"<< /Type /Annot /Subtype /Widget /Rect [10 60 90 80] /FT /Tx /T (name) \
+                   /V () >>"
+                    .to_vec(),
+                b"<< /Type /Annot /Subtype /Widget /Rect [10 20 90 40] /FT /Tx /T (fixed) \
+                   /Ff 1 /V () >>"
+                    .to_vec(),
+            ],
+            "5 0 R 6 0 R",
+            "",
+            "/AcroForm << /Fields [5 0 R 6 0 R] >>",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open highlight PDF");
+        let bluish = |p: PixelColor| p[2] > 200 && p[0] < 200 && p[1] < 200;
+
+        let plain = engine
+            .render_page_with_contract(&highlight_contract(&engine), &CancelToken::none())
+            .expect("default render");
+        assert_eq!(count_pixels_matching(&plain, bluish), 0, "off by default");
+        assert_eq!(
+            highlight_contract(&engine).cache_fingerprint(),
+            {
+                let mut contract = highlight_contract(&engine);
+                contract.form_highlight = crate::render::FormHighlightPolicy::default();
+                contract.cache_fingerprint()
+            },
+            "the default policy keeps the cache identity"
+        );
+
+        let mut contract = highlight_contract(&engine);
+        contract.form_highlight =
+            crate::render::FormHighlightPolicy::all(crate::render::ContractColor {
+                r: 0,
+                g: 0,
+                b: 255,
+                a: 128,
+            });
+        let highlighted = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("highlight render");
+        assert_pixel(&highlighted, 50, 30, [127, 127, 255], "editable field");
+        assert_pixel(&highlighted, 50, 70, [255, 255, 255], "read-only field");
+
+        // Per-type colours: check boxes only.
+        contract.form_highlight = crate::render::FormHighlightPolicy {
+            check_box: Some(crate::render::ContractColor {
+                r: 0,
+                g: 0,
+                b: 255,
+                a: 255,
+            }),
+            ..Default::default()
+        };
+        let none = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("check-box-only render");
+        assert_eq!(count_pixels_matching(&none, bluish), 0);
+
+        // Focus rectangle around the named field.
+        contract.form_highlight = crate::render::FormHighlightPolicy {
+            focus_field: Some("name".to_string()),
+            ..Default::default()
+        };
+        let focused = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("focus render");
+        let dark = matching_pixel_bounds(&focused, |p| p[0] < 160 && p[1] < 160 && p[2] < 160)
+            .expect("focus rectangle");
+        assert!(
+            (8..=9).contains(&dark[0]) && (90..=91).contains(&dark[2]),
+            "1pt outside the widget: {dark:?}"
+        );
+        assert!(
+            (18..=19).contains(&dark[1]) && (40..=41).contains(&dark[3]),
+            "{dark:?}"
+        );
+    }
+
+    fn type0_dr_pdf(widget: &str, font: &str, extra_objects: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut objects = vec![widget.as_bytes().to_vec(), font.as_bytes().to_vec()];
+        objects.extend(extra_objects);
+        annotation_pdf(
+            objects,
+            "5 0 R",
+            "",
+            "/AcroForm << /Fields [5 0 R] /DR << /Font << /CJK 6 0 R >> >> >>",
+        )
+    }
+
+    #[test]
+    fn text_field_uses_type0_dr_font_through_its_to_unicode() {
+        let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                    /CMapName /T def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> \
+                    endcodespacerange 2 beginbfchar <0011> <65E5> <0022> <672C> endbfchar \
+                    endcmap CMapName currentdict /CMap defineresource pop end end";
+        let to_unicode = format!("<< /Length {} >>\nstream\n{cmap}\nendstream", cmap.len());
+        let font = "<< /Type /Font /Subtype /Type0 /BaseFont /MSGothic /Encoding /Identity-H \
+                    /ToUnicode 7 0 R /DescendantFonts [<< /Type /Font /Subtype /CIDFontType2 \
+                    /BaseFont /MSGothic /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) \
+                    /Supplement 0 >> /DW 1000 /W [17 [500]] /FontDescriptor << /Type \
+                    /FontDescriptor /FontName /MSGothic /Flags 4 /FontBBox [0 -141 1000 859] \
+                    /ItalicAngle 0 /Ascent 859 /Descent -141 /CapHeight 700 /StemV 80 >> >>] >>";
+        let pdf = type0_dr_pdf(
+            "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Tx /T (j) \
+             /V <FEFF65E5672C> /DA (/CJK 12 Tf 0 g) >>",
+            font,
+            vec![to_unicode.into_bytes()],
+        );
+        let (dict, content) = synthesize_object_for_test(pdf, 5);
+        assert!(content.contains("/CJK 12 Tf <00110022> Tj"), "{content}");
+        let fonts = dict
+            .get_dict("Resources")
+            .and_then(|r| r.get_dict("Font"))
+            .expect("fonts");
+        assert!(matches!(
+            fonts.get("CJK"),
+            Some(PdfObject::Reference { .. })
+        ));
+        assert!(
+            fonts.get("WFUni").is_none(),
+            "no fallback needed: {fonts:?}"
+        );
+    }
+
+    #[test]
+    fn text_field_falls_back_to_installed_font_for_characters_dejavu_lacks() {
+        crate::fonts::installed::enable_installed_fonts_for_test_thread();
+        if crate::fonts::installed::installed_font_covering(
+            "\u{4E2D}\u{6587}",
+            &crate::fonts::installed::InstalledFontStyle::default(),
+        )
+        .is_none()
+        {
+            eprintln!("skipping: no installed CJK font");
+            return;
+        }
+        let widget = "<< /Type /Annot /Subtype /Widget /Rect [10 40 90 60] /FT /Tx /T (n) \
+                      /V <FEFF0041004E2D6587> /DA (/F1 14 Tf 0 0 1 rg) >>";
+        let (dict, content) = synthesize_widget_for_test(widget, "");
+        assert!(content.contains("/F1 14 Tf"), "{content}");
+        assert!(content.contains("/WFUni1 14 Tf"), "{content}");
+        let fonts = dict
+            .get_dict("Resources")
+            .and_then(|r| r.get_dict("Font"))
+            .expect("fonts");
+        assert_eq!(
+            fonts.get_dict("WFUni1").and_then(|f| f.get_name("Subtype")),
+            Some("Type0")
+        );
+        let pdf = pdf_with_form_objects(vec![widget.as_bytes().to_vec()], "5 0 R", "5 0 R", "");
+        let buf = render_pdf(pdf);
+        assert!(
+            count_pixels_matching(&buf, is_blue) > 40,
+            "CJK glyphs render through the installed face"
         );
     }
 

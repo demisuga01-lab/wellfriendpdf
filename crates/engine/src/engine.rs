@@ -2181,6 +2181,7 @@ impl ContentEngine {
         accepted_expected.print_profile = contract.print_profile;
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
+        accepted_expected.form_highlight = contract.form_highlight.clone();
         accepted_expected.execution_mode = contract.execution_mode;
         accepted_expected.halftone = contract.halftone;
         accepted_expected.background = contract.background;
@@ -2222,6 +2223,7 @@ impl ContentEngine {
                 contract.print_profile,
                 contract.annotations,
                 contract.forms,
+                &contract.form_highlight,
                 contract.rendering_intent,
                 contract.color_management,
                 contract.overprint,
@@ -2252,6 +2254,7 @@ impl ContentEngine {
                 contract.print_profile,
                 contract.annotations,
                 contract.forms,
+                &contract.form_highlight,
                 contract.rendering_intent,
                 contract.color_management,
                 contract.overprint,

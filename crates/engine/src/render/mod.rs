@@ -1,4 +1,5 @@
 pub(crate) mod annotation_synthesis;
+pub(crate) mod widget_synthesis;
 pub mod buffer;
 pub mod clip_dag;
 pub(crate) mod cmm;
@@ -47,8 +48,8 @@ pub use color::{ColorSpaceHandler, RenderColor};
 pub use contract::{
     render_contract_field_effects, AlphaMode, AnnotationRenderPolicy, BackendSelection,
     ColorManagementPolicy, ColorScheme, CompositingPolicy, ContractColor, DeterminismPolicy,
-    DeviceClip, DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, FormRenderPolicy,
-    HalftonePolicy, ObjectIdentityId, OptionalContentStateId, OverprintPolicy, PageBox,
+    DeviceClip, DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, FormHighlightPolicy,
+    FormRenderPolicy, HalftonePolicy, ObjectIdentityId, OptionalContentStateId, OverprintPolicy, PageBox,
     PixelFormat, PrintProfile, RenderContract, RenderContractFieldEffect, RenderResourceBudget,
     RenderingIntent, ResourceId, RevisionId, SmoothingPolicy, SourceLinkId,
     RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
