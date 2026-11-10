@@ -4348,6 +4348,8 @@ impl PageRenderer {
         recorded.len()
     }
 
+    /// Render a page's packed plan followed by its annotations (and XFA
+    /// foreground) under the default render contract.
     fn render_packed_vector_plan(
         engine: &ContentEngine,
         page_number: usize,
@@ -4358,6 +4360,7 @@ impl PageRenderer {
     ) -> Result<PixelBuffer> {
         cancel.check("packed plan render start")?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
+        let annotation_policy = AnnotationReplayPolicy::from_contract(contract.clone());
         let resources = engine.get_page_resources(page_number)?;
         let plan = RenderPlan::compile_with_resources_cancellable(
             list.clone(),
@@ -4366,8 +4369,9 @@ impl PageRenderer {
             cancel,
         )?;
         if !plan.packed.requires_native_replay() {
-            // Pure vector path — no RenderState needed
-            let buf = plan
+            // Pure vector path — no RenderState needed for the page content;
+            // annotations get their own state.
+            let mut buf = plan
                 .execute_vector_tile_cancellable(
                     RenderTile::full(list.viewport.width_px, list.viewport.height_px),
                     cancel,
@@ -4378,10 +4382,49 @@ impl PageRenderer {
                     )
                 })?;
             cancel.check("packed vector plan replay")?;
+            Self::render_annotations_into_with_policy(
+                engine,
+                page_number,
+                dpi,
+                &mut buf,
+                annotation_policy,
+            )?;
             return Ok(buf);
         }
         // High-level plan path: dispatch typed descriptors through RenderState
-        Self::execute_plan_with_state(engine, page_number, dpi, &plan, cancel, render_mode)
+        Self::execute_plan_with_state(
+            engine,
+            page_number,
+            dpi,
+            &plan,
+            cancel,
+            render_mode,
+            annotation_policy,
+        )
+    }
+
+    /// Draw the page's annotations and XFA foreground with `state`, the
+    /// state that just rendered the page content, instead of building a
+    /// second render state. The drawing state is reset to what a fresh state
+    /// starts with (graphics state, clip and soft-mask stacks, active
+    /// resources, guards and budgets), while the per-render caches (fonts,
+    /// glyphs, decoded images, programs) carry over. The page buffer's own
+    /// clip and soft mask are kept, as a second state would inherit them.
+    fn render_annotations_with_state(
+        engine: &ContentEngine,
+        page_number: usize,
+        state: &mut RenderState<'_>,
+        policy: AnnotationReplayPolicy,
+    ) -> Result<()> {
+        if !Self::page_has_annotations(engine, page_number)
+            && !Self::page_may_have_xfa_overlay(engine, &policy)
+        {
+            return Ok(());
+        }
+        state.reset_for_annotation_pass();
+        state.apply_annotation_replay_policy(policy);
+        state.render_page_annotations();
+        state.check_fatal_render_error()
     }
 
     /// Execute a compiled `RenderPlan` through a `RenderState`-backed
@@ -4395,6 +4438,7 @@ impl PageRenderer {
         plan: &RenderPlan,
         cancel: &CancelToken,
         render_mode: RenderMode,
+        annotation_policy: AnnotationReplayPolicy,
     ) -> Result<PixelBuffer> {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources_shared(page_number)?;
@@ -4403,7 +4447,7 @@ impl PageRenderer {
         // Fonts, decoded strings and glyphs come from the engine's
         // document-level cache, so a one-shot render of every page parses
         // each font once.
-        let mut buf = engine.with_text_render_cache(|cache| -> Result<PixelBuffer> {
+        let buf = engine.with_text_render_cache(|cache| -> Result<PixelBuffer> {
             let mut state = RenderState::new_with_shared_document_cache(
                 buf,
                 viewport.clone(),
@@ -4436,11 +4480,21 @@ impl PageRenderer {
                 state.return_document_cache(cache);
                 return Err(error);
             }
+            // Annotations draw over the flattened page.
+            if transparent_page_group {
+                state.buf.flatten_onto_background(WHITE);
+            }
+            if let Err(error) = Self::render_annotations_with_state(
+                engine,
+                page_number,
+                &mut state,
+                annotation_policy,
+            ) {
+                state.return_document_cache(cache);
+                return Err(error);
+            }
             Ok(state.into_buffer_and_document_cache(cache))
         })?;
-        if transparent_page_group {
-            buf.flatten_onto_background(WHITE);
-        }
         Ok(buf)
     }
 
@@ -4454,6 +4508,7 @@ impl PageRenderer {
         cancel: &CancelToken,
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
+        annotation_policy: AnnotationReplayPolicy,
     ) -> Result<PixelBuffer> {
         cancel.check("packed plan render start")?;
         let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
@@ -4479,7 +4534,7 @@ impl PageRenderer {
             }
         };
         if !plan.packed.requires_native_replay() {
-            let buf = plan
+            let mut buf = plan
                 .execute_vector_tile_cancellable(full_tile, cancel)?
                 .ok_or_else(|| {
                     WellfriendError::UnsupportedFeature(
@@ -4487,6 +4542,14 @@ impl PageRenderer {
                     )
                 })?;
             cancel.check("packed vector plan replay")?;
+            Self::render_annotations_into_with_cache_and_policy(
+                engine,
+                page_number,
+                dpi,
+                &mut buf,
+                cache,
+                annotation_policy,
+            )?;
             return Ok(buf);
         }
         Self::execute_plan_with_state_and_cache(
@@ -4498,9 +4561,11 @@ impl PageRenderer {
             cancel,
             render_mode,
             cache,
+            annotation_policy,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_plan_with_state_and_cache(
         engine: &ContentEngine,
         page_number: usize,
@@ -4510,6 +4575,7 @@ impl PageRenderer {
         cancel: &CancelToken,
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
+        annotation_policy: AnnotationReplayPolicy,
     ) -> Result<PixelBuffer> {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let transparent_contract_fingerprint = plan.contract.cache_fingerprint();
@@ -4559,11 +4625,17 @@ impl PageRenderer {
             state.return_document_cache(cache);
             return Err(error);
         }
-        let mut buf = state.into_buffer_and_document_cache(cache);
+        // Annotations draw over the flattened page.
         if transparent_page_group {
-            buf.flatten_onto_background(WHITE);
+            state.buf.flatten_onto_background(WHITE);
         }
-        Ok(buf)
+        if let Err(error) =
+            Self::render_annotations_with_state(engine, page_number, &mut state, annotation_policy)
+        {
+            state.return_document_cache(cache);
+            return Err(error);
+        }
+        Ok(state.into_buffer_and_document_cache(cache))
     }
 
     /// Return a retained page display list from the caller's document cache, or
@@ -4980,16 +5052,15 @@ impl PageRenderer {
             // form/shading) go through the packed plan path. The plan compiles
             // typed descriptors and dispatches through RenderState for native
             // ops, or through the CPU device for pure vector content.
-            let mut buf = Self::render_packed_vector_plan(
+            // Annotations are drawn by the same render pass.
+            Self::render_packed_vector_plan(
                 engine,
                 page_number,
                 dpi,
                 &list,
                 &CancelToken::none(),
                 render_mode,
-            )?;
-            Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
-            Ok(buf)
+            )
         }
     }
 
@@ -5006,7 +5077,8 @@ impl PageRenderer {
         if list.is_fully_supported() {
             // All fully-supported lists route through the plan path which
             // dispatches text/image/form/shading via typed compiled descriptors.
-            let mut buf = Self::render_packed_vector_plan(
+            // Annotations are drawn by the same render pass.
+            let buf = Self::render_packed_vector_plan(
                 engine,
                 page_number,
                 dpi,
@@ -5014,8 +5086,6 @@ impl PageRenderer {
                 cancel,
                 render_mode,
             )?;
-            cancel.check("display-list plan replay")?;
-            Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
             cancel.check("display-list annotation render")?;
             return Ok(buf);
         }
@@ -5134,7 +5204,8 @@ impl PageRenderer {
         );
 
         let buf = if list.is_fully_supported() {
-            let mut buf = Self::render_packed_vector_plan_with_cache(
+            // Annotations are drawn by the same render pass.
+            Self::render_packed_vector_plan_with_cache(
                 engine,
                 page_number,
                 dpi,
@@ -5143,17 +5214,8 @@ impl PageRenderer {
                 cancel,
                 render_mode,
                 cache,
-            )?;
-            cancel.check("display-list plan replay")?;
-            Self::render_annotations_into_with_cache_and_policy(
-                engine,
-                page_number,
-                dpi,
-                &mut buf,
-                cache,
                 policy,
-            )?;
-            buf
+            )?
         } else {
             if render_mode.is_high_quality() {
                 return Err(exact_contract_unsupported_display_list_error(list));
@@ -6017,20 +6079,6 @@ impl PageRenderer {
                 render_mode,
             )
         }
-    }
-
-    fn render_annotations_into(
-        engine: &ContentEngine,
-        page_number: usize,
-        dpi: u32,
-        buf: &mut PixelBuffer,
-    ) -> Result<()> {
-        let policy = AnnotationReplayPolicy::from_contract(engine.default_render_contract(
-            page_number,
-            dpi,
-            buf.render_mode(),
-        )?);
-        Self::render_annotations_into_with_policy(engine, page_number, dpi, buf, policy)
     }
 
     fn render_annotations_into_with_policy(
@@ -8615,6 +8663,51 @@ impl<'a> RenderState<'a> {
             policy.render_contract_fingerprint,
             policy.resource_budget,
         );
+    }
+
+    /// Return the drawing state to what `new_with_shared_document_cache`
+    /// starts with, keeping the page buffer (with its clip and soft mask),
+    /// the per-render caches and the cancellation token. Used to draw the
+    /// annotations with the state that rendered the page content.
+    fn reset_for_annotation_pass(&mut self) {
+        self.gs = GraphicsState::default();
+        self.initial_rendering_intent = self.gs.rendering_intent.clone();
+        self.resources = SharedPageResources::from(Arc::clone(&self.page_resources));
+        self.clip_stack.clear();
+        self.smask_stack.clear();
+        self.path = Path::new();
+        self.pending_clip = None;
+        self.pending_text_clip = None;
+        self.text_object_active = false;
+        // Resource keys embed the font scope, which the annotation contract
+        // identity replaces.
+        self.font_resource_key_cache.clear();
+        self.active_font_resource = None;
+        self.active_fill_color_space_resource = None;
+        self.active_stroke_color_space_resource = None;
+        self.resolved_fill_color_cache = None;
+        self.resolved_stroke_color_cache = None;
+        self.fill_plate_contribution_cache = None;
+        self.stroke_plate_contribution_cache = None;
+        self.active_fill_pattern_resource = None;
+        self.active_stroke_pattern_resource = None;
+        self.active_resource_stack.clear();
+        self.pattern_stack.clear();
+        self.form_depth = 0;
+        self.form_object_stack.clear();
+        self.inline_begin_pending = false;
+        self.pending_inline = None;
+        self.inline_data_pending_end = false;
+        self.base_ctm = Transform2D::identity();
+        self.shading_work_budget = Arc::new(AtomicU64::new(MAX_SHADING_WORK_UNITS));
+        self.fatal_render_error = None;
+        self.oc_visibility_stack.clear();
+        self.oc_current_visible = true;
+        self.forced_color_text_depth = 0;
+        self.forced_color_suppression = 0;
+        self.type3_blue_zones = Type3BlueState::default();
+        self.set_active_fill_color_space("DeviceGray", None);
+        self.set_active_stroke_color_space("DeviceGray", None);
     }
 
     fn cache_budget(&self, default_budget: usize) -> usize {
