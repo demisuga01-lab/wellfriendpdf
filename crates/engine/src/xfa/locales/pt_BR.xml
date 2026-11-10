@@ -1,0 +1,88 @@
+<locale name="pt_BR">
+  <calendarSymbols name="gregorian">
+	 <monthNames>
+		<month>janeiro</month>
+		<month>fevereiro</month>
+		<month>março</month>
+		<month>abril</month>
+		<month>maio</month>
+		<month>junho</month>
+		<month>julho</month>
+		<month>agosto</month>
+		<month>setembro</month>
+		<month>outubro</month>
+		<month>novembro</month>
+		<month>dezembro</month>
+	 </monthNames>
+	 <monthNames abbr="1">
+		<month>jan</month>
+		<month>fev</month>
+		<month>mar</month>
+		<month>abr</month>
+		<month>mai</month>
+		<month>jun</month>
+		<month>jul</month>
+		<month>ago</month>
+		<month>set</month>
+		<month>out</month>
+		<month>nov</month>
+		<month>dez</month>
+	 </monthNames>
+	 <dayNames>
+		<day>domingo</day>
+		<day>segunda-feira</day>
+		<day>terça-feira</day>
+		<day>quarta-feira</day>
+		<day>quinta-feira</day>
+		<day>sexta-feira</day>
+		<day>sábado</day>
+	 </dayNames>
+	 <dayNames abbr="1">
+		<day>dom</day>
+		<day>seg</day>
+		<day>ter</day>
+		<day>qua</day>
+		<day>qui</day>
+		<day>sex</day>
+		<day>sáb</day>
+	 </dayNames>
+	 <meridiemNames>
+		<meridiem>AM</meridiem>
+		<meridiem>PM</meridiem>
+	 </meridiemNames>
+	 <eraNames>
+		<era>BC</era>
+		<era>AD</era>
+	 </eraNames>
+  </calendarSymbols>
+  <datePatterns>
+	 <datePattern name="full">EEEE, D' de 'MMMM' de 'YYYY</datePattern>
+	 <datePattern name="long">D' de 'MMMM' de 'YYYY</datePattern>
+	 <datePattern name="med">DD/MM/YYYY</datePattern>
+	 <datePattern name="short">DD/MM/YY</datePattern>
+  </datePatterns>
+  <timePatterns>
+	 <timePattern name="full">HH'h'MM'min'SS's' Z</timePattern>
+	 <timePattern name="long">H'h'M'min'S's' Z</timePattern>
+	 <timePattern name="med">HH:MM:SS</timePattern>
+	 <timePattern name="short">HH:MM</timePattern>
+  </timePatterns>
+  <dateTimeSymbols>GyMdkHmsSEDFwWahKzZ</dateTimeSymbols>
+  <numberPatterns>
+	 <numberPattern name="numeric">z,zz9.zzz</numberPattern>
+	 <numberPattern name="currency">$ z,zz9.zz</numberPattern>
+	 <numberPattern name="percent">z,zz9%</numberPattern>
+  </numberPatterns>
+  <numberSymbols>
+	 <numberSymbol name="decimal">,</numberSymbol>
+	 <numberSymbol name="grouping">.</numberSymbol>
+	 <numberSymbol name="percent">%</numberSymbol>
+	 <numberSymbol name="minus">-</numberSymbol>
+	 <numberSymbol name="zero">0</numberSymbol>
+  </numberSymbols>
+  <currencySymbols>
+	 <currencySymbol name="symbol">R$</currencySymbol>
+	 <currencySymbol name="isoname">BRL</currencySymbol>
+	 <currencySymbol name="decimal">,</currencySymbol>
+  </currencySymbols>
+  </locale>

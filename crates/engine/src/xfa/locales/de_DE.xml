@@ -1,0 +1,75 @@
+<locale name="de_DE"><calendarSymbols name="gregorian"><monthNames><month>Januar</month>
+<month>Februar</month>
+<month>März</month>
+<month>April</month>
+<month>Mai</month>
+<month>Juni</month>
+<month>Juli</month>
+<month>August</month>
+<month>September</month>
+<month>Oktober</month>
+<month>November</month>
+<month>Dezember</month>
+</monthNames>
+<monthNames abbr="1"><month>Jan</month>
+<month>Feb</month>
+<month>Mrz</month>
+<month>Apr</month>
+<month>Mai</month>
+<month>Jun</month>
+<month>Jul</month>
+<month>Aug</month>
+<month>Sep</month>
+<month>Okt</month>
+<month>Nov</month>
+<month>Dez</month>
+</monthNames>
+<dayNames><day>Sonntag</day>
+<day>Montag</day>
+<day>Dienstag</day>
+<day>Mittwoch</day>
+<day>Donnerstag</day>
+<day>Freitag</day>
+<day>Samstag</day>
+</dayNames>
+<dayNames abbr="1"><day>So</day>
+<day>Mo</day>
+<day>Di</day>
+<day>Mi</day>
+<day>Do</day>
+<day>Fr</day>
+<day>Sa</day>
+</dayNames>
+<meridiemNames><meridiem>AM</meridiem>
+<meridiem>PM</meridiem>
+</meridiemNames>
+<eraNames><era>v. Chr.</era>
+<era>n. Chr.</era>
+</eraNames>
+</calendarSymbols>
+<datePatterns><datePattern name="full">EEEE, D. MMMM YYYY</datePattern>
+<datePattern name="long">D. MMMM YYYY</datePattern>
+<datePattern name="med">DD.MM.YYYY</datePattern>
+<datePattern name="short">DD.MM.YY</datePattern>
+</datePatterns>
+<timePatterns><timePattern name="full">H:MM' Uhr 'Z</timePattern>
+<timePattern name="long">HH:MM:SS Z</timePattern>
+<timePattern name="med">HH:MM:SS</timePattern>
+<timePattern name="short">HH:MM</timePattern>
+</timePatterns>
+<dateTimeSymbols>GjMtkHmsSEDFwWahKzZ</dateTimeSymbols>
+<numberPatterns><numberPattern name="numeric">z,zz9.zzz</numberPattern>
+<numberPattern name="currency">z,zz9.99 $</numberPattern>
+<numberPattern name="percent">z,zz9%</numberPattern>
+</numberPatterns>
+<numberSymbols><numberSymbol name="decimal">,</numberSymbol>
+<numberSymbol name="grouping">.</numberSymbol>
+<numberSymbol name="percent">%</numberSymbol>
+<numberSymbol name="minus">-</numberSymbol>
+<numberSymbol name="zero">0</numberSymbol>
+</numberSymbols>
+<currencySymbols><currencySymbol name="symbol">€</currencySymbol>
+<currencySymbol name="isoname">EUR</currencySymbol>
+<currencySymbol name="decimal">,</currencySymbol>
+</currencySymbols>
+</locale>

@@ -205,6 +205,36 @@ pub(crate) fn caption_spec<'t>(tpl: &Template<'t>, node: &'t XmlNode) -> Option<
     })
 }
 
+/// [`caption_spec`] with the node's script overrides (caption text,
+/// caption presence, font colour).
+pub(crate) fn caption_spec_for<'t>(
+    tpl: &Template<'t>,
+    node: &FormNode<'t>,
+) -> Option<CaptionSpec<'t>> {
+    let mut spec = caption_spec(tpl, node.tmpl)?;
+    if let Some(text) = &node.caption {
+        spec.text = Some(text.clone()).filter(|text| !text.is_empty());
+        spec.rich = None;
+    }
+    if let Some(presence) = node.caption_presence {
+        spec.visible = presence == Presence::Visible;
+        spec.hidden = presence == Presence::Hidden;
+    }
+    if let Some(color) = node.font_color {
+        spec.font.color = color;
+    }
+    Some(spec)
+}
+
+/// A node's `<font>` with a script font-colour override.
+pub(crate) fn node_font_for<'t>(tpl: &Template<'t>, node: &FormNode<'t>) -> FontSpec {
+    let mut font = node_font(tpl, node.tmpl);
+    if let Some(color) = node.font_color {
+        font.color = color;
+    }
+    font
+}
+
 impl<'t> CaptionSpec<'t> {
     pub(crate) fn paragraphs(&self) -> Vec<Paragraph> {
         match (self.rich, &self.text) {
@@ -215,10 +245,30 @@ impl<'t> CaptionSpec<'t> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct BreakTarget {
+#[derive(Clone, Copy, Debug, Default)]
+struct BreakTarget<'f, 't> {
     page_area: Option<usize>,
     content_area: bool,
+    /// A specific content area: (page area, content area index).
+    content: Option<(usize, usize)>,
+    /// Placed after / before the break (`leader` / `trailer`).
+    leader: Option<&'f FormNode<'t>>,
+    trailer: Option<&'f FormNode<'t>>,
+}
+
+/// `<overflow>` (or legacy `<break overflow...>`) of a container.
+#[derive(Clone, Copy, Debug, Default)]
+struct Overflow<'f, 't> {
+    leader: Option<&'f FormNode<'t>>,
+    trailer: Option<&'f FormNode<'t>>,
+    target: Option<BreakTarget<'f, 't>>,
+}
+
+/// `<keep>`: intact, with next, with previous.
+#[derive(Clone, Copy, Debug, Default)]
+struct Keep {
+    next: bool,
+    previous: bool,
 }
 
 #[derive(Default)]
@@ -247,7 +297,7 @@ pub(crate) struct Layouter<'a, 'f, 't, 'r> {
     content: usize,
     cursor: f64,
     used: bool,
-    pending_break: Option<BreakTarget>,
+    pending_break: Option<BreakTarget<'f, 't>>,
     placed: usize,
     depth: usize,
 }
@@ -372,7 +422,20 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
         self.pages.push(page);
     }
 
-    fn next_area(&mut self, target: Option<BreakTarget>) {
+    fn next_area(&mut self, target: Option<BreakTarget<'f, 't>>) {
+        if let Some((page_area, content)) = target.and_then(|t| t.content) {
+            if page_area == self.page_area && content > self.content {
+                self.content = content;
+                self.cursor = 0.0;
+                self.used = false;
+                return;
+            }
+            if self.pages.len() < MAX_PAGES {
+                self.start_page(Some(page_area));
+                self.content = content.min(self.content_count() - 1);
+                return;
+            }
+        }
         let to_page = target.is_some_and(|t| !t.content_area);
         let page_area = target.and_then(|t| t.page_area);
         if !to_page && page_area.is_none() && self.content + 1 < self.content_count() {
@@ -392,12 +455,15 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
 
     /// Applies a break: to a new content area/page when the current one
     /// has content, or re-targets an empty page to the requested page area.
-    fn apply_break(&mut self, target: BreakTarget) {
+    /// The break's trailer ends the old area and its leader starts the new
+    /// one (placed at `x`, `w` wide).
+    fn apply_break(&mut self, target: BreakTarget<'f, 't>, x: f64, w: f64) {
         if self.used {
+            if let Some(trailer) = target.trailer {
+                self.place_extra(trailer, x, w);
+            }
             self.next_area(Some(target));
-            return;
-        }
-        if let Some(page_area) = target.page_area {
+        } else if let Some(page_area) = target.page_area {
             if page_area != self.page_area && self.content == 0 {
                 if let Some(page) = self.pages.pop() {
                     self.area_uses[page.page_area] =
@@ -405,13 +471,146 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
                 }
                 self.start_page(Some(page_area));
             }
+        } else if let Some((page_area, content)) = target.content {
+            if page_area == self.page_area && content != self.content {
+                self.content = content.min(self.content_count() - 1);
+                self.cursor = 0.0;
+            }
+        }
+        if let Some(leader) = target.leader {
+            self.place_extra(leader, x, w);
         }
     }
 
-    fn take_pending_break(&mut self) {
+    fn take_pending_break(&mut self, x: f64, w: f64) {
         if let Some(target) = self.pending_break.take() {
-            self.apply_break(target);
+            self.apply_break(target, x, w);
         }
+    }
+
+    /// Lays out a leader/trailer subform and places it at the cursor.
+    fn place_extra(&mut self, node: &'f FormNode<'t>, x: f64, w: f64) {
+        if self.depth > 48 {
+            return;
+        }
+        if let Some(block) = self.layout_node(node, w) {
+            self.place_block(block, x);
+        }
+    }
+
+    /// Height a leader/trailer would take.
+    fn extra_height(&mut self, node: Option<&'f FormNode<'t>>, w: f64) -> f64 {
+        node.and_then(|node| self.layout_node(node, w))
+            .map_or(0.0, |block| block.h)
+    }
+
+    fn extra(&self, reference: Option<&str>) -> Option<&'f FormNode<'t>> {
+        let reference = reference?.trim();
+        if reference.is_empty() {
+            return None;
+        }
+        self.model.extras.get(reference)
+    }
+
+    /// A content area by `#id` or name: (page area, index).
+    fn content_target(&self, reference: Option<&str>) -> Option<(usize, usize)> {
+        let reference = reference?.trim();
+        let id = reference.trim_start_matches('#');
+        if id.is_empty() {
+            return None;
+        }
+        let name = id.rsplit('.').next().unwrap_or(id);
+        // Prefer the current page area.
+        let areas = &self.model.page_areas;
+        let order = std::iter::once(self.page_area)
+            .chain((0..areas.len()).filter(|&i| i != self.page_area));
+        for page_area in order {
+            if let Some(index) = areas[page_area]
+                .content_ids
+                .iter()
+                .position(|(cid, cname)| *cid == Some(id) || (!cname.is_empty() && *cname == name))
+            {
+                return Some((page_area, index));
+            }
+        }
+        None
+    }
+
+    fn overflow_of(&self, node: &'f FormNode<'t>) -> Overflow<'f, 't> {
+        let tpl = self.tpl;
+        let (leader, trailer, target) = if let Some(overflow) = tpl.child(node.tmpl, "overflow") {
+            (
+                tpl.attr(overflow, "leader"),
+                tpl.attr(overflow, "trailer"),
+                tpl.attr(overflow, "target"),
+            )
+        } else if let Some(legacy) = tpl.child(node.tmpl, "break") {
+            (
+                tpl.attr(legacy, "overflowLeader"),
+                tpl.attr(legacy, "overflowTrailer"),
+                tpl.attr(legacy, "overflowTarget"),
+            )
+        } else {
+            return Overflow::default();
+        };
+        let target = target.and_then(|target| {
+            if let Some(content) = self.content_target(Some(target)) {
+                return Some(BreakTarget {
+                    content: Some(content),
+                    content_area: true,
+                    ..BreakTarget::default()
+                });
+            }
+            self.page_area_target(Some(target))
+                .map(|page_area| BreakTarget {
+                    page_area: Some(page_area),
+                    ..BreakTarget::default()
+                })
+        });
+        Overflow {
+            leader: self.extra(leader),
+            trailer: self.extra(trailer),
+            target,
+        }
+    }
+
+    fn bookend_of(
+        &self,
+        node: &'f FormNode<'t>,
+    ) -> (Option<&'f FormNode<'t>>, Option<&'f FormNode<'t>>) {
+        let tpl = self.tpl;
+        match tpl.child(node.tmpl, "bookend") {
+            Some(bookend) => (
+                self.extra(tpl.attr(bookend, "leader")),
+                self.extra(tpl.attr(bookend, "trailer")),
+            ),
+            None => (None, None),
+        }
+    }
+
+    fn keep_of(&self, node: &'f FormNode<'t>) -> Keep {
+        let tpl = self.tpl;
+        let Some(keep) = tpl.child(node.tmpl, "keep") else {
+            return Keep::default();
+        };
+        let on = |attr: &str| matches!(tpl.attr(keep, attr), Some("contentArea" | "pageArea"));
+        Keep {
+            next: on("next"),
+            previous: on("previous"),
+        }
+    }
+
+    fn page_area_target(&self, target: Option<&str>) -> Option<usize> {
+        let target = target?.trim();
+        let target = target.trim_start_matches('#');
+        if target.is_empty() {
+            return None;
+        }
+        let name = target.rsplit('.').next().unwrap_or(target);
+        self.model
+            .page_areas
+            .iter()
+            .position(|area| area.id == Some(target) || area.name == name)
     }
 
     fn current_page(&mut self) -> &mut LayoutPage<'f, 't> {
@@ -436,51 +635,46 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
         self.current_page().items.extend(block.items);
     }
 
-    fn break_target(&self, node: &'t XmlNode, before: bool) -> Option<BreakTarget> {
+    fn break_target(&self, node: &'t XmlNode, before: bool) -> Option<BreakTarget<'f, 't>> {
         let tpl = self.tpl;
-        let resolve = |target: Option<&str>| -> Option<usize> {
-            let target = target?.trim();
-            let target = target.trim_start_matches('#');
-            if target.is_empty() {
-                return None;
-            }
-            let name = target.rsplit('.').next().unwrap_or(target);
-            self.model
-                .page_areas
-                .iter()
-                .position(|area| area.id == Some(target) || area.name == name)
-        };
         let element = if before { "breakBefore" } else { "breakAfter" };
-        if let Some(directive) = tpl.child(node, element) {
-            let kind = tpl.attr(directive, "targetType").unwrap_or("auto");
-            let target = resolve(tpl.attr(directive, "target"));
-            return match kind {
-                "pageArea" | "pageEven" | "pageOdd" => Some(BreakTarget {
-                    page_area: target,
-                    content_area: false,
-                }),
-                "contentArea" => Some(BreakTarget {
-                    page_area: None,
-                    content_area: true,
-                }),
-                _ => None,
-            };
-        }
-        let legacy = tpl.child(node, "break")?;
-        let (attr, target_attr) = if before {
-            ("before", "beforeTarget")
+        let (kind, target, leader, trailer) = if let Some(directive) = tpl.child(node, element) {
+            (
+                tpl.attr(directive, "targetType").unwrap_or("auto"),
+                tpl.attr(directive, "target"),
+                tpl.attr(directive, "leader"),
+                tpl.attr(directive, "trailer"),
+            )
         } else {
-            ("after", "afterTarget")
+            let legacy = tpl.child(node, "break")?;
+            let (attr, target_attr, leader, trailer) = if before {
+                ("before", "beforeTarget", "beforeLeader", "beforeTrailer")
+            } else {
+                ("after", "afterTarget", "afterLeader", "afterTrailer")
+            };
+            (
+                tpl.attr(legacy, attr).unwrap_or("auto"),
+                tpl.attr(legacy, target_attr),
+                tpl.attr(legacy, leader),
+                tpl.attr(legacy, trailer),
+            )
         };
-        let target = resolve(tpl.attr(legacy, target_attr));
-        match tpl.attr(legacy, attr) {
-            Some("pageArea" | "pageEven" | "pageOdd") => Some(BreakTarget {
-                page_area: target,
+        let leader = self.extra(leader);
+        let trailer = self.extra(trailer);
+        match kind {
+            "pageArea" | "pageEven" | "pageOdd" => Some(BreakTarget {
+                page_area: self.page_area_target(target),
                 content_area: false,
+                content: None,
+                leader,
+                trailer,
             }),
-            Some("contentArea") => Some(BreakTarget {
+            "contentArea" => Some(BreakTarget {
                 page_area: None,
                 content_area: true,
+                content: self.content_target(target),
+                leader,
+                trailer,
             }),
             _ => None,
         }
@@ -517,7 +711,7 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
         let inner_w = (width - margin.left - margin.right).max(0.0);
         let columns =
             (flow_of(tpl, node.tmpl) == Flow::Table).then(|| self.column_widths(node, inner_w));
-        let visible = presence(tpl, node.tmpl) != Presence::Hidden;
+        let visible = node.presence_in(tpl) != Presence::Hidden;
         if !visible {
             self.depth -= 1;
             return;
@@ -527,13 +721,22 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
                 self.pending_break = Some(target);
             }
         }
-        self.take_pending_break();
+        let content_x = x_off + margin.left;
+        self.take_pending_break(x_off, avail_w);
+        let overflow = self.overflow_of(node);
+        let (bookend_leader, bookend_trailer) = self.bookend_of(node);
+        let trailer_h = self.extra_height(overflow.trailer, inner_w);
         let mut fragment = self.open_fragment(node, x_off, width);
         self.cursor += margin.top;
-        for child in &node.children {
-            if presence(tpl, child.tmpl) == Presence::Hidden {
-                continue;
-            }
+        if let Some(leader) = bookend_leader {
+            self.place_extra(leader, content_x, inner_w);
+        }
+        let children: Vec<&'f FormNode<'t>> = node
+            .children
+            .iter()
+            .filter(|child| child.presence_in(tpl) != Presence::Hidden)
+            .collect();
+        for (index, &child) in children.iter().enumerate() {
             if self.placed > MAX_PLACED {
                 break;
             }
@@ -542,7 +745,7 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
             }
             if self.pending_break.is_some() {
                 let before = self.pages.len() * 64 + self.content;
-                self.take_pending_break();
+                self.take_pending_break(content_x, inner_w);
                 if self.pages.len() * 64 + self.content != before {
                     fragment = self.reopen_fragment(fragment, node, x_off, width);
                 }
@@ -562,17 +765,35 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
                 };
                 if let Some(block) = block {
                     let area = self.area();
-                    if block.h > area[3] - self.cursor + 0.01 && self.used {
+                    // A keep chain (`keep next`/`previous`) moves as a unit
+                    // when it fits in an empty content area.
+                    let chain =
+                        self.keep_chain_height(&children, index, inner_w, columns.as_deref());
+                    let needed = if chain > block.h && chain <= area[3] - trailer_h {
+                        chain
+                    } else {
+                        block.h
+                    };
+                    if needed > area[3] - self.cursor - trailer_h + 0.01 && self.used {
+                        if let Some(trailer) = overflow.trailer {
+                            self.place_extra(trailer, content_x, inner_w);
+                        }
                         self.close_fragment(&fragment, false);
-                        self.next_area(None);
+                        self.next_area(overflow.target);
                         fragment = self.open_fragment(node, x_off, width);
+                        if let Some(leader) = overflow.leader {
+                            self.place_extra(leader, content_x, inner_w);
+                        }
                     }
-                    self.place_block(block, x_off + margin.left);
+                    self.place_block(block, content_x);
                 }
             }
             if let Some(target) = self.break_target(child.tmpl, false) {
                 self.pending_break = Some(target);
             }
+        }
+        if let Some(trailer) = bookend_trailer {
+            self.place_extra(trailer, content_x, inner_w);
         }
         self.cursor += margin.bottom;
         self.close_fragment(&fragment, true);
@@ -582,6 +803,38 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
             }
         }
         self.depth -= 1;
+    }
+
+    /// Height of the keep chain starting at `children[index]`: the child
+    /// and following siblings linked by `keep next` / `keep previous`.
+    fn keep_chain_height(
+        &mut self,
+        children: &[&'f FormNode<'t>],
+        index: usize,
+        inner_w: f64,
+        columns: Option<&[f64]>,
+    ) -> f64 {
+        let mut total = 0.0;
+        let mut end = index;
+        while end + 1 < children.len()
+            && end - index < 32
+            && (self.keep_of(children[end]).next || self.keep_of(children[end + 1]).previous)
+        {
+            end += 1;
+        }
+        if end == index {
+            return 0.0;
+        }
+        for &child in &children[index..=end] {
+            let block = match (columns, flow_of(self.tpl, child.tmpl)) {
+                (Some(columns), Flow::Row) if child.kind == NodeKind::Subform => {
+                    self.layout_row(child, columns)
+                }
+                _ => self.layout_node(child, inner_w),
+            };
+            total += block.map_or(0.0, |block| block.h);
+        }
+        total
     }
 
     fn open_fragment(
@@ -709,13 +962,14 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
     fn flow_positioned(&mut self, root: &'f FormNode<'t>) {
         let tpl = self.tpl;
         for child in &root.children {
-            if presence(tpl, child.tmpl) == Presence::Hidden {
+            if child.presence_in(tpl) == Presence::Hidden {
                 continue;
             }
             if let Some(target) = self.break_target(child.tmpl, true) {
                 self.pending_break = Some(target);
             }
-            self.take_pending_break();
+            let width = self.area()[2];
+            self.take_pending_break(0.0, width);
             let area = self.area();
             if let Some(mut block) = self.layout_positioned_child(child, area[2]) {
                 block.shift(area[0], area[1]);
@@ -787,7 +1041,7 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
     /// as the tallest cell.
     fn layout_row(&mut self, node: &'f FormNode<'t>, columns: &[f64]) -> Option<Block<'f, 't>> {
         let tpl = self.tpl;
-        if presence(tpl, node.tmpl) == Presence::Hidden {
+        if node.presence_in(tpl) == Presence::Hidden {
             return None;
         }
         let margin = node_margin(tpl, node.tmpl);
@@ -796,7 +1050,7 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
         let mut column = 0usize;
         let mut height = 0.0f64;
         for child in &node.children {
-            if presence(tpl, child.tmpl) == Presence::Hidden {
+            if child.presence_in(tpl) == Presence::Hidden {
                 continue;
             }
             let span = tpl
@@ -859,7 +1113,7 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
         forced_w: Option<f64>,
     ) -> Option<Block<'f, 't>> {
         let tpl = self.tpl;
-        if presence(tpl, node.tmpl) == Presence::Hidden {
+        if node.presence_in(tpl) == Presence::Hidden {
             return None;
         }
         self.depth += 1;
@@ -1047,7 +1301,7 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
         let font = node_font(tpl, node.tmpl);
         let para = node_para(tpl, node.tmpl);
         let caption = if node.kind == NodeKind::Field {
-            caption_spec(tpl, node.tmpl).filter(|caption| !caption.hidden)
+            caption_spec_for(tpl, node).filter(|caption| !caption.hidden)
         } else {
             None
         };
@@ -1278,6 +1532,78 @@ mod tests {
         assert_eq!(pages.len(), 3);
         assert_eq!(pages[1].page_area, 1);
         assert_eq!((pages[1].width, pages[1].height), (300.0, 300.0));
+    }
+
+    #[test]
+    fn overflow_leaders_trailers_bookends_and_keep_chains() {
+        let template = parse(&format!(
+            r##"<template><subform name="f" layout="tb">{PAGE_SET}
+            <subform name="hdr" id="hdr" w="100pt" h="20pt"><occur min="0" initial="0"/></subform>
+            <subform name="ftr" id="ftr" w="100pt" h="10pt"><occur min="0" initial="0"/></subform>
+            <subform name="list" layout="tb"><overflow leader="#hdr" trailer="#ftr"/><bookend leader="#hdr"/>
+              <subform name="item" w="100pt" h="30pt"><occur min="8" max="8"/></subform>
+            </subform>
+            <subform name="a" w="100pt" h="100pt"><breakBefore targetType="pageArea" target="P1" trailer="#ftr"/></subform>
+            <subform name="b" w="100pt" h="60pt"><keep next="contentArea"/></subform>
+            <subform name="c" w="100pt" h="60pt"/>
+            </subform></template>"##
+        ));
+        let tpl = Template::new(&template);
+        let model = build_form_model(&tpl, &template, None).unwrap();
+        assert_eq!(model.extras.len(), 2);
+        let mut book = FontBook::new(None, Vec::new());
+        let pages = layout_form(&tpl, &model, &mut book);
+        let count = |page: &LayoutPage, name: &str| {
+            page.items
+                .iter()
+                .filter(|item| item.node.name() == name)
+                .count()
+        };
+        // Page 1: bookend leader, 5 items (the trailer's 10pt is reserved),
+        // overflow trailer. Page 2: overflow leader, 3 items.
+        assert_eq!(count(&pages[0], "hdr"), 1);
+        assert_eq!(count(&pages[0], "item"), 5);
+        assert_eq!(count(&pages[0], "ftr"), 1);
+        let ftr = pages[0]
+            .items
+            .iter()
+            .find(|i| i.node.name() == "ftr")
+            .unwrap();
+        assert_eq!(ftr.y, 36.0 + 20.0 + 150.0);
+        assert_eq!(count(&pages[1], "hdr"), 1);
+        assert_eq!(count(&pages[1], "item"), 3);
+        // The break before `a` places its trailer, then `a` starts page 3;
+        // `b` keeps with `c`, so both move to page 4.
+        assert_eq!(count(&pages[1], "ftr"), 1);
+        assert_eq!(count(&pages[2], "a"), 1);
+        assert_eq!(count(&pages[2], "b"), 0);
+        assert_eq!(count(&pages[3], "b"), 1);
+        assert_eq!(count(&pages[3], "c"), 1);
+        assert_eq!(pages.len(), 4);
+    }
+
+    #[test]
+    fn overflow_target_selects_a_content_area() {
+        let template = parse(
+            r##"<template><subform name="f" layout="tb"><pageSet>
+              <pageArea name="P" id="P"><contentArea id="A" x="0pt" y="0pt" w="100pt" h="50pt"/><contentArea id="B" x="0pt" y="100pt" w="100pt" h="50pt"/><contentArea id="C" x="0pt" y="200pt" w="100pt" h="100pt"/><medium short="300pt" long="300pt"/></pageArea></pageSet>
+            <subform name="list" layout="tb"><overflow target="#C"/>
+              <subform name="item" w="100pt" h="30pt"><occur min="3" max="3"/></subform>
+            </subform></subform></template>"##,
+        );
+        let tpl = Template::new(&template);
+        let model = build_form_model(&tpl, &template, None).unwrap();
+        let mut book = FontBook::new(None, Vec::new());
+        let pages = layout_form(&tpl, &model, &mut book);
+        let ys: Vec<f64> = pages[0]
+            .items
+            .iter()
+            .filter(|item| item.node.name() == "item")
+            .map(|item| item.y)
+            .collect();
+        // Content area B is skipped: the overflow continues in C.
+        assert_eq!(ys, vec![0.0, 200.0, 230.0]);
+        assert_eq!(pages.len(), 1);
     }
 
     #[test]

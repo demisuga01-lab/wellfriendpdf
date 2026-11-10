@@ -327,3 +327,253 @@ fn dynamic_xfa_lays_out_pages_beyond_the_pdf_page_count() {
     let layout = ContentEngine::open_bytes(engine.xfa_layout_pdf().unwrap()).unwrap();
     assert_eq!(layout.page_count().unwrap(), 4);
 }
+
+const EMPTY_DATA: &str = r#"<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data/></xfa:datasets>"#;
+
+/// Words of the XFA layout's page `page` (via the layout PDF's text).
+fn layout_words(engine: &ContentEngine, page: usize) -> Vec<String> {
+    let layout = ContentEngine::open_bytes(engine.xfa_layout_pdf().unwrap()).unwrap();
+    let tsv = layout.get_text_tsv(&[page]).unwrap();
+    tsv.lines()
+        .skip(1)
+        .filter_map(|line| line.rsplit('\t').next())
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+const SCRIPTED_TEMPLATE: &str = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="tb">
+  <pageSet><pageArea name="P" id="P"><contentArea x="10pt" y="10pt" w="180pt" h="180pt"/><medium short="200pt" long="200pt"/></pageArea></pageSet>
+  <subform name="item" layout="tb"><occur min="3" max="3"/>
+    <field name="amt" w="80pt" h="16pt"><ui><numericEdit/></ui><value><decimal/></value><font typeface="Helvetica" size="9pt"/>
+      <event activity="initialize"><script>$ = $.parent.index + 1</script></event></field>
+  </subform>
+  <field name="total" w="160pt" h="16pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <calculate><script>Concat("Total ", Sum(item[*].amt))</script></calculate></field>
+  <field name="secret" w="160pt" h="16pt"><ui><textEdit/></ui><value><text>Hidden</text></value><font typeface="Helvetica" size="9pt"/>
+    <event activity="initialize"><script>if (Sum(item[*].amt) == 6) then $.presence = "hidden" endif</script></event></field>
+  <field name="js" w="160pt" h="16pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <caption reserve="40pt"><value><text>Old</text></value></caption>
+    <event activity="docReady" ref="$host"><script contentType="application/x-javascript">
+      this.caption.value.text.value = "Cap";
+      var n = 0;
+      for (var i = 0; i &lt; 3; i++) { n += xfa.resolveNode("form1.item[" + i + "].amt").rawValue; }
+      this.rawValue = "JS" + n;
+    </script></event></field>
+</subform></template>"#;
+
+#[test]
+fn form_scripts_set_values_presence_and_captions() {
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, SCRIPTED_TEMPLATE, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    assert_eq!(engine.xfa_form_type(), XfaFormType::Full);
+    assert!(
+        engine.xfa_script_errors().is_empty(),
+        "{:?}",
+        engine.xfa_script_errors()
+    );
+    let words = layout_words(&engine, 1);
+    for expected in ["1", "2", "3", "Total", "6", "Cap"] {
+        assert!(
+            words.iter().any(|w| w == expected),
+            "{expected} in {words:?}"
+        );
+    }
+    assert!(!words.iter().any(|w| w == "Hidden"), "{words:?}");
+    assert!(words.iter().any(|w| w == "JS6"), "{words:?}");
+}
+
+fn pdfium_fixture(name: &str) -> String {
+    let path = format!(
+        "{}/tests/fixtures/xfa_pdfium/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(path).unwrap()
+}
+
+/// PDFium `testing/resources/javascript/xfa_specific/reentrant_calculate.in`.
+#[test]
+fn pdfium_reentrant_calculate_runs_calculations_and_doc_ready() {
+    let template = r#"<template>
+  <subform layout="tb" name="my_subform">
+    <pageSet id="page" relation="orderedOccurrence">
+      <occur initial="1" max="1" min="1"/>
+      <pageArea id="Page1" name="Page1">
+        <contentArea x="0.25in" y="0.25in" w="8in" h="10.5in"/>
+        <medium long="11in" short="8.5in" stock="letter"/>
+      </pageArea>
+    </pageSet>
+    <field name="source1"><value><text>1</text></value><ui><textEdit/></ui></field>
+    <field name="intermediate">
+      <calculate><script contentType="application/x-javascript">"inter";</script></calculate>
+      <ui><textEdit/></ui>
+    </field>
+    <field name="source2"><value><text>2</text></value><ui><textEdit/></ui></field>
+    <field name="target">
+      <calculate>
+        <script contentType="application/x-javascript">
+          var v1 = source1.rawValue;
+          intermediate.execCalculate();
+          var v2 = source2.rawValue;
+          var res = v1 + "+" + v2;
+          app.alert("target: " + res);
+          res;
+        </script>
+      </calculate>
+      <ui><textEdit/></ui>
+    </field>
+    <event activity="docReady" ref="$host">
+      <script contentType="application/x-javascript">source2.rawValue = "99";</script>
+    </event>
+  </subform>
+</template>"#;
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, template, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    let expected: Vec<String> = pdfium_fixture("reentrant_calculate_expected.txt")
+        .lines()
+        .map(|line| line.trim_start_matches("Alert: ").to_string())
+        .collect();
+    assert_eq!(engine.xfa_script_log(), expected);
+    let words = layout_words(&engine, 1);
+    assert!(words.iter().any(|w| w == "1+99"), "{words:?}");
+    assert!(words.iter().any(|w| w == "inter"), "{words:?}");
+}
+
+const INSTANCE_MANAGER_CHECKS: &str = r#"
+        var mgr = xfa.resolveNode("xfa.form..field4").instanceManager;
+        dumpTree(mgr);
+        testRWProperty(mgr, "count", 1, 12);
+        testROProperty(mgr, "min", 1);
+        testROProperty(mgr, "max", -1);
+        expectError("mgr.setInstances()");
+        expectError("mgr.setInstances(-10)");
+        expectError("mgr.setInstances('clams')");
+        expectError("mgr.setInstances([1, 2, 3])");
+        expect("mgr.setInstances(4)", undefined);
+        expect("mgr.count", 4);
+        expect("mgr.setInstances(2)", undefined);
+        expect("mgr.count", 2);
+        expectError("mgr.moveInstance()");
+        expectError("mgr.moveInstance(0)");
+        expectError("mgr.moveInstance('clams')");
+        expectError("mgr.moveInstance([1, 2, 3])");
+        expect("mgr.moveInstance(0, 1)", undefined);
+        expect("mgr.count", 2);
+        expectError("mgr.addInstance(1, 2, 3)");
+        expect("mgr.addInstance().className", "subform");
+        expect("mgr.addInstance(true).className", "subform");
+        expect("mgr.count", 4);
+        expectError("mgr.insertInstance()");
+        expectError("mgr.insertInstance(1, 2, 3)");
+        expect("mgr.insertInstance(1, true).className", "subform");
+        expect("mgr.count", 5);
+        expectError("mgr.removeInstance()");
+        expectError("mgr.removeInstance(1, 2)");
+        expect("mgr.removeInstance(0)", undefined);
+        expect("mgr.removeInstance(0)", undefined);
+        expect("mgr.removeInstance(0)", undefined);
+        expect("mgr.removeInstance(0)", undefined);
+        expect("mgr.count", 1);
+        expectError("mgr.removeInstance(0)");
+        expect("mgr.count", 1);
+"#;
+
+/// PDFium `testing/resources/javascript/xfa_specific/instance_manager.in`:
+/// every check passes (the messages of thrown errors differ in wording).
+#[test]
+fn pdfium_instance_manager_checks_pass() {
+    let script = format!(
+        "{}\n{}\n{}\n{INSTANCE_MANAGER_CHECKS}",
+        pdfium_fixture("expect.js"),
+        pdfium_fixture("property_test_helpers.js"),
+        pdfium_fixture("dump_tree.js"),
+    );
+    let template = format!(
+        r#"<template xmlns="http://www.xfa.org/schema/xfa-template/2.6/">
+  <subform layout="tb" locale="en_US" name="form1" restoreState="auto">
+    <pageSet><pageArea id="Page1" name="Page1"><contentArea h="10.5in" w="8in" x="0.25in" y="0.25in"/><medium long="11in" short="8.5in" stock="letter"/></pageArea></pageSet>
+    <subform h="10.5in" w="8in" name="subform2">
+      <field h="9.0001mm" name="field1" w="47.625mm" x="6.35mm" y="92.075mm"><ui><choiceList/></ui>
+        <items save="1"><text>Single</text><text>Married</text><text>Other</text></items></field>
+      <field name="field3" h="10.625mm" w="30.625mm" x="5mm" y="50mm"></field>
+      <subform name="field4" x="5mm" y="5mm"><occur max="-1"/><field name="field5" w="64.77mm" h="6.35mm"></field></subform>
+    </subform>
+    <event activity="docReady"><script contentType="application/x-javascript"><![CDATA[{script}]]></script></event>
+  </subform>
+</template>"#
+    );
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, &template, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    let log = engine.xfa_script_log();
+    let expected = pdfium_fixture("instance_manager_expected.txt");
+    let expected_checks = expected
+        .lines()
+        .filter(|line| line.starts_with("Alert: PASS"))
+        .count();
+    let failures: Vec<&String> = log
+        .iter()
+        .filter(|line| line.starts_with("FAIL") || line.starts_with("ERROR"))
+        .collect();
+    assert!(failures.is_empty(), "{failures:#?}\n{log:#?}");
+    let passes = log.iter().filter(|line| line.starts_with("PASS")).count();
+    assert_eq!(passes, expected_checks, "{log:#?}");
+    assert_eq!(log.first().map(String::as_str), Some("instanceManager"));
+}
+
+#[test]
+fn barcode_fields_draw_symbols() {
+    let template = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="position">
+  <pageSet><pageArea name="P"><contentArea w="200pt" h="200pt"/><medium short="200pt" long="200pt"/></pageArea></pageSet>
+  <field name="c128" x="10pt" y="10pt" w="180pt" h="40pt"><ui><barcode type="code128" textLocation="none"/></ui><value><text>WELL-123</text></value></field>
+  <field name="qr" x="10pt" y="60pt" w="80pt" h="80pt"><ui><barcode type="QRCode" moduleWidth="2pt" moduleHeight="2pt"/></ui><value><text>https://example.com/x</text></value></field>
+  <field name="ean" x="100pt" y="60pt" w="95pt" h="40pt"><ui><barcode type="ean13"/></ui><value><text>400638133393</text></value><font typeface="Helvetica" size="6pt"/></field>
+  <field name="dm" x="100pt" y="110pt" w="60pt" h="60pt"><ui><barcode type="dataMatrix" moduleWidth="2pt" moduleHeight="2pt"/></ui><value><text>DM-42</text></value></field>
+  <field name="p417" x="10pt" y="150pt" w="180pt" h="45pt"><ui><barcode type="pdf417" errorCorrectionLevel="2"/></ui><value><text>PDF417 symbol</text></value></field>
+</subform></template>"#;
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, template, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    assert!(
+        engine.xfa_render_unsupported().is_empty(),
+        "{:?}",
+        engine.xfa_render_unsupported()
+    );
+    let page = engine.render_xfa_page(1, 72).unwrap();
+    let area = |x0: u32, y0: u32, x1: u32, y1: u32| (x1 - x0) as usize * (y1 - y0) as usize;
+    // Bars: dark and light modules in every symbol's area.
+    for (x0, y0, x1, y1) in [
+        (10, 15, 190, 45),
+        (10, 60, 90, 140),
+        (100, 60, 195, 92),
+        (100, 110, 160, 170),
+        (10, 150, 190, 195),
+    ] {
+        let dark = dark_pixels(&page, x0, y0, x1, y1);
+        assert!(
+            dark > area(x0, y0, x1, y1) / 10 && dark < area(x0, y0, x1, y1) * 9 / 10,
+            "{x0},{y0}: {dark}"
+        );
+    }
+}
+
+#[test]
+fn locale_pictures_format_numbers_and_dates() {
+    let template = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="tb" locale="de_DE">
+  <pageSet><pageArea name="P"><contentArea w="200pt" h="200pt"/><medium short="200pt" long="200pt"/></pageArea></pageSet>
+  <field name="n" w="180pt" h="18pt"><ui><numericEdit/></ui><value><decimal>1234.5</decimal></value><format><picture>num{zzz,zz9.99}</picture></format><font typeface="Helvetica" size="10pt"/></field>
+  <field name="d" w="180pt" h="18pt"><ui><dateTimeEdit/></ui><value><date>2024-03-07</date></value><format><picture>date.long{}</picture></format><font typeface="Helvetica" size="10pt"/></field>
+  <field name="f" w="180pt" h="18pt" locale="fr_FR"><ui><dateTimeEdit/></ui><value><date>2024-03-07</date></value><format><picture>date{EEEE D MMMM YYYY}</picture></format><font typeface="Helvetica" size="10pt"/></field>
+</subform></template>"#;
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, template, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    let words = layout_words(&engine, 1);
+    for expected in ["1.234,50", "7.", "März", "2024", "jeudi", "mars"] {
+        assert!(
+            words.iter().any(|w| w == expected),
+            "{expected} in {words:?}"
+        );
+    }
+}

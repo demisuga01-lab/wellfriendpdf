@@ -1,0 +1,88 @@
+<locale name="zh_TW">
+  <calendarSymbols name="gregorian">
+	 <monthNames>
+		<month>一月</month>
+		<month>二月</month>
+		<month>三月</month>
+		<month>四月</month>
+		<month>五月</month>
+		<month>六月</month>
+		<month>七月</month>
+		<month>八月</month>
+		<month>九月</month>
+		<month>十月</month>
+		<month>十一月</month>
+		<month>十二月</month>
+	 </monthNames>
+	 <monthNames abbr="1">
+		<month>一月</month>
+		<month>二月</month>
+		<month>三月</month>
+		<month>四月</month>
+		<month>五月</month>
+		<month>六月</month>
+		<month>七月</month>
+		<month>八月</month>
+		<month>九月</month>
+		<month>十月</month>
+		<month>十一月</month>
+		<month>十二月</month>
+	 </monthNames>
+	 <dayNames>
+		<day>星期日</day>
+		<day>星期一</day>
+		<day>星期二</day>
+		<day>星期三</day>
+		<day>星期四</day>
+		<day>星期五</day>
+		<day>星期六</day>
+	 </dayNames>
+	 <dayNames abbr="1">
+		<day>日</day>
+		<day>一</day>
+		<day>二</day>
+		<day>三</day>
+		<day>四</day>
+		<day>五</day>
+		<day>六</day>
+	 </dayNames>
+	 <meridiemNames>
+		<meridiem>上午</meridiem>
+		<meridiem>下午</meridiem>
+	 </meridiemNames>
+	 <eraNames>
+		<era>公元前</era>
+		<era>公元</era>
+	 </eraNames>
+  </calendarSymbols>
+  <datePatterns>
+	 <datePattern name="full">YYYY'年'M'月'D'日'EEEE</datePattern>
+	 <datePattern name="long">YYYY'年'M'月'D'日'</datePattern>
+	 <datePattern name="med">YYYY/M/D</datePattern>
+	 <datePattern name="short">YYYY/M/D</datePattern>
+  </datePatterns>
+  <timePatterns>
+	 <timePattern name="full">Ahh'時'MM'分'SS'秒' Z</timePattern>
+	 <timePattern name="long">Ahh'時'MM'分'SS'秒'</timePattern>
+	 <timePattern name="med">A h:MM:SS</timePattern>
+	 <timePattern name="short">A h:MM</timePattern>
+  </timePatterns>
+  <dateTimeSymbols>GanjkHmsSEDFwWxhKzZ</dateTimeSymbols>
+  <numberPatterns>
+	 <numberPattern name="numeric">z,zz9.zzz</numberPattern>
+	 <numberPattern name="currency">$z,zz9.99</numberPattern>
+	 <numberPattern name="percent">z,zz9%</numberPattern>
+  </numberPatterns>
+  <numberSymbols>
+	 <numberSymbol name="decimal">.</numberSymbol>
+	 <numberSymbol name="grouping">,</numberSymbol>
+	 <numberSymbol name="percent">%</numberSymbol>
+	 <numberSymbol name="minus">-</numberSymbol>
+	 <numberSymbol name="zero">0</numberSymbol>
+  </numberSymbols>
+  <currencySymbols>
+	 <currencySymbol name="symbol">NT$</currencySymbol>
+	 <currencySymbol name="isoname">TWD</currencySymbol>
+	 <currencySymbol name="decimal">.</currencySymbol>
+  </currencySymbols>
+  </locale>

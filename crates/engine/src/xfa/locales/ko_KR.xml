@@ -1,0 +1,88 @@
+<locale name="ko_KR">
+  <calendarSymbols name="gregorian">
+	 <monthNames>
+		<month>1월</month>
+		<month>2월</month>
+		<month>3월</month>
+		<month>4월</month>
+		<month>5월</month>
+		<month>6월</month>
+		<month>7월</month>
+		<month>8월</month>
+		<month>9월</month>
+		<month>10월</month>
+		<month>11월</month>
+		<month>12월</month>
+	 </monthNames>
+	 <monthNames abbr="1">
+		<month>1월</month>
+		<month>2월</month>
+		<month>3월</month>
+		<month>4월</month>
+		<month>5월</month>
+		<month>6월</month>
+		<month>7월</month>
+		<month>8월</month>
+		<month>9월</month>
+		<month>10월</month>
+		<month>11월</month>
+		<month>12월</month>
+	 </monthNames>
+	 <dayNames>
+		<day>일요일</day>
+		<day>월요일</day>
+		<day>화요일</day>
+		<day>수요일</day>
+		<day>목요일</day>
+		<day>금요일</day>
+		<day>토요일</day>
+	 </dayNames>
+	 <dayNames abbr="1">
+		<day>일</day>
+		<day>월</day>
+		<day>화</day>
+		<day>수</day>
+		<day>목</day>
+		<day>금</day>
+		<day>토</day>
+	 </dayNames>
+	 <meridiemNames>
+		<meridiem>오전</meridiem>
+		<meridiem>오후</meridiem>
+	 </meridiemNames>
+	 <eraNames>
+		<era>기원전</era>
+		<era>서기</era>
+	 </eraNames>
+  </calendarSymbols>
+  <datePatterns>
+	 <datePattern name="full">YYYY'년' M'월' D'일' EEEE</datePattern>
+	 <datePattern name="long">YYYY'년' M'월' D'일'</datePattern>
+	 <datePattern name="med">YYYY. MM. DD</datePattern>
+	 <datePattern name="short">YY. MM. DD</datePattern>
+  </datePatterns>
+  <timePatterns>
+	 <timePattern name="full">A hh'시' MM'분' SS'초' Z</timePattern>
+	 <timePattern name="long">A hh'시' MM'분' SS'초'</timePattern>
+	 <timePattern name="med">A h:MM:SS</timePattern>
+	 <timePattern name="short">A h:MM</timePattern>
+  </timePatterns>
+  <dateTimeSymbols>GanjkHmsSEDFwWxhKzZ</dateTimeSymbols>
+  <numberPatterns>
+	 <numberPattern name="numeric">z,zz9.zzz</numberPattern>
+	 <numberPattern name="currency">$z,zz9</numberPattern>
+	 <numberPattern name="percent">z,zz9%</numberPattern>
+  </numberPatterns>
+  <numberSymbols>
+	 <numberSymbol name="decimal">.</numberSymbol>
+	 <numberSymbol name="grouping">,</numberSymbol>
+	 <numberSymbol name="percent">%</numberSymbol>
+	 <numberSymbol name="minus">-</numberSymbol>
+	 <numberSymbol name="zero">0</numberSymbol>
+  </numberSymbols>
+  <currencySymbols>
+	 <currencySymbol name="symbol">￦</currencySymbol>
+	 <currencySymbol name="isoname">KRW</currencySymbol>
+	 <currencySymbol name="decimal">.</currencySymbol>
+  </currencySymbols>
+  </locale>

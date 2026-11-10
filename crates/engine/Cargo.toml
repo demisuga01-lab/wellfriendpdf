@@ -95,6 +95,10 @@ pdf-writer = "=0.12.1"
 # PDF/A conversion font embedding: glyph subsetting for substituted fonts
 # (MIT OR Apache-2.0). Same version svg2pdf already resolves.
 subsetter = { version = "=0.2.6", default-features = false }
+# XFA barcode fields: QR Code and Data Matrix symbol encoders (both
+# MIT OR Apache-2.0, no default features / no image dependencies).
+qrcode = { version = "=0.14.1", default-features = false }
+datamatrix = { version = "=0.3.3", default-features = false }
 
 # The SHA-2 assembly backend does not build with the MSVC toolchain; enable it
 # only on non-Windows targets so Linux/macOS keep the accelerated path.
@@ -107,12 +111,16 @@ p12 = "0.6.3"
 # substitution (MIT). Same version usvg already resolves.
 fontdb = { version = "=0.23.0", default-features = false, features = ["std", "fs", "memmap", "fontconfig"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+# XFA form JavaScript (initialize/calculate/ready events) on a pure-Rust
+# engine; MIT OR Unlicense. No host bindings (network, files, timers) are
+# installed: scripts only see the XFA scripting object model.
+boa_engine = { version = "=0.22.0", default-features = false, features = ["annex-b"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 
 [features]
-default = ["parse", "render", "structural"]
+default = ["parse", "render", "structural", "xfa-js"]
 full = ["parse", "extract", "render", "create", "edit", "structural", "sign", "pdfa", "ocr"]
 parse = []
 extract = ["parse"]
@@ -136,6 +144,9 @@ native-cmm-lcms2 = ["dep:lcms2"]
 # default so the normal build keeps these implementation details private;
 # enabled only when building fuzz targets.
 fuzzing = []
+# JavaScript for XFA form scripts (boa); FormCalc is always available.
+# Without it (and on wasm32) JavaScript scripts are skipped and reported.
+xfa-js = ["dep:boa_engine"]
 
 [dev-dependencies]
 env_logger = "0.11"

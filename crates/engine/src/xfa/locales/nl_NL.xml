@@ -1,0 +1,88 @@
+<locale name="nl_NL">
+  <calendarSymbols name="gregorian">
+	 <monthNames>
+		<month>januari</month>
+		<month>februari</month>
+		<month>maart</month>
+		<month>april</month>
+		<month>mei</month>
+		<month>juni</month>
+		<month>juli</month>
+		<month>augustus</month>
+		<month>september</month>
+		<month>oktober</month>
+		<month>november</month>
+		<month>december</month>
+	 </monthNames>
+	 <monthNames abbr="1">
+		<month>jan</month>
+		<month>feb</month>
+		<month>mrt</month>
+		<month>apr</month>
+		<month>mei</month>
+		<month>jun</month>
+		<month>jul</month>
+		<month>aug</month>
+		<month>sep</month>
+		<month>okt</month>
+		<month>nov</month>
+		<month>dec</month>
+	 </monthNames>
+	 <dayNames>
+		<day>zondag</day>
+		<day>maandag</day>
+		<day>dinsdag</day>
+		<day>woensdag</day>
+		<day>donderdag</day>
+		<day>vrijdag</day>
+		<day>zaterdag</day>
+	 </dayNames>
+	 <dayNames abbr="1">
+		<day>zo</day>
+		<day>ma</day>
+		<day>di</day>
+		<day>wo</day>
+		<day>do</day>
+		<day>vr</day>
+		<day>za</day>
+	 </dayNames>
+	 <meridiemNames>
+		<meridiem>AM</meridiem>
+		<meridiem>PM</meridiem>
+	 </meridiemNames>
+	 <eraNames>
+		<era>BC</era>
+		<era>AD</era>
+	 </eraNames>
+  </calendarSymbols>
+  <datePatterns>
+	 <datePattern name="full">EEEE D MMMM YYYY</datePattern>
+	 <datePattern name="long">D MMMM YYYY</datePattern>
+	 <datePattern name="med">D-MMM-YYYY</datePattern>
+	 <datePattern name="short">D-M-YY</datePattern>
+  </datePatterns>
+  <timePatterns>
+	 <timePattern name="full">H:MM:SS' uur' Z</timePattern>
+	 <timePattern name="long">H:MM:SS Z</timePattern>
+	 <timePattern name="med">H:MM:SS</timePattern>
+	 <timePattern name="short">H:MM</timePattern>
+  </timePatterns>
+  <dateTimeSymbols>GyMdkHmsSEDFwWahKzZ</dateTimeSymbols>
+  <numberPatterns>
+	 <numberPattern name="numeric">z,zz9.zzz</numberPattern>
+	 <numberPattern name="currency">$ z,zz9.99s</numberPattern>
+	 <numberPattern name="percent">z,zz9%</numberPattern>
+  </numberPatterns>
+  <numberSymbols>
+	 <numberSymbol name="decimal">,</numberSymbol>
+	 <numberSymbol name="grouping">.</numberSymbol>
+	 <numberSymbol name="percent">%</numberSymbol>
+	 <numberSymbol name="minus">-</numberSymbol>
+	 <numberSymbol name="zero">0</numberSymbol>
+  </numberSymbols>
+  <currencySymbols>
+	 <currencySymbol name="symbol">€</currencySymbol>
+	 <currencySymbol name="isoname">EUR</currencySymbol>
+	 <currencySymbol name="decimal">,</currencySymbol>
+  </currencySymbols>
+  </locale>

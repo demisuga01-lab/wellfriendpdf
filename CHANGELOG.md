@@ -5,6 +5,28 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- XFA form scripts run before an XFA form is drawn, as in PDFium:
+  `initialize`, `calculate` (re-run when their inputs change), form:ready,
+  `docReady` and layout:ready (per page for master-page fields, so
+  `xfa.layout.page(this)` numbers pages). FormCalc is a complete
+  interpreter (control flow, functions, SOM accessors and its whole
+  built-in library except the URL functions); JavaScript runs on the
+  pure-Rust boa engine (new default `xfa-js` feature; not on wasm32) with
+  form objects exposed through the XFA scripting object model. Scripts set
+  values, presence, captions, choice items, colours and repeating-subform
+  instances. Scripts have no network, file or host access and run within a
+  per-document time and instruction budget; `ContentEngine::xfa_script_log`
+  and `xfa_script_errors` report their messages and failures.
+- XFA barcode fields draw their symbols: Code 39, Code 128, Codabar, EAN-8,
+  EAN-13, UPC-A, QR Code, PDF417 and Data Matrix.
+- XFA dynamic layout places overflow and bookend leaders and trailers,
+  break leaders/trailers and overflow/break targets for specific content
+  areas, and keeps `keep next`/`keep previous` chains together.
+- XFA picture clauses and default number/date formats follow the field's
+  locale: the document's `localeSet` and PDFium's 15 built-in locales
+  (de_DE, fr_FR, ja_JP, zh_CN, ...), with `date.long{}`-style locale
+  patterns and `date(fr_FR){...}` locale overrides.
+
 - Damaged images keep more of their content. CCITT Group 3 streams
   resynchronise on the next end-of-line marker after a damaged row, as in
   Poppler, instead of dropping every later row. JBIG2 streams with a damaged

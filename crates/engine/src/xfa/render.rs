@@ -21,8 +21,10 @@ use crate::render::annotation_synthesis::Resources;
 use crate::render::XfaRenderPolicy;
 use crate::{ContentEngine, PdfDocument};
 
+use super::events::FormScripts;
 use super::form::{build_form_model_with_datasets, data_root, Template};
 use super::layout::layout_form;
+use super::locale::LocaleSet;
 use super::paint::{NamedImages, PaintScope, Painter};
 use super::text::FontBook;
 use super::xml::XmlNode;
@@ -57,6 +59,10 @@ pub(crate) struct XfaRenderModel {
     /// Shared resources: fonts (`XF<n>`) and shadings (`XSh<n>`).
     pub resources: PdfDictionary,
     pub unsupported: Vec<String>,
+    /// `app.alert` / `xfa.host.messageBox` output of the form's scripts.
+    pub script_log: Vec<String>,
+    /// Script errors (first few), for diagnostics.
+    pub script_errors: Vec<String>,
     full_document: OnceLock<Option<ContentEngine>>,
 }
 
@@ -115,20 +121,45 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
     } else {
         XfaFormType::Foreground
     };
+    let locale_set =
+        packet_root(&loaded.packets, "localeSet").and_then(|root| xml_root(root, "localeSet"));
+    let locales = LocaleSet::new(locale_set, config);
     let tpl = Template::new(template);
-    let model = build_form_model_with_datasets(&tpl, template, datasets, datasets_root)?;
+    let mut model = build_form_model_with_datasets(&tpl, template, datasets, datasets_root)?;
+    // Form scripts (initialize, calculate, form:ready, docReady).
+    let mut scripts = FormScripts::prepare(&tpl, template, &model, locales.clone());
+    if let Some(scripts) = scripts.as_mut() {
+        scripts.before_layout(&tpl, &mut model);
+    }
     let dr_fonts = dr_fonts(reader, acroform);
     let mut book = FontBook::new(Some(reader), dr_fonts);
-    let pages = layout_form(&tpl, &model, &mut book);
+    let mut pages = layout_form(&tpl, &model, &mut book);
+    let mut page_values = std::collections::HashMap::new();
+    if let Some(scripts) = scripts.as_mut() {
+        if scripts.has_layout_ready() {
+            scripts.set_layout(&pages);
+            drop(pages);
+            scripts.layout_ready(&tpl, &mut model);
+            pages = layout_form(&tpl, &model, &mut book);
+            scripts.set_layout(&pages);
+            page_values = scripts.master_page_values(&pages);
+        }
+    }
+    let script_report = scripts
+        .as_ref()
+        .map(|scripts| scripts.report())
+        .unwrap_or_default();
     let named = named_images(reader, &catalog);
     let mut roots = vec![&model.root];
     roots.extend(model.page_areas.iter().flat_map(|area| area.content.iter()));
     let mut painter = Painter::new(&tpl, &mut book, &named, &roots);
+    painter.set_locales(locales);
+    painter.set_page_values(page_values);
     let mut painted = Vec::with_capacity(pages.len());
     let mut shadings = BTreeMap::new();
-    for page in &pages {
-        let all = painter.paint_page(page, PaintScope::All);
-        let fields = painter.paint_page(page, PaintScope::FieldsOnly);
+    for (index, page) in pages.iter().enumerate() {
+        let all = painter.paint_page_at(page, PaintScope::All, index);
+        let fields = painter.paint_page_at(page, PaintScope::FieldsOnly, index);
         shadings.extend(all.shadings);
         shadings.extend(fields.shadings);
         painted.push(XfaPaintedPage {
@@ -139,6 +170,12 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
         });
     }
     let mut unsupported = std::mem::take(&mut painter.unsupported);
+    if script_report.javascript_skipped > 0 {
+        unsupported.push("xfa.script.javascript_unavailable".to_string());
+    }
+    if script_report.failed > 0 {
+        unsupported.push("xfa.script.error".to_string());
+    }
     unsupported.sort();
     unsupported.dedup();
     drop(painter);
@@ -157,6 +194,8 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
         pages: painted,
         resources,
         unsupported,
+        script_log: script_report.log,
+        script_errors: script_report.errors,
         full_document: OnceLock::new(),
     })
 }
@@ -576,11 +615,27 @@ impl ContentEngine {
         full_layout_pdf(&model, self.document().reader())
     }
 
-    /// Constructs reported while painting the XFA form (e.g. barcodes,
-    /// undecodable images).
+    /// Constructs reported while painting the XFA form (e.g. undecodable
+    /// images, failed scripts).
     pub fn xfa_render_unsupported(&self) -> Vec<String> {
         model_for(self)
             .map(|model| model.unsupported.clone())
+            .unwrap_or_default()
+    }
+
+    /// Messages the form's scripts showed while the XFA form was prepared
+    /// for rendering (`app.alert`, `xfa.host.messageBox`), in order.
+    pub fn xfa_script_log(&self) -> Vec<String> {
+        model_for(self)
+            .map(|model| model.script_log.clone())
+            .unwrap_or_default()
+    }
+
+    /// The first errors raised by the form's scripts (syntax errors,
+    /// unknown accessors, exhausted budgets), for diagnostics.
+    pub fn xfa_script_errors(&self) -> Vec<String> {
+        model_for(self)
+            .map(|model| model.script_errors.clone())
             .unwrap_or_default()
     }
 }

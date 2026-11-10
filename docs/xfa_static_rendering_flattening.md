@@ -51,8 +51,8 @@ edits, multi-line wrapping and comb fields with cell separators; push button
 captions; draws (text, rich text XHTML subset, lines, rectangles, arcs,
 images); images from inline base64 data or `/Names /XFAImages` (JPEG, PNG,
 BMP; external `href`s are never fetched); rotation (90/180/270 with PDFium's
-anchor table) and anchor types; display picture clauses `num{}`, `date{}`,
-`time{}`, `text{}` (en_US) and PDFium's default date/number display.
+anchor table) and anchor types; display picture clauses (see *Locales*)
+and PDFium's default date/number display; barcodes (see *Barcodes*).
 
 **Full XFA pages**: `ContentEngine::xfa_page_count` and
 `ContentEngine::render_xfa_page` render dynamic forms from the XFA layout —
@@ -66,7 +66,130 @@ as a standalone PDF. Static forms report their PDF page count and render the
 PDF page with the overlay forced on.
 
 **Not drawn** (reported by `ContentEngine::xfa_render_unsupported` where
-applicable): scripts (JavaScript/FormCalc events do not run, so script-set
-values, presence and captions are not applied), barcodes, GIF/TIFF images,
-leaders/trailers and overflow targets, `keep` chains, interactive highlight
-and focus, and locales other than en_US for picture clauses.
+applicable): GIF/TIFF images, barcode types PDFium does not render either
+(Code 93, Code 11, Interleaved 2 of 5, postal codes, Aztec, MaxiCode, RSS),
+interactive events, validation, highlight and focus.
+
+## Form scripts
+
+Before layout the renderer runs the form's scripts the way PDFium's
+`CXFA_FFDocView` does: `initialize` (children before parents),
+`calculate` (document order, then only the calculations whose inputs
+changed, until values settle), `ready` on `$form` (form:ready) and
+`docReady`; after layout it runs `ready` on `$layout` (layout:ready) and
+lays the form out again when that changed anything. Master-page fields with
+layout:ready scripts are evaluated once per page, so `xfa.layout.page(this)`
+page numbers come out right on every page. Scripts change field values,
+presence, captions, choice-list items, fill/border/font colours and
+repeating-subform instances (`instanceManager` `setInstances`,
+`addInstance`, `insertInstance`, `removeInstance`, `moveInstance`, `count`,
+`_name` shorthand); new instances run their initialize scripts. Interactive
+events (click, enter, exit, change...), `validate` and `runAt="server"`
+scripts never run.
+
+The scripting object model (`crates/engine/src/xfa/som.rs`) resolves SOM
+expressions: `a.b[2].c`, `[*]`, relative `[+1]`/`[-1]`, `..name`, `#class`,
+`*`, `.[FormCalc predicate]`, `$`, `$form`, `$host`, `$layout`, `$event`,
+`xfa.*`, and unqualified names by XFA scoping (children, then ancestors'
+children; unnamed containers are transparent; unindexed names infer the
+instance from the referencing node). Properties: `rawValue`,
+`formattedValue`, `isNull`, `presence`, `access`, `caption.value.text`,
+`value.#text`, `fillColor`, `borderColor`, `fontColor`, `name`,
+`className`, `index`, `parent`, `all`, `nodes`, `length`,
+`somExpression`, `selectedIndex`, `x`/`y`/`w`/`h`; methods
+`resolveNode(s)`, `execCalculate`, `execInitialize`, `execEvent`,
+`addItem`, `clearItems`, `deleteItem`, `setItems`, `getDisplayItem`,
+`getSaveItem`, `boundItem`, `getItemState`/`setItemState`;
+`xfa.host` (`messageBox`, `name`, `numPages`...), `xfa.layout` (`page`,
+`pageCount`, `absPage`, `absPageCount`, `sheet`, `h`/`w`/`x`/`y`) and
+`<variables>` script objects. The datasets DOM (`$data`, `$record`, `!`)
+is not exposed to scripts.
+
+**FormCalc** (`formcalc.rs`) is a complete interpreter: literals, null
+semantics, arithmetic/logical/relational operators, `var`, `if`/`elseif`,
+`while`, `for ... upto/downto ... step`, `foreach`, `do ... end`, `func`,
+`break`, `continue`, `return`, accessors and method calls, and the built-in
+library: arithmetic (`Abs`, `Avg`, `Ceil`, `Count`, `Floor`, `Max`, `Min`,
+`Mod`, `Round`, `Sum`), dates and times (`Date`, `Date2Num`, `DateFmt`,
+`IsoDate2Num`, `IsoTime2Num`, `LocalDateFmt`, `LocalTimeFmt`, `Num2Date`,
+`Num2GMTime`, `Num2Time`, `Time`, `Time2Num`, `TimeFmt`), financial
+(`Apr`, `CTerm`, `FV`, `IPmt`, `NPV`, `Pmt`, `PPmt`, `PV`, `Rate`, `Term`),
+logical (`Choose`, `Exists`, `HasValue`, `Oneof`, `Within`), strings
+(`At`, `Concat`, `Decode`, `Encode`, `Format`, `Left`, `Len`, `Lower`,
+`Ltrim`, `Parse`, `Replace`, `Right`, `Rtrim`, `Space`, `Str`, `Stuff`,
+`Substr`, `Uuid`, `Upper`, `WordNum`) and `Eval`, `Null`, `Ref`,
+`UnitType`, `UnitValue`. `Get`, `Post` and `Put` are refused.
+
+**JavaScript** runs on [boa](https://boajs.dev) (`boa_engine`, MIT OR
+Unlicense; cargo feature `xfa-js`, on by default; not on wasm32, where
+JavaScript scripts are skipped and reported as
+`xfa.script.javascript_unavailable`). Form objects are `Proxy` objects over
+the same scripting object model; unqualified names resolve through a
+`with` scope proxy, `this` is the script's node, and `app.alert`/`console`
+write to `ContentEngine::xfa_script_log`. The context has no host
+bindings: no network, file system, timers or modules.
+
+**Bounds**: one budget per document: 3 s of script time, 20 million
+FormCalc steps, 400 million JavaScript VM cycles (checked every 4,096),
+call depth 64 (FormCalc) / 256 (JavaScript), 1 million loop iterations per
+JavaScript frame, 1 MB strings, 1,024 instances per subform, 100,000 script
+DOM nodes. JavaScript runs through boa's budgeted evaluation and is
+abandoned when the budget runs out (after which no more JavaScript runs for
+that document); array callbacks and `eval` are re-implemented in script so
+they stay inside the budget. Code reached only through native callbacks
+(`Function.prototype.call`, accessors, `String.prototype.replace` callbacks)
+is bounded by the per-frame loop and recursion limits rather than by the
+cycle budget. Script errors stop only that script; they are listed by
+`ContentEngine::xfa_script_errors` and flagged as `xfa.script.error`.
+
+## Barcodes
+
+`<ui><barcode>` fields draw their value as PDFium's `CFWL_Barcode` does:
+Code 39 (`code3Of9`, optional mod-43 check, wide/narrow ratio), Code 128
+(`code128` choosing set B or C, `code128B`, `code128C`), Codabar (start and
+end characters), EAN-8, EAN-13 and UPC-A (check digits computed), QR Code
+(error-correction levels L/M/Q/H from `errorCorrectionLevel` 0-3), PDF417
+(text/byte/numeric compaction, error-correction level 0-8, columns and rows
+from the widget size) and Data Matrix (ECC 200). Linear symbols fill the
+widget width with human-readable text above or below (`textLocation`);
+matrix symbols use PDFium's module sizing (`moduleWidth`/`moduleHeight` in
+whole points, integer scaling, centred; QR and Data Matrix symbols that do
+not fit are reported as `xfa.render.barcode.too_small`). QR and Data Matrix
+come from the `qrcode` and `datamatrix` crates (MIT OR Apache-2.0); the
+other encoders are in `barcode.rs`.
+
+## Layout: leaders, trailers, overflow and keep
+
+Flowed (`tb`) subforms honour `<overflow leader trailer target>` (and the
+legacy `<break overflowLeader overflowTrailer overflowTarget>`): when the
+subform splits, the trailer ends the old content area (its height is
+reserved), the leader starts the new one, and `target` picks the content
+area or page area to continue in. `<bookend leader trailer>` places a
+leader before and a trailer after the subform's content. `breakBefore` and
+`breakAfter` `leader`/`trailer` (legacy `beforeLeader`...) are placed
+around the break; `targetType="contentArea"` with a `target` jumps to that
+content area. `<keep intact>` keeps a subform in one content area;
+`keep next` / `keep previous` chains move to the next content area together
+when they fit there. Leader and trailer subforms are resolved by `#id` or by
+name and are instantiated with their template defaults.
+
+## Locales
+
+Picture clauses and default formats use the field's locale (the nearest
+`locale` attribute; `ambient` and missing fall back to the config packet's
+`acrobat|present > common > locale`, else en_US). Locales come from the
+document's `<localeSet>` packet, then PDFium's built-in locale data (en_US,
+en_GB, de_DE, fr_FR, es_ES, es_MX (Latin America), it_IT, pt_BR, nl_NL,
+ru_RU, ja_JP, ko_KR, zh_CN, zh_TW, zh_HK; other names map by language as in
+PDFium's `CXFA_LocaleMgr`). Month, day, meridiem and era names, decimal,
+grouping, percent, minus and currency symbols, and the
+`full`/`long`/`med`/`short` date and time and `numeric`/`currency`/`percent`
+number patterns come from the locale; pictures may name a locale
+(`date(fr_FR){...}`) or use the locale shorthands (`date.long{}`,
+`time.short{}`, `datetime.full{}`, `num.integer{}`, `num.decimal{}`,
+`num.currency{}`, `num.percent{}`). Number pictures support
+`9 8 z Z s S $ % E CR DB ( ) , . v` and literals, date pictures
+`D DD J JJJ M MM MMM MMMM E EEE EEEE e G YY YYYY w WW`, time pictures
+`h hh H HH k kk K KK M MM S SS FFF A Z z`; `null{}`/`zero{}` alternatives are
+honoured. FormCalc's `Format`, `Parse`, `Date2Num`, `Num2Date`, `Time2Num`
+and the other date functions use the same pictures and locales.

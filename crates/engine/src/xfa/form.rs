@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::parse_measurement;
+use super::style::{Presence, Rgb};
 use super::xml::XmlNode;
 
 /// Hard cap on generated form nodes, guarding against hostile `occur`/data.
@@ -56,6 +57,11 @@ impl<'t> Template<'t> {
             current = self.proto(candidate);
         }
         None
+    }
+
+    /// Template element by `id`.
+    pub(crate) fn by_id(&self, id: &str) -> Option<&'t XmlNode> {
+        self.ids.get(id).copied()
     }
 
     /// Attribute `name` of `node` or of its prototypes.
@@ -114,13 +120,23 @@ pub(crate) struct FormNode<'t> {
     /// Rich-text (`exData` XHTML) template value, when the value is rich.
     pub rich: Option<&'t XmlNode>,
     pub image: Option<ImageValue>,
-    /// Choice-list items bound from data (`<bindItems>`): (display, save).
+    /// Choice-list items bound from data (`<bindItems>`) or set by
+    /// scripts: (display, save).
     pub items: Option<Vec<(String, String)>>,
     pub children: Vec<FormNode<'t>>,
+    /// Effective locale name (the nearest `locale` attribute).
+    pub locale: Option<&'t str>,
+    /// Script overrides of template properties.
+    pub presence: Option<Presence>,
+    pub caption: Option<String>,
+    pub caption_presence: Option<Presence>,
+    pub fill_color: Option<Rgb>,
+    pub border_color: Option<Rgb>,
+    pub font_color: Option<Rgb>,
 }
 
 impl<'t> FormNode<'t> {
-    fn new(kind: NodeKind, tmpl: &'t XmlNode) -> Self {
+    pub(crate) fn new(kind: NodeKind, tmpl: &'t XmlNode) -> Self {
         Self {
             kind,
             tmpl,
@@ -129,7 +145,20 @@ impl<'t> FormNode<'t> {
             image: None,
             items: None,
             children: Vec::new(),
+            locale: None,
+            presence: None,
+            caption: None,
+            caption_presence: None,
+            fill_color: None,
+            border_color: None,
+            font_color: None,
         }
+    }
+
+    /// Presence: the script override, else the template's.
+    pub(crate) fn presence_in(&self, tpl: &Template<'t>) -> Presence {
+        self.presence
+            .unwrap_or_else(|| super::style::presence(tpl, self.tmpl))
     }
 
     #[cfg(test)]
@@ -149,12 +178,16 @@ pub(crate) enum PagePosition {
 
 #[derive(Debug)]
 pub(crate) struct PageAreaModel<'t> {
+    /// The `<pageArea>` element (the template root for the default page).
+    pub tmpl: &'t XmlNode,
     pub name: &'t str,
     pub id: Option<&'t str>,
     pub width: f64,
     pub height: f64,
     /// Content areas in page coordinates (x, y, w, h), template order.
     pub content_areas: Vec<[f64; 4]>,
+    /// (id, name) of each content area.
+    pub content_ids: Vec<(Option<&'t str>, &'t str)>,
     pub content: Vec<FormNode<'t>>,
     pub max_occur: Option<usize>,
     pub position: PagePosition,
@@ -166,6 +199,10 @@ pub(crate) struct FormModel<'t> {
     pub page_areas: Vec<PageAreaModel<'t>>,
     /// `orderedOccurrence` (false) or `simplexPaginated`/`duplexPaginated`.
     pub paginated: bool,
+    /// Leader/trailer subforms (`<overflow>`, `<bookend>`, break
+    /// `leader`/`trailer`) by their reference text, instantiated once
+    /// with template defaults.
+    pub extras: HashMap<String, FormNode<'t>>,
 }
 
 /// The template's root subform: `template > subform`.
@@ -243,21 +280,158 @@ pub(crate) fn build_form_model_with_datasets<'t>(
     }
     if page_areas.is_empty() {
         page_areas.push(PageAreaModel {
+            tmpl: root_tmpl,
             name: "",
             id: None,
             width: 612.0,
             height: 792.0,
             content_areas: vec![[0.0, 0.0, 612.0, 792.0]],
+            content_ids: vec![(None, "")],
             content: Vec::new(),
             max_occur: None,
             position: PagePosition::Any,
         });
     }
-    Some(FormModel {
+    let extras = leader_trailer_instances(tpl, template);
+    let mut model = FormModel {
         root,
         page_areas,
         paginated,
-    })
+        extras,
+    };
+    let ambient = None;
+    assign_locales(&mut model.root, ambient);
+    let root_locale = model.root.locale;
+    for extra in model.extras.values_mut() {
+        assign_locales(extra, root_locale);
+    }
+    for area in &mut model.page_areas {
+        let locale = area.tmpl.attr("locale").or(root_locale);
+        for node in &mut area.content {
+            assign_locales(node, locale);
+        }
+    }
+    Some(model)
+}
+
+/// The template subform a leader/trailer reference names: `#id`, or a
+/// (SOM-like) name whose last segment names a subform.
+pub(crate) fn resolve_template_ref<'t>(
+    tpl: &Template<'t>,
+    template: &'t XmlNode,
+    reference: &str,
+) -> Option<&'t XmlNode> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+    if let Some(id) = reference.strip_prefix('#') {
+        return tpl.by_id(id).filter(|node| node.local_name == "subform");
+    }
+    let name = reference
+        .rsplit('.')
+        .next()
+        .unwrap_or(reference)
+        .split('[')
+        .next()
+        .unwrap_or("");
+    if name.is_empty() {
+        return None;
+    }
+    template
+        .descendants("subform")
+        .find(|node| node.attr("name") == Some(name))
+}
+
+/// Instances of every subform referenced as a leader or trailer.
+fn leader_trailer_instances<'t>(
+    tpl: &Template<'t>,
+    template: &'t XmlNode,
+) -> HashMap<String, FormNode<'t>> {
+    const ATTRS: [&str; 8] = [
+        "leader",
+        "trailer",
+        "overflowLeader",
+        "overflowTrailer",
+        "beforeLeader",
+        "beforeTrailer",
+        "afterLeader",
+        "afterTrailer",
+    ];
+    let mut out = HashMap::new();
+    let mut stack = vec![template];
+    let mut seen = 0usize;
+    while let Some(node) = stack.pop() {
+        seen += 1;
+        if seen > 200_000 || out.len() >= 256 {
+            break;
+        }
+        if matches!(
+            node.local_name.as_str(),
+            "overflow" | "bookend" | "breakBefore" | "breakAfter" | "break"
+        ) {
+            for attr in ATTRS {
+                let Some(reference) = node.attr(attr).map(str::trim).filter(|r| !r.is_empty())
+                else {
+                    continue;
+                };
+                if out.contains_key(reference) {
+                    continue;
+                }
+                if let Some(tmpl) = resolve_template_ref(tpl, template, reference) {
+                    out.insert(reference.to_string(), instance_prototype(tpl, tmpl));
+                }
+            }
+        }
+        stack.extend(node.children.iter());
+    }
+    out
+}
+
+/// Sets each node's effective locale: its own `locale` attribute or the
+/// nearest ancestor's.
+pub(crate) fn assign_locales<'t>(node: &mut FormNode<'t>, inherited: Option<&'t str>) {
+    let own = node
+        .tmpl
+        .attr("locale")
+        .filter(|locale| !locale.trim().is_empty() && *locale != "ambient");
+    node.locale = own.or(inherited);
+    let locale = node.locale;
+    for child in &mut node.children {
+        assign_locales(child, locale);
+    }
+}
+
+/// One fresh instance of the repeatable subform `tmpl` with template
+/// defaults and no data (instance-manager `addInstance`).
+pub(crate) fn instance_prototype<'t>(tpl: &Template<'t>, tmpl: &'t XmlNode) -> FormNode<'t> {
+    let mut merger = Merger {
+        tpl,
+        consumed: HashSet::new(),
+        data: None,
+        datasets: None,
+        nodes: 0,
+    };
+    let mut node = FormNode::new(NodeKind::Subform, tmpl);
+    node.children = merger.merge_children(tmpl, None);
+    node
+}
+
+/// A node with its template defaults (value, rich text, image, items) and
+/// no children.
+pub(crate) fn fresh_node<'t>(
+    tpl: &Template<'t>,
+    kind: NodeKind,
+    tmpl: &'t XmlNode,
+) -> FormNode<'t> {
+    let mut node = FormNode::new(kind, tmpl);
+    if matches!(kind, NodeKind::Field | NodeKind::Draw) {
+        let (value, rich, image) = template_value(tpl, tmpl);
+        node.value = value;
+        node.rich = rich;
+        node.image = image;
+    }
+    node
 }
 
 fn collect_page_areas<'t>(
@@ -299,11 +473,13 @@ fn page_area_model<'t>(merger: &mut Merger<'_, 't>, area: &'t XmlNode) -> PageAr
     let width = width.max(1.0);
     let height = height.max(1.0);
     let mut content_areas = Vec::new();
+    let mut content_ids = Vec::new();
     for child in area
         .children
         .iter()
         .filter(|child| child.local_name == "contentArea")
     {
+        content_ids.push((child.attr("id"), child.attr("name").unwrap_or("")));
         let x = tpl.measure(child, "x").unwrap_or(0.0);
         let y = tpl.measure(child, "y").unwrap_or(0.0);
         let w = tpl.measure(child, "w").unwrap_or(width - x).max(1.0);
@@ -324,11 +500,13 @@ fn page_area_model<'t>(merger: &mut Merger<'_, 't>, area: &'t XmlNode) -> PageAr
     };
     let content = merger.merge_children(area, None);
     PageAreaModel {
+        tmpl: area,
         name: area.attr("name").unwrap_or(""),
         id: area.attr("id"),
         width,
         height,
         content_areas,
+        content_ids,
         content,
         max_occur,
         position,
@@ -720,7 +898,7 @@ pub(crate) fn rich_plain_text(node: &XmlNode) -> String {
 }
 
 /// The template default `<value>` of a field or draw.
-fn template_value<'t>(
+pub(crate) fn template_value<'t>(
     tpl: &Template<'t>,
     node: &'t XmlNode,
 ) -> (Option<String>, Option<&'t XmlNode>, Option<ImageValue>) {
