@@ -1297,21 +1297,25 @@ impl ClipMask {
             return clip;
         }
 
-        // Anti-aliased clipping is important for ordinary vector clips, but a
-        // few real-world files contain extremely complex clipping paths that
-        // are used only as broad containment masks. The 4x4 supersampled path
-        // would re-sort and walk those edge sets for every sub-scanline, which
-        // can turn a single page render into a multi-minute CPU sink. Keep the
-        // exact same fill rule but fall back to a binary scanline mask once the
-        // edge/scanline work estimate exceeds the bounded interactive path.
-        const ANTIALIAS_WORK_LIMIT: usize = 2_000_000;
-        let scanlines = (y_max - y_min + 1).max(0) as usize;
-        if edges.len().saturating_mul(scanlines) > ANTIALIAS_WORK_LIMIT {
-            return Self::scanline_fill_binary_edges(&edges, width, height, rule, y_min, y_max);
-        }
-
         const SAMPLES: i32 = 4;
         const SAMPLE_COUNT: u8 = (SAMPLES * SAMPLES) as u8;
+
+        // The 4x4 supersampled clip walks an active-edge list, so its cost is
+        // proportional to the number of real edge/sub-scanline crossings
+        // rather than to edges x scanlines. Complex clips (maps, CAD
+        // drawings, text-as-outline clips) therefore stay anti-aliased; only
+        // a clip whose crossing count would exceed the interactive budget
+        // falls back to the binary mask with the same fill rule.
+        const ANTIALIAS_CROSSING_LIMIT: usize = 48_000_000;
+        let crossing_work = edges.iter().fold(0usize, |work, edge| {
+            let first = floor_i32(edge.y_min).max(y_min);
+            let last = ceil_i32(edge.y_max).min(y_max);
+            let rows = (last - first + 1).max(0) as usize;
+            work.saturating_add(rows.saturating_mul(SAMPLES as usize))
+        });
+        if crossing_work > ANTIALIAS_CROSSING_LIMIT {
+            return Self::scanline_fill_binary_edges(&edges, width, height, rule, y_min, y_max);
+        }
         let Some(total_pixels) = (width as usize).checked_mul(height as usize) else {
             return clip;
         };
@@ -1321,20 +1325,29 @@ impl ClipMask {
         let mut coverage = vec![0u8; total_pixels];
         let mut intersections = Vec::<(f64, i32)>::with_capacity(edges.len().min(256));
         let mut spans = Vec::<(f64, f64)>::with_capacity(edges.len().saturating_div(2).min(128));
+        // Active-edge list over edges sorted by their top.
+        let mut order: Vec<usize> = (0..edges.len()).collect();
+        order.sort_by(|a, b| edges[*a].y_min.total_cmp(&edges[*b].y_min));
+        let mut next_edge = 0usize;
+        let mut active: Vec<usize> = Vec::new();
+        let row_len = width as usize;
 
         for y in y_min..=y_max {
+            let row_base = y as usize * row_len;
             for sub_y in 0..SAMPLES {
                 let y_f = y as f64 + (sub_y as f64 + 0.5) / f64::from(SAMPLES);
+                while next_edge < order.len() && edges[order[next_edge]].y_min <= y_f {
+                    active.push(order[next_edge]);
+                    next_edge += 1;
+                }
+                active.retain(|index| y_f < edges[*index].y_max);
                 intersections.clear();
-                intersections.extend(edges.iter().filter_map(|edge| {
-                    if edge.y_min <= y_f && y_f < edge.y_max {
-                        Some((
-                            edge.x_at_ymin + edge.slope * (y_f - edge.y_min),
-                            edge.winding,
-                        ))
-                    } else {
-                        None
-                    }
+                intersections.extend(active.iter().map(|index| {
+                    let edge = &edges[*index];
+                    (
+                        edge.x_at_ymin + edge.slope * (y_f - edge.y_min),
+                        edge.winding,
+                    )
                 }));
                 intersections
                     .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -1346,18 +1359,17 @@ impl ClipMask {
                     }
                     let k0 = ceil_i32(x0 * f64::from(SAMPLES) - 0.5).max(0);
                     let k1 = ceil_i32(x1 * f64::from(SAMPLES) - 0.5).min(width as i32 * SAMPLES);
-                    for sample_x in k0..k1 {
+                    // Add the covered sub-samples pixel by pixel: partial
+                    // first/last pixels, whole pixels in between.
+                    let mut sample_x = k0;
+                    while sample_x < k1 {
                         let px = sample_x / SAMPLES;
-                        if px < 0 || px >= width as i32 {
-                            continue;
+                        let pixel_end = ((px + 1) * SAMPLES).min(k1);
+                        let count = (pixel_end - sample_x) as u8;
+                        if let Some(slot) = coverage.get_mut(row_base + px as usize) {
+                            *slot = slot.saturating_add(count).min(SAMPLE_COUNT);
                         }
-                        let Some(idx) = (y as usize)
-                            .checked_mul(width as usize)
-                            .and_then(|row| row.checked_add(px as usize))
-                        else {
-                            continue;
-                        };
-                        coverage[idx] = coverage[idx].saturating_add(1).min(SAMPLE_COUNT);
+                        sample_x = pixel_end;
                     }
                 }
             }
@@ -11722,7 +11734,10 @@ mod tests {
     }
 
     #[test]
-    fn complex_clip_mask_uses_bounded_binary_fallback() {
+    fn complex_clip_mask_stays_antialiased() {
+        // 1200 tall rectangles: formerly over the edges x scanlines budget and
+        // forced to a binary (jagged) clip. The active-edge supersampler only
+        // pays for real crossings, so the clip keeps anti-aliased edges.
         let mut subpaths = Vec::new();
         let mut closed = Vec::new();
         for i in 0..1200 {
@@ -11740,9 +11755,56 @@ mod tests {
         let flat = FlatPath { subpaths, closed };
         let clip = ClipMask::from_path(&flat, 64, 1024, FillRule::NonZero);
 
-        assert!(!clip.has_partial_coverage());
+        assert!(clip.has_partial_coverage());
         assert_eq!(clip.opacity_byte(5, 100), 255);
         assert_eq!(clip.opacity_byte(0, 100), 0);
+        // x = 4.25 covers three of the four sub-sample columns of pixel 4.
+        assert_eq!(clip.opacity_byte(4, 100), 191);
+    }
+
+    #[test]
+    fn clip_mask_active_edge_supersampling_matches_brute_force() {
+        // Reference: count 4x4 sub-samples inside a nonzero star polygon by
+        // brute force and compare with the active-edge supersampler.
+        let points = [
+            (10.3137, 2.1),
+            (13.7137, 17.9),
+            (2.2137, 7.4),
+            (18.6137, 7.1),
+            (6.1137, 18.2),
+            (10.3137, 2.1),
+        ];
+        let flat = FlatPath {
+            subpaths: vec![points.to_vec()],
+            closed: vec![true],
+        };
+        let clip = ClipMask::from_path(&flat, 21, 21, FillRule::NonZero);
+        for y in 0..21 {
+            for x in 0..21 {
+                let mut count = 0u32;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let px = f64::from(x) + (f64::from(sx) + 0.5) / 4.0;
+                        let py = f64::from(y) + (f64::from(sy) + 0.5) / 4.0;
+                        let mut winding = 0i32;
+                        for edge in points.windows(2) {
+                            let ((x0, y0), (x1, y1)) = (edge[0], edge[1]);
+                            if (y0 <= py) != (y1 <= py) {
+                                let t = (py - y0) / (y1 - y0);
+                                if x0 + t * (x1 - x0) < px {
+                                    winding += if y1 > y0 { 1 } else { -1 };
+                                }
+                            }
+                        }
+                        if winding != 0 {
+                            count += 1;
+                        }
+                    }
+                }
+                let expected = ((count * 255 + 8) / 16) as u8;
+                assert_eq!(clip.opacity_byte(x, y), expected, "pixel ({x}, {y})");
+            }
+        }
     }
 
     #[test]

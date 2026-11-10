@@ -517,6 +517,8 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     push_if_changed!(image_smoothing);
     push_if_changed!(path_smoothing);
     push_if_changed!(subpixel_text);
+    push_if_changed!(thin_line_mode);
+    push_if_changed!(vector_antialias_gamma);
     push_if_changed!(grayscale);
     push_if_changed!(color_scheme);
     push_if_changed!(reverse_byte_order);
@@ -2199,6 +2201,8 @@ impl ContentEngine {
         accepted_expected.image_smoothing = contract.image_smoothing;
         accepted_expected.path_smoothing = contract.path_smoothing;
         accepted_expected.subpixel_text = contract.subpixel_text;
+        accepted_expected.thin_line_mode = contract.thin_line_mode;
+        accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -2212,6 +2216,10 @@ impl ContentEngine {
         let render_contract_fingerprint = contract.cache_fingerprint();
         let _scalar_compositor_guard = crate::render::buffer::ScalarCompositorGuard::enter(
             contract.backend == crate::render::BackendSelection::ScalarReference,
+        );
+        let _vector_raster_guard = crate::render::vector_quality::VectorRasterContractGuard::enter(
+            contract.thin_line_mode,
+            contract.vector_antialias_gamma,
         );
         let mut buffer = if tile == full_tile {
             PageRenderer::render_page_cancellable_with_contract_policies_and_cache(
