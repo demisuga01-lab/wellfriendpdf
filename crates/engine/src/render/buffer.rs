@@ -6469,6 +6469,37 @@ impl PixelBuffer {
         }
     }
 
+    /// Apply transfer lookup tables to the colour of every non-transparent
+    /// pixel `shape` covers (with any coverage). Splash applies the transfer
+    /// to the composited result of each pixel an object's shape touches, the
+    /// backdrop share included, so this runs after the object was composited.
+    pub(crate) fn apply_rgba_transfer_in_shape(
+        &mut self,
+        channels: &[[u8; 256]; 4],
+        shape: &ClipMask,
+    ) {
+        let Some((x0, y0, x1, y1)) = shape.visible_bounds() else {
+            return;
+        };
+        for y in y0.max(0)..y1.min(self.height as i32) {
+            for x in x0.max(0)..x1.min(self.width as i32) {
+                if shape.opacity_byte(x, y) == 0 {
+                    continue;
+                }
+                let Some(idx) = self.pixel_index(x, y) else {
+                    continue;
+                };
+                let pixel = &mut self.data[idx..idx + 4];
+                if pixel[3] == 0 {
+                    continue;
+                }
+                pixel[0] = channels[0][pixel[0] as usize];
+                pixel[1] = channels[1][pixel[1] as usize];
+                pixel[2] = channels[2][pixel[2] as usize];
+            }
+        }
+    }
+
     /// Remove a backdrop's contribution from this buffer (a non-isolated
     /// transparency-group result that was seeded with `backdrop`).
     ///

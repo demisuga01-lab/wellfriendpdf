@@ -13712,6 +13712,12 @@ impl<'a> RenderState<'a> {
         mask_gs.fill_alpha = 1.0;
         mask_gs.stroke_alpha = 1.0;
         mask_gs.blend_mode = BlendMode::Normal;
+        // The current transfer curves belong to the final compositing of the
+        // masked object, not to the mask group's content: Splash renders a
+        // soft-mask group with identity transfer (a group that sets /TR
+        // itself still gets its own curves) and the mask's luminosity is
+        // shaped only by the SMask /TR.
+        mask_gs.transfer = None;
         let mask_base_ctm = Transform2D::from(mask_gs.ctm);
         let mask_window = match transparency_group_pixel_window(
             Some(group_bbox),
@@ -16575,13 +16581,66 @@ impl<'a> RenderState<'a> {
         // Pattern cells keep their real colours under a forced colour
         // scheme (PDFium renders tiling cells with normal colour options).
         self.forced_color_suppression += 1;
-        self.paint_tiling_pattern_with_device_clip_inner(
-            pattern_obj,
-            path_clip,
-            flat,
-            use_stroke_color,
-        );
+        match self.gs.transfer.take() {
+            None => self.paint_tiling_pattern_with_device_clip_inner(
+                pattern_obj,
+                path_clip,
+                flat,
+                use_stroke_color,
+            ),
+            Some(lut) => {
+                // Splash draws the cells with identity transfer into a tile
+                // bitmap and applies the transfer when that bitmap is
+                // composited, to the resulting pixels of the filled area.
+                let shape = path_clip.clone();
+                self.paint_with_final_transfer(&lut, &shape, |state| {
+                    state.paint_tiling_pattern_with_device_clip_inner(
+                        pattern_obj,
+                        path_clip,
+                        flat,
+                        use_stroke_color,
+                    );
+                });
+                self.gs.transfer = Some(lut);
+            }
+        }
         self.forced_color_suppression -= 1;
+    }
+
+    /// Run `paint` (with the transfer curves cleared) into a transparent
+    /// page-sized surface, composite the result with the current blend mode
+    /// and soft mask, then apply `lut` to the composited pixels that `shape`
+    /// covers: Poppler's Splash applies the transfer to each composited
+    /// pixel of the painted area, not to the source colours.
+    fn paint_with_final_transfer(
+        &mut self,
+        lut: &crate::content::state::TransferLut,
+        shape: &ClipMask,
+        paint: impl FnOnce(&mut Self),
+    ) {
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        if let Some(clip) = self.buf.clip_mask() {
+            surface.set_clip(clip.clone());
+        }
+        surface.blend_mode = BlendMode::Normal;
+        let mut target = std::mem::replace(&mut self.buf, surface);
+        paint(self);
+        std::mem::swap(&mut self.buf, &mut target);
+        let mut painted = target;
+        painted.clear_clip();
+        painted.clear_smask();
+        // The surface was already clipped; composite without clipping twice.
+        let saved_clip = self.buf.clip_mask().cloned();
+        self.buf.clear_clip();
+        let soft_mask = self.buf.smask_mask().cloned();
+        let blend_mode = self.buf.blend_mode;
+        self.buf
+            .composite_from(&painted, 1.0, blend_mode, soft_mask.as_ref());
+        self.buf.apply_rgba_transfer_in_shape(&lut.channels, shape);
+        self.buf.replace_clip(saved_clip);
+        self.recycle_offscreen_buffer(painted);
     }
 
     fn paint_tiling_pattern_with_device_clip_inner(
@@ -42013,6 +42072,64 @@ mod tests {
     }
 
     const WP2_HELVETICA: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+    const WP2_INVERTING_TRANSFER: &str = "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>";
+
+    #[test]
+    fn transfer_applies_to_the_composited_tiling_pattern_area() {
+        // A 20 x 20 cell with a red 10 x 10 square; the rest of the cell is
+        // transparent. Splash applies the transfer to the composited pixels
+        // of the filled area, so the white page under the transparent part of
+        // the cells is inverted as well, and the red square turns cyan once.
+        let pattern = wp2_stream(
+            "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20 /Resources << >>",
+            b"1 0 0 rg 0 0 10 10 re f",
+        );
+        let pdf = wp2_page_pdf(
+            &format!(
+                "<< /ExtGState << /GS1 << /TR {WP2_INVERTING_TRANSFER} >> >> /Pattern << /P1 5 0 R >> >>"
+            ),
+            b"q /GS1 gs /Pattern cs /P1 scn 0 0 50 100 re f Q",
+            "",
+            &[pattern],
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open tiling transfer PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("tiling pattern with transfer renders");
+        assert_eq!(
+            buf.get_pixel(5, 94),
+            [0, 255, 255, 255],
+            "red cell inverted once"
+        );
+        assert_eq!(buf.get_pixel(5, 74), [0, 255, 255, 255], "next cell row");
+        assert_eq!(buf.get_pixel(15, 94), [0, 0, 0, 255], "uncovered cell area");
+        assert_eq!(buf.get_pixel(75, 50), WHITE, "outside the filled path");
+    }
+
+    #[test]
+    fn soft_mask_group_content_is_drawn_without_the_current_transfer() {
+        // The mask group paints white (luminosity 1). The inverting transfer
+        // active when the soft mask is set applies to the masked blue fill,
+        // not to the mask content, so the fill shows, inverted to yellow.
+        let group = wp2_stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Group << /S /Transparency /CS /DeviceRGB >>",
+            b"1 g 0 0 100 100 re f",
+        );
+        let pdf = wp2_page_pdf(
+            &format!(
+                "<< /ExtGState << /GS1 << /TR {WP2_INVERTING_TRANSFER} >> /GS2 << /SMask << /S /Luminosity /G 5 0 R >> >> >> >>"
+            ),
+            b"/GS1 gs /GS2 gs 0 0 1 rg 0 0 100 100 re f",
+            "",
+            &[group],
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open soft mask transfer PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("soft mask with transfer renders");
+        assert_eq!(buf.get_pixel(50, 50), [255, 255, 0, 255]);
+    }
 
     #[test]
     fn transfer_function_applies_to_fills_images_and_restores_with_q() {
