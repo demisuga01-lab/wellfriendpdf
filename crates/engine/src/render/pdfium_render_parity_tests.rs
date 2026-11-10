@@ -488,12 +488,8 @@ mod pdfium_render_parity {
             let mut preview = contract_for(&engine);
             preview.overprint = OverprintPolicy::Preview;
             let out = render(&engine, &preview);
-            // Darken(red backdrop, cyan image).
-            assert_eq!(
-                out.get_pixel(50, 50),
-                [image[0].min(255), image[1].min(0), image[2].min(0), 255],
-                "{space}"
-            );
+            // Darken(red backdrop [255, 0, 0], cyan image): per-channel min.
+            assert_eq!(out.get_pixel(50, 50), [image[0], 0, 0, 255], "{space}");
         }
         // RGB images are composited normally.
         let engine = overprint_image_fixture("/DeviceRGB", &[0, 200, 255]);
