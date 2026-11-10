@@ -75,9 +75,9 @@ const MAX_WORD_BASE_DELTA: f64 = 0.5;
 /// After this many glyphs smaller than 3 × 3 pt, further tiny glyphs are
 /// ignored (protection against noise layers).
 const MAX_TINY_CHARS: usize = 50_000;
-/// Above this many blocks the rule-2 "no block in between" check, cubic in
-/// the block count, is skipped so pathological pages stay bounded.
-const MAX_BLOCKS_FOR_INTERVENING_CHECK: usize = 2_000;
+/// Above this many blocks the rule-2 "no block in between" check (two n × n
+/// bit matrices) is skipped so pathological pages stay bounded.
+const MAX_BLOCKS_FOR_INTERVENING_CHECK: usize = 6_000;
 /// Stream positions given to glyphs synthesised for chunks without recorded
 /// geometry; they never claim adjacency with real glyphs.
 const SYNTHETIC_STREAM_POS: u32 = 0x8000_0000;
@@ -496,8 +496,6 @@ struct Word {
     font_size: f64,
     edge_end: f64,
     pos_end: u32,
-    /// An explicit space glyph followed this word in the content stream.
-    space_follows: bool,
 }
 
 impl Word {
@@ -512,7 +510,6 @@ impl Word {
             font_size,
             edge_end: 0.0,
             pos_end: 0,
-            space_follows: false,
         }
     }
 
@@ -656,7 +653,6 @@ impl Word {
         self.chars.extend(other.chars);
         self.edge_end = other.edge_end;
         self.pos_end = other.pos_end;
-        self.space_follows = other.space_follows;
     }
 
     fn len(&self) -> usize {
@@ -712,8 +708,6 @@ struct WordBuilder<'o> {
     words: Vec<Word>,
     pools: [Vec<usize>; 4],
     current: Option<Word>,
-    /// The word most recently ended, while no new word has begun.
-    last_ended: Option<usize>,
     last_char_overlap: bool,
     tiny_chars: usize,
     fonts: HashMap<String, u32>,
@@ -734,7 +728,6 @@ impl<'o> WordBuilder<'o> {
             words: Vec::new(),
             pools: Default::default(),
             current: None,
-            last_ended: None,
             last_char_overlap: false,
             tiny_chars: 0,
             fonts: HashMap::new(),
@@ -749,24 +742,12 @@ impl<'o> WordBuilder<'o> {
                 let id = self.words.len();
                 self.pools[usize::from(word.rot)].push(id);
                 self.words.push(word);
-                self.last_ended = Some(id);
             }
         }
     }
 
     fn begin_word(&mut self, rot: u8, diagonal: bool, vertical: bool, font_size: f64) {
-        self.last_ended = None;
         self.current = Some(Word::new(rot, diagonal, vertical, font_size));
-    }
-
-    fn note_space(&mut self) {
-        if let Some(word) = self.current.as_mut() {
-            if word.len() > 0 {
-                word.space_follows = true;
-            }
-        } else if let Some(id) = self.last_ended {
-            self.words[id].space_follows = true;
-        }
     }
 
     fn font_id(&mut self, name: &str) -> u32 {
@@ -906,7 +887,6 @@ impl<'o> WordBuilder<'o> {
         if single {
             let ch = first.unwrap_or(' ');
             if ch.is_whitespace() {
-                self.note_space();
                 self.end_word();
                 return;
             }
@@ -1574,11 +1554,8 @@ fn coalesce_line(words: &[Word], ids: &[usize], rect: Rect) -> Line {
             {
                 current.merge(next);
             } else {
-                // Not merged and below the space threshold: still a word
-                // break when the content stream put a space glyph there.
-                let explicit = current.space_follows && delta > MIN_CHAR_SPACING * font_size;
                 merged.push(std::mem::replace(&mut current, next));
-                spaces.push(explicit);
+                spaces.push(false);
             }
         }
         merged.push(current);
@@ -1857,12 +1834,35 @@ fn reading_order(
             b.e.p1 <= a.e.p0
         }
     };
+    // Rule-1 relations as bit sets, so "is there a block c with b1 before c
+    // and c before b2" is a word-wise intersection rather than a scan.
+    let words_per_row = n.div_ceil(64);
     let check_intervening = n <= MAX_BLOCKS_FOR_INTERVENING_CHECK;
+    let (mut below, mut above) = (Vec::new(), Vec::new());
+    if check_intervening {
+        below = vec![0u64; n * words_per_row];
+        above = vec![0u64; n * words_per_row];
+        for a in 0..n {
+            for c in 0..n {
+                if a != c && rule1(&pb[a], &pb[c]) {
+                    // a is before c: c is below a, a is above c.
+                    below[a * words_per_row + c / 64] |= 1 << (c % 64);
+                    above[c * words_per_row + a / 64] |= 1 << (a % 64);
+                }
+            }
+        }
+    }
+    let intervening = |b1: usize, b2: usize| -> bool {
+        let row1 = &below[b1 * words_per_row..(b1 + 1) * words_per_row];
+        let row2 = &above[b2 * words_per_row..(b2 + 1) * words_per_row];
+        row1.iter().zip(row2).any(|(x, y)| x & y != 0)
+    };
     // Is `b2` before `b1`?
-    let before = |b1: usize, b2: usize, cache: &mut [Option<usize>; 4]| -> bool {
+    let before = |b1: usize, b2: usize| -> bool {
         let (a, b) = (&pb[b1], &pb[b2]);
         if let (Some(t1), Some(t2)) = (a.table, b.table) {
             if t1 == t2 {
+                // Cells of one table: row by row.
                 let side = if primary_lr {
                     b.r.p1 <= a.r.p0
                 } else {
@@ -1874,33 +1874,8 @@ fn reading_order(
         if rule1(b, a) {
             return true;
         }
-        if !rule2(b, a) {
-            return false;
-        }
-        if !check_intervening {
-            return true;
-        }
-        // No block c with b1 before c and c before b2 by rule 1.
-        for slot in 0..cache.len() {
-            let Some(c) = cache[slot] else {
-                break;
-            };
-            if rule1(a, &pb[c]) && rule1(&pb[c], b) {
-                cache[..=slot].rotate_right(1);
-                return false;
-            }
-        }
-        for (c, block) in pb.iter().enumerate() {
-            if c == b1 || c == b2 {
-                continue;
-            }
-            if rule1(a, block) && rule1(block, b) {
-                cache.rotate_right(1);
-                cache[0] = Some(c);
-                return false;
-            }
-        }
-        true
+        // Rule 2, unless some block lies below b1 and above b2.
+        rule2(b, a) && !(check_intervening && intervening(b1, b2))
     };
 
     // Depth-first topological sort, iterative.
@@ -1910,7 +1885,6 @@ fn reading_order(
         if visited[start] {
             continue;
         }
-        let mut cache: [Option<usize>; 4] = [None; 4];
         visited[start] = true;
         let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
         while let Some(&mut (node, ref mut next)) = stack.last_mut() {
@@ -1921,7 +1895,7 @@ fn reading_order(
                 if visited[candidate] {
                     continue;
                 }
-                if before(node, candidate, &mut cache) {
+                if before(node, candidate) {
                     visited[candidate] = true;
                     stack.push((candidate, 0));
                     descended = true;

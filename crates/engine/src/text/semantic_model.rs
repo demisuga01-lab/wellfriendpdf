@@ -3396,6 +3396,42 @@ mod tests {
     }
 
     #[test]
+    fn character_quads_follow_recorded_glyph_advances() {
+        // "Wil": a wide W, a narrow i and l, the l a ligature-like glyph
+        // covering "ll" (two characters sharing its advance).
+        use crate::text::collector::{TextGlyph, TextGlyphRun};
+        let glyph = |x: f64, dx: f64, start: u32, end: u32| TextGlyph {
+            x,
+            y: 150.0,
+            dx,
+            dy: 0.0,
+            text_start: start,
+            text_end: end,
+            stream_pos: start,
+            code_len: 1,
+        };
+        let mut wide = chunk("Will", 10.0, 150.0, 24.0);
+        wide.glyph_run = Some(std::sync::Arc::new(TextGlyphRun {
+            font_matrix: [10.0, 0.0, 0.0, 10.0],
+            ascent: 0.95,
+            descent: -0.35,
+            glyphs: vec![glyph(10.0, 12.0, 0, 1), glyph(22.0, 4.0, 1, 2), glyph(26.0, 8.0, 2, 4)],
+        }));
+        let page = build_text_semantic_page(
+            1,
+            [0.0, 0.0, 200.0, 200.0],
+            vec![wide],
+            &TextSemanticOptions::default(),
+        );
+        let chars = &page.blocks[0].lines[0].chars;
+        let edges: Vec<(f64, f64)> = chars.iter().map(|c| (c.quad.x0, c.quad.x1)).collect();
+        assert_eq!(
+            edges,
+            vec![(10.0, 22.0), (22.0, 26.0), (26.0, 30.0), (30.0, 34.0)]
+        );
+    }
+
+    #[test]
     fn actual_text_and_invisible_provenance_are_reported() {
         let mut actual = chunk("office", 10.0, 100.0, 50.0);
         actual.is_actual_text = true;

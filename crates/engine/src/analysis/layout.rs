@@ -199,7 +199,7 @@ fn analyze_items(
     vertical: Vec<LayoutBlock>,
     config: &LayoutConfig,
 ) -> PageLayout {
-    let items: Vec<Item> = chunks.iter().filter_map(Item::from_chunk).collect();
+    let items = remove_overprinted(chunks.iter().filter_map(Item::from_chunk).collect());
     if items.is_empty() {
         return PageLayout {
             blocks: vertical,
@@ -267,6 +267,55 @@ fn analyze_items(
         blocks,
         page_is_rtl,
     }
+}
+
+/// Drop runs over-printed by an identical run (fake bold, fill-then-stroke,
+/// drop shadows): same text and font size within 5%, origin within 0.1 ×
+/// font size horizontally and 0.2 × font size vertically (Poppler's
+/// duplicate tolerances). The first occurrence is kept; order is preserved.
+fn remove_overprinted(items: Vec<Item>) -> Vec<Item> {
+    if items.len() < 2 {
+        return items;
+    }
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by(|&a, &b| {
+        items[a]
+            .text
+            .cmp(&items[b].text)
+            .then(
+                items[a]
+                    .bbox
+                    .y0
+                    .partial_cmp(&items[b].bbox.y0)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.cmp(&b))
+    });
+    let mut dropped = vec![false; items.len()];
+    for (k, &i) in order.iter().enumerate() {
+        if dropped[i] {
+            continue;
+        }
+        let first = &items[i];
+        let size = first.font_size;
+        for &j in &order[k + 1..] {
+            let other = &items[j];
+            if other.text != first.text || other.bbox.y0 - first.bbox.y0 > 0.2 * size {
+                break;
+            }
+            if !dropped[j]
+                && (other.bbox.x0 - first.bbox.x0).abs() < 0.1 * size
+                && (other.font_size - size).abs() < 0.05 * size
+            {
+                dropped[j] = true;
+            }
+        }
+    }
+    items
+        .into_iter()
+        .zip(dropped)
+        .filter_map(|(item, dropped)| (!dropped).then_some(item))
+        .collect()
 }
 
 /// Lay vertical runs out as blocks: chunks are grouped into columns (read top
@@ -865,6 +914,21 @@ mod tests {
             "a wide vertical gap should split paragraphs into separate blocks, got {}",
             layout.blocks.len()
         );
+    }
+
+    #[test]
+    fn overprinted_fake_bold_runs_are_kept_once() {
+        // "Title" painted three times 0.3pt apart (fake bold), then text.
+        let chunks = vec![
+            chunk("Title", 50.0, 700.0, 30.0, 10.0),
+            chunk("Title", 50.3, 700.0, 30.0, 10.0),
+            chunk("Title", 50.6, 700.1, 30.0, 10.0),
+            chunk("body", 50.0, 686.0, 25.0, 10.0),
+            // The same word elsewhere on the line is not a duplicate.
+            chunk("Title", 85.0, 700.0, 30.0, 10.0),
+        ];
+        let layout = analyze_page(&chunks, &LayoutConfig::default());
+        assert_eq!(layout.text(), "Title Title\nbody");
     }
 
     #[test]
