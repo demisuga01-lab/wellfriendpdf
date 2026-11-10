@@ -44,6 +44,7 @@ pub(crate) mod sfnt_outline;
 pub(crate) mod sfnt_subset;
 pub mod shaper;
 pub mod shaping_context;
+pub(crate) mod standard14_metrics;
 pub mod tab_stops;
 mod tt_bytecode;
 pub(crate) mod tt_hint_instance;
@@ -60,8 +61,8 @@ pub use writing_mode::WritingMode;
 
 pub use installed::{
     installed_font_covering, installed_font_faces, installed_font_named, installed_fonts_enabled,
-    set_installed_fonts_enabled, InstalledFontFace, InstalledFontProgram, InstalledFontProvider,
-    InstalledFontStyle,
+    set_installed_fonts_enabled, FontLanguage, InstalledFontFace, InstalledFontProgram,
+    InstalledFontProvider, InstalledFontStyle,
 };
 pub use provider::{
     BundledFontProvider, FontMatch, FontMatchRequest, FontProvider, FontProviderSource,

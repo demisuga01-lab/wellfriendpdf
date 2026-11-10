@@ -851,6 +851,8 @@ pub fn fuzz_font_mapping(data: &[u8]) {
         bold: data.first().copied().unwrap_or(0) & 1 != 0,
         italic: data.first().copied().unwrap_or(0) & 2 != 0,
         symbolic: data.first().copied().unwrap_or(0) & 4 != 0,
+        serif: data.first().copied().unwrap_or(0) & 8 != 0,
+        fixed_pitch: data.first().copied().unwrap_or(0) & 16 != 0,
     };
     if let Some(font_match) = provider.match_font(&request) {
         let shape_text: String = if data.get(1).copied().unwrap_or(0) & 1 == 0 {

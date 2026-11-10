@@ -56,7 +56,10 @@ impl Type1Font {
     }
 
     pub(crate) fn outline_by_name(&self, glyph_name: &str) -> (Option<Path>, f64) {
-        let Some(charstring) = self.charstrings.get(glyph_name) else {
+        let Some(charstring) = self.charstrings.get(glyph_name).or_else(|| {
+            crate::fonts::glyph_list::ligature_alternate_name(glyph_name)
+                .and_then(|alternate| self.charstrings.get(alternate))
+        }) else {
             return (None, 500.0);
         };
         let mut interpreter = Interpreter::new(self);

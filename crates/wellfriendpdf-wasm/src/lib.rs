@@ -948,6 +948,12 @@ mod wasm_api {
             })
         }
 
+        /// Register a font program (TrueType/OpenType bytes) for rendering.
+        /// It replaces non-embedded fonts whose `/BaseFont` has this name and
+        /// also draws, under any name, glyphs no other available font has.
+        /// The WebAssembly build has no system fonts and bundles Latin faces
+        /// only, so register a covering face to draw non-embedded CJK, Indic
+        /// or other scripts.
         #[wasm_bindgen(js_name = registerFontBytes)]
         pub fn register_font_bytes(
             &mut self,

@@ -136,6 +136,92 @@ pub fn extract_glyph_path_for_simple_var(
     (Some(builder.into_path()), advance)
 }
 
+/// [`extract_glyph_path_for_simple_var`] for vertical writing with a
+/// substitute program: the glyph found for the character is replaced by its
+/// vertical form from the font's GSUB `vrt2` or `vert` feature (rotated or
+/// repositioned brackets, dashes, small kana and punctuation), the way Poppler
+/// maps substituted vertical CID text. Glyphs without a vertical form, and
+/// fonts that are not sfnt, are drawn as in horizontal text.
+pub(crate) fn extract_vertical_glyph_path_for_simple_var(
+    font_bytes: &[u8],
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+    request: &VariationRequest,
+) -> (Option<Path>, f64) {
+    let Ok(mut face) = ttf_parser::Face::parse(font_bytes, 0) else {
+        return extract_glyph_path_for_simple_var(font_bytes, code, ch, glyph_name, request);
+    };
+    if variations::apply_request_checked(&mut face, request).is_err() {
+        return (None, 500.0);
+    }
+    let Some(glyph_id) = glyph_index_for_simple(&face, code, ch, glyph_name) else {
+        return extract_glyph_path_for_simple_var(font_bytes, code, ch, glyph_name, request);
+    };
+    let glyph_id = vertical_form_glyph(&face, glyph_id);
+    let upem = f64::from(face.units_per_em());
+    let advance = face
+        .glyph_hor_advance(glyph_id)
+        .filter(|_| upem > 0.0)
+        .map(|width| f64::from(width) / upem * 1000.0)
+        .unwrap_or(1000.0);
+    let mut builder = GlyphToPath::new();
+    if crate::fonts::sfnt_outline::outline(&face, glyph_id, &mut builder)
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return (None, advance);
+    }
+    (Some(builder.into_path()), advance)
+}
+
+/// The vertical alternate of `glyph` from the GSUB `vrt2` feature, else the
+/// `vert` feature (single substitutions only, which is all either feature
+/// contains), or `glyph` itself when the font has none.
+pub(crate) fn vertical_form_glyph(face: &ttf_parser::Face<'_>, glyph: GlyphId) -> GlyphId {
+    use ttf_parser::gsub::{SingleSubstitution, SubstitutionSubtable};
+    let Some(gsub) = face.tables().gsub else {
+        return glyph;
+    };
+    for feature_tag in [b"vrt2", b"vert"] {
+        let feature_tag = ttf_parser::Tag::from_bytes(feature_tag);
+        for feature in gsub
+            .features
+            .into_iter()
+            .filter(|feature| feature.tag == feature_tag)
+        {
+            for lookup_index in feature.lookup_indices {
+                let Some(lookup) = gsub.lookups.get(lookup_index) else {
+                    continue;
+                };
+                for subtable in lookup.subtables.into_iter::<SubstitutionSubtable>() {
+                    let SubstitutionSubtable::Single(single) = subtable else {
+                        continue;
+                    };
+                    let Some(coverage_index) = single.coverage().get(glyph) else {
+                        continue;
+                    };
+                    let substitute = match single {
+                        SingleSubstitution::Format1 { delta, .. } => {
+                            Some(GlyphId(glyph.0.wrapping_add(delta as u16)))
+                        }
+                        SingleSubstitution::Format2 { substitutes, .. } => {
+                            substitutes.get(coverage_index)
+                        }
+                    };
+                    if let Some(substitute) =
+                        substitute.filter(|substitute| substitute.0 < face.number_of_glyphs())
+                    {
+                        return substitute;
+                    }
+                }
+            }
+        }
+    }
+    glyph
+}
+
 /// Strict vector-output variant of [`extract_glyph_path_for_simple`].
 ///
 /// This refuses to synthesize a glyph advance. It may still return `None` for
@@ -426,6 +512,12 @@ fn glyph_index_for_simple(
 ) -> Option<GlyphId> {
     if let Some(name) = glyph_name.filter(|name| *name != ".notdef") {
         if let Some(gid) = face.glyph_index_by_name(name) {
+            return Some(gid);
+        }
+        // "fi" <-> "f_i" and the other standard ligature spellings.
+        if let Some(gid) = crate::fonts::glyph_list::ligature_alternate_name(name)
+            .and_then(|alternate| face.glyph_index_by_name(alternate))
+        {
             return Some(gid);
         }
     }
@@ -763,5 +855,97 @@ mod tests {
             bounds.2.round() as i32,
             bounds.3.round() as i32,
         )
+    }
+
+    /// A GSUB table with one `vert` feature (DFLT script) holding one single
+    /// substitution `from -> to`.
+    fn gsub_with_vert_substitution(from: u16, to: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut put = |value: u16| out.extend_from_slice(&value.to_be_bytes());
+        // Header: version 1.0, ScriptList at 10, FeatureList at 30,
+        // LookupList at 44.
+        for value in [1, 0, 10, 30, 44] {
+            put(value);
+        }
+        // ScriptList: one DFLT script at +8; Script: default LangSys at +4,
+        // no other languages; LangSys: no required feature, feature 0.
+        put(1);
+        out.extend_from_slice(b"DFLT");
+        let mut put = |value: u16| out.extend_from_slice(&value.to_be_bytes());
+        for value in [8, 4, 0, 0, 0xFFFF, 1, 0] {
+            put(value);
+        }
+        // FeatureList: one `vert` feature at +8 using lookup 0.
+        put(1);
+        out.extend_from_slice(b"vert");
+        let mut put = |value: u16| out.extend_from_slice(&value.to_be_bytes());
+        for value in [8, 0, 1, 0] {
+            put(value);
+        }
+        // LookupList: one lookup at +4; Lookup: type 1 (single), one
+        // subtable at +8; SingleSubst format 2 with coverage at +8;
+        // Coverage format 1 with one glyph.
+        for value in [1, 4, 1, 0, 1, 8, 2, 8, 1, to, 1, 1, from] {
+            put(value);
+        }
+        out
+    }
+
+    fn with_gsub(font: &[u8], gsub: Vec<u8>) -> Vec<u8> {
+        let face = ttf_parser::RawFace::parse(font, 0).expect("raw face");
+        let mut tables = std::collections::BTreeMap::new();
+        for record in face.table_records {
+            let tag = record.tag.to_bytes();
+            if &tag == b"GSUB" {
+                continue;
+            }
+            let start = record.offset as usize;
+            let end = start + record.length as usize;
+            tables.insert(tag, font[start..end].to_vec());
+        }
+        tables.insert(*b"GSUB", gsub);
+        crate::fonts::sfnt_subset::build_sfnt([0, 1, 0, 0], tables).expect("rebuilt sfnt")
+    }
+
+    #[test]
+    fn vertical_text_uses_the_gsub_vertical_form() {
+        let base = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        let face = ttf_parser::Face::parse(base, 0).expect("bundled face");
+        let paren = face.glyph_index('(').expect("parenleft");
+        let bracket = face.glyph_index('[').expect("bracketleft");
+        let font = with_gsub(base, gsub_with_vert_substitution(paren.0, bracket.0));
+        let face = ttf_parser::Face::parse(&font, 0).expect("font with vert");
+
+        assert_eq!(vertical_form_glyph(&face, paren), bracket);
+        // Glyphs without a vertical form are unchanged.
+        let letter = face.glyph_index('A').expect("A");
+        assert_eq!(vertical_form_glyph(&face, letter), letter);
+
+        let none = VariationRequest::none();
+        let (vertical, _) =
+            extract_vertical_glyph_path_for_simple_var(&font, 0x28, '(', None, &none);
+        let (bracket_path, _) = extract_glyph_path_for_simple_var(&font, 0x5B, '[', None, &none);
+        let (paren_path, _) = extract_glyph_path_for_simple_var(&font, 0x28, '(', None, &none);
+        assert_eq!(vertical, bracket_path);
+        assert_ne!(vertical, paren_path);
+        // Horizontal extraction never applies the vertical form.
+        let (horizontal, _) = extract_glyph_path_for_simple_var(&font, 0x28, '(', None, &none);
+        assert_eq!(horizontal, paren_path);
+    }
+
+    #[test]
+    fn ligature_glyphs_are_found_under_either_name() {
+        // Liberation Sans names its ligature "fi"; a PDF that says "f_i"
+        // must still reach it.
+        let font = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        let face = ttf_parser::Face::parse(font, 0).expect("bundled face");
+        let Some(fi) = face.glyph_index_by_name("fi") else {
+            return;
+        };
+        assert_eq!(face.glyph_index_by_name("f_i"), None);
+        assert_eq!(
+            resolve_glyph_id_for_simple(&face, 0, '\u{FFFD}', Some("f_i")),
+            Some(fi)
+        );
     }
 }

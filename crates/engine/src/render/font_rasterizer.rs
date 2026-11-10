@@ -293,6 +293,33 @@ pub(crate) mod cff_support {
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
+    /// The 8-bit encoding built into a simple (SID-keyed) bare CFF font, as
+    /// glyph names per code. Codes the font leaves unencoded are filled from
+    /// StandardEncoding, as Poppler does, so `seac` accents and producers
+    /// that rely on the standard layout keep working. `None` for CID-keyed
+    /// fonts and anything that is not bare CFF.
+    pub(crate) fn builtin_encoding(font_bytes: &[u8]) -> Option<Vec<String>> {
+        let table = parse(font_bytes)?;
+        if cff_is_cid_keyed(font_bytes) {
+            return None;
+        }
+        let names = (0u8..=255)
+            .map(|code| {
+                table
+                    .glyph_index(code)
+                    .filter(|glyph_id| glyph_id.0 != 0)
+                    .and_then(|glyph_id| table.glyph_name(glyph_id))
+                    .filter(|name| !name.is_empty() && *name != ".notdef")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        crate::fonts::encoding::Encoding::lookup("StandardEncoding", code)
+                            .to_string()
+                    })
+            })
+            .collect();
+        Some(names)
+    }
+
     /// In CID-keyed CFF fonts, PDF character codes map to CIDs and the CFF
     /// charset maps charstring GIDs back to those CIDs. Invert that charset so
     /// CIDFontType0 / Identity-H text paints the intended charstring instead of
@@ -371,13 +398,20 @@ pub(crate) mod cff_support {
         if glyph_name == ".notdef" {
             return Some(GlyphId(0));
         }
-        if let Some(glyph_id) = table.glyph_index_by_name(glyph_name) {
-            return Some(glyph_id);
-        }
-        (0..table.number_of_glyphs())
-            .map(GlyphId)
-            .find(|glyph_id| table.glyph_name(*glyph_id) == Some(glyph_name))
-            .or_else(|| cff_charset_gid_by_name(font_bytes, glyph_name).map(GlyphId))
+        let by_name = |glyph_name: &str| {
+            if let Some(glyph_id) = table.glyph_index_by_name(glyph_name) {
+                return Some(glyph_id);
+            }
+            (0..table.number_of_glyphs())
+                .map(GlyphId)
+                .find(|glyph_id| table.glyph_name(*glyph_id) == Some(glyph_name))
+                .or_else(|| cff_charset_gid_by_name(font_bytes, glyph_name).map(GlyphId))
+        };
+        // Ligatures are named either way ("fi" or "f_i"); try the other
+        // spelling before giving up, as Poppler does.
+        by_name(glyph_name).or_else(|| {
+            crate::fonts::glyph_list::ligature_alternate_name(glyph_name).and_then(by_name)
+        })
     }
 
     fn compose_seac_outline(
@@ -1506,9 +1540,13 @@ impl FontRasterizer {
         let tm_t = Transform2D::from(*tm);
         let glyph_ctm = scale_t.concat(&tm_t).concat(ctm);
 
-        // Keep production glyph rendering on the non-distorting coverage path.
-        // Light grid-fitting is available to test but is deferred for default
-        // rendering until it improves Poppler comparisons instead of regressing.
+        // This standalone helper draws the plain outline with no grid-fitting.
+        // Page rendering does not come through here: `PageRenderer` applies
+        // light grid-fitting (`GlyphHinting::light`) to filled sfnt and Type 1
+        // glyphs between 7 and 32 device pixels per em, axis-aligned text
+        // only: the baseline moves by up to 0.35 px and outline points within
+        // 0.18 px of a pixel edge snap to it. No font hinting instructions are
+        // executed (see docs/binding_surface0_hinting_posture.md).
         let glyph_hinting = GlyphHinting::disabled();
 
         match render_mode {

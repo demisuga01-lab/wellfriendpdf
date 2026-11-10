@@ -6,7 +6,10 @@ use crate::fonts::cmap::ToUnicodeCMap;
 #[path = "resolver_codes.rs"]
 mod codes;
 use crate::fonts::encoding::Encoding;
-use crate::fonts::glyph_list::glyph_name_to_unicode;
+use crate::fonts::glyph_list::{
+    differences_look_numeric, glyph_name_looks_hex, glyph_name_to_text, glyph_name_to_unicode,
+    DifferencesEntry,
+};
 use crate::fonts::predefined_cmap;
 use crate::fonts::type1;
 use crate::object::{PdfDictionary, PdfObject};
@@ -138,6 +141,10 @@ pub struct FontResolver {
     /// only in that case; the recovery MuPDF performs for Identity-encoded
     /// subsets, without which such text extracts as U+FFFD.
     cid_to_unicode: Option<std::collections::BTreeMap<u16, String>>,
+    /// `Some(hex)` when the simple font's /Differences uses numeric glyph
+    /// names throughout (`g12`, `cid7`, `Gab`), so such names are read as
+    /// character values (Poppler's testForNumericNames). `None` otherwise.
+    numeric_glyph_names: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,13 +275,13 @@ impl FontResolver {
             .unwrap_or(".notdef");
 
         if glyph_name != ".notdef" {
-            if let Some(ch) = glyph_name_to_unicode(glyph_name) {
+            if let Some(text) = glyph_name_to_text(glyph_name, self.numeric_glyph_names) {
                 let source = if glyph_name.starts_with("uni") || glyph_name.starts_with('u') {
                     FontDecodeSource::GlyphName
                 } else {
                     FontDecodeSource::EncodingDifferences
                 };
-                return (expand_ligature(ch), source);
+                return (text, source);
             }
         }
 
@@ -436,6 +443,9 @@ impl FontResolver {
         } else {
             Some(build_encoding_table(font_dict, reader, &font_type))
         };
+        let numeric_glyph_names = encoding_table
+            .as_deref()
+            .and_then(|table| numeric_glyph_names(font_dict, reader, table));
         let descendant_font = if matches!(font_type, FontType::Type0) {
             get_descendant_font_optional(font_dict, reader)
         } else {
@@ -584,280 +594,102 @@ impl FontResolver {
             code_space,
             unicode_encoding,
             cid_to_unicode,
+            numeric_glyph_names,
         }
     }
 
     fn standard14_width(&self, char_code: u16) -> Option<f64> {
         let base = self.standard14_base.as_deref()?;
-        let glyph_name = self.glyph_name(char_code)?;
-        standard14_width(base, glyph_name)
+        match self.glyph_name(char_code) {
+            Some(glyph_name) => standard14_width(base, glyph_name),
+            // Broken producers encode the word space 0x20 as .notdef; give it
+            // the font's space width rather than the default width, as
+            // Poppler does.
+            None if char_code == 0x20 => standard14_width(base, "space"),
+            None => None,
+        }
     }
 }
 
+/// The standard 14 font whose built-in metrics apply to `name`, after removing
+/// a subset tag. Besides the 14 names themselves this accepts the aliases PDF
+/// producers commonly write for them (Arial/ArialMT for Helvetica,
+/// TimesNewRoman/TimesNewRomanPS for Times, CourierNew/CourierNewPS for
+/// Courier, SymbolMT for Symbol, and the `,Bold`/`-BoldMT` style spellings),
+/// the same alias set Poppler and PDFium use when a font has no /Widths.
 fn standard14_base_name(name: &str) -> Option<String> {
     let raw = name.trim_start_matches('/');
     let raw = raw.rsplit('+').next().unwrap_or(raw);
-    match raw {
+    let compact: String = raw.chars().filter(|ch| *ch != ' ').collect();
+    match compact.as_str() {
         "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique" => {
-            Some(raw.to_string())
+            return Some(compact);
         }
         "Helvetica" | "Helvetica-Bold" | "Helvetica-Oblique" | "Helvetica-BoldOblique" => {
-            Some(raw.to_string())
+            return Some(compact);
         }
-        "Times-Roman" | "Times-Bold" | "Times-Italic" | "Times-BoldItalic" => Some(raw.to_string()),
-        _ => None,
+        "Times-Roman" | "Times-Bold" | "Times-Italic" | "Times-BoldItalic" => {
+            return Some(compact);
+        }
+        "Symbol" | "ZapfDingbats" => return Some(compact),
+        _ => {}
     }
+    let (family, style) = match compact.find([',', '-']) {
+        Some(index) => (&compact[..index], &compact[index + 1..]),
+        None => (compact.as_str(), ""),
+    };
+    let style = style.strip_suffix("MT").unwrap_or(style);
+    let bold = match style {
+        "" | "Roman" | "Regular" | "Italic" | "Oblique" => false,
+        "Bold" | "BoldItalic" | "BoldOblique" => true,
+        _ => return None,
+    };
+    let italic = style.contains("Italic") || style.contains("Oblique");
+    let base = match family {
+        "Arial" | "ArialMT" | "Helvetica" => match (bold, italic) {
+            (false, false) => "Helvetica",
+            (true, false) => "Helvetica-Bold",
+            (false, true) => "Helvetica-Oblique",
+            (true, true) => "Helvetica-BoldOblique",
+        },
+        "TimesNewRoman" | "TimesNewRomanPS" | "TimesNewRomanPSMT" | "Times" => {
+            match (bold, italic) {
+                (false, false) => "Times-Roman",
+                (true, false) => "Times-Bold",
+                (false, true) => "Times-Italic",
+                (true, true) => "Times-BoldItalic",
+            }
+        }
+        "CourierNew" | "CourierNewPS" | "CourierNewPSMT" | "Courier" => match (bold, italic) {
+            (false, false) => "Courier",
+            (true, false) => "Courier-Bold",
+            (false, true) => "Courier-Oblique",
+            (true, true) => "Courier-BoldOblique",
+        },
+        "Symbol" | "SymbolMT" => "Symbol",
+        _ => return None,
+    };
+    Some(base.to_string())
 }
 
 fn standard14_width(base: &str, glyph_name: &str) -> Option<f64> {
+    use super::standard14_metrics as metrics;
     match base {
         "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique" => {
             (glyph_name != ".notdef").then_some(600.0)
         }
-        "Helvetica" | "Helvetica-Oblique" => helvetica_standard_width(glyph_name),
-        "Helvetica-Bold" | "Helvetica-BoldOblique" => helvetica_bold_standard_width(glyph_name),
-        "Times-Roman" => times_roman_standard_width(glyph_name),
-        "Times-Bold" => times_bold_standard_width(glyph_name),
-        "Times-Italic" => times_italic_standard_width(glyph_name),
-        "Times-BoldItalic" => times_bold_italic_standard_width(glyph_name),
+        "Helvetica" | "Helvetica-Oblique" => metrics::lookup(metrics::HELVETICA, glyph_name),
+        "Helvetica-Bold" | "Helvetica-BoldOblique" => {
+            metrics::lookup(metrics::HELVETICA_BOLD, glyph_name)
+        }
+        "Times-Roman" => metrics::lookup(metrics::TIMES_ROMAN, glyph_name),
+        "Times-Bold" => metrics::lookup(metrics::TIMES_BOLD, glyph_name),
+        "Times-Italic" => metrics::lookup(metrics::TIMES_ITALIC, glyph_name),
+        "Times-BoldItalic" => metrics::lookup(metrics::TIMES_BOLD_ITALIC, glyph_name),
+        "Symbol" => metrics::lookup(metrics::SYMBOL, glyph_name),
+        "ZapfDingbats" => metrics::lookup(metrics::ZAPF_DINGBATS, glyph_name),
         _ => None,
     }
-}
-
-fn helvetica_standard_width(glyph: &str) -> Option<f64> {
-    Some(match glyph {
-        "space" => 278.0,
-        "exclam" => 278.0,
-        "quotedbl" => 355.0,
-        "numbersign" | "dollar" => 556.0,
-        "percent" => 889.0,
-        "ampersand" => 667.0,
-        "quoteright" | "quotesingle" | "quoteleft" | "grave" | "acute" => 222.0,
-        "parenleft" | "parenright" | "bracketleft" | "bracketright" => 333.0,
-        "asterisk" => 389.0,
-        "plus" | "less" | "equal" | "greater" | "asciitilde" => 584.0,
-        "comma" | "period" | "colon" | "semicolon" => 278.0,
-        "hyphen" => 333.0,
-        "slash" | "backslash" => 278.0,
-        "zero" | "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine" => {
-            556.0
-        }
-        "question" => 556.0,
-        "at" => 1015.0,
-        "A" | "B" | "K" | "X" | "Y" => 667.0,
-        "C" | "H" | "N" | "R" | "U" => 722.0,
-        "D" | "G" | "O" | "Q" => 778.0,
-        "E" => 667.0,
-        "F" | "T" | "Z" => 611.0,
-        "I" => 278.0,
-        "J" => 500.0,
-        "L" => 556.0,
-        "M" => 833.0,
-        "P" => 667.0,
-        "S" => 667.0,
-        "V" => 667.0,
-        "W" => 944.0,
-        "asciicircum" => 469.0,
-        "underscore" => 556.0,
-        "a" | "b" | "d" | "e" | "g" | "n" | "o" | "p" | "q" | "u" => 556.0,
-        "c" | "k" | "s" | "v" | "x" | "y" | "z" => 500.0,
-        "f" | "t" => 278.0,
-        "h" => 556.0,
-        "i" | "j" | "l" => 222.0,
-        "m" => 833.0,
-        "r" => 333.0,
-        "w" => 722.0,
-        "braceleft" | "braceright" => 334.0,
-        "bar" => 260.0,
-        _ => return None,
-    })
-}
-
-fn helvetica_bold_standard_width(glyph: &str) -> Option<f64> {
-    Some(match glyph {
-        "space" | "quoteright" | "quotesingle" | "quoteleft" | "grave" | "acute" | "comma"
-        | "period" | "slash" | "backslash" | "I" | "i" | "j" | "l" => 278.0,
-        "exclam" | "parenleft" | "parenright" | "colon" | "semicolon" | "bracketleft"
-        | "bracketright" | "f" | "t" => 333.0,
-        "quotedbl" => 474.0,
-        "numbersign" | "dollar" | "zero" | "one" | "two" | "three" | "four" | "five" | "six"
-        | "seven" | "eight" | "nine" | "L" | "T" | "c" | "k" | "s" | "x" | "z" => 556.0,
-        "percent" | "m" => 889.0,
-        "ampersand" | "E" | "P" | "S" | "Y" => 667.0,
-        "asterisk" | "r" => 389.0,
-        "plus" | "less" | "equal" | "greater" | "asciicircum" | "asciitilde" => 584.0,
-        "hyphen" => 333.0,
-        "question" | "F" => 611.0,
-        "at" => 975.0,
-        "A" | "B" | "H" | "K" | "N" | "R" | "U" => 722.0,
-        "C" | "D" | "G" | "O" | "Q" => 778.0,
-        "J" | "a" => 556.0,
-        "M" => 833.0,
-        "V" => 722.0,
-        "W" => 944.0,
-        "X" => 722.0,
-        "Z" => 611.0,
-        "underscore" => 556.0,
-        "b" | "d" | "g" | "h" | "n" | "o" | "p" | "q" | "u" => 611.0,
-        "e" | "v" | "y" => 556.0,
-        "w" => 778.0,
-        "braceleft" | "braceright" => 389.0,
-        "bar" => 280.0,
-        _ => return None,
-    })
-}
-
-fn times_roman_standard_width(glyph: &str) -> Option<f64> {
-    Some(match glyph {
-        "space" => 250.0,
-        "exclam" => 333.0,
-        "quotedbl" => 408.0,
-        "numbersign" | "dollar" | "asterisk" => 500.0,
-        "percent" => 833.0,
-        "ampersand" => 778.0,
-        "quoteright" | "quotesingle" | "quoteleft" => 180.0,
-        "parenleft" | "parenright" | "bracketleft" | "bracketright" | "grave" | "acute" => 333.0,
-        "plus" | "less" | "equal" | "greater" => 564.0,
-        "comma" | "period" => 250.0,
-        "hyphen" => 333.0,
-        "slash" | "backslash" | "colon" | "semicolon" | "i" | "j" | "l" | "t" => 278.0,
-        "zero" | "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine" => {
-            500.0
-        }
-        "question" | "a" | "c" | "e" | "z" => 444.0,
-        "at" => 921.0,
-        "A" | "K" | "N" | "O" | "Q" | "V" | "X" | "Y" => 722.0,
-        "B" | "C" | "R" => 667.0,
-        "D" => 722.0,
-        "E" | "L" | "T" | "Z" => 611.0,
-        "F" | "S" => 556.0,
-        "G" | "H" => 722.0,
-        "I" => 333.0,
-        "J" | "s" => 389.0,
-        "M" => 889.0,
-        "P" => 556.0,
-        "U" => 722.0,
-        "W" => 944.0,
-        "asciicircum" => 469.0,
-        "underscore" => 500.0,
-        "b" | "d" | "g" | "h" | "k" | "n" | "o" | "p" | "q" | "u" | "v" | "x" | "y" => 500.0,
-        "f" | "r" => 333.0,
-        "m" => 778.0,
-        "w" => 722.0,
-        "braceleft" | "braceright" => 480.0,
-        "bar" => 200.0,
-        "asciitilde" => 541.0,
-        _ => return None,
-    })
-}
-
-fn times_bold_standard_width(glyph: &str) -> Option<f64> {
-    Some(match glyph {
-        "space" | "comma" | "period" => 250.0,
-        "exclam" | "parenleft" | "parenright" | "colon" | "semicolon" | "bracketleft"
-        | "bracketright" | "grave" | "acute" | "f" | "t" => 333.0,
-        "quotedbl" | "J" | "P" | "S" | "a" | "o" | "v" | "x" | "y" => 500.0,
-        "numbersign" | "dollar" | "asterisk" | "zero" | "one" | "two" | "three" | "four"
-        | "five" | "six" | "seven" | "eight" | "nine" | "question" => 500.0,
-        "percent" => 1000.0,
-        "ampersand" => 833.0,
-        "quoteright" | "quotesingle" | "quoteleft" | "slash" | "backslash" | "i" | "l" => 278.0,
-        "plus" | "less" | "equal" | "greater" => 570.0,
-        "at" => 930.0,
-        "A" | "C" | "N" | "R" | "U" | "V" | "X" => 722.0,
-        "B" | "E" | "L" | "Z" => 667.0,
-        "D" | "H" | "K" | "O" | "Q" => 778.0,
-        "F" => 611.0,
-        "G" => 778.0,
-        "I" => 389.0,
-        "M" => 944.0,
-        "T" => 667.0,
-        "W" => 1000.0,
-        "Y" => 722.0,
-        "asciicircum" => 581.0,
-        "underscore" => 500.0,
-        "b" | "d" | "h" | "k" | "n" | "p" | "q" | "u" => 556.0,
-        "c" | "e" | "z" => 444.0,
-        "g" => 500.0,
-        "j" => 333.0,
-        "m" => 833.0,
-        "r" => 444.0,
-        "s" => 389.0,
-        "w" => 722.0,
-        "braceleft" | "braceright" => 394.0,
-        "bar" => 220.0,
-        "asciitilde" => 520.0,
-        _ => return None,
-    })
-}
-
-fn times_italic_standard_width(glyph: &str) -> Option<f64> {
-    Some(match glyph {
-        "space" | "comma" | "period" => 250.0,
-        "exclam" | "parenleft" | "parenright" | "colon" | "semicolon" | "bracketleft"
-        | "bracketright" | "grave" | "acute" => 333.0,
-        "quotedbl" => 420.0,
-        "numbersign" | "dollar" | "asterisk" | "zero" | "one" | "two" | "three" | "four"
-        | "five" | "six" | "seven" | "eight" | "nine" | "question" | "a" | "b" | "d" | "g"
-        | "h" | "n" | "o" | "p" | "q" | "u" => 500.0,
-        "percent" | "M" | "W" => 833.0,
-        "ampersand" => 778.0,
-        "quoteright" | "quotesingle" | "quoteleft" => 214.0,
-        "plus" | "less" | "equal" | "greater" => 675.0,
-        "hyphen" => 333.0,
-        "slash" | "backslash" | "i" | "j" | "l" | "t" => 278.0,
-        "at" => 920.0,
-        "A" | "B" | "E" | "F" | "P" | "R" | "V" | "X" => 611.0,
-        "C" | "K" => 667.0,
-        "D" | "G" | "H" | "O" | "Q" | "U" => 722.0,
-        "I" => 333.0,
-        "J" => 444.0,
-        "L" | "T" | "Y" | "Z" => 556.0,
-        "S" | "r" | "s" | "z" => 389.0,
-        "asciicircum" | "x" | "y" => 422.0,
-        "underscore" => 500.0,
-        "c" | "e" | "k" | "v" => 444.0,
-        "f" => 278.0,
-        "m" => 722.0,
-        "w" => 667.0,
-        "braceleft" | "braceright" => 400.0,
-        "bar" => 275.0,
-        "asciitilde" => 541.0,
-        _ => return None,
-    })
-}
-
-fn times_bold_italic_standard_width(glyph: &str) -> Option<f64> {
-    Some(match glyph {
-        "space" | "comma" | "period" => 250.0,
-        "exclam" | "I" | "colon" | "semicolon" | "f" => 389.0,
-        "quotedbl" | "r" | "s" | "z" => 389.0,
-        "numbersign" | "dollar" | "asterisk" | "zero" | "one" | "two" | "three" | "four"
-        | "five" | "six" | "seven" | "eight" | "nine" | "question" | "a" | "b" | "d" | "g"
-        | "k" | "o" | "p" | "q" | "x" => 500.0,
-        "percent" => 833.0,
-        "ampersand" | "H" | "m" => 778.0,
-        "quoteright" | "quotesingle" | "quoteleft" | "slash" | "backslash" | "i" | "j" | "l"
-        | "t" => 278.0,
-        "parenleft" | "parenright" | "bracketleft" | "bracketright" | "grave" | "acute" => 333.0,
-        "plus" | "less" | "equal" | "greater" | "asciicircum" | "asciitilde" => 570.0,
-        "hyphen" => 333.0,
-        "at" => 832.0,
-        "A" | "B" | "C" | "E" | "K" | "R" | "V" | "X" => 667.0,
-        "D" | "G" | "N" | "O" | "Q" | "U" => 722.0,
-        "F" => 667.0,
-        "J" => 500.0,
-        "L" | "P" | "T" | "Y" | "Z" => 611.0,
-        "M" | "W" => 889.0,
-        "S" => 556.0,
-        "underscore" => 500.0,
-        "c" | "e" | "v" | "y" => 444.0,
-        "h" | "n" | "u" => 556.0,
-        "w" => 667.0,
-        "braceleft" | "braceright" => 348.0,
-        "bar" => 220.0,
-        _ => return None,
-    })
 }
 
 pub fn predefined_cmap_name(
@@ -1067,47 +899,117 @@ fn build_encoding_table(
     reader: Option<&PdfReader>,
     font_type: &FontType,
 ) -> Vec<String> {
-    // Symbol and ZapfDingbats are standard-14 fonts with their own built-in
-    // encodings (spec Appendix D). When the BaseFont names one of them, that
-    // encoding — not StandardEncoding/MacRoman — is the implicit default, used
-    // both when /Encoding is absent and as the base for any /Differences.
+    // Base encoding, in Poppler's order of priority:
+    //   1. ZapfDingbats always uses its own built-in encoding; an /Encoding
+    //      name or /BaseEncoding never replaces it (Differences still apply).
+    //   2. A named encoding in the PDF (/Encoding or /BaseEncoding).
+    //   3. For embedded Type 1 and bare CFF (Type1C) programs, the encoding
+    //      built into the font program.
+    //   4. The default: the built-in encoding of a Symbol/ZapfDingbats
+    //      standard font, WinAnsiEncoding for TrueType, StandardEncoding
+    //      otherwise.
+    // Then /Differences overrides individual codes.
     let symbolic_base = symbolic_builtin_encoding(font_dict);
+    let forced_base = is_zapf_dingbats_font(font_dict).then_some("ZapfDingbatsEncoding");
     let default_base = symbolic_base.unwrap_or(match font_type {
-        FontType::TrueType => "MacRomanEncoding",
+        FontType::TrueType => "WinAnsiEncoding",
         _ => "StandardEncoding",
     });
-    let type1_builtin =
+    let font_builtin = || {
         if symbolic_base.is_none() && matches!(font_type, FontType::Type1 | FontType::MMType1) {
-            embedded_font_program_bytes(font_dict, reader)
-                .and_then(|bytes| type1::builtin_encoding(bytes.as_slice()))
+            embedded_font_program_bytes(font_dict, reader).and_then(|bytes| {
+                if crate::render::font_rasterizer::cff_support::is_bare_cff(&bytes) {
+                    crate::render::font_rasterizer::cff_support::builtin_encoding(&bytes)
+                } else {
+                    type1::builtin_encoding(bytes.as_slice())
+                }
+            })
         } else {
             None
-        };
+        }
+    };
+    let implicit_base = || font_builtin().unwrap_or_else(|| table_for(default_base));
 
     let Some(encoding_obj) = font_dict.get("Encoding") else {
-        return type1_builtin.unwrap_or_else(|| table_for(default_base));
+        return forced_base.map(table_for).unwrap_or_else(implicit_base);
     };
 
     let resolved = resolve_optional(encoding_obj, reader).unwrap_or_else(|_| encoding_obj.clone());
     match resolved {
-        PdfObject::Name(name) => table_for(&name),
+        PdfObject::Name(name) => match forced_base {
+            Some(forced) => table_for(forced),
+            None if is_known_base_encoding(&name) => table_for(&name),
+            None => implicit_base(),
+        },
         PdfObject::Dictionary(dict) => {
             let diffs = dict
                 .get_array("Differences")
                 .map(pdf_objects_to_operands)
                 .unwrap_or_default();
-            let base_table = dict
-                .get_name("BaseEncoding")
-                .map(table_for)
-                .unwrap_or_else(|| type1_builtin.unwrap_or_else(|| table_for(default_base)));
+            let base_table = match (forced_base, dict.get_name("BaseEncoding")) {
+                (Some(forced), _) => table_for(forced),
+                (None, Some(name)) if is_known_base_encoding(name) => table_for(name),
+                _ => implicit_base(),
+            };
             if diffs.is_empty() {
                 base_table
             } else {
                 apply_differences_to_table(base_table, &diffs)
             }
         }
-        _ => table_for(default_base),
+        _ => forced_base.map(table_for).unwrap_or_else(implicit_base),
     }
+}
+
+/// `Some(hex)` when every /Differences name of a simple font is numeric (see
+/// [`differences_look_numeric`]). `hex` is set when some name the glyph list
+/// cannot map only makes sense as two hex digits.
+fn numeric_glyph_names(
+    font_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+    table: &[String],
+) -> Option<bool> {
+    let encoding = resolve_optional(font_dict.get("Encoding")?, reader).ok()?;
+    let PdfObject::Dictionary(encoding) = encoding else {
+        return None;
+    };
+    let differences = resolve_optional(encoding.get("Differences")?, reader).ok()?;
+    let PdfObject::Array(differences) = differences else {
+        return None;
+    };
+    let hex = table.iter().any(|name| {
+        name != ".notdef" && glyph_name_to_unicode(name).is_none() && glyph_name_looks_hex(name)
+    });
+    let entries = differences.iter().map(|item| match item {
+        PdfObject::Integer(code) => DifferencesEntry::Code(*code),
+        PdfObject::Name(name) => DifferencesEntry::Name(name.as_str()),
+        _ => DifferencesEntry::Other,
+    });
+    differences_look_numeric(entries, hex).then_some(hex)
+}
+
+/// Encoding names [`Encoding::lookup`] has a table for. Anything else (a
+/// misspelt or CMap name on a simple font) falls back to the implicit base
+/// encoding instead of turning every code into .notdef.
+fn is_known_base_encoding(name: &str) -> bool {
+    matches!(
+        name,
+        "StandardEncoding"
+            | "WinAnsiEncoding"
+            | "MacRomanEncoding"
+            | "MacExpertEncoding"
+            | "PDFDocEncoding"
+            | "SymbolEncoding"
+            | "ZapfDingbatsEncoding"
+    )
+}
+
+/// True for the ZapfDingbats standard font (subset tag allowed). Like Poppler,
+/// the name must end in "ZapfDingbats".
+fn is_zapf_dingbats_font(font_dict: &PdfDictionary) -> bool {
+    font_dict
+        .get_name("BaseFont")
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with("zapfdingbats"))
 }
 
 /// If the font's `/BaseFont` is the Symbol or ZapfDingbats standard-14 font,
@@ -2152,5 +2054,214 @@ mod tests {
 
         let resolver = FontResolver::new_from_dict_only(&font);
         assert_eq!(resolver.decode_string(b"AB"), "\u{20AC}\u{4E2D}");
+    }
+
+    fn simple_font(subtype: &str, base_font: &str, encoding: Option<PdfObject>) -> PdfDictionary {
+        let mut font = dict(&[
+            ("Subtype", PdfObject::Name(subtype.to_string())),
+            ("BaseFont", PdfObject::Name(base_font.to_string())),
+        ]);
+        if let Some(encoding) = encoding {
+            font.insert("Encoding", encoding);
+        }
+        font
+    }
+
+    fn differences(items: Vec<PdfObject>) -> PdfObject {
+        PdfObject::Dictionary(dict(&[("Differences", PdfObject::Array(items))]))
+    }
+
+    fn name(value: &str) -> PdfObject {
+        PdfObject::Name(value.to_string())
+    }
+
+    #[test]
+    fn standard14_metrics_cover_the_full_latin_set() {
+        let encoding = Some(name("WinAnsiEncoding"));
+        let helvetica =
+            FontResolver::new_from_dict_only(&simple_font("Type1", "Helvetica", encoding.clone()));
+        // Accented capitals, typographic quotes, bullet and dashes: all
+        // outside the old ASCII-only table.
+        assert_eq!(helvetica.glyph_width(0xC1), 667.0); // Aacute
+        assert_eq!(helvetica.glyph_width(0xE9), 556.0); // eacute
+        assert_eq!(helvetica.glyph_width(0x93), 333.0); // quotedblleft
+        assert_eq!(helvetica.glyph_width(0x95), 350.0); // bullet
+        assert_eq!(helvetica.glyph_width(0x97), 1000.0); // emdash
+        assert_eq!(helvetica.glyph_width(0x80), 556.0); // Euro
+                                                        // AFM value: quotesingle is 191 units, not the 222 of quoteright.
+        assert_eq!(helvetica.glyph_width(0x27), 191.0);
+
+        let times = FontResolver::new_from_dict_only(&simple_font(
+            "Type1",
+            "Times-Roman",
+            encoding.clone(),
+        ));
+        assert_eq!(times.glyph_width(0xE9), 444.0); // eacute
+        assert_eq!(times.glyph_width(0xDF), 500.0); // germandbls
+        let times_bold_italic =
+            FontResolver::new_from_dict_only(&simple_font("Type1", "Times-BoldItalic", encoding));
+        assert_eq!(times_bold_italic.glyph_width(0xC6), 944.0); // AE
+    }
+
+    #[test]
+    fn symbol_and_zapf_dingbats_have_builtin_metrics() {
+        let symbol = FontResolver::new_from_dict_only(&simple_font("Type1", "Symbol", None));
+        assert!(symbol.has_standard14_metrics());
+        assert_eq!(symbol.glyph_width(u16::from(b'a')), 631.0); // alpha
+        assert_eq!(symbol.glyph_width(0xE5), 713.0); // summation
+        let dingbats =
+            FontResolver::new_from_dict_only(&simple_font("Type1", "ZapfDingbats", None));
+        assert!(dingbats.has_standard14_metrics());
+        assert_eq!(dingbats.glyph_width(0x21), 974.0); // a1
+        assert_eq!(dingbats.glyph_width(0x6C), 791.0); // a71, black circle
+    }
+
+    #[test]
+    fn standard14_aliases_use_builtin_metrics() {
+        let arial_bold =
+            FontResolver::new_from_dict_only(&simple_font("TrueType", "Arial,Bold", None));
+        assert!(arial_bold.has_standard14_metrics());
+        assert_eq!(arial_bold.glyph_width(u16::from(b'A')), 722.0);
+        let arial = FontResolver::new_from_dict_only(&simple_font("TrueType", "ArialMT", None));
+        assert_eq!(arial.glyph_width(u16::from(b'm')), 833.0);
+        let times = FontResolver::new_from_dict_only(&simple_font(
+            "TrueType",
+            "TimesNewRomanPS-BoldItalicMT",
+            None,
+        ));
+        assert_eq!(times.glyph_width(u16::from(b'A')), 667.0);
+        let courier =
+            FontResolver::new_from_dict_only(&simple_font("TrueType", "CourierNew", None));
+        assert_eq!(courier.glyph_width(u16::from(b'W')), 600.0);
+        let unknown =
+            FontResolver::new_from_dict_only(&simple_font("TrueType", "ArialNarrow", None));
+        assert!(!unknown.has_standard14_metrics());
+    }
+
+    #[test]
+    fn notdef_space_code_gets_the_space_width() {
+        let font = simple_font(
+            "Type1",
+            "Helvetica",
+            Some(differences(vec![PdfObject::Integer(32), name(".notdef")])),
+        );
+        let resolver = FontResolver::new_from_dict_only(&font);
+        assert_eq!(resolver.glyph_width(0x20), 278.0);
+    }
+
+    #[test]
+    fn truetype_without_encoding_defaults_to_win_ansi() {
+        let resolver = FontResolver::new_from_dict_only(&simple_font("TrueType", "SomeFace", None));
+        assert_eq!(
+            resolver.decode_string(&[0x80, 0x92, 0xE9]),
+            "\u{20AC}\u{2019}\u{E9}"
+        );
+        assert_eq!(resolver.glyph_name(0x92), Some("quoteright"));
+    }
+
+    #[test]
+    fn zapf_dingbats_ignores_an_explicit_encoding() {
+        let named = FontResolver::new_from_dict_only(&simple_font(
+            "Type1",
+            "ZapfDingbats",
+            Some(name("WinAnsiEncoding")),
+        ));
+        assert_eq!(named.glyph_name(0x6C), Some("a71"));
+        assert_eq!(named.decode_string(&[0x6C]), "\u{25CF}");
+        let mut encoding = dict(&[("BaseEncoding", name("WinAnsiEncoding"))]);
+        encoding.insert(
+            "Differences",
+            PdfObject::Array(vec![PdfObject::Integer(0x22), name("a3")]),
+        );
+        let subset = FontResolver::new_from_dict_only(&simple_font(
+            "Type1",
+            "ABCDEF+ZapfDingbats",
+            Some(PdfObject::Dictionary(encoding)),
+        ));
+        assert_eq!(subset.glyph_name(0x21), Some("a1"));
+        assert_eq!(subset.glyph_name(0x22), Some("a3"));
+    }
+
+    #[test]
+    fn mac_expert_encoding_is_supported() {
+        let resolver = FontResolver::new_from_dict_only(&simple_font(
+            "Type1",
+            "Minion-Expert",
+            Some(name("MacExpertEncoding")),
+        ));
+        assert_eq!(resolver.glyph_name(0x56), Some("ff"));
+        assert_eq!(resolver.glyph_name(0x30), Some("zerooldstyle"));
+        assert_eq!(resolver.decode_string(&[0x56, 0x57]), "fffi");
+    }
+
+    #[test]
+    fn unknown_encoding_name_falls_back_to_the_default_base() {
+        let resolver = FontResolver::new_from_dict_only(&simple_font(
+            "Type1",
+            "SomeFace",
+            Some(name("Identity-H")),
+        ));
+        assert_eq!(resolver.glyph_name(u16::from(b'A')), Some("A"));
+    }
+
+    #[test]
+    fn glyph_names_follow_the_adobe_glyph_list_convention() {
+        let font = simple_font(
+            "Type1",
+            "SomeFace",
+            Some(differences(vec![
+                PdfObject::Integer(65),
+                name("a.sc"),
+                name("f_f_i"),
+                name("uni00660069"),
+                name("u1F600"),
+                name("T_h"),
+                name("seven.oldstyle"),
+            ])),
+        );
+        let resolver = FontResolver::new_from_dict_only(&font);
+        assert_eq!(resolver.decode_string(b"ABCDEF"), "affifi\u{1F600}Th7");
+    }
+
+    #[test]
+    fn numeric_glyph_names_need_an_all_numeric_differences_array() {
+        let numeric = simple_font(
+            "Type1",
+            "SomeFace",
+            Some(differences(vec![
+                PdfObject::Integer(1),
+                name("g65"),
+                name("g66"),
+            ])),
+        );
+        let resolver = FontResolver::new_from_dict_only(&numeric);
+        assert_eq!(resolver.decode_string(&[1, 2]), "AB");
+
+        // One non-numeric name: numeric names are not trusted, so code 1
+        // stays unmapped instead of becoming 'B'.
+        let mixed = simple_font(
+            "Type1",
+            "SomeFace",
+            Some(differences(vec![
+                PdfObject::Integer(1),
+                name("g66"),
+                name("A"),
+            ])),
+        );
+        let resolver = FontResolver::new_from_dict_only(&mixed);
+        assert_eq!(resolver.decode_string(&[1]), "\u{FFFD}");
+
+        // A name that only makes sense as hex switches the whole font to hex.
+        let hex = simple_font(
+            "Type1",
+            "SomeFace",
+            Some(differences(vec![
+                PdfObject::Integer(1),
+                name("Gab"),
+                name("G41"),
+            ])),
+        );
+        let resolver = FontResolver::new_from_dict_only(&hex);
+        assert_eq!(resolver.decode_string(&[1, 2]), "\u{AB}A");
     }
 }

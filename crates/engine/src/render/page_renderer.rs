@@ -15594,6 +15594,16 @@ impl<'a> RenderState<'a> {
                         light_hinting_supported: ttf_parser::Face::parse(bytes.as_slice(), 0)
                             .is_ok()
                             || crate::fonts::type1::Type1Font::is_type1(bytes.as_slice()),
+                        is_substitute: substitution_event_index.is_some()
+                            || font_dict.as_deref().is_none_or(|font_dict| {
+                                !font_dict_declares_program(
+                                    font_dict,
+                                    self.engine.document().reader(),
+                                )
+                            }),
+                        fallback_language: font_dict.as_deref().and_then(|font_dict| {
+                            font_cjk_language(font_dict, self.engine.document().reader())
+                        }),
                     };
                     self.prepared_font_metadata
                         .insert(font_cache_key.clone(), metadata);
@@ -15605,6 +15615,8 @@ impl<'a> RenderState<'a> {
             glyph_cache_hash: 0,
             upem: 1000.0,
             light_hinting_supported: false,
+            is_substitute: false,
+            fallback_language: None,
         });
 
         if let Some(refusal) = exact_font_refusal {
@@ -15707,6 +15719,12 @@ impl<'a> RenderState<'a> {
                             offset_y: glyph.vertical_origin.map(|(_, vy)| vy).unwrap_or(0.0),
                             fill_color,
                             stroke_color,
+                            substitute_pdf_width: glyph
+                                .width
+                                .filter(|_| prepared_font.is_substitute && !glyph.is_vertical),
+                            fallback_pdf_width: glyph.width.filter(|_| !glyph.is_vertical),
+                            vertical: glyph.is_vertical,
+                            fallback_language: prepared_font.fallback_language,
                         });
                     }
                 }
@@ -15848,6 +15866,18 @@ impl<'a> RenderState<'a> {
                         request.code,
                         request.variation,
                     )
+                } else if request.vertical {
+                    // Vertical text drawn from a substitute program (an
+                    // embedded CID program is addressed by glyph id): use the
+                    // substitute's GSUB vertical forms, as Poppler does, so
+                    // brackets and punctuation turn upright in the column.
+                    crate::render::glyph_outline::extract_vertical_glyph_path_for_simple_var(
+                        request.font_bytes,
+                        request.code,
+                        request.ch,
+                        request.glyph_name,
+                        request.variation,
+                    )
                 } else {
                     crate::render::glyph_outline::extract_glyph_path_for_simple_var(
                         request.font_bytes,
@@ -15867,7 +15897,12 @@ impl<'a> RenderState<'a> {
 
         let scale = font_size_scale(self.gs.text.font_size, request.upem);
         let th = self.gs.text.horizontal_scaling / 100.0;
-        let scale_x = scale * th;
+        // A substitute glyph is fitted to the advance the PDF reserves for it
+        // (see `substitute_width_fit`); embedded programs are never rescaled.
+        let width_fit = request.substitute_pdf_width.map_or(1.0, |pdf_width| {
+            substitute_width_fit(pdf_width, advance_width)
+        });
+        let scale_x = scale * th * width_fit;
         if scale <= 0.0 || !scale_x.is_finite() {
             return Some(advance_width);
         }
@@ -15880,11 +15915,8 @@ impl<'a> RenderState<'a> {
         let rise_t = Transform2D::translation(0.0, self.gs.text.rise);
         let tm_t = Transform2D::from(self.gs.text.tm);
         let ctm = self.ctm();
-        let glyph_ctm = scale_t
-            .concat(&offset_t)
-            .concat(&rise_t)
-            .concat(&tm_t)
-            .concat(&ctm);
+        let glyph_to_user = scale_t.concat(&offset_t).concat(&rise_t).concat(&tm_t);
+        let glyph_ctm = glyph_to_user.concat(&ctm);
 
         // Light baseline grid-fitting is bounded to normal body-text sizes in
         // `GlyphHinting::light`, and is enabled only for outline formats whose
@@ -15955,6 +15987,11 @@ impl<'a> RenderState<'a> {
                 self.paint_fallback_glyph(
                     request.ch,
                     request.font_name,
+                    FallbackGlyphStyle {
+                        pdf_width: request.fallback_pdf_width,
+                        vertical: request.vertical,
+                        language: request.fallback_language,
+                    },
                     &offset_t,
                     &rise_t,
                     &tm_t,
@@ -16004,19 +16041,7 @@ impl<'a> RenderState<'a> {
                 }
             }
             1 | 5 => {
-                PathPainter::stroke_with_style_fast_cancellable(
-                    &mut self.buf,
-                    glyph_path,
-                    &glyph_ctm,
-                    &self.viewport,
-                    stroke_color,
-                    self.gs.line_width,
-                    &DashState::solid(),
-                    &LineCap::Butt,
-                    &LineJoin::Miter,
-                    10.0,
-                    &self.cancel,
-                );
+                self.stroke_text_glyph(glyph_path, &glyph_to_user, stroke_color);
             }
             2 | 6 => {
                 if !color_fill_painted
@@ -16051,19 +16076,7 @@ impl<'a> RenderState<'a> {
                         );
                     }
                 }
-                PathPainter::stroke_with_style_fast_cancellable(
-                    &mut self.buf,
-                    glyph_path,
-                    &glyph_ctm,
-                    &self.viewport,
-                    stroke_color,
-                    self.gs.line_width,
-                    &DashState::solid(),
-                    &LineCap::Butt,
-                    &LineJoin::Miter,
-                    10.0,
-                    &self.cancel,
-                );
+                self.stroke_text_glyph(glyph_path, &glyph_to_user, stroke_color);
             }
             3 | 7 => {}
             other => log::warn!("PageRenderer: unknown text render mode {}", other),
@@ -16081,6 +16094,7 @@ impl<'a> RenderState<'a> {
         &mut self,
         ch: char,
         font_name: &str,
+        style: FallbackGlyphStyle,
         offset_t: &Transform2D,
         rise_t: &Transform2D,
         tm_t: &Transform2D,
@@ -16090,40 +16104,56 @@ impl<'a> RenderState<'a> {
         fill_color: PixelColor,
         stroke_color: PixelColor,
     ) -> bool {
-        let Some((bytes, upem)) = select_covering_fallback_font(ch, font_name) else {
+        let engine = self.engine;
+        let Some((bytes, upem)) = select_covering_fallback_font(
+            ch,
+            font_name,
+            style.language,
+            Some(engine.registered_font_provider()),
+        ) else {
             return false;
         };
         let scale = font_size_scale(self.gs.text.font_size, upem);
-        let scale_x = scale * th;
-        if scale <= 0.0 || !scale_x.is_finite() {
+        if scale <= 0.0 || !scale.is_finite() {
             return false;
         }
         let code = u16::try_from(ch as u32).unwrap_or(0);
-        let (path, _advance) = crate::render::glyph_outline::extract_glyph_path_for_simple_var(
-            bytes,
-            code,
-            ch,
-            None,
-            &crate::fonts::VariationRequest::none(),
-        );
+        let variation = crate::fonts::VariationRequest::none();
+        let (path, advance) = if style.vertical {
+            crate::render::glyph_outline::extract_vertical_glyph_path_for_simple_var(
+                bytes, code, ch, None, &variation,
+            )
+        } else {
+            crate::render::glyph_outline::extract_glyph_path_for_simple_var(
+                bytes, code, ch, None, &variation,
+            )
+        };
         let Some(path) = path else {
             return false;
         };
         if path.is_empty() {
             return false;
         }
-        let glyph_ctm = Transform2D::scale(scale_x, scale)
+        // The fallback face is a substitute too: fit it to the PDF advance.
+        let width_fit = style
+            .pdf_width
+            .map_or(1.0, |pdf_width| substitute_width_fit(pdf_width, advance));
+        let scale_x = scale * th * width_fit;
+        if !scale_x.is_finite() {
+            return false;
+        }
+        let glyph_to_user = Transform2D::scale(scale_x, scale)
             .concat(offset_t)
             .concat(rise_t)
-            .concat(tm_t)
-            .concat(ctm);
+            .concat(tm_t);
+        let glyph_ctm = glyph_to_user.concat(ctm);
         let glyph_hinting = GlyphHinting::light(glyph_pixel_size);
         match self.gs.text.rendering_mode {
             0 | 4 => self.fill_fallback_glyph(&path, &glyph_ctm, fill_color, glyph_hinting),
-            1 | 5 => self.stroke_fallback_glyph(&path, &glyph_ctm, stroke_color),
+            1 | 5 => self.stroke_text_glyph(&path, &glyph_to_user, stroke_color),
             2 | 6 => {
                 self.fill_fallback_glyph(&path, &glyph_ctm, fill_color, glyph_hinting);
-                self.stroke_fallback_glyph(&path, &glyph_ctm, stroke_color);
+                self.stroke_text_glyph(&path, &glyph_to_user, stroke_color);
             }
             _ => return false,
         }
@@ -16161,23 +16191,33 @@ impl<'a> RenderState<'a> {
         }
     }
 
-    fn stroke_fallback_glyph(
+    /// Stroke a glyph outline for text render modes 1, 2, 5 and 6 with the
+    /// graphics state's line width, dash pattern, line cap, line join and
+    /// miter limit, like any other stroked path. The outline is mapped into
+    /// user space first, so the line width and dash lengths are user-space
+    /// values that do not scale with the font size or text matrix (PDF
+    /// 32000-1 9.3.6, and what Poppler and PDFium draw).
+    fn stroke_text_glyph(
         &mut self,
         path: &Path,
-        glyph_ctm: &Transform2D,
+        glyph_to_user: &Transform2D,
         stroke_color: PixelColor,
     ) {
-        PathPainter::stroke_with_style_fast_cancellable(
+        let user_path = transform_path(path, glyph_to_user);
+        let ctm = self.ctm();
+        let dash = self.dash_state();
+        PathPainter::stroke_with_style_fast_cancellable_with_flatness(
             &mut self.buf,
-            path,
-            glyph_ctm,
+            &user_path,
+            &ctm,
             &self.viewport,
             stroke_color,
             self.gs.line_width,
-            &DashState::solid(),
-            &LineCap::Butt,
-            &LineJoin::Miter,
-            10.0,
+            &dash,
+            &self.gs.line_cap,
+            &self.gs.line_join,
+            self.gs.miter_limit,
+            self.gs.path_flatness_tolerance(),
             &self.cancel,
         );
     }
@@ -18526,6 +18566,13 @@ struct PreparedFontMetadata {
     glyph_cache_hash: u64,
     upem: f64,
     light_hinting_supported: bool,
+    /// The program drawn is a substitute (registered, installed or bundled
+    /// face), not the font embedded in the PDF. Substituted glyphs are
+    /// width-fitted to the PDF metrics; embedded ones never are.
+    is_substitute: bool,
+    /// The CJK language of a composite font's character collection, used to
+    /// choose a per-glyph fallback face built for that language.
+    fallback_language: Option<crate::fonts::FontLanguage>,
 }
 
 struct GlyphRenderRequest<'a> {
@@ -18546,6 +18593,17 @@ struct GlyphRenderRequest<'a> {
     offset_y: f64,
     fill_color: PixelColor,
     stroke_color: PixelColor,
+    /// The PDF horizontal advance (1/1000 text units) when the glyph is drawn
+    /// from a substitute program, so the substitute glyph can be fitted to
+    /// it. `None` for embedded programs and for vertical text.
+    substitute_pdf_width: Option<f64>,
+    /// The PDF horizontal advance for a glyph the program lacks, which is then
+    /// drawn from a covering fallback face. `None` for vertical text.
+    fallback_pdf_width: Option<f64>,
+    /// Vertical writing mode: substituted glyphs use their GSUB vertical forms.
+    vertical: bool,
+    /// The source font's CJK language, for choosing fallback faces.
+    fallback_language: Option<crate::fonts::FontLanguage>,
 }
 
 const TYPE3_MAX_CHARPROC_BYTES: usize = 1_048_576;
@@ -20698,6 +20756,8 @@ fn resolve_descriptor(
     }
 }
 
+const FONT_DESCRIPTOR_FIXED_PITCH_FLAG: i64 = 1;
+const FONT_DESCRIPTOR_SERIF_FLAG: i64 = 1 << 1;
 const FONT_DESCRIPTOR_SYMBOLIC_FLAG: i64 = 1 << 2;
 const FONT_DESCRIPTOR_NONSYMBOLIC_FLAG: i64 = 1 << 5;
 const FONT_DESCRIPTOR_ITALIC_FLAG: i64 = 1 << 6;
@@ -20719,6 +20779,8 @@ fn font_match_request_for_replacement(
         request.symbolic = (flags & FONT_DESCRIPTOR_SYMBOLIC_FLAG) != 0
             && (flags & FONT_DESCRIPTOR_NONSYMBOLIC_FLAG) == 0;
         request.italic |= (flags & FONT_DESCRIPTOR_ITALIC_FLAG) != 0;
+        request.fixed_pitch = (flags & FONT_DESCRIPTOR_FIXED_PITCH_FLAG) != 0;
+        request.serif = (flags & FONT_DESCRIPTOR_SERIF_FLAG) != 0;
         request.bold |= (flags & FONT_DESCRIPTOR_FORCE_BOLD_FLAG) != 0;
     }
     if descriptor
@@ -20815,6 +20877,71 @@ fn font_descriptor_has_font_program(
             .iter()
             .any(|key| descriptor.get(key).is_some())
     })
+}
+
+/// Whether the font (or, for Type0, its descendant) declares an embedded
+/// program. Used to tell a substitute from an embedded program when the
+/// program bytes came from the shared font cache.
+fn font_dict_declares_program(
+    font_dict: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+) -> bool {
+    if font_descriptor_has_font_program(font_dict, reader) {
+        return true;
+    }
+    detect_font_subtype(font_dict) == FontSubtype::Type0
+        && get_descendant_font(font_dict, reader)
+            .is_some_and(|descendant| font_descriptor_has_font_program(&descendant, reader))
+}
+
+/// The CJK language of a composite font: its descendant's `CIDSystemInfo`
+/// `/Ordering` (Japan1, GB1, CNS1, Korea1), or for an Identity ordering the
+/// language its predefined encoding CMap name implies (UniJIS-, UniGB-...).
+fn font_cjk_language(
+    font_dict: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+) -> Option<crate::fonts::FontLanguage> {
+    use crate::fonts::FontLanguage;
+    if detect_font_subtype(font_dict) != FontSubtype::Type0 {
+        return None;
+    }
+    let ordering = get_descendant_font(font_dict, reader).and_then(|descendant| {
+        let info = reader
+            .resolve(descendant.get("CIDSystemInfo")?.clone())
+            .ok()?;
+        let PdfObject::Dictionary(info) = info else {
+            return None;
+        };
+        let ordering = reader.resolve(info.get("Ordering")?.clone()).ok()?;
+        match ordering {
+            PdfObject::Name(name) => Some(name),
+            other => other
+                .as_string()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+        }
+    });
+    if let Some(language) = ordering
+        .as_deref()
+        .and_then(FontLanguage::from_cid_ordering)
+    {
+        return Some(language);
+    }
+    let cmap = font_dict.get_name("Encoding")?;
+    if cmap.contains("JIS") || cmap.contains("RKSJ") || cmap.starts_with("90") {
+        Some(FontLanguage::Japanese)
+    } else if cmap.contains("GB") {
+        Some(FontLanguage::SimplifiedChinese)
+    } else if cmap.contains("CNS")
+        || cmap.contains("B5")
+        || cmap.contains("ETen")
+        || cmap.contains("HKscs")
+    {
+        Some(FontLanguage::TraditionalChinese)
+    } else if cmap.contains("KSC") || cmap.contains("UniKS") {
+        Some(FontLanguage::Korean)
+    } else {
+        None
+    }
 }
 
 fn font_substitution_encoding_summary(font_dict: &PdfDictionary) -> String {
@@ -21139,7 +21266,39 @@ fn is_fallback_candidate_char(ch: char) -> bool {
 /// render it: a bundled face chosen from the source font's name, then DejaVu
 /// Sans (broad Unicode coverage), then an installed system face (CJK / Indic /
 /// Arabic, when present). Returns the program bytes and its units-per-em.
-fn select_covering_fallback_font(ch: char, font_name: &str) -> Option<(&'static [u8], f64)> {
+fn select_covering_fallback_font<'r>(
+    ch: char,
+    font_name: &str,
+    language: Option<crate::fonts::FontLanguage>,
+    registered: Option<&'r crate::fonts::RegisteredFontProvider>,
+) -> Option<(&'r [u8], f64)> {
+    // Caller-registered faces cover scripts the bundled faces lack on hosts
+    // with no installed fonts (WebAssembly), whatever name they were
+    // registered under.
+    let registered = || {
+        let bytes = registered?.face_covering(ch, language)?;
+        font_covers_char_upem(bytes, ch).map(|upem| (bytes, upem))
+    };
+    let installed = || {
+        if !crate::fonts::installed::installed_fonts_enabled() {
+            return None;
+        }
+        let style = crate::fonts::installed::InstalledFontStyle {
+            family_hint: Some(font_name.to_string()),
+            language,
+            ..Default::default()
+        };
+        let program = crate::fonts::installed::installed_font_covering(&ch.to_string(), &style)?;
+        font_covers_char_upem(program.bytes, ch).map(|upem| (program.bytes, upem))
+    };
+    // A CJK font draws its whole text, Latin included, with a face made for
+    // its language (as Poppler's fontconfig lookup does); the bundled Latin
+    // faces only stand in when no such face is installed.
+    if language.is_some() {
+        if let Some(found) = registered().or_else(installed) {
+            return Some(found);
+        }
+    }
     if let Some(bytes) = crate::render::get_fallback_font(font_name) {
         if let Some(upem) = font_covers_char_upem(bytes, ch) {
             return Some((bytes, upem));
@@ -21149,20 +21308,86 @@ fn select_covering_fallback_font(ch: char, font_name: &str) -> Option<(&'static 
     if let Some(upem) = font_covers_char_upem(dejavu, ch) {
         return Some((dejavu, upem));
     }
-    if crate::fonts::installed::installed_fonts_enabled() {
-        let style = crate::fonts::installed::InstalledFontStyle {
-            family_hint: Some(font_name.to_string()),
-            ..Default::default()
-        };
-        if let Some(program) =
-            crate::fonts::installed::installed_font_covering(&ch.to_string(), &style)
-        {
-            if let Some(upem) = font_covers_char_upem(program.bytes, ch) {
-                return Some((program.bytes, upem));
-            }
-        }
+    if language.is_none() {
+        return registered().or_else(installed);
     }
     None
+}
+
+/// Horizontal scale that fits a substitute glyph to the advance the PDF
+/// reserves for it (`pdf_width` and `natural_advance` in 1/1000 text units).
+///
+/// Poppler compares one glyph ('m') and squeezes the whole font when the
+/// substitute is more than 10% too wide; it never stretches. Fitting every
+/// glyph does better: each glyph fills exactly its own cell, so narrow and
+/// wide letters of a design whose proportions differ from the substitute's
+/// neither overlap nor leave ragged gaps. The scale is limited:
+/// - within 1% it stays 1, so metric-compatible faces (Liberation for
+///   Arial, Times New Roman and Courier New) draw unchanged;
+/// - it shrinks to 0.5 at most: narrower than half its design width a glyph
+///   stops being legible, and a mismatch that large means the PDF width
+///   belongs to a different glyph (a wrong encoding), not a narrower design;
+/// - it stretches by 10% at most: widening distorts stems and round shapes
+///   quickly, while a little extra space between letters is barely noticed.
+fn substitute_width_fit(pdf_width: f64, natural_advance: f64) -> f64 {
+    const DEAD_BAND: f64 = 0.01;
+    const MIN_SHRINK: f64 = 0.5;
+    const MAX_STRETCH: f64 = 1.1;
+    if !(pdf_width.is_finite() && natural_advance.is_finite())
+        || pdf_width <= 0.0
+        || natural_advance <= 1.0
+    {
+        return 1.0;
+    }
+    let ratio = pdf_width / natural_advance;
+    if (ratio - 1.0).abs() <= DEAD_BAND {
+        1.0
+    } else {
+        ratio.clamp(MIN_SHRINK, MAX_STRETCH)
+    }
+}
+
+/// Style inputs for drawing a glyph from a covering fallback face.
+#[derive(Debug, Clone, Copy)]
+struct FallbackGlyphStyle {
+    /// The PDF advance to fit the glyph to (`None` for vertical text).
+    pdf_width: Option<f64>,
+    /// Vertical writing mode: use the face's GSUB vertical forms.
+    vertical: bool,
+    /// The source font's CJK language.
+    language: Option<crate::fonts::FontLanguage>,
+}
+
+/// `path` with every point mapped through `transform`.
+fn transform_path(path: &Path, transform: &Transform2D) -> Path {
+    let mut out = Path::new();
+    for segment in &path.segments {
+        match *segment {
+            PathSegment::MoveTo(x, y) => {
+                let (x, y) = transform.transform_point(x, y);
+                out.move_to(x, y);
+            }
+            PathSegment::LineTo(x, y) => {
+                let (x, y) = transform.transform_point(x, y);
+                out.line_to(x, y);
+            }
+            PathSegment::CubicTo {
+                cp1x,
+                cp1y,
+                cp2x,
+                cp2y,
+                x,
+                y,
+            } => {
+                let (cp1x, cp1y) = transform.transform_point(cp1x, cp1y);
+                let (cp2x, cp2y) = transform.transform_point(cp2x, cp2y);
+                let (x, y) = transform.transform_point(x, y);
+                out.curve_to(cp1x, cp1y, cp2x, cp2y, x, y);
+            }
+            PathSegment::ClosePath => out.close(),
+        }
+    }
+    out
 }
 
 /// Units-per-em of `bytes` iff it has a non-notdef glyph for `ch`.
@@ -28280,7 +28505,7 @@ mod tests {
         // U+2713 (CHECK MARK) is absent from the bundled Liberation faces but
         // present in DejaVu Sans. A source font that cannot render it must fall
         // back to a face that covers it rather than drop the glyph.
-        let picked = select_covering_fallback_font('\u{2713}', "Helvetica");
+        let picked = select_covering_fallback_font('\u{2713}', "Helvetica", None, None);
         let (bytes, upem) = picked.expect("expected a covering fallback for U+2713");
         assert!(upem > 0.0);
         assert!(
@@ -28288,7 +28513,7 @@ mod tests {
             "selected fallback must actually cover U+2713"
         );
         // A plain Latin glyph is covered by the first (name-based) bundled face.
-        assert!(select_covering_fallback_font('A', "Helvetica").is_some());
+        assert!(select_covering_fallback_font('A', "Helvetica", None, None).is_some());
     }
 
     #[test]
@@ -29243,6 +29468,10 @@ mod tests {
             offset_y: 0.0,
             fill_color: BLACK,
             stroke_color: BLACK,
+            substitute_pdf_width: None,
+            fallback_pdf_width: None,
+            vertical: false,
+            fallback_language: None,
         };
         let op = crate::render::color_glyph::ColrPaintOp {
             glyph_id: glyph_id.0,
@@ -45013,6 +45242,168 @@ mod tests {
                 "butt-capped zero dash is invisible, got {pixel:?} at {x}"
             );
         }
+    }
+
+    #[test]
+    fn substitute_width_fit_shrinks_caps_stretch_and_keeps_compatible_metrics() {
+        // Metric-compatible substitutes (within 1%) are left alone.
+        assert_eq!(substitute_width_fit(833.0, 833.0), 1.0);
+        assert_eq!(substitute_width_fit(556.0, 560.0), 1.0);
+        // Too-wide substitutes are squeezed to the PDF cell...
+        assert!((substitute_width_fit(500.0, 625.0) - 0.8).abs() < 1e-9);
+        // ...but never below half their design width.
+        assert_eq!(substitute_width_fit(100.0, 833.0), 0.5);
+        // Too-narrow ones stretch by 10% at most.
+        assert!((substitute_width_fit(525.0, 500.0) - 1.05).abs() < 1e-9);
+        assert_eq!(substitute_width_fit(1000.0, 500.0), 1.1);
+        // Zero-width cells (combining marks) and missing advances are untouched.
+        assert_eq!(substitute_width_fit(0.0, 500.0), 1.0);
+        assert_eq!(substitute_width_fit(500.0, 0.0), 1.0);
+        assert_eq!(substitute_width_fit(f64::NAN, 500.0), 1.0);
+    }
+
+    fn render_font_test_page(
+        font_object: &str,
+        extra_objects: &[Vec<u8>],
+        content: &str,
+    ) -> PixelBuffer {
+        let mut objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            font_object.as_bytes().to_vec(),
+        ];
+        objects.extend(extra_objects.iter().cloned());
+        let pdf = build_test_pdf_from_objects(&objects);
+        let engine = ContentEngine::open_bytes(pdf).expect("open font test PDF");
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("render font test page")
+    }
+
+    fn dark_pixel_max_x(buf: &PixelBuffer) -> Option<u32> {
+        let mut max_x = None;
+        for y in 0..buf.height {
+            for x in 0..buf.width {
+                let pixel = buf.get_pixel(x as i32, y as i32);
+                if pixel[0] < 128 && pixel[1] < 128 && pixel[2] < 128 {
+                    max_x = Some(max_x.map_or(x, |current: u32| current.max(x)));
+                }
+            }
+        }
+        max_x
+    }
+
+    const FOUR_EMS: &str = "BT /F1 40 Tf 10 50 Td (mmmm) Tj ET";
+
+    #[test]
+    fn substituted_glyphs_are_fitted_to_narrower_pdf_widths() {
+        // A non-embedded font whose 'm' is 400 units wide is drawn with
+        // Liberation Sans, whose 'm' is 833 units: without fitting, each m
+        // overlaps the next and the last one ends near x = 10 + 48 + 31.
+        let narrow = render_font_test_page(
+            "<< /Type /Font /Subtype /TrueType /BaseFont /UnknownFace /FirstChar 109 /LastChar 109 /Widths [400] >>",
+            &[],
+            FOUR_EMS,
+        );
+        let narrow_end = dark_pixel_max_x(&narrow).expect("substituted text paints");
+        assert!(
+            narrow_end < 78,
+            "substitute glyphs must be squeezed into their 16 px cells, ink ends at {narrow_end}"
+        );
+
+        // With the substitute's own width nothing changes.
+        let natural = render_font_test_page(
+            "<< /Type /Font /Subtype /TrueType /BaseFont /UnknownFace /FirstChar 109 /LastChar 109 /Widths [833] >>",
+            &[],
+            FOUR_EMS,
+        );
+        let natural_end = dark_pixel_max_x(&natural).expect("substituted text paints");
+        assert!(
+            natural_end > 10 + 3 * 33 + 25,
+            "unfitted glyphs keep their natural width, ink ends at {natural_end}"
+        );
+    }
+
+    #[test]
+    fn embedded_glyphs_are_never_width_fitted() {
+        let font = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        let mut font_file = format!("<< /Length {} >>\nstream\n", font.len()).into_bytes();
+        font_file.extend_from_slice(font);
+        font_file.extend_from_slice(b"\nendstream");
+        let descriptor = b"<< /Type /FontDescriptor /FontName /LiberationSans /Flags 32 /FontBBox [-200 -300 1200 1000] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>".to_vec();
+        let page = render_font_test_page(
+            "<< /Type /Font /Subtype /TrueType /BaseFont /LiberationSans /FirstChar 109 /LastChar 109 /Widths [400] /FontDescriptor 6 0 R >>",
+            &[descriptor, font_file],
+            FOUR_EMS,
+        );
+        let end = dark_pixel_max_x(&page).expect("embedded text paints");
+        // The fourth m starts at 10 + 3 * 16 and keeps its full ~29 px ink.
+        assert!(
+            end > 10 + 48 + 24,
+            "embedded glyphs keep their own outlines, ink ends at {end}"
+        );
+    }
+
+    fn stroked_text_ink(graphics_state: &str) -> usize {
+        let content = format!("BT /F1 60 Tf 1 Tr {graphics_state} 10 25 Td (HH) Tj ET");
+        let page = render_font_test_page(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            &[],
+            &content,
+        );
+        count_dark_pixels(&page)
+    }
+
+    #[test]
+    fn stroked_text_uses_the_graphics_state_line_width_and_dash() {
+        let thin = stroked_text_ink("0.5 w");
+        let thick = stroked_text_ink("5 w");
+        assert!(thin > 0, "stroked text paints");
+        // The line width is a user-space value: 5 units is 5 px at 72 dpi,
+        // not 5 units of glyph space shrunk by the 60/1000 font scale.
+        assert!(
+            thick > thin * 3,
+            "a 5 unit pen must draw far more ink than a 0.5 unit pen ({thick} vs {thin})"
+        );
+        let solid = stroked_text_ink("4 w");
+        let dashed = stroked_text_ink("4 w [3 9] 0 d");
+        assert!(
+            dashed * 10 < solid * 6,
+            "a 3-on 9-off dash must leave most of the outline unpainted ({dashed} vs {solid})"
+        );
+    }
+
+    #[test]
+    fn registered_faces_back_the_per_glyph_fallback() {
+        let mut provider = crate::fonts::RegisteredFontProvider::default();
+        let serif = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SERIF_REGULAR;
+        assert!(provider.register_font_bytes("HostCjkFace", serif.to_vec()));
+        // Without a CJK language the bundled face named after the source
+        // font comes first.
+        let (latin, _) = select_covering_fallback_font('A', "Helvetica", None, Some(&provider))
+            .expect("bundled face");
+        assert_eq!(
+            latin,
+            crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR
+        );
+        // A CJK font prefers a host-supplied face (on WebAssembly the only
+        // source of CJK glyphs) over the bundled Latin faces.
+        let (cjk, _) = select_covering_fallback_font(
+            'A',
+            "Helvetica",
+            Some(crate::fonts::FontLanguage::Japanese),
+            Some(&provider),
+        )
+        .expect("registered face");
+        assert_eq!(cjk, serif);
+        // Characters no bundled face has come from registered faces too.
+        let empty = crate::fonts::RegisteredFontProvider::default();
+        assert!(
+            select_covering_fallback_font('\u{4E2D}', "Helvetica", None, Some(&empty)).is_none()
+        );
     }
 }
 

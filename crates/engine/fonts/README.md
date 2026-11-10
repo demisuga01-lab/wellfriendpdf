@@ -38,3 +38,28 @@ texts are included in this directory as the licenses require.
 - Neither family is copyleft; both are compatible with this project's permissive
   (MIT-or-Apache-class) positioning. See the repository `NOTICE` /
   `docs/licenses.md` for the consolidated third-party attribution.
+
+## Scripts the bundled faces do not cover (CJK, Indic, Thai, ...)
+
+The bundled faces cover Latin, Greek, Cyrillic, symbols and dingbats. A PDF
+that does not embed its CJK, Indic or other non-Latin fonts needs faces from
+somewhere else. No CJK face is bundled: one Noto Sans CJK face is 15-20 MB,
+too much for the WebAssembly package and for every native build.
+
+Glyphs the selected font cannot draw are taken, one at a time, from:
+
+1. faces the host registered with `ContentEngine::register_font_bytes`
+   (`registerFontBytes(name, bytes)` in the WebAssembly binding). A
+   registered face replaces fonts whose `/BaseFont` has its name, and also
+   serves as a coverage fallback for every font, whatever its name;
+2. fonts installed on the host (native builds only, see
+   `src/fonts/installed.rs`);
+3. the bundled faces above.
+
+For a composite font whose `CIDSystemInfo` ordering is Japan1, GB1, CNS1 or
+Korea1 the registered and installed faces come first, and faces made for that
+language (OS/2 code pages, localized family names) win, so Japanese text is
+not drawn with Chinese glyph shapes. The WebAssembly build has no installed
+fonts: a browser host that must draw non-embedded CJK or Indic text registers
+a covering face (for example a Noto Sans CJK subset) with `registerFontBytes`;
+without one those glyphs are not drawn.

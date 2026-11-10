@@ -19854,12 +19854,13 @@ mod tests {
     fn same_width_patch_rewrites_one_token_and_preserves_prefix() {
         let input = advanced_editing_fixture(false);
         let options = SameWidthPatchOptions::default();
+        // Helvetica AFM: A+B+C = 667+667+722 = D+E+B = 722+667+667.
         let analysis =
-            analyze_same_width_patch(&input, 1, "ABC", "DEF", &options).expect("eligibility");
+            analyze_same_width_patch(&input, 1, "ABC", "DEB", &options).expect("eligibility");
         assert_eq!(analysis.candidates.len(), 1);
         assert!(analysis.candidates[0].eligible);
         let (output, report) =
-            apply_same_width_patch(&input, 1, "ABC", "DEF", &options).expect("patch");
+            apply_same_width_patch(&input, 1, "ABC", "DEB", &options).expect("patch");
         assert!(output.starts_with(&input));
         assert!(report.replacement_extracts);
         assert!(report.old_text_absent);

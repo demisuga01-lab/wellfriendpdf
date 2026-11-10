@@ -4306,3 +4306,282 @@ pub fn glyph_name_to_unicode(name: &str) -> Option<char> {
     // Unicode Dingbats block so the symbolic-font fallback can render them.
     crate::fonts::encoding::zapf_dingbats_name_to_unicode(name)
 }
+
+/// Unicode text for a glyph name, following the Adobe Glyph List
+/// Specification's mapping convention:
+///
+/// 1. drop everything from the first period (`a.sc`, `seven.oldstyle`);
+/// 2. split the rest on underscores into components (`f_f_i`, `T_h`);
+/// 3. map each component through the Adobe Glyph List (and the ZapfDingbats
+///    names), then as `uniXXXX[YYYY...]` (one or more groups of four hex
+///    digits), then as `uXXXX[X[X]]`.
+///
+/// Presentation-form ligatures (U+FB00..U+FB06) are expanded to their letters.
+/// Returns `None` when no component maps to anything.
+pub fn glyph_name_to_unicode_text(name: &str) -> Option<String> {
+    glyph_name_to_text(name, None)
+}
+
+/// [`glyph_name_to_unicode_text`] that also accepts the numeric names some
+/// producers use (`g65`, `cid12`, `Gab`). Pass `Some(hex)` only when the whole
+/// /Differences array looks numeric (see [`differences_look_numeric`]); `hex`
+/// selects hexadecimal over decimal digits.
+pub(crate) fn glyph_name_to_text(name: &str, numeric: Option<bool>) -> Option<String> {
+    if let Ok(index) = AGL.binary_search_by(|(entry, _)| (*entry).cmp(name)) {
+        return char::from_u32(AGL[index].1).map(|ch| crate::fonts::resolver::expand_ligature(ch));
+    }
+    let base = match name.find('.') {
+        Some(0) => return None,
+        Some(index) => &name[..index],
+        None => name,
+    };
+    let mut text = String::new();
+    if base.contains('_') {
+        for component in base.split('_').filter(|part| !part.is_empty()) {
+            if let Some(part) = glyph_component_text(component, numeric) {
+                text.push_str(&part);
+            }
+        }
+    } else if let Some(part) = glyph_component_text(base, numeric) {
+        text.push_str(&part);
+    }
+    if text.is_empty() {
+        return None;
+    }
+    let mut expanded = String::with_capacity(text.len());
+    for ch in text.chars() {
+        expanded.push_str(&crate::fonts::resolver::expand_ligature(ch));
+    }
+    Some(expanded)
+}
+
+fn glyph_component_text(component: &str, numeric: Option<bool>) -> Option<String> {
+    if let Ok(index) = AGL.binary_search_by(|(entry, _)| (*entry).cmp(component)) {
+        return char::from_u32(AGL[index].1).map(String::from);
+    }
+    if let Some(ch) = crate::fonts::encoding::zapf_dingbats_name_to_unicode(component) {
+        return Some(ch.to_string());
+    }
+    if let Some(hex) = component.strip_prefix("uni") {
+        if !hex.is_empty() && hex.len() % 4 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let text: String = hex
+                .as_bytes()
+                .chunks(4)
+                .filter_map(|group| std::str::from_utf8(group).ok())
+                .filter_map(|group| u32::from_str_radix(group, 16).ok())
+                .filter_map(char::from_u32)
+                .collect();
+            return (!text.is_empty()).then_some(text);
+        }
+    }
+    if let Some(hex) = component.strip_prefix('u') {
+        if (4..=6).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return u32::from_str_radix(hex, 16)
+                .ok()
+                .and_then(char::from_u32)
+                .map(String::from);
+        }
+    }
+    let hex = numeric?;
+    numeric_glyph_name_value(component, hex)
+        .and_then(char::from_u32)
+        .filter(|ch| !ch.is_control())
+        .map(String::from)
+}
+
+/// Value of a numeric glyph name: `xx`/`Axx` (two hex digits after at most one
+/// letter) when `hex`, else up to two letters followed by decimal digits
+/// (`nn`, `Ann`, `ABnn`). Trailing punctuation is ignored.
+pub(crate) fn numeric_glyph_name_value(name: &str, hex: bool) -> Option<u32> {
+    let bytes = name.as_bytes();
+    let mut start = 0usize;
+    if hex {
+        let alnum = bytes
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .count();
+        if alnum == 3 && bytes[0].is_ascii_alphabetic() {
+            start = 1;
+        } else if alnum != 2 {
+            return None;
+        }
+    } else {
+        while start < 2 && bytes.get(start).is_some_and(u8::is_ascii_alphabetic) {
+            start += 1;
+        }
+    }
+    let radix = if hex { 16 } else { 10 };
+    let digits = bytes[start..]
+        .iter()
+        .take_while(|b| (**b as char).is_digit(radix))
+        .count();
+    if digits == 0 {
+        return None;
+    }
+    let end = start + digits;
+    if !bytes[end..].iter().all(|b| !b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    u32::from_str_radix(&name[start..end], radix).ok()
+}
+
+/// A name that only makes sense as two hex digits (`3F`, `Gab`): Poppler's
+/// signal that numeric names in the font are hexadecimal.
+pub(crate) fn glyph_name_looks_hex(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let is_hex_letter = |b: u8| matches!(b, b'a'..=b'f' | b'A'..=b'F');
+    match bytes.len() {
+        3 => {
+            bytes[0].is_ascii_alphabetic()
+                && bytes[1].is_ascii_hexdigit()
+                && bytes[2].is_ascii_hexdigit()
+                && (is_hex_letter(bytes[1]) || is_hex_letter(bytes[2]))
+        }
+        2 => bytes[0].is_ascii_hexdigit() && is_hex_letter(bytes[1]),
+        _ => false,
+    }
+}
+
+/// Whether a font's /Differences array uses numeric glyph names throughout:
+/// every run starts at code 0..=5 and every name parses as a number. Only
+/// then are names like `g12` trusted as character values (as Poppler does);
+/// otherwise a stray `a1` or `c3` would be read as U+0001 or U+0003.
+pub(crate) fn differences_look_numeric<'a>(
+    entries: impl IntoIterator<Item = DifferencesEntry<'a>>,
+    hex: bool,
+) -> bool {
+    let mut any = false;
+    for entry in entries {
+        any = true;
+        match entry {
+            DifferencesEntry::Code(code) if code > 5 => return false,
+            DifferencesEntry::Code(_) => {}
+            DifferencesEntry::Name(name) => {
+                if numeric_glyph_name_value(name, hex).is_none() {
+                    return false;
+                }
+            }
+            DifferencesEntry::Other => return false,
+        }
+    }
+    any
+}
+
+/// The other conventional spelling of a standard Latin ligature name:
+/// "fi" <-> "f_i", "fl" <-> "f_l", "ff" <-> "f_f", "ffi" <-> "f_f_i",
+/// "ffl" <-> "f_f_l". Fonts name these glyphs either way, so a lookup by name
+/// tries both.
+pub(crate) fn ligature_alternate_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "fi" => "f_i",
+        "f_i" => "fi",
+        "fl" => "f_l",
+        "f_l" => "fl",
+        "ff" => "f_f",
+        "f_f" => "ff",
+        "ffi" => "f_f_i",
+        "f_f_i" => "ffi",
+        "ffl" => "f_f_l",
+        "f_f_l" => "ffl",
+        _ => return None,
+    })
+}
+
+/// One item of a /Differences array, for [`differences_look_numeric`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DifferencesEntry<'a> {
+    Code(i64),
+    Name(&'a str),
+    Other,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glyph_name_text_strips_suffixes_and_splits_ligatures() {
+        assert_eq!(glyph_name_to_unicode_text("a.sc").as_deref(), Some("a"));
+        assert_eq!(
+            glyph_name_to_unicode_text("seven.oldstyle").as_deref(),
+            Some("7")
+        );
+        assert_eq!(glyph_name_to_unicode_text("f_f_i").as_deref(), Some("ffi"));
+        assert_eq!(glyph_name_to_unicode_text("T_h").as_deref(), Some("Th"));
+        assert_eq!(glyph_name_to_unicode_text("f_i.alt").as_deref(), Some("fi"));
+        // Presentation-form ligatures expand to their letters.
+        assert_eq!(glyph_name_to_unicode_text("fi").as_deref(), Some("fi"));
+        assert_eq!(glyph_name_to_unicode_text(".notdef"), None);
+        assert_eq!(glyph_name_to_unicode_text("notaname"), None);
+    }
+
+    #[test]
+    fn glyph_name_text_decodes_uni_and_u_forms() {
+        assert_eq!(glyph_name_to_unicode_text("uni0041").as_deref(), Some("A"));
+        assert_eq!(
+            glyph_name_to_unicode_text("uni00660069").as_deref(),
+            Some("fi")
+        );
+        assert_eq!(
+            glyph_name_to_unicode_text("u1F600").as_deref(),
+            Some("\u{1F600}")
+        );
+        assert_eq!(
+            glyph_name_to_unicode_text("u00E9").as_deref(),
+            Some("\u{E9}")
+        );
+        // Surrogates are not scalar values.
+        assert_eq!(glyph_name_to_unicode_text("uniD800"), None);
+        // "uni" with a digit count that is not a multiple of four.
+        assert_eq!(glyph_name_to_unicode_text("uni004"), None);
+    }
+
+    #[test]
+    fn numeric_glyph_names_parse_only_when_enabled() {
+        assert_eq!(glyph_name_to_text("g65", None), None);
+        assert_eq!(glyph_name_to_text("g65", Some(false)).as_deref(), Some("A"));
+        assert_eq!(
+            glyph_name_to_text("cd66", Some(false)).as_deref(),
+            Some("B")
+        );
+        assert_eq!(glyph_name_to_text("G41", Some(true)).as_deref(), Some("A"));
+        // Control characters never come out of a numeric name.
+        assert_eq!(glyph_name_to_text("g3", Some(false)), None);
+        assert_eq!(numeric_glyph_name_value("Gab", true), Some(0xAB));
+        assert_eq!(numeric_glyph_name_value("abc12", false), None);
+        assert!(glyph_name_looks_hex("Gab"));
+        assert!(glyph_name_looks_hex("3F"));
+        assert!(!glyph_name_looks_hex("g65"));
+    }
+
+    #[test]
+    fn differences_are_numeric_only_when_every_entry_is() {
+        use DifferencesEntry::{Code, Name, Other};
+        assert!(differences_look_numeric(
+            [Code(1), Name("g1"), Name("g2"), Code(5), Name("g9")],
+            false
+        ));
+        assert!(!differences_look_numeric([Code(6), Name("g1")], false));
+        assert!(!differences_look_numeric(
+            [Code(1), Name("g1"), Name("A")],
+            false
+        ));
+        assert!(!differences_look_numeric([Code(1), Other], false));
+        assert!(!differences_look_numeric([], false));
+    }
+
+    #[test]
+    fn ligature_alternate_names_go_both_ways() {
+        for (a, b) in [
+            ("fi", "f_i"),
+            ("fl", "f_l"),
+            ("ff", "f_f"),
+            ("ffi", "f_f_i"),
+            ("ffl", "f_f_l"),
+        ] {
+            assert_eq!(ligature_alternate_name(a), Some(b));
+            assert_eq!(ligature_alternate_name(b), Some(a));
+        }
+        assert_eq!(ligature_alternate_name("A"), None);
+    }
+}

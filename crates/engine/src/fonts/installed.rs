@@ -53,6 +53,102 @@ pub struct InstalledFontStyle {
     pub serif: Option<bool>,
     /// Only faces whose OS/2 `fsType` allows embedding in an edited PDF.
     pub require_embeddable: bool,
+    /// The language a CJK source font was made for (from its
+    /// `CIDSystemInfo` `/Ordering`). Faces built for that language are
+    /// preferred, so Japanese text is not drawn with a Chinese face whose
+    /// shared ideographs have different glyph shapes.
+    pub language: Option<FontLanguage>,
+}
+
+/// The CJK language of a composite font, from its character collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FontLanguage {
+    /// Adobe-Japan1 / Adobe-Japan2.
+    Japanese,
+    /// Adobe-GB1.
+    SimplifiedChinese,
+    /// Adobe-CNS1.
+    TraditionalChinese,
+    /// Adobe-Korea1 / Adobe-KR.
+    Korean,
+}
+
+impl FontLanguage {
+    /// The language of a `CIDSystemInfo` `/Ordering` (`Japan1`, `GB1`,
+    /// `CNS1`, `Korea1`, also `KR` and `Japan2`). `None` for `Identity` and
+    /// anything else.
+    pub fn from_cid_ordering(ordering: &str) -> Option<Self> {
+        match ordering {
+            "Japan1" | "Japan2" => Some(Self::Japanese),
+            "GB1" => Some(Self::SimplifiedChinese),
+            "CNS1" => Some(Self::TraditionalChinese),
+            "Korea1" | "KR" => Some(Self::Korean),
+            _ => None,
+        }
+    }
+
+    /// OS/2 `ulCodePageRange1` bits that declare support for the language.
+    fn code_page_bits(self) -> u32 {
+        match self {
+            Self::Japanese => 1 << 17,
+            Self::SimplifiedChinese => 1 << 18,
+            Self::Korean => (1 << 19) | (1 << 21),
+            Self::TraditionalChinese => 1 << 20,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn matches_name_language(self, language: ttf_parser::Language) -> bool {
+        use ttf_parser::Language as L;
+        match self {
+            Self::Japanese => language == L::Japanese_Japan,
+            Self::SimplifiedChinese => {
+                matches!(
+                    language,
+                    L::Chinese_PeoplesRepublicOfChina | L::Chinese_Singapore
+                )
+            }
+            Self::TraditionalChinese => matches!(
+                language,
+                L::Chinese_Taiwan | L::Chinese_HongKongSAR | L::Chinese_MacaoSAR
+            ),
+            Self::Korean => language == L::Korean_Korea,
+        }
+    }
+}
+
+/// OS/2 code-page bits for the four CJK languages (Japanese, simplified and
+/// traditional Chinese, Korean Wansung and Johab).
+const CJK_CODE_PAGE_BITS: u32 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21);
+
+/// `ulCodePageRange1` of a face's OS/2 table (version 1 and later), else 0.
+fn os2_code_pages(face: &ttf_parser::Face<'_>) -> u32 {
+    face.raw_face()
+        .table(ttf_parser::Tag::from_bytes(b"OS/2"))
+        .filter(|data| data.len() >= 82 && u16::from_be_bytes([data[0], data[1]]) >= 1)
+        .map(|data| u32::from_be_bytes([data[78], data[79], data[80], data[81]]))
+        .unwrap_or(0)
+}
+
+/// How well a face's OS/2 code pages suit `language` (0 best, 2 worst), for
+/// ranking faces that are not in the installed-font database.
+pub(crate) fn face_language_rank(face: &ttf_parser::Face<'_>, language: FontLanguage) -> u32 {
+    language_rank(os2_code_pages(face), false, language)
+}
+
+/// How well a face suits `language`: 0 when it is built for exactly that
+/// language (its only CJK code page, or a family name localized for it),
+/// 1 when it declares the language among others, 2 when it does not.
+fn language_rank(code_pages: u32, localized_for_language: bool, language: FontLanguage) -> u32 {
+    let wanted = language.code_page_bits();
+    let cjk = code_pages & CJK_CODE_PAGE_BITS;
+    if (cjk != 0 && cjk & !wanted == 0) || localized_for_language {
+        0
+    } else if cjk & wanted != 0 {
+        1
+    } else {
+        2
+    }
 }
 
 /// A selected installed face with its standalone program bytes (a face of a
@@ -208,14 +304,15 @@ pub fn installed_font_covering(
         return None;
     }
     let cache_key = format!(
-        "cover:{}:{:?}:{}:{}:{}:{:?}:{}",
+        "cover:{}:{:?}:{}:{}:{}:{:?}:{}:{:?}",
         chars.iter().collect::<String>(),
         style.family_hint.as_deref().map(family_key),
         style.bold,
         style.italic,
         style.monospace,
         style.serif,
-        style.require_embeddable
+        style.require_embeddable,
+        style.language
     );
     memoized(&cache_key, || {
         let hint = style.family_hint.as_deref().map(family_key);
@@ -231,27 +328,35 @@ pub fn installed_font_covering(
         let wanted_italic =
             style.italic || style.family_hint.as_deref().is_some_and(name_is_italic);
 
-        let mut best: Option<(usize, (u32, u32, u32, String, u32), fontdb::ID)> = None;
+        let mut best: Option<(usize, (u32, u32, u32, u32, String, u32), fontdb::ID)> = None;
         for face in db.faces() {
-            let covered = db
+            let (covered, code_pages) = db
                 .with_face_data(face.id, |data, index| {
                     let parsed = ttf_parser::Face::parse(data, index).ok()?;
                     if !has_outlines(&parsed) || (style.require_embeddable && !embeddable(&parsed))
                     {
                         return None;
                     }
-                    Some(
+                    Some((
                         chars
                             .iter()
                             .filter(|ch| parsed.glyph_index(**ch).is_some_and(|gid| gid.0 != 0))
                             .count(),
-                    )
+                        os2_code_pages(&parsed),
+                    ))
                 })
                 .flatten()
-                .unwrap_or(0);
+                .unwrap_or((0, 0));
             if covered == 0 {
                 continue;
             }
+            let language_rank = style.language.map_or(0, |language| {
+                let localized = face
+                    .families
+                    .iter()
+                    .any(|(_, name_language)| language.matches_name_language(*name_language));
+                language_rank(code_pages, localized, language)
+            });
             let family = face
                 .families
                 .first()
@@ -272,6 +377,7 @@ pub fn installed_font_covering(
             let design_rank = u32::from(face.monospaced != monospace)
                 + u32::from(serif.is_some_and(|serif| name_looks_serif(family) != serif));
             let rank = (
+                language_rank,
                 family_rank,
                 design_rank,
                 style_distance(face, wanted_bold, wanted_italic) + preferred_family_rank(family),
@@ -901,5 +1007,52 @@ mod tests {
         assert!(name_looks_monospace("Courier New"));
         assert!(name_is_bold("Arial-BoldMT"));
         assert!(name_is_italic("Garamond-Italic"));
+    }
+
+    #[test]
+    fn cid_orderings_name_their_cjk_language() {
+        assert_eq!(
+            FontLanguage::from_cid_ordering("Japan1"),
+            Some(FontLanguage::Japanese)
+        );
+        assert_eq!(
+            FontLanguage::from_cid_ordering("GB1"),
+            Some(FontLanguage::SimplifiedChinese)
+        );
+        assert_eq!(
+            FontLanguage::from_cid_ordering("CNS1"),
+            Some(FontLanguage::TraditionalChinese)
+        );
+        assert_eq!(
+            FontLanguage::from_cid_ordering("Korea1"),
+            Some(FontLanguage::Korean)
+        );
+        assert_eq!(FontLanguage::from_cid_ordering("Identity"), None);
+    }
+
+    #[test]
+    fn faces_made_for_the_language_rank_first() {
+        let japanese = 1 << 17;
+        let simplified = 1 << 18;
+        let korean_johab = 1 << 21;
+        // A Japanese-only face is the best match for Japanese text...
+        assert_eq!(language_rank(japanese, false, FontLanguage::Japanese), 0);
+        // ...a pan-CJK face is acceptable, a Chinese-only face is not.
+        assert_eq!(
+            language_rank(japanese | simplified, false, FontLanguage::Japanese),
+            1
+        );
+        assert_eq!(language_rank(simplified, false, FontLanguage::Japanese), 2);
+        // A localized family name counts as being made for the language.
+        assert_eq!(language_rank(0, true, FontLanguage::Japanese), 0);
+        // Both Korean code pages count as Korean.
+        assert_eq!(language_rank(korean_johab, false, FontLanguage::Korean), 0);
+        // Latin faces declare no CJK code page.
+        let latin = ttf_parser::Face::parse(
+            crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR,
+            0,
+        )
+        .expect("bundled face");
+        assert_eq!(face_language_rank(&latin, FontLanguage::Korean), 2);
     }
 }

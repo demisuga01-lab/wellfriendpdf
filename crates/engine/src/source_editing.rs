@@ -877,7 +877,8 @@ mod tests {
         let request = OperatorTextEditRequest {
             page: 1,
             source_text: "ABC".into(),
-            replacement_text: "DEF".into(),
+            // Same Helvetica AFM width as "ABC" (2056 units).
+            replacement_text: "DEB".into(),
             source_instruction_id: None,
             signature_policy_override: false,
         };
@@ -893,7 +894,7 @@ mod tests {
                 .get_page_text(1)
                 .unwrap()
                 .trim_end(),
-            "DEF"
+            "DEB"
         );
     }
 

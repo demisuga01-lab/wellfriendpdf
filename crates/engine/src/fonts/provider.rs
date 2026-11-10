@@ -61,6 +61,12 @@ pub struct FontMatchRequest {
     pub italic: bool,
     /// Whether the PDF font is symbolic.
     pub symbolic: bool,
+    /// The font descriptor's Serif flag. Picks a serif substitute when the
+    /// name itself does not say which design the font has.
+    pub serif: bool,
+    /// The font descriptor's FixedPitch flag. Picks a monospaced substitute
+    /// when the name itself does not say which design the font has.
+    pub fixed_pitch: bool,
 }
 
 impl FontMatchRequest {
@@ -72,6 +78,8 @@ impl FontMatchRequest {
             bold: false,
             italic: false,
             symbolic: false,
+            serif: false,
+            fixed_pitch: false,
         }
     }
 }
@@ -238,6 +246,40 @@ impl RegisteredFontProvider {
         self.faces.is_empty()
     }
 
+    /// A registered face with a real glyph for `ch`, whatever name it was
+    /// registered under: the per-glyph coverage fallback for text whose own
+    /// font (embedded or substituted) lacks the character. This is how a
+    /// host without installed fonts (WebAssembly) supplies CJK, Indic or
+    /// other scripts the bundled Latin faces cannot draw. With a `language`,
+    /// faces whose OS/2 code pages declare that CJK language come first.
+    /// Faces are tried in registration-key order, so the choice is
+    /// deterministic.
+    pub(crate) fn face_covering(
+        &self,
+        ch: char,
+        language: Option<super::installed::FontLanguage>,
+    ) -> Option<&[u8]> {
+        let mut best: Option<(u32, &[u8])> = None;
+        for face in self.faces.values() {
+            let Ok(parsed) = ttf_parser::Face::parse(&face.bytes, 0) else {
+                continue;
+            };
+            if !parsed.glyph_index(ch).is_some_and(|glyph| glyph.0 != 0) {
+                continue;
+            }
+            let rank = language.map_or(0, |language| {
+                super::installed::face_language_rank(&parsed, language)
+            });
+            if best.is_none_or(|(best_rank, _)| rank < best_rank) {
+                best = Some((rank, face.bytes.as_slice()));
+                if rank == 0 {
+                    break;
+                }
+            }
+        }
+        best.map(|(_, bytes)| bytes)
+    }
+
     fn refresh_fingerprint(&mut self) {
         if self.faces.is_empty() {
             self.fingerprint = "registered-fonts:none".to_string();
@@ -286,6 +328,26 @@ fn selected_lookup_name(request: &FontMatchRequest) -> (String, &'static str) {
                 "deterministic_system_mapping",
             );
         }
+    }
+    // An unknown name (a subset of some foundry face, "F1", "Bembo") says
+    // nothing about the design; the descriptor flags do. Like Poppler, pick
+    // the monospaced substitute for FixedPitch and the serif one for Serif
+    // instead of drawing every unknown font sans serif.
+    if (request.fixed_pitch || request.serif)
+        && !is_standard14_name(&request.base_font)
+        && name_design_hint(&request.base_font).is_none()
+    {
+        let family = if request.fixed_pitch {
+            DeterministicSystemFamily::Mono
+        } else {
+            DeterministicSystemFamily::Serif
+        };
+        let bold = request.bold || lookup_name_contains_bold(&request.base_font);
+        let italic = request.italic || lookup_name_contains_italic(&request.base_font);
+        return (
+            standard14_lookup_for_family(family, bold, italic).to_string(),
+            "descriptor_flags",
+        );
     }
     if request.bold && !lookup_name_contains_bold(&name) {
         name.push_str("-Bold");
@@ -403,6 +465,56 @@ fn deterministic_system_family(name: &str) -> Option<DeterministicSystemFamily> 
         .any(|token| compact.starts_with(token))
     {
         Some(DeterministicSystemFamily::Mono)
+    } else {
+        None
+    }
+}
+
+/// The design a font name announces by itself (the same tokens the bundled
+/// face selection in `get_fallback_font` keys on, plus common sans-serif
+/// names), or `None` when the name gives no hint.
+fn name_design_hint(name: &str) -> Option<DeterministicSystemFamily> {
+    if let Some(family) = deterministic_system_family(name) {
+        return Some(family);
+    }
+    let compact: String = normalized_font_name(name)
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    let has = |tokens: &[&str]| tokens.iter().any(|token| compact.contains(token));
+    if has(&[
+        "courier",
+        "mono",
+        "typewriter",
+        "consolas",
+        "inconsolata",
+        "lucidaconsole",
+        "fixed",
+    ]) {
+        Some(DeterministicSystemFamily::Mono)
+    } else if has(&[
+        "sans",
+        "helvetica",
+        "arial",
+        "gothic",
+        "grotesk",
+        "frutiger",
+        "univers",
+    ]) {
+        Some(DeterministicSystemFamily::Sans)
+    } else if has(&[
+        "times",
+        "serif",
+        "georgia",
+        "palatino",
+        "bookman",
+        "garamond",
+        "cambria",
+        "constantia",
+        "roman",
+        "minion",
+    ]) {
+        Some(DeterministicSystemFamily::Serif)
     } else {
         None
     }
@@ -636,5 +748,77 @@ mod tests {
             assert_eq!(matched.family_name, family, "{name}");
             assert!(!matched.bytes.is_empty(), "{name}");
         }
+    }
+
+    #[test]
+    fn descriptor_flags_pick_the_substitute_design_for_unknown_names() {
+        let provider = BundledFontProvider;
+        let mut request = FontMatchRequest::new("ABCDEF+Bembo");
+        request.serif = true;
+        let serif = provider.match_font(&request).expect("serif substitute");
+        assert_eq!(serif.lookup_name, "Times-Roman");
+        assert_eq!(serif.family_name, "Liberation Serif");
+        assert_eq!(serif.match_reason, "descriptor_flags");
+
+        let mut request = FontMatchRequest::new("F12");
+        request.fixed_pitch = true;
+        request.serif = true;
+        request.bold = true;
+        let mono = provider
+            .match_font(&request)
+            .expect("monospaced substitute");
+        assert_eq!(mono.lookup_name, "Courier-Bold");
+        assert_eq!(mono.family_name, "Liberation Mono");
+
+        let mut request = FontMatchRequest::new("Bembo-Italic");
+        request.serif = true;
+        let italic = provider
+            .match_font(&request)
+            .expect("italic serif substitute");
+        assert_eq!(italic.lookup_name, "Times-Italic");
+
+        // Without flags an unknown name still falls back to sans serif.
+        let sans = provider
+            .match_font(&FontMatchRequest::new("Bembo"))
+            .expect("default substitute");
+        assert_eq!(sans.family_name, "Liberation Sans");
+    }
+
+    #[test]
+    fn a_name_that_states_its_design_beats_the_descriptor_flags() {
+        let provider = BundledFontProvider;
+        let mut request = FontMatchRequest::new("Helvetica-Light");
+        request.serif = true;
+        let font_match = provider.match_font(&request).expect("named substitute");
+        assert_eq!(font_match.family_name, "Liberation Sans");
+
+        let mut request = FontMatchRequest::new("SourceSansPro-Regular");
+        request.fixed_pitch = true;
+        let font_match = provider.match_font(&request).expect("named substitute");
+        assert_eq!(font_match.family_name, "Liberation Sans");
+
+        // Standard 14 names are never redirected.
+        let mut request = FontMatchRequest::new("Courier");
+        request.serif = true;
+        let font_match = provider.match_font(&request).expect("standard 14");
+        assert_eq!(font_match.family_name, "Liberation Mono");
+    }
+
+    #[test]
+    fn registered_faces_cover_characters_whatever_their_name() {
+        let mut provider = RegisteredFontProvider::default();
+        assert!(provider.face_covering('A', None).is_none());
+        let liberation = crate::render::font_rasterizer::fallback_fonts::LIBERATION_SANS_REGULAR;
+        let dejavu = crate::render::font_rasterizer::fallback_fonts::DEJAVU_SANS;
+        assert!(provider.register_font_bytes("AaaLatinOnly", liberation.to_vec()));
+        assert!(provider.register_font_bytes("ZzzWide", dejavu.to_vec()));
+        // U+2713 CHECK MARK is in DejaVu Sans only.
+        let check = provider
+            .face_covering('\u{2713}', None)
+            .expect("a registered face covers U+2713");
+        assert_eq!(check, dejavu);
+        // The first face in key order wins when several cover a character.
+        assert_eq!(provider.face_covering('A', None), Some(liberation));
+        assert!(provider.face_covering('\u{4E2D}', None).is_none());
     }
 }
