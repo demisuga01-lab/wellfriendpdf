@@ -299,13 +299,18 @@ impl PdfDocument {
                         "page tree exceeds node limit {MAX_PAGE_TREE_NODES}"
                     )));
                 }
-                let kid_object = self.reader.get_and_resolve(kid_ref.0, kid_ref.1)?;
-                let kid_dict = kid_object.as_dict().ok_or_else(|| {
-                    WellfriendError::MalformedPdf(format!(
-                        "page-tree object {} {} did not resolve to a dictionary",
-                        kid_ref.0, kid_ref.1
-                    ))
-                })?;
+                let Some(kid_object) = self.resolve_page_tree_kid(kid_ref)? else {
+                    continue;
+                };
+                let Some(kid_dict) = kid_object.as_dict() else {
+                    log::warn!(
+                        "skipping page-tree object {} {}: it is a {}, not a dictionary",
+                        kid_ref.0,
+                        kid_ref.1,
+                        kid_object.variant_name()
+                    );
+                    continue;
+                };
                 if kid_dict.get("Kids").is_some() {
                     let subtree_count = kid_dict
                         .get("Count")
@@ -336,7 +341,7 @@ impl PdfDocument {
                         }
                     }
                 }
-                if let Some(page) = self.walk_page_tree_until(
+                let found = self.walk_page_tree_until(
                     kid_ref,
                     kid_dict,
                     inherited.clone(),
@@ -344,7 +349,8 @@ impl PdfDocument {
                     next_page_number,
                     target_page,
                     depth + 1,
-                )? {
+                );
+                if let Some(Some(page)) = skip_broken_page_tree_kid(found, kid_ref)? {
                     return Ok(Some(page));
                 }
             }
@@ -481,6 +487,24 @@ impl PdfDocument {
         Ok(Some(ranges))
     }
 
+    /// Fetch one page-tree kid. A kid that cannot be read is skipped with a
+    /// warning (Poppler keeps walking the rest of the tree); only resource
+    /// limits and cancellation abort the walk.
+    fn resolve_page_tree_kid(&self, kid_ref: (u32, u16)) -> Result<Option<PdfObject>> {
+        match self.reader.get_and_resolve(kid_ref.0, kid_ref.1) {
+            Ok(object) => Ok(Some(object)),
+            Err(err) if page_tree_error_is_fatal(&err) => Err(err),
+            Err(err) => {
+                log::warn!(
+                    "skipping unreadable page-tree object {} {}: {err}",
+                    kid_ref.0,
+                    kid_ref.1
+                );
+                Ok(None)
+            }
+        }
+    }
+
     fn walk_page_tree(
         &self,
         object_ref: (u32, u16),
@@ -543,21 +567,27 @@ impl PdfDocument {
                         "page tree exceeds node limit {MAX_PAGE_TREE_NODES}"
                     )));
                 }
-                let kid_object = self.reader.get_and_resolve(kid_ref.0, kid_ref.1)?;
-                let kid_dict = kid_object.as_dict().ok_or_else(|| {
-                    WellfriendError::MalformedPdf(format!(
-                        "page-tree object {} {} did not resolve to a dictionary",
-                        kid_ref.0, kid_ref.1
-                    ))
-                })?;
-                self.walk_page_tree(
+                let Some(kid_object) = self.resolve_page_tree_kid(kid_ref)? else {
+                    continue;
+                };
+                let Some(kid_dict) = kid_object.as_dict() else {
+                    log::warn!(
+                        "skipping page-tree object {} {}: it is a {}, not a dictionary",
+                        kid_ref.0,
+                        kid_ref.1,
+                        kid_object.variant_name()
+                    );
+                    continue;
+                };
+                let walked = self.walk_page_tree(
                     kid_ref,
                     kid_dict,
                     inherited.clone(),
                     visited,
                     pages,
                     depth + 1,
-                )?;
+                );
+                skip_broken_page_tree_kid(walked, kid_ref)?;
             }
         } else {
             if pages.len() >= MAX_DOCUMENT_PAGES {
@@ -587,22 +617,67 @@ impl PdfDocument {
     }
 }
 
+fn page_tree_error_is_fatal(err: &WellfriendError) -> bool {
+    matches!(
+        err,
+        WellfriendError::ResourceLimit(_) | WellfriendError::Cancelled(_)
+    )
+}
+
+/// Turn a failed subtree/page into a warning so one broken kid does not stop
+/// the page-tree walk. Returns `None` when the kid was skipped.
+fn skip_broken_page_tree_kid<T>(result: Result<T>, kid_ref: (u32, u16)) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if page_tree_error_is_fatal(&err) => Err(err),
+        Err(err) => {
+            log::warn!(
+                "skipping broken page-tree object {} {}: {err}",
+                kid_ref.0,
+                kid_ref.1
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Parse an optional page attribute leniently: a malformed value is logged
+/// and ignored so the inherited value or the default applies (as in Poppler).
+fn lenient_attr<T>(key: &str, parsed: Result<T>) -> Result<Option<T>> {
+    match parsed {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if page_tree_error_is_fatal(&err) => Err(err),
+        Err(err) => {
+            log::warn!("ignoring invalid /{key}: {err}");
+            Ok(None)
+        }
+    }
+}
+
 fn apply_inherited_attrs(
     dict: &PdfDictionary,
     mut inherited: InheritedAttrs,
     reader: Option<&PdfReader>,
 ) -> Result<InheritedAttrs> {
-    if let Some(media_box) = dict.get("MediaBox") {
-        inherited.media_box = Some(parse_box(media_box, reader, "MediaBox")?);
+    if let Some(object) = dict.get("MediaBox") {
+        if let Some(media_box) = lenient_attr("MediaBox", parse_box(object, reader, "MediaBox"))? {
+            inherited.media_box = Some(media_box);
+        }
     }
-    if let Some(crop_box) = dict.get("CropBox") {
-        inherited.crop_box = Some(parse_box(crop_box, reader, "CropBox")?);
+    if let Some(object) = dict.get("CropBox") {
+        if let Some(crop_box) = lenient_attr("CropBox", parse_box(object, reader, "CropBox"))? {
+            inherited.crop_box = Some(crop_box);
+        }
     }
-    if let Some(rotate) = dict.get("Rotate") {
-        inherited.rotate = Some(parse_rotate_value(rotate, reader)?);
+    if let Some(object) = dict.get("Rotate") {
+        if let Some(rotate) = lenient_attr("Rotate", parse_rotate_value(object, reader))? {
+            inherited.rotate = Some(rotate);
+        }
     }
-    if let Some(resources) = dict.get("Resources") {
-        inherited.resources = Some(parse_resources(resources, reader)?);
+    if let Some(object) = dict.get("Resources") {
+        if let Some(resources) = lenient_attr("Resources", parse_resources(object, reader))? {
+            inherited.resources = Some(resources);
+        }
     }
     Ok(inherited)
 }
@@ -628,18 +703,15 @@ fn build_page_from_dict(
         }
     };
     let crop_box = inherited.crop_box.unwrap_or(media_box);
-    let bleed_box = match dict.get("BleedBox") {
-        Some(bleed_box) => parse_box(bleed_box, reader, "BleedBox")?,
-        None => crop_box,
+    let optional_box = |key: &str| -> Result<[f64; 4]> {
+        let Some(object) = dict.get(key) else {
+            return Ok(crop_box);
+        };
+        Ok(lenient_attr(key, parse_box(object, reader, key))?.unwrap_or(crop_box))
     };
-    let trim_box = match dict.get("TrimBox") {
-        Some(trim_box) => parse_box(trim_box, reader, "TrimBox")?,
-        None => crop_box,
-    };
-    let art_box = match dict.get("ArtBox") {
-        Some(art_box) => parse_box(art_box, reader, "ArtBox")?,
-        None => crop_box,
-    };
+    let bleed_box = optional_box("BleedBox")?;
+    let trim_box = optional_box("TrimBox")?;
+    let art_box = optional_box("ArtBox")?;
     let rotate = normalize_rotate(inherited.rotate.unwrap_or(0));
     let user_unit = parse_user_unit(dict, reader)?;
     let resources = match inherited.resources {
@@ -703,20 +775,46 @@ fn parse_box(object: &PdfObject, reader: Option<&PdfReader>, key: &str) -> Resul
     let mut values = [0.0; 4];
     for (idx, item) in array.iter().enumerate() {
         let item = resolve_if_possible(item, reader)?;
-        values[idx] = item.as_number().ok_or_else(|| {
-            WellfriendError::MalformedPdf(format!("/{key} entry {} is not a number", idx + 1))
-        })?;
+        values[idx] = item
+            .as_number()
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(format!("/{key} entry {} is not a number", idx + 1))
+            })?;
+    }
+    // An all-zero rectangle carries no geometry; reject it so the inherited
+    // box or the default applies (as Poppler does).
+    if values.iter().all(|value| *value == 0.0) {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "/{key} is an all-zero rectangle"
+        )));
+    }
+    // A rectangle may name any two opposite corners; normalise to
+    // lower-left / upper-right.
+    if values[0] > values[2] {
+        values.swap(0, 2);
+    }
+    if values[1] > values[3] {
+        values.swap(1, 3);
     }
     Ok(values)
 }
 
 fn parse_rotate_value(object: &PdfObject, reader: Option<&PdfReader>) -> Result<i32> {
     let object = resolve_if_possible(object, reader)?;
-    let value = object
-        .as_integer()
-        .ok_or_else(|| WellfriendError::MalformedPdf("/Rotate must be an integer".to_string()))?;
-    i32::try_from(value)
-        .map_err(|_| WellfriendError::MalformedPdf("/Rotate does not fit in i32".to_string()))
+    if let Some(value) = object.as_integer() {
+        return i32::try_from(value)
+            .map_err(|_| WellfriendError::MalformedPdf("/Rotate does not fit in i32".to_string()));
+    }
+    // Some producers write the rotation as a real number ("90.0").
+    match object {
+        PdfObject::Real(value) if value.is_finite() && value.abs() <= f64::from(i32::MAX) => {
+            Ok(value.round() as i32)
+        }
+        _ => Err(WellfriendError::MalformedPdf(
+            "/Rotate must be a number".to_string(),
+        )),
+    }
 }
 
 fn parse_resources(object: &PdfObject, reader: Option<&PdfReader>) -> Result<PdfDictionary> {
@@ -965,6 +1063,90 @@ mod tests {
 
         let page = document.get_page(1).expect("page materializes");
         assert_eq!(page.contents, vec![(5, 0), (6, 0)]);
+    }
+
+    #[test]
+    fn parse_box_swaps_reversed_corners_and_rejects_all_zero() {
+        let reversed = box_obj([612, 792, 0, 0]);
+        assert_eq!(
+            parse_box(&reversed, None, "MediaBox").unwrap(),
+            [0.0, 0.0, 612.0, 792.0]
+        );
+        let zero = box_obj([0, 0, 0, 0]);
+        assert!(parse_box(&zero, None, "MediaBox").is_err());
+    }
+
+    #[test]
+    fn all_zero_or_malformed_boxes_fall_back_to_inherited_values() {
+        let parent = dict(&[("MediaBox", box_obj([0, 0, 300, 400]))]);
+        let parent_attrs = apply_inherited_attrs(&parent, InheritedAttrs::default(), None).unwrap();
+        let page = dict(&[
+            ("MediaBox", box_obj([0, 0, 0, 0])),
+            ("CropBox", PdfObject::Name("Bogus".to_string())),
+            ("TrimBox", box_obj([0, 0, 0, 0])),
+        ]);
+        let parsed = build_page_from_dict(5, 0, 1, &page, parent_attrs, None).unwrap();
+        assert_eq!(parsed.media_box, [0.0, 0.0, 300.0, 400.0]);
+        assert_eq!(parsed.crop_box, [0.0, 0.0, 300.0, 400.0]);
+        assert_eq!(parsed.trim_box, [0.0, 0.0, 300.0, 400.0]);
+
+        let orphan = dict(&[("MediaBox", box_obj([0, 0, 0, 0]))]);
+        let parsed =
+            build_page_from_dict(6, 0, 1, &orphan, InheritedAttrs::default(), None).unwrap();
+        assert_eq!(parsed.media_box, DEFAULT_MEDIA_BOX);
+    }
+
+    #[test]
+    fn real_valued_rotate_is_accepted() {
+        let page = dict(&[
+            ("MediaBox", box_obj([0, 0, 100, 100])),
+            ("Rotate", PdfObject::Real(90.0)),
+        ]);
+        let parsed = build_page_from_dict(7, 0, 1, &page, InheritedAttrs::default(), None).unwrap();
+        assert_eq!(parsed.rotate, 90);
+
+        let negative = dict(&[
+            ("MediaBox", box_obj([0, 0, 100, 100])),
+            ("Rotate", PdfObject::Real(-90.0)),
+        ]);
+        let parsed =
+            build_page_from_dict(8, 0, 1, &negative, InheritedAttrs::default(), None).unwrap();
+        assert_eq!(parsed.rotate, 270);
+    }
+
+    #[test]
+    fn broken_page_tree_kid_is_skipped_instead_of_aborting_the_walk() {
+        // Kid 4 is missing, kid 5 is not a dictionary; pages 3 and 6 remain.
+        let document = PdfDocument::open_bytes(pdf_with_objects(&[
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R 9 0 R 5 0 R 6 0 R] /Count 4 /MediaBox [0 0 10 10] >>",
+            "<< /Type /Page /Parent 2 0 R >>",
+            "<< /Length 0 >>\nstream\n\nendstream",
+            "42",
+            "<< /Type /Page /Parent 2 0 R /Rotate 180 >>",
+        ]))
+        .expect("PDF opens");
+
+        let pages = document
+            .get_pages()
+            .expect("page walk survives broken kids");
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].object_number, 3);
+        assert_eq!(pages[1].object_number, 6);
+        assert_eq!(pages[1].rotate, 180);
+    }
+
+    #[test]
+    fn indexed_page_lookup_skips_broken_kid() {
+        let document = PdfDocument::open_bytes(pdf_with_objects(&[
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [9 0 R 3 0 R] /Count 1 /MediaBox [0 0 10 10] >>",
+            "<< /Type /Page /Parent 2 0 R >>",
+        ]))
+        .expect("PDF opens");
+
+        let page = document.get_page(1).expect("first readable page is found");
+        assert_eq!(page.object_number, 3);
     }
 
     #[test]

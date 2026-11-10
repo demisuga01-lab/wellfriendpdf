@@ -7149,7 +7149,11 @@ fn validate_image_replacement(replacement: &UniversalImageReplacementV2) -> Resu
     }
     if replacement.encoding == UniversalImageEncodingV2::Flate {
         let expected = expected_image_sample_bytes(replacement)?;
-        let decoded = crate::filters::flate_decode_capped(&replacement.data, expected)?;
+        let decoded = crate::filters::flate_decode_capped(
+            &replacement.data,
+            expected,
+            crate::filters::DecodeMode::Strict,
+        )?;
         if decoded.len() as u64 != expected {
             return Err(WellfriendError::invalid_input(format!(
                 "Flate replacement sample length is {}; expected {expected}",

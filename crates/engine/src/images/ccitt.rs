@@ -44,9 +44,9 @@ pub fn decode(data: &[u8], params: CcittDecodeParams) -> Result<RawImage> {
     crate::images::decoder::ensure_decode_budget(params.columns, params.rows, 1)?;
     let mut sink = GrayscaleSink::new(params.columns, params.rows);
 
-    decode_with_settings(data, settings, &mut sink)?;
+    decode_with_settings(data, settings, &mut sink);
 
-    sink.finish()
+    Ok(sink.finish())
 }
 
 /// Decode a bounded source window from a CCITT image.
@@ -72,8 +72,8 @@ pub fn decode_window(
     crate::images::decoder::ensure_decode_budget(window.width, window.height, 1)?;
     let settings = ccitt_settings(params)?;
     let mut sink = WindowedGrayscaleSink::new(params.columns, params.rows, window);
-    decode_with_settings(data, settings, &mut sink)?;
-    sink.finish()
+    decode_with_settings(data, settings, &mut sink);
+    Ok(sink.finish())
 }
 
 fn validate_window(params: CcittDecodeParams, window: CcittDecodeWindow) -> Result<()> {
@@ -116,15 +116,29 @@ fn ccitt_settings(params: CcittDecodeParams) -> Result<hayro_ccitt::DecodeSettin
     })
 }
 
+/// Run the CCITT decoder into `sink`. Rows decoded before a coding error stay
+/// in the sink (hayro-ccitt writes them incrementally); the sinks pad the
+/// missing rows white on `finish`, as Poppler draws damaged fax images.
 fn decode_with_settings<D: hayro_ccitt::Decoder>(
     data: &[u8],
     settings: hayro_ccitt::DecodeSettings,
     sink: &mut D,
-) -> Result<()> {
+) {
     let mut context = hayro_ccitt::DecoderContext::new(settings);
-    hayro_ccitt::decode(data, sink, &mut context)
-        .map(|_| ())
-        .map_err(|err| WellfriendError::MalformedPdf(format!("CCITTFaxDecode failed: {err}")))
+    if let Err(err) = hayro_ccitt::decode(data, sink, &mut context) {
+        log::warn!("CCITTFaxDecode stopped early ({err}); keeping the rows decoded so far");
+    }
+}
+
+/// Fill the missing tail of a short CCITT bitmap with white samples.
+fn pad_white(pixels: &mut Vec<u8>, expected: usize, label: &str) {
+    if pixels.len() < expected {
+        log::warn!(
+            "{label} decoded {} of {expected} pixels; padding the rest white",
+            pixels.len()
+        );
+        pixels.resize(expected, 255);
+    }
 }
 
 struct GrayscaleSink {
@@ -143,24 +157,16 @@ impl GrayscaleSink {
         }
     }
 
-    fn finish(self) -> Result<RawImage> {
+    fn finish(mut self) -> RawImage {
         let expected = self.width as usize * self.height as usize;
-        if self.pixels.len() != expected {
-            return Err(WellfriendError::MalformedPdf(format!(
-                "CCITTFaxDecode {}x{} decoded {} pixels, expected {}",
-                self.width,
-                self.height,
-                self.pixels.len(),
-                expected
-            )));
-        }
-        Ok(RawImage {
+        pad_white(&mut self.pixels, expected, "CCITTFaxDecode");
+        RawImage {
             width: self.width,
             height: self.height,
             channels: 1,
             bits_per_sample: 8,
             pixels: self.pixels,
-        })
+        }
     }
 
     fn push_gray(&mut self, white: bool, count: usize) {
@@ -204,28 +210,16 @@ impl WindowedGrayscaleSink {
         }
     }
 
-    fn finish(self) -> Result<RawImage> {
+    fn finish(mut self) -> RawImage {
         let expected = self.window.width as usize * self.window.height as usize;
-        if self.pixels.len() != expected {
-            return Err(WellfriendError::MalformedPdf(format!(
-                "CCITTFaxDecode window {}:{} {}x{} from {}x{} decoded {} pixels, expected {}",
-                self.window.x,
-                self.window.y,
-                self.window.width,
-                self.window.height,
-                self.image_width,
-                self.image_height,
-                self.pixels.len(),
-                expected
-            )));
-        }
-        Ok(RawImage {
+        pad_white(&mut self.pixels, expected, "CCITTFaxDecode window");
+        RawImage {
             width: self.window.width,
             height: self.window.height,
             channels: 1,
             bits_per_sample: 8,
             pixels: self.pixels,
-        })
+        }
     }
 
     fn push_gray(&mut self, white: bool, count: usize) {
@@ -339,13 +333,39 @@ mod tests {
     }
 
     #[test]
-    fn ccitt_full_sink_refuses_short_output() {
+    fn ccitt_full_sink_pads_short_output_white() {
         let mut sink = GrayscaleSink::new(4, 1);
-        sink.push_gray(true, 2);
-        let err = sink
-            .finish()
-            .expect_err("short CCITT output must fail typed");
-        assert!(format!("{err}").contains("CCITTFaxDecode 4x1 decoded 2 pixels, expected 4"));
+        sink.push_gray(false, 2);
+        assert_eq!(sink.finish().pixels, vec![0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn damaged_ccitt_keeps_rows_decoded_before_the_error() {
+        // Row 1: white 2, black 3, white 3. Then an invalid all-zero code.
+        let data = pack_bits("0111 10 1000 000000000000 000000000000");
+        let image = decode(&data, params(0, 8, 3)).unwrap();
+        assert_eq!(image.width, 8);
+        assert_eq!(image.height, 3);
+        assert_eq!(&image.pixels[..8], &[255, 255, 0, 0, 0, 255, 255, 255]);
+        assert!(image.pixels[8..].iter().all(|pixel| *pixel == 255));
+    }
+
+    #[test]
+    fn truncated_ccitt_window_pads_missing_rows_white() {
+        // Only the first of three rows is present.
+        let image = decode_window(
+            &pack_bits("0111 10 1000"),
+            params(0, 8, 3),
+            CcittDecodeWindow {
+                x: 1,
+                y: 0,
+                width: 5,
+                height: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(&image.pixels[..5], &[255, 0, 0, 0, 255]);
+        assert!(image.pixels[5..].iter().all(|pixel| *pixel == 255));
     }
 
     #[test]
@@ -369,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn ccitt_window_sink_refuses_short_output() {
+    fn ccitt_window_sink_pads_short_output_white() {
         let mut sink = WindowedGrayscaleSink::new(
             8,
             2,
@@ -381,11 +401,7 @@ mod tests {
             },
         );
         sink.pixels.extend_from_slice(&[255, 0]);
-        let err = sink
-            .finish()
-            .expect_err("short windowed CCITT output must fail typed");
-        assert!(format!("{err}")
-            .contains("CCITTFaxDecode window 1:0 3x1 from 8x2 decoded 2 pixels, expected 3"));
+        assert_eq!(sink.finish().pixels, vec![255, 0, 255]);
     }
 
     #[test]

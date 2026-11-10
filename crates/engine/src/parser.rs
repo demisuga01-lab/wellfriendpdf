@@ -129,9 +129,9 @@ impl<'a> PdfParser<'a> {
         let object = self.parse_object()?;
         self.skip_ws_and_comments();
         if !self.consume_keyword(b"endobj") {
-            return Err(WellfriendError::ParseError(format!(
-                "object {number} {generation} is missing endobj"
-            )));
+            // Poppler accepts an object whose `endobj` is missing (the next
+            // object header or EOF follows); keep the parsed object.
+            log::warn!("object {number} {generation} is missing endobj");
         }
         Ok(IndirectObject {
             number,
@@ -215,10 +215,18 @@ impl<'a> PdfParser<'a> {
                 ));
             }
             if self.peek_byte() != Some(b'/') {
-                self.leave_nesting();
-                return Err(WellfriendError::ParseError(
-                    "dictionary key must be a name".to_string(),
-                ));
+                if self.starts_with(b"endobj") {
+                    // Missing `>>`: end the dictionary at `endobj`.
+                    log::warn!("dictionary is missing >> before endobj");
+                    break;
+                }
+                // Poppler skips a non-name key with a warning and goes on
+                // with the next token, so `<< /A 1 2 /B 3 >>` keeps /A and /B.
+                if let Err(err) = self.skip_non_name_dictionary_key() {
+                    self.leave_nesting();
+                    return Err(err);
+                }
+                continue;
             }
             let key = match self.parse_name() {
                 Ok(key) => key,
@@ -238,6 +246,27 @@ impl<'a> PdfParser<'a> {
         }
         self.leave_nesting();
         Ok(PdfDictionary::new(entries))
+    }
+
+    /// Skip one token that appears where a dictionary key was expected.
+    fn skip_non_name_dictionary_key(&mut self) -> Result<()> {
+        let start = self.pos;
+        match self.parse_object() {
+            Ok(object) => {
+                log::warn!(
+                    "dictionary key must be a name, got {}; skipping it",
+                    object.variant_name()
+                );
+                Ok(())
+            }
+            // Never swallow the recursion guard.
+            Err(err) if err.to_string().contains("depth limit") => Err(err),
+            Err(_) => {
+                log::warn!("skipping unexpected byte in dictionary key position");
+                self.pos = start + 1;
+                Ok(())
+            }
+        }
     }
 
     fn parse_array(&mut self) -> Result<PdfObject> {
@@ -400,7 +429,11 @@ impl<'a> PdfParser<'a> {
         let token = self.parse_number_token()?;
         let is_real = token.contains(&b'.');
         if !is_real {
-            let integer = parse_i64_token(&token)?;
+            let Ok(integer) = parse_i64_token(&token) else {
+                // An integer too large for i64 is kept as a real number, as
+                // Poppler does, instead of failing the whole object.
+                return parse_real_token(&token);
+            };
             if let Some(reference) = self.try_reference(integer)? {
                 return Ok(reference);
             }
@@ -430,7 +463,10 @@ impl<'a> PdfParser<'a> {
             self.pos = saved;
             return Ok(None);
         }
-        let generation = parse_i64_token(&second_token)?;
+        let Ok(generation) = parse_i64_token(&second_token) else {
+            self.pos = saved;
+            return Ok(None);
+        };
         if generation < 0 || generation > i64::from(u16::MAX) {
             self.pos = saved;
             return Ok(None);
@@ -492,12 +528,30 @@ impl<'a> PdfParser<'a> {
                 let Some(resolver) = self.resolver else {
                     return Ok(None);
                 };
-                match resolver.resolve_for_parser(length_obj)? {
-                    PdfObject::Integer(value) => Ok(Some(value)),
-                    other => Err(WellfriendError::MalformedPdf(format!(
-                        "stream Length reference resolved to {}",
-                        other.variant_name()
-                    ))),
+                // An unresolvable /Length (missing object, a reference back
+                // to the stream itself, a non-integer) is not fatal: the body
+                // is delimited by scanning for `endstream` instead.
+                match resolver.resolve_for_parser(length_obj) {
+                    Ok(PdfObject::Integer(value)) => Ok(Some(value)),
+                    Ok(PdfObject::Real(value)) if value.is_finite() && value >= 0.0 => {
+                        Ok(Some(value as i64))
+                    }
+                    Ok(other) => {
+                        log::warn!(
+                            "stream Length reference resolved to {}; scanning for endstream",
+                            other.variant_name()
+                        );
+                        Ok(None)
+                    }
+                    Err(WellfriendError::Cancelled(message)) => {
+                        Err(WellfriendError::Cancelled(message))
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "stream Length reference could not be resolved ({err}); scanning for endstream"
+                        );
+                        Ok(None)
+                    }
                 }
             }
             other => Err(WellfriendError::MalformedPdf(format!(
@@ -538,7 +592,9 @@ impl<'a> PdfParser<'a> {
     fn parse_number_token(&mut self) -> Result<Vec<u8>> {
         self.skip_ws_and_comments();
         let start = self.pos;
-        if matches!(self.peek_byte(), Some(b'+' | b'-')) {
+        let mut token = Vec::new();
+        if let Some(sign @ (b'+' | b'-')) = self.peek_byte() {
+            token.push(sign);
             self.pos += 1;
         }
         let mut saw_digit = false;
@@ -547,10 +603,23 @@ impl<'a> PdfParser<'a> {
             match byte {
                 b'0'..=b'9' => {
                     saw_digit = true;
+                    token.push(byte);
                     self.pos += 1;
                 }
                 b'.' if !saw_dot => {
                     saw_dot = true;
+                    token.push(byte);
+                    self.pos += 1;
+                }
+                // A minus sign in the fractional part ("1.5-2") is ignored,
+                // matching Adobe and Poppler.
+                b'-' if saw_dot
+                    && self
+                        .data
+                        .get(self.pos + 1)
+                        .is_some_and(|next| next.is_ascii_digit()) =>
+                {
+                    log::warn!("ignoring stray minus sign inside a number");
                     self.pos += 1;
                 }
                 _ => break,
@@ -562,7 +631,7 @@ impl<'a> PdfParser<'a> {
                 "expected numeric token".to_string(),
             ));
         }
-        Ok(self.data[start..self.pos].to_vec())
+        Ok(token)
     }
 
     fn expect_bytes(&mut self, expected: &[u8]) -> Result<()> {
@@ -636,6 +705,15 @@ impl<'a> PdfParser<'a> {
         self.pos += 1;
         Some(byte)
     }
+}
+
+fn parse_real_token(token: &[u8]) -> Result<PdfObject> {
+    let text = std::str::from_utf8(token)
+        .map_err(|err| WellfriendError::ParseError(format!("invalid real token: {err}")))?;
+    let value = text
+        .parse::<f64>()
+        .map_err(|err| WellfriendError::ParseError(format!("invalid real number: {err}")))?;
+    Ok(PdfObject::Real(value))
 }
 
 fn parse_i64_token(token: &[u8]) -> Result<i64> {
@@ -754,6 +832,91 @@ mod tests {
             parser.parse_object().unwrap(),
             PdfObject::Name("A\u{fffd}Name".to_string())
         );
+    }
+
+    #[test]
+    fn dictionary_skips_non_name_keys() {
+        let mut parser = PdfParser::new(b"<< /A 1 2 /B 3 (junk) /C /D >>", 0).unwrap();
+        let object = parser.parse_object().unwrap();
+        let dict = object.as_dict().unwrap();
+        assert_eq!(dict.get("A"), Some(&PdfObject::Integer(1)));
+        assert_eq!(dict.get("B"), Some(&PdfObject::Integer(3)));
+        assert_eq!(dict.get("C"), Some(&PdfObject::Name("D".to_string())));
+        assert_eq!(dict.len(), 3);
+    }
+
+    #[test]
+    fn missing_endobj_is_tolerated() {
+        let mut parser =
+            PdfParser::new(b"4 0 obj << /A 1 >>\n5 0 obj << /B 2 >> endobj", 0).unwrap();
+        let object = parser.parse_indirect_object().unwrap();
+        assert_eq!(object.number, 4);
+        assert_eq!(
+            object.object.as_dict().unwrap().get("A"),
+            Some(&PdfObject::Integer(1))
+        );
+        let next = parser.parse_indirect_object().unwrap();
+        assert_eq!(next.number, 5);
+    }
+
+    #[test]
+    fn dictionary_missing_close_before_endobj_is_tolerated() {
+        let mut parser = PdfParser::new(b"6 0 obj << /A 1 endobj", 0).unwrap();
+        let object = parser.parse_indirect_object().unwrap();
+        assert_eq!(
+            object.object.as_dict().unwrap().get("A"),
+            Some(&PdfObject::Integer(1))
+        );
+    }
+
+    #[test]
+    fn integer_overflow_becomes_real() {
+        let mut parser =
+            PdfParser::new(b"[99999999999999999999 -99999999999999999999 7]", 0).unwrap();
+        let PdfObject::Array(items) = parser.parse_object().unwrap() else {
+            panic!("expected array");
+        };
+        assert_eq!(items[0], PdfObject::Real(99999999999999999999.0));
+        assert_eq!(items[1], PdfObject::Real(-99999999999999999999.0));
+        assert_eq!(items[2], PdfObject::Integer(7));
+    }
+
+    #[test]
+    fn stray_minus_inside_number_is_ignored() {
+        let mut parser = PdfParser::new(b"[0.00-5 1.5-2 -3 4 -5]", 0).unwrap();
+        let PdfObject::Array(items) = parser.parse_object().unwrap() else {
+            panic!("expected array");
+        };
+        assert_eq!(
+            items,
+            vec![
+                PdfObject::Real(0.005),
+                PdfObject::Real(1.52),
+                PdfObject::Integer(-3),
+                PdfObject::Integer(4),
+                PdfObject::Integer(-5),
+            ]
+        );
+    }
+
+    struct FailingResolver;
+
+    impl ParserResolver for FailingResolver {
+        fn resolve_for_parser(&self, _object: &PdfObject) -> Result<PdfObject> {
+            Err(WellfriendError::ParseError(
+                "object is being resolved".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn unresolvable_stream_length_scans_for_endstream() {
+        let data = b"7 0 obj << /Length 7 0 R >> stream\nq 1 0 0 1 0 0 cm Q\nendstream endobj";
+        let resolver = FailingResolver;
+        let mut parser = PdfParser::with_resolver(data, 0, Some(&resolver)).unwrap();
+        let object = parser.parse_indirect_object().unwrap();
+        let (_, raw) = object.object.as_stream().unwrap();
+        assert_eq!(raw, b"q 1 0 0 1 0 0 cm Q");
     }
 
     #[test]

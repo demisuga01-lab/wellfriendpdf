@@ -22,7 +22,9 @@ use crate::editing_transactions::{
     DocumentSnapshot, EditTransactionReport, EditableSceneGraph, SceneTextEditRequest,
     TransactionState,
 };
-use crate::filters::{decode_stream_lossless, flate_encode_cancellable, StreamDecodeStatus};
+use crate::filters::{
+    decode_stream_lossless_strict, flate_encode_cancellable, StreamDecodeStatus,
+};
 use crate::render::get_fallback_font;
 use crate::source_editing::{
     operator_text_provenance, prepared_multi_run_text_range, TrueEditingMode,
@@ -1309,7 +1311,8 @@ fn unaffected_content_proof(
                     .document()
                     .reader()
                     .get_object(*number, *generation)?;
-                let decoded = decode_stream_lossless(&object, engine.document().reader())?;
+                let decoded =
+                    decode_stream_lossless_strict(&object, engine.document().reader())?;
                 Ok(json!({
                     "object": [number, generation],
                     "decode_status": decoded.status,
@@ -1445,7 +1448,7 @@ fn unaffected_content_proof(
                 .reader()
                 .get_object(reference.0, reference.1)?;
             let before_decoded =
-                decode_stream_lossless(&before_object, before.document().reader())?;
+                decode_stream_lossless_strict(&before_object, before.document().reader())?;
             let before_hash = digest_hex(&before_decoded.data);
             let after_hash = if after_references.contains(reference) {
                 let after_object = after
@@ -1453,7 +1456,7 @@ fn unaffected_content_proof(
                     .reader()
                     .get_object(reference.0, reference.1)?;
                 let after_decoded =
-                    decode_stream_lossless(&after_object, after.document().reader())?;
+                    decode_stream_lossless_strict(&after_object, after.document().reader())?;
                 Some(digest_hex(&after_decoded.data))
             } else {
                 None
@@ -5144,7 +5147,7 @@ fn wrap_authored_page_with_actual_text(input: &[u8], logical_text: &str) -> Resu
     let (number, generation) = page.contents[0];
     let reader = engine.document().reader();
     let object = reader.get_object(number, generation)?;
-    let decoded = decode_stream_lossless(&object, reader)?;
+    let decoded = decode_stream_lossless_strict(&object, reader)?;
     if decoded.status != StreamDecodeStatus::Complete {
         return Err(WellfriendError::UnsupportedFeature(
             "text_reflow authored continuation stream is not losslessly decodable".to_string(),

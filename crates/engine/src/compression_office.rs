@@ -14,7 +14,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::error::{Result, WellfriendError};
-use crate::filters::{decode_stream_from_dict_with_limits, flate_encode, DecodeLimits};
+use crate::filters::{decode_stream_from_dict_strict_with_limits, flate_encode, DecodeLimits};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::office::{
     docx_to_pdf, inspect_office_package, pptx_to_pdf, xlsx_to_pdf, OfficeFormat,
@@ -697,7 +697,7 @@ fn recompress_stream_object(
     let decoded = if filters.is_empty() {
         raw.clone()
     } else {
-        decode_stream_from_dict_with_limits(dict, raw, decode_limits)?
+        decode_stream_from_dict_strict_with_limits(dict, raw, decode_limits)?
     };
     let encoded = encode_deflate(&decoded, options, report)?;
     let savings = raw.len().saturating_sub(encoded.len());
@@ -711,7 +711,7 @@ fn recompress_stream_object(
     new_dict.remove("DecodeParms");
     new_dict.remove("DP");
     new_dict.insert("Length", PdfObject::Integer(encoded.len() as i64));
-    let check = decode_stream_from_dict_with_limits(&new_dict, &encoded, decode_limits)?;
+    let check = decode_stream_from_dict_strict_with_limits(&new_dict, &encoded, decode_limits)?;
     report.decoded_equality_checks += 1;
     if check != decoded {
         report.decoded_equality_failures += 1;
@@ -935,7 +935,7 @@ fn canonical_stream_fingerprint(
     if matches!(dict.get_name("Type"), Some("XRef") | Some("ObjStm")) || has_crypt_filter(dict) {
         return Ok(None);
     }
-    let decoded = decode_stream_from_dict_with_limits(dict, raw, decode_limits)?;
+    let decoded = decode_stream_from_dict_strict_with_limits(dict, raw, decode_limits)?;
     let mut canonical_dict = PdfDictionary::empty();
     for (key, value) in dict.iter() {
         if key != "Length" {

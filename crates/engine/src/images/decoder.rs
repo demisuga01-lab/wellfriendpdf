@@ -236,10 +236,14 @@ impl ImageDecoder {
             StreamDecodeStatus::StoppedAtImageFilter(filter)
                 if matches!(filter.as_str(), "DCTDecode" | "DCT") =>
             {
+                let decode_params = image_decode_params(&dict, Some(reader), &filter)
+                    .ok()
+                    .flatten();
                 let jpeg = Self::decode_jpeg_scaled_with_info(
                     &decoded.data,
                     requested_width,
                     requested_height,
+                    decode_params.as_ref(),
                 )?;
                 ensure_dct_dimensions_match(
                     &format!("image {}", image.xobject_name),
@@ -310,6 +314,24 @@ impl ImageDecoder {
             StreamDecodeStatus::StoppedAtImageFilter(filter)
                 if matches!(filter.as_str(), "JPXDecode" | "JPX") =>
             {
+                let label = format!("image {}", image.xobject_name);
+                let color_space = color_space_override
+                    .map(|(name, _)| name.as_str())
+                    .unwrap_or(&image.color_space);
+                if let Some(raw) = Self::decode_jpx_with_pdf_color_space(
+                    &decoded.data,
+                    Some((requested_width, requested_height)),
+                    image.width,
+                    image.height,
+                    color_space,
+                    &effective_dict,
+                    &label,
+                    limits,
+                    ImageColorContext::with_reader(reader, ColorTransformOptions::default().into())
+                        .with_source(effective_dict.get("ColorSpace")),
+                )? {
+                    return Ok(raw);
+                }
                 let jpx = jpx::decode_with_target_resolution(
                     &decoded.data,
                     Some((requested_width, requested_height)),
@@ -321,7 +343,7 @@ impl ImageDecoder {
                     image.height,
                     jpx.original_width,
                     jpx.original_height,
-                    &format!("image {}", image.xobject_name),
+                    &label,
                     &effective_dict,
                 )
             }
@@ -652,7 +674,9 @@ impl ImageDecoder {
         if let Some(last_filter) = filter.last() {
             match *last_filter {
                 "DCTDecode" | "DCT" => {
-                    let (pixels, w, h, channels) = Self::decode_jpeg_with_info(&decompressed)?;
+                    let jpeg_params = decode_parms.filter(|_| filter.len() == 1);
+                    let (pixels, w, h, channels) =
+                        Self::decode_pdf_jpeg(&decompressed, jpeg_params)?;
                     ensure_dct_dimensions_match("inline image", width, height, w, h)?;
                     return Self::finish_dct_decoded_image(
                         pixels,
@@ -860,7 +884,7 @@ impl ImageDecoder {
                 }
                 return match filter {
                     "DCTDecode" | "DCT" => {
-                        let (pixels, w, h, channels) = Self::decode_jpeg_with_info(&data)?;
+                        let (pixels, w, h, channels) = Self::decode_pdf_jpeg(&data, params)?;
                         ensure_dct_dimensions_match("inline image", width, height, w, h)?;
                         Self::finish_dct_decoded_image(
                             pixels,
@@ -1086,6 +1110,7 @@ impl ImageDecoder {
                             &data,
                             requested_width,
                             requested_height,
+                            params,
                         )?;
                         ensure_dct_dimensions_match(
                             "inline image",
@@ -1255,7 +1280,11 @@ impl ImageDecoder {
             PdfObject::Stream { dict, .. } => dict,
             _ => PdfDictionary::empty(),
         };
-        let (pixels, width, height, channels) = Self::decode_jpeg_with_info(&raw)?;
+        let decode_params = image_decode_params(&dict, Some(reader), "DCTDecode")
+            .ok()
+            .flatten();
+        let (pixels, width, height, channels) =
+            Self::decode_pdf_jpeg(&raw, decode_params.as_ref())?;
         ensure_dct_dimensions_match(
             &format!("image {}", image.xobject_name),
             image.width,
@@ -1277,7 +1306,21 @@ impl ImageDecoder {
 
     /// Decode JPEG bytes and return pixels plus width, height, channel count.
     pub fn decode_jpeg_with_info(jpeg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32, u8)> {
-        let jpeg = decode_jpeg_with_requested_size(jpeg_bytes, None)?;
+        let jpeg = decode_jpeg_with_requested_size(jpeg_bytes, None, None)?;
+        Ok((jpeg.pixels, jpeg.width, jpeg.height, jpeg.channels))
+    }
+
+    /// Decode a PDF `DCTDecode` image, honouring its `/DecodeParms
+    /// /ColorTransform` entry.
+    fn decode_pdf_jpeg(
+        jpeg_bytes: &[u8],
+        decode_params: Option<&PdfDictionary>,
+    ) -> Result<(Vec<u8>, u32, u32, u8)> {
+        let jpeg = decode_jpeg_with_requested_size(
+            jpeg_bytes,
+            None,
+            pdf_jpeg_color_transform(decode_params),
+        )?;
         Ok((jpeg.pixels, jpeg.width, jpeg.height, jpeg.channels))
     }
 
@@ -1285,6 +1328,7 @@ impl ImageDecoder {
     /// surface. Mutation planners use this to prove that a replacement stream
     /// agrees with its PDF image dictionary before commit.
     pub fn jpeg_metadata(jpeg_bytes: &[u8]) -> Result<(u32, u32, u8)> {
+        let jpeg_bytes = skip_to_jpeg_soi(jpeg_bytes);
         let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(jpeg_bytes));
         decoder.read_info().map_err(|error| {
             WellfriendError::MalformedPdf(format!("JPEG metadata decode failed: {error}"))
@@ -1303,15 +1347,79 @@ impl ImageDecoder {
         jpeg_bytes: &[u8],
         requested_width: u32,
         requested_height: u32,
+        decode_params: Option<&PdfDictionary>,
     ) -> Result<DecodedJpeg> {
-        decode_jpeg_with_requested_size(jpeg_bytes, Some((requested_width, requested_height)))
+        decode_jpeg_with_requested_size(
+            jpeg_bytes,
+            Some((requested_width, requested_height)),
+            pdf_jpeg_color_transform(decode_params),
+        )
     }
+}
+
+/// Skip junk bytes before the JPEG start-of-image marker (Poppler's DCTStream
+/// also searches for SOI), so a few stray bytes do not drop the image.
+fn skip_to_jpeg_soi(data: &[u8]) -> &[u8] {
+    if data.starts_with(&[0xFF, 0xD8]) {
+        return data;
+    }
+    match data
+        .windows(3)
+        .position(|window| window == [0xFF, 0xD8, 0xFF])
+    {
+        Some(offset) => {
+            log::warn!("skipping {offset} junk byte(s) before the JPEG SOI marker");
+            &data[offset..]
+        }
+        None => data,
+    }
+}
+
+/// The PDF `/ColorTransform` decode parameter, when present.
+fn pdf_jpeg_color_transform(decode_params: Option<&PdfDictionary>) -> Option<i64> {
+    decode_params?.get("ColorTransform")?.as_integer()
+}
+
+/// True when the JPEG carries an Adobe APP14 segment, whose transform flag
+/// takes precedence over the PDF `/ColorTransform` entry.
+fn jpeg_has_adobe_marker(data: &[u8]) -> bool {
+    let mut pos = 2usize;
+    while pos + 4 <= data.len() {
+        if data[pos] != 0xFF {
+            return false;
+        }
+        let marker = data[pos + 1];
+        if marker == 0xFF {
+            pos += 1;
+            continue;
+        }
+        // Start of scan / end of image: no more header segments.
+        if matches!(marker, 0xDA | 0xD9) {
+            return false;
+        }
+        if matches!(marker, 0x01 | 0xD0..=0xD7) {
+            pos += 2;
+            continue;
+        }
+        let length = usize::from(u16::from_be_bytes([data[pos + 2], data[pos + 3]]));
+        if marker == 0xEE
+            && data
+                .get(pos + 4..pos + 2 + length)
+                .is_some_and(|payload| payload.starts_with(b"Adobe"))
+        {
+            return true;
+        }
+        pos += 2 + length;
+    }
+    false
 }
 
 fn decode_jpeg_with_requested_size(
     jpeg_bytes: &[u8],
     requested_size: Option<(u32, u32)>,
+    pdf_color_transform: Option<i64>,
 ) -> Result<DecodedJpeg> {
+    let jpeg_bytes = skip_to_jpeg_soi(jpeg_bytes);
     let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(jpeg_bytes));
     decoder
         .read_info()
@@ -1321,6 +1429,22 @@ fn decode_jpeg_with_requested_size(
     })?;
     let original_width = u32::from(info.width);
     let original_height = u32::from(info.height);
+    // PDF /ColorTransform: 0 = no YCbCr/YCCK transform, 1 = transform. An
+    // Adobe APP14 marker in the JPEG overrides it (PDF 32000-1 table 13).
+    if let Some(transform) = pdf_color_transform {
+        if !jpeg_has_adobe_marker(jpeg_bytes) {
+            let color_transform = match (info.pixel_format, transform) {
+                (jpeg_decoder::PixelFormat::RGB24, 0) => Some(jpeg_decoder::ColorTransform::RGB),
+                (jpeg_decoder::PixelFormat::RGB24, _) => Some(jpeg_decoder::ColorTransform::YCbCr),
+                (jpeg_decoder::PixelFormat::CMYK32, 0) => Some(jpeg_decoder::ColorTransform::CMYK),
+                (jpeg_decoder::PixelFormat::CMYK32, _) => Some(jpeg_decoder::ColorTransform::YCCK),
+                _ => None,
+            };
+            if let Some(color_transform) = color_transform {
+                decoder.set_color_transform(color_transform);
+            }
+        }
+    }
     if let Some((requested_width, requested_height)) = requested_size {
         let requested_width = requested_width.clamp(1, u32::from(u16::MAX)) as u16;
         let requested_height = requested_height.clamp(1, u32::from(u16::MAX)) as u16;
@@ -1340,7 +1464,9 @@ fn decode_jpeg_with_requested_size(
     let mut pixels = decoder
         .decode()
         .map_err(|e| WellfriendError::MalformedPdf(format!("JPEG decode failed: {e}")))?;
-    fit_decoded_len(&mut pixels, width, height, channels, max_decoded)?;
+    // Short output is padded with 255: white for gray/RGB, and no ink for
+    // CMYK once the 255 - v convention below is undone.
+    fit_decoded_len(&mut pixels, width, height, channels, max_decoded, 255)?;
     if channels == 4 {
         // jpeg-decoder returns 255 - v for every 4-component JPEG (plain CMYK
         // and Adobe YCCK alike). PDF image samples are libjpeg's output, which
@@ -1459,6 +1585,7 @@ impl ImageDecoder {
             height,
             selected_channels,
             expected_size,
+            255,
         )?;
         if !image_mask_flag(dict)? && decode_array_applies_before_color_conversion(color_space) {
             apply_decode_array_for_component_selection(
@@ -1492,7 +1619,11 @@ impl ImageDecoder {
         let color_options: ImageColorOptions<'a> = color_options.into();
         match filter {
             "DCTDecode" | "DCT" => {
-                let (pixels, width, height, channels) = Self::decode_jpeg_with_info(data)?;
+                let decode_params = image_decode_params(dict, Some(reader), filter)
+                    .ok()
+                    .flatten();
+                let (pixels, width, height, channels) =
+                    Self::decode_pdf_jpeg(data, decode_params.as_ref())?;
                 ensure_dct_dimensions_match(
                     &format!("image {}", image.xobject_name),
                     image.width,
@@ -1510,13 +1641,29 @@ impl ImageDecoder {
                     ImageColorContext::with_reader(reader, color_options).with_source(source_space),
                 )
             }
-            "JPXDecode" | "JPX" => Self::finish_jpx_decoded_image(
-                jpx::decode_with_limits(data, limits)?,
-                image.width,
-                image.height,
-                &format!("image {}", image.xobject_name),
-                dict,
-            ),
+            "JPXDecode" | "JPX" => {
+                let label = format!("image {}", image.xobject_name);
+                if let Some(raw) = Self::decode_jpx_with_pdf_color_space(
+                    data,
+                    None,
+                    image.width,
+                    image.height,
+                    &image.color_space,
+                    dict,
+                    &label,
+                    limits,
+                    ImageColorContext::with_reader(reader, color_options).with_source(source_space),
+                )? {
+                    return Ok(raw);
+                }
+                Self::finish_jpx_decoded_image(
+                    jpx::decode_with_limits(data, limits)?,
+                    image.width,
+                    image.height,
+                    &label,
+                    dict,
+                )
+            }
             "CCITTFaxDecode" | "CCF" => {
                 Self::ensure_monochrome_terminal_color_space(filter, &image.color_space)?;
                 let decode_params = image_decode_params(dict, Some(reader), filter)?;
@@ -1632,11 +1779,9 @@ impl ImageDecoder {
                 pixels: Vec::new(),
             });
         }
-        if decompressed.is_empty() {
-            return Err(WellfriendError::MalformedPdf(format!(
-                "image {width}x{height} decoded to empty pixel data"
-            )));
-        }
+        let pad = white_pad_byte(is_mask, color_space, raw_channels, dict);
+        let decompressed =
+            pad_short_image_data(decompressed, width, height, raw_channels, bpc, pad);
 
         if !is_mask && matches!(color_space, "ICCBased" | "Lab" | "Indexed") {
             return super::sample_decode::convert_component_image(
@@ -1662,6 +1807,7 @@ impl ImageDecoder {
             height,
             raw_channels,
             expected_raw_size,
+            pad,
         )?;
         if is_mask {
             let pixels = normalised;
@@ -1715,7 +1861,7 @@ impl ImageDecoder {
         };
 
         let expected_size = expected_len(width, height, channels);
-        fit_decoded_len(&mut pixels, width, height, channels, expected_size)?;
+        fit_decoded_len(&mut pixels, width, height, channels, expected_size, 255)?;
 
         Ok(RawImage {
             width,
@@ -1793,7 +1939,7 @@ impl ImageDecoder {
             let mut pixels = pixels;
             ensure_decode_budget(width, height, channels)?;
             let expected_size = expected_len(width, height, channels);
-            fit_decoded_len(&mut pixels, width, height, channels, expected_size)?;
+            fit_decoded_len(&mut pixels, width, height, channels, expected_size, 0)?;
             Self::apply_decode_array(&mut pixels, channels, dict)?;
             return Ok(RawImage {
                 width,
@@ -1806,6 +1952,121 @@ impl ImageDecoder {
         Err(WellfriendError::UnsupportedFeature(format!(
             "DCTDecode image produced {channels} components but PDF ColorSpace /{color_space} expects {expected_channels}"
         )))
+    }
+
+    /// Decode a JPX image through the PDF `/ColorSpace` (and `/Decode`) of its
+    /// dictionary. PDF 32000-1 section 7.4.9: when the image dictionary has a
+    /// ColorSpace, the colour specification inside the JPEG 2000 data is
+    /// ignored, so Indexed, ICCBased (including CMYK), Separation, DeviceN and
+    /// DeviceCMYK JPX images get the PDF's colours. Returns `None` (caller
+    /// keeps the JPX-internal colour path) when there is no PDF colour space
+    /// or its component count does not match the codestream.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_jpx_with_pdf_color_space(
+        data: &[u8],
+        target_resolution: Option<(u32, u32)>,
+        declared_width: u32,
+        declared_height: u32,
+        color_space: &str,
+        dict: &PdfDictionary,
+        label: &str,
+        limits: &DecodeLimits,
+        color_context: ImageColorContext<'_>,
+    ) -> Result<Option<RawImage>> {
+        let has_pdf_color_space = dict
+            .get("ColorSpace")
+            .or_else(|| dict.get("CS"))
+            .is_some_and(|space| !matches!(space, PdfObject::Null));
+        if !has_pdf_color_space || color_space.is_empty() || image_mask_flag(dict)? {
+            return Ok(None);
+        }
+        let Ok(expected_channels) =
+            Self::raw_channel_count(color_space, dict, color_context.reader)
+        else {
+            return Ok(None);
+        };
+        let is_indexed = color_space == "Indexed";
+        let components = jpx::decode_components(data, limits, !is_indexed, target_resolution)?;
+        if components.color_channels != expected_channels {
+            log::warn!(
+                "JPXDecode {label}: codestream has {} colour components but /{color_space} expects {expected_channels}; using the JPX colour space",
+                components.color_channels
+            );
+            return Ok(None);
+        }
+        let mut samples = components.samples;
+        if is_indexed {
+            // hayro-jpeg2000 scales samples to 8 bits; palette indices must
+            // keep their codestream values.
+            let depth = components.original_bit_depth;
+            if depth == 0 || depth > 8 {
+                return Ok(None);
+            }
+            if depth < 8 {
+                let max = (1u32 << depth) - 1;
+                for sample in &mut samples {
+                    *sample = ((u32::from(*sample) * max + 127) / 255) as u8;
+                }
+            }
+        }
+        let built = match Self::build_raw_image(
+            samples,
+            components.width,
+            components.height,
+            8,
+            color_space,
+            dict,
+            color_context,
+        ) {
+            Ok(built) => built,
+            Err(err @ (WellfriendError::ResourceLimit(_) | WellfriendError::Cancelled(_))) => {
+                return Err(err)
+            }
+            Err(err) => {
+                log::warn!(
+                    "JPXDecode {label}: /{color_space} could not be applied ({err}); using the JPX colour space"
+                );
+                return Ok(None);
+            }
+        };
+        // Keep a JPX opacity channel only when /SMaskInData asks for it.
+        let wants_alpha = matches!(jpx_smask_in_data_value(label, dict)?, Some(1 | 2));
+        let raw = match (components.alpha, wants_alpha, built.channels) {
+            (Some(alpha), true, 1 | 3) => {
+                let color = usize::from(built.channels);
+                let mut pixels = Vec::with_capacity(alpha.len() * 4);
+                for (index, alpha) in alpha.iter().enumerate() {
+                    let pixel = &built.pixels[index * color..(index + 1) * color];
+                    if color == 1 {
+                        pixels.extend_from_slice(&[pixel[0], pixel[0], pixel[0]]);
+                    } else {
+                        pixels.extend_from_slice(pixel);
+                    }
+                    pixels.push(*alpha);
+                }
+                RawImage {
+                    channels: 4,
+                    pixels,
+                    ..built
+                }
+            }
+            _ => built,
+        };
+        let finished = match target_resolution {
+            Some(_) => Self::finish_reduced_jpx_decoded_image(
+                raw,
+                declared_width,
+                declared_height,
+                components.original_width,
+                components.original_height,
+                label,
+                dict,
+            )?,
+            None => {
+                Self::finish_jpx_decoded_image(raw, declared_width, declared_height, label, dict)?
+            }
+        };
+        Ok(Some(finished))
     }
 
     fn finish_jpx_decoded_image(
@@ -2071,6 +2332,7 @@ impl ColorSpaceConverter {
                     height,
                     4,
                     expected_len(width, height, 4),
+                    0,
                 )?;
                 ensure_cmyk_input_len("DeviceCMYK image ColorSpace", width, height, &pixels)?;
                 Ok((Self::cmyk_to_rgb(&pixels), 3))
@@ -2088,7 +2350,8 @@ impl ColorSpaceConverter {
                         WellfriendError::MalformedPdf("ICC image dimensions overflow".into())
                     })?;
                 let mut pixels = pixels;
-                fit_decoded_len(&mut pixels, width, height, channels, expected)?;
+                let pad = if channels == 4 { 0 } else { 255 };
+                fit_decoded_len(&mut pixels, width, height, channels, expected, pad)?;
                 crate::render::icc_conversion::convert_image(&pixels, dict, reader, color_options)
             }
             "Indexed" => Self::decode_indexed_with_options(
@@ -3171,6 +3434,10 @@ fn enforce_raw_window_limit(required_bytes: u64, limits: &DecodeLimits) -> Resul
     Ok(())
 }
 
+/// A JPEG whose header size differs from the PDF `/Width` `/Height` is decoded
+/// at its own size; the renderer maps every image into the unit square, so it
+/// is fitted to the image's placement instead of being dropped (Poppler draws
+/// these too). Only logged.
 fn ensure_dct_dimensions_match(
     label: &str,
     declared_width: u32,
@@ -3179,9 +3446,9 @@ fn ensure_dct_dimensions_match(
     header_height: u32,
 ) -> Result<()> {
     if declared_width != header_width || declared_height != header_height {
-        return Err(WellfriendError::MalformedPdf(format!(
-            "DCTDecode {label} dictionary dimensions {declared_width}x{declared_height} differ from JPEG header {header_width}x{header_height}"
-        )));
+        log::warn!(
+            "DCTDecode {label} dictionary dimensions {declared_width}x{declared_height} differ from JPEG header {header_width}x{header_height}; using the JPEG size"
+        );
     }
     Ok(())
 }
@@ -3448,15 +3715,17 @@ pub(crate) fn resample_raw_image_nearest(
 
 /// Bring decoded image data to exactly the size its dictionary declares.
 /// Producers routinely leave trailing bytes after the last row, and truncated
-/// streams are common; PDFium reads only the rows it needs and zero-fills a
-/// short tail (`cpdf_dib.cpp`), Poppler reads exactly the rows it needs. Do the
-/// same instead of refusing the image. Empty data is still an error.
+/// streams are common; Poppler reads exactly the rows it needs and fills a
+/// short tail with white-equivalent samples. Do the same instead of refusing
+/// the image; `pad` is the white-equivalent byte for these samples (255 for
+/// gray/RGB output, 0 for CMYK ink values). Empty data is still an error.
 fn fit_decoded_len(
     pixels: &mut Vec<u8>,
     width: u32,
     height: u32,
     channels: u8,
     expected_size: usize,
+    pad: u8,
 ) -> Result<()> {
     if pixels.len() == expected_size {
         return Ok(());
@@ -3470,8 +3739,66 @@ fn fit_decoded_len(
         "image {width}x{height} x{channels} channels decoded {} bytes, expected {expected_size}; fitting",
         pixels.len()
     );
-    pixels.resize(expected_size, 0);
+    pixels.resize(expected_size, pad);
     Ok(())
+}
+
+/// The packed byte that decodes to "no paint" for an image's samples: white
+/// for additive spaces (Poppler fills missing image bytes with 0xFF), no ink
+/// (0) for subtractive spaces, and "not painted" for stencil masks. An
+/// inverted first /Decode range flips it.
+fn white_pad_byte(is_mask: bool, color_space: &str, channels: u8, dict: &PdfDictionary) -> u8 {
+    let subtractive = !is_mask
+        && (matches!(
+            color_space,
+            "DeviceCMYK" | "CMYK" | "Separation" | "DeviceN"
+        ) || (color_space == "ICCBased" && channels == 4));
+    let base = if subtractive { 0x00 } else { 0xFF };
+    if color_space == "Indexed" && !is_mask {
+        return base;
+    }
+    let inverted = dict
+        .get("Decode")
+        .or_else(|| dict.get("D"))
+        .and_then(PdfObject::as_array)
+        .and_then(|decode| Some((decode.first()?.as_number()?, decode.get(1)?.as_number()?)))
+        .is_some_and(|(low, high)| low > high);
+    if inverted {
+        !base
+    } else {
+        base
+    }
+}
+
+/// Pad short packed image data (any bit depth) to the size its dimensions
+/// require, so truncated or empty streams still draw the rows they have.
+fn pad_short_image_data(
+    mut data: Vec<u8>,
+    width: u32,
+    height: u32,
+    channels: u8,
+    bpc: u8,
+    pad: u8,
+) -> Vec<u8> {
+    if !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
+        return data;
+    }
+    let Some(required) = (width as usize)
+        .checked_mul(usize::from(channels.max(1)))
+        .and_then(|samples| samples.checked_mul(usize::from(bpc)))
+        .map(|bits| bits.div_ceil(8))
+        .and_then(|row_bytes| row_bytes.checked_mul(height as usize))
+    else {
+        return data;
+    };
+    if data.len() < required {
+        log::warn!(
+            "image {width}x{height} has {} of {required} data bytes; padding the rest",
+            data.len()
+        );
+        data.resize(required, pad);
+    }
+    data
 }
 
 fn ccitt_decode_params(
@@ -3846,12 +4173,12 @@ mod tests {
     #[test]
     fn decoded_buffers_are_fitted_to_the_declared_size() {
         let mut long = vec![1, 2, 3, 4, 9, 9];
-        fit_decoded_len(&mut long, 2, 2, 1, 4).unwrap();
+        fit_decoded_len(&mut long, 2, 2, 1, 4, 255).unwrap();
         assert_eq!(long, vec![1, 2, 3, 4]);
         let mut short = vec![1, 2, 3];
-        fit_decoded_len(&mut short, 2, 2, 1, 4).unwrap();
-        assert_eq!(short, vec![1, 2, 3, 0]);
-        assert!(fit_decoded_len(&mut Vec::new(), 2, 2, 1, 4).is_err());
+        fit_decoded_len(&mut short, 2, 2, 1, 4, 255).unwrap();
+        assert_eq!(short, vec![1, 2, 3, 255]);
+        assert!(fit_decoded_len(&mut Vec::new(), 2, 2, 1, 4, 255).is_err());
     }
 
     #[test]
@@ -4986,16 +5313,77 @@ mod tests {
 
     #[test]
     fn build_raw_image_fits_mismatched_buffers() {
-        // Like PDFium: a short stream is zero-filled, trailing bytes are ignored.
+        // Like Poppler: a short stream is filled with white, trailing bytes
+        // are ignored.
         let dict = PdfDictionary::empty();
-        let short = ImageDecoder::build_raw_image_pub(vec![255], 2, 1, 8, "DeviceRGB", &dict)
-            .expect("short RGB image data is zero-filled");
-        assert_eq!(short.pixels, vec![255, 0, 0, 0, 0, 0]);
+        let short = ImageDecoder::build_raw_image_pub(vec![7], 2, 1, 8, "DeviceRGB", &dict)
+            .expect("short RGB image data is white-filled");
+        assert_eq!(short.pixels, vec![7, 255, 255, 255, 255, 255]);
 
         let long =
             ImageDecoder::build_raw_image_pub(vec![1, 2, 3, 4], 1, 1, 8, "DeviceGray", &dict)
                 .expect("trailing grayscale bytes are ignored");
         assert_eq!(long.pixels, vec![1]);
+    }
+
+    #[test]
+    fn short_image_data_is_padded_white_at_every_bit_depth() {
+        let dict = PdfDictionary::empty();
+        let gray8 = ImageDecoder::build_raw_image_pub(vec![10], 2, 1, 8, "DeviceGray", &dict)
+            .expect("short 8-bit data");
+        assert_eq!(gray8.pixels, vec![10, 255]);
+
+        // 4x2 1-bit: first row black, second row missing.
+        let gray1 = ImageDecoder::build_raw_image_pub(vec![0], 4, 2, 1, "DeviceGray", &dict)
+            .expect("short 1-bit data");
+        assert_eq!(gray1.pixels, vec![0, 0, 0, 0, 255, 255, 255, 255]);
+
+        let gray2 = ImageDecoder::build_raw_image_pub(vec![0], 4, 2, 2, "DeviceGray", &dict)
+            .expect("short 2-bit data");
+        assert_eq!(gray2.pixels, vec![0, 0, 0, 0, 255, 255, 255, 255]);
+
+        let gray4 = ImageDecoder::build_raw_image_pub(vec![0x0F], 2, 2, 4, "DeviceGray", &dict)
+            .expect("short 4-bit data");
+        assert_eq!(gray4.pixels, vec![0, 255, 255, 255]);
+
+        let gray16 =
+            ImageDecoder::build_raw_image_pub(vec![0x12, 0x34], 2, 1, 16, "DeviceGray", &dict)
+                .expect("short 16-bit data");
+        assert_eq!(gray16.pixels, vec![0x12, 255]);
+    }
+
+    #[test]
+    fn empty_or_short_subtractive_and_mask_data_pads_with_no_paint() {
+        let dict = PdfDictionary::empty();
+        let empty_gray =
+            ImageDecoder::build_raw_image_pub(Vec::new(), 2, 1, 8, "DeviceGray", &dict)
+                .expect("empty data draws white");
+        assert_eq!(empty_gray.pixels, vec![255, 255]);
+
+        let cmyk = ImageDecoder::build_raw_image_pub(Vec::new(), 1, 1, 8, "DeviceCMYK", &dict)
+            .expect("empty CMYK data draws white");
+        assert_eq!(cmyk.pixels, vec![255, 255, 255]);
+
+        let mut inverted = PdfDictionary::empty();
+        inverted.insert(
+            "Decode",
+            PdfObject::Array(vec![PdfObject::Integer(1), PdfObject::Integer(0)]),
+        );
+        let gray = ImageDecoder::build_raw_image_pub(Vec::new(), 1, 1, 8, "DeviceGray", &inverted)
+            .expect("inverted Decode still pads white");
+        assert_eq!(gray.pixels, vec![255]);
+
+        let mut mask = PdfDictionary::empty();
+        mask.insert("ImageMask", PdfObject::Boolean(true));
+        let unpainted = ImageDecoder::build_raw_image_pub(Vec::new(), 8, 1, 1, "DeviceGray", &mask)
+            .expect("empty stencil mask");
+        assert_eq!(unpainted.pixels, vec![255; 8]);
+        assert_eq!(white_pad_byte(true, "DeviceGray", 1, &mask), 0xFF);
+        mask.insert(
+            "Decode",
+            PdfObject::Array(vec![PdfObject::Integer(1), PdfObject::Integer(0)]),
+        );
+        assert_eq!(white_pad_byte(true, "DeviceGray", 1, &mask), 0x00);
     }
 
     #[test]
@@ -5729,7 +6117,7 @@ mod tests {
             pixels,
         };
         let jpeg = ImageEncoder::encode_jpeg(&original, 95).unwrap();
-        let decoded = ImageDecoder::decode_jpeg_scaled_with_info(&jpeg, 4, 4).unwrap();
+        let decoded = ImageDecoder::decode_jpeg_scaled_with_info(&jpeg, 4, 4, None).unwrap();
 
         assert_eq!(decoded.original_width, 16);
         assert_eq!(decoded.original_height, 16);
@@ -5749,7 +6137,7 @@ mod tests {
             pixels: vec![128; 8 * 8 * 3],
         };
         let jpeg = ImageEncoder::encode_jpeg(&original, 90).unwrap();
-        let error =
+        let image =
             ImageDecoder::decode_inline_scaled_dct_with_resolved_color_space_and_param_array(
                 &jpeg,
                 4,
@@ -5765,12 +6153,11 @@ mod tests {
                 ColorTransformOptions::default(),
                 None,
             )
-            .expect_err("scaled DCT path must compare PDF dimensions with original JPEG header");
+            .expect("a PDF/JPEG size mismatch decodes at the JPEG's own size");
 
-        assert!(matches!(error, WellfriendError::MalformedPdf(_)));
-        assert!(
-            format!("{error}").contains("dictionary dimensions 4x8 differ from JPEG header 8x8")
-        );
+        assert!(image.is_valid());
+        assert_eq!(image.channels, 3);
+        assert!(image.width <= 8 && image.height <= 8);
     }
 
     #[test]
@@ -5783,7 +6170,7 @@ mod tests {
             pixels: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
         };
         let jpeg = ImageEncoder::encode_jpeg(&original, 90).unwrap();
-        let error = ImageDecoder::decode_inline_with_limits(
+        let image = ImageDecoder::decode_inline_with_limits(
             &jpeg,
             1,
             2,
@@ -5793,12 +6180,160 @@ mod tests {
             None,
             &DecodeLimits::default(),
         )
-        .expect_err("DCT dictionary/header dimension mismatch must fail typed");
+        .expect("DCT dictionary/header mismatch decodes at the JPEG's own size");
 
-        assert!(matches!(error, WellfriendError::MalformedPdf(_)));
+        assert_eq!((image.width, image.height), (2, 2));
+        assert!(image.is_valid());
+    }
+
+    fn solid_red_jpeg() -> Vec<u8> {
+        let original = RawImage {
+            width: 8,
+            height: 8,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: [255u8, 0, 0].repeat(64),
+        };
+        ImageEncoder::encode_jpeg(&original, 95).unwrap()
+    }
+
+    #[test]
+    fn jpeg_with_junk_before_soi_still_decodes() {
+        let mut data = b"\r\n\x00junk".to_vec();
+        data.extend_from_slice(&solid_red_jpeg());
+        let (pixels, width, height, channels) = ImageDecoder::decode_jpeg_with_info(&data)
+            .expect("junk before the SOI marker is skipped");
+        assert_eq!((width, height, channels), (8, 8, 3));
+        assert!(pixels[0] > 240 && pixels[1] < 16 && pixels[2] < 16);
+        assert_eq!(ImageDecoder::jpeg_metadata(&data).unwrap(), (8, 8, 3));
+    }
+
+    #[test]
+    fn pdf_color_transform_zero_disables_ycbcr_conversion() {
+        let jpeg = solid_red_jpeg();
+        assert!(!jpeg_has_adobe_marker(&jpeg));
+        let mut no_transform = PdfDictionary::empty();
+        no_transform.insert("ColorTransform", PdfObject::Integer(0));
+        let mut transform = PdfDictionary::empty();
+        transform.insert("ColorTransform", PdfObject::Integer(1));
+
+        let (default_pixels, ..) = ImageDecoder::decode_pdf_jpeg(&jpeg, None).unwrap();
+        let (with_transform, ..) = ImageDecoder::decode_pdf_jpeg(&jpeg, Some(&transform)).unwrap();
+        let (raw_ycc, ..) = ImageDecoder::decode_pdf_jpeg(&jpeg, Some(&no_transform)).unwrap();
+
+        assert_eq!(default_pixels, with_transform);
+        // Red in YCbCr is about (76, 85, 255): returned as-is without the
+        // transform.
+        let close = |value: u8, expected: i32| (i32::from(value) - expected).abs() <= 6;
         assert!(
-            format!("{error}").contains("dictionary dimensions 1x2 differ from JPEG header 2x2")
+            close(raw_ycc[0], 76) && close(raw_ycc[1], 85) && close(raw_ycc[2], 255),
+            "unexpected untransformed samples {:?}",
+            &raw_ycc[..3]
         );
+    }
+
+    #[test]
+    fn adobe_marker_overrides_pdf_color_transform() {
+        // SOI, APP14 "Adobe" (transform flag 1), then SOS.
+        let mut data = vec![0xFF, 0xD8, 0xFF, 0xEE, 0x00, 0x0E];
+        data.extend_from_slice(b"Adobe");
+        data.extend_from_slice(&[0, 100, 0, 0, 0, 0, 1]);
+        data.extend_from_slice(&[0xFF, 0xDA]);
+        assert!(jpeg_has_adobe_marker(&data));
+        assert!(!jpeg_has_adobe_marker(&[0xFF, 0xD8, 0xFF, 0xDA]));
+    }
+
+    fn jpx_fixture_stream() -> Vec<u8> {
+        let reader = PdfReader::from_bytes(
+            include_bytes!("../../../../tests/corpus/pdfs/pdfjs/jp2k-resetprob.pdf").to_vec(),
+        )
+        .unwrap();
+        for (number, generation) in reader.object_ids() {
+            if let Ok(PdfObject::Stream { dict, raw }) = reader.get_object(number, generation) {
+                if dict.get_name("Filter") == Some("JPXDecode") {
+                    return raw;
+                }
+            }
+        }
+        panic!("fixture has a JPXDecode stream");
+    }
+
+    #[test]
+    fn jpx_pdf_color_space_and_decode_override_jpx_colors() {
+        let data = jpx_fixture_stream();
+        let limits = DecodeLimits::default();
+        let plain = jpx::decode_with_limits(&data, &limits).unwrap();
+        assert_eq!(plain.channels, 3);
+
+        let mut dict = PdfDictionary::empty();
+        dict.insert("ColorSpace", PdfObject::Name("DeviceRGB".to_string()));
+        dict.insert(
+            "Decode",
+            PdfObject::Array(
+                [1, 0, 1, 0, 1, 0]
+                    .into_iter()
+                    .map(PdfObject::Integer)
+                    .collect(),
+            ),
+        );
+        let inverted = ImageDecoder::decode_jpx_with_pdf_color_space(
+            &data,
+            None,
+            plain.width,
+            plain.height,
+            "DeviceRGB",
+            &dict,
+            "fixture",
+            &limits,
+            ImageColorContext::default(),
+        )
+        .unwrap()
+        .expect("PDF colour space applies");
+        assert_eq!(
+            (inverted.width, inverted.height),
+            (plain.width, plain.height)
+        );
+        assert_eq!(inverted.channels, 3);
+        assert!(inverted
+            .pixels
+            .iter()
+            .zip(&plain.pixels)
+            .all(|(inverted, plain)| *inverted == 255 - *plain));
+
+        // A PDF colour space whose component count disagrees with the
+        // codestream keeps the JPX-internal colour path.
+        let mut gray = PdfDictionary::empty();
+        gray.insert("ColorSpace", PdfObject::Name("DeviceGray".to_string()));
+        assert!(ImageDecoder::decode_jpx_with_pdf_color_space(
+            &data,
+            None,
+            plain.width,
+            plain.height,
+            "DeviceGray",
+            &gray,
+            "fixture",
+            &limits,
+            ImageColorContext::default(),
+        )
+        .unwrap()
+        .is_none());
+
+        // DeviceCMYK needs four components: not this RGB codestream.
+        let mut cmyk = PdfDictionary::empty();
+        cmyk.insert("ColorSpace", PdfObject::Name("DeviceCMYK".to_string()));
+        assert!(ImageDecoder::decode_jpx_with_pdf_color_space(
+            &data,
+            None,
+            plain.width,
+            plain.height,
+            "DeviceCMYK",
+            &cmyk,
+            "fixture",
+            &limits,
+            ImageColorContext::default(),
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

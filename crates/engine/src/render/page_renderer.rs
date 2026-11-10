@@ -38558,10 +38558,25 @@ mod tests {
     }
 
     #[test]
-    fn annotation_appearance_decode_failure_returns_typed_refusal() {
+    fn damaged_flate_annotation_appearance_draws_what_it_can() {
+        // Lenient decoding: undecodable Flate data yields an empty appearance
+        // instead of failing the whole page (Poppler behaviour).
         let pdf = pdf_with_annotation_appearance_object(&annotation_appearance_stream(
             "not deflated",
             "/BBox [0 0 50 50] /Resources << >> /Filter /FlateDecode",
+        ));
+        let engine = ContentEngine::open_bytes(pdf).expect("open bad appearance stream PDF");
+        engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect("a damaged appearance stream must not fail the page");
+    }
+
+    #[test]
+    fn annotation_appearance_decode_failure_returns_typed_refusal() {
+        // A /Crypt filter without the document key still cannot be decoded.
+        let pdf = pdf_with_annotation_appearance_object(&annotation_appearance_stream(
+            "0 0 m 10 10 l S",
+            "/BBox [0 0 50 50] /Resources << >> /Filter /Crypt /DecodeParms << /Name /StdCF >>",
         ));
         let engine = ContentEngine::open_bytes(pdf).expect("open bad appearance stream PDF");
         let error = engine
