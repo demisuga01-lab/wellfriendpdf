@@ -9,10 +9,18 @@
 //!
 //! SOM expressions: `a.b[2].c`, `a[*]`, `a[+1]`/`a[-1]`, `..name`
 //! (descendants), `#class`, `*`, `.[FormCalc predicate]`, `$` (this),
-//! `$form`, `$host`, `$layout`, `$event`, `$data`/`$record`/`!` (data is
-//! not exposed and resolves to nothing), `xfa.*`, and unqualified names
-//! resolved by XFA scoping (children, then ancestors' children, with
-//! unnamed containers transparent and instance-index inference).
+//! `$form`, `$host`, `$layout`, `$event`, `$data`, `$record`, `!`
+//! (`xfa.datasets`), `xfa.*`, and unqualified names resolved by XFA
+//! scoping (children, then ancestors' children, with unnamed containers
+//! transparent and instance-index inference).
+//!
+//! The data DOM (PDFium `CXFA_DocumentBuilder::ParseDataGroup`) lives in
+//! the same arena: `xfa.datasets` (a `dataModel`) holds the datasets
+//! packet's `dataGroup` and `dataValue` nodes, attributes become
+//! `metaData` data values, and fields, exclusion groups and subforms
+//! carry the data node they are bound to. Writing a bound field's value
+//! updates its data node and every other field bound to it, and writing a
+//! data value updates the fields bound to it (PDFium `SyncValue`).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -35,6 +43,12 @@ pub(crate) enum Class {
     ScriptObject,
     /// `<variables><text name=...>` (and other value) variables.
     Variable,
+    /// `xfa.datasets`.
+    DataModel,
+    /// A data element with element children (`xfa.datasets.data` too).
+    DataGroup,
+    /// A data element with character data, or an attribute (`metaData`).
+    DataValue,
 }
 
 impl Class {
@@ -49,12 +63,48 @@ impl Class {
             Class::PageArea => "pageArea",
             Class::ScriptObject => "script",
             Class::Variable => "text",
+            Class::DataModel => "dataModel",
+            Class::DataGroup => "dataGroup",
+            Class::DataValue => "dataValue",
         }
     }
 
     fn container(self) -> bool {
-        !matches!(self, Class::ScriptObject | Class::Variable)
+        !matches!(self, Class::ScriptObject | Class::Variable) && !self.is_data()
     }
+
+    pub(crate) fn is_data(self) -> bool {
+        matches!(self, Class::DataModel | Class::DataGroup | Class::DataValue)
+    }
+}
+
+/// A container's `<validate>` (XFA `nullTest`, `formatTest`,
+/// `scriptTest`; PDFium `CXFA_Validate`).
+#[derive(Clone, Debug)]
+pub(crate) struct ValidateDef {
+    /// `disabled` (default), `warning` or `error`.
+    pub null_test: String,
+    /// `warning` (default), `error` or `disabled`.
+    pub format_test: String,
+    /// `error` (default), `warning` or `disabled`.
+    pub script_test: String,
+    /// `<validate><picture>`.
+    pub picture: Option<String>,
+    pub script: Option<ScriptDef>,
+    /// `<message><text name="nullTest|formatTest|scriptTest">`.
+    pub null_message: Option<String>,
+    pub format_message: Option<String>,
+    pub script_message: Option<String>,
+}
+
+/// One failed validation test.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ValidationFailure {
+    /// `nullTest`, `formatTest` or `scriptTest`.
+    pub test: &'static str,
+    /// `error` or `warning`.
+    pub severity: String,
+    pub message: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,6 +195,11 @@ pub(crate) struct SNode {
     /// Page-area index (page areas) or other class-specific data.
     pub aux: usize,
     pub changes: Changes,
+    /// The data node a field, exclusion group or subform is bound to.
+    pub bind: Option<usize>,
+    /// A data value made from an XML attribute (`contains="metaData"`).
+    pub meta: bool,
+    pub validate: Option<Box<ValidateDef>>,
 }
 
 pub(crate) const NO_TMPL: usize = usize::MAX;
@@ -181,6 +236,9 @@ impl SNode {
             managed: Vec::new(),
             aux: 0,
             changes: Changes::default(),
+            bind: None,
+            meta: false,
+            validate: None,
         }
     }
 
@@ -295,6 +353,9 @@ pub(crate) fn format_number(value: f64) -> String {
 pub(crate) enum Obj {
     Node(usize),
     Nodes(Vec<usize>),
+    /// The live child list of a data node (`nodes`: `append`, `insert`,
+    /// `remove`, `item`, `length`).
+    Children(usize),
     Xfa,
     FormModel,
     Host,
@@ -337,6 +398,8 @@ pub(crate) enum Request {
     /// A new instance: run its initialize events.
     Instance(usize),
     RecalculateAll,
+    /// `execValidate` / `execEvent("validate")`: validate the subtree.
+    Validate(usize),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -402,6 +465,18 @@ pub(crate) struct Dom {
     pub reads: RefCell<Option<HashSet<usize>>>,
     /// Nodes whose value changed since the runner last looked.
     pub changed: Vec<usize>,
+    /// `xfa.datasets`, `xfa.datasets.data`.
+    pub datasets: Option<usize>,
+    pub data: Option<usize>,
+    /// Data node -> the form nodes bound to it.
+    pub bound: HashMap<usize, Vec<usize>>,
+    /// `xfa.host.validationsEnabled`.
+    pub validations_enabled: bool,
+    /// Set once the initial validation pass ran (before it, `execValidate`
+    /// skips the null and format tests, as PDFium's `kNeedsInitApp`).
+    pub validate_ready: bool,
+    /// Form nodes whose value changed since they were last validated.
+    pub validate_dirty: HashSet<usize>,
 }
 
 /// SOM index: none, `[n]`, `[+n]`/`[-n]`, `[*]`.
@@ -571,7 +646,35 @@ impl Dom {
             structure_changed: false,
             reads: RefCell::new(None),
             changed: Vec::new(),
+            datasets: None,
+            data: None,
+            bound: HashMap::new(),
+            validations_enabled: true,
+            validate_ready: false,
+            validate_dirty: HashSet::new(),
         }
+    }
+
+    /// `$record`: the first data group of `xfa.datasets.data`.
+    pub(crate) fn record(&self) -> Option<usize> {
+        let data = self.data?;
+        self.nodes[data]
+            .children
+            .iter()
+            .copied()
+            .find(|&child| self.nodes[child].class == Class::DataGroup)
+    }
+
+    /// The objects `$data`, `$record` and `$datasets` (or `xfa.data`...)
+    /// name; `None` for names that are not data models.
+    fn data_objs(&self, name: &str) -> Option<Vec<Obj>> {
+        let node = match name {
+            "data" => self.data,
+            "record" => self.record(),
+            "datasets" => self.datasets,
+            _ => return None,
+        };
+        Some(node.map(Obj::Node).into_iter().collect())
     }
 
     pub(crate) fn add(&mut self, node: SNode, parent: Option<usize>) -> usize {
@@ -797,11 +900,13 @@ impl Dom {
                 "layout" => vec![Obj::Layout],
                 "event" => vec![Obj::Event],
                 "template" => vec![Obj::Template],
-                "data" | "record" | "datasets" | "connectionSet" | "config" => vec![Obj::Data],
+                "data" | "record" | "datasets" => self.data_objs(name).unwrap_or_default(),
+                "connectionSet" | "config" => vec![Obj::Data],
                 "xfa" => vec![Obj::Xfa],
                 _ => Vec::new(),
             },
-            SomName::Bang => vec![Obj::Data],
+            // `!name`: a child of `xfa.datasets`.
+            SomName::Bang => self.data_objs("datasets").unwrap_or_default(),
             SomName::Name(name) if name == "xfa" => vec![Obj::Xfa],
             SomName::Name(name) => {
                 if let Some(manager_name) = name.strip_prefix('_') {
@@ -860,7 +965,10 @@ impl Dom {
                             "layout" => out.push(Obj::Layout),
                             "event" => out.push(Obj::Event),
                             "template" => out.push(Obj::Template),
-                            "datasets" | "data" | "record" | "config" => out.push(Obj::Data),
+                            "datasets" | "data" | "record" => {
+                                out.extend(self.data_objs(name).unwrap_or_default());
+                            }
+                            "config" | "connectionSet" => out.push(Obj::Data),
                             _ if seg.desc => {
                                 let mut found = Vec::new();
                                 if self.nodes[self.root].name == *name {
@@ -963,6 +1071,14 @@ impl Dom {
                     let objs: Vec<Obj> = ids.iter().map(|id| Obj::Node(*id)).collect();
                     out.extend(self.step(&objs, seg, ctx)?);
                 }
+                Obj::Children(parent) => {
+                    let objs: Vec<Obj> = self.nodes[*parent]
+                        .children
+                        .iter()
+                        .map(|id| Obj::Node(*id))
+                        .collect();
+                    out.extend(self.step(&objs, seg, ctx)?);
+                }
                 _ => {}
             }
         }
@@ -999,7 +1115,12 @@ impl Dom {
         }
         if matches!(
             node.class,
-            Class::Subform | Class::PageSet | Class::PageArea | Class::Area
+            Class::Subform
+                | Class::PageSet
+                | Class::PageArea
+                | Class::Area
+                | Class::DataModel
+                | Class::DataGroup
         ) {
             return Val::Null;
         }
@@ -1066,23 +1187,59 @@ impl Dom {
                         group_value.clone()
                     };
                     if new_group != group_value {
-                        self.mutate()?;
-                        self.nodes[group].value = new_group;
-                        self.nodes[group].changes.value = true;
-                        self.changed.push(group);
+                        self.store_value(group, new_group)?;
+                        self.sync_binding(group)?;
                     }
                     return Ok(());
                 }
             }
-            Class::ExclGroup | Class::Draw | Class::Variable => {}
+            Class::ExclGroup | Class::Draw | Class::Variable | Class::DataValue => {}
             _ => return Ok(()),
         }
         let normalized = text.filter(|t| !t.is_empty() || self.nodes[id].value.is_some());
         if self.nodes[id].value != normalized {
-            self.mutate()?;
-            self.nodes[id].value = normalized;
-            self.nodes[id].changes.value = true;
-            self.changed.push(id);
+            self.store_value(id, normalized)?;
+            self.sync_binding(id)?;
+        }
+        Ok(())
+    }
+
+    /// Stores a raw value (no binding propagation).
+    fn store_value(&mut self, id: usize, value: Option<String>) -> SResult<()> {
+        self.mutate()?;
+        let node = &mut self.nodes[id];
+        node.value = value;
+        if !node.class.is_data() {
+            node.changes.value = true;
+            if matches!(node.class, Class::Field | Class::ExclGroup) {
+                self.validate_dirty.insert(id);
+            }
+        }
+        self.changed.push(id);
+        Ok(())
+    }
+
+    /// After `id`'s value changed: copies it to the data value it is bound
+    /// to (or that it is) and to every other form node bound to that data
+    /// value (PDFium `CJX_Object::SetContent` with `bSyncData`).
+    fn sync_binding(&mut self, id: usize) -> SResult<()> {
+        let data = if self.nodes[id].class == Class::DataValue {
+            id
+        } else {
+            match self.nodes[id].bind {
+                Some(data) if self.nodes[data].class == Class::DataValue => data,
+                _ => return Ok(()),
+            }
+        };
+        let value = self.nodes[id].value.clone();
+        if data != id && self.nodes[data].value != value {
+            self.store_value(data, value.clone())?;
+        }
+        let forms = self.bound.get(&data).cloned().unwrap_or_default();
+        for form in forms {
+            if form != id && self.nodes[form].value != value {
+                self.store_value(form, value.clone())?;
+            }
         }
         Ok(())
     }
@@ -1110,9 +1267,10 @@ impl Dom {
             .unwrap_or(0)
     }
 
-    fn som_expression(&self, id: usize) -> String {
+    pub(crate) fn som_expression(&self, id: usize) -> String {
         let mut parts = Vec::new();
         let mut current = Some(id);
+        let mut top = id;
         while let Some(node) = current {
             let n = &self.nodes[node];
             let name = if n.name.is_empty() {
@@ -1121,9 +1279,15 @@ impl Dom {
                 n.name.clone()
             };
             parts.push(format!("{name}[{}]", self.index_of(node)));
+            top = node;
             current = n.parent;
+            if parts.len() > 256 {
+                break;
+            }
         }
-        parts.push("form[0]".to_string());
+        if !self.nodes[top].class.is_data() {
+            parts.push("form[0]".to_string());
+        }
         parts.push("xfa[0]".to_string());
         parts.reverse();
         parts.join(".")
@@ -1319,6 +1483,19 @@ impl Dom {
                     },
                 }
             }
+            Obj::Children(parent) => {
+                let ids = self.nodes[*parent].children.clone();
+                if let Ok(index) = name.parse::<usize>() {
+                    return Ok(ids
+                        .get(index)
+                        .map_or(Val::Null, |id| Val::Obj(Obj::Node(*id))));
+                }
+                Ok(match name {
+                    "length" => Val::Num(ids.len() as f64),
+                    "className" => Val::Str("nodeList".into()),
+                    _ => Val::Null,
+                })
+            }
             Obj::Manager { parent, tmpl } => {
                 let (parent, tmpl) = (*parent, *tmpl);
                 let (min, max) = self.occur_of(parent, tmpl);
@@ -1337,7 +1514,11 @@ impl Dom {
                 "layout" => Val::Obj(Obj::Layout),
                 "event" => Val::Obj(Obj::Event),
                 "template" => Val::Obj(Obj::Template),
-                "datasets" | "data" | "record" | "config" => Val::Obj(Obj::Data),
+                "datasets" | "data" | "record" => self
+                    .data_objs(name)
+                    .and_then(|objs| objs.into_iter().next())
+                    .map_or(Val::Null, Val::Obj),
+                "config" | "connectionSet" => Val::Obj(Obj::Data),
                 "className" => Val::Str("xfa".into()),
                 "name" => Val::Str("xfa".into()),
                 _ => Val::Null,
@@ -1369,7 +1550,8 @@ impl Dom {
                 "title" => Val::Str(String::new()),
                 "numPages" => Val::Num(self.layout.as_ref().map_or(1, |l| l.page_count) as f64),
                 "currentPage" => Val::Num(self.current_page.unwrap_or(0) as f64),
-                "calculationsEnabled" | "validationsEnabled" => Val::Bool(true),
+                "calculationsEnabled" => Val::Bool(true),
+                "validationsEnabled" => Val::Bool(self.validations_enabled),
                 "className" => Val::Str("hostPseudoModel".into()),
                 _ => Val::Null,
             }),
@@ -1391,6 +1573,9 @@ impl Dom {
     }
 
     fn get_node(&mut self, id: usize, name: &str) -> SResult<Val> {
+        if self.nodes[id].class.is_data() {
+            return Ok(self.get_data_node(id, name));
+        }
         // `subform._row`: the instance manager of a child repeating subform.
         if let Some(rest) = name.strip_prefix('_').filter(|rest| !rest.is_empty()) {
             let group = self.children_named(id, rest);
@@ -1514,18 +1699,175 @@ impl Dom {
             | "para" | "format" | "assist" | "validate" | "calculate" | "bind" | "occur" => {
                 prop(name)
             }
-            "mandatory" => Val::Str("disabled".into()),
+            "mandatory" => Val::Str(
+                node.validate
+                    .as_ref()
+                    .map_or("disabled", |v| v.null_test.as_str())
+                    .to_string(),
+            ),
             "id" | "use" | "usehref" | "relevant" => Val::Str(String::new()),
-            "dataNode" | "variables" | "pageSet" => {
-                if name == "pageSet" {
-                    let group = self.children_class(id, "pageSet");
-                    return Ok(group.first().map_or(Val::Null, |&p| Val::Obj(Obj::Node(p))));
-                }
-                Val::Null
+            "dataNode" => node
+                .bind
+                .map_or(Val::Null, |data| Val::Obj(Obj::Node(data))),
+            "pageSet" => {
+                let group = self.children_class(id, "pageSet");
+                group.first().map_or(Val::Null, |&p| Val::Obj(Obj::Node(p)))
             }
+            "variables" => Val::Null,
             "isContainer" => Val::Bool(node.class.container()),
             _ => Val::Null,
         })
+    }
+
+    /// Properties of data nodes (PDFium `CJX_DataValue`, `CJX_Node`,
+    /// `CJX_Tree`): children by name first, as SOM resolution does.
+    fn get_data_node(&self, id: usize, name: &str) -> Val {
+        if let Some(&child) = self.children_named(id, name).first() {
+            return Val::Obj(Obj::Node(child));
+        }
+        let node = &self.nodes[id];
+        match name {
+            "value" if node.class == Class::DataValue => {
+                self.note_read(id);
+                Val::Str(node.value.clone().unwrap_or_default())
+            }
+            "isNull" => {
+                self.note_read(id);
+                Val::Bool(node.value.is_none())
+            }
+            "contentType" => Val::Str(String::new()),
+            "contains" if node.class == Class::DataValue => {
+                Val::Str(if node.meta { "metaData" } else { "data" }.to_string())
+            }
+            "name" => Val::Str(node.name.clone()),
+            "className" => Val::Str(node.class.name().into()),
+            "index" | "instanceIndex" => Val::Num(self.index_of(id) as f64),
+            "classIndex" => Val::Num(node.parent.map_or(0, |parent| {
+                self.nodes[parent]
+                    .children
+                    .iter()
+                    .filter(|&&c| self.nodes[c].class == node.class)
+                    .position(|&c| c == id)
+                    .unwrap_or(0)
+            }) as f64),
+            "parent" => match node.parent {
+                Some(parent) => Val::Obj(Obj::Node(parent)),
+                None if node.class == Class::DataModel => Val::Obj(Obj::Xfa),
+                None => Val::Null,
+            },
+            "somExpression" => Val::Str(self.som_expression(id)),
+            "all" => Val::Obj(Obj::Nodes(match node.parent {
+                Some(parent) => self.children_named(parent, &node.name),
+                None => vec![id],
+            })),
+            "nodes" => Val::Obj(Obj::Children(id)),
+            "model" => self.datasets.map_or(Val::Null, |d| Val::Obj(Obj::Node(d))),
+            "isContainer" => Val::Bool(false),
+            "ns" => Val::Str(String::new()),
+            "length" => Val::Num(1.0),
+            _ => Val::Null,
+        }
+    }
+
+    /// Records a value read for calculate dependency tracking.
+    fn note_read(&self, id: usize) {
+        if let Some(reads) = self.reads.borrow_mut().as_mut() {
+            reads.insert(id);
+        }
+    }
+
+    /// The `metaData` value (XML attribute) `name` of a data node.
+    fn meta_child(&self, id: usize, name: &str) -> Option<usize> {
+        self.nodes[id]
+            .children
+            .iter()
+            .copied()
+            .find(|&c| self.nodes[c].meta && self.nodes[c].name == name)
+    }
+
+    /// Creates a detached data node (`createNode`, `setAttribute`).
+    pub(crate) fn new_data_node(&mut self, class: Class, name: &str) -> SResult<usize> {
+        if self.nodes.len() >= self.limits.max_nodes {
+            self.exhausted = true;
+            return err("XFA script node limit exceeded");
+        }
+        self.mutate()?;
+        Ok(self.add(SNode::new(class, name, NO_TMPL), None))
+    }
+
+    /// Moves the data node `child` under `parent` at `position` (end when
+    /// `None`); refuses form nodes and cycles.
+    fn attach_data(&mut self, parent: usize, child: usize, position: Option<usize>) -> SResult<()> {
+        if !self.nodes[parent].class.is_data() || !self.nodes[child].class.is_data() {
+            return err("XFAObject.append: Invalid argument (not a data node).");
+        }
+        if self.is_ancestor_or_self(child, parent) {
+            return err("The node would become its own ancestor.");
+        }
+        self.mutate()?;
+        if let Some(old) = self.nodes[child].parent {
+            self.nodes[old].children.retain(|&c| c != child);
+        }
+        let children = &mut self.nodes[parent].children;
+        let position = position.unwrap_or(children.len()).min(children.len());
+        children.insert(position, child);
+        self.nodes[child].parent = Some(parent);
+        Ok(())
+    }
+
+    /// `saveXML` of a data node: the data as XML text.
+    fn data_xml(&self, id: usize, out: &mut String, depth: usize) {
+        fn escape(text: &str, out: &mut String) {
+            for ch in text.chars() {
+                match ch {
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    '&' => out.push_str("&amp;"),
+                    '"' => out.push_str("&quot;"),
+                    _ => out.push(ch),
+                }
+            }
+        }
+        if depth > 64 || out.len() > self.limits.max_string_bytes {
+            return;
+        }
+        let node = &self.nodes[id];
+        let name = match node.class {
+            Class::DataModel => "xfa:datasets",
+            _ if node.name.is_empty() => {
+                escape(node.value.as_deref().unwrap_or(""), out);
+                return;
+            }
+            _ => node.name.as_str(),
+        };
+        out.push('<');
+        out.push_str(name);
+        for &child in &node.children {
+            let child = &self.nodes[child];
+            if child.meta {
+                out.push(' ');
+                out.push_str(&child.name);
+                out.push_str("=\"");
+                escape(child.value.as_deref().unwrap_or(""), out);
+                out.push('"');
+            }
+        }
+        if node.class == Class::DataModel {
+            out.push_str(" xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\"");
+        }
+        out.push('>');
+        if node.class == Class::DataValue {
+            escape(node.value.as_deref().unwrap_or(""), out);
+        } else {
+            for &child in &node.children {
+                if !self.nodes[child].meta {
+                    self.data_xml(child, out, depth + 1);
+                }
+            }
+        }
+        out.push_str("</");
+        out.push_str(name);
+        out.push('>');
     }
 
     fn get_prop(&mut self, node: usize, path: &[String], name: &str) -> SResult<Val> {
@@ -1598,12 +1940,37 @@ impl Dom {
                 full.push(name.trim_start_matches('#').to_string());
                 self.set_prop(*node, &full, value)
             }
-            Obj::Host => Ok(()),
+            Obj::Host => {
+                if name == "validationsEnabled" {
+                    self.validations_enabled = match value {
+                        Val::Bool(b) => *b,
+                        Val::Str(s) => !matches!(s.trim(), "" | "0" | "false"),
+                        other => other.to_num() != 0.0,
+                    };
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
 
     fn set_node(&mut self, id: usize, name: &str, value: &Val) -> SResult<()> {
+        if self.nodes[id].class.is_data() {
+            if let Some(&child) = self.children_named(id, name).first() {
+                return self.set_value(child, value);
+            }
+            return match name {
+                "value" => self.set_value(id, value),
+                "isNull" if value.to_num() != 0.0 => {
+                    if self.nodes[id].class == Class::DataValue && self.nodes[id].value.is_some() {
+                        self.store_value(id, None)?;
+                        self.sync_binding(id)?;
+                    }
+                    Ok(())
+                }
+                _ => Ok(()),
+            };
+        }
         match name {
             "rawValue" | "editValue" | "formattedValue" | "value" => self.set_value(id, value),
             "presence" => {
@@ -1727,7 +2094,10 @@ impl Dom {
                     ));
                     Ok(Val::Null)
                 }
-                "execValidate" => Ok(Val::Bool(true)),
+                "execValidate" => {
+                    let root = self.root;
+                    self.exec_validate(root, args)
+                }
                 "remerge" | "execEvent" | "createNode" => Ok(Val::Null),
                 "isCompatibleNS" => Ok(Val::Bool(true)),
                 _ => err(format!("unknown method {method}")),
@@ -1801,8 +2171,306 @@ impl Dom {
                     None => Ok(Val::Null),
                 },
             },
+            Obj::Children(parent) => self.call_list(*parent, method, args),
             Obj::Node(id) => self.call_node(*id, method, args),
             Obj::Event | Obj::Data | Obj::Template | Obj::Prop { .. } => Ok(Val::Null),
+        }
+    }
+
+    /// `nodes` list methods of a data node (PDFium `CJX_List`).
+    fn call_list(&mut self, parent: usize, method: &str, args: &[Val]) -> SResult<Val> {
+        let node_arg = |index: usize| match args.get(index) {
+            Some(Val::Obj(Obj::Node(id))) => Some(*id),
+            Some(Val::Obj(Obj::Nodes(ids))) if ids.len() == 1 => Some(ids[0]),
+            _ => None,
+        };
+        match method {
+            "item" => {
+                if args.len() != 1 {
+                    return err(
+                        "XFAObject.item: Incorrect number of parameters passed to function.",
+                    );
+                }
+                let index = Self::arg_num(args, 0) as i64;
+                Ok(usize::try_from(index)
+                    .ok()
+                    .and_then(|i| self.nodes[parent].children.get(i))
+                    .map_or(Val::Null, |id| Val::Obj(Obj::Node(*id))))
+            }
+            "namedItem" => {
+                let name = Self::arg_text(args, 0);
+                Ok(self
+                    .children_named(parent, &name)
+                    .first()
+                    .map_or(Val::Null, |id| Val::Obj(Obj::Node(*id))))
+            }
+            "append" => {
+                if args.len() != 1 {
+                    return err(
+                        "XFAObject.append: Incorrect number of parameters passed to function.",
+                    );
+                }
+                let Some(child) = node_arg(0) else {
+                    return err("XFAObject.append: Invalid argument.");
+                };
+                self.attach_data(parent, child, None)?;
+                Ok(Val::Null)
+            }
+            "insert" => {
+                if args.len() != 2 {
+                    return err(
+                        "XFAObject.insert: Incorrect number of parameters passed to function.",
+                    );
+                }
+                let (Some(child), Some(before)) = (node_arg(0), node_arg(1)) else {
+                    return err("XFAObject.insert: Invalid argument.");
+                };
+                let Some(position) = self.nodes[parent]
+                    .children
+                    .iter()
+                    .position(|&c| c == before)
+                else {
+                    return err("XFAObject.insert: Invalid argument.");
+                };
+                // Detaching `child` first may shift `before` left.
+                let shift = usize::from(
+                    self.nodes[child].parent == Some(parent)
+                        && self.nodes[parent].children.iter().position(|&c| c == child)
+                            < Some(position),
+                );
+                self.attach_data(parent, child, Some(position - shift))?;
+                Ok(Val::Null)
+            }
+            "remove" => {
+                if args.len() != 1 {
+                    return err(
+                        "XFAObject.remove: Incorrect number of parameters passed to function.",
+                    );
+                }
+                let Some(child) = node_arg(0) else {
+                    return err("XFAObject.remove: Invalid argument.");
+                };
+                if self.nodes[child].parent == Some(parent) && self.nodes[child].class.is_data() {
+                    self.mutate()?;
+                    self.nodes[parent].children.retain(|&c| c != child);
+                    self.nodes[child].parent = None;
+                }
+                Ok(Val::Null)
+            }
+            _ => err(format!("unknown method {method}")),
+        }
+    }
+
+    /// Data-node methods (PDFium `CJX_Node`, `CJX_Model`); `None` when
+    /// `method` is not data-specific.
+    fn call_data_node(&mut self, id: usize, method: &str, args: &[Val]) -> Option<SResult<Val>> {
+        Some(match method {
+            "isRecordGroup" => Ok(Val::Bool(self.record() == Some(id))),
+            "getAttribute" => {
+                if args.len() != 1 {
+                    return Some(err(
+                        "XFAObject.getAttribute: Incorrect number of parameters passed to function.",
+                    ));
+                }
+                let name = Self::arg_text(args, 0);
+                Ok(Val::Str(
+                    self.meta_child(id, &name)
+                        .and_then(|child| self.nodes[child].value.clone())
+                        .unwrap_or_default(),
+                ))
+            }
+            "setAttribute" => {
+                if args.len() != 2 {
+                    return Some(err(
+                        "XFAObject.setAttribute: Incorrect number of parameters passed to function.",
+                    ));
+                }
+                // PDFium's argument order: value, then attribute name.
+                let value = Self::arg_text(args, 0);
+                let name = Self::arg_text(args, 1);
+                if name.is_empty() || !name.chars().all(is_name_char) {
+                    return Some(Ok(Val::Null));
+                }
+                let child = match self.meta_child(id, &name) {
+                    Some(child) => child,
+                    None => {
+                        let child = match self.new_data_node(Class::DataValue, &name) {
+                            Ok(child) => child,
+                            Err(error) => return Some(Err(error)),
+                        };
+                        self.nodes[child].meta = true;
+                        if let Err(error) = self.attach_data(id, child, Some(0)) {
+                            return Some(Err(error));
+                        }
+                        child
+                    }
+                };
+                self.set_value(child, &Val::Str(value)).map(|_| Val::Null)
+            }
+            "createNode" => {
+                if args.is_empty() || args.len() > 3 {
+                    return Some(err(
+                        "XFAObject.createNode: Incorrect number of parameters passed to function.",
+                    ));
+                }
+                let class = match Self::arg_text(args, 0).as_str() {
+                    "dataGroup" => Class::DataGroup,
+                    "dataValue" => Class::DataValue,
+                    _ => return Some(Ok(Val::Null)),
+                };
+                let name = Self::arg_text(args, 1);
+                self.new_data_node(class, &name)
+                    .map(|node| Val::Obj(Obj::Node(node)))
+            }
+            "saveXML" => {
+                let mut out = String::new();
+                self.data_xml(id, &mut out, 0);
+                Ok(Val::Str(out))
+            }
+            "assignNode" => {
+                // A no-op in PDFium as well (pdfium:501).
+                if args.is_empty() || args.len() > 3 {
+                    return Some(err(
+                        "XFAObject.assignNode: Incorrect number of parameters passed to function.",
+                    ));
+                }
+                Ok(Val::Null)
+            }
+            "clearErrorList" => Ok(Val::Null),
+            _ => return None,
+        })
+    }
+
+    /// `execValidate()`: queues the subtree's validation (scripts run
+    /// after the current script) and returns whether its null and format
+    /// tests pass (always true before the initial validation pass).
+    fn exec_validate(&mut self, id: usize, args: &[Val]) -> SResult<Val> {
+        if !args.is_empty() {
+            return err(
+                "XFAObject.execValidate: Incorrect number of parameters passed to function.",
+            );
+        }
+        if !self.validations_enabled {
+            return Ok(Val::Bool(true));
+        }
+        self.requests.push(Request::Validate(id));
+        if !self.validate_ready {
+            return Ok(Val::Bool(true));
+        }
+        let mut stack = vec![id];
+        let mut seen = 0usize;
+        while let Some(node) = stack.pop() {
+            seen += 1;
+            if seen > 100_000 {
+                break;
+            }
+            if !self.static_validation(node).is_empty() {
+                return Ok(Val::Bool(false));
+            }
+            stack.extend(self.nodes[node].children.iter().copied());
+        }
+        Ok(Val::Bool(true))
+    }
+
+    /// Whether `id` takes part in validation: a field, exclusion group or
+    /// subform with a `<validate>`, not `inactive` (itself or an ancestor).
+    pub(crate) fn validatable(&self, id: usize) -> bool {
+        let node = &self.nodes[id];
+        if node.validate.is_none()
+            || !matches!(node.class, Class::Field | Class::ExclGroup | Class::Subform)
+        {
+            return false;
+        }
+        let mut current = Some(id);
+        let mut guard = 0;
+        while let Some(n) = current {
+            guard += 1;
+            if guard > 256 || self.nodes[n].presence == "inactive" {
+                return false;
+            }
+            current = self.nodes[n].parent;
+        }
+        true
+    }
+
+    /// The null and format tests of `id` (PDFium
+    /// `ProcessNullTestValidate`, `ProcessFormatTestValidate`).
+    pub(crate) fn static_validation(&self, id: usize) -> Vec<ValidationFailure> {
+        let mut out = Vec::new();
+        if !self.validatable(id) {
+            return out;
+        }
+        let node = &self.nodes[id];
+        let Some(validate) = node.validate.as_deref() else {
+            return out;
+        };
+        if !matches!(node.class, Class::Field | Class::ExclGroup) {
+            return out;
+        }
+        let value = node.value.clone().unwrap_or_default();
+        if value.is_empty() {
+            if validate.null_test != "disabled" {
+                let message = validate.null_message.clone().unwrap_or_else(|| {
+                    let name = self.validate_caption_name(id);
+                    if validate.null_test == "error" {
+                        format!("{name} cannot be blank.")
+                    } else {
+                        format!(
+                            "{name} cannot be blank. To ignore validations for {name}, click Ignore."
+                        )
+                    }
+                });
+                out.push(ValidationFailure {
+                    test: "nullTest",
+                    severity: validate.null_test.clone(),
+                    message,
+                });
+            }
+            return out;
+        }
+        if let Some(picture) = &validate.picture {
+            if validate.format_test != "disabled"
+                && !picture::validate_value_in(
+                    &value,
+                    picture,
+                    &node.value_kind,
+                    &self.locales,
+                    node.locale.as_deref(),
+                )
+            {
+                let message = validate
+                    .format_message
+                    .clone()
+                    .unwrap_or_else(|| self.validate_message(id, &validate.format_test));
+                out.push(ValidationFailure {
+                    test: "formatTest",
+                    severity: validate.format_test.clone(),
+                    message,
+                });
+            }
+        }
+        out
+    }
+
+    /// The caption text, else the name (PDFium `GetValidateCaptionName`).
+    fn validate_caption_name(&self, id: usize) -> String {
+        let node = &self.nodes[id];
+        node.caption
+            .clone()
+            .map(|caption| caption.trim().to_string())
+            .filter(|caption| !caption.is_empty())
+            .unwrap_or_else(|| node.name.clone())
+    }
+
+    /// PDFium `GetValidateMessage` (XFA 2.8+ wording).
+    pub(crate) fn validate_message(&self, id: usize, severity: &str) -> String {
+        let name = self.validate_caption_name(id);
+        if severity == "error" {
+            format!("The value you entered for {name} is invalid.")
+        } else {
+            format!(
+                "The value you entered for {name} is invalid. To ignore validations for {name}, click Ignore."
+            )
         }
     }
 
@@ -1814,6 +2482,9 @@ impl Dom {
         // `xfa.resolveNode("form1.x")`: an unqualified first name is looked
         // up as a child of xfa, then of the form, then anywhere in it.
         let mut current = match &first.name {
+            SomName::Name(name) if name == "datasets" => {
+                self.data_objs("datasets").unwrap_or_default()
+            }
             SomName::Name(name)
                 if !matches!(
                     name.as_str(),
@@ -1846,6 +2517,11 @@ impl Dom {
     }
 
     fn call_node(&mut self, id: usize, method: &str, args: &[Val]) -> SResult<Val> {
+        if self.nodes[id].class.is_data() {
+            if let Some(result) = self.call_data_node(id, method, args) {
+                return result;
+            }
+        }
         match method {
             "resolveNode" | "resolveNodes" => {
                 let som = Self::arg_text(args, 0);
@@ -1867,11 +2543,20 @@ impl Dom {
             }
             "execEvent" => {
                 let activity = Self::arg_text(args, 0);
+                if activity == "validate" {
+                    // PDFium: a field reports the validation outcome.
+                    let result = self.exec_validate(id, &[])?;
+                    return Ok(if self.nodes[id].class == Class::Field {
+                        result
+                    } else {
+                        Val::Null
+                    });
+                }
                 let kind = activity_kind(&activity, None);
                 self.requests.push(Request::Event(id, kind, activity));
                 Ok(Val::Null)
             }
-            "execValidate" => Ok(Val::Bool(true)),
+            "execValidate" => self.exec_validate(id, args),
             "addItem" => {
                 let display = Self::arg_text(args, 0);
                 let save = if args.len() > 1 {

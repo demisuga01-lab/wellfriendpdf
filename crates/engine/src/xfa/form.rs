@@ -133,6 +133,9 @@ pub(crate) struct FormNode<'t> {
     pub fill_color: Option<Rgb>,
     pub border_color: Option<Rgb>,
     pub font_color: Option<Rgb>,
+    /// The datasets element the node was merged with (fields, exclusion
+    /// groups, subform instances, the root's record).
+    pub data: Option<&'t XmlNode>,
 }
 
 impl<'t> FormNode<'t> {
@@ -152,6 +155,7 @@ impl<'t> FormNode<'t> {
             fill_color: None,
             border_color: None,
             font_color: None,
+            data: None,
         }
     }
 
@@ -263,6 +267,7 @@ pub(crate) fn build_form_model_with_datasets<'t>(
             .or_else(|| elements.first().copied().filter(|_| elements.len() == 1))
     });
     let mut root = FormNode::new(NodeKind::Subform, root_tmpl);
+    root.data = record;
     root.children = merger.merge_children(root_tmpl, record);
 
     let mut page_areas = Vec::new();
@@ -608,19 +613,7 @@ impl<'t> Merger<'_, 't> {
     }
 
     fn binding(&self, node: &'t XmlNode) -> (&'t str, Option<&'t str>) {
-        let name = node.attr("name").unwrap_or("");
-        let bind = self.tpl.child(node, "bind");
-        let reference = bind.and_then(|bind| self.tpl.attr(bind, "ref"));
-        let mode = bind
-            .and_then(|bind| self.tpl.attr(bind, "match"))
-            .unwrap_or(if reference.is_some() {
-                "dataRef"
-            } else if name.is_empty() {
-                "none"
-            } else {
-                "once"
-            });
-        (mode, reference)
+        binding_mode(self.tpl, node)
     }
 
     fn merge_subform(
@@ -680,6 +673,7 @@ impl<'t> Merger<'_, 't> {
                 None => None,
             };
             let mut node = FormNode::new(NodeKind::Subform, tmpl);
+            node.data = data_nodes.get(index).copied();
             node.children = self.merge_children(tmpl, instance_scope);
             out.push(node);
         }
@@ -715,6 +709,7 @@ impl<'t> Merger<'_, 't> {
         node.rich = rich;
         node.image = image;
         if let Some(data) = self.field_data(tmpl, scope) {
+            node.data = Some(data);
             let is_image =
                 node.image.is_some() || self.tpl.path(tmpl, &["ui", "imageEdit"]).is_some();
             if is_image {
@@ -738,6 +733,7 @@ impl<'t> Merger<'_, 't> {
     fn merge_excl_group(&mut self, tmpl: &'t XmlNode, scope: Option<&'t XmlNode>) -> FormNode<'t> {
         let mut node = FormNode::new(NodeKind::ExclGroup, tmpl);
         let data = self.field_data(tmpl, scope);
+        node.data = data;
         node.value = data.map(data_value);
         // Members take their on/off state from the group value; they keep
         // their template defaults when the group has no data.
@@ -867,8 +863,29 @@ fn key(node: &XmlNode) -> usize {
     node as *const XmlNode as usize
 }
 
+/// A container's data binding: the `<bind match>` mode (`once`, `none`,
+/// `global`, `dataRef`) and `ref`.
+pub(crate) fn binding_mode<'t>(
+    tpl: &Template<'t>,
+    node: &'t XmlNode,
+) -> (&'t str, Option<&'t str>) {
+    let name = node.attr("name").unwrap_or("");
+    let bind = tpl.child(node, "bind");
+    let reference = bind.and_then(|bind| tpl.attr(bind, "ref"));
+    let mode = bind
+        .and_then(|bind| tpl.attr(bind, "match"))
+        .unwrap_or(if reference.is_some() {
+            "dataRef"
+        } else if name.is_empty() {
+            "none"
+        } else {
+            "once"
+        });
+    (mode, reference)
+}
+
 /// Value text of a data node: its character data (plain text of rich data).
-fn data_value(node: &XmlNode) -> String {
+pub(crate) fn data_value(node: &XmlNode) -> String {
     if node.children.is_empty() {
         node.text.trim_matches(['\r', '\n']).to_string()
     } else {

@@ -7,21 +7,30 @@
 //!
 //! FormCalc runs in [`super::formcalc`]; JavaScript in [`super::js`]
 //! (boa, when the `xfa-js` feature is enabled on a non-wasm target).
-//! Interactive events (click, change, enter, exit...), `validate` and
-//! scripts marked `runAt="server"` never run.
+//! The datasets packet is loaded into the script DOM as the data DOM
+//! (`$data`, `$record`, `!`, `xfa.datasets`), with every container bound
+//! to its data node; named containers without data get new data nodes, as
+//! PDFium's data merge creates them.
+//!
+//! Validation (`<validate>`: `nullTest`, `formatTest`, validate scripts)
+//! runs non-interactively after the calculations (PDFium `InitValidate`),
+//! again for values changed later, and on `execValidate`; failures are
+//! recorded (no message boxes). Interactive events (click, change, enter,
+//! exit...) and scripts marked `runAt="server"` never run.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::form::{
-    assign_locales, fresh_node, instance_prototype, FormModel, FormNode, NodeKind, Template,
+    assign_locales, binding_mode, data_value, fresh_node, instance_prototype, FormModel, FormNode,
+    NodeKind, Template,
 };
 use super::layout::{caption_spec, field_ui, LayoutPage};
 use super::locale::LocaleSet;
 use super::som::{
     activity_kind, Activity, Class, Dom, Lang, LayoutInfo, Limits, Request, SNode, ScriptDef, Val,
-    NO_TMPL,
+    ValidateDef, ValidationFailure, NO_TMPL,
 };
 use super::style::{parse_color, Presence};
 use super::xml::XmlNode;
@@ -36,7 +45,26 @@ pub(crate) struct ScriptReport {
     pub errors: Vec<String>,
     /// `app.alert` / `messageBox` output.
     pub log: Vec<String>,
+    /// Failed validation tests, in document order.
+    pub validations: Vec<ValidationRecord>,
 }
+
+/// A failed validation test of one container.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ValidationRecord {
+    /// SOM expression of the container (`xfa[0].form[0].form1[0].f[0]`).
+    pub som: String,
+    pub test: &'static str,
+    pub severity: String,
+    pub message: String,
+}
+
+/// Data DOM nodes built from the datasets packet, at most.
+const MAX_DATA_NODES: usize = 50_000;
+/// Validation failures kept, at most.
+const MAX_VALIDATION_RECORDS: usize = 10_000;
+/// Nested script-triggered event runs, at most.
+const MAX_EVENT_DEPTH: usize = 16;
 
 const MAX_CALC_PASSES: usize = 12;
 const PANICKED: &str = "XFA script engine failed; script changes discarded";
@@ -61,11 +89,13 @@ fn form_key(node: &FormNode<'_>) -> usize {
 }
 
 impl<'t> FormScripts<'t> {
-    /// Builds the script DOM when the template has any runnable script.
+    /// Builds the script DOM when the template has any script or
+    /// validation. `datasets` is the datasets packet (`<xfa:datasets>`).
     pub(crate) fn prepare(
         tpl: &Template<'t>,
         template: &'t XmlNode,
         model: &FormModel<'t>,
+        datasets: Option<&'t XmlNode>,
         locales: LocaleSet,
     ) -> Option<Self> {
         if !has_scripts(template) {
@@ -89,7 +119,9 @@ impl<'t> FormScripts<'t> {
             runner: Runner::new(dom),
             addresses: HashMap::new(),
         };
-        scripts.build(tpl, model);
+        let mut xml_binds = HashMap::new();
+        scripts.build(tpl, model, &mut xml_binds);
+        scripts.build_data(tpl, datasets, &xml_binds);
         scripts.remember_addresses(model);
         Some(scripts)
     }
@@ -98,8 +130,16 @@ impl<'t> FormScripts<'t> {
         self.tmpl_ids.get(&key(node)).copied().unwrap_or(NO_TMPL)
     }
 
-    fn build(&mut self, tpl: &Template<'t>, model: &FormModel<'t>) {
+    fn build(
+        &mut self,
+        tpl: &Template<'t>,
+        model: &FormModel<'t>,
+        xml_binds: &mut HashMap<usize, usize>,
+    ) {
         let root = self.add_form_node(tpl, &model.root, None, false, true);
+        if let Some(data) = model.root.data {
+            xml_binds.insert(root, key(data));
+        }
         {
             let mut dom = self.runner.dom.borrow_mut();
             dom.root = root;
@@ -127,7 +167,7 @@ impl<'t> FormScripts<'t> {
             }
         }
         for child in &model.root.children {
-            self.add_form_node(tpl, child, Some(root), true, true);
+            self.add_bound_node(tpl, child, root, xml_binds);
         }
         // Instance prototypes for repeatable subforms, when scripts may
         // add instances.
@@ -179,6 +219,123 @@ impl<'t> FormScripts<'t> {
             }
         }
         id
+    }
+
+    /// [`Self::add_form_node`] (recursive, recorded) that also notes each
+    /// node's merged data element.
+    fn add_bound_node(
+        &mut self,
+        tpl: &Template<'t>,
+        node: &FormNode<'t>,
+        parent: usize,
+        xml_binds: &mut HashMap<usize, usize>,
+    ) {
+        let id = self.add_form_node(tpl, node, Some(parent), false, true);
+        if let Some(data) = node.data {
+            xml_binds.insert(id, key(data));
+        }
+        for child in &node.children {
+            self.add_bound_node(tpl, child, id, xml_binds);
+        }
+    }
+
+    /// Loads the datasets packet as the data DOM and binds the form to it
+    /// (`xml_binds`: form node -> merged data element address).
+    fn build_data(
+        &mut self,
+        tpl: &Template<'t>,
+        datasets: Option<&'t XmlNode>,
+        xml_binds: &HashMap<usize, usize>,
+    ) {
+        let mut by_xml: HashMap<usize, usize> = HashMap::new();
+        let mut dom = self.runner.dom.borrow_mut();
+        let model = dom.add(SNode::new(Class::DataModel, "datasets", NO_TMPL), None);
+        dom.datasets = Some(model);
+        let mut data = None;
+        let mut budget = MAX_DATA_NODES;
+        if let Some(datasets) = datasets {
+            // A bare `<xfa:data>` packet stands for the data group itself.
+            let elements: Vec<&XmlNode> = if datasets.local_name == "data" {
+                vec![datasets]
+            } else {
+                datasets.children.iter().collect()
+            };
+            for element in elements {
+                if is_package_element(element) {
+                    continue;
+                }
+                let id = add_data_element(&mut dom, element, model, &mut by_xml, 0, &mut budget);
+                if let Some(id) = id {
+                    if element.local_name == "data" && data.is_none() {
+                        dom.nodes[id].class = Class::DataGroup;
+                        dom.nodes[id].value = None;
+                        data = Some(id);
+                    }
+                }
+            }
+        }
+        let data = match data {
+            Some(data) => data,
+            None => dom.add(SNode::new(Class::DataGroup, "data", NO_TMPL), Some(model)),
+        };
+        dom.data = Some(data);
+        // Bind the form body (page-area content is not merged with data).
+        let root = dom.root;
+        let mut stack = vec![(root, Some(data))];
+        while let Some((id, scope)) = stack.pop() {
+            let class = dom.nodes[id].class;
+            let scope_for_children = match class {
+                Class::Area => scope,
+                Class::Subform | Class::Field | Class::ExclGroup => {
+                    let Some(&tmpl) = self.tmpls.get(dom.nodes[id].tmpl) else {
+                        continue;
+                    };
+                    let (mode, _) = binding_mode(tpl, tmpl);
+                    let bound = xml_binds
+                        .get(&id)
+                        .and_then(|address| by_xml.get(address))
+                        .copied();
+                    let target = match (bound, scope) {
+                        (Some(target), _) => Some(target),
+                        (None, Some(scope))
+                            if mode == "once"
+                                && !dom.nodes[id].name.is_empty()
+                                && dom.nodes[id].ui != "button"
+                                && budget > 0
+                                && dom.nodes.len() < dom.limits.max_nodes =>
+                        {
+                            // PDFium's data merge creates data for unbound
+                            // named containers.
+                            budget -= 1;
+                            let node = if class == Class::Subform {
+                                SNode::new(Class::DataGroup, &dom.nodes[id].name, NO_TMPL)
+                            } else {
+                                let mut node =
+                                    SNode::new(Class::DataValue, &dom.nodes[id].name, NO_TMPL);
+                                node.value = dom.nodes[id].value.clone();
+                                node
+                            };
+                            Some(dom.add(node, Some(scope)))
+                        }
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        dom.nodes[id].bind = Some(target);
+                        dom.bound.entry(target).or_default().push(id);
+                    }
+                    match class {
+                        Class::Subform if mode == "none" => scope,
+                        Class::Subform => target,
+                        // Exclusion-group members bind through the group.
+                        _ => None,
+                    }
+                }
+                _ => continue,
+            };
+            for &child in dom.nodes[id].children.iter().rev() {
+                stack.push((child, scope_for_children));
+            }
+        }
     }
 
     fn add_variables(&mut self, tpl: &Template<'t>, tmpl: &'t XmlNode, parent: usize) {
@@ -266,6 +423,9 @@ impl<'t> FormScripts<'t> {
             *slot = tpl.attr(tmpl, name).map(str::to_string);
         }
         s.scripts = collect_scripts(tpl, tmpl);
+        if node.kind != NodeKind::Draw {
+            s.validate = validate_def(tpl, tmpl);
+        }
         if node.kind == NodeKind::Subform {
             if let Some(occur) = tpl.child(tmpl, "occur") {
                 s.occur = Some(parse_occur(tpl, occur));
@@ -295,9 +455,11 @@ impl<'t> FormScripts<'t> {
         let ran = self.runner.guarded(|runner| {
             runner.run_all(Activity::Initialize);
             runner.calculate_all(true);
+            runner.validate_all();
             runner.run_all(Activity::FormReady);
             runner.run_all(Activity::DocReady);
             runner.calculate_all(false);
+            runner.revalidate_changed();
         });
         if ran {
             self.write_back(tpl, model);
@@ -355,6 +517,7 @@ impl<'t> FormScripts<'t> {
                 runner.run_node(id, Activity::LayoutReady, None);
             }
             runner.calculate_all(false);
+            runner.revalidate_changed();
         });
         let changed = ran && self.runner.dom.borrow().mutations != before;
         if changed {
@@ -443,7 +606,36 @@ impl<'t> FormScripts<'t> {
 
     pub(crate) fn report(&self) -> ScriptReport {
         let mut report = self.runner.report.clone();
-        report.log = self.runner.dom.borrow().log.clone();
+        let dom = self.runner.dom.borrow();
+        report.log = dom.log.clone();
+        // Document order of the (still attached) containers.
+        let mut order = HashMap::new();
+        let mut stack = vec![dom.root];
+        while let Some(id) = stack.pop() {
+            order.insert(id, order.len());
+            stack.extend(dom.nodes[id].children.iter().rev().copied());
+        }
+        let mut failed: Vec<(usize, usize)> = self
+            .runner
+            .validations
+            .keys()
+            .filter_map(|&id| order.get(&id).map(|&rank| (rank, id)))
+            .collect();
+        failed.sort_unstable();
+        for (_, id) in failed {
+            let som = dom_som(&dom, id);
+            for failure in &self.runner.validations[&id] {
+                if report.validations.len() >= MAX_VALIDATION_RECORDS {
+                    break;
+                }
+                report.validations.push(ValidationRecord {
+                    som: som.clone(),
+                    test: failure.test,
+                    severity: failure.severity.clone(),
+                    message: failure.message.clone(),
+                });
+            }
+        }
         report
     }
 
@@ -653,6 +845,158 @@ fn take_order<'t>(model: &mut FormModel<'t>) -> Vec<FormNode<'t>> {
 
 fn has_scripts(template: &XmlNode) -> bool {
     template.descendants("script").next().is_some()
+        || template.descendants("validate").next().is_some()
+}
+
+/// SOM expression of a script DOM node.
+fn dom_som(dom: &Dom, id: usize) -> String {
+    dom.som_expression(id)
+}
+
+/// `<validate>` of a container (through `use` prototypes).
+fn validate_def<'t>(tpl: &Template<'t>, tmpl: &'t XmlNode) -> Option<Box<ValidateDef>> {
+    let validate = tpl.child(tmpl, "validate")?;
+    let attr = |name: &str, default: &str| {
+        let value = tpl.attr(validate, name).map(str::trim).unwrap_or(default);
+        match value {
+            "error" | "warning" | "disabled" => value.to_string(),
+            _ => default.to_string(),
+        }
+    };
+    let mut messages: HashMap<&str, String> = HashMap::new();
+    if let Some(message) = tpl.child(validate, "message") {
+        for text in &message.children {
+            if let Some(name) = text.attr("name") {
+                let body = text.plain_text();
+                if !body.is_empty() {
+                    messages.entry(name).or_insert(body);
+                }
+            }
+        }
+    }
+    let script = tpl
+        .child(validate, "script")
+        .filter(|script| runnable(script) && !script.text.trim().is_empty())
+        .map(|script| ScriptDef {
+            activity: Activity::Other,
+            activity_name: "validate".into(),
+            lang: script_lang(script),
+            source: script.text.clone(),
+        });
+    let def = ValidateDef {
+        null_test: attr("nullTest", "disabled"),
+        format_test: attr("formatTest", "warning"),
+        script_test: attr("scriptTest", "error"),
+        picture: tpl
+            .child(validate, "picture")
+            .map(|picture| picture.text.trim().to_string())
+            .filter(|picture| !picture.is_empty()),
+        script,
+        null_message: messages.remove("nullTest"),
+        format_message: messages.remove("formatTest"),
+        script_message: messages.remove("scriptTest"),
+    };
+    let active = def.null_test != "disabled" || def.picture.is_some() || def.script.is_some();
+    active.then(|| Box::new(def))
+}
+
+/// Elements of the XDP package namespaces (not data).
+fn is_package_element(node: &XmlNode) -> bool {
+    matches!(
+        node.namespace_uri.as_deref(),
+        Some(
+            "http://www.xfa.org/schema/xfa-package/"
+                | "http://www.xfa.com/schema/xfa-package/"
+                | "http://www.w3.org/2001/XMLSchema-instance"
+        )
+    )
+}
+
+const XFA_DATA_NS: &str = "http://www.xfa.org/schema/xfa-data/1.0/";
+
+/// Loads one datasets element (PDFium `CXFA_DocumentBuilder::
+/// ParseDataGroup`): `xfa:dataNode` forces the class, an
+/// `xfa:contentType` or no element children (rich XHTML aside) make a
+/// data value, and attributes become `metaData` values.
+fn add_data_element(
+    dom: &mut Dom,
+    element: &XmlNode,
+    parent: usize,
+    by_xml: &mut HashMap<usize, usize>,
+    depth: usize,
+    budget: &mut usize,
+) -> Option<usize> {
+    if *budget == 0 || depth > 64 || dom.nodes.len() >= dom.limits.max_nodes {
+        return None;
+    }
+    *budget -= 1;
+    let data_attr = |name: &str| {
+        element
+            .attributes
+            .iter()
+            .find(|attr| {
+                attr.local_name == name && attr.namespace_uri.as_deref() == Some(XFA_DATA_NS)
+            })
+            .map(|attr| attr.value.trim())
+    };
+    let rich = |child: &XmlNode| {
+        child.namespace_uri.as_deref() == Some("http://www.w3.org/1999/xhtml")
+            || child.local_name == "body"
+    };
+    let group = match data_attr("dataNode") {
+        Some("dataGroup") => true,
+        Some("dataValue") => false,
+        _ => {
+            data_attr("contentType").is_none_or(str::is_empty)
+                && element.children.iter().any(|child| !rich(child))
+        }
+    };
+    let nil = element.attributes.iter().any(|attr| {
+        attr.local_name == "nil"
+            && attr.value.trim() == "true"
+            && attr.namespace_uri.as_deref() == Some("http://www.w3.org/2001/XMLSchema-instance")
+    });
+    let class = if group {
+        Class::DataGroup
+    } else {
+        Class::DataValue
+    };
+    let mut node = SNode::new(class, &element.local_name, NO_TMPL);
+    if !group && !nil {
+        node.value = Some(data_value(element));
+    }
+    let id = dom.add(node, Some(parent));
+    by_xml.insert(key(element), id);
+    for attr in &element.attributes {
+        let skip = attr.name == "xmlns"
+            || attr.name.starts_with("xmlns:")
+            || matches!(
+                attr.namespace_uri.as_deref(),
+                Some(
+                    "http://www.xfa.org/schema/xfa-package/"
+                        | "http://www.xfa.com/schema/xfa-package/"
+                        | "http://www.w3.org/2001/XMLSchema-instance"
+                        | XFA_DATA_NS
+                )
+            );
+        if skip || *budget == 0 || dom.nodes.len() >= dom.limits.max_nodes {
+            continue;
+        }
+        *budget -= 1;
+        let mut meta = SNode::new(Class::DataValue, &attr.local_name, NO_TMPL);
+        meta.meta = true;
+        meta.value = Some(attr.value.clone());
+        dom.add(meta, Some(id));
+    }
+    if group {
+        for child in &element.children {
+            if is_package_element(child) {
+                continue;
+            }
+            add_data_element(dom, child, id, by_xml, depth + 1, budget);
+        }
+    }
+    Some(id)
 }
 
 fn script_lang(script: &XmlNode) -> Lang {
@@ -813,6 +1157,10 @@ struct Runner {
     runs: usize,
     /// Values each calculate script read when it last ran.
     calc_reads: HashMap<usize, HashSet<usize>>,
+    /// Failed validation tests by container (latest run).
+    validations: HashMap<usize, Vec<ValidationFailure>>,
+    /// Nesting of script-requested event runs.
+    depth: usize,
 }
 
 impl Runner {
@@ -826,6 +1174,123 @@ impl Runner {
             report: ScriptReport::default(),
             runs: 0,
             calc_reads: HashMap::new(),
+            validations: HashMap::new(),
+            depth: 0,
+        }
+    }
+
+    /// The initial validation pass (PDFium `InitValidate`): every
+    /// container's validate script, null test and format test.
+    fn validate_all(&mut self) {
+        let enabled = self.dom.borrow().validations_enabled;
+        if enabled {
+            for id in self.post_order() {
+                if !self.dom.borrow().time_left() {
+                    break;
+                }
+                self.validate_node(id);
+            }
+        }
+        let mut dom = self.dom.borrow_mut();
+        dom.validate_ready = true;
+        dom.validate_dirty.clear();
+    }
+
+    /// Validates the containers whose values changed since they were last
+    /// validated (PDFium `RunValidate`).
+    fn revalidate_changed(&mut self) {
+        let dirty: Vec<usize> = {
+            let mut dom = self.dom.borrow_mut();
+            if !dom.validations_enabled {
+                dom.validate_dirty.clear();
+                return;
+            }
+            let mut dirty: Vec<usize> = dom.validate_dirty.drain().collect();
+            dirty.sort_unstable();
+            dirty
+        };
+        for id in dirty {
+            if !self.dom.borrow().time_left() {
+                break;
+            }
+            self.validate_node(id);
+        }
+    }
+
+    /// Validates the subtree of `id` (`execValidate`).
+    fn validate_subtree(&mut self, id: usize) {
+        let subtree = {
+            let dom = self.dom.borrow();
+            if !dom.validations_enabled {
+                return;
+            }
+            let mut out = Vec::new();
+            let mut stack = vec![(id, false)];
+            while let Some((node, visited)) = stack.pop() {
+                if visited {
+                    out.push(node);
+                    continue;
+                }
+                stack.push((node, true));
+                for &child in dom.nodes[node].children.iter().rev() {
+                    stack.push((child, false));
+                }
+            }
+            out
+        };
+        for node in subtree {
+            self.validate_node(node);
+        }
+    }
+
+    /// One container's validation (PDFium `CXFA_Node::ProcessValidate`):
+    /// its validate script (a false result fails the script test), then
+    /// the null and format tests; the failures replace earlier ones.
+    fn validate_node(&mut self, id: usize) {
+        let def = {
+            let dom = self.dom.borrow();
+            if !dom.validatable(id) {
+                return;
+            }
+            dom.nodes[id].validate.clone()
+        };
+        let Some(def) = def else {
+            return;
+        };
+        let mut failures = Vec::new();
+        if let (Some(script), true) = (&def.script, def.script_test != "disabled") {
+            self.runs += 1;
+            if self.runs > MAX_EVENT_RUNS {
+                return;
+            }
+            let result = self.exec(id, script);
+            self.drain_requests();
+            let passed = match result {
+                Some(Val::Obj(obj)) => {
+                    let value = self.dom.borrow_mut().value_of(&obj).unwrap_or(Val::Null);
+                    script_passed(&value)
+                }
+                Some(value) => script_passed(&value),
+                None => true,
+            };
+            if !passed {
+                let dom = self.dom.borrow();
+                failures.push(ValidationFailure {
+                    test: "scriptTest",
+                    severity: def.script_test.clone(),
+                    message: def
+                        .script_message
+                        .clone()
+                        .unwrap_or_else(|| dom.validate_message(id, &def.script_test)),
+                });
+            }
+        }
+        failures.extend(self.dom.borrow().static_validation(id));
+        self.dom.borrow_mut().validate_dirty.remove(&id);
+        if failures.is_empty() {
+            self.validations.remove(&id);
+        } else {
+            self.validations.insert(id, failures);
         }
     }
 
@@ -995,6 +1460,18 @@ impl Runner {
     }
 
     fn drain_requests(&mut self) {
+        if self.depth >= MAX_EVENT_DEPTH {
+            // Script-triggered events nested too deeply (scripts invoking
+            // each other): drop the rest, as PDFium caps re-entrancy.
+            self.dom.borrow_mut().requests.clear();
+            return;
+        }
+        self.depth += 1;
+        self.drain_requests_inner();
+        self.depth -= 1;
+    }
+
+    fn drain_requests_inner(&mut self) {
         let mut guard = 0;
         loop {
             let request = {
@@ -1037,6 +1514,7 @@ impl Runner {
                 Request::RecalculateAll => {
                     // The runner recalculates after every phase anyway.
                 }
+                Request::Validate(id) => self.validate_subtree(id),
             }
         }
     }
@@ -1116,6 +1594,21 @@ impl Runner {
     }
 }
 
+/// Whether a validate script's result passes (XFA: a false result fails;
+/// FormCalc returns 0/1, JavaScript a boolean; other results pass).
+fn script_passed(value: &Val) -> bool {
+    match value {
+        Val::Bool(b) => *b,
+        Val::Num(n) => *n != 0.0,
+        Val::Str(s) => match s.trim() {
+            "false" | "0" => false,
+            "true" | "1" => true,
+            other => !other.parse::<f64>().is_ok_and(|n| n == 0.0),
+        },
+        Val::Null | Val::Obj(_) => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1164,7 +1657,7 @@ mod tests {
         let tpl = Template::new(&template);
         let mut model = build_form_model(&tpl, &template, Some(&data)).unwrap();
         let mut scripts =
-            FormScripts::prepare(&tpl, &template, &model, LocaleSet::default()).unwrap();
+            FormScripts::prepare(&tpl, &template, &model, None, LocaleSet::default()).unwrap();
         scripts.before_layout(&tpl, &mut model);
         let report = scripts.report();
         assert_eq!(report.failed, 0, "{:?}", report.errors);
@@ -1214,5 +1707,178 @@ mod tests {
         let values = scripts.master_page_values(&pages);
         assert_eq!(values.len(), pages.len());
         assert!(values.values().all(|v| v == "1"));
+    }
+
+    fn run_scripts<'t>(
+        template: &'t XmlNode,
+        datasets: Option<&'t XmlNode>,
+    ) -> (FormModel<'t>, ScriptReport) {
+        let tpl = Template::new(template);
+        let data = datasets.and_then(crate::xfa::form::data_root);
+        let mut model = build_form_model(&tpl, template, data).unwrap();
+        let mut scripts =
+            FormScripts::prepare(&tpl, template, &model, datasets, LocaleSet::default()).unwrap();
+        scripts.before_layout(&tpl, &mut model);
+        let report = scripts.report();
+        (model, report)
+    }
+
+    fn value_of<'t>(model: &FormModel<'t>, name: &str) -> Option<String> {
+        find(&model.root, name).and_then(|node| node.value.clone())
+    }
+
+    #[test]
+    fn formcalc_reads_and_writes_the_data_dom() {
+        let template = parse(
+            r#"<template><subform name="form1" layout="tb">
+              <pageSet><pageArea name="P"><contentArea w="500pt" h="700pt"/></pageArea></pageSet>
+              <field name="name"/>
+              <field name="copy"><calculate><script>$record.name</script></calculate></field>
+              <field name="zip"><calculate><script>!data.form1.address.zip</script></calculate></field>
+              <field name="kind"><calculate><script>$data.form1.address.getAttribute("kind")</script></calculate></field>
+              <field name="fresh"><value><text>dflt</text></value></field>
+              <field name="probe"><calculate><script>Concat($record.fresh, "|", xfa.datasets.data.form1.address.city, "|", $record.name.isNull, "|", $record.className, "|", $record.address.city.somExpression)</script></calculate></field>
+              <subform name="rows"><occur min="0" max="-1"/><field name="v"/></subform>
+              <field name="count"><calculate><script>$record.rows.nodes.length</script></calculate></field>
+              <field name="nick"><event activity="initialize"><script>$ = "Robert"</script></event></field>
+              <field name="nickCopy"><calculate><script>$record.nick</script></calculate></field>
+              <field name="bound"><calculate><script>Concat(nick.dataNode.value, "/", nick.dataNode.className)</script></calculate></field>
+              <event activity="initialize"><script>
+                $record.name = "Renamed"
+                $data.form1.rows[1].v = "second"
+              </script></event>
+            </subform></template>"#,
+        );
+        let datasets = parse(
+            r#"<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form1><name>Ann</name><address kind="home"><city>Oslo</city><zip>0150</zip></address><rows><v>a</v></rows><rows><v>b</v></rows><nick>Bob</nick></form1></xfa:data></xfa:datasets>"#,
+        );
+        let (model, report) = run_scripts(&template, Some(&datasets));
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        assert_eq!(value_of(&model, "name").as_deref(), Some("Renamed"));
+        assert_eq!(value_of(&model, "copy").as_deref(), Some("Renamed"));
+        assert_eq!(value_of(&model, "zip").as_deref(), Some("0150"));
+        assert_eq!(value_of(&model, "kind").as_deref(), Some("home"));
+        assert_eq!(
+            value_of(&model, "probe").as_deref(),
+            Some("dflt|Oslo|0|dataGroup|xfa[0].datasets[0].data[0].form1[0].address[0].city[0]")
+        );
+        let rows: Vec<_> = model
+            .root
+            .children
+            .iter()
+            .filter(|n| n.tmpl.attr("name") == Some("rows"))
+            .map(|row| find(row, "v").unwrap().value.clone())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![Some("a".to_string()), Some("second".to_string())]
+        );
+        assert_eq!(value_of(&model, "count").as_deref(), Some("1"));
+        // A field write reaches its data node and the fields reading it.
+        assert_eq!(value_of(&model, "nickCopy").as_deref(), Some("Robert"));
+        assert_eq!(
+            value_of(&model, "bound").as_deref(),
+            Some("Robert/dataValue")
+        );
+    }
+
+    #[test]
+    fn data_dom_without_datasets_is_created_from_the_form() {
+        let template = parse(
+            r#"<template><subform name="form1" layout="tb">
+              <pageSet><pageArea name="P"><contentArea w="500pt" h="700pt"/></pageArea></pageSet>
+              <subform name="s"><field name="a"><value><text>x</text></value></field></subform>
+              <field name="b"><calculate><script>Concat($record.className, ":", $record.name, ":", $record.s.a, ":", $data.nodes.length)</script></calculate></field>
+              <field name="c"><calculate><script>$record.s.a.parent.isRecordGroup()</script></calculate></field>
+            </subform></template>"#,
+        );
+        let (model, report) = run_scripts(&template, None);
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        assert_eq!(
+            value_of(&model, "b").as_deref(),
+            Some("dataGroup:form1:x:1")
+        );
+        assert_eq!(value_of(&model, "c").as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn validations_run_without_ui_and_are_recorded() {
+        let template = parse(
+            r#"<template><subform name="form1" layout="tb">
+              <pageSet><pageArea name="P"><contentArea w="500pt" h="700pt"/></pageArea></pageSet>
+              <field name="early"><event activity="initialize"><script>$ = req.execValidate()</script></event></field>
+              <field name="req"><caption><value><text>Required name</text></value></caption><validate nullTest="error"/></field>
+              <field name="warn"><validate nullTest="warning"><message><text name="nullTest">Please fill warn</text></message></validate></field>
+              <field name="zip"><value><text>12a45</text></value><validate formatTest="error"><picture>text{99999}</picture></validate></field>
+              <field name="okzip"><value><text>12345</text></value><validate><picture>text{99999}</picture></validate></field>
+              <field name="day"><ui><dateTimeEdit/></ui><value><date>2024-02-30</date></value><validate><picture>date{YYYY-MM-DD}</picture></validate></field>
+              <field name="amount"><ui><numericEdit/></ui><value><decimal>5</decimal></value><validate><script>$ > 10</script></validate></field>
+              <field name="big"><ui><numericEdit/></ui><value><decimal>50</decimal></value><validate scriptTest="warning"><script>$ > 10</script></validate></field>
+              <field name="later"><validate nullTest="error"/><event activity="docReady"><script>$ = "filled"</script></event></field>
+              <field name="off" presence="inactive"><validate nullTest="error"/></field>
+              <field name="probe"><event activity="docReady"><script>$ = Concat(xfa.form.execValidate(), "/", okzip.execValidate(), "/", xfa.host.validationsEnabled)</script></event></field>
+            </subform></template>"#,
+        );
+        let (model, report) = run_scripts(&template, None);
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        // Before the initial pass, execValidate skips the null test.
+        assert_eq!(value_of(&model, "early").as_deref(), Some("1"));
+        assert_eq!(value_of(&model, "probe").as_deref(), Some("0/1/1"));
+        let found: Vec<(String, &str, String, String)> = report
+            .validations
+            .iter()
+            .map(|r| (r.som.clone(), r.test, r.severity.clone(), r.message.clone()))
+            .collect();
+        let som = |name: &str| format!("xfa[0].form[0].form1[0].{name}[0]");
+        assert_eq!(
+            found,
+            vec![
+                (
+                    som("req"),
+                    "nullTest",
+                    "error".to_string(),
+                    "Required name cannot be blank.".to_string()
+                ),
+                (
+                    som("warn"),
+                    "nullTest",
+                    "warning".to_string(),
+                    "Please fill warn".to_string()
+                ),
+                (
+                    som("zip"),
+                    "formatTest",
+                    "error".to_string(),
+                    "The value you entered for zip is invalid.".to_string()
+                ),
+                (
+                    som("day"),
+                    "formatTest",
+                    "warning".to_string(),
+                    "The value you entered for day is invalid. To ignore validations for day, click Ignore."
+                        .to_string()
+                ),
+                (
+                    som("amount"),
+                    "scriptTest",
+                    "error".to_string(),
+                    "The value you entered for amount is invalid.".to_string()
+                ),
+            ]
+        );
+        // Validation never changes values.
+        assert_eq!(value_of(&model, "zip").as_deref(), Some("12a45"));
+
+        // xfa.host.validationsEnabled = 0 turns validation off.
+        let template = parse(
+            r#"<template><subform name="form1" layout="tb">
+              <pageSet><pageArea name="P"><contentArea w="500pt" h="700pt"/></pageArea></pageSet>
+              <field name="req"><validate nullTest="error"/></field>
+              <event activity="initialize"><script>xfa.host.validationsEnabled = 0</script></event>
+            </subform></template>"#,
+        );
+        let (_, report) = run_scripts(&template, None);
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        assert!(report.validations.is_empty(), "{:?}", report.validations);
     }
 }

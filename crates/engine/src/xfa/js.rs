@@ -106,7 +106,10 @@ const NODE_METHODS: &[&str] = &[
     "relayout",
     "isRecordGroup",
     "item",
+    "createNode",
+    "clearErrorList",
 ];
+const LIST_METHODS: &[&str] = &["item", "namedItem", "append", "insert", "remove"];
 const MODEL_METHODS: &[&str] = &[
     "resolveNode",
     "resolveNodes",
@@ -163,6 +166,7 @@ const MANAGER_METHODS: &[&str] = &[
 fn methods_of(obj: &Obj) -> &'static [&'static str] {
     match obj {
         Obj::Node(_) | Obj::Nodes(_) => NODE_METHODS,
+        Obj::Children(_) => LIST_METHODS,
         Obj::Xfa | Obj::FormModel => MODEL_METHODS,
         Obj::Host => HOST_METHODS,
         Obj::Layout => LAYOUT_METHODS,
@@ -638,8 +642,22 @@ fn trap_has(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResul
     Ok(JsValue::from(value != Val::Null))
 }
 
+/// `$`-prefixed SOM shortcuts usable as JavaScript identifiers (PDFium's
+/// global property handler resolves them like SOM expressions).
+fn dollar_name(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix('$')?;
+    matches!(
+        rest,
+        "" | "form" | "data" | "record" | "host" | "layout" | "event" | "template" | "xfa"
+    )
+    .then_some(rest)
+}
+
 /// Whether an unqualified name resolves through XFA scoping.
 fn scope_resolves(host: &Host, name: &str) -> bool {
+    if dollar_name(name).is_some() {
+        return !host.scope.borrow().declared.contains(name);
+    }
     if name.starts_with("__wf") || name.is_empty() || !name.chars().all(is_name_char) {
         return false;
     }
@@ -697,7 +715,10 @@ fn scope_get(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
     let this = host.scope.borrow().this;
     let seg = Seg {
         desc: false,
-        name: SomName::Name(name.clone()),
+        name: match dollar_name(&name) {
+            Some(rest) => SomName::Dollar(rest.to_string()),
+            None => SomName::Name(name.clone()),
+        },
         index: SomIndex::Default,
     };
     let objs = host
@@ -727,7 +748,10 @@ fn scope_set(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
     let this = host.scope.borrow().this;
     let seg = Seg {
         desc: false,
-        name: SomName::Name(name),
+        name: match dollar_name(&name) {
+            Some(rest) => SomName::Dollar(rest.to_string()),
+            None => SomName::Name(name),
+        },
         index: SomIndex::Default,
     };
     let mut dom = host.dom.borrow_mut();

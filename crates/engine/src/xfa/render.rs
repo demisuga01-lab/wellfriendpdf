@@ -63,7 +63,24 @@ pub(crate) struct XfaRenderModel {
     pub script_log: Vec<String>,
     /// Script errors (first few), for diagnostics.
     pub script_errors: Vec<String>,
+    /// Failed `<validate>` tests.
+    pub validations: Vec<XfaValidationResult>,
     full_document: OnceLock<Option<ContentEngine>>,
+}
+
+/// A failed XFA validation test, recorded while the form was prepared for
+/// rendering (no message is shown).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XfaValidationResult {
+    /// SOM expression of the field, exclusion group or subform
+    /// (`xfa[0].form[0].form1[0].name[0]`).
+    pub som: String,
+    /// `nullTest`, `formatTest` or `scriptTest`.
+    pub test: String,
+    /// `error` or `warning` (the test's attribute value).
+    pub severity: String,
+    /// The `<validate><message>` text, else PDFium's default message.
+    pub message: String,
 }
 
 /// Cached per engine; `None` for documents without a renderable XFA form.
@@ -127,7 +144,7 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
     let tpl = Template::new(template);
     let mut model = build_form_model_with_datasets(&tpl, template, datasets, datasets_root)?;
     // Form scripts (initialize, calculate, form:ready, docReady).
-    let mut scripts = FormScripts::prepare(&tpl, template, &model, locales.clone());
+    let mut scripts = FormScripts::prepare(&tpl, template, &model, datasets_root, locales.clone());
     if let Some(scripts) = scripts.as_mut() {
         scripts.before_layout(&tpl, &mut model);
     }
@@ -196,6 +213,16 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
         unsupported,
         script_log: script_report.log,
         script_errors: script_report.errors,
+        validations: script_report
+            .validations
+            .into_iter()
+            .map(|record| XfaValidationResult {
+                som: record.som,
+                test: record.test.to_string(),
+                severity: record.severity,
+                message: record.message,
+            })
+            .collect(),
         full_document: OnceLock::new(),
     })
 }
@@ -636,6 +663,16 @@ impl ContentEngine {
     pub fn xfa_script_errors(&self) -> Vec<String> {
         model_for(self)
             .map(|model| model.script_errors.clone())
+            .unwrap_or_default()
+    }
+
+    /// Failed `<validate>` tests (`nullTest`, `formatTest`, validate
+    /// scripts) of the XFA form after its scripts ran, in document order.
+    /// Validation runs non-interactively, as PDFium's on document load; it
+    /// never changes what is drawn.
+    pub fn xfa_validation_results(&self) -> Vec<XfaValidationResult> {
+        model_for(self)
+            .map(|model| model.validations.clone())
             .unwrap_or_default()
     }
 }
