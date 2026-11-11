@@ -24,8 +24,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::form::{
-    assign_locales, binding_mode, data_value, fresh_node, instance_prototype, FormModel, FormNode,
-    NodeKind, Template,
+    assign_locales, binding_mode, data_value, fresh_node, instance_prototype, presence_text,
+    FormModel, FormNode, NodeKind, Template,
 };
 use super::layout::{caption_spec, field_ui, LayoutPage};
 use super::locale::LocaleSet;
@@ -511,7 +511,8 @@ impl<'t> FormScripts<'t> {
                 .clone()
                 .unwrap_or_else(|| template_choice_items(tmpl));
         }
-        s.presence = tpl.attr(tmpl, "presence").unwrap_or("visible").to_string();
+        // A saved form packet may have changed the merged presence.
+        s.presence = presence_text(tpl, node).to_string();
         s.access = tpl.attr(tmpl, "access").unwrap_or("open").to_string();
         if let Some(caption) = caption_spec(tpl, tmpl) {
             s.has_caption = true;
@@ -1000,12 +1001,7 @@ impl<'t> FormScripts<'t> {
             return Err(format!("{som} is a button; use click"));
         }
         let template = self.tmpls.get(tmpl).copied();
-        let max_chars = template
-            .and_then(|t| tpl.child(t, "value"))
-            .and_then(|v| v.children.first())
-            .and_then(|text| tpl.attr(text, "maxChars"))
-            .and_then(|max| max.trim().parse::<usize>().ok())
-            .filter(|max| *max > 0);
+        let max_chars = max_chars(tpl, template);
         let dropdown = ui == "choiceList"
             && template
                 .and_then(|t| field_ui(tpl, t).1)
@@ -1066,6 +1062,101 @@ impl<'t> FormScripts<'t> {
                 result.map_err(|error| error.0)?;
                 outcome.committed = true;
             }
+        }
+        self.runner
+            .fire(id, "exit", EventState::default(), &mut outcome.fired);
+        Ok(self.finish_action(outcome, log, errors))
+    }
+
+    /// Keystrokes into a text field (PDFium `CXFA_FFTextEdit::
+    /// OnTextWillChange`, once per inserted character): `enter`, then for
+    /// every character a `change` event inserting it at the caret
+    /// (`prevText` the text so far, `change` the character, `selStart` =
+    /// `selEnd` = the caret, `newText` the text after it). Scripts may
+    /// rewrite `xfa.event.change` (or the selection) or cancel the
+    /// keystroke; the caret follows the inserted text. At `maxChars` a
+    /// keystroke fires `full` instead (`CFDE_TextEditEngine::Insert`), and
+    /// numeric fields drop keystrokes that would not leave a number. The
+    /// text is committed once, then `exit` and the calculate and validate
+    /// passes. Typing starts at the end of the current text.
+    pub(crate) fn session_type_text(
+        &mut self,
+        tpl: &Template<'t>,
+        som: &str,
+        text: &str,
+    ) -> Result<ActionOutcome, String> {
+        self.runner.begin_action();
+        let (log, errors) = self.marks();
+        let id = self.session_node(som)?;
+        let (class, ui, tmpl) = {
+            let dom = self.runner.dom.borrow();
+            let node = &dom.nodes[id];
+            (node.class, node.ui.clone(), node.tmpl)
+        };
+        if class != Class::Field {
+            return Err(format!("{som} is not a field"));
+        }
+        self.ensure_interactive(id)?;
+        if !matches!(
+            ui.as_str(),
+            "" | "textEdit" | "numericEdit" | "passwordEdit" | "dateTimeEdit"
+        ) {
+            return Err(format!(
+                "{som} is a {ui} field, not a text edit; use set_value or click"
+            ));
+        }
+        let numeric = ui == "numericEdit";
+        let max_chars = max_chars(tpl, self.tmpls.get(tmpl).copied());
+        let prev = self.raw_text(id);
+        let mut current = prev.clone();
+        let mut caret = current.chars().count() as i64;
+        let mut outcome = ActionOutcome::default();
+        self.runner
+            .fire(id, "enter", EventState::default(), &mut outcome.fired);
+        for ch in text.chars() {
+            let length = current.chars().count();
+            if max_chars.is_some_and(|max| length >= max) {
+                self.runner
+                    .fire(id, "full", EventState::default(), &mut outcome.fired);
+                continue;
+            }
+            let mut event = EventState {
+                change: ch.to_string(),
+                prev_text: current.clone(),
+                sel_start: caret,
+                sel_end: caret,
+                ..EventState::default()
+            };
+            event.full_text = event.new_text();
+            let after = self.runner.fire(id, "change", event, &mut outcome.fired);
+            if after.cancel_action {
+                continue;
+            }
+            let mut next = after.new_text();
+            if let Some(max) = max_chars {
+                if next.chars().count() > max {
+                    next = next.chars().take(max).collect();
+                }
+            }
+            if numeric && !is_partial_number(&next) {
+                continue;
+            }
+            let start = after.sel_start.clamp(0, length as i64);
+            caret = (start + after.change.chars().count() as i64).min(next.chars().count() as i64);
+            current = next;
+        }
+        if current != prev {
+            let result = {
+                let mut dom = self.runner.dom.borrow_mut();
+                let stored = if current.is_empty() {
+                    Val::Null
+                } else {
+                    Val::Str(current)
+                };
+                dom.set_value(id, &stored)
+            };
+            result.map_err(|error| error.0)?;
+            outcome.committed = true;
         }
         self.runner
             .fire(id, "exit", EventState::default(), &mut outcome.fired);
@@ -1467,6 +1558,31 @@ fn apply_changes(snode: &SNode, node: &mut FormNode<'_>) {
         node.border_color = snode.border_color.as_deref().and_then(parse_color);
         node.font_color = snode.font_color.as_deref().and_then(parse_color);
     }
+}
+
+/// The `maxChars` of a field's text value, when positive.
+fn max_chars<'t>(tpl: &Template<'t>, template: Option<&'t XmlNode>) -> Option<usize> {
+    template
+        .and_then(|t| tpl.child(t, "value"))
+        .and_then(|v| v.children.first())
+        .and_then(|text| tpl.attr(text, "maxChars"))
+        .and_then(|max| max.trim().parse::<usize>().ok())
+        .filter(|max| *max > 0)
+}
+
+/// Text a numeric edit accepts while typing: an optional sign, digits and
+/// at most one decimal separator (PDFium `CXFA_FFNumericEdit::OnValidate`).
+fn is_partial_number(text: &str) -> bool {
+    let body = text.strip_prefix(['-', '+']).unwrap_or(text);
+    let mut separators = 0;
+    body.chars().all(|ch| {
+        if ch == '.' || ch == ',' {
+            separators += 1;
+            separators == 1
+        } else {
+            ch.is_ascii_digit()
+        }
+    })
 }
 
 fn parse_presence(text: &str) -> Presence {

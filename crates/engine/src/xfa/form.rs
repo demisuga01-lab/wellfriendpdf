@@ -422,6 +422,232 @@ pub(crate) fn instance_prototype<'t>(tpl: &Template<'t>, tmpl: &'t XmlNode) -> F
     node
 }
 
+/// Namespace of the `form` packets a session saves.
+pub(crate) const XFA_FORM_NS: &str = "http://www.xfa.org/schema/xfa-form/2.8/";
+
+fn kind_element(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Subform => "subform",
+        NodeKind::Area => "area",
+        NodeKind::ExclGroup => "exclGroup",
+        NodeKind::Field => "field",
+        NodeKind::Draw => "draw",
+    }
+}
+
+/// The presence a node shows: its override, else the template's.
+pub(crate) fn presence_text<'t>(tpl: &Template<'t>, node: &FormNode<'t>) -> &'t str {
+    let template = tpl.attr(node.tmpl, "presence").unwrap_or("visible");
+    match node.presence {
+        None => template,
+        Some(Presence::Visible) => "visible",
+        Some(Presence::Invisible) => "invisible",
+        Some(Presence::Hidden) if matches!(template, "hidden" | "inactive") => template,
+        Some(Presence::Hidden) => "hidden",
+    }
+}
+
+/// The form DOM of `model` as a `form` packet (PDFium saves the form packet
+/// next to `datasets`, `CXFA_FFDoc::SavePackage`): the merged containers of
+/// the root subform in document order, with their names, presence and the
+/// values of fields (repeated subform instances appear once each). Rich
+/// text and image values are left to the template and data.
+pub(crate) fn form_packet_xml<'t>(tpl: &Template<'t>, model: &FormModel<'t>) -> String {
+    let mut out = String::new();
+    out.push_str("<form xmlns=\"");
+    out.push_str(XFA_FORM_NS);
+    out.push_str("\">");
+    write_form_node(tpl, &model.root, &mut out, 0);
+    out.push_str("</form>");
+    out
+}
+
+fn write_form_node<'t>(tpl: &Template<'t>, node: &FormNode<'t>, out: &mut String, depth: usize) {
+    use super::xml::escape_xml;
+    if depth > 256 {
+        return;
+    }
+    let element = kind_element(node.kind);
+    out.push('<');
+    out.push_str(element);
+    if let Some(name) = node.tmpl.attr("name").filter(|name| !name.is_empty()) {
+        out.push_str(" name=\"");
+        escape_xml(name, out);
+        out.push('"');
+    }
+    out.push_str(" presence=\"");
+    out.push_str(presence_text(tpl, node));
+    out.push_str("\">");
+    if node.kind == NodeKind::Field && node.rich.is_none() && node.image.is_none() {
+        let content = tpl
+            .child(node.tmpl, "value")
+            .and_then(|value| value.children.first())
+            .map(|content| content.local_name.as_str())
+            .filter(|name| !matches!(*name, "exData" | "image"))
+            .unwrap_or("text");
+        out.push_str("<value><");
+        out.push_str(content);
+        out.push('>');
+        if let Some(value) = &node.value {
+            escape_xml(value, out);
+        }
+        out.push_str("</");
+        out.push_str(content);
+        out.push_str("></value>");
+    }
+    for child in &node.children {
+        write_form_node(tpl, child, out, depth + 1);
+    }
+    out.push_str("</");
+    out.push_str(element);
+    out.push('>');
+}
+
+/// Merges a saved `form` packet into a freshly merged model, as PDFium's
+/// data merge reuses the form DOM it loaded (`XFA_NodeMerge_CloneOrMerge
+/// Container`): saved containers match the model's children by element,
+/// name and position; their `presence` applies; fields not bound to data
+/// take the saved value (bound fields keep the data's); a repeatable
+/// subform saved with more instances than the merge produced gets the
+/// missing instances (bounded by `occur max`). Returns whether anything
+/// changed.
+pub(crate) fn apply_form_packet<'t>(
+    tpl: &Template<'t>,
+    model: &mut FormModel<'t>,
+    form: &XmlNode,
+) -> bool {
+    let root_name = model.root.tmpl.attr("name").unwrap_or("");
+    let Some(saved) = form
+        .children
+        .iter()
+        .find(|child| child.local_name == "subform")
+        .filter(|saved| saved.attr("name").unwrap_or("") == root_name)
+    else {
+        return false;
+    };
+    let mut budget = MAX_FORM_NODES;
+    let changed = apply_saved_node(tpl, &mut model.root, saved, &mut budget, 0);
+    if changed {
+        assign_locales(&mut model.root, None);
+    }
+    changed
+}
+
+fn apply_saved_node<'t>(
+    tpl: &Template<'t>,
+    node: &mut FormNode<'t>,
+    saved: &XmlNode,
+    budget: &mut usize,
+    depth: usize,
+) -> bool {
+    if depth > 256 || *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    let mut changed = false;
+    if let Some(presence) = saved.attr("presence") {
+        if presence != presence_text(tpl, node) {
+            node.presence = Some(match presence {
+                "invisible" => Presence::Invisible,
+                "hidden" | "inactive" => Presence::Hidden,
+                _ => Presence::Visible,
+            });
+            changed = true;
+        }
+    }
+    if node.kind == NodeKind::Field
+        && node.data.is_none()
+        && node.rich.is_none()
+        && node.image.is_none()
+    {
+        if let Some(content) = saved
+            .child("value")
+            .and_then(|value| value.children.first())
+        {
+            let value = (!content.text.is_empty()).then(|| content.text.clone());
+            if node.value != value {
+                node.value = value;
+                changed = true;
+            }
+        }
+    }
+    changed |= add_saved_instances(tpl, node, saved, budget);
+    let mut seen: HashMap<(&'static str, &'t str), usize> = HashMap::new();
+    for child in &mut node.children {
+        let element = kind_element(child.kind);
+        let name = child.tmpl.attr("name").unwrap_or("");
+        let index = seen.entry((element, name)).or_insert(0);
+        let matched = saved
+            .children
+            .iter()
+            .filter(|c| c.local_name == element && c.attr("name").unwrap_or("") == name)
+            .nth(*index);
+        *index += 1;
+        if let Some(matched) = matched {
+            changed |= apply_saved_node(tpl, child, matched, budget, depth + 1);
+        }
+    }
+    changed
+}
+
+/// Appends instances of named repeatable subforms the saved node has more
+/// of than `node` (instances a script added before the save).
+fn add_saved_instances<'t>(
+    tpl: &Template<'t>,
+    node: &mut FormNode<'t>,
+    saved: &XmlNode,
+    budget: &mut usize,
+) -> bool {
+    let mut changed = false;
+    let mut index = 0;
+    while index < node.children.len() {
+        let tmpl = node.children[index].tmpl;
+        let Some(occur) = (node.children[index].kind == NodeKind::Subform)
+            .then(|| tpl.child(tmpl, "occur"))
+            .flatten()
+        else {
+            index += 1;
+            continue;
+        };
+        let name = tmpl.attr("name").unwrap_or("");
+        // The run of instances of this template.
+        let mut end = index;
+        while end < node.children.len() && std::ptr::eq(node.children[end].tmpl, tmpl) {
+            end += 1;
+        }
+        if name.is_empty() {
+            index = end;
+            continue;
+        }
+        let have = end - index;
+        let wanted = saved
+            .children
+            .iter()
+            .filter(|c| c.local_name == "subform" && c.attr("name") == Some(name))
+            .count();
+        let max = match tpl.attr(occur, "max").map(str::trim) {
+            Some("-1" | "*") => usize::MAX,
+            Some(max) => max.parse::<usize>().unwrap_or(1),
+            None => tpl
+                .attr(occur, "min")
+                .and_then(|min| min.trim().parse::<usize>().ok())
+                .unwrap_or(1)
+                .max(1),
+        };
+        let wanted = wanted.min(max).min(have + *budget);
+        let mut at = end;
+        for _ in have..wanted {
+            let instance = instance_prototype(tpl, tmpl);
+            *budget = budget.saturating_sub(1);
+            node.children.insert(at, instance);
+            at += 1;
+            changed = true;
+        }
+        index = at;
+    }
+    changed
+}
+
 /// A node with its template defaults (value, rich text, image, items) and
 /// no children.
 pub(crate) fn fresh_node<'t>(

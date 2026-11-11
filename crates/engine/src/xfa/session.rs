@@ -7,8 +7,10 @@
 //! DOM (values, presence, instances, script variables, the JavaScript
 //! engine) between calls; rendering re-merges and re-lays out the form
 //! with that state, and saving writes the data DOM back into the PDF's
-//! `datasets` packet as an incremental update (PDFium
-//! `SaveXFADocumentData`, after `preSave` and before `postSave`).
+//! `datasets` packet and the form DOM into its `form` packet as an
+//! incremental update (PDFium `SaveXFADocumentData`, after `preSave` and
+//! before `postSave`). Opening merges a saved `form` packet into the fresh
+//! form, so presence, unbound values and added instances survive.
 //!
 //! Scripts run in the same sandbox as rendering (FormCalc, JavaScript
 //! through boa when available), each host action under fresh time,
@@ -25,7 +27,7 @@ use crate::writer::{write_incremental_update, IncrementalObject};
 use crate::ContentEngine;
 
 use super::events::{ActionOutcome, FormScripts, ScriptState};
-use super::form::{build_form_model_with_datasets, Template};
+use super::form::{form_packet_xml, Template};
 use super::render::{has_xfa_entry, paint_form, xfa_sources, XfaFormType, XfaValidationResult};
 use super::xml::parse_xml;
 use super::{load_xfa, LoadedXfa, XfaLimits};
@@ -152,13 +154,7 @@ impl XfaFormSession {
             let sources = xfa_sources(&loaded).ok_or_else(no_form)?;
             let template = sources.template;
             let tpl = Template::new(template);
-            let mut model = build_form_model_with_datasets(
-                &tpl,
-                template,
-                sources.datasets,
-                sources.datasets_root,
-            )
-            .ok_or_else(no_form)?;
+            let mut model = sources.merged_model(&tpl).ok_or_else(no_form)?;
             let mut scripts = FormScripts::prepare_session(
                 &tpl,
                 template,
@@ -273,6 +269,17 @@ impl XfaFormSession {
         self.act(|scripts, tpl| scripts.session_set_value(tpl, som, value))
     }
 
+    /// Types `text` into a text field keystroke by keystroke, as PDFium's
+    /// `CXFA_FFTextEdit` does: `enter`, one `change` event per inserted
+    /// character (`xfa.event.prevText`, `change`, `newText`, `selStart`,
+    /// `selEnd`; scripts may rewrite `change` or cancel the keystroke),
+    /// `full` for keystrokes past `maxChars`, then the commit, `exit` and
+    /// the dependent calculations and validations. Typing starts at the end
+    /// of the current text.
+    pub fn type_text(&mut self, som: &str, text: &str) -> Result<XfaSessionOutcome> {
+        self.act(|scripts, tpl| scripts.session_type_text(tpl, som, text))
+    }
+
     /// Clicks a field: buttons fire `click`; check boxes toggle and radio
     /// buttons select (clearing the rest of their exclusion group), firing
     /// `change` and `click` on the group and the button.
@@ -328,19 +335,27 @@ impl XfaFormSession {
         Ok(self.state()?.datasets_xml())
     }
 
+    /// The form packet (`<form>`) of the current form DOM: containers,
+    /// presence and field values (see [`Self::save_to_pdf`]).
+    pub fn export_form_xml(&mut self) -> Result<String> {
+        let sources = xfa_sources(&self.loaded).ok_or_else(no_form)?;
+        let template = sources.template;
+        let tpl = Template::new(template);
+        let mut model = sources.merged_model(&tpl).ok_or_else(no_form)?;
+        let state = self.state.take().ok_or_else(poisoned)?;
+        let mut scripts = FormScripts::resume(template, state);
+        scripts.apply_to_fresh_model(&tpl, &mut model);
+        self.state = Some(scripts.into_state());
+        Ok(form_packet_xml(&tpl, &model))
+    }
+
     /// The document with the current form state painted.
     fn view(&mut self) -> Result<&ContentEngine> {
         if self.view.is_none() {
             let sources = xfa_sources(&self.loaded).ok_or_else(no_form)?;
             let template = sources.template;
             let tpl = Template::new(template);
-            let mut model = build_form_model_with_datasets(
-                &tpl,
-                template,
-                sources.datasets,
-                sources.datasets_root,
-            )
-            .ok_or_else(no_form)?;
+            let mut model = sources.merged_model(&tpl).ok_or_else(no_form)?;
             let state = self.state.take().ok_or_else(poisoned)?;
             let mut scripts = FormScripts::resume(template, state);
             scripts.begin_render();
@@ -388,13 +403,17 @@ impl XfaFormSession {
     }
 
     /// Fires `preSave`, writes the data DOM into the PDF's `datasets`
-    /// packet as an incremental update (adding the packet when missing),
-    /// then fires `postSave`. The session itself keeps working on its
-    /// state; the returned bytes are the saved document.
+    /// packet and the form DOM into its `form` packet (PDFium saves both)
+    /// as an incremental update, adding either packet when missing, then
+    /// fires `postSave`. Reopening merges the form packet, so presence,
+    /// values and instances scripts changed survive. The session itself
+    /// keeps working on its state; the returned bytes are the saved
+    /// document.
     pub fn save_to_pdf(&mut self) -> Result<Vec<u8>> {
         self.broadcast("preSave")?;
-        let xml = self.export_data_xml()?;
-        let bytes = write_datasets(&self.engine, &xml)?;
+        let datasets = self.export_data_xml()?;
+        let form = self.export_form_xml()?;
+        let bytes = write_packets(&self.engine, &[("datasets", &datasets), ("form", &form)])?;
         self.broadcast("postSave")?;
         Ok(bytes)
     }
@@ -409,11 +428,13 @@ impl XfaFormSession {
     ///
     /// * `{"op":"fields"}` → `{"fields":[XfaFieldState...]}`
     /// * `{"op":"value","som":S}` → `{"value":V|null}`
-    /// * `{"op":"set_value","som":S,"value":V}`, `{"op":"click","som":S}`,
+    /// * `{"op":"set_value","som":S,"value":V}`,
+    ///   `{"op":"type_text","som":S,"text":T}`, `{"op":"click","som":S}`,
     ///   `{"op":"dispatch","som":S,"activity":A}` → [`XfaSessionOutcome`]
     /// * `{"op":"validations"}` → `{"validations":[...]}`
     /// * `{"op":"script_log"}` → `{"messages":[...],"errors":[...]}`
     /// * `{"op":"export_data_xml"}` → `{"xml":"<xfa:datasets...>"}`
+    /// * `{"op":"export_form_xml"}` → `{"xml":"<form...>"}`
     /// * `{"op":"page_count"}` → `{"page_count":N}`
     /// * `{"op":"form_type"}` → `{"form_type":"foreground"|"full"}`
     pub fn command_json(&mut self, command: &str) -> Result<String> {
@@ -446,6 +467,7 @@ impl XfaFormSession {
                 };
                 json(self.set_field_value(&text("som")?, &value)?)?
             }
+            "type_text" => json(self.type_text(&text("som")?, &text("text")?)?)?,
             "click" => json(self.click(&text("som")?)?)?,
             "dispatch" => json(self.dispatch_event(&text("som")?, &text("activity")?)?)?,
             "validations" => serde_json::json!({ "validations": self.validation_results() }),
@@ -454,6 +476,7 @@ impl XfaFormSession {
                 "errors": self.script_errors(),
             }),
             "export_data_xml" => serde_json::json!({ "xml": self.export_data_xml()? }),
+            "export_form_xml" => serde_json::json!({ "xml": self.export_form_xml()? }),
             "page_count" => serde_json::json!({ "page_count": self.page_count()? }),
             "form_type" => serde_json::json!({ "form_type": self.form_type() }),
             other => {
@@ -483,11 +506,12 @@ fn is_packet_name(object: &PdfObject, name: &str) -> bool {
     matches!(object, PdfObject::String(bytes) if crate::info::decode_pdf_text_string(bytes) == name)
 }
 
-/// Writes `datasets` (a `<xfa:datasets>` element) into the document's XFA
-/// entry: the `datasets` stream of a packet array is replaced (or a new one
-/// inserted before the last packet, as PDFium), a single XDP stream gets
-/// its `datasets` element spliced. Incremental update.
-fn write_datasets(engine: &ContentEngine, datasets: &str) -> Result<Vec<u8>> {
+/// Writes `packets` (name, XML element) into the document's XFA entry: in a
+/// packet array each named stream is replaced, or a new one inserted (the
+/// first before the last packet, as PDFium inserts `datasets`, the next
+/// after the previous one); a single XDP stream gets each element spliced.
+/// Incremental update.
+fn write_packets(engine: &ContentEngine, packets: &[(&str, &str)]) -> Result<Vec<u8>> {
     let document = engine.document();
     let reader = document.reader();
     if reader.is_encrypted() {
@@ -512,17 +536,23 @@ fn write_datasets(engine: &ContentEngine, datasets: &str) -> Result<Vec<u8>> {
         .unwrap_or(0);
     match reader.resolve(xfa_entry.clone())? {
         PdfObject::Array(mut items) => {
-            let index = (0..items.len().saturating_sub(1))
-                .find(|&i| is_packet_name(&items[i], "datasets"))
-                .map(|i| i + 1);
-            let stream = flate_stream(datasets.as_bytes())?;
-            if let Some((number, generation)) = index.and_then(|i| items[i].as_reference()) {
-                changes.push(IncrementalObject {
-                    number,
-                    generation,
-                    object: stream,
-                });
-            } else {
+            let mut array_changed = false;
+            // Where a new packet goes: after the packet written before it.
+            let mut insert_at: Option<usize> = None;
+            for &(name, xml) in packets {
+                let index = (0..items.len().saturating_sub(1))
+                    .find(|&i| is_packet_name(&items[i], name))
+                    .map(|i| i + 1);
+                let stream = flate_stream(xml.as_bytes())?;
+                if let Some((number, generation)) = index.and_then(|i| items[i].as_reference()) {
+                    changes.push(IncrementalObject {
+                        number,
+                        generation,
+                        object: stream,
+                    });
+                    insert_at = index.map(|i| i + 1);
+                    continue;
+                }
                 next += 1;
                 changes.push(IncrementalObject {
                     number: next,
@@ -534,13 +564,22 @@ fn write_datasets(engine: &ContentEngine, datasets: &str) -> Result<Vec<u8>> {
                     generation: 0,
                 };
                 match index {
-                    Some(i) => items[i] = reference,
+                    Some(i) => {
+                        items[i] = reference;
+                        insert_at = Some(i + 1);
+                    }
                     None => {
-                        let at = items.len().saturating_sub(2);
-                        items.insert(at, PdfObject::String(b"datasets".to_vec()));
+                        let at = insert_at
+                            .unwrap_or_else(|| items.len().saturating_sub(2))
+                            .min(items.len());
+                        items.insert(at, PdfObject::String(name.as_bytes().to_vec()));
                         items.insert(at + 1, reference);
+                        insert_at = Some(at + 2);
                     }
                 }
+                array_changed = true;
+            }
+            if array_changed {
                 let array = PdfObject::Array(items);
                 if let Some((number, generation)) = xfa_entry.as_reference() {
                     changes.push(IncrementalObject {
@@ -556,16 +595,18 @@ fn write_datasets(engine: &ContentEngine, datasets: &str) -> Result<Vec<u8>> {
         }
         stream @ PdfObject::Stream { .. } => {
             let (number, generation) = xfa_entry.as_reference().ok_or_else(no_form)?;
-            let bytes = crate::filters::decode_stream_with_limits(
+            let mut bytes = crate::filters::decode_stream_with_limits(
                 &stream,
                 reader,
                 &crate::filters::DecodeLimits::default(),
             )?;
-            let spliced = splice_datasets(&bytes, datasets)?;
+            for &(name, xml) in packets {
+                bytes = splice_packet(&bytes, name, xml)?;
+            }
             changes.push(IncrementalObject {
                 number,
                 generation,
-                object: flate_stream(&spliced)?,
+                object: flate_stream(&bytes)?,
             });
         }
         _ => return Err(no_form()),
@@ -605,15 +646,15 @@ fn push_acroform(
     Ok(())
 }
 
-/// Replaces the `datasets` element of a whole-XDP stream (or inserts one
+/// Replaces the `name` element of a whole-XDP stream (or inserts one
 /// before the closing root tag).
-fn splice_datasets(xdp: &[u8], datasets: &str) -> Result<Vec<u8>> {
+fn splice_packet(xdp: &[u8], name: &str, packet: &str) -> Result<Vec<u8>> {
     let parsed = parse_xml(xdp, &XfaLimits::default())?;
     let root = &parsed.root;
-    let mut out = Vec::with_capacity(xdp.len() + datasets.len());
-    if let Some(existing) = root.children.iter().find(|c| c.local_name == "datasets") {
+    let mut out = Vec::with_capacity(xdp.len() + packet.len());
+    if let Some(existing) = root.children.iter().find(|c| c.local_name == name) {
         out.extend_from_slice(&xdp[..existing.start_offset]);
-        out.extend_from_slice(datasets.as_bytes());
+        out.extend_from_slice(packet.as_bytes());
         out.extend_from_slice(&xdp[existing.end_offset..]);
         return Ok(out);
     }
@@ -624,7 +665,7 @@ fn splice_datasets(xdp: &[u8], datasets: &str) -> Result<Vec<u8>> {
         .filter(|&at| xdp.get(at..root.end_offset) == Some(close.as_bytes()))
         .ok_or_else(|| WellfriendError::MalformedPdf("XDP root element has no end tag".into()))?;
     out.extend_from_slice(&xdp[..at]);
-    out.extend_from_slice(datasets.as_bytes());
+    out.extend_from_slice(packet.as_bytes());
     out.extend_from_slice(&xdp[at..]);
     Ok(out)
 }

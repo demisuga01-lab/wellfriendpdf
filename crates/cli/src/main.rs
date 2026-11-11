@@ -1372,6 +1372,10 @@ struct XfaFillArgs {
     /// run in command-line order
     #[arg(long = "set", value_name = "SOM=VALUE")]
     set: Vec<String>,
+    /// Type text into a field keystroke by keystroke: SOM=TEXT (one change
+    /// event per character; scripts may rewrite or cancel each). Repeatable
+    #[arg(long = "type", value_name = "SOM=TEXT")]
+    type_text: Vec<String>,
     /// Click a field (button, check box, radio button). Repeatable
     #[arg(long = "click", value_name = "SOM")]
     click: Vec<String>,
@@ -5721,6 +5725,7 @@ fn run_xfa_fill(args: XfaFillArgs) -> Result<(), Box<dyn Error>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Kind {
         Set,
+        Type,
         Click,
         Event,
     }
@@ -5730,6 +5735,7 @@ fn run_xfa_fill(args: XfaFillArgs) -> Result<(), Box<dyn Error>> {
     for arg in std::env::args() {
         for (flag, kind) in [
             ("--set", Kind::Set),
+            ("--type", Kind::Type),
             ("--click", Kind::Click),
             ("--event", Kind::Event),
         ] {
@@ -5738,9 +5744,10 @@ fn run_xfa_fill(args: XfaFillArgs) -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    let expected = args.set.len() + args.click.len() + args.event.len();
+    let expected = args.set.len() + args.type_text.len() + args.click.len() + args.event.len();
     if order.len() != expected {
         order = std::iter::repeat_n(Kind::Set, args.set.len())
+            .chain(std::iter::repeat_n(Kind::Type, args.type_text.len()))
             .chain(std::iter::repeat_n(Kind::Click, args.click.len()))
             .chain(std::iter::repeat_n(Kind::Event, args.event.len()))
             .collect();
@@ -5756,8 +5763,12 @@ fn run_xfa_fill(args: XfaFillArgs) -> Result<(), Box<dyn Error>> {
         run_scripts: !args.no_scripts,
     };
     let mut session = engine.xfa_session_with_options(&options)?;
-    let (mut sets, mut clicks, mut events) =
-        (args.set.iter(), args.click.iter(), args.event.iter());
+    let (mut sets, mut types, mut clicks, mut events) = (
+        args.set.iter(),
+        args.type_text.iter(),
+        args.click.iter(),
+        args.event.iter(),
+    );
     let mut actions = Vec::new();
     for kind in order {
         let (action, outcome) = match kind {
@@ -5766,6 +5777,12 @@ fn run_xfa_fill(args: XfaFillArgs) -> Result<(), Box<dyn Error>> {
                 let (som, value) = split(spec, "set")?;
                 let outcome = session.set_field_value(&som, &value)?;
                 (serde_json::json!({ "set": som, "value": value }), outcome)
+            }
+            Kind::Type => {
+                let spec = types.next().ok_or("--type mismatch")?;
+                let (som, text) = split(spec, "type")?;
+                let outcome = session.type_text(&som, &text)?;
+                (serde_json::json!({ "type": som, "text": text }), outcome)
             }
             Kind::Click => {
                 let som = clicks.next().ok_or("--click mismatch")?;

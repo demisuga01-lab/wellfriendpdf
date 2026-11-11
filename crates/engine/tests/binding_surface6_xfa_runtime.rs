@@ -558,7 +558,7 @@ fn xfa_session_json_commands_and_new_datasets_packet() {
     assert!(session.command_json("not json").is_err());
     let saved = ContentEngine::open_bytes(session.save_to_pdf().unwrap()).unwrap();
     let inventory = xfa_inventory(&saved, &XfaLimits::default()).unwrap();
-    assert_eq!(inventory.packet_order, ["datasets", "template"]);
+    assert_eq!(inventory.packet_order, ["datasets", "form", "template"]);
     let mut again = saved.xfa_session().unwrap();
     assert_eq!(again.field_value("form1.total").unwrap(), Some("9".into()));
 }

@@ -390,6 +390,9 @@ enum PlateRender {
     /// Ink planes (0 = no ink) in plate order: C, M, Y, K, then spots.
     Native {
         planes: Vec<Vec<u8>>,
+        /// Process ink of separated spots by plate index (recorded when
+        /// the passes flatten spots, see `PlateTarget::with_spot_flattening`).
+        spot_tables: HashMap<usize, crate::render::plate::SpotInkTable>,
         font_substitution_log: FontSubstitutionLog,
         telemetry_report: RenderContractTelemetryReport,
     },
@@ -2249,7 +2252,7 @@ impl ContentEngine {
             .map(|name| (name.to_string(), false))
             .chain(spots.iter().map(|name| (name.clone(), true)))
             .collect();
-        match self.render_contract_plates(contract, cancel, cache, Arc::clone(&spots))? {
+        match self.render_contract_plates(contract, cancel, cache, Arc::clone(&spots), false)? {
             PlateRender::Native { planes, .. } => Ok(crate::render::SeparationRaster {
                 width,
                 height,
@@ -2329,21 +2332,72 @@ impl ContentEngine {
         FontSubstitutionLog,
         RenderContractTelemetryReport,
     )> {
-        match self.render_contract_plates(contract, cancel, cache, Arc::from(Vec::new()))? {
+        // With overprint, Poppler composites spots in their own plates
+        // (`splashModeDeviceN8`, at most `SPOT_NCOMPS` of them) and adds
+        // their alternate inks to the process plates on output, so a spot
+        // overprinting process ink adds to it. Separate the page's first
+        // spots the same way and flatten them.
+        let spots: Vec<String> = if contract.overprint != OverprintPolicy::Disabled {
+            let mut spots = self.page_spot_colorants(contract.page_number)?;
+            spots.truncate(crate::render::plate::POPPLER_SPOT_PLATES);
+            spots
+        } else {
+            Vec::new()
+        };
+        let mut render =
+            self.render_contract_plates(contract, cancel, cache, spots.into(), true)?;
+        // A spot plate with ink but no recorded conversion cannot be
+        // flattened: composite through the alternates instead.
+        let unconvertible = match &render {
             PlateRender::Native {
                 planes,
+                spot_tables,
+                ..
+            } => planes.iter().enumerate().skip(4).any(|(plate, pixels)| {
+                !spot_tables.contains_key(&plate) && pixels.iter().any(|&ink| ink != 0)
+            }),
+            PlateRender::Fallback { .. } => false,
+        };
+        if unconvertible {
+            render =
+                self.render_contract_plates(contract, cancel, cache, Arc::from(Vec::new()), false)?;
+        }
+        match render {
+            PlateRender::Native {
+                planes,
+                spot_tables,
                 font_substitution_log,
                 telemetry_report,
             } => {
                 let pixel_count = contract.width as usize * contract.height as usize;
+                let spot_planes: Vec<(&[u8], &[[u8; 4]; 256])> = planes
+                    .iter()
+                    .enumerate()
+                    .skip(4)
+                    .filter_map(|(plate, pixels)| {
+                        spot_tables
+                            .get(&plate)
+                            .map(|table| (pixels.as_slice(), &**table))
+                    })
+                    .collect();
                 let mut pixels = Vec::with_capacity(pixel_count * 4);
                 for index in 0..pixel_count {
-                    pixels.extend([
+                    let process = [
                         planes[0][index],
                         planes[1][index],
                         planes[2][index],
                         planes[3][index],
-                    ]);
+                    ];
+                    if spot_planes.is_empty() {
+                        pixels.extend(process);
+                    } else {
+                        pixels.extend(crate::render::plate::flatten_spot_inks(
+                            process,
+                            spot_planes
+                                .iter()
+                                .map(|(plane, table)| (plane[index], *table)),
+                        ));
+                    }
                 }
                 Ok((
                     crate::render::CmykRaster {
@@ -2414,13 +2468,15 @@ impl ContentEngine {
     /// plates rendered together repeats the page with one plate per pass; a
     /// non-separable blend mode in a pass that does not hold C, M and Y
     /// together repeats it with C/M/Y together and every other plate alone,
-    /// masking overprint per plate in the C/M/Y pass.
+    /// masking overprint per plate in the C/M/Y pass. `flatten_spots`
+    /// records the process ink of the separated spots for flattening.
     fn render_contract_plates(
         &self,
         contract: &RenderContract,
         cancel: &crate::cancel::CancelToken,
         cache: &mut RenderDocumentCache,
         spots: Arc<[String]>,
+        flatten_spots: bool,
     ) -> Result<PlateRender> {
         use crate::render::plate::{
             plate_pass_channels, PassLayout, PlateTarget, MIXED_OVERPRINT_ISSUE,
@@ -2430,6 +2486,7 @@ impl ContentEngine {
         let plate_count = 4 + spots.len();
         let honour_overprint = contract.overprint != OverprintPolicy::Disabled;
         let mut reports = None;
+        let mut spot_tables = HashMap::new();
         let mut layout = PassLayout::Grouped;
         loop {
             let mut planes: Vec<Option<Vec<u8>>> = vec![None; plate_count];
@@ -2437,7 +2494,8 @@ impl ContentEngine {
             for channels in plate_pass_channels(plate_count, layout) {
                 let target = Arc::new(
                     PlateTarget::new(channels, Arc::clone(&spots), honour_overprint)
-                        .with_overprint_masking(layout == PassLayout::ProcessTogether),
+                        .with_overprint_masking(layout == PassLayout::ProcessTogether)
+                        .with_spot_flattening(flatten_spots),
                 );
                 let (buffer, _, log, telemetry) = self
                     .render_contract_pixels_with_telemetry_report_inner(
@@ -2449,6 +2507,9 @@ impl ContentEngine {
                     )?;
                 if reports.is_none() {
                     reports = Some((log, telemetry));
+                }
+                for (plate, table) in target.spot_ink_tables() {
+                    spot_tables.entry(plate).or_insert(table);
                 }
                 let mut mixed = false;
                 let mut nonseparable = false;
@@ -2513,6 +2574,7 @@ impl ContentEngine {
                 reports.take().expect("at least one plate pass ran");
             return Ok(PlateRender::Native {
                 planes: planes.into_iter().map(Option::unwrap_or_default).collect(),
+                spot_tables,
                 font_substitution_log,
                 telemetry_report,
             });

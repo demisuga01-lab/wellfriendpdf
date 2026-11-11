@@ -27,7 +27,10 @@
 //! spaces name the four process plates (with OPM 1 a DeviceCMYK component of
 //! zero names nothing); a separated spot names its own plate; a spot mapped
 //! through its alternate names the process plates its alternate colour at full
-//! tint inks (Poppler's overprint mask).
+//! tint inks (Poppler's overprint mask). A CMYK render honouring overprint
+//! separates the page's first [`POPPLER_SPOT_PLATES`] spots and adds their
+//! alternate ink to the process plates afterwards ([`flatten_spot_inks`]), as
+//! Poppler's DeviceN compositor does.
 //!
 //! Non-separable blend modes, transfer functions and colour-font glyphs are
 //! native as well: see [`PlateTarget::check_blend_mode`],
@@ -88,8 +91,52 @@ pub const PROCESS_COLORANTS: [&str; 4] = ["Cyan", "Magenta", "Yellow", "Black"];
 /// Upper bound on separately rendered spot plates.
 pub const MAX_SEPARATION_SPOTS: usize = 32;
 
+/// Spot plates Poppler's `splashModeDeviceN8` keeps (`SPOT_NCOMPS`): a CMYK
+/// render honouring overprint separates this many spots and flattens them
+/// back (see [`flatten_spot_inks`]).
+pub(crate) const POPPLER_SPOT_PLATES: usize = 4;
+
+/// Process ink bytes (C, M, Y, K) of a separated spot at each tint byte.
+pub(crate) type SpotInkTable = Arc<[[u8; 4]; 256]>;
+
 /// Channel that renders no plate (stays paper).
 pub(crate) const NO_PLATE: usize = usize::MAX;
+
+/// Poppler `SplashBitmap::getCMYKLine`, which `pdftoppm -jpegcmyk` and
+/// `-overprint` write: every spot plate with ink converts through its
+/// alternate space and is *added* to the process plates, clamped
+/// (`dblToByte(clip01(c + ...))`, truncating). So a spot overprinting a
+/// backdrop that already carries ink in the same process plates adds to
+/// it (magenta 102 + 61 = 163) instead of replacing it.
+pub(crate) fn flatten_spot_inks<'a>(
+    process: [u8; 4],
+    spots: impl IntoIterator<Item = (u8, &'a [[u8; 4]; 256])>,
+) -> [u8; 4] {
+    let mut sum = process.map(|byte| f64::from(byte) / 255.0);
+    let mut inked = false;
+    for (tint, table) in spots {
+        if tint == 0 {
+            continue;
+        }
+        inked = true;
+        for (acc, &byte) in sum.iter_mut().zip(&table[usize::from(tint)]) {
+            *acc += f64::from(byte) / 255.0;
+        }
+    }
+    if !inked {
+        return process;
+    }
+    sum.map(|value| (value.clamp(0.0, 1.0) * 255.0) as u8)
+}
+
+/// Process ink bytes of a resolved colour (`None` when it did not resolve).
+fn process_ink_bytes(result: InkResult) -> Option<[u8; 4]> {
+    match result {
+        InkResult::Ink(ink) => Some([0, 1, 2, 3].map(|plate| unit_to_byte(ink.value(plate)))),
+        InkResult::NoPaint => Some([0; 4]),
+        _ => None,
+    }
+}
 
 /// Issue reported when one pass renders several plates and an overprinting
 /// paint names some of them but not others; the pass is then repeated with
@@ -120,6 +167,9 @@ pub(crate) struct PlateTarget {
     honour_overprint: bool,
     mask_overprint: bool,
     issues: Mutex<Vec<String>>,
+    /// Record [`Self::spot_ink_tables`] for separated spots.
+    flatten_spots: bool,
+    spot_tables: Mutex<HashMap<usize, SpotInkTable>>,
 }
 
 impl PlateTarget {
@@ -132,6 +182,52 @@ impl PlateTarget {
             honour_overprint,
             mask_overprint: false,
             issues: Mutex::new(Vec::new()),
+            flatten_spots: false,
+            spot_tables: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Record, for every separated spot the pass resolves, its process ink
+    /// at each tint (the alternate space through the tint transform), so
+    /// the spot plates can be flattened into CMYK with
+    /// [`flatten_spot_inks`].
+    pub(crate) fn with_spot_flattening(mut self, flatten: bool) -> Self {
+        self.flatten_spots = flatten;
+        self
+    }
+
+    /// The recorded spot ink tables by plate index (`4 + spot`).
+    pub(crate) fn spot_ink_tables(&self) -> HashMap<usize, SpotInkTable> {
+        self.spot_tables
+            .lock()
+            .map(|tables| tables.clone())
+            .unwrap_or_default()
+    }
+
+    /// Records the process ink of separated spot `plate` at every tint
+    /// byte, as Poppler converts a plate byte (`byteToCol`, 16.16 fixed
+    /// point) through the separation's `getCMYK`.
+    fn record_spot_table(&self, plate: usize, ink_at: impl Fn(f64) -> Option<[u8; 4]>) {
+        if !self.flatten_spots || plate < 4 {
+            return;
+        }
+        let known = match self.spot_tables.lock() {
+            Ok(tables) => tables.contains_key(&plate),
+            Err(_) => true,
+        };
+        if known {
+            return;
+        }
+        let mut table = [[0u8; 4]; 256];
+        for (byte, entry) in table.iter_mut().enumerate() {
+            let fixed = (byte << 8) + byte + (byte >> 7);
+            match ink_at(fixed as f64 / 65536.0) {
+                Some(ink) => *entry = ink,
+                None => return,
+            }
+        }
+        if let Ok(mut tables) = self.spot_tables.lock() {
+            tables.entry(plate).or_insert_with(|| Arc::new(table));
         }
     }
 
@@ -509,6 +605,21 @@ impl PlateTarget {
             _ => {}
         }
         if let Some(plate) = self.direct_plate(colorant) {
+            if let (Some(alt), Some(tint_fn)) = (arr.get(2), arr.get(3)) {
+                self.record_spot_table(plate, |tint| {
+                    process_ink_bytes(self.resolve_alternate(
+                        alt,
+                        tint_fn,
+                        "Separation",
+                        source,
+                        &[tint],
+                        reader,
+                        options,
+                        resources,
+                        depth,
+                    ))
+                });
+            }
             return InkResult::Ink(Ink::direct(&[(plate, tint)]));
         }
         let (Some(alt), Some(tint_fn)) = (arr.get(2), arr.get(3)) else {
@@ -564,6 +675,9 @@ impl PlateTarget {
             })
             .collect();
         if let Some(direct) = direct {
+            if self.flatten_spots {
+                self.record_device_n_tables(arr, &names, source, reader, options, resources, depth);
+            }
             return InkResult::Ink(Ink::direct(&direct));
         }
         let (Some(alt), Some(tint_fn)) = (arr.get(2), arr.get(3)) else {
@@ -572,6 +686,71 @@ impl PlateTarget {
         self.resolve_alternate(
             alt, tint_fn, "DeviceN", source, components, reader, options, resources, depth,
         )
+    }
+
+    /// Spot ink tables of the separated colorants of a DeviceN space: their
+    /// Separation in the `/Colorants` attribute when present, else the
+    /// DeviceN alternate with that colorant alone at the tint.
+    #[allow(clippy::too_many_arguments)]
+    fn record_device_n_tables(
+        &self,
+        arr: &[PdfObject],
+        names: &[&str],
+        source: Option<&PdfObject>,
+        reader: &PdfReader,
+        options: ColorTransformOptions,
+        resources: FunctionResources<'_>,
+        depth: u8,
+    ) {
+        let resolve_dict = |object: &PdfObject| -> Option<crate::object::PdfDictionary> {
+            reader.resolve(object.clone()).ok()?.as_dict().cloned()
+        };
+        let colorants = arr
+            .get(4)
+            .and_then(resolve_dict)
+            .and_then(|attributes| attributes.get("Colorants").and_then(resolve_dict));
+        for (index, name) in names.iter().enumerate() {
+            let Some(plate) = self.direct_plate(name).filter(|plate| *plate >= 4) else {
+                continue;
+            };
+            let separation = colorants
+                .as_ref()
+                .and_then(|colorants| colorants.get(name))
+                .and_then(|object| reader.resolve(object.clone()).ok())
+                .and_then(|object| object.as_array().map(|items| items.to_vec()))
+                .filter(|items| items.len() >= 4);
+            if let Some(separation) = separation {
+                self.record_spot_table(plate, |tint| {
+                    process_ink_bytes(self.resolve_alternate(
+                        &separation[2],
+                        &separation[3],
+                        "Separation",
+                        None,
+                        &[tint],
+                        reader,
+                        options,
+                        resources,
+                        depth,
+                    ))
+                });
+            } else if let (Some(alt), Some(tint_fn)) = (arr.get(2), arr.get(3)) {
+                self.record_spot_table(plate, |tint| {
+                    let mut components = vec![0.0; names.len()];
+                    components[index] = tint;
+                    process_ink_bytes(self.resolve_alternate(
+                        alt,
+                        tint_fn,
+                        "DeviceN",
+                        source,
+                        &components,
+                        reader,
+                        options,
+                        resources,
+                        depth,
+                    ))
+                });
+            }
+        }
     }
 
     /// Spot colours this pass set does not separate: tint transform to the
@@ -1253,6 +1432,24 @@ mod tests {
         // A single-plate pass never masks.
         let single = target([0, 0, 0], &[]).with_overprint_masking(true);
         assert_eq!(single.overprint_keep_mask(&ink), None);
+    }
+
+    #[test]
+    fn spot_plates_flatten_additively_like_poppler() {
+        let mut table = [[0u8; 4]; 256];
+        table[255] = [0, 61, 240, 0];
+        table[128] = [0, 31, 120, 0];
+        assert_eq!(
+            flatten_spot_inks([0, 102, 0, 0], [(255, &table)]),
+            [0, 163, 240, 0]
+        );
+        // Clamped at full ink.
+        assert_eq!(
+            flatten_spot_inks([0, 250, 100, 0], [(255, &table), (128, &table)]),
+            [0, 255, 255, 0]
+        );
+        // No spot ink keeps the process ink.
+        assert_eq!(flatten_spot_inks([1, 2, 3, 4], [(0, &table)]), [1, 2, 3, 4]);
     }
 
     #[test]

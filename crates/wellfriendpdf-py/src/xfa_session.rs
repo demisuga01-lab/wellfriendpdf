@@ -46,7 +46,7 @@ impl PyXfaFormSession {
 #[pymethods]
 impl PyXfaFormSession {
     /// Runs a JSON command (`{"op": "fields" | "value" | "set_value" |
-    /// "click" | "dispatch" | "validations" | "script_log" |
+    /// "type_text" | "click" | "dispatch" | "validations" | "script_log" |
     /// "export_data_xml" | "page_count" | "form_type", ...}`) and returns the
     /// JSON result string.
     fn command_json(&mut self, command_json: &str) -> PyResult<String> {
@@ -62,6 +62,13 @@ impl PyXfaFormSession {
     /// Edits a field (enter, change, exit, then calculate and validate).
     fn set_value(&mut self, py: Python<'_>, som: &str, value: &str) -> PyResult<Py<PyAny>> {
         let outcome = self.run(|session| session.set_field_value(som, value))?;
+        outcome_json(py, &outcome)
+    }
+
+    /// Types text keystroke by keystroke (one change event per character,
+    /// scripts may rewrite or cancel each), then commits and exits.
+    fn type_text(&mut self, py: Python<'_>, som: &str, text: &str) -> PyResult<Py<PyAny>> {
+        let outcome = self.run(|session| session.type_text(som, text))?;
         outcome_json(py, &outcome)
     }
 

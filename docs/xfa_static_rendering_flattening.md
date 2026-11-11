@@ -197,6 +197,16 @@ JavaScript engine) between calls:
   `<text maxChars>` (it is truncated), `postOpen`, the commit (open access
   only), `exit`; drop-down lists accept display text for their save value;
   an exclusion group takes the on value of the member to select.
+* `type_text(som, text)`: keystrokes into a text, numeric, password or
+  date edit (PDFium `CXFA_FFTextEdit::OnTextWillChange`): `enter`, then one
+  `change` event per character inserted at the caret (typing starts at the
+  end of the current text) with `xfa.event.prevText` (the text so far),
+  `change` (the character), `newText`, and `selStart` = `selEnd` = the
+  caret. Scripts may rewrite `change` (or the selection) or set
+  `cancelAction` to drop the keystroke; the caret follows the inserted text.
+  A keystroke into a field already at `<text maxChars>` fires `full`
+  instead (`CFDE_TextEditEngine::Insert`); numeric edits drop keystrokes
+  that would not leave a number. The text commits once, then `exit`.
 * `click(som)`: `mouseEnter`, `enter`, `mouseDown`, `mouseUp`; check boxes
   toggle and radio buttons select (clearing their exclusion group), firing
   `change` then `click` on the group and the button (a selected radio
@@ -213,15 +223,30 @@ disables scripts. `fields()`, `field_value()`, `validation_results()`,
 `script_log()` report the state; `render_xfa_page()` / `render_page_png()` /
 `layout_pdf()` re-merge and re-lay out the form with the session's changes
 (instances, presence, values); `export_data_xml()` serializes the data DOM
-as the `datasets` packet and `save_to_pdf()` fires `preSave`, writes it into
-the PDF as an incremental update (replacing the array's `datasets` stream,
-inserting one before the last packet as PDFium does, or splicing a whole-XDP
-stream), then fires `postSave`. Unlike PDFium, the `form` packet (form-DOM
-state such as presence changes) is not saved, and encrypted PDFs cannot be
-saved. The C ABI (`wellfriendpdf_xfa_session_*`), Python
-(`Document.xfa_session()`), WASM (`XfaSession`) and the `xfa-fill` CLI
-command (`--set SOM=VALUE`, `--click SOM`, `--event SOM=ACTIVITY`, `-o`,
-`--png`, `--json`) wrap it; bindings use `XfaFormSession::command_json`.
+as the `datasets` packet and `export_form_xml()` the form DOM as the `form`
+packet (every merged container of the root subform with its name and
+presence, fields with their values, one element per subform instance).
+`save_to_pdf()` fires `preSave`, writes both into the PDF as an incremental
+update, as PDFium's `SaveXFADocumentData` writes `datasets` and `form`
+(replacing the array's streams, inserting a missing `datasets` before the
+last packet and a missing `form` after it, or splicing a whole-XDP stream),
+then fires `postSave`. Encrypted PDFs cannot be saved.
+
+Opening a document with a `form` packet (rendering or a session) merges it
+into the freshly merged form like PDFium's data merge reuses the loaded
+form DOM: saved containers match by element, name and position; their
+`presence` applies, fields not bound to data take the saved value (bound
+fields keep the data's), and a named repeatable subform saved with more
+instances than the merge produced gets the missing ones (up to `occur
+max`). So presence, instance and value changes made by scripts survive a
+save and reopen. The packet's `checksum` is not checked.
+
+The C ABI (`wellfriendpdf_xfa_session_*`), Python
+(`Document.xfa_session()`, `type_text`), WASM (`XfaSession`) and the
+`xfa-fill` CLI command (`--set SOM=VALUE`, `--type SOM=TEXT`, `--click SOM`,
+`--event SOM=ACTIVITY`, `-o`, `--png`, `--json`) wrap it; bindings use
+`XfaFormSession::command_json` (ops include `type_text` and
+`export_form_xml`).
 
 ## Barcodes
 
