@@ -438,3 +438,21 @@ this set renders about 8.6x faster than Poppler, 2.3x faster than PDFium and
 1.2x faster than MuPDF in total wall time. Its peak RSS is higher on one
 document (673 MB, a page with very large images); the median is in line with
 the other engines.
+
+## Text extraction on hard-font PDFs (final build, 2026-11-12)
+
+Four PDFs whose fonts carry little or no Unicode information, extracted
+with `pdftotext` (Poppler 26.07), pypdfium2 `get_text_range` (PDFium),
+`mutool draw -F txt` (MuPDF 1.27) and `wellfriendpdf extract-text`.
+
+| PDF | Poppler | PDFium | MuPDF | Wellfriend |
+|---|---|---|---|---|
+| TAMReview (letters+digits / garbage chars) | 10,195 / 46,378 | 8,735 / 39,963 | 7,677 / 50,731 | **47,689 / 0** |
+| issue5801 (Polish weekday table) | garbage | garbage | garbage | **correct text** ("piątek, czwartek, … poniedziałek") |
+| ThuluthFeatures (real Arabic letters) | 19 | 19 | 0 | **337** |
+| issue5874 (real Arabic letters / invented CJK chars) | 41 / 0 | 52 / 26 | 41 / 0 | 41 / 0 |
+
+On `issue5874` no engine recovers more than the same 41 Arabic letters: the
+remaining glyphs are ligatures with no Unicode mapping in the file (PDFium's
+extra letters come with 26 invented CJK characters). Wellfriend marks the
+unrecoverable glyphs with U+FFFD instead of inventing characters.
