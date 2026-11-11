@@ -432,6 +432,55 @@ fn ean(value: &str, len: usize) -> Option<Symbol> {
     })
 }
 
+/// Where PDFium draws the human-readable digits of EAN-8, EAN-13 and UPC-A
+/// symbols (`CBC_OnedEAN13Writer::ShowChars`, `CBC_OnedEAN8Writer`,
+/// `CBC_OnedUPCAWriter`): in module units of the quiet-zone-padded
+/// symbol, the digit groups sit in white boxes below the bars, between the
+/// guard bars, which run down to the bottom edge.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EanText {
+    /// Modules across the widget: the symbol plus PDFium's 7-module quiet
+    /// zones (left for EAN-13; both sides for UPC-A).
+    pub total_modules: f64,
+    /// Modules before the first bar.
+    pub left_pad: f64,
+    /// Digit groups: (digit range of the text, module x, module width).
+    /// The digits are centred in the width; the white box is half a module
+    /// narrower.
+    pub groups: Vec<(std::ops::Range<usize>, f64, f64)>,
+}
+
+pub(crate) fn ean_text_layout(kind: Symbology) -> Option<EanText> {
+    Some(match kind {
+        // 95 modules + left padding; the leading digit (encoded in the
+        // parity pattern) is drawn in the quiet zone.
+        Symbology::Ean13 => EanText {
+            total_modules: 102.0,
+            left_pad: 7.0,
+            groups: vec![(0..1, 0.0, 7.0), (1..7, 10.0, 42.0), (7..13, 57.0, 42.0)],
+        },
+        Symbology::Ean8 => EanText {
+            total_modules: 67.0,
+            left_pad: 0.0,
+            groups: vec![(0..4, 3.0, 28.0), (4..8, 36.0, 28.0)],
+        },
+        // 95 modules + padding on both sides; the number-system and check
+        // digits are drawn outside, beside the guard-height bars of their
+        // symbol characters.
+        Symbology::UpcA => EanText {
+            total_modules: 109.0,
+            left_pad: 7.0,
+            groups: vec![
+                (0..1, 0.0, 7.0),
+                (1..6, 17.0, 35.0),
+                (6..11, 57.0, 35.0),
+                (11..12, 102.0, 7.0),
+            ],
+        },
+        _ => return None,
+    })
+}
+
 // ----------------------------------------------------------------- QR Code
 
 fn qr(value: &str, level: i32) -> Option<Symbol> {
@@ -1060,6 +1109,21 @@ mod tests {
         };
         assert_eq!(text, "96385074");
         assert_eq!(modules(&ean8).len(), 67);
+        // PDFium's text layout: the groups cover the digits, in order and
+        // within the padded symbol, clear of the guard bars.
+        for (kind, digits, bits) in [
+            (Symbology::Ean13, 13, 95.0),
+            (Symbology::Ean8, 8, 67.0),
+            (Symbology::UpcA, 12, 95.0),
+        ] {
+            let layout = ean_text_layout(kind).unwrap();
+            let covered: Vec<usize> = layout.groups.iter().flat_map(|g| g.0.clone()).collect();
+            assert_eq!(covered, (0..digits).collect::<Vec<_>>());
+            assert!(layout.left_pad + bits <= layout.total_modules);
+            for pair in layout.groups.windows(2) {
+                assert!(pair[0].1 + pair[0].2 <= pair[1].1 + 0.01);
+            }
+        }
     }
 
     #[test]
