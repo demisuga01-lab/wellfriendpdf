@@ -5,6 +5,42 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- Native CMYK raster output (Poppler `splashModeCMYK8`, `pdftoppm
+  -jpegcmyk`): `ContentEngine::render_page_cmyk_with_contract` and
+  `RenderContract::pixel_format = PixelFormat::Cmyk8` composite the page in
+  CMYK instead of converting the RGB render. The page is rendered in plate
+  passes (C/M/Y together, then K; one plate per pass when an overprinting
+  paint names only some plates of a pass) through the normal compositor with
+  every colour replaced by inverted plate ink, so coverage, clipping,
+  constant and soft-mask alpha, groups and the separable blend modes
+  composite each plate exactly (separable blends on complemented values are
+  the PDF rule for subtractive spaces). DeviceCMYK fills, strokes, text,
+  images (raw, DCT, JPX, Indexed, ICC N=4) and shadings keep their exact
+  components; DeviceGray is black ink; RGB, ICC N=3, Lab and Cal spaces
+  convert with Poppler's uncalibrated undercolour-removal formula (ICC
+  through the CMM to sRGB first); Separation/DeviceN colorants named
+  Cyan/Magenta/Yellow/Black paint their plates and spot colours go through
+  their alternate and tint transform. Overprint (`OP`/`op`/`OPM`) is
+  honoured natively per plate, unless `OverprintPolicy::Disabled`: a spot
+  mapped through its alternate overprints the plates its full-tint
+  alternate inks. Luminosity soft masks are still computed from RGB. Pages
+  using what the plate compositor lacks — non-separable blend modes,
+  transfer functions, colour-font (COLR/SVG/bitmap) glyphs, forced colour
+  schemes, form-field highlights, linear-light compositing, proof/halftone/
+  colour-scheme post-processing — fall back to RGB render plus conversion,
+  reported in `CmykRaster::native` / `diagnostics`. The RGB render is
+  unchanged.
+- DeviceN plate output (Poppler `splashModeDeviceN8`):
+  `render_page_separations_with_contract_and_cache` returns one 8-bit ink
+  plate per colorant: the four process plates plus up to `max_spots` (at
+  most 32) spot colours the page paints, found with the separation
+  framebuffer. A separated spot paints only its own plate; further spots map
+  to CMYK through their alternates.
+- CLI: `render --cmyk` (jpg, tiff) now composites natively; `--cmyk-method
+  convert` keeps the RGB conversion. `render --separations [--max-spots N]`
+  writes one grey image per plate (`page-001-Cyan.png`, ...,
+  `page-001-PANTONE_123_C.png`; full ink is black) for png, tiff and pnm.
+
 - Damaged images keep more of their content. CCITT Group 3 streams
   resynchronise on the next end-of-line marker after a damaged row, as in
   Poppler, instead of dropping every later row. JBIG2 streams with a damaged
