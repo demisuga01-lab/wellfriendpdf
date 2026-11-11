@@ -564,7 +564,10 @@ pub use render::{
     BACKEND_DOCUMENT_PLAN_ARENA_REPORT_SCHEMA_VERSION, BACKEND_PLAN_ARENA_REPORT_SCHEMA_VERSION,
     BLACK, BLUE, DOCUMENT_VIEWS_REPORT_SCHEMA_VERSION, GREEN, RED, TRANSPARENT, WHITE,
 };
-pub use render::{render_page_svg, render_page_svg_strict, svg, text_decode};
+pub use render::{
+    render_page_svg, render_page_svg_strict, render_page_svg_with_options, svg, text_decode,
+    SvgOptions, SvgTextMode,
+};
 pub use runtime::*;
 pub use sdk::REPORT_ENVELOPE_VERSION;
 pub use secure_mutation::{

@@ -4907,6 +4907,19 @@ impl ContentEngine {
         crate::render::render_page_svg_strict(self, page_number, dpi)
     }
 
+    /// Render a page to SVG with explicit [`crate::render::SvgOptions`]:
+    /// text as outlines (the default) or as `<text>` in embedded subset
+    /// fonts ([`crate::render::SvgTextMode::EmbeddedFonts`]), and the strict
+    /// vector policy of [`Self::render_page_svg_strict`].
+    pub fn render_page_svg_with_options(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        options: &crate::render::SvgOptions,
+    ) -> Result<crate::render::SvgPage> {
+        crate::render::render_page_svg_with_options(self, page_number, dpi, options)
+    }
+
     /// Render a single page to a PostScript page body (the building block of the
     /// `render --format ps` / `pdftops` equivalent). See
     /// [`crate::render::postscript`]. Pages using only path/text/solid-fill/clip

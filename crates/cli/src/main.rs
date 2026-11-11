@@ -3061,6 +3061,11 @@ struct RenderArgs {
     /// For svg, ps, and eps output, refuse whole-page raster fallback instead of compatibility raster embedding.
     #[arg(long)]
     strict_vector: bool,
+    /// SVG text: outlines (glyph paths, renders identically everywhere) or
+    /// fonts (visible <text> in subset fonts embedded as @font-face data
+    /// URIs; glyphs whose font cannot be embedded stay outlines).
+    #[arg(long, default_value = "outlines", value_parser = ["outlines", "fonts"])]
+    svg_text: String,
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
@@ -9743,6 +9748,9 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         || args.transparent
         || args.cmyk
         || args.separations;
+    if args.svg_text != "outlines" && format_name != "svg" {
+        return Err(usage_error("--svg-text applies only to svg output"));
+    }
     if matches!(format_name.as_str(), "svg" | "ps" | "eps") {
         if raster_only_flags {
             return Err(usage_error(
@@ -12392,14 +12400,18 @@ fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(1));
 
+    let svg_options = wellfriendpdf_engine::SvgOptions {
+        text_mode: if args.svg_text == "fonts" {
+            wellfriendpdf_engine::SvgTextMode::EmbeddedFonts
+        } else {
+            wellfriendpdf_engine::SvgTextMode::Outlines
+        },
+        strict_vector: args.strict_vector,
+    };
     let mut rendered = 0usize;
     let mut rasterized_fallback = 0usize;
     for page_num in &page_nums {
-        let page_result = if args.strict_vector {
-            engine.render_page_svg_strict(*page_num, dpi)
-        } else {
-            engine.render_page_svg(*page_num, dpi)
-        };
+        let page_result = engine.render_page_svg_with_options(*page_num, dpi, &svg_options);
         let page = match page_result {
             Ok(page) => page,
             Err(err) => {
@@ -12429,6 +12441,7 @@ fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
                 "format": "svg",
                 "dpi": dpi,
                 "strict_vector": args.strict_vector,
+                "svg_text": args.svg_text,
                 "pages_requested": page_nums.len(),
                 "pages_rendered": rendered,
                 "rasterized_fallback_pages": rasterized_fallback,
