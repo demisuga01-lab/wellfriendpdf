@@ -3016,10 +3016,29 @@ struct RenderArgs {
     /// (pdftocairo -transp). Same as --background 255,255,255,0.
     #[arg(long)]
     transparent: bool,
-    /// CMYK output for jpg (Adobe YCCK) and tiff (Separated), converted from
-    /// the rendered RGB with the uncalibrated DeviceRGB to DeviceCMYK formula.
+    /// CMYK output for jpg (Adobe YCCK) and tiff (Separated), like pdftoppm
+    /// -jpegcmyk / -tiff with CMYK: see --cmyk-method.
     #[arg(long, conflicts_with_all = ["gray", "mono"])]
     cmyk: bool,
+    /// How --cmyk produces CMYK. native composites in CMYK (DeviceCMYK paint
+    /// stays exact, other colours convert to CMYK, spot colours go through
+    /// their alternates, overprint is honoured per plate); a page using a
+    /// feature the CMYK compositor lacks (non-separable blend modes, transfer
+    /// functions, colour-font glyphs) falls back to convert with a warning.
+    /// convert renders RGB and applies the uncalibrated DeviceRGB to
+    /// DeviceCMYK formula.
+    #[arg(long, default_value = "native", value_parser = ["native", "convert"])]
+    cmyk_method: String,
+    /// Write one 8-bit grey image per ink plate instead of the composite
+    /// (Poppler DeviceN8 plates): page-001-Cyan.png, -Magenta, -Yellow,
+    /// -Black, then one per spot colour the page uses. Full ink is black.
+    /// For png, tiff and pnm output.
+    #[arg(long, conflicts_with_all = ["gray", "mono", "cmyk", "transparent"])]
+    separations: bool,
+    /// Most spot colours --separations writes as their own plates; further
+    /// spots are mapped to the process plates through their alternates.
+    #[arg(long, default_value_t = 16)]
+    max_spots: usize,
     /// TIFF compression: none, packbits, or deflate.
     #[arg(long, default_value = "deflate", value_parser = ["none", "packbits", "deflate", "zip"])]
     tiff_compression: String,
@@ -8753,6 +8772,11 @@ struct RenderedPageOutput {
     extension: &'static str,
     contract_json: Option<Vec<u8>>,
     font_substitution_json: Option<Vec<u8>>,
+    /// `--separations`: one encoded image per plate (file-name suffix,
+    /// bytes), written instead of `bytes`.
+    plates: Vec<(String, Vec<u8>)>,
+    /// Render notes worth a warning (e.g. a native CMYK fallback).
+    diagnostics: Vec<String>,
 }
 
 fn render_args_have_contract_options(args: &RenderArgs) -> bool {
@@ -9424,6 +9448,102 @@ fn encode_cli_render_buffer(
     }
 }
 
+/// Encode a natively composited CMYK page (jpg: Adobe CMYK/YCCK, tiff:
+/// Separated).
+fn encode_cli_cmyk_raster(
+    output_format: CliRenderRasterFormat,
+    raster: wellfriendpdf_engine::render::CmykRaster,
+    settings: &CliRasterEncodeSettings,
+) -> wellfriendpdf_engine::Result<Vec<u8>> {
+    use wellfriendpdf_engine::images::raster::{self, JpegOptions};
+    use wellfriendpdf_engine::images::tiff::{self, TiffOptions, TiffPixels};
+    let image = wellfriendpdf_engine::RawImage {
+        width: raster.width,
+        height: raster.height,
+        channels: 4,
+        bits_per_sample: 8,
+        pixels: raster.pixels,
+    };
+    match output_format {
+        CliRenderRasterFormat::Jpeg => raster::encode_jpeg(
+            &image,
+            true,
+            &JpegOptions {
+                quality: settings.quality,
+                progressive: settings.jpeg_progressive,
+                optimize_huffman: settings.jpeg_optimize,
+                metadata: settings.metadata.clone(),
+            },
+        ),
+        CliRenderRasterFormat::Tiff => tiff::encode_tiff(
+            TiffPixels::Cmyk(&image),
+            &TiffOptions {
+                compression: settings.tiff_compression,
+                dpi: settings.metadata.dpi,
+            },
+        ),
+        _ => Err(wellfriendpdf_engine::WellfriendError::UnsupportedFeature(
+            "--cmyk applies to jpg and tiff output".to_string(),
+        )),
+    }
+}
+
+/// Encode one ink plate (0 = no ink) as an 8-bit grey image with full ink
+/// black, like a separation film.
+fn encode_cli_separation_plate(
+    output_format: CliRenderRasterFormat,
+    width: u32,
+    height: u32,
+    ink: &[u8],
+    settings: &CliRasterEncodeSettings,
+) -> wellfriendpdf_engine::Result<Vec<u8>> {
+    use wellfriendpdf_engine::images::raster::{self, PngEffort};
+    use wellfriendpdf_engine::images::tiff::{self, TiffOptions, TiffPixels};
+    let image = wellfriendpdf_engine::RawImage {
+        width,
+        height,
+        channels: 1,
+        bits_per_sample: 8,
+        pixels: ink.iter().map(|ink| 255 - ink).collect(),
+    };
+    match output_format {
+        CliRenderRasterFormat::Png => {
+            raster::encode_png(&image, &settings.metadata, PngEffort::Fast)
+        }
+        CliRenderRasterFormat::Tiff => tiff::encode_tiff(
+            TiffPixels::Gray(&image),
+            &TiffOptions {
+                compression: settings.tiff_compression,
+                dpi: settings.metadata.dpi,
+            },
+        ),
+        CliRenderRasterFormat::Pnm => raster::encode_pnm(&image),
+        _ => Err(wellfriendpdf_engine::WellfriendError::UnsupportedFeature(
+            "--separations applies to png, tiff and pnm output".to_string(),
+        )),
+    }
+}
+
+/// File-name suffix for a plate: the colorant name with characters outside
+/// `[A-Za-z0-9._-]` replaced by `_`.
+fn cli_plate_file_stem(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if stem.is_empty() {
+        "plate".to_string()
+    } else {
+        stem
+    }
+}
+
 /// Requested resolution and pixel-size options, resolved per page the way
 /// pdftoppm does it.
 #[derive(Clone, Copy, Debug)]
@@ -9620,11 +9740,12 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         || args.gray
         || args.mono
         || args.transparent
-        || args.cmyk;
+        || args.cmyk
+        || args.separations;
     if matches!(format_name.as_str(), "svg" | "ps" | "eps") {
         if raster_only_flags {
             return Err(usage_error(
-                "--rx, --ry, --scale-to*, --gray, --mono, --transparent and --cmyk apply only to raster output",
+                "--rx, --ry, --scale-to*, --gray, --mono, --transparent, --cmyk and --separations apply only to raster output",
             ));
         }
         if base_dpi.fract() != 0.0 {
@@ -9731,6 +9852,17 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         }
         _ => {}
     }
+    if args.separations
+        && !matches!(
+            output_format,
+            CliRenderRasterFormat::Png | CliRenderRasterFormat::Tiff | CliRenderRasterFormat::Pnm
+        )
+    {
+        return Err(usage_error(
+            "--separations applies to png, tiff and pnm output",
+        ));
+    }
+    let native_cmyk = color == CliRasterColor::Cmyk && args.cmyk_method == "native";
     if args.transparent {
         if !matches!(
             output_format,
@@ -9779,8 +9911,12 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         jpeg_progressive: args.jpeg_progressive,
         jpeg_optimize: args.jpeg_optimize,
     };
-    let use_contract =
-        contract_requested || output_format.is_raw() || !scaling.is_plain() || args.transparent;
+    let use_contract = contract_requested
+        || output_format.is_raw()
+        || !scaling.is_plain()
+        || args.transparent
+        || native_cmyk
+        || args.separations;
     let extension = cli_render_extension(output_format, color);
 
     let mut engine = open_engine(&args.pdf, &args.password)?;
@@ -9853,6 +9989,60 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             } else {
                 None
             };
+            if native_cmyk {
+                let raster = engine
+                    .render_page_cmyk_with_contract_and_cache(
+                        &contract,
+                        &CancelToken::none(),
+                        document_cache,
+                    )
+                    .map_err(|err| err.to_string())?;
+                let diagnostics = raster.diagnostics.clone();
+                let bytes = encode_cli_cmyk_raster(output_format, raster, &settings)
+                    .map_err(|err| err.to_string())?;
+                return Ok(RenderedPageOutput {
+                    bytes,
+                    extension,
+                    contract_json,
+                    font_substitution_json: None,
+                    plates: Vec::new(),
+                    diagnostics,
+                });
+            }
+            if args.separations {
+                let raster = engine
+                    .render_page_separations_with_contract_and_cache(
+                        &contract,
+                        &CancelToken::none(),
+                        args.max_spots,
+                        document_cache,
+                    )
+                    .map_err(|err| err.to_string())?;
+                let mut plates = Vec::with_capacity(raster.plates.len());
+                for plate in &raster.plates {
+                    let bytes = encode_cli_separation_plate(
+                        output_format,
+                        raster.width,
+                        raster.height,
+                        &plate.pixels,
+                        &settings,
+                    )
+                    .map_err(|err| err.to_string())?;
+                    plates.push((cli_plate_file_stem(&plate.name), bytes));
+                }
+                return Ok(RenderedPageOutput {
+                    bytes: Vec::new(),
+                    extension: if matches!(output_format, CliRenderRasterFormat::Pnm) {
+                        "pgm"
+                    } else {
+                        extension
+                    },
+                    contract_json,
+                    font_substitution_json: None,
+                    plates,
+                    diagnostics: raster.diagnostics,
+                });
+            }
             if output_format.is_raw() {
                 let len = contract
                     .stride
@@ -9879,6 +10069,8 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                     extension: output_format.file_extension(),
                     contract_json,
                     font_substitution_json,
+                    plates: Vec::new(),
+                    diagnostics: Vec::new(),
                 });
             }
             let (buf, font_substitution_json) = if args.font_substitution_report {
@@ -9909,6 +10101,8 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 extension,
                 contract_json,
                 font_substitution_json,
+                plates: Vec::new(),
+                diagnostics: Vec::new(),
             });
         }
 
@@ -9934,6 +10128,8 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             extension,
             contract_json: None,
             font_substitution_json,
+            plates: Vec::new(),
+            diagnostics: Vec::new(),
         })
     };
 
@@ -10003,9 +10199,19 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         } else {
             zip_opts
         };
-        let filename = format!("page-{:03}.{}", page_num, output.extension);
-        zip.start_file(&filename, page_opts)?;
-        zip.write_all(&output.bytes)?;
+        for diagnostic in &output.diagnostics {
+            eprintln!("Warning: page {page_num}: {diagnostic}");
+        }
+        if output.plates.is_empty() {
+            let filename = format!("page-{:03}.{}", page_num, output.extension);
+            zip.start_file(&filename, page_opts)?;
+            zip.write_all(&output.bytes)?;
+        }
+        for (plate, bytes) in &output.plates {
+            let filename = format!("page-{:03}-{}.{}", page_num, plate, output.extension);
+            zip.start_file(&filename, page_opts)?;
+            zip.write_all(bytes)?;
+        }
         if let Some(contract_json) = output.contract_json {
             let filename = format!("page-{:03}.contract.json", page_num);
             zip.start_file(&filename, zip_opts)?;
