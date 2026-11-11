@@ -10133,39 +10133,133 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         })
     };
 
-    let rendered_pages: Vec<(usize, Result<RenderedPageOutput, String>)> =
-        if page_nums.len() >= PARALLEL_RENDER_PAGE_THRESHOLD {
-            page_nums
-                .par_iter()
-                .map_init(
-                    RenderDocumentCache::single_pass,
-                    |document_cache, &page_num| (page_num, encode_page(page_num, document_cache)),
-                )
-                .collect()
-        } else {
-            let mut document_cache = RenderDocumentCache::single_pass();
-            page_nums
-                .iter()
-                .map(|&page_num| (page_num, encode_page(page_num, &mut document_cache)))
-                .collect()
+    // Pages are written to the ZIP as they finish, in page order, so a long
+    // book never holds every encoded page in memory at once (the old
+    // collect-then-write path peaked at several GB on 1,000-page books). The
+    // output file is created at the first successful page, so a render in
+    // which no page succeeds still writes nothing.
+    let requested_count = page_nums.len();
+    let zip_opts = FileOptions::<()>::default()
+        .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(1));
+    let mut zip: Option<ZipWriter<std::fs::File>> = None;
+    let mut render_failures: Vec<(usize, String)> = Vec::new();
+    let mut rendered_count = 0usize;
+    let mut contract_sidecars = 0usize;
+    let mut font_substitution_sidecars = 0usize;
+    {
+        let mut write_page = |page_num: usize,
+                              output: Result<RenderedPageOutput, String>|
+         -> Result<(), Box<dyn Error>> {
+            let output = match output {
+                Ok(output) => output,
+                Err(error) => {
+                    eprintln!("Warning: skipped page {}: {}", page_num, error);
+                    render_failures.push((page_num, error));
+                    return Ok(());
+                }
+            };
+            if zip.is_none() {
+                zip = Some(ZipWriter::new(std::fs::File::create(&args.output)?));
+            }
+            let zip = zip.as_mut().expect("zip writer was just created");
+            // PNG, JPEG and WebP are already compressed; deflating them again
+            // costs time for no size gain.
+            let page_opts = if matches!(output.extension, "png" | "jpg" | "jpeg" | "webp") {
+                FileOptions::<()>::default().compression_method(CompressionMethod::Stored)
+            } else {
+                zip_opts
+            };
+            for diagnostic in &output.diagnostics {
+                eprintln!("Warning: page {page_num}: {diagnostic}");
+            }
+            if output.plates.is_empty() {
+                let filename = format!("page-{:03}.{}", page_num, output.extension);
+                zip.start_file(&filename, page_opts)?;
+                zip.write_all(&output.bytes)?;
+            }
+            for (plate, bytes) in &output.plates {
+                let filename = format!("page-{:03}-{}.{}", page_num, plate, output.extension);
+                zip.start_file(&filename, page_opts)?;
+                zip.write_all(bytes)?;
+            }
+            if let Some(contract_json) = output.contract_json {
+                let filename = format!("page-{:03}.contract.json", page_num);
+                zip.start_file(&filename, zip_opts)?;
+                zip.write_all(&contract_json)?;
+                contract_sidecars += 1;
+            }
+            if let Some(font_substitution_json) = output.font_substitution_json {
+                let filename = format!("page-{:03}.font-substitution.json", page_num);
+                zip.start_file(&filename, zip_opts)?;
+                zip.write_all(&font_substitution_json)?;
+                font_substitution_sidecars += 1;
+            }
+            rendered_count += 1;
+            Ok(())
         };
 
-    let requested_count = page_nums.len();
-    let render_failures = rendered_pages
-        .iter()
-        .filter_map(|(page_num, output)| {
-            output
-                .as_ref()
-                .err()
-                .map(|error| (*page_num, error.clone()))
-        })
-        .collect::<Vec<_>>();
-    for (page_num, error) in &render_failures {
-        eprintln!("Warning: skipped page {}: {}", page_num, error);
+        if page_nums.len() >= PARALLEL_RENDER_PAGE_THRESHOLD {
+            // Workers pull pages in order (par_bridge), keep one document cache
+            // each for the whole run, and hand finished pages to this thread,
+            // which reorders the few that arrive early and writes them. Memory
+            // stays bounded by the pages in flight, not the page count.
+            use std::sync::atomic::{AtomicBool, Ordering};
+            let window = rayon::current_num_threads().max(1) * 2;
+            let (tx, rx) = std::sync::mpsc::sync_channel::<(
+                usize,
+                usize,
+                Result<RenderedPageOutput, String>,
+            )>(window);
+            let stop = AtomicBool::new(false);
+            let mut write_result: Result<(), Box<dyn Error>> = Ok(());
+            std::thread::scope(|scope| {
+                let stop = &stop;
+                let encode_page = &encode_page;
+                let page_nums = &page_nums;
+                scope.spawn(move || {
+                    page_nums
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .par_bridge()
+                        .for_each_init(
+                            || (RenderDocumentCache::single_pass(), tx.clone()),
+                            |(document_cache, tx), (index, page_num)| {
+                                if stop.load(Ordering::Relaxed) {
+                                    return;
+                                }
+                                let output = encode_page(page_num, document_cache);
+                                let _ = tx.send((index, page_num, output));
+                            },
+                        );
+                });
+                let mut pending = std::collections::BTreeMap::new();
+                let mut next = 0usize;
+                for (index, page_num, output) in rx {
+                    pending.insert(index, (page_num, output));
+                    while let Some((page_num, output)) = pending.remove(&next) {
+                        next += 1;
+                        if write_result.is_ok() {
+                            if let Err(err) = write_page(page_num, output) {
+                                write_result = Err(err);
+                                stop.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            });
+            write_result?;
+        } else {
+            let mut document_cache = RenderDocumentCache::single_pass();
+            for &page_num in &page_nums {
+                write_page(page_num, encode_page(page_num, &mut document_cache))?;
+            }
+        }
     }
     // Like Poppler, PDFium and MuPDF, one bad page must not cost the whole
-    // document: write every page that rendered and list the rest. Only a
-    // render where no page succeeded is an error.
+    // document: every page that rendered is written and the rest are listed.
+    // Only a render where no page succeeded is an error.
     if render_failures.len() == requested_count {
         let details = render_failures
             .iter()
@@ -10178,55 +10272,9 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-
-    let out_file = std::fs::File::create(&args.output)?;
-    let mut zip = ZipWriter::new(out_file);
-    let zip_opts = FileOptions::<()>::default()
-        .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(1));
-
-    let mut rendered_count = 0usize;
-    let mut contract_sidecars = 0usize;
-    let mut font_substitution_sidecars = 0usize;
-    for (page_num, output) in rendered_pages {
-        let Ok(output) = output else {
-            continue;
-        };
-        // PNG, JPEG and WebP are already compressed; deflating them again
-        // costs time for no size gain.
-        let page_opts = if matches!(output.extension, "png" | "jpg" | "jpeg" | "webp") {
-            FileOptions::<()>::default().compression_method(CompressionMethod::Stored)
-        } else {
-            zip_opts
-        };
-        for diagnostic in &output.diagnostics {
-            eprintln!("Warning: page {page_num}: {diagnostic}");
-        }
-        if output.plates.is_empty() {
-            let filename = format!("page-{:03}.{}", page_num, output.extension);
-            zip.start_file(&filename, page_opts)?;
-            zip.write_all(&output.bytes)?;
-        }
-        for (plate, bytes) in &output.plates {
-            let filename = format!("page-{:03}-{}.{}", page_num, plate, output.extension);
-            zip.start_file(&filename, page_opts)?;
-            zip.write_all(bytes)?;
-        }
-        if let Some(contract_json) = output.contract_json {
-            let filename = format!("page-{:03}.contract.json", page_num);
-            zip.start_file(&filename, zip_opts)?;
-            zip.write_all(&contract_json)?;
-            contract_sidecars += 1;
-        }
-        if let Some(font_substitution_json) = output.font_substitution_json {
-            let filename = format!("page-{:03}.font-substitution.json", page_num);
-            zip.start_file(&filename, zip_opts)?;
-            zip.write_all(&font_substitution_json)?;
-            font_substitution_sidecars += 1;
-        }
-        rendered_count += 1;
+    if let Some(zip) = zip {
+        zip.finish()?;
     }
-    zip.finish()?;
 
     if args.json {
         let summary_pixel_format = input_contract
