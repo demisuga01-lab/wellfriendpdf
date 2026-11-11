@@ -402,6 +402,36 @@ pub(crate) enum Request {
     Validate(usize),
 }
 
+/// The `$event` (`xfa.event`) properties of the event being dispatched
+/// (PDFium `CXFA_EventParam`); empty outside interactive events.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct EventState {
+    pub name: String,
+    pub change: String,
+    pub prev_text: String,
+    pub full_text: String,
+    pub sel_start: i64,
+    pub sel_end: i64,
+    /// The node the event was dispatched to (`xfa.event.target`).
+    pub target: Option<usize>,
+    /// `xfa.event.cancelAction`, set by a script to veto the change.
+    pub cancel_action: bool,
+}
+
+impl EventState {
+    /// The text after the change: the selection of `prevText` replaced by
+    /// `change` (PDFium `CXFA_EventParam::GetNewText`).
+    pub(crate) fn new_text(&self) -> String {
+        let chars: Vec<char> = self.prev_text.chars().collect();
+        let start = (self.sel_start.max(0) as usize).min(chars.len());
+        let end = (self.sel_end.max(0) as usize).clamp(start, chars.len());
+        let mut out: String = chars[..start].iter().collect();
+        out.push_str(&self.change);
+        out.extend(chars[end..].iter());
+        out
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LayoutInfo {
     pub page_count: usize,
@@ -477,6 +507,11 @@ pub(crate) struct Dom {
     pub validate_ready: bool,
     /// Form nodes whose value changed since they were last validated.
     pub validate_dirty: HashSet<usize>,
+    /// `$event` of the interactive event being dispatched.
+    pub event: EventState,
+    /// Qualified element names and namespace declarations of data nodes
+    /// loaded from the datasets packet (for exporting it again).
+    pub data_xml: HashMap<usize, (String, Vec<(String, String)>)>,
 }
 
 /// SOM index: none, `[n]`, `[+n]`/`[-n]`, `[*]`.
@@ -652,6 +687,8 @@ impl Dom {
             validations_enabled: true,
             validate_ready: false,
             validate_dirty: HashSet::new(),
+            event: EventState::default(),
+            data_xml: HashMap::new(),
         }
     }
 
@@ -1560,13 +1597,27 @@ impl Dom {
                 "className" => Val::Str("layoutPseudoModel".into()),
                 _ => Val::Null,
             }),
-            Obj::Event => Ok(match name {
-                "name" | "change" | "newText" | "prevText" | "fullText" | "newContentType"
-                | "prevContentType" | "selEnd" | "selStart" | "soapFaultCode"
-                | "soapFaultString" | "commitKey" | "keyDown" => Val::Str(String::new()),
-                "className" => Val::Str("eventPseudoModel".into()),
-                _ => Val::Null,
-            }),
+            Obj::Event => {
+                let event = &self.event;
+                Ok(match name {
+                    "name" => Val::Str(event.name.clone()),
+                    "change" => Val::Str(event.change.clone()),
+                    "newText" => Val::Str(event.new_text()),
+                    "prevText" => Val::Str(event.prev_text.clone()),
+                    "fullText" => Val::Str(event.full_text.clone()),
+                    "selStart" => Val::Num(event.sel_start as f64),
+                    "selEnd" => Val::Num(event.sel_end as f64),
+                    "cancelAction" => Val::Bool(event.cancel_action),
+                    "modifier" | "shift" | "keyDown" | "reenter" => Val::Bool(false),
+                    "commitKey" => Val::Num(0.0),
+                    "target" => event.target.map_or(Val::Null, |id| Val::Obj(Obj::Node(id))),
+                    "newContentType" | "prevContentType" | "soapFaultCode" | "soapFaultString" => {
+                        Val::Str(String::new())
+                    }
+                    "className" => Val::Str("eventPseudoModel".into()),
+                    _ => Val::Null,
+                })
+            }
             Obj::Data | Obj::Template => Ok(Val::Null),
             Obj::Prop { node, path } => self.get_prop(*node, path, name),
         }
@@ -1947,6 +1998,28 @@ impl Dom {
                         Val::Str(s) => !matches!(s.trim(), "" | "0" | "false"),
                         other => other.to_num() != 0.0,
                     };
+                }
+                Ok(())
+            }
+            Obj::Event => {
+                // Scripts may rewrite the pending change (PDFium copies
+                // `change`, the selection and `cancelAction` back).
+                match name {
+                    "change" => {
+                        let text = value.to_text();
+                        self.check_string(&text)?;
+                        self.event.change = text;
+                    }
+                    "selStart" => self.event.sel_start = value.to_num() as i64,
+                    "selEnd" => self.event.sel_end = value.to_num() as i64,
+                    "cancelAction" => {
+                        self.event.cancel_action = match value {
+                            Val::Bool(b) => *b,
+                            Val::Str(s) => !matches!(s.trim(), "" | "0" | "false"),
+                            other => other.to_num() != 0.0,
+                        }
+                    }
+                    _ => {}
                 }
                 Ok(())
             }

@@ -21,12 +21,17 @@ mod paint;
 mod picture;
 pub(crate) mod render;
 mod script;
+mod session;
 mod som;
 mod style;
 mod text;
 pub(crate) mod xml;
 
 pub use self::render::{XfaFormType, XfaValidationResult};
+pub use self::session::{
+    XfaChoiceItem, XfaFieldState, XfaFiredEvent, XfaFormSession, XfaSessionOptions,
+    XfaSessionOutcome,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
@@ -491,7 +496,7 @@ pub struct XfaExtractionReport {
 }
 
 #[derive(Debug, Clone)]
-struct PacketSource {
+pub(crate) struct PacketSource {
     record: XfaPacketRecord,
     bytes: Vec<u8>,
     parsed: Option<ParsedXml>,
@@ -499,7 +504,7 @@ struct PacketSource {
 }
 
 #[derive(Debug, Clone)]
-struct LoadedXfa {
+pub(crate) struct LoadedXfa {
     inventory: XfaInventoryReport,
     packets: Vec<PacketSource>,
 }

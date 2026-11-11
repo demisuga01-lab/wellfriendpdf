@@ -2,7 +2,8 @@
 //! and dynamic (full) XFA pages produced from the XFA layout.
 
 use wellfriendpdf_engine::{
-    CancelToken, ContentEngine, PixelBuffer, RenderMode, XfaFormType, XfaRenderPolicy,
+    CancelToken, ContentEngine, PixelBuffer, RenderMode, XfaFormSession, XfaFormType,
+    XfaRenderPolicy, XfaSessionOptions, XfaSessionOutcome,
 };
 
 struct PdfFixtureBuilder {
@@ -826,4 +827,366 @@ fn ean_digits_are_split_around_the_guard_bars() {
         find(word);
     }
     assert!(find("36000") < find("29145"));
+}
+
+/// PDFium `xfa_specific/xfa_event_pseudomodel.in` (without `emit()`):
+/// `xfa.event` properties outside an interactive event, `change` and
+/// `cancelAction` writable, `newText` derived from `change`.
+#[test]
+fn pdfium_event_pseudomodel_checks_pass() {
+    let helpers = pdfium_fixture("property_test_helpers.js");
+    let template = format!(
+        r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+  <subform layout="tb" name="my_doc">
+    <pageSet><pageArea id="Page1" name="Page1"><contentArea h="100mm" w="200mm"/><medium long="297mm" short="210mm" stock="a4"/></pageArea></pageSet>
+    <event activity="docReady" ref="$host"><script contentType="application/x-javascript"><![CDATA[{helpers}
+      testRWProperty(xfa.event, "cancelAction", false, true);
+      testRWProperty(xfa.event, "change", "", "new foo");
+      testRIProperty(xfa.event, "commitKey", 0);
+      testRIProperty(xfa.event, "fullText", "");
+      testRIProperty(xfa.event, "keyDown", false);
+      testRIProperty(xfa.event, "modifier", false);
+      testRIProperty(xfa.event, "newContentType", "");
+      testRIProperty(xfa.event, "newText", "new foo");
+      testRIProperty(xfa.event, "prevContentType", "");
+      testRIProperty(xfa.event, "prevText", "");
+      testRIProperty(xfa.event, "reenter", "");
+      testRIProperty(xfa.event, "selEnd", 0);
+      testRIProperty(xfa.event, "selStart", 0);
+      testRIProperty(xfa.event, "shift", false);
+      testRIProperty(xfa.event, "soapFaultCode", "");
+      testRIProperty(xfa.event, "soapFaultString", "");
+      testRIProperty(xfa.event, "target", undefined);
+    ]]></script></event>
+  </subform>
+</template>"#
+    );
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, &template, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    let log = engine.xfa_script_log();
+    let failures: Vec<&String> = log.iter().filter(|l| !l.starts_with("PASS")).collect();
+    assert!(failures.is_empty(), "{failures:#?}");
+    assert_eq!(log.len(), 34, "{log:#?}");
+}
+
+const SESSION_TEMPLATE: &str = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="tb">
+  <pageSet><pageArea name="P" id="P"><contentArea x="10pt" y="10pt" w="180pt" h="380pt"/><medium short="200pt" long="400pt"/></pageArea></pageSet>
+  <field name="qty" w="160pt" h="16pt"><ui><numericEdit/></ui><value><decimal/></value><font typeface="Helvetica" size="9pt"/>
+    <event activity="enter"><script>xfa.host.messageBox("enter qty")</script></event>
+    <event activity="change"><script contentType="application/x-javascript">app.alert("change " + xfa.event.prevText + "->" + xfa.event.newText);</script></event>
+    <event activity="exit"><script>xfa.host.messageBox(Concat("exit qty ", $.rawValue))</script></event>
+  </field>
+  <field name="price" w="160pt" h="16pt"><ui><numericEdit/></ui><value><decimal>2.5</decimal></value><font typeface="Helvetica" size="9pt"/></field>
+  <field name="total" w="160pt" h="16pt"><ui><numericEdit/></ui><value><decimal/></value><font typeface="Helvetica" size="9pt"/>
+    <calculate><script>qty * price</script></calculate></field>
+  <field name="name" w="160pt" h="16pt"><ui><textEdit/></ui><value><text maxChars="5"/></value><font typeface="Helvetica" size="9pt"/>
+    <validate nullTest="error"/>
+    <event activity="change"><script contentType="application/x-javascript">xfa.event.change = xfa.event.change.toUpperCase();</script></event>
+    <event activity="full"><script>xfa.host.messageBox("full")</script></event>
+  </field>
+  <field name="agree" w="20pt" h="20pt"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items>
+    <event activity="click"><script>xfa.host.messageBox(Concat("agree ", $.rawValue))</script></event></field>
+  <exclGroup name="color" layout="lr-tb">
+    <field name="red" w="40pt" h="16pt"><ui><checkButton shape="round"/></ui><items><text>R</text></items></field>
+    <field name="blue" w="40pt" h="16pt"><ui><checkButton shape="round"/></ui><items><text>B</text></items></field>
+    <event activity="change"><script>xfa.host.messageBox("color change")</script></event>
+  </exclGroup>
+  <field name="shown" w="160pt" h="16pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <calculate><script>color.rawValue</script></calculate></field>
+  <field name="size" w="160pt" h="16pt"><ui><choiceList/></ui><items><text>Small</text><text>Large</text></items><items save="1"><text>S</text><text>L</text></items>
+    <event activity="preOpen"><script>xfa.host.messageBox("preOpen")</script></event></field>
+  <field name="more" w="60pt" h="16pt"><ui><button/></ui><caption><value><text>More</text></value></caption>
+    <event activity="click"><script>
+      _row.addInstance(1)
+      note.presence = "visible"
+    </script></event></field>
+  <field name="note" w="160pt" h="16pt" presence="hidden"><ui><textEdit/></ui><value><text>Shown</text></value><font typeface="Helvetica" size="9pt"/></field>
+  <subform name="row" layout="tb"><occur min="1" max="-1"/>
+    <field name="item" w="160pt" h="16pt"><ui><textEdit/></ui><value><text>Row</text></value><font typeface="Helvetica" size="9pt"/></field>
+  </subform>
+</subform></template>"#;
+
+fn session_engine() -> ContentEngine {
+    ContentEngine::open_bytes(xfa_pdf(
+        DYNAMIC_CONFIG,
+        SESSION_TEMPLATE,
+        EMPTY_DATA,
+        None,
+        false,
+    ))
+    .unwrap()
+}
+
+fn activities(outcome: &XfaSessionOutcome, som: &str) -> Vec<String> {
+    outcome
+        .events
+        .iter()
+        .filter(|event| event.som == som)
+        .map(|event| event.activity.clone())
+        .collect()
+}
+
+/// A value edit fires enter, change and exit (PDFium `CXFA_FFField`
+/// focus and commit) and the calculations that depend on the value.
+#[test]
+fn session_value_edit_fires_events_and_recalculates() {
+    let engine = session_engine();
+    let mut session = engine.xfa_session().unwrap();
+    assert_eq!(
+        session.field_value("form1.total").unwrap(),
+        Some("0".into())
+    );
+    let outcome = session.set_field_value("form1.qty", "4").unwrap();
+    assert!(outcome.committed);
+    assert_eq!(
+        activities(&outcome, "xfa[0].form[0].form1[0].qty[0]"),
+        vec!["enter", "change", "exit"]
+    );
+    assert_eq!(
+        outcome.messages,
+        vec!["enter qty", "change ->4", "exit qty 4"],
+        "{:?}",
+        outcome.errors
+    );
+    assert_eq!(
+        session.field_value("form1.total").unwrap(),
+        Some("10".into())
+    );
+    assert_eq!(
+        session.field_value("xfa.form.form1.qty").unwrap(),
+        Some("4".into())
+    );
+    // The previous value reaches the next change event.
+    let outcome = session.set_field_value("form1.qty", "6").unwrap();
+    assert_eq!(outcome.messages[1], "change 4->6");
+    assert_eq!(
+        session.field_value("form1.total").unwrap(),
+        Some("15".into())
+    );
+    assert_eq!(
+        session.script_log(),
+        vec![
+            "enter qty",
+            "change ->4",
+            "exit qty 4",
+            "enter qty",
+            "change 4->6",
+            "exit qty 6"
+        ]
+    );
+    assert!(session.set_field_value("form1.nonesuch", "1").is_err());
+    assert!(session.set_field_value("form1.more", "1").is_err());
+}
+
+/// Change scripts may rewrite `xfa.event.change`; `maxChars` fires `full`;
+/// the commit revalidates (the null test stops failing).
+#[test]
+fn session_change_rewrites_value_and_exit_revalidates() {
+    let engine = session_engine();
+    let mut session = engine.xfa_session().unwrap();
+    let failing = |session: &XfaFormSession| {
+        session
+            .validation_results()
+            .into_iter()
+            .any(|r| r.som == "xfa[0].form[0].form1[0].name[0]" && r.test == "nullTest")
+    };
+    assert!(failing(&session));
+    let outcome = session.set_field_value("form1.name", "abcdefg").unwrap();
+    assert!(
+        outcome.messages.contains(&"full".to_string()),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        session.field_value("form1.name").unwrap(),
+        Some("ABCDE".into())
+    );
+    assert!(!failing(&session));
+    assert!(outcome
+        .validations
+        .iter()
+        .all(|r| !r.som.ends_with("name[0]")));
+    // Clearing the value fails the null test again.
+    session.set_field_value("form1.name", "").unwrap();
+    assert_eq!(session.field_value("form1.name").unwrap(), None);
+    assert!(failing(&session));
+}
+
+/// Clicks toggle check boxes and select radio buttons, clearing the rest of
+/// the exclusion group (PDFium `CXFA_FFCheckButton`), firing change/click.
+#[test]
+fn session_clicks_toggle_check_boxes_and_radio_groups() {
+    let engine = session_engine();
+    let mut session = engine.xfa_session().unwrap();
+    let outcome = session.click("form1.agree").unwrap();
+    assert!(outcome.committed);
+    assert_eq!(outcome.messages, vec!["agree 1"]);
+    assert_eq!(
+        activities(&outcome, "xfa[0].form[0].form1[0].agree[0]"),
+        vec![
+            "mouseEnter",
+            "enter",
+            "mouseDown",
+            "mouseUp",
+            "change",
+            "click",
+            "exit",
+            "mouseExit"
+        ]
+    );
+    session.click("form1.agree").unwrap();
+    assert_eq!(
+        session.field_value("form1.agree").unwrap(),
+        Some("0".into())
+    );
+
+    let outcome = session.click("form1.color.red").unwrap();
+    assert_eq!(outcome.messages, vec!["color change"]);
+    assert_eq!(
+        session.field_value("form1.color").unwrap(),
+        Some("R".into())
+    );
+    assert_eq!(
+        session.field_value("form1.shown").unwrap(),
+        Some("R".into())
+    );
+    session.click("form1.color.blue").unwrap();
+    let fields = session.fields().unwrap();
+    let checked = |name: &str| {
+        fields
+            .iter()
+            .find(|f| f.name == name)
+            .and_then(|f| f.checked)
+            .unwrap()
+    };
+    assert!(!checked("red") && checked("blue"));
+    assert_eq!(
+        session.field_value("form1.shown").unwrap(),
+        Some("B".into())
+    );
+    // A selected radio button stays selected.
+    let outcome = session.click("form1.color.blue").unwrap();
+    assert!(!outcome.committed);
+    assert!(outcome.messages.is_empty());
+    // Setting the group's value selects the matching member.
+    session.set_field_value("form1.color", "R").unwrap();
+    assert_eq!(
+        session.field_value("form1.shown").unwrap(),
+        Some("R".into())
+    );
+    assert!(session.set_field_value("form1.color", "nope").is_err());
+
+    // Drop-down lists open (preOpen) and take display text.
+    let outcome = session.set_field_value("form1.size", "Large").unwrap();
+    assert!(outcome.messages.contains(&"preOpen".to_string()));
+    assert_eq!(session.field_value("form1.size").unwrap(), Some("L".into()));
+    // Hidden fields are not interactive.
+    assert!(session.click("form1.note").is_err());
+}
+
+fn session_layout_words(session: &mut XfaFormSession) -> Vec<String> {
+    let layout = ContentEngine::open_bytes(session.layout_pdf().unwrap()).unwrap();
+    let tsv = layout.get_text_tsv(&[1]).unwrap();
+    tsv.lines()
+        .skip(1)
+        .filter_map(|line| line.rsplit('\t').next())
+        .map(|word| word.trim().to_string())
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// A button click adds an instance and shows a hidden field; rendering
+/// re-lays out the session's form.
+#[test]
+fn session_button_click_changes_layout() {
+    let engine = session_engine();
+    let mut session = engine.xfa_session().unwrap();
+    let before = session_layout_words(&mut session);
+    assert_eq!(
+        before.iter().filter(|w| *w == "Row").count(),
+        1,
+        "{before:?}"
+    );
+    assert!(!before.iter().any(|w| w == "Shown"));
+    let outcome = session.click("form1.more").unwrap();
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+    let after = session_layout_words(&mut session);
+    assert_eq!(after.iter().filter(|w| *w == "Row").count(), 2, "{after:?}");
+    assert!(after.iter().any(|w| w == "Shown"), "{after:?}");
+    let items = session
+        .fields()
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.name == "item")
+        .count();
+    assert_eq!(items, 2);
+    assert_eq!(session.page_count().unwrap(), 1);
+    assert!(session.render_xfa_page(1, 36).is_ok());
+    // The document's own rendering is unchanged.
+    let original = layout_words(&engine, 1);
+    assert!(!original.iter().any(|w| w == "Shown"));
+    // Custom events dispatch to their handlers.
+    session.click("form1.agree").unwrap();
+    let outcome = session.dispatch_event("form1.agree", "click").unwrap();
+    assert_eq!(outcome.messages, vec!["agree 1"]);
+    assert_eq!(outcome.events.len(), 1);
+    assert_eq!(outcome.events[0].scripts, 1);
+}
+
+/// Saving writes the data DOM into the datasets packet (incremental
+/// update); reopening restores the values and recalculates.
+#[test]
+fn session_save_writes_datasets_incrementally() {
+    let engine = session_engine();
+    let original = engine.document().reader().file_bytes().to_vec();
+    let mut session = engine.xfa_session().unwrap();
+    session.set_field_value("form1.qty", "4").unwrap();
+    session.set_field_value("form1.name", "a&b").unwrap();
+    session.click("form1.color.blue").unwrap();
+    let xml = session.export_data_xml().unwrap();
+    assert!(xml.starts_with("<xfa:datasets"), "{xml}");
+    for part in [
+        "<qty>4</qty>",
+        "<total>10</total>",
+        "<name>A&amp;B</name>",
+        "<color>B</color>",
+    ] {
+        assert!(xml.contains(part), "{part} in {xml}");
+    }
+    let saved = session.save_to_pdf().unwrap();
+    assert!(saved.starts_with(&original), "incremental update");
+    let reopened = ContentEngine::open_bytes(saved).unwrap();
+    let mut again = reopened.xfa_session().unwrap();
+    assert_eq!(again.field_value("form1.qty").unwrap(), Some("4".into()));
+    assert_eq!(again.field_value("form1.total").unwrap(), Some("10".into()));
+    assert_eq!(again.field_value("form1.name").unwrap(), Some("A&B".into()));
+    assert_eq!(again.field_value("form1.color").unwrap(), Some("B".into()));
+    // Saving again keeps working on the session state.
+    session.set_field_value("form1.qty", "5").unwrap();
+    let saved = ContentEngine::open_bytes(session.save_to_pdf().unwrap()).unwrap();
+    let mut third = saved.xfa_session().unwrap();
+    assert_eq!(
+        third.field_value("form1.total").unwrap(),
+        Some("12.5".into())
+    );
+}
+
+/// Without scripts, sessions still edit values; documents without XFA have
+/// no session.
+#[test]
+fn session_without_scripts_only_sets_values() {
+    let engine = session_engine();
+    let options = XfaSessionOptions { run_scripts: false };
+    let mut session = engine.xfa_session_with_options(&options).unwrap();
+    let outcome = session.set_field_value("form1.qty", "4").unwrap();
+    assert!(outcome.messages.is_empty());
+    assert!(outcome.events.iter().all(|event| event.scripts == 0));
+    assert_eq!(session.field_value("form1.qty").unwrap(), Some("4".into()));
+    assert_eq!(session.field_value("form1.total").unwrap(), None);
+    let mut builder = PdfFixtureBuilder::new();
+    builder.add("<< /Type /Catalog /Pages 2 0 R >>");
+    builder.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    builder.add("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>");
+    let plain = ContentEngine::open_bytes(builder.build()).unwrap();
+    assert!(plain.xfa_session().is_err());
 }

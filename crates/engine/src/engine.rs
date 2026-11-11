@@ -1594,6 +1594,21 @@ impl ContentEngine {
         &self.xfa_render
     }
 
+    /// The same document with `model` as its painted XFA form (an
+    /// interactive XFA session's current state). The PDF-side caches stay
+    /// shared: they never hold XFA output.
+    pub(crate) fn with_xfa_render_model(
+        &self,
+        model: crate::xfa::render::XfaRenderModel,
+    ) -> ContentEngine {
+        let cache: crate::xfa::render::XfaRenderCache = Default::default();
+        let _ = cache.set(Some(Arc::new(model)));
+        ContentEngine {
+            xfa_render: cache,
+            ..self.clone()
+        }
+    }
+
     pub(crate) fn cached_edit_policy(
         &self,
         operation: crate::secure_mutation::EditOperation,

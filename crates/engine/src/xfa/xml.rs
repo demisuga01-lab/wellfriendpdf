@@ -632,7 +632,7 @@ fn write_node(
     out.push('>');
 }
 
-fn escape_xml(value: &str, out: &mut String) {
+pub(crate) fn escape_xml(value: &str, out: &mut String) {
     for ch in value.chars() {
         match ch {
             '&' => out.push_str("&amp;"),

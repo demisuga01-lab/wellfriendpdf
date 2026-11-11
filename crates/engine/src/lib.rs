@@ -751,15 +751,17 @@ pub use writer_history::{
 pub use xfa::{
     extract_xfa, sanitize_xfa_pdf, xfa_flatten_pdf, xfa_inventory, xfa_inventory_cancellable,
     xfa_render_preview_pdf, xfa_runtime_report, xfa_runtime_report_cancellable,
-    xfa_security_report, XfaBindingRecord, XfaClassification, XfaDataNode, XfaDiagnostic,
-    XfaDrawRecord, XfaEventRecord, XfaExtractionReport, XfaFieldRecord, XfaFlattenMode,
-    XfaFlattenOptions, XfaFlattenReport, XfaFormType, XfaGeometry, XfaInventoryReport,
-    XfaLayoutItem, XfaLayoutRect, XfaLimits, XfaOccur, XfaPacketRecord, XfaProvenance, XfaRagChunk,
-    XfaRedactionPosture, XfaReopenVerification, XfaRuntimeMetrics, XfaRuntimeOptions,
-    XfaRuntimeReport, XfaSandboxAuditEntry, XfaSandboxReport, XfaSanitizerMode,
-    XfaSanitizerOptions, XfaSanitizerReport, XfaScriptPolicy, XfaScriptRecord, XfaSecurityReport,
-    XfaSemanticIntegrationReport, XfaSignatureImpact, XfaSubformRecord, XfaSupportStatus,
-    XfaValidationResult, XfaXmlMetrics, XfaXmlSafetyReport, XFA_SCHEMA_VERSION,
+    xfa_security_report, XfaBindingRecord, XfaChoiceItem, XfaClassification, XfaDataNode,
+    XfaDiagnostic, XfaDrawRecord, XfaEventRecord, XfaExtractionReport, XfaFieldRecord,
+    XfaFieldState, XfaFiredEvent, XfaFlattenMode, XfaFlattenOptions, XfaFlattenReport,
+    XfaFormSession, XfaFormType, XfaGeometry, XfaInventoryReport, XfaLayoutItem, XfaLayoutRect,
+    XfaLimits, XfaOccur, XfaPacketRecord, XfaProvenance, XfaRagChunk, XfaRedactionPosture,
+    XfaReopenVerification, XfaRuntimeMetrics, XfaRuntimeOptions, XfaRuntimeReport,
+    XfaSandboxAuditEntry, XfaSandboxReport, XfaSanitizerMode, XfaSanitizerOptions,
+    XfaSanitizerReport, XfaScriptPolicy, XfaScriptRecord, XfaSecurityReport,
+    XfaSemanticIntegrationReport, XfaSessionOptions, XfaSessionOutcome, XfaSignatureImpact,
+    XfaSubformRecord, XfaSupportStatus, XfaValidationResult, XfaXmlMetrics, XfaXmlSafetyReport,
+    XFA_SCHEMA_VERSION,
 };
 
 /// The curated high-level embedding surface.
