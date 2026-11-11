@@ -1171,6 +1171,132 @@ fn session_save_writes_datasets_incrementally() {
     );
 }
 
+/// Saving writes the form packet as well as the datasets (PDFium saves
+/// both): a hidden field a click script showed and the instance it added
+/// survive reopening, in the document's own rendering and in a new session.
+#[test]
+fn session_save_keeps_script_presence_and_instances() {
+    let engine = session_engine();
+    let mut session = engine.xfa_session().unwrap();
+    let outcome = session.click("form1.more").unwrap();
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+    let clicked = session_layout_words(&mut session);
+    assert_eq!(clicked.iter().filter(|w| *w == "Row").count(), 2);
+    let form = session.export_form_xml().unwrap();
+    assert!(
+        form.starts_with("<form xmlns=\"http://www.xfa.org/schema/xfa-form/"),
+        "{form}"
+    );
+    assert!(
+        form.contains(r#"<field name="note" presence="visible">"#),
+        "{form}"
+    );
+    assert_eq!(form.matches(r#"<subform name="row""#).count(), 2, "{form}");
+    let reopened = ContentEngine::open_bytes(session.save_to_pdf().unwrap()).unwrap();
+    // The reopened document renders the saved state.
+    let words = layout_words(&reopened, 1);
+    assert_eq!(words, clicked);
+    assert!(words.iter().any(|w| w == "Shown"), "{words:?}");
+    assert!(reopened.render_xfa_page(1, 36).is_ok());
+    // A new session starts from it and keeps it through another save.
+    let mut again = reopened.xfa_session().unwrap();
+    let fields = again.fields().unwrap();
+    assert_eq!(fields.iter().filter(|f| f.name == "item").count(), 2);
+    let note = fields.iter().find(|f| f.name == "note").unwrap();
+    assert_eq!(note.presence, "visible");
+    assert!(note.interactive);
+    assert_eq!(session_layout_words(&mut again), clicked);
+    again.set_field_value("form1.qty", "2").unwrap();
+    let third = ContentEngine::open_bytes(again.save_to_pdf().unwrap()).unwrap();
+    assert_eq!(
+        layout_words(&third, 1)
+            .iter()
+            .filter(|w| *w == "Row")
+            .count(),
+        2
+    );
+    // The original document is unchanged.
+    let original = layout_words(&engine, 1);
+    assert_eq!(original.iter().filter(|w| *w == "Row").count(), 1);
+    assert!(!original.iter().any(|w| w == "Shown"));
+}
+
+const KEYSTROKE_TEMPLATE: &str = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="tb">
+  <pageSet><pageArea name="P"><contentArea x="10pt" y="10pt" w="180pt" h="180pt"/><medium short="200pt" long="200pt"/></pageArea></pageSet>
+  <field name="code" w="160pt" h="16pt"><ui><textEdit/></ui><value><text maxChars="4"/></value><font typeface="Helvetica" size="9pt"/>
+    <event activity="change"><script contentType="application/x-javascript">
+      app.alert(xfa.event.prevText + "|" + xfa.event.change + "|" + xfa.event.newText + "|" + xfa.event.selStart + "|" + xfa.event.selEnd);
+      if (xfa.event.change == "1") xfa.event.cancelAction = true;
+      else xfa.event.change = xfa.event.change.toUpperCase();
+    </script></event>
+    <event activity="full"><script>xfa.host.messageBox("full")</script></event>
+    <event activity="exit"><script>xfa.host.messageBox(Concat("exit ", $.rawValue))</script></event>
+  </field>
+  <field name="echo" w="160pt" h="16pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <calculate><script>code.rawValue</script></calculate></field>
+  <field name="pick" w="160pt" h="16pt"><ui><choiceList/></ui><items><text>A</text></items></field>
+</subform></template>"#;
+
+/// Typing fires one change event per keystroke with the caret selection
+/// (PDFium `CXFA_FFTextEdit::OnTextWillChange`); scripts rewrite or cancel
+/// keystrokes, `maxChars` fires `full`, and the text commits once.
+#[test]
+fn session_type_text_fires_keystroke_change_events() {
+    let engine = ContentEngine::open_bytes(xfa_pdf(
+        DYNAMIC_CONFIG,
+        KEYSTROKE_TEMPLATE,
+        EMPTY_DATA,
+        None,
+        false,
+    ))
+    .unwrap();
+    let mut session = engine.xfa_session().unwrap();
+    let outcome = session.type_text("form1.code", "a1bcde").unwrap();
+    assert!(outcome.committed);
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+    assert_eq!(
+        outcome.messages,
+        vec![
+            "|a|a|0|0",
+            "A|1|A1|1|1",
+            "A|b|Ab|1|1",
+            "AB|c|ABc|2|2",
+            "ABC|d|ABCd|3|3",
+            "full",
+            "exit ABCD",
+        ]
+    );
+    assert_eq!(
+        activities(&outcome, "xfa[0].form[0].form1[0].code[0]"),
+        vec!["enter", "change", "change", "change", "change", "change", "full", "exit"]
+    );
+    assert_eq!(
+        session.field_value("form1.code").unwrap(),
+        Some("ABCD".into())
+    );
+    assert_eq!(
+        session.field_value("form1.echo").unwrap(),
+        Some("ABCD".into())
+    );
+    // Keystrokes into a full field only fire `full`; nothing commits.
+    let outcome = session.type_text("form1.code", "z").unwrap();
+    assert!(!outcome.committed);
+    assert_eq!(outcome.messages, vec!["full", "exit ABCD"]);
+    // The JSON transport drives keystrokes too; non-text widgets refuse.
+    session.set_field_value("form1.code", "").unwrap();
+    let json: serde_json::Value = serde_json::from_str(
+        &session
+            .command_json(r#"{"op":"type_text","som":"form1.code","text":"x"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(json["committed"], true);
+    assert_eq!(session.field_value("form1.code").unwrap(), Some("X".into()));
+    assert!(session.type_text("form1.pick", "A").is_err());
+    assert!(session.type_text("form1.nonesuch", "A").is_err());
+}
+
 /// Without scripts, sessions still edit values; documents without XFA have
 /// no session.
 #[test]

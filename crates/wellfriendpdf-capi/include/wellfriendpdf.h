@@ -86,7 +86,7 @@ WELLFRIENDPDF_API void wellfriendpdf_story_session_free(WellfriendStorySession *
  * serialize session use/free. options_json may be NULL or
  * {"run_scripts":bool}; the session copies the document. JSON commands are
  * length-delimited UTF-8 objects with an "op": fields, value, set_value,
- * click, dispatch, validations, script_log, export_data_xml, page_count,
+ * type_text, click, dispatch, validations, script_log, export_data_xml, page_count,
  * form_type. Outputs use wellfriendpdf_buffer_free; errors use
  * wellfriendpdf_error_free. A PANIC poisons the session. */
 WELLFRIENDPDF_API WellfriendXfaSession *wellfriendpdf_xfa_session_open(

@@ -22,7 +22,9 @@ use crate::render::XfaRenderPolicy;
 use crate::{ContentEngine, PdfDocument};
 
 use super::events::FormScripts;
-use super::form::{build_form_model_with_datasets, data_root, FormModel, Template};
+use super::form::{
+    apply_form_packet, build_form_model_with_datasets, data_root, FormModel, Template,
+};
 use super::layout::layout_form;
 use super::locale::LocaleSet;
 use super::paint::{NamedImages, PaintScope, Painter};
@@ -116,6 +118,22 @@ pub(crate) struct XfaSources<'a> {
     pub datasets: Option<&'a XmlNode>,
     pub form_type: XfaFormType,
     pub locales: LocaleSet,
+    /// The saved form DOM (`<form>` packet), merged into fresh models.
+    pub form: Option<&'a XmlNode>,
+}
+
+impl<'a> XfaSources<'a> {
+    /// The template merged with the datasets, then with the saved `form`
+    /// packet (presence, unbound values and added instances survive a
+    /// save, as in PDFium).
+    pub(crate) fn merged_model(&self, tpl: &Template<'a>) -> Option<FormModel<'a>> {
+        let mut model =
+            build_form_model_with_datasets(tpl, self.template, self.datasets, self.datasets_root)?;
+        if let Some(form) = self.form {
+            apply_form_packet(tpl, &mut model, form);
+        }
+        Some(model)
+    }
 }
 
 /// Whether the document has an `/AcroForm /XFA` entry at all.
@@ -151,12 +169,39 @@ pub(crate) fn xfa_sources(loaded: &LoadedXfa) -> Option<XfaSources<'_>> {
     let locale_set =
         packet_root(&loaded.packets, "localeSet").and_then(|root| xml_root(root, "localeSet"));
     let locales = LocaleSet::new(locale_set, config);
+    // Only a real form packet: the `form` packet of an array, or the
+    // `form` child of a whole-XDP stream.
+    let form = loaded
+        .packets
+        .iter()
+        .filter(|packet| packet.record.name.eq_ignore_ascii_case("form"))
+        .find_map(|packet| packet.parsed.as_ref())
+        .map(|parsed| &parsed.root)
+        .and_then(|root| {
+            if root.local_name == "form" {
+                Some(root)
+            } else {
+                root.child("form")
+            }
+        })
+        .or_else(|| {
+            loaded
+                .packets
+                .iter()
+                .filter_map(|packet| packet.parsed.as_ref())
+                .find_map(|parsed| {
+                    (parsed.root.local_name == "xdp")
+                        .then(|| parsed.root.child("form"))
+                        .flatten()
+                })
+        });
     Some(XfaSources {
         template,
         datasets_root,
         datasets,
         form_type,
         locales,
+        form,
     })
 }
 
@@ -170,8 +215,7 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
     let sources = xfa_sources(&loaded)?;
     let template = sources.template;
     let tpl = Template::new(template);
-    let mut model =
-        build_form_model_with_datasets(&tpl, template, sources.datasets, sources.datasets_root)?;
+    let mut model = sources.merged_model(&tpl)?;
     // Form scripts (initialize, calculate, form:ready, docReady).
     let mut scripts = FormScripts::prepare(
         &tpl,

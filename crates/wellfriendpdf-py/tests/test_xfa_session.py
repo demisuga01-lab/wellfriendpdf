@@ -58,14 +58,19 @@ def test_xfa_session_events_render_and_save():
     assert outcome["messages"] == ["exit"]
     total = json.loads(session.command_json('{"op":"value","som":"form1.total"}'))
     assert total["value"] == "6"
+    typed = session.type_text("form1.qty", "2x")
+    assert typed["committed"] is True
+    assert [event["activity"] for event in typed["events"]].count("change") == 2
+    total = json.loads(session.command_json('{"op":"value","som":"form1.total"}'))
+    assert total["value"] == "64"
     session.click("form1.agree")
     fields = {field["name"]: field for field in session.fields()["fields"]}
     assert fields["agree"]["checked"] is True
-    assert "<qty>3</qty>" in session.export_data_xml()
+    assert "<qty>32</qty>" in session.export_data_xml()
     assert session.render_page_png(1, 36).startswith(b"\x89PNG")
     saved = session.save_pdf()
     assert saved.startswith(source)
     again = wellfriendpdf.Document.from_bytes(saved).xfa_session()
-    assert json.loads(again.command_json('{"op":"value","som":"form1.qty"}'))["value"] == "3"
+    assert json.loads(again.command_json('{"op":"value","som":"form1.qty"}'))["value"] == "32"
     with pytest.raises(wellfriendpdf.WellfriendError):
         session.click("form1.nonesuch")

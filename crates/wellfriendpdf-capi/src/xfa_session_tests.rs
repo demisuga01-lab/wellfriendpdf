@@ -101,6 +101,22 @@ fn xfa_session_abi_drives_events_renders_and_saves() {
         assert_eq!(outcome["messages"][0], "exit");
         let total = command(session, r#"{"op":"value","som":"form1.total"}"#).unwrap();
         assert_eq!(total["value"], "6");
+        // Keystrokes append at the caret; the numeric edit drops "x".
+        let typed = command(
+            session,
+            r#"{"op":"type_text","som":"form1.qty","text":"2x"}"#,
+        )
+        .unwrap();
+        assert_eq!(typed["committed"], true);
+        let changes = typed["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["activity"] == "change")
+            .count();
+        assert_eq!(changes, 2);
+        let total = command(session, r#"{"op":"value","som":"form1.total"}"#).unwrap();
+        assert_eq!(total["value"], "64");
         command(session, r#"{"op":"click","som":"form1.agree"}"#).unwrap();
         let fields = command(session, r#"{"op":"fields"}"#).unwrap();
         assert_eq!(fields["fields"][2]["checked"], true);
@@ -121,7 +137,7 @@ fn xfa_session_abi_drives_events_renders_and_saves() {
         assert!(saved.starts_with(&pdf));
         let reopened = ContentEngine::open_bytes(saved).unwrap();
         let mut again = reopened.xfa_session().unwrap();
-        assert_eq!(again.field_value("form1.qty").unwrap(), Some("3".into()));
+        assert_eq!(again.field_value("form1.qty").unwrap(), Some("32".into()));
 
         // Null pointers fail cleanly.
         let mut out = WellfriendBuffer::empty();

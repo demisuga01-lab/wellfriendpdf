@@ -3064,6 +3064,8 @@ fn xfa_fill_sets_clicks_saves_and_renders() {
         pdf.to_str().unwrap(),
         "--set",
         "form1.qty=4",
+        "--type",
+        "form1.qty=2",
         "--click",
         "form1.agree",
         "-o",
@@ -3073,8 +3075,11 @@ fn xfa_fill_sets_clicks_saves_and_renders() {
         "--json",
     ]);
     let report = assert_json(&out, "xfa-fill");
-    assert_eq!(report["actions"].as_array().unwrap().len(), 2);
+    assert_eq!(report["actions"].as_array().unwrap().len(), 3);
     assert_eq!(report["actions"][0]["outcome"]["committed"], true);
+    // Keystrokes append to the value set before them.
+    assert_eq!(report["actions"][1]["action"]["type"], "form1.qty");
+    assert_eq!(report["actions"][1]["outcome"]["committed"], true);
     assert_eq!(report["messages"][0], "clicked");
     let total = report["fields"]
         .as_array()
@@ -3082,7 +3087,7 @@ fn xfa_fill_sets_clicks_saves_and_renders() {
         .iter()
         .find(|field| field["name"] == "total")
         .unwrap();
-    assert_eq!(total["value"], "12");
+    assert_eq!(total["value"], "126");
     assert!(std::fs::read(&out_png).unwrap().starts_with(b"\x89PNG"));
     // The saved PDF carries the data: filling it again shows the values.
     let out = run(&["xfa-fill", out_pdf.to_str().unwrap(), "--json"]);
@@ -3096,7 +3101,7 @@ fn xfa_fill_sets_clicks_saves_and_renders() {
             .unwrap()["value"]
             .clone()
     };
-    assert_eq!(value("qty"), "4");
+    assert_eq!(value("qty"), "42");
     assert_eq!(value("agree"), "1");
     // Unknown fields fail.
     let out = run(&["xfa-fill", pdf.to_str().unwrap(), "--set", "form1.nope=1"]);

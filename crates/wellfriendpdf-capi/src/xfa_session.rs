@@ -97,7 +97,7 @@ unsafe fn xfa_output(
     }
 }
 
-/// Runs one JSON command (`fields`, `value`, `set_value`, `click`,
+/// Runs one JSON command (`fields`, `value`, `set_value`, `type_text`, `click`,
 /// `dispatch`, `validations`, `script_log`, `export_data_xml`,
 /// `page_count`, `form_type`; see `XfaFormSession::command_json`). The
 /// UTF-8 JSON result is length-delimited (not NUL-terminated); free it
