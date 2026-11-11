@@ -272,6 +272,10 @@ enum Commands {
     XfaSecurityReport(XfaReportArgs),
     /// Run/report the bounded minimal dynamic XFA runtime
     XfaRuntimeReport(XfaRuntimeReportArgs),
+    /// Fill an XFA form interactively: set values and click fields (firing the
+    /// form's change/exit/click/calculate/validate events), then save the data
+    /// into the PDF and/or render a page
+    XfaFill(XfaFillArgs),
     /// Export AcroForm field values as JSON, FDF, or XFDF
     FormsExport(FormsExportArgs),
     /// Import AcroForm field values from JSON, FDF, or XFDF
@@ -1358,6 +1362,43 @@ struct XfaRenderArgs {
     /// Print the JSON report to stdout
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Parser)]
+struct XfaFillArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Set a field: SOM=VALUE (e.g. form1.name=Alice). Repeatable; actions
+    /// run in command-line order
+    #[arg(long = "set", value_name = "SOM=VALUE")]
+    set: Vec<String>,
+    /// Click a field (button, check box, radio button). Repeatable
+    #[arg(long = "click", value_name = "SOM")]
+    click: Vec<String>,
+    /// Dispatch an event: SOM=ACTIVITY (e.g. form1.btn=mouseUp). Repeatable
+    #[arg(long = "event", value_name = "SOM=ACTIVITY")]
+    event: Vec<String>,
+    /// Output PDF with the form data saved into the datasets packet
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Output PNG of an XFA page with the filled state
+    #[arg(long)]
+    png: Option<PathBuf>,
+    /// 1-based XFA page for --png
+    #[arg(long, default_value = "1")]
+    page: usize,
+    /// DPI for --png
+    #[arg(long, default_value = "72")]
+    dpi: u32,
+    /// Do not run the form's scripts
+    #[arg(long)]
+    no_scripts: bool,
+    /// Print a JSON report (outcomes, fields, validations, messages)
+    #[arg(long)]
+    json: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
 }
 
 #[derive(Parser)]
@@ -4526,6 +4567,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::XfaScriptReport(args) => run_xfa_script_report(args),
         Commands::XfaSecurityReport(args) => run_xfa_security_report(args),
         Commands::XfaRuntimeReport(args) => run_xfa_runtime_report(args),
+        Commands::XfaFill(args) => run_xfa_fill(args),
         Commands::FormsExport(args) => run_forms_export(args),
         Commands::FormsImport(args) => run_forms_import(args),
         Commands::AnnotationsReport(args) => run_annotations_report(args),
@@ -5666,6 +5708,108 @@ fn run_xfa_render(args: XfaRenderArgs) -> Result<(), Box<dyn Error>> {
     write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
     if !args.json {
         eprintln!("Rendered XFA preview -> {}", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_xfa_fill(args: XfaFillArgs) -> Result<(), Box<dyn Error>> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind {
+        Set,
+        Click,
+        Event,
+    }
+    // Actions run in command-line order: recover the interleaving of the
+    // three repeatable flags from the raw arguments.
+    let mut order = Vec::new();
+    for arg in std::env::args() {
+        for (flag, kind) in [
+            ("--set", Kind::Set),
+            ("--click", Kind::Click),
+            ("--event", Kind::Event),
+        ] {
+            if arg == flag || arg.starts_with(&format!("{flag}=")) {
+                order.push(kind);
+            }
+        }
+    }
+    let expected = args.set.len() + args.click.len() + args.event.len();
+    if order.len() != expected {
+        order = std::iter::repeat_n(Kind::Set, args.set.len())
+            .chain(std::iter::repeat_n(Kind::Click, args.click.len()))
+            .chain(std::iter::repeat_n(Kind::Event, args.event.len()))
+            .collect();
+    }
+    let split = |spec: &str, what: &str| -> Result<(String, String), Box<dyn Error>> {
+        let (som, value) = spec
+            .split_once('=')
+            .ok_or_else(|| usage_error(format!("--{what} expects SOM=VALUE, got '{spec}'")))?;
+        Ok((som.trim().to_string(), value.to_string()))
+    };
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let options = wellfriendpdf_engine::XfaSessionOptions {
+        run_scripts: !args.no_scripts,
+    };
+    let mut session = engine.xfa_session_with_options(&options)?;
+    let (mut sets, mut clicks, mut events) =
+        (args.set.iter(), args.click.iter(), args.event.iter());
+    let mut actions = Vec::new();
+    for kind in order {
+        let (action, outcome) = match kind {
+            Kind::Set => {
+                let spec = sets.next().ok_or("--set mismatch")?;
+                let (som, value) = split(spec, "set")?;
+                let outcome = session.set_field_value(&som, &value)?;
+                (serde_json::json!({ "set": som, "value": value }), outcome)
+            }
+            Kind::Click => {
+                let som = clicks.next().ok_or("--click mismatch")?;
+                let outcome = session.click(som)?;
+                (serde_json::json!({ "click": som }), outcome)
+            }
+            Kind::Event => {
+                let spec = events.next().ok_or("--event mismatch")?;
+                let (som, activity) = split(spec, "event")?;
+                let outcome = session.dispatch_event(&som, &activity)?;
+                (
+                    serde_json::json!({ "event": activity, "som": som }),
+                    outcome,
+                )
+            }
+        };
+        actions.push(serde_json::json!({ "action": action, "outcome": outcome }));
+    }
+    if let Some(png) = &args.png {
+        std::fs::write(png, session.render_page_png(args.page, args.dpi)?)?;
+    }
+    if let Some(output) = &args.output {
+        std::fs::write(output, session.save_to_pdf()?)?;
+    }
+    if args.json {
+        let report = serde_json::json!({
+            "actions": actions,
+            "fields": session.fields()?,
+            "validations": session.validation_results(),
+            "messages": session.script_log(),
+            "script_errors": session.script_errors(),
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        for line in session.script_log() {
+            eprintln!("message: {line}");
+        }
+        for failure in session.validation_results() {
+            eprintln!(
+                "validation {} ({}): {}",
+                failure.som, failure.severity, failure.message
+            );
+        }
+        if let Some(output) = &args.output {
+            eprintln!("Saved XFA form data -> {}", output.display());
+        }
+        if let Some(png) = &args.png {
+            eprintln!("Rendered XFA page {} -> {}", args.page, png.display());
+        }
     }
     Ok(())
 }

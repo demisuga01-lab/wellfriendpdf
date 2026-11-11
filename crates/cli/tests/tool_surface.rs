@@ -3006,3 +3006,102 @@ fn render_contract_raster_policy_options_reach_the_contract() {
     remove_path(&pdf);
     remove_path(&o);
 }
+
+/// A one-page PDF whose AcroForm carries a dynamic XFA form.
+fn xfa_form_pdf() -> Vec<u8> {
+    let config = r#"<config xmlns="http://www.xfa.org/schema/xci/3.0/"><acrobat><acrobat7><dynamicRender>required</dynamicRender></acrobat7></acrobat></config>"#;
+    let template = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="tb">
+  <pageSet><pageArea name="P"><contentArea w="200pt" h="200pt"/><medium short="200pt" long="200pt"/></pageArea></pageSet>
+  <field name="qty" w="160pt" h="16pt"><ui><numericEdit/></ui><value><decimal/></value><font typeface="Helvetica" size="9pt"/></field>
+  <field name="total" w="160pt" h="16pt"><ui><numericEdit/></ui><value><decimal/></value><font typeface="Helvetica" size="9pt"/>
+    <calculate><script>qty * 3</script></calculate></field>
+  <field name="agree" w="20pt" h="20pt"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items>
+    <event activity="click"><script>xfa.host.messageBox("clicked")</script></event></field>
+</subform></template>"#;
+    let data = r#"<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data/></xfa:datasets>"#;
+    let stream = |text: &str| format!("<< /Length {} >>\nstream\n{text}\nendstream", text.len());
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".to_string(),
+        "<< /Fields [] /XFA [(config) 5 0 R (template) 6 0 R (datasets) 7 0 R] >>".to_string(),
+        stream(config),
+        stream(template),
+        stream(data),
+    ];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
+#[test]
+fn xfa_fill_sets_clicks_saves_and_renders() {
+    let pdf = tmp("xfa_fill_in.pdf");
+    let out_pdf = tmp("xfa_fill_out.pdf");
+    let out_png = tmp("xfa_fill_out.png");
+    std::fs::write(&pdf, xfa_form_pdf()).unwrap();
+    let out = run(&[
+        "xfa-fill",
+        pdf.to_str().unwrap(),
+        "--set",
+        "form1.qty=4",
+        "--click",
+        "form1.agree",
+        "-o",
+        out_pdf.to_str().unwrap(),
+        "--png",
+        out_png.to_str().unwrap(),
+        "--json",
+    ]);
+    let report = assert_json(&out, "xfa-fill");
+    assert_eq!(report["actions"].as_array().unwrap().len(), 2);
+    assert_eq!(report["actions"][0]["outcome"]["committed"], true);
+    assert_eq!(report["messages"][0], "clicked");
+    let total = report["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"] == "total")
+        .unwrap();
+    assert_eq!(total["value"], "12");
+    assert!(std::fs::read(&out_png).unwrap().starts_with(b"\x89PNG"));
+    // The saved PDF carries the data: filling it again shows the values.
+    let out = run(&["xfa-fill", out_pdf.to_str().unwrap(), "--json"]);
+    let report = assert_json(&out, "xfa-fill reopen");
+    let value = |name: &str| {
+        report["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap()["value"]
+            .clone()
+    };
+    assert_eq!(value("qty"), "4");
+    assert_eq!(value("agree"), "1");
+    // Unknown fields fail.
+    let out = run(&["xfa-fill", pdf.to_str().unwrap(), "--set", "form1.nope=1"]);
+    assert!(!out.status.success());
+    for path in [&pdf, &out_pdf, &out_png] {
+        remove_path(path);
+    }
+}
