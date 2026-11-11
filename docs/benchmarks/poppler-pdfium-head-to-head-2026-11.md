@@ -456,3 +456,22 @@ On `issue5874` no engine recovers more than the same 41 Arabic letters: the
 remaining glyphs are ligatures with no Unicode mapping in the file (PDFium's
 extra letters come with 26 invented CJK characters). Wellfriend marks the
 unrecoverable glyphs with U+FFFD instead of inventing characters.
+
+## Damaged CCITT Group 4 image (final build, 2026-11-12)
+
+`ccitt_EndOfBlock_false.pdf` with 4 bytes flipped in the middle of its G4
+stream (file length unchanged), rendered at 72 dpi; each engine is compared
+with its own render of the undamaged file.
+
+| Engine | Rows identical to its clean render | Clean ink pixels still inked |
+|---|---:|---:|
+| Poppler 26.07 | 92.8% | 90.7% |
+| PDFium | 92.8% | 91.6% |
+| MuPDF 1.27 | 93.2% | 99.9% |
+| Wellfriend | 92.9% | 90.9% |
+
+All four keep the rows decoded before the damage. Group 4 (T.6) has no
+end-of-line markers, so no decoder can resynchronise after it. MuPDF's higher
+ink figure with no more identical rows suggests it paints the damaged region
+dark rather than recovering it. This is a single small image, so it is a spot
+check rather than a broad measurement.
