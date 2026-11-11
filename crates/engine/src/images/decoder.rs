@@ -148,6 +148,9 @@ impl RawImageComponentSelection {
 pub(crate) struct ImageColorOptions<'a> {
     pub options: ColorTransformOptions,
     pub functions: crate::render::function::FunctionResources<'a>,
+    /// Native CMYK/DeviceN plate pass: decoded colour images come out as
+    /// inverted plate ink (see [`crate::render::plate`]) instead of RGB.
+    pub plate: Option<&'a crate::render::plate::PlateTarget>,
 }
 
 impl From<ColorTransformOptions> for ImageColorOptions<'_> {
@@ -155,7 +158,38 @@ impl From<ColorTransformOptions> for ImageColorOptions<'_> {
         Self {
             options,
             functions: Default::default(),
+            plate: None,
         }
+    }
+}
+
+impl<'a> ImageColorOptions<'a> {
+    /// The same colour policy producing device RGB/gray output.
+    pub(crate) fn without_plate(self) -> Self {
+        Self {
+            plate: None,
+            ..self
+        }
+    }
+}
+
+/// Plate-convert a decoded image that came out device-referred (gray, RGB,
+/// with or without alpha) from a codec path that does not see the PDF colour
+/// space.
+fn plate_device_image(raw: RawImage, options: &ImageColorOptions<'_>) -> RawImage {
+    let Some(plate) = options.plate else {
+        return raw;
+    };
+    if raw.bits_per_sample != 8 || raw.pixels.is_empty() {
+        return raw;
+    }
+    let (pixels, channels) = plate.convert_device_image(&raw.pixels, raw.channels);
+    RawImage {
+        width: raw.width,
+        height: raw.height,
+        channels,
+        bits_per_sample: 8,
+        pixels,
     }
 }
 
@@ -1740,6 +1774,7 @@ impl ImageDecoder {
                     &label,
                     dict,
                 )
+                .map(|raw| plate_device_image(raw, &color_options))
             }
             "CCITTFaxDecode" | "CCF" => {
                 Self::ensure_monochrome_terminal_color_space(filter, &image.color_space)?;
@@ -1901,6 +1936,29 @@ impl ImageDecoder {
             Self::apply_decode_array(&mut normalised, raw_channels, dict)?;
         }
 
+        if let Some(plate) = color_context.options.plate {
+            let space = dict.get("ColorSpace").or_else(|| dict.get("CS"));
+            if let Some((mut pixels, channels)) = plate.convert_samples(
+                &normalised,
+                raw_channels as usize,
+                color_space,
+                space,
+                reader,
+                color_context.options.options,
+                color_context.options.functions,
+            ) {
+                let expected_size = expected_len(width, height, channels);
+                fit_decoded_len(&mut pixels, width, height, channels, expected_size, 255)?;
+                return Ok(RawImage {
+                    width,
+                    height,
+                    channels,
+                    bits_per_sample: 8,
+                    pixels,
+                });
+            }
+        }
+
         let (mut pixels, channels) = match color_space {
             "DeviceGray" | "G" => (normalised, 1u8),
             "CalGray" => {
@@ -1940,13 +1998,14 @@ impl ImageDecoder {
         let expected_size = expected_len(width, height, channels);
         fit_decoded_len(&mut pixels, width, height, channels, expected_size, 255)?;
 
-        Ok(RawImage {
+        let raw = RawImage {
             width,
             height,
             channels,
             bits_per_sample: 8,
             pixels,
-        })
+        };
+        Ok(plate_device_image(raw, &color_context.options))
     }
 
     fn finish_monochrome_decoded_image(

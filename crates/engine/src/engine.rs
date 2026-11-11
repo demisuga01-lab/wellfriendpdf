@@ -335,6 +335,10 @@ fn encode_contract_row_scalar_loop(
                 destination[offset..offset + 3].copy_from_slice(&[blue, green, red])
             }
             PixelFormat::Gray8 => destination[offset] = gray,
+            // Native CMYK surfaces are composited by the plate renderer; an
+            // RGB row reaching this encoder is converted uncalibrated.
+            PixelFormat::Cmyk8 => destination[offset..offset + 4]
+                .copy_from_slice(&crate::render::plate::rgb_bytes_to_cmyk(red, green, blue)),
         }
         if reverse_byte_order && bytes_per_pixel > 1 {
             destination[offset..offset + bytes_per_pixel].reverse();
@@ -379,6 +383,41 @@ fn div255_round_contract(value: u16) -> u16 {
 #[inline]
 fn contract_luma_u8(red: u8, green: u8, blue: u8) -> u8 {
     ((u16::from(red) * 77 + u16::from(green) * 150 + u16::from(blue) * 29 + 128) >> 8) as u8
+}
+
+/// Result of the plate passes of one page.
+enum PlateRender {
+    /// Ink planes (0 = no ink) in plate order: C, M, Y, K, then spots.
+    Native {
+        planes: Vec<Vec<u8>>,
+        font_substitution_log: FontSubstitutionLog,
+        telemetry_report: RenderContractTelemetryReport,
+    },
+    /// Features the plate compositor cannot reproduce.
+    Fallback { issues: Vec<String> },
+}
+
+/// The canonical RGBA contract a plate pass renders through: same page,
+/// geometry and policies, opaque white paper.
+fn plate_pass_contract(contract: &RenderContract) -> RenderContract {
+    let mut plate_contract = contract.clone();
+    plate_contract.pixel_format = PixelFormat::Rgba8;
+    plate_contract.alpha_mode = AlphaMode::Premultiplied;
+    plate_contract.grayscale = false;
+    plate_contract.reverse_byte_order = false;
+    plate_contract.stride = contract.width as usize * PixelFormat::Rgba8.bytes_per_pixel();
+    plate_contract.background.r = 255;
+    plate_contract.background.g = 255;
+    plate_contract.background.b = 255;
+    plate_contract.background.a = 255;
+    plate_contract
+}
+
+fn fallback_diagnostic(issues: &[String]) -> String {
+    format!(
+        "native CMYK compositing unavailable ({}); rendered RGB and converted with the uncalibrated DeviceRGB to DeviceCMYK formula",
+        issues.join(", ")
+    )
 }
 
 pub(crate) fn contract_background_pixel(contract: &RenderContract) -> PixelColor {
@@ -2068,6 +2107,9 @@ impl ContentEngine {
         cancel: &crate::cancel::CancelToken,
         output: &mut [u8],
     ) -> Result<(FontSubstitutionLog, RenderContractTelemetryReport)> {
+        if contract.pixel_format == PixelFormat::Cmyk8 {
+            return self.render_page_cmyk_into_buffer(contract, cancel, output);
+        }
         let (buffer, _, font_substitution_log, telemetry_report) =
             self.render_contract_pixels_with_telemetry_report(contract, cancel)?;
         let required = contract
@@ -2098,6 +2140,341 @@ impl ContentEngine {
             );
         }
         Ok((font_substitution_log, telemetry_report))
+    }
+
+    /// `PixelFormat::Cmyk8` surface: native CMYK raster rows at the
+    /// contract stride.
+    fn render_page_cmyk_into_buffer(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        output: &mut [u8],
+    ) -> Result<(FontSubstitutionLog, RenderContractTelemetryReport)> {
+        let required = contract
+            .stride
+            .checked_mul(contract.height as usize)
+            .ok_or_else(|| {
+                WellfriendError::ResourceLimit("render surface byte length overflows".to_string())
+            })?;
+        if output.len() < required {
+            return Err(WellfriendError::invalid_input(format!(
+                "caller surface has {} bytes but contract requires at least {required}",
+                output.len()
+            )));
+        }
+        let mut cache = RenderDocumentCache::new();
+        let (raster, font_substitution_log, telemetry_report) =
+            self.render_contract_cmyk(contract, cancel, &mut cache)?;
+        let row_bytes = raster.width as usize * 4;
+        for (row, src) in raster.pixels.chunks_exact(row_bytes.max(1)).enumerate() {
+            let dst = &mut output[row * contract.stride..row * contract.stride + row_bytes];
+            dst.copy_from_slice(src);
+        }
+        Ok((font_substitution_log, telemetry_report))
+    }
+
+    /// Render a page natively in CMYK (Poppler `splashModeCMYK8`, `pdftoppm
+    /// -jpegcmyk`): DeviceCMYK paint keeps its exact components, other
+    /// colour spaces convert to CMYK, spot colours map through their
+    /// alternates and overprint is honoured per plate. The contract's
+    /// geometry, page box, optional content, annotations and policies apply;
+    /// its pixel format and background do not (the result is opaque CMYK on
+    /// blank paper). Features the plate compositor cannot reproduce make the
+    /// page fall back to an RGB render converted with the uncalibrated
+    /// formula; [`crate::render::CmykRaster::native`] and `diagnostics` say
+    /// which happened and why.
+    pub fn render_page_cmyk_with_contract(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<crate::render::CmykRaster> {
+        let mut cache = RenderDocumentCache::new();
+        self.render_page_cmyk_with_contract_and_cache(contract, cancel, &mut cache)
+    }
+
+    /// [`Self::render_page_cmyk_with_contract`] with a caller-owned cache.
+    pub fn render_page_cmyk_with_contract_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<crate::render::CmykRaster> {
+        self.render_contract_cmyk(contract, cancel, cache)
+            .map(|(raster, _, _)| raster)
+    }
+
+    /// Render one 8-bit ink plate per colorant (Poppler `splashModeDeviceN8`):
+    /// the four process plates followed by up to `max_spots` spot colorants
+    /// the page paints (as recorded by the separation framebuffer), in the
+    /// order the page first uses them. Spot colorants beyond `max_spots` are
+    /// mapped to the process plates through their alternate space.
+    pub fn render_page_separations_with_contract_and_cache(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        max_spots: usize,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<crate::render::SeparationRaster> {
+        use crate::render::plate::MAX_SEPARATION_SPOTS;
+        let mut diagnostics = Vec::new();
+        let mut spots = self.page_spot_colorants(contract.page_number)?;
+        let cap = max_spots.min(MAX_SEPARATION_SPOTS);
+        if spots.len() > cap {
+            diagnostics.push(format!(
+                "{} spot colorants exceed the limit of {cap}; {} mapped to CMYK through their alternates",
+                spots.len(),
+                spots[cap..].join(", ")
+            ));
+            spots.truncate(cap);
+        }
+        let spots: Arc<[String]> = spots.into();
+        let (width, height) = (contract.width, contract.height);
+        let names: Vec<(String, bool)> = crate::render::plate::PROCESS_COLORANTS
+            .iter()
+            .map(|name| (name.to_string(), false))
+            .chain(spots.iter().map(|name| (name.clone(), true)))
+            .collect();
+        match self.render_contract_plates(contract, cancel, cache, Arc::clone(&spots))? {
+            PlateRender::Native { planes, .. } => Ok(crate::render::SeparationRaster {
+                width,
+                height,
+                plates: names
+                    .into_iter()
+                    .zip(planes)
+                    .map(|((name, spot), pixels)| crate::render::SeparationPlate {
+                        name,
+                        spot,
+                        pixels,
+                    })
+                    .collect(),
+                native: true,
+                diagnostics,
+            }),
+            PlateRender::Fallback { issues } => {
+                let (cmyk, _, _) = self.render_contract_cmyk_fallback(contract, cancel, cache)?;
+                diagnostics.push(fallback_diagnostic(&issues));
+                if !spots.is_empty() {
+                    diagnostics.push(
+                        "spot plates are empty in the RGB fallback; spot inks are in the process plates"
+                            .to_string(),
+                    );
+                }
+                let pixel_count = width as usize * height as usize;
+                let plates = names
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (name, spot))| crate::render::SeparationPlate {
+                        name,
+                        spot,
+                        pixels: if index < 4 {
+                            cmyk.pixels.iter().skip(index).step_by(4).copied().collect()
+                        } else {
+                            vec![0; pixel_count]
+                        },
+                    })
+                    .collect();
+                Ok(crate::render::SeparationRaster {
+                    width,
+                    height,
+                    plates,
+                    native: false,
+                    diagnostics,
+                })
+            }
+        }
+    }
+
+    /// Spot colorants the page paints, in first-use order, from a
+    /// report-only separation framebuffer pass (it records touched plates
+    /// only).
+    fn page_spot_colorants(&self, page_number: usize) -> Result<Vec<String>> {
+        let report = PageRenderer::prepress_plate_report(self, page_number, 9)?;
+        let mut spots: Vec<String> = Vec::new();
+        for summary in &report.plate_summaries {
+            let separable = matches!(
+                summary.kind,
+                crate::prepress::PlateKind::Spot | crate::prepress::PlateKind::DeviceN
+            ) && summary.enabled
+                && !crate::render::plate::PROCESS_COLORANTS.contains(&summary.plane_name.as_str())
+                && !matches!(summary.plane_name.as_str(), "All" | "None");
+            if separable && !spots.contains(&summary.plane_name) {
+                spots.push(summary.plane_name.clone());
+            }
+        }
+        Ok(spots)
+    }
+
+    fn render_contract_cmyk(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(
+        crate::render::CmykRaster,
+        FontSubstitutionLog,
+        RenderContractTelemetryReport,
+    )> {
+        match self.render_contract_plates(contract, cancel, cache, Arc::from(Vec::new()))? {
+            PlateRender::Native {
+                planes,
+                font_substitution_log,
+                telemetry_report,
+            } => {
+                let pixel_count = contract.width as usize * contract.height as usize;
+                let mut pixels = Vec::with_capacity(pixel_count * 4);
+                for index in 0..pixel_count {
+                    pixels.extend([
+                        planes[0][index],
+                        planes[1][index],
+                        planes[2][index],
+                        planes[3][index],
+                    ]);
+                }
+                Ok((
+                    crate::render::CmykRaster {
+                        width: contract.width,
+                        height: contract.height,
+                        pixels,
+                        native: true,
+                        diagnostics: Vec::new(),
+                    },
+                    font_substitution_log,
+                    telemetry_report,
+                ))
+            }
+            PlateRender::Fallback { issues } => {
+                let (mut raster, log, telemetry) =
+                    self.render_contract_cmyk_fallback(contract, cancel, cache)?;
+                raster.diagnostics.push(fallback_diagnostic(&issues));
+                Ok((raster, log, telemetry))
+            }
+        }
+    }
+
+    /// RGB render converted with Poppler's uncalibrated DeviceRGB to
+    /// DeviceCMYK formula, composited over white.
+    fn render_contract_cmyk_fallback(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(
+        crate::render::CmykRaster,
+        FontSubstitutionLog,
+        RenderContractTelemetryReport,
+    )> {
+        let rgb_contract = plate_pass_contract(contract);
+        let (buffer, _, log, telemetry) = self.render_contract_pixels_with_telemetry_report_inner(
+            &rgb_contract,
+            cancel,
+            cache,
+            "cmyk_fallback_render_contract",
+            None,
+        )?;
+        let mut pixels = Vec::with_capacity(buffer.rgba_bytes().len());
+        for px in buffer.rgba_bytes().as_chunks::<4>().0 {
+            // Premultiplied over white: c + (1 - a).
+            let over_white = |c: u8| c.saturating_add(255 - px[3]);
+            pixels.extend(crate::render::plate::rgb_bytes_to_cmyk(
+                over_white(px[0]),
+                over_white(px[1]),
+                over_white(px[2]),
+            ));
+        }
+        Ok((
+            crate::render::CmykRaster {
+                width: buffer.width,
+                height: buffer.height,
+                pixels,
+                native: false,
+                diagnostics: Vec::new(),
+            },
+            log,
+            telemetry,
+        ))
+    }
+
+    /// Run the plate passes for the four process plates plus `spots`, three
+    /// plates per pass, repeating with one plate per pass when an
+    /// overprinting paint names only some of the plates rendered together.
+    fn render_contract_plates(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        cache: &mut RenderDocumentCache,
+        spots: Arc<[String]>,
+    ) -> Result<PlateRender> {
+        use crate::render::plate::{
+            plate_pass_channels, PlateTarget, MIXED_OVERPRINT_ISSUE, NO_PLATE,
+        };
+        let plate_contract = plate_pass_contract(contract);
+        let plate_count = 4 + spots.len();
+        let honour_overprint = contract.overprint != OverprintPolicy::Disabled;
+        let mut reports = None;
+        for single_plate in [false, true] {
+            let mut planes: Vec<Option<Vec<u8>>> = vec![None; plate_count];
+            let mut mixed = false;
+            for channels in plate_pass_channels(plate_count, single_plate) {
+                let target = Arc::new(PlateTarget::new(
+                    channels,
+                    Arc::clone(&spots),
+                    honour_overprint,
+                ));
+                let (buffer, _, log, telemetry) = self
+                    .render_contract_pixels_with_telemetry_report_inner(
+                        &plate_contract,
+                        cancel,
+                        cache,
+                        "plate_render_contract",
+                        Some(Arc::clone(&target)),
+                    )?;
+                if reports.is_none() {
+                    reports = Some((log, telemetry));
+                }
+                let issues: Vec<String> = target
+                    .issues()
+                    .into_iter()
+                    .filter(|issue| {
+                        if issue == MIXED_OVERPRINT_ISSUE {
+                            mixed = true;
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+                if !issues.is_empty() {
+                    return Ok(PlateRender::Fallback { issues });
+                }
+                if mixed && !single_plate {
+                    break;
+                }
+                let rgba = buffer.rgba_bytes();
+                for (channel, &plate) in channels.iter().enumerate() {
+                    if plate == NO_PLATE || planes[plate].is_some() {
+                        continue;
+                    }
+                    planes[plate] = Some(
+                        rgba.as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|px| 255 - px[channel])
+                            .collect(),
+                    );
+                }
+            }
+            if mixed && !single_plate {
+                continue;
+            }
+            let (font_substitution_log, telemetry_report) =
+                reports.take().expect("at least one plate pass ran");
+            return Ok(PlateRender::Native {
+                planes: planes.into_iter().map(Option::unwrap_or_default).collect(),
+                font_substitution_log,
+                telemetry_report,
+            });
+        }
+        unreachable!("single-plate passes never mix overprint")
     }
 
     fn render_contract_pixels(
@@ -2154,6 +2531,7 @@ impl ContentEngine {
             cancel,
             &mut cache,
             "one_shot_render_contract_report",
+            None,
         )
     }
 
@@ -2173,6 +2551,7 @@ impl ContentEngine {
             cancel,
             cache,
             "caller_owned_render_cache_report",
+            None,
         )
     }
 
@@ -2182,6 +2561,7 @@ impl ContentEngine {
         cancel: &crate::cancel::CancelToken,
         cache: &mut RenderDocumentCache,
         telemetry_scope: &str,
+        plate: Option<Arc<crate::render::plate::PlateTarget>>,
     ) -> Result<(
         PixelBuffer,
         RenderTile,
@@ -2312,7 +2692,12 @@ impl ContentEngine {
                 fields.join(", ")
             )));
         }
-        let render_contract_fingerprint = contract.cache_fingerprint();
+        let mut render_contract_fingerprint = contract.cache_fingerprint();
+        if let Some(plate) = plate.as_deref() {
+            // Plate passes produce ink, not RGB: keep every fingerprint-keyed
+            // cache entry (decoded images, glyph programs) per plate set.
+            render_contract_fingerprint.push_str(&plate.cache_identity());
+        }
         let _scalar_compositor_guard = crate::render::buffer::ScalarCompositorGuard::enter(
             contract.backend == crate::render::BackendSelection::ScalarReference,
         );
@@ -2333,6 +2718,7 @@ impl ContentEngine {
             render_contract_fingerprint,
             optional_content_context,
             cache,
+            plate.clone(),
         )?;
         let font_substitution_log = cache.take_font_substitution_log();
         let telemetry_report = RenderContractTelemetryReport::from_contract_cache_with_scope(
@@ -2340,15 +2726,28 @@ impl ContentEngine {
             contract,
             cache,
         );
-        self.apply_contract_proof_profile(contract, &mut buffer)?;
-        if contract.halftone == HalftonePolicy::Screen {
-            crate::render::print_profile::apply_ordered_halftone_screen(
-                &mut buffer,
-                tile.x,
-                tile.y,
-            );
+        if let Some(plate) = plate.as_deref() {
+            // RGB post-processing has no plate counterpart.
+            if contract.print_profile == crate::render::PrintProfile::Proof {
+                plate.note_issue("proof print profile");
+            }
+            if contract.halftone == HalftonePolicy::Screen {
+                plate.note_issue("halftone screen");
+            }
+            if contract.color_scheme != ColorScheme::Light {
+                plate.note_issue("colour scheme");
+            }
+        } else {
+            self.apply_contract_proof_profile(contract, &mut buffer)?;
+            if contract.halftone == HalftonePolicy::Screen {
+                crate::render::print_profile::apply_ordered_halftone_screen(
+                    &mut buffer,
+                    tile.x,
+                    tile.y,
+                );
+            }
+            apply_contract_color_scheme(contract, &mut buffer);
         }
-        apply_contract_color_scheme(contract, &mut buffer);
         if buffer.width != contract.width || buffer.height != contract.height {
             return Err(WellfriendError::MalformedPdf(
                 "render contract output dimensions diverged from the active viewport".to_string(),

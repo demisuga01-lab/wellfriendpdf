@@ -583,7 +583,7 @@ fn evaluate_tint_transform(
     evaluate_tint_transform_with_resources(tint_fn, inputs, reader, FunctionResources::default())
 }
 
-fn evaluate_tint_transform_with_resources(
+pub(crate) fn evaluate_tint_transform_with_resources(
     tint_fn: &PdfObject,
     inputs: &[f64],
     reader: &PdfReader,

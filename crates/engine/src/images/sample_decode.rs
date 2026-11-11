@@ -252,6 +252,33 @@ pub(crate) fn convert_component_image<'a>(
     source_space: Option<&PdfObject>,
 ) -> Result<super::decoder::RawImage> {
     let options = options.into();
+    if let Some(plate) = options.plate {
+        if let Some(raw) = convert_component_image_to_plate(
+            plate, data, width, height, channels, bits, family, dict, reader, options,
+        )? {
+            return Ok(raw);
+        }
+        let device = convert_component_image(
+            data,
+            width,
+            height,
+            channels,
+            bits,
+            family,
+            dict,
+            reader,
+            options.without_plate(),
+            source_space,
+        )?;
+        let (pixels, channels) = plate.convert_device_image(&device.pixels, device.channels);
+        return Ok(super::decoder::RawImage {
+            width,
+            height,
+            channels,
+            bits_per_sample: 8,
+            pixels,
+        });
+    }
     use crate::render::cmm;
     crate::cancel::check_current_cancel("image component-domain decoding")?;
     let samples = PackedSamples::new(data, width, height, channels, bits)?;
@@ -353,6 +380,123 @@ pub(crate) fn convert_component_image<'a>(
         bits_per_sample: 8,
         pixels,
     })
+}
+
+/// Plate pass: Indexed images through a per-entry ink table and one- and
+/// four-component ICC images as gray/CMYK ink. `None` sends other spaces
+/// through their RGB conversion.
+#[allow(clippy::too_many_arguments)]
+fn convert_component_image_to_plate(
+    plate: &crate::render::plate::PlateTarget,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    channels: usize,
+    bits: u8,
+    family: &str,
+    dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+    options: super::decoder::ImageColorOptions<'_>,
+) -> Result<Option<super::decoder::RawImage>> {
+    use crate::render::plate::{InkResult, PlateTarget};
+    let Some(reader) = reader else {
+        return Ok(None);
+    };
+    crate::cancel::check_current_cancel("image plate decoding")?;
+    let single = plate.single_plate();
+    let out_channels = if single { 1usize } else { 3 };
+    let samples = PackedSamples::new(data, width, height, channels, bits)?;
+    let mut pixels = Vec::with_capacity(samples.pixel_count() * out_channels);
+    let mut push = |bytes: [u8; 3]| {
+        if single {
+            pixels.push(bytes[0]);
+        } else {
+            pixels.extend_from_slice(&bytes);
+        }
+    };
+    match (family, channels) {
+        ("Indexed", 1) if matches!(bits, 1 | 2 | 4 | 8) => {
+            let Some(space) = dict
+                .get("ColorSpace")
+                .or_else(|| dict.get("CS"))
+                .and_then(|space| reader.resolve(space.clone()).ok())
+            else {
+                return Ok(None);
+            };
+            let Some(hival) = space
+                .as_array()
+                .and_then(|items| items.get(2))
+                .and_then(PdfObject::as_number)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+            else {
+                return Ok(None);
+            };
+            let hival = (hival as usize).min(255);
+            let mut table = Vec::with_capacity(hival + 1);
+            for index in 0..=hival {
+                let bytes = match plate.resolve(
+                    &space,
+                    None,
+                    &[index as f64],
+                    reader,
+                    options.options,
+                    options.functions,
+                    false,
+                ) {
+                    InkResult::Ink(ink) => plate.ink_bytes(&ink),
+                    InkResult::NoPaint => [255; 3],
+                    _ => return Ok(None),
+                };
+                table.push(bytes);
+            }
+            let map = DecodeMap::from_dictionary(
+                dict,
+                &[(0.0, ((1u32 << bits) - 1) as f64)],
+                Some(reader),
+            )?;
+            let decoder = samples.table_decoder(&map);
+            let mut value = [0.0];
+            for pixel in 0..samples.pixel_count() {
+                if pixel % 4096 == 0 {
+                    crate::cancel::check_current_cancel("Indexed plate conversion")?;
+                }
+                decoder.decode_pixel(pixel, &mut value)?;
+                if !value[0].is_finite() {
+                    return Err(invalid("Indexed pixel is not finite"));
+                }
+                let index = value[0].clamp(0.0, hival as f64).round() as usize;
+                push(table[index]);
+            }
+        }
+        ("ICCBased", 1 | 4) => {
+            let device = if channels == 4 {
+                "DeviceCMYK"
+            } else {
+                "DeviceGray"
+            };
+            let map = DecodeMap::from_dictionary(dict, &vec![(0.0, 1.0); channels], Some(reader))?;
+            let decoder = samples.table_decoder(&map);
+            let mut values = vec![0.0; channels];
+            for pixel in 0..samples.pixel_count() {
+                if pixel % 4096 == 0 {
+                    crate::cancel::check_current_cancel("ICC plate conversion")?;
+                }
+                decoder.decode_pixel(pixel, &mut values)?;
+                let Some(ink) = PlateTarget::device_ink(device, &values, false) else {
+                    return Err(invalid("ICC image component is not finite"));
+                };
+                push(plate.ink_bytes(&ink));
+            }
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(super::decoder::RawImage {
+        width,
+        height,
+        channels: out_channels as u8,
+        bits_per_sample: 8,
+        pixels,
+    }))
 }
 
 fn source_icc_decode_defaults(

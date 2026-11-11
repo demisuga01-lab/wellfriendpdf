@@ -64,12 +64,16 @@ pub enum PixelFormat {
     Rgb8,
     Bgr8,
     Gray8,
+    /// Interleaved C, M, Y, K ink bytes (0 = no ink), composited natively
+    /// in CMYK by the plate renderer (Poppler `splashModeCMYK8`). Alpha mode,
+    /// grayscale and byte-order flags do not apply.
+    Cmyk8,
 }
 
 impl PixelFormat {
     pub const fn bytes_per_pixel(self) -> usize {
         match self {
-            Self::Rgba8 | Self::Bgra8 => 4,
+            Self::Rgba8 | Self::Bgra8 | Self::Cmyk8 => 4,
             Self::Rgb8 | Self::Bgr8 => 3,
             Self::Gray8 => 1,
         }
