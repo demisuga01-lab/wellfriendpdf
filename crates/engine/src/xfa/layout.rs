@@ -13,6 +13,10 @@ use super::xml::XmlNode;
 /// Hard caps protecting against hostile templates.
 const MAX_PAGES: usize = 2_000;
 const MAX_PLACED: usize = 400_000;
+/// Siblings a `keep next`/`keep previous` chain spans, at most (chains are
+/// also cut once they exceed the content area, where they cannot move as
+/// a unit anyway).
+const MAX_KEEP_CHAIN: usize = 512;
 
 /// A laid-out form node: its layout extent on the page (after rotation),
 /// in points from the page's top-left corner.
@@ -264,6 +268,18 @@ struct Overflow<'f, 't> {
     target: Option<BreakTarget<'f, 't>>,
 }
 
+/// The overflow leader/trailer of one container on the flow path, with
+/// where they are placed.
+#[derive(Clone, Copy, Debug, Default)]
+struct OverflowFrame<'f, 't> {
+    overflow: Overflow<'f, 't>,
+    /// Content x offset and width of the container.
+    x: f64,
+    w: f64,
+    /// Height of the overflow trailer.
+    trailer_h: f64,
+}
+
 /// `<keep>`: intact, with next, with previous.
 #[derive(Clone, Copy, Debug, Default)]
 struct Keep {
@@ -300,6 +316,10 @@ pub(crate) struct Layouter<'a, 'f, 't, 'r> {
     pending_break: Option<BreakTarget<'f, 't>>,
     placed: usize,
     depth: usize,
+    /// Overflow leaders/trailers of the flowed containers being laid out,
+    /// outermost first: a split places every one of them (PDFium lays out
+    /// each splitting ancestor's overflow leader and trailer).
+    overflow_stack: Vec<OverflowFrame<'f, 't>>,
 }
 
 /// Lays out the whole form into pages.
@@ -321,6 +341,7 @@ pub(crate) fn layout_form<'f, 't>(
         pending_break: None,
         placed: 0,
         depth: 0,
+        overflow_stack: Vec::new(),
     };
     layouter.start_page(None);
     let root = &model.root;
@@ -725,7 +746,15 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
         self.take_pending_break(x_off, avail_w);
         let overflow = self.overflow_of(node);
         let (bookend_leader, bookend_trailer) = self.bookend_of(node);
-        let trailer_h = self.extra_height(overflow.trailer, inner_w);
+        let own_trailer_h = self.extra_height(overflow.trailer, inner_w);
+        self.overflow_stack.push(OverflowFrame {
+            overflow,
+            x: content_x,
+            w: inner_w,
+            trailer_h: own_trailer_h,
+        });
+        // Room kept for the trailers of this container and its ancestors.
+        let trailer_h: f64 = self.overflow_stack.iter().map(|f| f.trailer_h).sum();
         let mut fragment = self.open_fragment(node, x_off, width);
         self.cursor += margin.top;
         if let Some(leader) = bookend_leader {
@@ -767,23 +796,20 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
                     let area = self.area();
                     // A keep chain (`keep next`/`previous`) moves as a unit
                     // when it fits in an empty content area.
-                    let chain =
-                        self.keep_chain_height(&children, index, inner_w, columns.as_deref());
+                    let chain = self.keep_chain_height(
+                        &children,
+                        index,
+                        inner_w,
+                        columns.as_deref(),
+                        area[3] - trailer_h,
+                    );
                     let needed = if chain > block.h && chain <= area[3] - trailer_h {
                         chain
                     } else {
                         block.h
                     };
                     if needed > area[3] - self.cursor - trailer_h + 0.01 && self.used {
-                        if let Some(trailer) = overflow.trailer {
-                            self.place_extra(trailer, content_x, inner_w);
-                        }
-                        self.close_fragment(&fragment, false);
-                        self.next_area(overflow.target);
-                        fragment = self.open_fragment(node, x_off, width);
-                        if let Some(leader) = overflow.leader {
-                            self.place_extra(leader, content_x, inner_w);
-                        }
+                        fragment = self.overflow_split(fragment, node, x_off, width);
                     }
                     self.place_block(block, content_x);
                 }
@@ -792,6 +818,7 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
                 self.pending_break = Some(target);
             }
         }
+        self.overflow_stack.pop();
         if let Some(trailer) = bookend_trailer {
             self.place_extra(trailer, content_x, inner_w);
         }
@@ -805,19 +832,65 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
         self.depth -= 1;
     }
 
+    /// The innermost flowed container (`node`, whose fragment is
+    /// `fragment`) splits: the overflow trailers of it and of every
+    /// ancestor on the flow path end the content area (innermost first),
+    /// the flow moves on (to the innermost overflow `target`), and the
+    /// overflow leaders start the new area (outermost first). Returns the
+    /// container's new fragment.
+    fn overflow_split(
+        &mut self,
+        fragment: (usize, usize, f64),
+        node: &'f FormNode<'t>,
+        x_off: f64,
+        width: f64,
+    ) -> (usize, usize, f64) {
+        let frames = self.overflow_stack.clone();
+        let Some((own, ancestors)) = frames.split_last() else {
+            self.close_fragment(&fragment, false);
+            self.next_area(None);
+            return self.open_fragment(node, x_off, width);
+        };
+        if let Some(trailer) = own.overflow.trailer {
+            self.place_extra(trailer, own.x, own.w);
+        }
+        self.close_fragment(&fragment, false);
+        for frame in ancestors.iter().rev() {
+            if let Some(trailer) = frame.overflow.trailer {
+                self.place_extra(trailer, frame.x, frame.w);
+            }
+        }
+        let target = frames.iter().rev().find_map(|frame| frame.overflow.target);
+        self.next_area(target);
+        for frame in ancestors {
+            if let Some(leader) = frame.overflow.leader {
+                self.place_extra(leader, frame.x, frame.w);
+            }
+        }
+        let fragment = self.open_fragment(node, x_off, width);
+        if let Some(leader) = own.overflow.leader {
+            self.place_extra(leader, own.x, own.w);
+        }
+        fragment
+    }
+
     /// Height of the keep chain starting at `children[index]`: the child
-    /// and following siblings linked by `keep next` / `keep previous`.
+    /// and following siblings linked by `keep next` / `keep previous`
+    /// ([`MAX_KEEP_CHAIN`] at most). Measuring stops once the chain is
+    /// taller than `limit` (the room in an empty content area): such a
+    /// chain cannot move as a unit.
     fn keep_chain_height(
         &mut self,
         children: &[&'f FormNode<'t>],
         index: usize,
         inner_w: f64,
         columns: Option<&[f64]>,
+        limit: f64,
     ) -> f64 {
         let mut total = 0.0;
         let mut end = index;
         while end + 1 < children.len()
-            && end - index < 32
+            && end - index < MAX_KEEP_CHAIN
             && (self.keep_of(children[end]).next || self.keep_of(children[end + 1]).previous)
         {
             end += 1;
@@ -833,6 +906,9 @@ impl<'f, 't> Layouter<'_, 'f, 't, '_> {
                 _ => self.layout_node(child, inner_w),
             };
             total += block.map_or(0.0, |block| block.h);
+            if total > limit {
+                break;
+            }
         }
         total
     }
@@ -1580,6 +1656,101 @@ mod tests {
         assert_eq!(count(&pages[3], "b"), 1);
         assert_eq!(count(&pages[3], "c"), 1);
         assert_eq!(pages.len(), 4);
+    }
+
+    #[test]
+    fn nested_splits_place_every_ancestor_leader_and_trailer() {
+        let extras = r##"
+            <subform name="ohdr" id="ohdr" w="100pt" h="20pt"><occur min="0" initial="0"/></subform>
+            <subform name="oftr" id="oftr" w="100pt" h="10pt"><occur min="0" initial="0"/></subform>
+            <subform name="ihdr" id="ihdr" w="100pt" h="15pt"><occur min="0" initial="0"/></subform>
+            <subform name="iftr" id="iftr" w="100pt" h="5pt"><occur min="0" initial="0"/></subform>"##;
+        let layout = |inner_overflow: &str| {
+            let template = parse(&format!(
+                r##"<template><subform name="f" layout="tb">{PAGE_SET}{extras}
+                <subform name="outer" layout="tb"><overflow leader="#ohdr" trailer="#oftr"/>
+                  <subform name="inner" layout="tb">{inner_overflow}
+                    <subform name="item" w="100pt" h="30pt"><occur min="8" max="8"/></subform>
+                  </subform>
+                </subform>
+                </subform></template>"##
+            ));
+            let tpl = Template::new(&template);
+            let model = build_form_model(&tpl, &template, None).unwrap();
+            let mut book = FontBook::new(None, Vec::new());
+            let pages = layout_form(&tpl, &model, &mut book);
+            pages
+                .iter()
+                .map(|page| {
+                    page.items
+                        .iter()
+                        .filter(|item| !item.master)
+                        .filter(|item| item.node.kind == NodeKind::Subform)
+                        .map(|item| (item.node.name().to_string(), item.y))
+                        .filter(|(name, _)| !matches!(name.as_str(), "f" | "outer" | "inner"))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let items = |page: &[(String, f64)]| page.iter().filter(|(n, _)| n == "item").count();
+        // Both containers split: 15pt of trailers is reserved, so 6 items
+        // fit; the inner trailer, then the outer one, end page 1; the outer
+        // leader, then the inner one, start page 2.
+        let pages = layout(r##"<overflow leader="#ihdr" trailer="#iftr"/>"##);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(items(&pages[0]), 6);
+        let extras_of = |page: &[(String, f64)]| {
+            page.iter()
+                .filter(|(n, _)| n != "item")
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            extras_of(&pages[0]),
+            vec![("iftr".to_string(), 216.0), ("oftr".to_string(), 221.0)]
+        );
+        assert_eq!(
+            extras_of(&pages[1]),
+            vec![("ohdr".to_string(), 36.0), ("ihdr".to_string(), 56.0)]
+        );
+        assert_eq!(items(&pages[1]), 2);
+        assert_eq!(pages[1].iter().find(|(n, _)| n == "item").unwrap().1, 71.0);
+        // A nested subform without its own overflow still carries the
+        // ancestor's leader and trailer across the split.
+        let pages = layout("");
+        assert_eq!(pages.len(), 2);
+        assert_eq!(items(&pages[0]), 6);
+        assert_eq!(extras_of(&pages[0]), vec![("oftr".to_string(), 216.0)]);
+        assert_eq!(extras_of(&pages[1]), vec![("ohdr".to_string(), 36.0)]);
+        assert_eq!(items(&pages[1]), 2);
+    }
+
+    #[test]
+    fn long_keep_chains_move_as_a_unit() {
+        // 40 kept-together 4pt rows (160pt) after a 50pt block: the chain
+        // does not fit the remaining 150pt but fits an empty 200pt area.
+        let template = parse(&format!(
+            r#"<template><subform name="f" layout="tb">{PAGE_SET}
+            <subform name="lead" w="100pt" h="50pt"/>
+            <subform name="row" w="100pt" h="4pt"><occur min="40" max="40"/><keep next="contentArea"/></subform>
+            <subform name="tail" w="100pt" h="4pt"/>
+            </subform></template>"#
+        ));
+        let tpl = Template::new(&template);
+        let model = build_form_model(&tpl, &template, None).unwrap();
+        let mut book = FontBook::new(None, Vec::new());
+        let pages = layout_form(&tpl, &model, &mut book);
+        let count = |page: &LayoutPage, name: &str| {
+            page.items
+                .iter()
+                .filter(|item| item.node.name() == name)
+                .count()
+        };
+        assert_eq!(pages.len(), 2);
+        assert_eq!(count(&pages[0], "lead"), 1);
+        assert_eq!(count(&pages[0], "row"), 0);
+        assert_eq!(count(&pages[1], "row"), 40);
+        assert_eq!(count(&pages[1], "tail"), 1);
     }
 
     #[test]
