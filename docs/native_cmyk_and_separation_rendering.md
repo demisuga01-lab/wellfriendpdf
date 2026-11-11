@@ -63,16 +63,35 @@ its alternate colour inks at full tint (Poppler's overprint mask). Images
 and shadings overprint as a whole by their colour space. Luminosity soft
 masks are still computed from the mask group's RGB rendering.
 
+Non-separable blend modes (Hue, Saturation, Color, Luminosity) follow the
+PDF rule for CMYK (PDF 32000-2 11.3.5.3, Poppler `splashModeCMYK8`): the
+RGB formulas run on the complements of C, M and Y, and K is the backdrop's
+(Hue, Saturation, Color) or the source's (Luminosity). The C/M/Y pass holds
+exactly those complements, and a pass with one plate holds it as a grey
+triple, for which the formulas reduce to the backdrop or the source, so the
+ordinary compositor computes both. Spot plates follow the K rule. A
+separation render whose K-and-spots pass meets such a mode is repeated with
+C/M/Y together and every other plate alone.
+
+Transfer functions (`/TR`, `/TR2`) apply per plate to `255 - ink`, like
+Poppler's `cmykTransfer*[i] = 255 - transfer[255 - i]`: C, M and Y take the
+first three curves of a four-curve array, K and spot plates the fourth; a
+single curve applies to every plate. They apply where the RGB render applies
+them (paint colours, image samples, shadings, tiling-pattern results).
+
+Colour-font glyphs: COLR/CPAL palette colours, COLRv1 gradient stops, SVG
+glyph fills and bitmap glyph pixels are sRGB and convert to ink like
+DeviceRGB paint; layers in the text colour (palette index 0xFFFF,
+`currentColor`) keep its exact ink. Gradients interpolate in ink.
+
 ## Fallback
 
 Pages that use something the plate compositor cannot reproduce are rendered
 in RGB and converted with the formula above; `CmykRaster::native` is
 `false`, `diagnostics` names the feature and the CLI prints a warning:
 
-- non-separable blend modes (Hue, Saturation, Color, Luminosity), detected
-  when an ExtGState selects them;
-- transfer functions (`/TR`, `/TR2`);
-- colour-font glyphs (COLR/CPAL, SVG, bitmap emoji);
+- a non-separable blend mode on a page that also needs one plate per pass
+  for overprint (C, M and Y are then never in one pass);
 - forced colour schemes and form-field highlights;
 - linear-light (`high`) compositing;
 - proof print profile, halftone screen and colour-scheme post-processing.
@@ -96,8 +115,9 @@ converted RGB render and leaves spot plates empty.
 
 - `render::plate` unit and end-to-end tests: exact DeviceCMYK paint, Gray and
   RGB conversion, OPM 1 and spot overprint per plate, knockout without
-  overprint, constant alpha, Multiply, CMYK images and shadings, the
-  non-separable blend fallback, separation plates.
+  overprint, constant alpha, Multiply, CMYK images and shadings,
+  separation plates; native Hue and Luminosity in CMYK and with spot plates,
+  per-plate transfer curves, COLR palette and foreground ink.
 - Synthetic page against `pdftoppm -jpegcmyk -overprint`: every probe point
   within JPEG noise (DeviceCMYK fill 51/102/0/26, OPM 1 overlap 255/255/0/0,
   spot overprint on cyan 255/61/240/0, CMYK image and shading values).

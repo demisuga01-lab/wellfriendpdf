@@ -29,6 +29,10 @@
 //! through its alternate names the process plates its alternate colour at full
 //! tint inks (Poppler's overprint mask).
 //!
+//! Non-separable blend modes, transfer functions and colour-font glyphs are
+//! native as well: see [`PlateTarget::check_blend_mode`],
+//! [`PlateTarget::transfer_for_pass`] and [`PlateTarget::srgb_pixel`].
+//!
 //! Features a plate pass cannot reproduce exactly are reported through
 //! [`PlateTarget::note_issue`]; callers then fall back to rendering RGB and
 //! converting it, and surface the issue as a diagnostic.
@@ -93,6 +97,12 @@ pub(crate) const NO_PLATE: usize = usize::MAX;
 pub(crate) const MIXED_OVERPRINT_ISSUE: &str =
     "overprint paint names only some of the plates rendered together";
 
+/// Issue reported when a non-separable blend mode is used in a pass that
+/// renders neither exactly the C/M/Y plates nor a single black or spot plate;
+/// the page is then repeated with [`PassLayout::ProcessTogether`].
+pub(crate) const NONSEPARABLE_LAYOUT_ISSUE: &str =
+    "non-separable blend mode in a pass mixing black or spot plates";
+
 const PROCESS_MASK: u64 = 0b1111;
 const MAX_RESOLVE_DEPTH: u8 = 8;
 
@@ -150,6 +160,71 @@ impl PlateTarget {
             .lock()
             .map(|issues| issues.clone())
             .unwrap_or_default()
+    }
+
+    /// Check a blend mode against this pass's plates.
+    ///
+    /// The non-separable modes (Hue, Saturation, Color, Luminosity) are
+    /// computed in CMYK on the complements of C, M and Y, with K taken from
+    /// the backdrop (Hue, Saturation, Color) or the source (Luminosity)
+    /// (PDF 32000-2 11.3.5.3, Poppler `splashModeCMYK8`). A pass rendering
+    /// exactly C/M/Y already holds those complements (`255 - ink`) in R/G/B,
+    /// so the RGB formulas are that rule. A pass rendering one plate holds it
+    /// as a grey triple, for which the formulas reduce to the backdrop (Hue,
+    /// Saturation, Color) or the source (Luminosity): the K rule, which spot
+    /// plates follow as well. Other passes cannot compute the modes: a pass
+    /// mixing K or spots asks for [`PassLayout::ProcessTogether`]; a pass
+    /// with C, M or Y alone (per-plate overprint) needs the RGB fallback.
+    pub(crate) fn check_blend_mode(&self, nonseparable: bool, mode_name: &str) {
+        if !nonseparable || self.channels == [0, 1, 2] {
+            return;
+        }
+        if self.single_plate() {
+            if self.channels[0] < 3 {
+                self.note_issue(format!(
+                    "non-separable blend mode {mode_name} with one process plate per pass"
+                ));
+            }
+            return;
+        }
+        self.note_issue(NONSEPARABLE_LAYOUT_ISSUE);
+    }
+
+    /// Transfer curves for this pass. `/TR` tables map additive values and a
+    /// plate holds `255 - ink`, so C, M and Y take the red, green and blue
+    /// curves and K (and spot plates) the fourth, grey curve, as Poppler's
+    /// `cmykTransferC[i] = 255 - rgbTransferR[255 - i]`. Channels without a
+    /// plate keep the identity.
+    pub(crate) fn transfer_for_pass(
+        &self,
+        lut: &crate::content::state::TransferLut,
+    ) -> crate::content::state::TransferLut {
+        let mut identity = [0u8; 256];
+        for (index, value) in identity.iter_mut().enumerate() {
+            *value = index as u8;
+        }
+        let mut channels = lut.channels;
+        for (slot, &plate) in channels.iter_mut().zip(self.channels.iter()) {
+            *slot = match plate {
+                NO_PLATE => identity,
+                0..=2 => lut.channels[plate],
+                _ => lut.channels[3],
+            };
+        }
+        crate::content::state::TransferLut { channels }
+    }
+
+    /// Plate pixel of an sRGB colour (colour-font palette entries and
+    /// bitmaps) through the DeviceRGB conversion; alpha is kept.
+    pub(crate) fn srgb_pixel(&self, rgba: PixelColor) -> PixelColor {
+        let cmyk = rgb_bytes_to_cmyk(rgba[0], rgba[1], rgba[2]);
+        let mut out = [255u8, 255, 255, rgba[3]];
+        for (byte, &plate) in out.iter_mut().zip(self.channels.iter()) {
+            if plate < 4 {
+                *byte = 255 - cmyk[plate];
+            }
+        }
+        out
     }
 
     fn spot_index(&self, name: &str) -> Option<usize> {
@@ -928,13 +1003,30 @@ pub(crate) fn component_count(space: &PdfObject, reader: &PdfReader, depth: u8) 
     }
 }
 
-/// Plate channel sets covering `plates` plates three per pass (CMY, then K
-/// with the first two spots, ...), or one plate per pass with
-/// `single_plate`, used when an overprinting paint names only some of the
-/// plates of a pass. A plate alone in its pass fills all three channels.
-pub(crate) fn plate_pass_channels(plates: usize, single_plate: bool) -> Vec<[usize; 3]> {
-    if single_plate {
-        return (0..plates).map(|plate| [plate; 3]).collect();
+/// How the plates of a page are grouped into render passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PassLayout {
+    /// Three plates per pass: C/M/Y, then K with the first two spots, ...
+    Grouped,
+    /// C/M/Y together, every other plate alone (non-separable blend modes
+    /// with spot plates).
+    ProcessTogether,
+    /// One plate per pass (an overprinting paint names only some of the
+    /// plates of a pass).
+    Single,
+}
+
+/// Plate channel sets covering `plates` plates in `layout`. A plate alone in
+/// its pass fills all three channels.
+pub(crate) fn plate_pass_channels(plates: usize, layout: PassLayout) -> Vec<[usize; 3]> {
+    match layout {
+        PassLayout::Grouped => {}
+        PassLayout::ProcessTogether => {
+            let mut passes = vec![[0, 1, 2]];
+            passes.extend((3..plates).map(|plate| [plate; 3]));
+            return passes;
+        }
+        PassLayout::Single => return (0..plates).map(|plate| [plate; 3]).collect(),
     }
     (0..plates)
         .step_by(3)
@@ -1066,12 +1158,64 @@ mod tests {
 
     #[test]
     fn pass_channels_group_plates_three_at_a_time() {
-        assert_eq!(plate_pass_channels(4, false), vec![[0, 1, 2], [3, 3, 3]]);
-        assert_eq!(plate_pass_channels(4, true).len(), 4);
-        assert_eq!(plate_pass_channels(6, false), vec![[0, 1, 2], [3, 4, 5]]);
+        use PassLayout::{Grouped, ProcessTogether, Single};
+        assert_eq!(plate_pass_channels(4, Grouped), vec![[0, 1, 2], [3, 3, 3]]);
+        assert_eq!(plate_pass_channels(4, Single).len(), 4);
+        assert_eq!(plate_pass_channels(6, Grouped), vec![[0, 1, 2], [3, 4, 5]]);
         assert_eq!(
-            plate_pass_channels(5, false),
+            plate_pass_channels(5, Grouped),
             vec![[0, 1, 2], [3, 4, NO_PLATE]]
         );
+        assert_eq!(
+            plate_pass_channels(6, ProcessTogether),
+            vec![[0, 1, 2], [3, 3, 3], [4, 4, 4], [5, 5, 5]]
+        );
+    }
+
+    #[test]
+    fn non_separable_blend_needs_process_plates_together() {
+        let cmy = target([0, 1, 2], &[]);
+        cmy.check_blend_mode(true, "Hue");
+        let black = target([3, 3, 3], &[]);
+        black.check_blend_mode(true, "Color");
+        let spot = target([4, 4, 4], &["Gold"]);
+        spot.check_blend_mode(true, "Luminosity");
+        assert!(cmy.issues().is_empty());
+        assert!(black.issues().is_empty());
+        assert!(spot.issues().is_empty());
+        let mixed = target([3, 4, 5], &["Gold", "Silver"]);
+        mixed.check_blend_mode(false, "Multiply");
+        assert!(mixed.issues().is_empty());
+        mixed.check_blend_mode(true, "Saturation");
+        assert_eq!(mixed.issues(), vec![NONSEPARABLE_LAYOUT_ISSUE.to_string()]);
+        let cyan = target([0, 0, 0], &[]);
+        cyan.check_blend_mode(true, "Hue");
+        assert_eq!(cyan.issues().len(), 1);
+        assert_ne!(cyan.issues()[0], NONSEPARABLE_LAYOUT_ISSUE);
+    }
+
+    #[test]
+    fn transfer_curves_map_to_plates() {
+        let mut channels = [[0u8; 256]; 4];
+        for (curve, table) in channels.iter_mut().enumerate() {
+            for (index, value) in table.iter_mut().enumerate() {
+                *value = (index as u8).saturating_sub(curve as u8 + 1);
+            }
+        }
+        let lut = crate::content::state::TransferLut { channels };
+        let cmy = target([0, 1, 2], &[]).transfer_for_pass(&lut);
+        assert_eq!(cmy.apply_rgba([200, 200, 200, 255]), [199, 198, 197, 255]);
+        let k_spot = target([3, 4, NO_PLATE], &["Gold"]).transfer_for_pass(&lut);
+        assert_eq!(k_spot.apply_rgba([200, 200, 200, 9]), [196, 196, 200, 9]);
+    }
+
+    #[test]
+    fn srgb_colours_convert_to_plate_ink() {
+        let cmy = target([0, 1, 2], &[]);
+        assert_eq!(cmy.srgb_pixel([255, 0, 0, 128]), [255, 0, 0, 128]);
+        let black = target([3, 3, 3], &[]);
+        assert_eq!(black.srgb_pixel([64, 64, 64, 255]), [64, 64, 64, 255]);
+        let spot = target([4, 4, 4], &["Gold"]);
+        assert_eq!(spot.srgb_pixel([0, 0, 0, 255]), [255, 255, 255, 255]);
     }
 }

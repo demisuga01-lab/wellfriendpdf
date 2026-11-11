@@ -3429,6 +3429,18 @@ fn fill_flat_with_color_compositor(
         ) {
             return handled;
         }
+        if let Some(rects) = scanline_rect_set(flat, (y0, y1), PATH_SCANLINE_COLOR_VERTICAL_SAMPLES)
+        {
+            return fill_scanline_rects_with_color_compositor(
+                buf,
+                &rects,
+                color,
+                cancel,
+                (x0, y0, x1, y1),
+                PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+                lut,
+            );
+        }
     }
     // General page paths now use the edge-bucket scanline route by default.
     // This avoids falling back to accumulator grids on the pathological vector
@@ -3445,6 +3457,311 @@ fn fill_flat_with_color_compositor(
         &rescues,
         lut,
     )
+}
+
+/// One subpath of a [`scanline_rect_set`]: an axis-aligned box as the
+/// sampled scan converter sees it.
+#[derive(Clone, Copy, Debug)]
+struct ScanlineRect {
+    /// Crossing x of the left and right edge (`left <= right`).
+    left: f64,
+    right: f64,
+    /// The sample lines (`row * samples + sample`) the box crosses, clipped
+    /// to the scanned rows: `first_sample..end_sample`.
+    first_sample: i64,
+    end_sample: i64,
+}
+
+/// `(left, right, index)` ordered with `f64::total_cmp`.
+#[derive(Clone, Copy)]
+struct ScanlineRectKey(f64, f64, usize);
+
+impl PartialEq for ScanlineRectKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for ScanlineRectKey {}
+
+impl PartialOrd for ScanlineRectKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScanlineRectKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0
+            .total_cmp(&other.0)
+            .then_with(|| self.1.total_cmp(&other.1))
+            .then_with(|| self.2.cmp(&other.2))
+    }
+}
+
+/// First sample line (`row * samples + sample`, clipped to
+/// `scan_lo..=scan_hi`) whose y, computed exactly as the scan converter
+/// computes it, is at or below `y`.
+fn first_sample_line_at_or_after(y: f64, samples: i64, scan_lo: i64, scan_hi: i64) -> i64 {
+    let scale = 1.0 / samples as f64;
+    let row_lo = scan_lo / samples;
+    let row_hi = scan_hi / samples;
+    if y < row_lo as f64 {
+        return scan_lo;
+    }
+    if y >= (row_hi + 1) as f64 {
+        return scan_hi;
+    }
+    let row = (y.floor() as i64).clamp(row_lo, row_hi);
+    for line in ((row - 1) * samples).max(scan_lo)..scan_hi {
+        let (line_row, sample) = (line / samples, line % samples);
+        let scan_y = line_row as i32 as f64 + (sample as f64 + 0.5) * scale;
+        if scan_y >= y {
+            return line;
+        }
+    }
+    scan_hi
+}
+
+/// Recognise an outline made only of axis-aligned boxes whose spans never
+/// overlap on a sample line: dash pieces of axis-aligned strokes, and fills
+/// of separate rectangles. Each subpath's scanline edges (the edges the scan
+/// converter keeps, closing edge included) must be exactly two vertical edges
+/// with the same vertical extent and opposite directions. On every sample
+/// line the sorted crossings of such an outline pair up into one span per
+/// box crossing it (boxes that only touch split exactly where their spans
+/// meet), under either fill rule, so
+/// [`fill_scanline_rects_with_color_compositor`] can add those spans directly
+/// with the general scan converter's arithmetic instead of collecting and
+/// sorting crossings per sample line. Anything else, including boxes whose
+/// spans overlap on some sample line, returns `None`.
+fn scanline_rect_set(
+    flat: &FlatPath,
+    rows: (i32, i32),
+    vertical_samples: usize,
+) -> Option<Vec<ScanlineRect>> {
+    const MAX_RECTS: usize = 1 << 16;
+    if flat.subpaths.is_empty()
+        || flat.subpaths.len() > MAX_RECTS
+        || vertical_samples == 0
+        || vertical_samples > 32
+        || rows.1 <= rows.0
+    {
+        return None;
+    }
+    let samples = vertical_samples as i64;
+    let scan_lo = i64::from(rows.0) * samples;
+    let scan_hi = i64::from(rows.1) * samples;
+    let mut rects = Vec::with_capacity(flat.subpaths.len());
+    for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
+        if sp.len() < 2 {
+            continue;
+        }
+        let mut edges = [None; 2];
+        let mut count = 0usize;
+        let mut visit = |p0: (f64, f64), p1: (f64, f64)| -> bool {
+            let Some(edge) = ScanlineEdge::new(p0, p1) else {
+                return true;
+            };
+            if count == 2 {
+                return false;
+            }
+            edges[count] = Some(edge);
+            count += 1;
+            true
+        };
+        for win in sp.windows(2) {
+            if !visit(win[0], win[1]) {
+                return None;
+            }
+        }
+        if !closed {
+            if let (Some(&first), Some(&last)) = (sp.first(), sp.last()) {
+                if first != last && !visit(last, first) {
+                    return None;
+                }
+            }
+        }
+        let (a, b) = match (count, edges) {
+            (0, _) => continue,
+            (2, [Some(a), Some(b)]) => (a, b),
+            _ => return None,
+        };
+        if a.dx_dy != 0.0
+            || b.dx_dy != 0.0
+            || a.dir == b.dir
+            || a.ymin != b.ymin
+            || a.ymax != b.ymax
+        {
+            return None;
+        }
+        // Vertical edges cross every sample line they span at the same x.
+        let ((xa, _), (xb, _)) = (a.crossing_at(a.ymin)?, b.crossing_at(b.ymin)?);
+        let (left, right) = if xa.total_cmp(&xb).is_le() {
+            (xa, xb)
+        } else {
+            (xb, xa)
+        };
+        let first_sample = first_sample_line_at_or_after(a.ymin, samples, scan_lo, scan_hi);
+        let end_sample = first_sample_line_at_or_after(a.ymax, samples, scan_lo, scan_hi);
+        if end_sample > first_sample {
+            rects.push(ScanlineRect {
+                left,
+                right,
+                first_sample,
+                end_sample,
+            });
+        }
+    }
+    if rects.is_empty() || scanline_rects_overlap(&rects) {
+        return None;
+    }
+    Some(rects)
+}
+
+/// Whether two boxes have strictly overlapping spans on a common sample line.
+fn scanline_rects_overlap(rects: &[ScanlineRect]) -> bool {
+    let overlap_x = |a: &ScanlineRect, b: &ScanlineRect| a.left < b.right && b.left < a.right;
+    let mut order: Vec<usize> = (0..rects.len()).collect();
+    // Common cases first: boxes separated along x (pieces of a horizontal
+    // rule) or along the sample lines (pieces of a vertical rule).
+    order.sort_unstable_by(|&a, &b| {
+        rects[a]
+            .left
+            .total_cmp(&rects[b].left)
+            .then_with(|| rects[a].right.total_cmp(&rects[b].right))
+    });
+    if order
+        .windows(2)
+        .all(|pair| rects[pair[0]].right <= rects[pair[1]].left)
+    {
+        return false;
+    }
+    order.sort_unstable_by_key(|&index| (rects[index].first_sample, rects[index].end_sample));
+    if order
+        .windows(2)
+        .all(|pair| rects[pair[0]].end_sample <= rects[pair[1]].first_sample)
+    {
+        return false;
+    }
+    // Sweep the sample lines keeping the boxes still crossing them ordered
+    // by (left, right). Those are pairwise disjoint, so a new box can only
+    // overlap its nearest live neighbours; boxes that ended are dropped when
+    // met.
+    let mut live: std::collections::BTreeMap<ScanlineRectKey, usize> =
+        std::collections::BTreeMap::new();
+    for &index in &order {
+        let rect = rects[index];
+        let key = ScanlineRectKey(rect.left, rect.right, index);
+        while let Some((&below, &other)) = live.range(..key).next_back() {
+            if rects[other].end_sample > rect.first_sample {
+                if overlap_x(&rects[other], &rect) {
+                    return true;
+                }
+                break;
+            }
+            live.remove(&below);
+        }
+        while let Some((&above, &other)) = live.range(key..).next() {
+            if rects[other].end_sample > rect.first_sample {
+                if overlap_x(&rects[other], &rect) {
+                    return true;
+                }
+                break;
+            }
+            live.remove(&above);
+        }
+        live.insert(key, index);
+    }
+    false
+}
+
+/// Fill a [`scanline_rect_set`]: per row, each box adds its span once per
+/// sample line it crosses (`add_alpha_span_repeated` with that count, the
+/// integer sum the general scan converter accumulates line by line), and
+/// the row is painted as [`fill_flat_with_color_compositor_scanline`]
+/// paints it. The output is identical to the general path.
+fn fill_scanline_rects_with_color_compositor(
+    buf: &mut PixelBuffer,
+    rects: &[ScanlineRect],
+    color: PixelColor,
+    cancel: Option<&CancelToken>,
+    bounds: (i32, i32, i32, i32),
+    vertical_samples: usize,
+    lut: Option<&[u8; 256]>,
+) -> bool {
+    let (x0, y0, x1, y1) = bounds;
+    let w = (x1 - x0) as usize;
+    if w == 0 || y1 <= y0 {
+        return true;
+    }
+    let samples = vertical_samples as i64;
+    let sample_scale = 1.0 / vertical_samples as f64;
+    let sample_weight = 255.0 * sample_scale;
+    let origin = x0 as f64;
+    let mut order: Vec<usize> = (0..rects.len()).collect();
+    order.sort_unstable_by_key(|&index| rects[index].first_sample);
+    let mut pending = order.into_iter().peekable();
+    let mut live: Vec<usize> = Vec::new();
+    let mut row_accum = take_scanline_u16_vec(w);
+    let mut memo = take_coverage_blend_memo();
+    let mut sample_lines = 0u64;
+    for y in y0..y1 {
+        if (y - y0) % 16 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+            return_scanline_u16_vec(row_accum);
+            return_coverage_blend_memo(memo);
+            return false;
+        }
+        let row_first = i64::from(y) * samples;
+        let row_end = row_first + samples;
+        live.retain(|&index| rects[index].end_sample > row_first);
+        while let Some(index) = pending.next_if(|&index| rects[index].first_sample < row_end) {
+            live.push(index);
+        }
+        if live.is_empty() {
+            if pending.peek().is_none() {
+                break;
+            }
+            continue;
+        }
+        let mut touched = (w, 0usize);
+        let mut lines = 0u64;
+        for &index in &live {
+            let rect = &rects[index];
+            let lo = rect.first_sample.max(row_first);
+            let hi = rect.end_sample.min(row_end);
+            if hi <= lo {
+                continue;
+            }
+            let repeat = (hi - lo) as u32;
+            lines |= ((1u64 << repeat) - 1) << ((lo - row_first) as u32);
+            let start = rect.left - origin;
+            let end = rect.right - origin;
+            let lo_col = safe_floor_i32(start).clamp(0, w as i32) as usize;
+            let hi_col = safe_ceil_i32(end).saturating_add(1).clamp(0, w as i32) as usize;
+            touched = (touched.0.min(lo_col), touched.1.max(hi_col));
+            add_alpha_span_repeated(&mut row_accum, 0, w, start, end, sample_weight, repeat);
+        }
+        sample_lines += u64::from(lines.count_ones());
+        if touched.0 < touched.1 {
+            let (lo, hi) = touched;
+            paint_alpha_row_runs(
+                buf,
+                &row_accum[lo..hi],
+                x0 + lo as i32,
+                y,
+                color,
+                lut,
+                &mut memo,
+                |_| {},
+            );
+            row_accum[lo..hi].fill(0);
+        }
+    }
+    PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(sample_lines, Ordering::Relaxed);
+    return_scanline_u16_vec(row_accum);
+    return_coverage_blend_memo(memo);
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4016,16 +4333,18 @@ struct SampleLineGroup {
 
 impl SampleLineGroup {
     /// Add the spans of `crossings` (unsorted, as collected) `repeat` times.
+    /// Returns the number of sample lines that crossed the outline (the
+    /// caller adds them to the raster counters once per row).
     fn accumulate(
         &self,
         crossings: &mut Vec<(f64, i32)>,
         repeat: u32,
         row_accum: &mut [u16],
         touched: &mut (usize, usize),
-    ) {
+    ) -> u64 {
         let (x0, w, sample_weight) = (self.x0, self.w, self.sample_weight);
         if !prepare_scanline_crossings(crossings) {
-            return;
+            return 0;
         }
         if let (Some(first), Some(last)) = (crossings.first(), crossings.last()) {
             let lo = safe_floor_i32(first.0 - x0 as f64).clamp(0, w as i32) as usize;
@@ -4034,7 +4353,6 @@ impl SampleLineGroup {
                 .clamp(0, w as i32) as usize;
             *touched = (touched.0.min(lo), touched.1.max(hi));
         }
-        PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(u64::from(repeat), Ordering::Relaxed);
         match self.rule {
             FillRule::EvenOdd => {
                 let mut i = 0usize;
@@ -4075,6 +4393,7 @@ impl SampleLineGroup {
                 }
             }
         }
+        u64::from(repeat)
     }
 }
 
@@ -4131,6 +4450,7 @@ fn accumulate_scanline_row_subsampled(
         crossings,
     );
     let mut repeat = 1u32;
+    let mut lines = 0u64;
     NEXT_SAMPLE_CROSSINGS.with(|next| {
         let mut next = next.borrow_mut();
         for sample in 1..vertical_samples {
@@ -4141,12 +4461,15 @@ fn accumulate_scanline_row_subsampled(
                 repeat += 1;
                 continue;
             }
-            group.accumulate(crossings, repeat, row_accum, &mut touched);
+            lines += group.accumulate(crossings, repeat, row_accum, &mut touched);
             std::mem::swap(crossings, &mut *next);
             repeat = 1;
         }
     });
-    group.accumulate(crossings, repeat, row_accum, &mut touched);
+    lines += group.accumulate(crossings, repeat, row_accum, &mut touched);
+    if lines > 0 {
+        PATH_RASTER_SCANLINE_FAST_ROWS.fetch_add(lines, Ordering::Relaxed);
+    }
     touched
 }
 
@@ -4479,15 +4802,15 @@ pub(crate) fn stroke_flat_path(
         if closed {
             dashed_points.push(points[0]);
         }
-        for dash_piece in dash_polyline(&dashed_points, dash) {
-            if matches!(style.cap, LineCap::Butt) && is_zero_dash_dot(&dash_piece) {
+        for_each_dash_piece(&dashed_points, dash, |dash_piece| {
+            if matches!(style.cap, LineCap::Butt) && is_zero_dash_dot(dash_piece) {
                 // A zero-length dash with butt caps has no area (PDF 8.4.3.6).
-                continue;
+                return;
             }
-            if let Some(poly) = stroked_polyline_outline(&dash_piece, false, &style) {
+            if let Some(poly) = stroked_polyline_outline(dash_piece, false, &style) {
                 push_outline_subpath(&mut outline, poly);
             }
-        }
+        });
     }
 
     outline
@@ -4535,12 +4858,25 @@ fn is_zero_dash_dot(piece: &[(f64, f64)]) -> bool {
     piece.len() == 2 && distance(piece[0], piece[1]) <= ZERO_DASH_DOT_LENGTH * 1.5
 }
 
+#[cfg(test)]
 fn dash_polyline(points: &[(f64, f64)], dash: &DashState) -> Vec<Vec<(f64, f64)>> {
+    let mut pieces = Vec::new();
+    for_each_dash_piece(points, dash, |piece| pieces.push(piece.to_vec()));
+    pieces
+}
+
+/// Call `emit` with each dash piece of the polyline `points`, in order. One
+/// scratch buffer holds the piece being built, so pieces cost no allocation.
+fn for_each_dash_piece(
+    points: &[(f64, f64)],
+    dash: &DashState,
+    mut emit: impl FnMut(&[(f64, f64)]),
+) {
     if dash_polyline_would_expand_too_much(points, dash) {
-        return vec![points.to_vec()];
+        emit(points);
+        return;
     }
 
-    let mut pieces = Vec::new();
     let mut current = Vec::new();
     let mut dash_state = dash.clone();
 
@@ -4558,16 +4894,16 @@ fn dash_polyline(points: &[(f64, f64)], dash: &DashState) -> Vec<Vec<(f64, f64)>
 
         for (t0, t1, drawing) in dash_state.advance(seg_len) {
             if !drawing {
-                finish_dash_piece(&mut pieces, &mut current);
+                finish_dash_piece(&mut current, &mut emit);
                 continue;
             }
             if t1 - t0 <= 1e-10 {
                 // Zero-length dash: a tiny segment along the path direction.
                 // Its caps give the PDF result (round = dot, projecting =
                 // square, butt = nothing visible).
-                finish_dash_piece(&mut pieces, &mut current);
+                finish_dash_piece(&mut current, &mut emit);
                 let q = (p0.0 + ux * t0, p0.1 + uy * t0);
-                pieces.push(vec![
+                emit(&[
                     q,
                     (
                         q.0 + ux * ZERO_DASH_DOT_LENGTH,
@@ -4583,7 +4919,7 @@ fn dash_polyline(points: &[(f64, f64)], dash: &DashState) -> Vec<Vec<(f64, f64)>
                 .last()
                 .is_some_and(|&last| distance(last, q0) > 1e-7)
             {
-                finish_dash_piece(&mut pieces, &mut current);
+                finish_dash_piece(&mut current, &mut emit);
             }
             if current.is_empty() {
                 current.push(q0);
@@ -4594,8 +4930,7 @@ fn dash_polyline(points: &[(f64, f64)], dash: &DashState) -> Vec<Vec<(f64, f64)>
         }
     }
 
-    finish_dash_piece(&mut pieces, &mut current);
-    pieces
+    finish_dash_piece(&mut current, &mut emit);
 }
 
 fn dash_polyline_would_expand_too_much(points: &[(f64, f64)], dash: &DashState) -> bool {
@@ -4617,12 +4952,11 @@ fn dash_polyline_would_expand_too_much(points: &[(f64, f64)], dash: &DashState) 
         .is_some_and(|count| count > MAX_DASH_POLYLINE_PIECES)
 }
 
-fn finish_dash_piece(pieces: &mut Vec<Vec<(f64, f64)>>, current: &mut Vec<(f64, f64)>) {
+fn finish_dash_piece(current: &mut Vec<(f64, f64)>, emit: &mut impl FnMut(&[(f64, f64)])) {
     if current.len() >= 2 {
-        pieces.push(std::mem::take(current));
-    } else {
-        current.clear();
+        emit(current);
     }
+    current.clear();
 }
 
 fn stroked_polyline_outline(
@@ -4630,6 +4964,9 @@ fn stroked_polyline_outline(
     closed: bool,
     style: &StrokeStyle,
 ) -> Option<Vec<(f64, f64)>> {
+    if let (false, [start, end]) = (closed, points) {
+        return stroked_line_outline(*start, *end, style);
+    }
     let segments = build_stroke_segments(points, closed)?;
     if closed {
         let (outer_side, inner_side) = stroked_closed_outline_contours(points, &segments, style)?;
@@ -4639,6 +4976,51 @@ fn stroked_polyline_outline(
     } else {
         stroked_open_outline(points, &segments, style)
     }
+}
+
+/// [`stroked_open_outline`] of the single segment `start`..`end` (most dash
+/// pieces), built in one allocation with the same arithmetic.
+fn stroked_line_outline(
+    start: (f64, f64),
+    end: (f64, f64),
+    style: &StrokeStyle,
+) -> Option<Vec<(f64, f64)>> {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-10 || !len.is_finite() {
+        return None;
+    }
+    let dir = (dx / len, dy / len);
+    let normal = (-dir.1, dir.0);
+    let (start_center, end_center) = match style.cap {
+        LineCap::ProjectingSquare => (
+            sub(start, scale(dir, style.half_width)),
+            add(end, scale(dir, style.half_width)),
+        ),
+        _ => (start, end),
+    };
+    let start_left = offset_point(start_center, normal, 1.0, style.half_width);
+    let start_right = offset_point(start_center, normal, -1.0, style.half_width);
+    let end_left = offset_point(end_center, normal, 1.0, style.half_width);
+    let end_right = offset_point(end_center, normal, -1.0, style.half_width);
+    if !matches!(style.cap, LineCap::Round) {
+        return Some(vec![start_left, end_left, end_right, start_right]);
+    }
+    let end_arc = arc_points_towards(end_center, end_left, end_right, dir, style.half_width);
+    let start_arc = arc_points_towards(
+        start_center,
+        start_right,
+        start_left,
+        scale(dir, -1.0),
+        style.half_width,
+    );
+    let mut poly = Vec::with_capacity(4 + end_arc.len() + start_arc.len());
+    poly.extend([start_left, end_left]);
+    poly.extend(end_arc);
+    poly.extend([end_right, start_right]);
+    poly.extend(start_arc);
+    Some(poly)
 }
 
 fn build_stroke_segments(points: &[(f64, f64)], closed: bool) -> Option<Vec<StrokeSegment>> {
@@ -6508,6 +6890,120 @@ mod tests {
         PathPainter::stroke(&mut buf, &p, &ctm, &vp, BLACK, 1.0, &DashState::solid());
         assert_eq!(buf.get_pixel(0, 0), WHITE);
         assert_eq!(buf.get_pixel(99, 99), WHITE);
+    }
+
+    /// Fill `flat` through the dispatcher (box fast path when it applies) and
+    /// through the general scan converter, and require identical pixels.
+    fn assert_rect_path_matches_general(flat: &FlatPath, color: PixelColor) {
+        let mut fast = PixelBuffer::new_filled(120, 90, WHITE);
+        assert!(fill_flat_with_color_compositor(
+            &mut fast,
+            flat,
+            color,
+            FillRule::NonZero,
+            None,
+            None
+        ));
+        let mut general = PixelBuffer::new_filled(120, 90, WHITE);
+        assert!(fill_flat_with_color_compositor_scanline(
+            &mut general,
+            flat,
+            color,
+            FillRule::NonZero,
+            None,
+            (0, 0, 120, 90),
+            PATH_SCANLINE_COLOR_VERTICAL_SAMPLES,
+            &[],
+            None,
+        ));
+        assert_eq!(fast.rgba_bytes(), general.rgba_bytes());
+    }
+
+    fn dashed_outline(points: &[(f64, f64)], width: f64, dash: &[f64], cap: LineCap) -> FlatPath {
+        let flat = FlatPath {
+            subpaths: vec![points.to_vec()],
+            closed: vec![false],
+        };
+        stroke_flat_path(
+            &flat,
+            width,
+            &DashState::new(dash.to_vec(), 0.3),
+            cap,
+            LineJoin::Miter,
+            10.0,
+        )
+    }
+
+    #[test]
+    fn axis_aligned_dash_boxes_fill_exactly_like_the_general_scan_converter() {
+        let semi = [128, 30, 200, 160];
+        // Horizontal and vertical dashed rules at fractional positions.
+        for (points, width) in [
+            (vec![(3.3, 10.37), (117.6, 10.37)], 1.67),
+            (vec![(3.3, 20.5), (117.6, 20.5)], 0.6),
+            (vec![(40.25, 2.1), (40.25, 88.9)], 2.2),
+        ] {
+            let outline = dashed_outline(&points, width, &[4.1, 2.3], LineCap::Butt);
+            assert!(
+                scanline_rect_set(&outline, (0, 90), PATH_SCANLINE_COLOR_VERTICAL_SAMPLES)
+                    .is_some()
+            );
+            assert_rect_path_matches_general(&outline, BLACK);
+            assert_rect_path_matches_general(&outline, semi);
+        }
+        // A dashed rectangle: horizontal and vertical pieces in one outline,
+        // touching or overlapping at the corners.
+        let rect = [
+            (10.4, 10.6),
+            (100.2, 10.6),
+            (100.2, 70.3),
+            (10.4, 70.3),
+            (10.4, 10.6),
+        ];
+        for cap in [LineCap::Butt, LineCap::ProjectingSquare] {
+            let outline = dashed_outline(&rect, 1.4, &[3.0, 1.0], cap);
+            assert_rect_path_matches_general(&outline, semi);
+        }
+        // Projecting caps wider than the gaps overlap: the general path.
+        let overlapping = dashed_outline(
+            &[(3.3, 10.37), (117.6, 10.37)],
+            3.0,
+            &[4.0, 1.0],
+            LineCap::ProjectingSquare,
+        );
+        assert!(
+            scanline_rect_set(&overlapping, (0, 90), PATH_SCANLINE_COLOR_VERTICAL_SAMPLES)
+                .is_none()
+        );
+        assert_rect_path_matches_general(&overlapping, BLACK);
+        // Diagonal dashes are not boxes.
+        let diagonal = dashed_outline(
+            &[(3.0, 3.0), (110.0, 80.0)],
+            1.5,
+            &[4.0, 2.0],
+            LineCap::Butt,
+        );
+        assert!(
+            scanline_rect_set(&diagonal, (0, 90), PATH_SCANLINE_COLOR_VERTICAL_SAMPLES).is_none()
+        );
+    }
+
+    #[test]
+    fn line_outline_matches_the_polyline_stroker() {
+        for cap in [LineCap::Butt, LineCap::Round, LineCap::ProjectingSquare] {
+            let style = StrokeStyle {
+                half_width: 0.83,
+                cap: cap.clone(),
+                join: LineJoin::Miter,
+                miter_limit: 10.0,
+            };
+            let points = [(1.25, 7.5), (31.7, -4.125)];
+            let segments = build_stroke_segments(&points, false).unwrap();
+            assert_eq!(
+                stroked_line_outline(points[0], points[1], &style),
+                stroked_open_outline(&points, &segments, &style)
+            );
+        }
     }
 
     #[test]

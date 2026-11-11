@@ -150,27 +150,106 @@ fn device_cmyk_images_and_shadings_keep_components() {
     assert_eq!(at(&raster, 75, 50), [102, 0, 0, 255]);
 }
 
+fn assert_near(actual: [u8; 4], expected: [u8; 4]) {
+    assert!(
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(a, e)| (i16::from(*a) - i16::from(e)).abs() <= 1),
+        "{actual:?} != {expected:?}"
+    );
+}
+
 #[test]
-fn non_separable_blend_falls_back_with_a_diagnostic() {
+fn non_separable_blends_composite_natively_in_cmyk() {
+    // Backdrop C/M/Y/K = 0.2/0.4/0.6/0.3. The modes act on the complements
+    // of C, M and Y (0.8, 0.6, 0.4); K comes from the backdrop for Hue,
+    // Saturation and Color and from the source for Luminosity.
+    let resources = "/ExtGState << /H 5 0 R /L 6 0 R >>";
+    let content = "0.2 0.4 0.6 0.3 k 0 0 100 100 re f \
+                   q /H gs 1 0 0 0 k 0 0 50 50 re f Q \
+                   q /L gs 0 0 0 0.5 k 50 0 50 50 re f Q";
     let raster = render_cmyk(
         pdf(
-            "1 0 0 rg 0 0 100 100 re f /L gs 0 0 1 rg 0 0 50 50 re f",
-            "/ExtGState << /L 5 0 R >>",
-            &[b"<< /Type /ExtGState /BM /Luminosity >>"],
+            content,
+            resources,
+            &[
+                b"<< /Type /ExtGState /BM /Hue >>",
+                b"<< /Type /ExtGState /BM /Luminosity >>",
+            ],
         ),
         OverprintPolicy::Preview,
     );
-    assert!(!raster.native);
-    assert!(
-        raster
-            .diagnostics
-            .iter()
-            .any(|d| d.contains("non-separable blend mode")),
-        "{:?}",
-        raster.diagnostics
+    assert!(raster.native, "{:?}", raster.diagnostics);
+    // Hue of pure cyan, saturation and luminosity of the backdrop:
+    // SetLum(SetSat((0, 1, 1), 0.4), 0.638) = (0.358, 0.758, 0.758).
+    assert_near(at(&raster, 25, 25), [164, 62, 62, 77]);
+    // Luminosity of paper-white C/M/Y lifts the backdrop to white; K from
+    // the source.
+    assert_near(at(&raster, 75, 25), [0, 0, 0, 128]);
+    // Untouched backdrop.
+    assert_eq!(at(&raster, 25, 75), [51, 102, 153, 77]);
+}
+
+#[test]
+fn non_separable_blend_with_spot_plates_renders_process_plates_together() {
+    let resources = "/ColorSpace << /CS0 5 0 R >> /ExtGState << /H 6 0 R >>";
+    let content = "0 0 0 1 k 0 0 50 100 re f /CS0 cs 0.5 scn 50 0 50 100 re f \
+                   /H gs 1 0 0 0 k 0 0 100 50 re f";
+    let engine = ContentEngine::open_bytes(pdf(
+        content,
+        resources,
+        &[SPOT, b"<< /Type /ExtGState /BM /Hue >>"],
+    ))
+    .unwrap();
+    let contract = engine
+        .default_render_contract(1, 72, RenderMode::Compat)
+        .unwrap();
+    let mut cache = RenderDocumentCache::new();
+    let raster = engine
+        .render_page_separations_with_contract_and_cache(
+            &contract,
+            &CancelToken::none(),
+            8,
+            &mut cache,
+        )
+        .unwrap();
+    assert!(raster.native, "{:?}", raster.diagnostics);
+    assert_eq!(raster.plates.len(), 5);
+    // Device row 75 is PDF y = 24 (the Hue paint); row 25 is above it.
+    let pixel =
+        |plate: usize, x: u32, row: u32| raster.plates[plate].pixels[(row * 100 + x) as usize];
+    // A grey backdrop has no hue to take: C/M/Y stay at the backdrop's.
+    assert_eq!(pixel(0, 25, 75), 0);
+    assert_eq!(pixel(0, 75, 75), 0);
+    // Black and the spot keep the backdrop.
+    assert_eq!(pixel(3, 25, 75), 255);
+    assert_eq!(pixel(4, 75, 75), 128);
+    assert_eq!(pixel(4, 75, 25), 128);
+}
+
+#[test]
+fn transfer_functions_apply_per_plate() {
+    // A single curve y = x^2 on the additive value (255 - ink), and a
+    // four-curve array that only changes the black plate.
+    let resources = "/ExtGState << /T 5 0 R /T4 6 0 R >>";
+    let content = "q /T gs 0 0 0 0.5 k 0 0 50 100 re f Q \
+                   q /T4 gs 0.5 0 0 0.5 k 50 0 50 100 re f Q";
+    let raster = render_cmyk(
+        pdf(
+            content,
+            resources,
+            &[
+                b"<< /Type /ExtGState /TR << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 2 >> >>",
+                b"<< /Type /ExtGState /TR [/Identity /Identity /Identity << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 2 >>] >>",
+            ],
+        ),
+        OverprintPolicy::Preview,
     );
-    assert_eq!(raster.pixels.len(), 100 * 100 * 4);
-    assert_eq!(at(&raster, 75, 75), [0, 255, 255, 0]);
+    assert!(raster.native, "{:?}", raster.diagnostics);
+    // K = 128 ink is 127 additive: (127/255)^2 * 255 = 63, i.e. 192 ink.
+    assert_near(at(&raster, 25, 50), [0, 0, 0, 192]);
+    assert_near(at(&raster, 75, 50), [128, 0, 0, 192]);
 }
 
 #[test]

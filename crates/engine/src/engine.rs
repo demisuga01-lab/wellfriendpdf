@@ -2395,8 +2395,10 @@ impl ContentEngine {
     }
 
     /// Run the plate passes for the four process plates plus `spots`, three
-    /// plates per pass, repeating with one plate per pass when an
-    /// overprinting paint names only some of the plates rendered together.
+    /// plates per pass. An overprinting paint that names only some of the
+    /// plates rendered together repeats the page with one plate per pass; a
+    /// non-separable blend mode in a pass mixing black and spot plates
+    /// repeats it with C/M/Y together and every other plate alone.
     fn render_contract_plates(
         &self,
         contract: &RenderContract,
@@ -2405,16 +2407,18 @@ impl ContentEngine {
         spots: Arc<[String]>,
     ) -> Result<PlateRender> {
         use crate::render::plate::{
-            plate_pass_channels, PlateTarget, MIXED_OVERPRINT_ISSUE, NO_PLATE,
+            plate_pass_channels, PassLayout, PlateTarget, MIXED_OVERPRINT_ISSUE,
+            NONSEPARABLE_LAYOUT_ISSUE, NO_PLATE,
         };
         let plate_contract = plate_pass_contract(contract);
         let plate_count = 4 + spots.len();
         let honour_overprint = contract.overprint != OverprintPolicy::Disabled;
         let mut reports = None;
-        for single_plate in [false, true] {
+        let mut layout = PassLayout::Grouped;
+        loop {
             let mut planes: Vec<Option<Vec<u8>>> = vec![None; plate_count];
-            let mut mixed = false;
-            for channels in plate_pass_channels(plate_count, single_plate) {
+            let mut next_layout = None;
+            for channels in plate_pass_channels(plate_count, layout) {
                 let target = Arc::new(PlateTarget::new(
                     channels,
                     Arc::clone(&spots),
@@ -2431,12 +2435,17 @@ impl ContentEngine {
                 if reports.is_none() {
                     reports = Some((log, telemetry));
                 }
+                let mut mixed = false;
+                let mut nonseparable = false;
                 let issues: Vec<String> = target
                     .issues()
                     .into_iter()
                     .filter(|issue| {
                         if issue == MIXED_OVERPRINT_ISSUE {
                             mixed = true;
+                            false
+                        } else if issue == NONSEPARABLE_LAYOUT_ISSUE {
+                            nonseparable = true;
                             false
                         } else {
                             true
@@ -2446,7 +2455,17 @@ impl ContentEngine {
                 if !issues.is_empty() {
                     return Ok(PlateRender::Fallback { issues });
                 }
-                if mixed && !single_plate {
+                if mixed && layout != PassLayout::Single {
+                    next_layout = Some(PassLayout::Single);
+                    break;
+                }
+                if nonseparable {
+                    if layout != PassLayout::Grouped {
+                        return Ok(PlateRender::Fallback {
+                            issues: vec![NONSEPARABLE_LAYOUT_ISSUE.to_string()],
+                        });
+                    }
+                    next_layout = Some(PassLayout::ProcessTogether);
                     break;
                 }
                 let rgba = buffer.rgba_bytes();
@@ -2463,7 +2482,8 @@ impl ContentEngine {
                     );
                 }
             }
-            if mixed && !single_plate {
+            if let Some(next) = next_layout {
+                layout = next;
                 continue;
             }
             let (font_substitution_log, telemetry_report) =
@@ -2474,7 +2494,6 @@ impl ContentEngine {
                 telemetry_report,
             });
         }
-        unreachable!("single-plate passes never mix overprint")
     }
 
     fn render_contract_pixels(
